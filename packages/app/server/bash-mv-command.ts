@@ -12,6 +12,16 @@ import { bash_create_glob_syntax_unsupported_message, bash_current_workspace_pat
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
+ * Occupied-destination error. Suggest `-f` only when a file-onto-file replace could work.
+ */
+function create_dest_exists_error(destPath: string, canReplace: boolean, force: boolean) {
+	if (canReplace && !force) {
+		return `mv: destination '${destPath}' already exists. To propose replacing the existing file, add -f: the replacement only applies after the user accepts it in Files.\n`;
+	}
+	return `mv: destination '${destPath}' already exists; only a file can replace an existing file with mv -f. Choose a different destination path.\n`;
+}
+
+/**
  * Propose app-file moves as pending updates for shell `mv`.
  *
  * `/tmp` moves still delegate to the built-in. In Agent mode an app→app `mv`
@@ -30,7 +40,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 	}
 
 	return defineCommand("mv", async (args, commandCtx) => {
-		const { operands } = bash_parse_cp_mv_operands(args);
+		const { operands, force } = bash_parse_cp_mv_operands(args);
 
 		// Mounts are read-only: mv would delete a mount source or write a mount destination, so reject
 		// any operand under /.mounts or /.plugins before native delegation. (cp <mount> /tmp covers
@@ -180,34 +190,47 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				};
 			}
 			if (destNode.kind !== "folder") {
-				return {
-					stdout: "",
-					stderr: `mv: destination '${destDbFilesPath}' already exists; overwrite is not supported. Choose a different destination path.\n`,
-					exitCode: bash_COMMAND_EXIT_FAILURE,
-				};
-			}
-			// An existing folder destination keeps the source name inside it, like native mv.
-			destParentId = destNode._id;
-			destName = sourceNode.name;
-			intendedDestPath = path_join(destNode.path, destName);
-			const occupant = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-				organizationId,
-				workspaceId,
-				path: intendedDestPath,
-			})) as files_nodes_get_by_path_Result;
-			if (occupant) {
-				if (occupant._id === sourceNode._id) {
+				// `mv -f` file-onto-file proposes a replace; folders can never replace or be replaced.
+				if (!force || sourceNode.kind !== "file") {
 					return {
 						stdout: "",
-						stderr: `mv: '${sourceOperand}' and '${destOperand}' are the same file\n`,
+						stderr: create_dest_exists_error(destDbFilesPath, sourceNode.kind === "file", force),
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
-				return {
-					stdout: "",
-					stderr: `mv: destination '${intendedDestPath}' already exists; overwrite is not supported. Choose a different destination path.\n`,
-					exitCode: bash_COMMAND_EXIT_FAILURE,
-				};
+				destParentId = destNode.parentId;
+				destName = destNode.name;
+				intendedDestPath = destNode.path;
+			} else {
+				// An existing folder destination keeps the source name inside it, like native mv.
+				destParentId = destNode._id;
+				destName = sourceNode.name;
+				intendedDestPath = path_join(destNode.path, destName);
+				const occupant = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+					organizationId,
+					workspaceId,
+					path: intendedDestPath,
+				})) as files_nodes_get_by_path_Result;
+				if (occupant) {
+					if (occupant._id === sourceNode._id) {
+						return {
+							stdout: "",
+							stderr: `mv: '${sourceOperand}' and '${destOperand}' are the same file\n`,
+							exitCode: bash_COMMAND_EXIT_FAILURE,
+						};
+					}
+					if (!force || sourceNode.kind !== "file" || occupant.kind !== "file") {
+						return {
+							stdout: "",
+							stderr: create_dest_exists_error(
+								intendedDestPath,
+								sourceNode.kind === "file" && occupant.kind === "file",
+								force,
+							),
+							exitCode: bash_COMMAND_EXIT_FAILURE,
+						};
+					}
+				}
 			}
 		} else {
 			// Missing destination: the last segment is the new name; the parent folder must already exist.
@@ -256,6 +279,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			nodeId: sourceNode._id,
 			destParentId,
 			destName,
+			replace: force,
 		})) as upsert_file_pending_move_in_db_Result;
 		if (proposed._nay) {
 			const message = proposed._nay.message;
@@ -263,7 +287,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				stdout: "",
 				stderr:
 					message === "Path already exists"
-						? `mv: destination '${intendedDestPath}' already exists; overwrite is not supported. Choose a different destination path.\n`
+						? create_dest_exists_error(intendedDestPath, sourceNode.kind === "file", force)
 						: message === "Cannot move a folder into itself"
 							? `mv: cannot move '${sourceOperand}' to a subdirectory of itself\n`
 							: message === "Source and destination are the same"
@@ -274,7 +298,9 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		}
 
 		return {
-			stdout: `pending move created: ${proposed._yay.fromPath} -> ${proposed._yay.destPath} — review in Files\n`,
+			stdout: proposed._yay.replacesExistingFile
+				? `pending move created: ${proposed._yay.fromPath} -> ${proposed._yay.destPath} — replaces the existing file when accepted; review in Files\n`
+				: `pending move created: ${proposed._yay.fromPath} -> ${proposed._yay.destPath} — review in Files\n`,
 			stderr: "",
 			exitCode: 0,
 		};

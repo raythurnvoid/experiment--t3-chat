@@ -1433,26 +1433,26 @@ export async function files_nodes_db_delete_subtree_batch(
 }
 
 /**
- * A pending-copy destination may only be hard-deleted while it is still the eager near-empty
- * node the copy created: no content committed since the proposal (the committed Yjs sequence
- * still matches the immutable `copiedFrom.committedSequence` stamp) and no other user's pending
- * row on the node. Anything else means the node became a real file; callers must then drop only
- * the proposer's row and keep the node.
+ * An eagerly-created destination (write_file or cp onto a new path) may only be hard-deleted
+ * while it is still the near-empty node the proposal created: no content committed since the
+ * proposal (the committed Yjs sequence still matches the immutable `eagerCreated.committedSequence`
+ * stamp) and no other user's pending row on the node. Anything else means the node became a real
+ * file; callers must then drop only the proposer's row and keep the node.
  */
-export async function files_nodes_db_is_copy_dest_safe_to_hard_delete(
+export async function files_nodes_db_is_eager_node_safe_to_hard_delete(
 	ctx: QueryCtx,
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
-		pendingUpdate: Pick<Doc<"files_pending_updates">, "_id" | "copiedFrom">;
+		pendingUpdate: Pick<Doc<"files_pending_updates">, "_id" | "eagerCreated">;
 	},
 ) {
-	// Conservative: a copy row without a committed-sequence stamp cannot prove the node is untouched.
-	const committedSequence = args.pendingUpdate.copiedFrom?.committedSequence;
-	if (committedSequence === undefined) {
+	// Proposals against pre-existing files (edits, replace-copies): never hard-delete those.
+	if (!args.pendingUpdate.eagerCreated) {
 		return false;
 	}
+	const committedSequence = args.pendingUpdate.eagerCreated.committedSequence;
 
 	const node = await ctx.db.get("files_nodes", args.nodeId);
 	if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
@@ -2123,6 +2123,12 @@ export async function files_nodes_db_validate_pending_move_target(
 		nodeId: Id<"files_nodes">;
 		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 		destName: string;
+		/**
+		 * File-onto-file replace opt-in. `"any-active-file"` at proposal time (`mv -f`) accepts
+		 * whichever active file owns the destination; a node id at accept time requires the
+		 * destination to still be exactly that node.
+		 */
+		replaceTarget?: Id<"files_nodes"> | "any-active-file";
 	},
 ) {
 	const node = await ctx.db.get("files_nodes", args.nodeId);
@@ -2173,10 +2179,18 @@ export async function files_nodes_db_validate_pending_move_target(
 		)
 		.first();
 	if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
-		return Result({ _nay: { message: "Path already exists" } });
+		const replaceable =
+			args.replaceTarget != null &&
+			node.kind === "file" &&
+			activeSiblingConflict.kind === "file" &&
+			(args.replaceTarget === "any-active-file" || activeSiblingConflict._id === args.replaceTarget);
+		if (!replaceable) {
+			return Result({ _nay: { message: "Path already exists" } });
+		}
+		return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
 	}
 
-	return Result({ _yay: { node, destParentPath, destPath } });
+	return Result({ _yay: { node, destParentPath, destPath, replacesNode: null } });
 }
 
 /**
@@ -2191,6 +2205,7 @@ export async function files_nodes_db_apply_pending_move(
 		nodeId: Id<"files_nodes">;
 		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 		destName: string;
+		replacesNodeId?: Id<"files_nodes">;
 		updatedBy: Id<"users">;
 	},
 ) {
@@ -2200,6 +2215,7 @@ export async function files_nodes_db_apply_pending_move(
 		nodeId: args.nodeId,
 		destParentId: args.destParentId,
 		destName: args.destName,
+		replaceTarget: args.replacesNodeId,
 	});
 	if (validated._nay) {
 		return validated;
@@ -2208,6 +2224,15 @@ export async function files_nodes_db_apply_pending_move(
 
 	// Update the node once and then rebase descendants under the new materialized path.
 	const now = Date.now();
+	if (validated._yay.replacesNode) {
+		// Replace proposal: archive (never hard-delete) the file that owns the destination path.
+		// If it moved away since the proposal, `replacesNode` is null and the move proceeds plainly.
+		await files_nodes_db_archive_nodes(ctx, {
+			nodeIds: [validated._yay.replacesNode._id],
+			updatedBy: args.updatedBy,
+			now,
+		});
+	}
 	await ctx.db.patch("files_nodes", args.nodeId, {
 		parentId: args.destParentId,
 		name: args.destName,

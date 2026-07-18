@@ -7,7 +7,10 @@ export type FileEditorSidebarPendingRow = {
 	kind: "content" | "move" | "copy" | "content_and_move";
 	nodeKind: app_convex_Doc<"files_nodes">["kind"] | undefined;
 	moveDestinationPath: string | undefined;
-	copiedFromPath: string | undefined;
+	/** True for `mv -f` replace proposals: accepting archives the file at the destination path. */
+	moveReplacesExistingFile: boolean;
+	/** True when the proposal created the file (write_file/cp onto a new path): shown as Added. */
+	isAddedFile: boolean;
 };
 
 const FILE_EDITOR_SIDEBAR_PENDING_MISSING_PATH_LABEL = "(unknown file)";
@@ -52,7 +55,8 @@ export function files_pending_changes_build_rows(
 				kind,
 				nodeKind: node?.kind,
 				moveDestinationPath,
-				copiedFromPath: copiedFrom ? (nodesById.get(copiedFrom.nodeId)?.path ?? copiedFrom.path) : undefined,
+				moveReplacesExistingFile: pendingMove?.replacesNodeId != null,
+				isAddedFile: pendingUpdate.eagerCreated != null,
 			};
 		})
 		.sort((left, right) => left.path.localeCompare(right.path));

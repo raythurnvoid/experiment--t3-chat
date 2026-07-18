@@ -21,7 +21,7 @@ import {
 	files_db_yjs_push_update,
 	files_nodes_db_apply_pending_move,
 	files_nodes_db_hard_delete_node,
-	files_nodes_db_is_copy_dest_safe_to_hard_delete,
+	files_nodes_db_is_eager_node_safe_to_hard_delete,
 	files_nodes_db_validate_pending_move_target,
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
@@ -475,6 +475,7 @@ async function files_pending_update_upsert_branch_docs(
 		unstagedMarkdown: string;
 		unstagedBranchChanged: boolean;
 		copiedFrom?: app_convex_Doc<"files_pending_updates">["copiedFrom"];
+		eagerCreated?: app_convex_Doc<"files_pending_updates">["eagerCreated"];
 	},
 ) {
 	const branchDocsHaveChanges = files_pending_update_branch_docs_have_changes({
@@ -492,13 +493,15 @@ async function files_pending_update_upsert_branch_docs(
 	}
 
 	if (!branchDocsHaveChanges._yay) {
-		// Copy rows (even with a pendingMove) must stay persisted when the content matches the
-		// committed base (empty-source copy): fall through and store base == staged == unstaged so
-		// the row never loses its yjs fields and the eager destination node stays discardable.
-		if (!args.existingPendingUpdate?.copiedFrom && !args.copiedFrom) {
+		// Eager rows (even with a pendingMove) must stay persisted when the content matches the
+		// committed base (empty-source copy, empty write_file): fall through and store base ==
+		// staged == unstaged so the row never loses its yjs fields and the eager destination node
+		// stays discardable. Non-eager rows target a real file, so they delete/degrade like plain rows.
+		if (!args.existingPendingUpdate?.eagerCreated && !args.eagerCreated) {
 			if (args.existingPendingUpdate?.pendingMove) {
 				// Content collapsed back to base while a move proposal sits on the row: degrade to a
-				// pure-move row instead of deleting the move along with the content.
+				// pure-move row instead of deleting the move along with the content. Only non-eager
+				// rows can reach here, and without content copiedFrom is stale provenance — clear it.
 				const now = Date.now();
 				await Promise.all([
 					ctx.db.patch("files_pending_updates", args.existingPendingUpdate._id, {
@@ -506,6 +509,7 @@ async function files_pending_update_upsert_branch_docs(
 						baseYjsUpdate: undefined,
 						stagedBranchYjsUpdate: undefined,
 						unstagedBranchYjsUpdate: undefined,
+						copiedFrom: undefined,
 						size: 0,
 						updatedAt: now,
 					}),
@@ -573,6 +577,7 @@ async function files_pending_update_upsert_branch_docs(
 			stagedBranchYjsUpdate,
 			unstagedBranchYjsUpdate,
 			...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+			...(args.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
 			size: unstagedSize,
 			updatedAt: now,
 		});
@@ -596,8 +601,11 @@ async function files_pending_update_upsert_branch_docs(
 				baseYjsUpdate,
 				stagedBranchYjsUpdate,
 				unstagedBranchYjsUpdate,
-				// Never overwrite an existing copiedFrom: its committedSequence stamp must stay immutable.
 				...(args.copiedFrom && !args.existingPendingUpdate.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+				// Never overwrite an existing eagerCreated: its committedSequence stamp must stay immutable.
+				...(args.eagerCreated && !args.existingPendingUpdate.eagerCreated
+					? { eagerCreated: args.eagerCreated }
+					: {}),
 				...(args.unstagedBranchChanged ? { size: unstagedSize } : {}),
 				updatedAt: now,
 			}),
@@ -641,6 +649,7 @@ async function files_pending_update_upsert_updates(
 		stagedMarkdown?: string;
 		unstagedMarkdown: string;
 		copiedFrom?: app_convex_Doc<"files_pending_updates">["copiedFrom"];
+		eagerCreated?: boolean;
 	},
 ) {
 	const file = await ctx.db.get("files_nodes", args.nodeId);
@@ -648,13 +657,14 @@ async function files_pending_update_upsert_updates(
 		return Result({ _nay: { message: "Not found" } });
 	}
 
-	// Stamp the copy row with the node's committed last sequence so the hard-delete safety
+	// Stamp eager creation with the node's committed last sequence so the hard-delete safety
 	// check compares against an immutable value that later rebases can never bring back in sync.
-	let copiedFrom = args.copiedFrom;
-	if (copiedFrom && copiedFrom.committedSequence === undefined && file.yjsLastSequenceId) {
+	// No resolvable sequence -> no stamp: the row degrades to a plain edit and is never hard-deleted.
+	let eagerCreated: app_convex_Doc<"files_pending_updates">["eagerCreated"];
+	if (args.eagerCreated && file.yjsLastSequenceId) {
 		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", file.yjsLastSequenceId);
 		if (yjsLastSequenceDoc) {
-			copiedFrom = { ...copiedFrom, committedSequence: yjsLastSequenceDoc.lastSequence };
+			eagerCreated = { committedSequence: yjsLastSequenceDoc.lastSequence };
 		}
 	}
 
@@ -715,7 +725,8 @@ async function files_pending_update_upsert_updates(
 		unstagedMarkdown: args.unstagedMarkdown,
 		// `false` means the branch already matched this markdown.
 		unstagedBranchChanged: unstagedBranchProjection._yay !== false,
-		copiedFrom,
+		copiedFrom: args.copiedFrom,
+		eagerCreated,
 	});
 }
 
@@ -748,15 +759,15 @@ export const remove_file_pending_update_if_expired = internalMutation({
 			return null;
 		}
 
-		if (pendingUpdate.copiedFrom) {
-			const safeToHardDelete = await files_nodes_db_is_copy_dest_safe_to_hard_delete(ctx, {
+		if (pendingUpdate.eagerCreated) {
+			const safeToHardDelete = await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
 				organizationId: pendingUpdate.organizationId,
 				workspaceId: pendingUpdate.workspaceId,
 				nodeId: pendingUpdate.fileNodeId,
 				pendingUpdate,
 			});
 			if (safeToHardDelete) {
-				// Expired pending copy: remove the eagerly-created destination node entirely. The hard
+				// Expired eager proposal: remove the eagerly-created destination node entirely. The hard
 				// delete also removes this row, its chunks, and the remaining cleanup tasks.
 				await files_nodes_db_hard_delete_node(ctx, {
 					organizationId: pendingUpdate.organizationId,
@@ -794,6 +805,8 @@ export const upsert_file_pending_update_in_db = internalMutation({
 		stagedMarkdown: v.optional(v.string()),
 		unstagedMarkdown: v.string(),
 		copiedFrom: v.optional(v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
+		/** True when the caller eagerly created the node for this proposal (write_file/cp on a new path). */
+		eagerCreated: v.optional(v.boolean()),
 	},
 	returns: v_result({
 		_yay: v.null(),
@@ -821,6 +834,7 @@ async function action_upsert_file_pending_update_in_db(
 		stagedMarkdown?: string | undefined;
 		unstagedMarkdown: string;
 		copiedFrom?: app_convex_Doc<"files_pending_updates">["copiedFrom"];
+		eagerCreated?: boolean;
 	},
 ) {
 	const result = (await ctx.runMutation(
@@ -897,6 +911,8 @@ export const upsert_file_pending_update_internal_action = internalAction({
 		stagedMarkdown: v.optional(v.string()),
 		unstagedMarkdown: v.string(),
 		copiedFrom: v.optional(v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
+		/** True when the caller eagerly created the node for this proposal (write_file/cp on a new path). */
+		eagerCreated: v.optional(v.boolean()),
 	},
 	returns: v_result({
 		_yay: v.null(),
@@ -941,11 +957,14 @@ export const upsert_file_pending_move_in_db = internalMutation({
 		nodeId: v.id("files_nodes"),
 		destParentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
 		destName: v.string(),
+		/** `mv -f`: allow a file-onto-file replace proposal when an active file owns the destination. */
+		replace: v.optional(v.boolean()),
 	},
 	returns: v_result({
 		_yay: v.object({
 			fromPath: v.string(),
 			destPath: v.string(),
+			replacesExistingFile: v.boolean(),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -955,11 +974,12 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			nodeId: args.nodeId,
 			destParentId: args.destParentId,
 			destName: args.destName,
+			replaceTarget: args.replace ? "any-active-file" : undefined,
 		});
 		if (validated._nay) {
 			return validated;
 		}
-		const { node, destPath } = validated._yay;
+		const { node, destPath, replacesNode } = validated._yay;
 
 		const existingPendingUpdate = await files_db_get_pending_update(ctx, {
 			organizationId: args.organizationId,
@@ -973,6 +993,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			destParentId: args.destParentId,
 			destName: args.destName,
 			fromPath: node.path,
+			...(replacesNode ? { replacesNodeId: replacesNode._id } : {}),
 		};
 		if (!existingPendingUpdate) {
 			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
@@ -1002,7 +1023,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			]);
 		}
 
-		return Result({ _yay: { fromPath: node.path, destPath } });
+		return Result({ _yay: { fromPath: node.path, destPath, replacesExistingFile: replacesNode != null } });
 	},
 });
 
@@ -1056,6 +1077,7 @@ export const apply_file_pending_move = mutation({
 			nodeId: args.nodeId,
 			destParentId: pendingUpdate.pendingMove.destParentId,
 			destName: pendingUpdate.pendingMove.destName,
+			replacesNodeId: pendingUpdate.pendingMove.replacesNodeId,
 			updatedBy: userAuth.id,
 		});
 		if (applied._nay) {
@@ -1132,15 +1154,15 @@ export const discard_file_pending_structural = mutation({
 			return Result({ _nay: { message: "Nothing to discard" } });
 		}
 
-		if (pendingUpdate.copiedFrom) {
-			const safeToHardDelete = await files_nodes_db_is_copy_dest_safe_to_hard_delete(ctx, {
+		if (pendingUpdate.copiedFrom || pendingUpdate.eagerCreated) {
+			const safeToHardDelete = await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				nodeId: args.nodeId,
 				pendingUpdate,
 			});
 			if (safeToHardDelete) {
-				// Discarding a pending copy removes the eagerly-created destination node entirely;
+				// Discarding an eager proposal removes the eagerly-created destination node entirely;
 				// the hard delete subsumes this row and its chunks.
 				await files_nodes_db_hard_delete_node(ctx, {
 					organizationId: membership.organizationId,
@@ -1150,8 +1172,8 @@ export const discard_file_pending_structural = mutation({
 				return Result({ _yay: null });
 			}
 
-			// The node became a real file (committed content or another user's draft):
-			// drop only this proposal and keep the node.
+			// The node is a real file (pre-existing replace target, committed content, or another
+			// user's draft): drop only this proposal and keep the node.
 			await Promise.all([
 				files_db_cancel_pending_update_cleanup_tasks(ctx, {
 					pendingUpdateId: pendingUpdate._id,
@@ -1269,13 +1291,15 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 		}
 
 		if (!branchDocsHaveChanges._yay) {
-			// Copy rows (even with a pendingMove) must stay persisted when the content matches the
+			// Eager rows (even with a pendingMove) must stay persisted when the content matches the
 			// base: fall through and store base == staged == unstaged so the row never loses its
-			// yjs fields and the eager destination node stays discardable.
-			if (!existingPendingUpdate?.copiedFrom) {
+			// yjs fields and the eager destination node stays discardable. Non-eager rows target a
+			// real file, so they delete/degrade like plain rows.
+			if (!existingPendingUpdate?.eagerCreated) {
 				if (existingPendingUpdate?.pendingMove) {
 					// Content collapsed back to base while a move proposal sits on the row: degrade to a
-					// pure-move row instead of deleting the move along with the content.
+					// pure-move row instead of deleting the move along with the content. Only non-eager
+					// rows can reach here, and without content copiedFrom is stale provenance — clear it.
 					const now = Date.now();
 					await Promise.all([
 						ctx.db.patch("files_pending_updates", existingPendingUpdate._id, {
@@ -1283,6 +1307,7 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 							baseYjsUpdate: undefined,
 							stagedBranchYjsUpdate: undefined,
 							unstagedBranchYjsUpdate: undefined,
+							copiedFrom: undefined,
 							size: 0,
 							updatedAt: now,
 						}),
@@ -1807,7 +1832,8 @@ export const save_file_pending_update_in_db = internalMutation({
 		if (unstagedMatchesSavedBase._yay) {
 			if (pendingUpdate.pendingMove) {
 				// Save publishes the content only; the move proposal survives as a pure-move row.
-				// The content is committed now, so expiry must never hard-delete the node: clear copiedFrom.
+				// The content is committed now, so expiry must never hard-delete the node: clear the
+				// eager stamp (and the now-stale copy provenance).
 				await Promise.all([
 					files_pending_update_upsert_last_sequence_saved(ctx, {
 						organizationId: membership.organizationId,
@@ -1823,6 +1849,7 @@ export const save_file_pending_update_in_db = internalMutation({
 						stagedBranchYjsUpdate: undefined,
 						unstagedBranchYjsUpdate: undefined,
 						copiedFrom: undefined,
+						eagerCreated: undefined,
 						size: 0,
 						updatedAt: now,
 					}),
@@ -1892,6 +1919,7 @@ export const save_file_pending_update_in_db = internalMutation({
 				}),
 				// Content is committed from here on, so expiry must never hard-delete the node.
 				copiedFrom: undefined,
+				eagerCreated: undefined,
 				...(unstagedMarkdownAfterRemoteDrift
 					? { size: files_get_utf8_byte_size(unstagedMarkdownAfterRemoteDrift._yay) }
 					: {}),

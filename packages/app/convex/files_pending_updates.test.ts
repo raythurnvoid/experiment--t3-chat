@@ -605,6 +605,7 @@ async function upsert_file_pending_update_internal_for_test(args: {
 	stagedMarkdown?: string;
 	unstagedMarkdown: string;
 	copiedFrom?: { nodeId: Id<"files_nodes">; path: string };
+	eagerCreated?: boolean;
 }) {
 	return await args.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
 		organizationId: args.organizationId,
@@ -615,6 +616,7 @@ async function upsert_file_pending_update_internal_for_test(args: {
 		...(args.stagedMarkdown !== undefined ? { stagedMarkdown: args.stagedMarkdown } : {}),
 		unstagedMarkdown: args.unstagedMarkdown,
 		...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+		...(args.eagerCreated !== undefined ? { eagerCreated: args.eagerCreated } : {}),
 	});
 }
 
@@ -626,6 +628,7 @@ async function upsert_file_pending_move_for_test(args: {
 	nodeId: Id<"files_nodes">;
 	destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 	destName: string;
+	replace?: boolean;
 }) {
 	return await args.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 		organizationId: args.organizationId,
@@ -634,6 +637,7 @@ async function upsert_file_pending_move_for_test(args: {
 		nodeId: args.nodeId,
 		destParentId: args.destParentId,
 		destName: args.destName,
+		replace: args.replace,
 	});
 }
 
@@ -3463,6 +3467,7 @@ describe("upsert_file_pending_move_in_db", () => {
 		expect(created._yay).toEqual({
 			fromPath: "/move-upsert-src.md",
 			destPath: "/move-upsert-dest/moved.md",
+			replacesExistingFile: false,
 		});
 
 		const pendingRow = await t.run((ctx) =>
@@ -3688,6 +3693,104 @@ describe("upsert_file_pending_move_in_db", () => {
 			destName: "moved.md",
 		});
 		expect(archivedSource._nay?.message).toBe("Not found");
+	});
+
+	test("records the replace target only with the replace opt-in", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/move-replace-src.md",
+				name: "move-replace-src.md",
+				markdown: "# Replace source base",
+			}),
+		);
+		const membership = {
+			userId: seeded.userId,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			membershipId: seeded.membershipId,
+		};
+		const occupant = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/move-replace-dest.md",
+				name: "move-replace-dest.md",
+				markdown: "# Replace dest base",
+				membership,
+			}),
+		);
+
+		// Without the opt-in the occupied destination stays a conflict.
+		const withoutReplace = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "move-replace-dest.md",
+		});
+		expect(withoutReplace._nay?.message).toBe("Path already exists");
+
+		const withReplace = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "move-replace-dest.md",
+			replace: true,
+		});
+		if (withReplace._nay) {
+			throw new Error(withReplace._nay.message);
+		}
+		expect(withReplace._yay).toEqual({
+			fromPath: "/move-replace-src.md",
+			destPath: "/move-replace-dest.md",
+			replacesExistingFile: true,
+		});
+
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		expect(row?.pendingMove).toEqual({
+			destParentId: files_ROOT_ID,
+			destName: "move-replace-dest.md",
+			fromPath: "/move-replace-src.md",
+			replacesNodeId: occupant.nodeId,
+		});
+
+		// A folder occupant is never replaceable, even with the opt-in.
+		await t.run((ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/move-replace-folder",
+				name: "move-replace-folder",
+			}),
+		);
+		const folderConflict = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "move-replace-folder",
+			replace: true,
+		});
+		expect(folderConflict._nay?.message).toBe("Path already exists");
 	});
 });
 
@@ -3987,6 +4090,7 @@ describe("apply_file_pending_move", () => {
 					fromPath: "/apply-copy-dest.md",
 				},
 				copiedFrom: { nodeId: source.nodeId, path: "/apply-copy-source.md" },
+				eagerCreated: { committedSequence: 0 },
 				size: 0,
 				updatedAt: Date.now(),
 			}),
@@ -4015,6 +4119,7 @@ describe("apply_file_pending_move", () => {
 			}
 			expect(row.pendingMove).toBeUndefined();
 			expect(row.copiedFrom).toEqual({ nodeId: source.nodeId, path: "/apply-copy-source.md" });
+			expect(row.eagerCreated).toEqual({ committedSequence: 0 });
 		});
 	});
 
@@ -4082,6 +4187,163 @@ describe("apply_file_pending_move", () => {
 				nodeId: seeded.nodeId,
 			});
 			expect(row?.pendingMove?.destName).toBe("apply-conflict-dest.md");
+		});
+	});
+
+	test("archives the replaced file when applying a replace move", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/apply-replace-src.md",
+				name: "apply-replace-src.md",
+				markdown: "# Apply replace base",
+			}),
+		);
+		const membership = {
+			userId: seeded.userId,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			membershipId: seeded.membershipId,
+		};
+		const occupant = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/apply-replace-dest.md",
+				name: "apply-replace-dest.md",
+				markdown: "# Apply replace dest base",
+				membership,
+			}),
+		);
+		const created = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "apply-replace-dest.md",
+			replace: true,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			// The replaced file is archived (recoverable), never hard-deleted.
+			const replacedNode = await ctx.db.get("files_nodes", occupant.nodeId);
+			expect(replacedNode?.archiveOperationId).toBeDefined();
+
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.path).toBe("/apply-replace-dest.md");
+			expect(node?.archiveOperationId).toBeUndefined();
+
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			expect(row).toBeNull();
+		});
+	});
+
+	test("keeps the row when another node owns the replace destination at accept", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/apply-replace-conflict-src.md",
+				name: "apply-replace-conflict-src.md",
+				markdown: "# Replace conflict base",
+			}),
+		);
+		const membership = {
+			userId: seeded.userId,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			membershipId: seeded.membershipId,
+		};
+		const occupant = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/apply-replace-conflict-dest.md",
+				name: "apply-replace-conflict-dest.md",
+				markdown: "# Replace conflict dest base",
+				membership,
+			}),
+		);
+		const created = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "apply-replace-conflict-dest.md",
+			replace: true,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		// The recorded target goes away and a DIFFERENT file takes the destination path.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", occupant.nodeId, { archiveOperationId: "archive-op-replaced-away" });
+			await ctx.db.insert("files_nodes", {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				path: "/apply-replace-conflict-dest.md",
+				treePath: "/apply-replace-conflict-dest.md",
+				pathDepth: 1,
+				lowercaseExtension: "md",
+				name: "apply-replace-conflict-dest.md",
+				kind: "file",
+				parentId: files_ROOT_ID,
+				createdBy: seeded.userId,
+				updatedBy: seeded.userId,
+				updatedAt: Date.now(),
+			});
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(applied._nay?.message).toBe("Path already exists");
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.path).toBe("/apply-replace-conflict-src.md");
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			expect(row?.pendingMove?.replacesNodeId).toBe(occupant.nodeId);
 		});
 	});
 
@@ -4300,6 +4562,7 @@ describe("discard_file_pending_structural", () => {
 			nodeId: dest.nodeId,
 			unstagedMarkdown: `${source.baseMarkdown}\n\nCopied content`,
 			copiedFrom: { nodeId: source.nodeId, path: "/discard-copy-source.md" },
+			eagerCreated: true,
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -4438,6 +4701,133 @@ describe("discard_file_pending_structural", () => {
 		expect(sourceNode?.path).toBe("/discard-copy-source.md");
 	});
 
+	test("hard-deletes an eagerly created write_file destination", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+
+		// write_file onto a new path: the node was eagerly created for this proposal, no copiedFrom.
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/discard-eager-write-dest.md",
+				name: "discard-eager-write-dest.md",
+				markdown: "# Eager write base",
+			}),
+		);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			unstagedMarkdown: `${dest.baseMarkdown}\n\nWritten content`,
+			eagerCreated: true,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: dest.userId,
+				nodeId: dest.nodeId,
+			}),
+		);
+		if (!pendingRow) {
+			throw new Error("Missing eager write row before discard");
+		}
+		expect(pendingRow.eagerCreated).toEqual({ committedSequence: 0 });
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: dest.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
+			membershipId: dest.membershipId,
+			nodeId: dest.nodeId,
+			pendingUpdateId: pendingRow._id,
+		});
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", dest.nodeId)).toBeNull();
+			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
+		});
+	});
+
+	test("keeps the node when discarding a replace-copy row", async () => {
+		const t = test_convex();
+
+		const source = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/discard-replace-copy-source.md",
+				name: "discard-replace-copy-source.md",
+				markdown: "# Replace copy source",
+			}),
+		);
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/discard-replace-copy-dest.md",
+				name: "discard-replace-copy-dest.md",
+				markdown: "# Replace copy dest base",
+				membership: {
+					userId: source.userId,
+					organizationId: source.organizationId,
+					workspaceId: source.workspaceId,
+					membershipId: source.membershipId,
+				},
+			}),
+		);
+		// cp onto an existing file: the destination node was NOT created by the proposal.
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			unstagedMarkdown: `${source.baseMarkdown}\n\nReplacement content`,
+			copiedFrom: { nodeId: source.nodeId, path: "/discard-replace-copy-source.md" },
+			eagerCreated: false,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: dest.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
+			membershipId: dest.membershipId,
+			nodeId: dest.nodeId,
+		});
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			// Only the proposal row is dropped; the pre-existing node keeps its committed content.
+			const node = await ctx.db.get("files_nodes", dest.nodeId);
+			expect(node?.path).toBe("/discard-replace-copy-dest.md");
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: dest.userId,
+				nodeId: dest.nodeId,
+			});
+			expect(row).toBeNull();
+		});
+	});
+
 	test("keeps the node when content was committed since the copy was proposed", async () => {
 		const t = test_convex();
 
@@ -4471,6 +4861,7 @@ describe("discard_file_pending_structural", () => {
 			nodeId: dest.nodeId,
 			unstagedMarkdown: `${source.baseMarkdown}\n\nCopied content`,
 			copiedFrom: { nodeId: source.nodeId, path: "/discard-copy-committed-source.md" },
+			eagerCreated: true,
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -4546,6 +4937,7 @@ describe("discard_file_pending_structural", () => {
 			nodeId: dest.nodeId,
 			unstagedMarkdown: `${source.baseMarkdown}\n\nCopied content`,
 			copiedFrom: { nodeId: source.nodeId, path: "/discard-copy-rebase-source.md" },
+			eagerCreated: true,
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -4614,11 +5006,8 @@ describe("discard_file_pending_structural", () => {
 				nodeId: dest.nodeId,
 			});
 			expect(row?.baseYjsSequence).toBe(1);
-			expect(row?.copiedFrom).toEqual({
-				nodeId: source.nodeId,
-				path: "/discard-copy-rebase-source.md",
-				committedSequence: 0,
-			});
+			expect(row?.copiedFrom).toEqual({ nodeId: source.nodeId, path: "/discard-copy-rebase-source.md" });
+			expect(row?.eagerCreated).toEqual({ committedSequence: 0 });
 		});
 
 		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
@@ -4678,6 +5067,7 @@ describe("discard_file_pending_structural", () => {
 			nodeId: dest.nodeId,
 			unstagedMarkdown: `${source.baseMarkdown}\n\nCopied content`,
 			copiedFrom: { nodeId: source.nodeId, path: "/discard-copy-otheruser-source.md" },
+			eagerCreated: true,
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -4881,6 +5271,7 @@ describe("structural rows on content collapse", () => {
 			nodeId: dest.nodeId,
 			unstagedMarkdown: dest.baseMarkdown,
 			copiedFrom: { nodeId: source.nodeId, path: "/copy-empty-source.md" },
+			eagerCreated: true,
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -4898,7 +5289,8 @@ describe("structural rows on content collapse", () => {
 		if (!row) {
 			throw new Error("Expected a persisted copy row for an unchanged copy");
 		}
-		expect(row.copiedFrom).toEqual({ nodeId: source.nodeId, path: "/copy-empty-source.md", committedSequence: 0 });
+		expect(row.copiedFrom).toEqual({ nodeId: source.nodeId, path: "/copy-empty-source.md" });
+		expect(row.eagerCreated).toEqual({ committedSequence: 0 });
 		expect(files_pending_update_has_yjs_content(row)).toBe(true);
 	});
 
@@ -4935,6 +5327,7 @@ describe("structural rows on content collapse", () => {
 			nodeId: dest.nodeId,
 			unstagedMarkdown: `${source.baseMarkdown}\n\nCopied content`,
 			copiedFrom: { nodeId: source.nodeId, path: "/collapse-copy-source.md" },
+			eagerCreated: true,
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -4979,9 +5372,93 @@ describe("structural rows on content collapse", () => {
 		if (!row) {
 			throw new Error("Expected the copy row to survive the content collapse");
 		}
-		expect(row.copiedFrom).toEqual({ nodeId: source.nodeId, path: "/collapse-copy-source.md", committedSequence: 0 });
+		expect(row.copiedFrom).toEqual({ nodeId: source.nodeId, path: "/collapse-copy-source.md" });
+		expect(row.eagerCreated).toEqual({ committedSequence: 0 });
 		expect(row.pendingMove?.destName).toBe("collapse-copy-renamed.md");
 		expect(files_pending_update_has_yjs_content(row)).toBe(true);
+	});
+
+	test("content collapse degrades a replace-copy row with a move to a pure move", async () => {
+		const t = test_convex();
+
+		const source = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/collapse-replace-source.md",
+				name: "collapse-replace-source.md",
+				markdown: "# Collapse replace source",
+			}),
+		);
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/collapse-replace-dest.md",
+				name: "collapse-replace-dest.md",
+				markdown: "# Collapse replace dest base",
+				membership: {
+					userId: source.userId,
+					organizationId: source.organizationId,
+					workspaceId: source.workspaceId,
+					membershipId: source.membershipId,
+				},
+			}),
+		);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			unstagedMarkdown: `${source.baseMarkdown}\n\nReplacement content`,
+			copiedFrom: { nodeId: source.nodeId, path: "/collapse-replace-source.md" },
+			eagerCreated: false,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const moved = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "collapse-replace-renamed.md",
+		});
+		if (moved._nay) {
+			throw new Error(moved._nay.message);
+		}
+
+		// Reverting the content to base hits the pure-move degrade branch: the non-eager
+		// provenance is stale without content, so the patch clears copiedFrom too.
+		const collapsed = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			stagedMarkdown: dest.baseMarkdown,
+			unstagedMarkdown: dest.baseMarkdown,
+		});
+		if (collapsed._nay) {
+			throw new Error(collapsed._nay.message);
+		}
+
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: dest.userId,
+				nodeId: dest.nodeId,
+			}),
+		);
+		if (!row) {
+			throw new Error("Expected the degraded pure-move row to survive the content collapse");
+		}
+		expect(row.copiedFrom).toBeUndefined();
+		expect(row.pendingMove?.destName).toBe("collapse-replace-renamed.md");
+		expect(files_pending_update_has_yjs_content(row)).toBe(false);
 	});
 });
 
@@ -5150,6 +5627,7 @@ describe("save with structural rows", () => {
 			nodeId: dest.nodeId,
 			unstagedMarkdown: `${source.baseMarkdown}\n\nCopied content`,
 			copiedFrom: { nodeId: source.nodeId, path: "/save-copy-source.md" },
+			eagerCreated: true,
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -5220,6 +5698,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 			nodeId: dest.nodeId,
 			unstagedMarkdown: `${source.baseMarkdown}\n\nCopied content`,
 			copiedFrom: { nodeId: source.nodeId, path: "/expire-copy-source.md" },
+			eagerCreated: true,
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -5254,6 +5733,76 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
 			const sourceNode = await ctx.db.get("files_nodes", source.nodeId);
 			expect(sourceNode?.path).toBe("/expire-copy-source.md");
+		});
+	});
+
+	test("expiry deletes a replace-copy row but keeps the node", async () => {
+		const t = test_convex();
+
+		const source = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/expire-replace-copy-source.md",
+				name: "expire-replace-copy-source.md",
+				markdown: "# Expire replace copy source",
+			}),
+		);
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/expire-replace-copy-dest.md",
+				name: "expire-replace-copy-dest.md",
+				markdown: "# Expire replace copy dest base",
+				membership: {
+					userId: source.userId,
+					organizationId: source.organizationId,
+					workspaceId: source.workspaceId,
+					membershipId: source.membershipId,
+				},
+			}),
+		);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			unstagedMarkdown: `${source.baseMarkdown}\n\nReplacement content`,
+			copiedFrom: { nodeId: source.nodeId, path: "/expire-replace-copy-source.md" },
+			eagerCreated: false,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const { pendingRow, cleanupTask } = await t.run(async (ctx) => {
+			const pendingRow = await read_pending_update_row({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: dest.userId,
+				nodeId: dest.nodeId,
+			});
+			if (!pendingRow) {
+				throw new Error("Missing replace-copy row before expiry");
+			}
+			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
+			const cleanupTask = cleanupTasks[0];
+			if (!cleanupTask) {
+				throw new Error("Missing cleanup task before expiry");
+			}
+			return { pendingRow, cleanupTask };
+		});
+
+		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
+			pendingUpdateId: pendingRow._id,
+			expectedUpdatedAt: cleanupTask.expectedUpdatedAt,
+		});
+
+		await t.run(async (ctx) => {
+			// The row expires like a plain content row; the pre-existing node is never hard-deleted.
+			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
+			const node = await ctx.db.get("files_nodes", dest.nodeId);
+			expect(node?.path).toBe("/expire-replace-copy-dest.md");
 		});
 	});
 

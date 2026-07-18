@@ -227,19 +227,34 @@ const app_convex_schema = defineSchema({
 				destParentId: v.union(v.id("files_nodes"), v.literal("root")),
 				destName: v.string(),
 				fromPath: v.string(),
+				/**
+				 * `mv -f` replace proposal: the active file node that owned the destination path at
+				 * proposal time. Accept archives exactly this node before moving; if a different node
+				 * occupies the path at accept time, the apply fails with a conflict instead.
+				 */
+				replacesNodeId: v.optional(v.id("files_nodes")),
 			}),
 		),
-		/** Set on the eagerly-created destination node of a pending copy; discard/expiry hard-deletes that node. */
+		/** Copy provenance for the destination node of a pending copy. */
 		copiedFrom: v.optional(
 			v.object({
 				nodeId: v.id("files_nodes"),
 				path: v.string(),
+			}),
+		),
+		/**
+		 * Set when this proposal eagerly created the file node (write_file or cp onto a new path):
+		 * the file shows as Added, and discard/expiry hard-deletes the node. Absent for proposals
+		 * against pre-existing files, which must never hard-delete.
+		 */
+		eagerCreated: v.optional(
+			v.object({
 				/**
-				 * The destination node's committed Yjs last sequence when the copy row was first
-				 * created. Immutable (never re-stamped on later patches/rebases): the hard-delete
-				 * safety check compares it against the current committed sequence.
+				 * The node's committed Yjs last sequence when the row was first created. Immutable
+				 * (never re-stamped on later patches/rebases): the hard-delete safety check compares
+				 * it against the current committed sequence.
 				 */
-				committedSequence: v.optional(v.number()),
+				committedSequence: v.number(),
 			}),
 		),
 		size: v.number(),

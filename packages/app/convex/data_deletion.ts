@@ -26,7 +26,7 @@ import {
 } from "./access_control.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
-import { files_nodes_db_hard_delete_node, files_nodes_db_is_copy_dest_safe_to_hard_delete } from "./files_nodes.ts";
+import { files_nodes_db_hard_delete_node, files_nodes_db_is_eager_node_safe_to_hard_delete } from "./files_nodes.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -1343,15 +1343,15 @@ async function db_finalize_deleted_user(
 		]),
 	]);
 
-	// Pending-copy rows point at an eagerly-created destination node. While the node is still the
-	// untouched eager copy, remove it entirely instead of stranding an empty file; otherwise the
-	// node became a real file and only the row is deleted below.
+	// Eager rows (write_file/cp onto a new path) point at an eagerly-created destination node.
+	// While the node is still the untouched eager creation, remove it entirely instead of
+	// stranding an empty file; otherwise the node became a real file and only the row is deleted below.
 	const hardDeletedNodeIds = new Set<Id<"files_nodes">>();
 	for (const pendingUpdate of pendingUpdates) {
-		if (!pendingUpdate.copiedFrom) {
+		if (!pendingUpdate.eagerCreated) {
 			continue;
 		}
-		const safeToHardDelete = await files_nodes_db_is_copy_dest_safe_to_hard_delete(ctx, {
+		const safeToHardDelete = await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
 			organizationId: pendingUpdate.organizationId,
 			workspaceId: pendingUpdate.workspaceId,
 			nodeId: pendingUpdate.fileNodeId,

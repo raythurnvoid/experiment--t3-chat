@@ -132,14 +132,18 @@
 		margin: 0 16px 12px;
 	}
 
-	/* Pure move rows: same layout as the summary, but no accordion so no pointer cursor. */
+	/* Pure move rows: same layout as the summary, but no accordion so no pointer cursor.
+	   No leading icon: only expandable rows get a chevron. The extra left padding reserves
+	   the summary's 36px chevron slot + 4px gap so all row labels align, and min-height
+	   matches the summary row height (36px chevron button + 2 × 6px padding). */
 	.FileEditorSidebarPending-item-move {
 		display: flex;
 		flex-direction: row;
 		align-items: center;
 		gap: 4px;
 
-		padding: 6px 16px;
+		min-height: 48px;
+		padding: 6px 16px 6px 56px;
 	}
 
 	/* Same MyLink wrapper trick as the summary: grow/clip the <a> so the label truncates. */
@@ -150,13 +154,6 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-
-	.FileEditorSidebarPending-item-kind-icon {
-		width: 16px;
-		height: 16px;
-
-		color: var(--color-fg-07);
 	}
 
 	.FileEditorSidebarPending-item-move-label {
@@ -173,6 +170,16 @@
 		white-space: nowrap;
 	}
 
+	/* Old and new path use the diff-editor palette: removed red strikethrough → added green. */
+	.FileEditorSidebarPending-item-move-label-from {
+		color: var(--color-red-10);
+		text-decoration: line-through;
+	}
+
+	.FileEditorSidebarPending-item-move-label-to {
+		color: var(--color-green-10);
+	}
+
 	.FileEditorSidebarPending-item-caption {
 		display: block;
 		min-width: 0;
@@ -183,6 +190,12 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/* Proposals that create a new file (write_file/cp onto a new path): green = added,
+	   matching the green destination of move labels. */
+	.FileEditorSidebarPending-item-path-text-added {
+		color: var(--color-green-10);
 	}
 
 	/* Green accept (per-row + global), mirrors .FileEditorDiffToolbarActions-button-accept-all */

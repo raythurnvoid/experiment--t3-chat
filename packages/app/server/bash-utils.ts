@@ -1161,6 +1161,7 @@ export function bash_disallowed_source_target_error() {
 export function bash_parse_cp_mv_operands(args: string[]) {
 	const operands: string[] = [];
 	let recursive = false;
+	let force = false;
 	let optionsEnded = false;
 
 	for (const arg of args) {
@@ -1176,15 +1177,25 @@ export function bash_parse_cp_mv_operands(args: string[]) {
 			recursive = true;
 			continue;
 		}
+		if (arg === "-f" || arg === "--force") {
+			force = true;
+			continue;
+		}
 		if (arg.startsWith("-")) {
-			if (!arg.startsWith("--") && [...arg.slice(1)].some((flag) => flag === "r" || flag === "R")) {
-				recursive = true;
+			if (!arg.startsWith("--")) {
+				const flags = [...arg.slice(1)];
+				if (flags.some((flag) => flag === "r" || flag === "R")) {
+					recursive = true;
+				}
+				if (flags.some((flag) => flag === "f")) {
+					force = true;
+				}
 			}
 			continue;
 		}
 		operands.push(arg);
 	}
-	return { operands, recursive };
+	return { operands, recursive, force };
 }
 
 /**

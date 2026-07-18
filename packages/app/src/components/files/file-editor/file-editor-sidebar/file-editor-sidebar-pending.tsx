@@ -1,5 +1,5 @@
 import "./file-editor-sidebar-pending.css";
-import { CheckCheck, ChevronDown, ChevronRight, FileText, Folder, Trash2 } from "lucide-react";
+import { CheckCheck, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPatch } from "diff";
 import { useConvex, useQuery } from "convex/react";
@@ -9,7 +9,6 @@ import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/a
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
-import { MyIcon } from "@/components/my-icon.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
@@ -32,8 +31,8 @@ import {
 const PENDING_PATH_FONT = `500 16px ${APP_FONT_FAMILY}`;
 const PENDING_PATH_LETTER_SPACING = 0;
 
-const PendingPathText = memo(function PendingPathText(props: { path: string }) {
-	const { path } = props;
+const PendingPathText = memo(function PendingPathText(props: { path: string; className?: string }) {
+	const { path, className } = props;
 	const pathRef = useRef<HTMLSpanElement>(null);
 	const [displayPath, setDisplayPath] = useState(path);
 
@@ -85,9 +84,27 @@ const PendingPathText = memo(function PendingPathText(props: { path: string }) {
 	return (
 		<span
 			ref={pathRef}
-			className={cn("FileEditorSidebarPending-item-path-text" satisfies FileEditorSidebarPending_ClassNames)}
+			className={cn("FileEditorSidebarPending-item-path-text" satisfies FileEditorSidebarPending_ClassNames, className)}
 		>
 			{displayPath}
+		</span>
+	);
+});
+
+/** Old path in red strikethrough → new path in green. Shared by pure move and mixed rows. */
+const PendingMoveLabel = memo(function PendingMoveLabel(props: { path: string; moveDestinationPath: string }) {
+	const { path, moveDestinationPath } = props;
+	return (
+		<span className={cn("FileEditorSidebarPending-item-move-label" satisfies FileEditorSidebarPending_ClassNames)}>
+			<span
+				className={cn("FileEditorSidebarPending-item-move-label-from" satisfies FileEditorSidebarPending_ClassNames)}
+			>
+				{path}
+			</span>
+			{" → "}
+			<span className={cn("FileEditorSidebarPending-item-move-label-to" satisfies FileEditorSidebarPending_ClassNames)}>
+				{moveDestinationPath}
+			</span>
 		</span>
 	);
 });
@@ -171,10 +188,11 @@ async function files_pending_row_accept(
 }
 
 /**
- * Discard a pending row per its kind: content → the existing content-revert upsert; pure move or
- * copy → the structural discard (a copy discard hard-deletes the eagerly-created destination node,
- * so the content-revert upsert must never run for it); content + move → revert the content first
- * (the server degrades the row to a pure move), then discard the move.
+ * Discard a pending row per its kind: plain content → the existing content-revert upsert; pure
+ * move, copy, or eagerly-created file → the structural discard (an eager discard hard-deletes the
+ * eagerly-created destination node, so the content-revert upsert must never run for it);
+ * content + move → revert the content first (the server degrades the row to a pure move), then
+ * discard the move.
  */
 async function files_pending_row_discard(
 	convex: ReturnType<typeof useConvex>,
@@ -184,7 +202,7 @@ async function files_pending_row_discard(
 	if (pendingUpdate.pendingMove && files_pending_update_has_yjs_content(pendingUpdate)) {
 		const reverted = await files_pending_discard(convex, membershipId, pendingUpdate);
 		if (reverted._nay) return reverted;
-	} else if (!pendingUpdate.pendingMove && !pendingUpdate.copiedFrom) {
+	} else if (!pendingUpdate.pendingMove && !pendingUpdate.copiedFrom && !pendingUpdate.eagerCreated) {
 		return await files_pending_discard(convex, membershipId, pendingUpdate);
 	}
 
@@ -200,16 +218,16 @@ type FileEditorSidebarPendingItem_Props = {
 	pendingUpdate: app_convex_Doc<"files_pending_updates">;
 	path: string;
 	kind: FileEditorSidebarPendingRow["kind"];
-	nodeKind: FileEditorSidebarPendingRow["nodeKind"];
 	moveDestinationPath: string | undefined;
-	copiedFromPath: string | undefined;
+	moveReplacesExistingFile: boolean;
+	isAddedFile: boolean;
 	disabled?: boolean;
 };
 
 const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	props: FileEditorSidebarPendingItem_Props,
 ) {
-	const { pendingUpdate, path, kind, nodeKind, moveDestinationPath, copiedFromPath, disabled } = props;
+	const { pendingUpdate, path, kind, moveDestinationPath, moveReplacesExistingFile, isAddedFile, disabled } = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const convex = useConvex();
 
@@ -299,11 +317,6 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						"FileEditorSidebarPending-item-move" satisfies FileEditorSidebarPending_ClassNames,
 					)}
 				>
-					<MyIcon
-						className={cn("FileEditorSidebarPending-item-kind-icon" satisfies FileEditorSidebarPending_ClassNames)}
-					>
-						{nodeKind === "folder" ? <Folder /> : <FileText />}
-					</MyIcon>
 					<MyLink
 						className={cn("FileEditorSidebarPending-item-path" satisfies FileEditorSidebarPending_ClassNames)}
 						to="/w/$organizationName/$workspaceName/files"
@@ -312,10 +325,17 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						aria-label={moveLabel}
 						title={moveLabel}
 					>
-						<span
-							className={cn("FileEditorSidebarPending-item-move-label" satisfies FileEditorSidebarPending_ClassNames)}
-						>
-							{moveLabel}
+						{moveDestinationPath != null ? (
+							<PendingMoveLabel path={path} moveDestinationPath={moveDestinationPath} />
+						) : (
+							<span
+								className={cn("FileEditorSidebarPending-item-move-label" satisfies FileEditorSidebarPending_ClassNames)}
+							>
+								{path}
+							</span>
+						)}
+						<span className={cn("FileEditorSidebarPending-item-caption" satisfies FileEditorSidebarPending_ClassNames)}>
+							{moveReplacesExistingFile ? "Replaced" : "Moved"}
 						</span>
 					</MyLink>
 					<span className={cn("FileEditorSidebarPending-item-actions" satisfies FileEditorSidebarPending_ClassNames)}>
@@ -342,12 +362,21 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		);
 	}
 
-	const caption =
-		kind === "copy" && copiedFromPath != null
-			? `Copy of ${copiedFromPath}`
-			: kind === "content_and_move" && moveDestinationPath != null
-				? `Moves to ${moveDestinationPath}`
-				: null;
+	// One-word neutral helper describing what accepting does, always visible. Replace wins the
+	// slot: for mv -f it archives the destination file; a non-eager copy replaces the target's
+	// content. Plain content edits show Modified.
+	const caption = moveReplacesExistingFile
+		? "Replaced"
+		: isAddedFile
+			? "Added"
+			: kind === "content_and_move"
+				? "Moved"
+				: kind === "copy"
+					? "Replaced"
+					: "Modified";
+
+	// Mixed rows show the same red → green move label as pure move rows; the link still opens the diff.
+	const rowLabel = kind === "content_and_move" && moveDestinationPath != null ? `${path} → ${moveDestinationPath}` : path;
 
 	return (
 		<li>
@@ -365,28 +394,33 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						to="/w/$organizationName/$workspaceName/files"
 						params={{ organizationName, workspaceName }}
 						search={{ nodeId: pendingUpdate.fileNodeId, view: "diff_editor" }}
-						aria-label={path}
-						title={path}
+						aria-label={rowLabel}
+						title={rowLabel}
 					>
-						<PendingPathText path={path} />
-						{caption != null ? (
-							<span
-								className={cn("FileEditorSidebarPending-item-caption" satisfies FileEditorSidebarPending_ClassNames)}
-							>
-								{caption}
-							</span>
-						) : null}
+						{kind === "content_and_move" && moveDestinationPath != null ? (
+							<PendingMoveLabel path={path} moveDestinationPath={moveDestinationPath} />
+						) : (
+							<PendingPathText
+								path={path}
+								className={cn(
+									isAddedFile &&
+										("FileEditorSidebarPending-item-path-text-added" satisfies FileEditorSidebarPending_ClassNames),
+								)}
+							/>
+						)}
+						<span className={cn("FileEditorSidebarPending-item-caption" satisfies FileEditorSidebarPending_ClassNames)}>
+							{caption}
+						</span>
 					</MyLink>
 					<span className={cn("FileEditorSidebarPending-item-actions" satisfies FileEditorSidebarPending_ClassNames)}>
 						<MyButton
 							variant="ghost"
 							className={cn("FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames)}
-							aria-label={kind === "content_and_move" ? "Apply edit and move" : undefined}
 							aria-busy={isBusy}
 							disabled={isBusy || disabled}
 							onClick={handleAccept}
 						>
-							Accept &amp; save
+							Accept
 						</MyButton>
 						<MyButton
 							variant="ghost_destructive"
@@ -427,9 +461,11 @@ export type FileEditorSidebarPending_ClassNames =
 	| "FileEditorSidebarPending-item-actions"
 	| "FileEditorSidebarPending-item-diff"
 	| "FileEditorSidebarPending-item-move"
-	| "FileEditorSidebarPending-item-kind-icon"
 	| "FileEditorSidebarPending-item-move-label"
-	| "FileEditorSidebarPending-item-caption";
+	| "FileEditorSidebarPending-item-move-label-from"
+	| "FileEditorSidebarPending-item-move-label-to"
+	| "FileEditorSidebarPending-item-caption"
+	| "FileEditorSidebarPending-item-path-text-added";
 
 export const FileEditorSidebarPending = memo(function FileEditorSidebarPending() {
 	const { membershipId } = AppTenantProvider.useContext();
@@ -512,7 +548,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 						"FileEditorSidebarPending-header-button" satisfies FileEditorSidebarPending_ClassNames,
 						"FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames,
 					)}
-					aria-label="Accept and save all pending changes"
+					aria-label="Accept all pending changes"
 					aria-busy={isBulkBusy}
 					disabled={isBulkBusy}
 					onClick={handleAcceptAll}
@@ -547,9 +583,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 						pendingUpdate={row.pendingUpdate}
 						path={row.path}
 						kind={row.kind}
-						nodeKind={row.nodeKind}
 						moveDestinationPath={row.moveDestinationPath}
-						copiedFromPath={row.copiedFromPath}
+						moveReplacesExistingFile={row.moveReplacesExistingFile}
+						isAddedFile={row.isAddedFile}
 						disabled={isBulkBusy}
 					/>
 				))}

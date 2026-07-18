@@ -1527,6 +1527,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			brokenChunks?: boolean;
 			/** Upload-style node without editable yjs state (binary uploads, PDFs). */
 			withoutYjsState?: boolean;
+			/** Store a real yjs snapshot in mock R2 so action-side base-state fetches work (pending upserts). */
+			withRealYjsSnapshot?: boolean;
 			/** Committed asset byte size override; defaults to the utf8 size of `content`. */
 			size?: number;
 			updatedAt?: number;
@@ -1650,12 +1652,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				await ctx.db.patch("files_nodes", fileId, { assetId });
 				return;
 			}
+			let yjsSnapshotAssetFields: { r2Key?: string; size: number } = { size: 0 };
+			if (spec.withRealYjsSnapshot) {
+				const { files_yjs_doc_create_from_markdown } = await import("./files.ts");
+				const { encodeStateAsUpdate } = await import("yjs");
+				const yjsDoc = files_yjs_doc_create_from_markdown({ markdown: content });
+				if ("_nay" in yjsDoc) {
+					throw new Error(`Seed yjs snapshot failed for ${spec.path}: ${yjsDoc._nay.message}`);
+				}
+				const snapshotBytes = encodeStateAsUpdate(yjsDoc);
+				const yjsSnapshotR2Key = `bash-test-yjs${spec.path}`;
+				test_r2_objects.set(yjsSnapshotR2Key, snapshotBytes);
+				yjsSnapshotAssetFields = { r2Key: yjsSnapshotR2Key, size: snapshotBytes.byteLength };
+			}
 			const yjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: scope.organizationId,
 				workspaceId: scope.workspaceId,
 				kind: "yjs_snapshot",
 				r2Bucket: "test",
-				size: 0,
+				...yjsSnapshotAssetFields,
 				createdBy: scope.userId,
 				updatedAt,
 			});
@@ -5045,7 +5060,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(destFileExists.metadata.exitCode).not.toBe(0);
 			expect(destFileExists.stderr).toBe(
-				"mv: destination '/docs/tutorial.md' already exists; overwrite is not supported. Choose a different destination path.\n",
+				"mv: destination '/docs/tutorial.md' already exists. To propose replacing the existing file, add -f: the replacement only applies after the user accepts it in Files.\n",
 			);
 
 			const destOccupiedInFolder = await runner.run(
@@ -5053,7 +5068,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(destOccupiedInFolder.metadata.exitCode).not.toBe(0);
 			expect(destOccupiedInFolder.stderr).toBe(
-				"mv: destination '/reports/readme.md' already exists; overwrite is not supported. Choose a different destination path.\n",
+				"mv: destination '/reports/readme.md' already exists. To propose replacing the existing file, add -f: the replacement only applies after the user accepts it in Files.\n",
 			);
 
 			const multiSource = await runner.run(
@@ -5095,6 +5110,55 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const rows = await runner.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 			expect(rows).toHaveLength(0);
+		});
+
+		test("proposes a file replace with mv -f", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/reports/readme.md", content: "occupied\n" }],
+			});
+			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
+			const tutorialId = await get_seeded_node_id(runner, "/docs/tutorial.md");
+
+			const fileOntoFile = await runner.run(
+				`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/tutorial.md`,
+			);
+			expect(fileOntoFile.metadata.exitCode).toBe(0);
+			expect(fileOntoFile.stdout).toBe(
+				"pending move created: /docs/readme.md -> /docs/tutorial.md — replaces the existing file when accepted; review in Files\n",
+			);
+			const rows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+					.collect(),
+			);
+			expect(rows).toHaveLength(1);
+			expect(rows[0].pendingMove).toMatchObject({ destName: "tutorial.md", replacesNodeId: tutorialId });
+
+			// A folder destination replaces its occupant file through the same -f opt-in.
+			const occupantId = await get_seeded_node_id(runner, "/reports/readme.md");
+			const folderDest = await runner.run(`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`);
+			expect(folderDest.metadata.exitCode).toBe(0);
+			expect(folderDest.stdout).toBe(
+				"pending move created: /docs/readme.md -> /reports/readme.md — replaces the existing file when accepted; review in Files\n",
+			);
+			const replacedRows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+					.collect(),
+			);
+			expect(replacedRows).toHaveLength(1);
+			expect(replacedRows[0].pendingMove).toMatchObject({ destName: "readme.md", replacesNodeId: occupantId });
+
+			// Folders can never replace or be replaced, even with -f.
+			const folderOntoFile = await runner.run(
+				`mv -f ${test_db_files_mount}/docs/nested ${test_db_files_mount}/docs/tutorial.md`,
+			);
+			expect(folderOntoFile.metadata.exitCode).not.toBe(0);
+			expect(folderOntoFile.stderr).toBe(
+				"mv: destination '/docs/tutorial.md' already exists; only a file can replace an existing file with mv -f. Choose a different destination path.\n",
+			);
 		});
 
 		test("replaces an earlier move proposal and mixes with pending content", async () => {
@@ -5209,6 +5273,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(rows).toHaveLength(1);
 			expect(rows[0].copiedFrom).toMatchObject({ nodeId: sourceId, path: "/docs/readme.md" });
+			expect(rows[0].eagerCreated).toBeDefined();
 			expect(rows[0].unstagedBranchYjsUpdate).toBeDefined();
 
 			// Readers overlay the agent's own pending content on the fresh destination node.
@@ -5223,16 +5288,55 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(folderDest.stdout).toBe("pending copy created: /docs/readme.md -> /reports/readme.md — review in Files\n");
 		});
 
-		test("rejects unsupported app copy shapes without creating proposals", async () => {
-			const runner = await create_bash_runner();
+		test("cp onto an existing file proposes replacing its content", async () => {
+			const runner = await create_bash_runner({
+				// The pending upsert fetches the destination's committed yjs snapshot from R2.
+				extraFiles: [{ path: "/docs/replace-target.md", content: "replace me\n", withRealYjsSnapshot: true }],
+			});
+			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
+			const targetId = await get_seeded_node_id(runner, "/docs/replace-target.md");
 
-			const destExists = await runner.run(
-				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/tutorial.md`,
+			const result = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/replace-target.md`,
 			);
-			expect(destExists.metadata.exitCode).not.toBe(0);
-			expect(destExists.stderr).toBe(
-				"cp: destination '/docs/tutorial.md' already exists; overwrite is not supported. Choose a different destination path.\n",
+			expect(result.stderr).toBe("");
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe(
+				"pending copy created: /docs/readme.md -> /docs/replace-target.md — replaces the existing file's content when accepted; review in Files\n",
 			);
+
+			// The proposal lands on the existing node; no eager stamp, so discard/expiry can never
+			// hard-delete a node cp did not create.
+			const rows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+					.collect(),
+			);
+			expect(rows).toHaveLength(1);
+			expect(rows[0].copiedFrom).toMatchObject({ nodeId: sourceId, path: "/docs/readme.md" });
+			expect(rows[0].eagerCreated).toBeUndefined();
+
+			// The agent's own read overlays the proposed content on the destination.
+			const overlayRead = await runner.run(`cat ${test_db_files_mount}/docs/replace-target.md`);
+			expect(overlayRead.metadata.exitCode).toBe(0);
+			expect(overlayRead.stdout).toContain("unique-token");
+		});
+
+		test("rejects unsupported app copy shapes without creating proposals", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/conflict/readme.md", kind: "folder" }],
+			});
+
+			const sameFile = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs`);
+			expect(sameFile.metadata.exitCode).not.toBe(0);
+			expect(sameFile.stderr).toBe(
+				`cp: '${test_db_files_mount}/docs/readme.md' and '${test_db_files_mount}/docs' are the same file\n`,
+			);
+
+			const folderOccupant = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/conflict`);
+			expect(folderOccupant.metadata.exitCode).not.toBe(0);
+			expect(folderOccupant.stderr).toBe("cp: cannot overwrite directory '/conflict/readme.md' with non-directory\n");
 
 			const folderSource = await runner.run(`cp ${test_db_files_mount}/docs ${test_db_files_mount}/docs-copy`);
 			expect(folderSource.metadata.exitCode).not.toBe(0);
@@ -5258,7 +5362,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(rows).toHaveLength(0);
 		});
 
-		test("rejects a copy destination created concurrently between check and create", async () => {
+		test("degrades to a replace when the destination is created concurrently", async () => {
 			const runner = await create_bash_runner();
 			const racedPath = "/docs/raced-copy.md";
 
@@ -5278,7 +5382,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 								workspaceId: runner.seeded.workspaceId,
 								userId: runner.seeded.userId,
 							},
-							{ path: racedPath, content: "raced\n" },
+							{ path: racedPath, content: "raced\n", withRealYjsSnapshot: true },
 							99,
 						);
 					});
@@ -5288,12 +5392,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const result = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}${racedPath}`);
 
-			expect(result.metadata.exitCode).not.toBe(0);
-			expect(result.stderr).toBe(
-				`cp: destination '${racedPath}' already exists; overwrite is not supported. Choose a different destination path.\n`,
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe(
+				`pending copy created: /docs/readme.md -> ${racedPath} — replaces the existing file's content when accepted; review in Files\n`,
 			);
 
-			// The raced node keeps its own content and never gains a pending copy row.
+			// The raced node becomes a replace target: no eager stamp, so discarding this
+			// proposal can never hard-delete the node cp did not create.
 			const racedNode = await get_seeded_node(runner, racedPath);
 			const pendingRows = await runner.t.run((ctx) =>
 				ctx.db
@@ -5301,10 +5406,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", racedNode._id))
 					.collect(),
 			);
-			expect(pendingRows).toHaveLength(0);
-			const racedRead = await runner.run(`cat ${test_db_files_mount}${racedPath}`);
-			expect(racedRead.metadata.exitCode).toBe(0);
-			expect(racedRead.stdout).toContain("raced");
+			expect(pendingRows).toHaveLength(1);
+			expect(pendingRows[0].copiedFrom).toBeDefined();
+			expect(pendingRows[0].eagerCreated).toBeUndefined();
 		});
 
 		test("supports the broader Native Just Bash /tmp command surface", async () => {

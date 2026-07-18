@@ -149,8 +149,9 @@ function makePendingUpdate(args: {
 	fileNodeId: string;
 	staged?: string;
 	unstaged?: string;
-	pendingMove?: { destParentId: string; destName: string; fromPath: string };
+	pendingMove?: { destParentId: string; destName: string; fromPath: string; replacesNodeId?: string };
 	copiedFrom?: { nodeId: string; path: string };
+	eagerCreated?: { committedSequence: number };
 }): app_convex_Doc<"files_pending_updates"> {
 	return {
 		_id: args.id,
@@ -170,6 +171,7 @@ function makePendingUpdate(args: {
 			: {}),
 		...(args.pendingMove ? { pendingMove: args.pendingMove } : {}),
 		...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+		...(args.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
 		size: 0,
 		updatedAt: 1,
 	} as unknown as app_convex_Doc<"files_pending_updates">;
@@ -318,33 +320,25 @@ describe("files_pending_changes_build_rows", () => {
 		expect(rows[1]?.nodeKind).toBe("folder");
 	});
 
-	test("resolves the copied-from path live with the recorded path as fallback", () => {
+	test("marks rows whose proposal created the file as added", () => {
 		const updates = [
 			makePendingUpdate({
-				id: "pu_live",
+				id: "pu_added",
 				fileNodeId: "node_a",
 				staged: "s",
 				unstaged: "u",
-				copiedFrom: { nodeId: "node_src", path: "/recorded/source.md" },
+				eagerCreated: { committedSequence: 0 },
 			}),
-			makePendingUpdate({
-				id: "pu_fallback",
-				fileNodeId: "node_b",
-				staged: "s",
-				unstaged: "u",
-				copiedFrom: { nodeId: "node_gone", path: "/recorded/gone.md" },
-			}),
+			makePendingUpdate({ id: "pu_edit", fileNodeId: "node_b", staged: "s", unstaged: "u" }),
 		];
 		const nodesById = new Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>([
 			["node_a" as app_convex_Id<"files_nodes">, makeNode({ id: "node_a", path: "/a.md" })],
 			["node_b" as app_convex_Id<"files_nodes">, makeNode({ id: "node_b", path: "/b.md" })],
-			["node_src" as app_convex_Id<"files_nodes">, makeNode({ id: "node_src", path: "/live/source.md" })],
 		]);
 
 		const rows = files_pending_changes_build_rows(updates, nodesById);
 
-		expect(rows[0]?.copiedFromPath).toBe("/live/source.md");
-		expect(rows[1]?.copiedFromPath).toBe("/recorded/gone.md");
+		expect(rows.map((row) => row.isAddedFile)).toEqual([true, false]);
 	});
 });
 
@@ -370,7 +364,7 @@ describe("FileEditorSidebarPending", () => {
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		const paths = Array.from(container.querySelectorAll(".FileEditorSidebarPending-item-path")).map(
+		const paths = Array.from(container.querySelectorAll(".FileEditorSidebarPending-item-path-text")).map(
 			(element) => element.textContent,
 		);
 		expect(paths).toEqual(["alpha/intro.md", "zebra/notes.md"]);
@@ -391,7 +385,7 @@ describe("FileEditorSidebarPending", () => {
 		expect(href).toContain("view=diff_editor");
 		expect(link.getAttribute("aria-label")).toBe("alpha/deeply/nested/intro.md");
 		expect(link.getAttribute("title")).toBe("alpha/deeply/nested/intro.md");
-		expect(container.querySelector(".FileEditorSidebarPending-item-path")?.textContent).toBe(
+		expect(container.querySelector(".FileEditorSidebarPending-item-path-text")?.textContent).toBe(
 			"alpha/deeply/nested/intro.md",
 		);
 	});
@@ -423,14 +417,14 @@ describe("FileEditorSidebarPending", () => {
 		clientWidthSpy.mockRestore();
 	});
 
-	test("Accept & save stages the unstaged content then saves", async () => {
+	test("Accept stages the unstaged content then saves", async () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
 		]);
 		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
 
 		render(<FileEditorSidebarPending />);
-		fireEvent.click(screen.getByText("Accept & save"));
+		fireEvent.click(screen.getByText("Accept"));
 
 		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
 		expect(actionMock).toHaveBeenNthCalledWith(1, "upsert_file_pending_update", {
@@ -558,11 +552,14 @@ describe("FileEditorSidebarPending", () => {
 		expect(href).toContain("nodeId=node_a");
 		expect(href).not.toContain("view=diff_editor");
 		expect(link.getAttribute("title")).toBe("/a.md → /docs/a.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-from")?.textContent).toBe("/a.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-to")?.textContent).toBe("/docs/a.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Moved");
 		expect(container.querySelector("details")).toBeNull();
 		expect(screen.getByText("Accept")).toBeTruthy();
 	});
 
-	test("copy row shows the Copy of caption and keeps the diff link", () => {
+	test("added row shows the green Added caption and path and keeps the diff link", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_copy",
@@ -570,6 +567,7 @@ describe("FileEditorSidebarPending", () => {
 				staged: "s",
 				unstaged: "u",
 				copiedFrom: { nodeId: "node_src", path: "/recorded.md" },
+				eagerCreated: { committedSequence: 0 },
 			}),
 		]);
 		useStableQueryMock.mockReturnValue([
@@ -579,13 +577,42 @@ describe("FileEditorSidebarPending", () => {
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		expect(screen.getByText("Copy of /source.md")).toBeTruthy();
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Added");
+		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-added")?.textContent).toBe("/copy.md");
 		const link = screen.getByRole("link", { name: "/copy.md" });
 		expect(link.getAttribute("href")).toContain("view=diff_editor");
 		expect(container.querySelector("details")).toBeTruthy();
 	});
 
-	test("mixed row keeps the content row and shows the Moves to caption", () => {
+	test("replace-copy row shows the Replaced caption without the green path", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_replace_copy",
+				fileNodeId: "node_a",
+				staged: "s",
+				unstaged: "u",
+				copiedFrom: { nodeId: "node_src", path: "/source.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/target.md" })]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
+		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-added")).toBeNull();
+	});
+
+	test("plain edit rows show the Modified caption without the green path", () => {
+		useQueryMock.mockReturnValue([makePendingUpdate({ id: "pu_edit", fileNodeId: "node_a", staged: "s", unstaged: "u" })]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Modified");
+		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-added")).toBeNull();
+	});
+
+	test("mixed row keeps the accordion and shows the from → dest move label", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_mixed",
@@ -599,9 +626,51 @@ describe("FileEditorSidebarPending", () => {
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		expect(screen.getByText("Moves to /b.md")).toBeTruthy();
+		const link = screen.getByRole("link", { name: "/a.md → /b.md" });
+		expect(link.getAttribute("href")).toContain("view=diff_editor");
+		expect(link.getAttribute("title")).toBe("/a.md → /b.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-from")?.textContent).toBe("/a.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-to")?.textContent).toBe("/b.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Moved");
 		expect(container.querySelector("details")).toBeTruthy();
-		expect(screen.getByText("Accept & save").getAttribute("aria-label")).toBe("Apply edit and move");
+		expect(screen.getByText("Accept")).toBeTruthy();
+	});
+
+	test("move replace row shows the Replaced caption", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_move",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "node_docs", destName: "a.md", fromPath: "/a.md", replacesNodeId: "node_dest" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md" }),
+			makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
+		]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
+	});
+
+	test("mixed replace row shows the Replaced caption instead of Added", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_mixed",
+				fileNodeId: "node_a",
+				staged: "s",
+				unstaged: "u",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md", replacesNodeId: "node_dest" },
+				eagerCreated: { committedSequence: 0 },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
+		expect(screen.queryByText("Added")).toBeNull();
 	});
 
 	test("move Accept applies the pending move with a single mutation", async () => {
@@ -672,6 +741,30 @@ describe("FileEditorSidebarPending", () => {
 		expect(actionMock).not.toHaveBeenCalled();
 	});
 
+	test("eagerly created file Discard issues only the structural discard", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_added",
+				fileNodeId: "node_a",
+				staged: "STAGED_MD",
+				unstaged: "UNSTAGED_MD",
+				eagerCreated: { committedSequence: 0 },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/new.md" })]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Discard"));
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_added",
+		});
+		expect(actionMock).not.toHaveBeenCalled();
+	});
+
 	test("copy Accept keeps the existing upsert + save pair", async () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
@@ -685,7 +778,7 @@ describe("FileEditorSidebarPending", () => {
 		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/copy.md" })]);
 
 		render(<FileEditorSidebarPending />);
-		fireEvent.click(screen.getByText("Accept & save"));
+		fireEvent.click(screen.getByText("Accept"));
 
 		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
 		expect(actionMock).toHaveBeenNthCalledWith(1, "upsert_file_pending_update", {
@@ -716,7 +809,7 @@ describe("FileEditorSidebarPending", () => {
 		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 
 		render(<FileEditorSidebarPending />);
-		fireEvent.click(screen.getByText("Accept & save"));
+		fireEvent.click(screen.getByText("Accept"));
 
 		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
 		expect(mutationMock).toHaveBeenCalledTimes(1);

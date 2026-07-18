@@ -1,6 +1,7 @@
 import { defineCommand } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
+import type { Id } from "../convex/_generated/dataModel";
 import type {
 	files_nodes_create_file_by_path_Result,
 	files_nodes_get_by_path_Result,
@@ -133,11 +134,9 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					// An existing folder destination keeps the source name inside it, like native cp.
 					destPath = path_join(destNode.path, sourceNode.name);
 				} else if (destNode) {
-					return {
-						stdout: "",
-						stderr: `cp: destination '${rawDestDbFilesPath}' already exists; overwrite is not supported. Choose a different destination path.\n`,
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
+					// Existing file destination: like native cp, the copy replaces its content — as a
+					// pending proposal the user reviews before anything is committed.
+					destPath = destNode.path;
 				} else {
 					// Missing parent folders are fine; create_file_by_path creates them below.
 					const normalizedDestSegments = files_get_normalized_node_path_segments({
@@ -155,17 +154,27 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					}
 					destPath = `/${normalizedDestSegments.normalizedPathSegments.join("/")}`;
 				}
-				// Check the final (joined/normalized) path: create_file_by_path silently reuses an
-				// existing active file, which would turn the copy into an overwrite.
-				const occupant = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-					organizationId,
-					workspaceId,
-					path: destPath,
-				})) as files_nodes_get_by_path_Result;
-				if (occupant) {
+				// Resolve the final (joined/normalized) path: an existing file there becomes the
+				// replace target instead of an eagerly-created node.
+				const occupant =
+					destNode && destNode.kind !== "folder"
+						? destNode
+						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+								organizationId,
+								workspaceId,
+								path: destPath,
+							})) as files_nodes_get_by_path_Result);
+				if (occupant && occupant._id === sourceNode._id) {
 					return {
 						stdout: "",
-						stderr: `cp: destination '${destPath}' already exists; overwrite is not supported. Choose a different destination path.\n`,
+						stderr: `cp: '${operands[0]}' and '${operands[1]}' are the same file\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
+				if (occupant && occupant.kind === "folder") {
+					return {
+						stdout: "",
+						stderr: `cp: cannot overwrite directory '${destPath}' with non-directory\n`,
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
@@ -187,27 +196,29 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
-				const created = (await ctx.runAction(internal.files_nodes.create_file_by_path, {
-					organizationId,
-					workspaceId,
-					userId,
-					path: destPath,
-				})) as files_nodes_create_file_by_path_Result;
-				if (created._nay) {
-					return {
-						stdout: "",
-						stderr: `cp: cannot create '${destPath}': ${created._nay.message}\n`,
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
-				if (!created._yay.created) {
-					// A user created the destination between the occupancy check above and this call;
-					// the action reused that node, so never stamp pending copy content onto it.
-					return {
-						stdout: "",
-						stderr: `cp: destination '${destPath}' already exists; overwrite is not supported. Choose a different destination path.\n`,
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
+				let destNodeId: Id<"files_nodes">;
+				let replacesExisting: boolean;
+				if (occupant) {
+					destNodeId = occupant._id;
+					replacesExisting = true;
+				} else {
+					const created = (await ctx.runAction(internal.files_nodes.create_file_by_path, {
+						organizationId,
+						workspaceId,
+						userId,
+						path: destPath,
+					})) as files_nodes_create_file_by_path_Result;
+					if (created._nay) {
+						return {
+							stdout: "",
+							stderr: `cp: cannot create '${destPath}': ${created._nay.message}\n`,
+							exitCode: bash_COMMAND_EXIT_FAILURE,
+						};
+					}
+					destNodeId = created._yay.nodeId;
+					// A raced creation reuses the pre-existing node: degrade to a replace proposal so
+					// discard/expiry can never hard-delete a node this command did not create.
+					replacesExisting = !created._yay.created;
 				}
 				const upserted = (await ctx.runAction(
 					internal.files_pending_updates.upsert_file_pending_update_internal_action,
@@ -215,9 +226,10 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						organizationId,
 						workspaceId,
 						userId,
-						nodeId: created._yay.nodeId,
+						nodeId: destNodeId,
 						unstagedMarkdown: sourceContent.content,
 						copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath },
+						eagerCreated: !replacesExisting,
 					},
 				)) as upsert_file_pending_update_internal_action_Result;
 				if (upserted._nay) {
@@ -228,7 +240,9 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					};
 				}
 				return {
-					stdout: `pending copy created: ${sourceDbFilesPath} -> ${destPath} — review in Files\n`,
+					stdout: replacesExisting
+						? `pending copy created: ${sourceDbFilesPath} -> ${destPath} — replaces the existing file's content when accepted; review in Files\n`
+						: `pending copy created: ${sourceDbFilesPath} -> ${destPath} — review in Files\n`,
 					stderr: "",
 					exitCode: 0,
 				};
