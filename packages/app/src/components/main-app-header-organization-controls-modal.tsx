@@ -747,7 +747,7 @@ const MainAppHeaderOrganizationCreateEditFormField = memo(function MainAppHeader
 	} = props;
 
 	return (
-		<MyInput displayValidationMessage={displayValidationMessage}>
+		<MyInput layout="stacked" displayValidationMessage={displayValidationMessage}>
 			<MyInputLabel>{label}</MyInputLabel>
 			<MyInputBackground />
 			<MyInputArea>

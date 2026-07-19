@@ -33,21 +33,6 @@
 		font-size: 0.9375rem;
 	}
 
-	.MainAppAccountManagement .MyInput {
-		flex-direction: column;
-		align-items: stretch;
-	}
-
-	.MainAppAccountManagement .MyInputLabel {
-		line-height: 20px;
-		margin-bottom: 6px;
-	}
-
-	.MainAppAccountManagement .MyInput:has(.MyInputLabel) > :is(.MyInputBackground, .MyInputBox) {
-		top: 26px;
-		height: auto;
-	}
-
 	.MainAppAccountManagement-body {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr);

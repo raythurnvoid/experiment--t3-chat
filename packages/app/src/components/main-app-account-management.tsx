@@ -508,7 +508,7 @@ const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManage
 					void handleDelete();
 				}}
 			>
-				<MyInput>
+				<MyInput layout="stacked">
 					<MyInputLabel>Confirmation</MyInputLabel>
 					<MyInputBackground />
 					<MyInputArea>

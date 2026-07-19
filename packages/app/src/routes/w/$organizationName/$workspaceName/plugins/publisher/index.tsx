@@ -253,7 +253,7 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 				className={"RoutePluginsPublisherPlugins-form" satisfies RoutePluginsPublisherPlugins_ClassNames}
 				onSubmit={handleClaim}
 			>
-				<MyInput>
+				<MyInput layout="stacked">
 					<MyInputLabel>GitHub repository URL</MyInputLabel>
 					<MyInputBackground />
 					<MyInputArea>

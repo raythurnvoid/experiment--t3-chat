@@ -1436,7 +1436,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 					<div
 						className={"FileNodeViewFolderCreateNodeModal-field" satisfies FileNodeViewFolderCreateNodeModal_ClassNames}
 					>
-						<MyInput className={cn(displayedValidationMessage && "userInvalid")}>
+						<MyInput layout="stacked" className={cn(displayedValidationMessage && "userInvalid")}>
 							<MyInputLabel>Name</MyInputLabel>
 							<MyInputBackground />
 							<MyInputArea>
@@ -1461,9 +1461,10 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 						</MyInput>
 					</div>
 					<MyModalFooter>
-						<MyModalCloseTrigger disabled={isCreatingNode}>
-							<MyButton variant="ghost">Cancel</MyButton>
-						</MyModalCloseTrigger>
+						{/* Do not wrap Cancel in MyModalCloseTrigger — that class is absolute top-right for the X. */}
+						<MyButton type="button" variant="ghost" disabled={isCreatingNode} onClick={closeModal}>
+							Cancel
+						</MyButton>
 						<MyButton
 							type="submit"
 							disabled={!name.trim() || isSubmitBlocked || isCreatingNode}

@@ -313,7 +313,11 @@ export const MyInputTextAreaControl = memo(function MyInputTextAreaControl(props
 // #endregion textarea control
 
 // #region root
-type MyInput_ClassNames = "MyInput" | "MyInput-variant-floating" | "MyInput-variant-transparent";
+type MyInput_ClassNames =
+	| "MyInput"
+	| "MyInput-variant-floating"
+	| "MyInput-variant-transparent"
+	| "MyInput-layout-stacked";
 
 export type MyInput_Props = ComponentPropsWithRef<"div"> & {
 	/**
@@ -322,11 +326,17 @@ export type MyInput_Props = ComponentPropsWithRef<"div"> & {
 	 * elevation as `MyMenuPopover` / `MyFloatingSurface`.
 	 */
 	variant?: "surface" | "floating" | "transparent";
+
+	/**
+	 * Use `stacked` when the input includes a label or helper outside the painted field.
+	 */
+	layout?: "inline" | "stacked";
+
 	displayValidationMessage?: string;
 };
 
 export const MyInput = memo(function MyInput(props: MyInput_Props) {
-	const { className, variant = "surface", displayValidationMessage, children, ...rest } = props;
+	const { className, variant = "surface", layout = "inline", displayValidationMessage, children, ...rest } = props;
 
 	const rootId = useUiId("MyInput");
 	const inputId = `${rootId}-input`;
@@ -348,6 +358,7 @@ export const MyInput = memo(function MyInput(props: MyInput_Props) {
 					"MyInput" satisfies MyInput_ClassNames,
 					variant === "floating" && ("MyInput-variant-floating" satisfies MyInput_ClassNames),
 					variant === "transparent" && ("MyInput-variant-transparent" satisfies MyInput_ClassNames),
+					layout === "stacked" && ("MyInput-layout-stacked" satisfies MyInput_ClassNames),
 					displayValidationMessage && "userInvalid",
 					className,
 				)}

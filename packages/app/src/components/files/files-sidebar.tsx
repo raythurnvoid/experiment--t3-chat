@@ -476,7 +476,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 						</MyMenuItem>
 					</MyMenuItemsGroup>
 				) : null}
-				<MyMenuItemsGroup separator={kind === "folder"}>
+				<MyMenuItemsGroup separator={kind === "folder" && expandedFolderActionsVisible}>
 					<MyMenuItem hideOnClick onClick={onCopy}>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
@@ -2339,6 +2339,7 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 				>
 					<div className={"FilesSidebarUploadConflictModal-body" satisfies FilesSidebarUploadConflictModal_ClassNames}>
 						<MyInput
+							layout="stacked"
 							className={cn(
 								showAttentionState &&
 									("FilesSidebarUploadConflictModal-name-field-state-attention" satisfies FilesSidebarUploadConflictModal_ClassNames),

@@ -5,6 +5,34 @@
 
 		display: flex;
 	}
+
+	/* Keep the absolute Background and Box inside the field cell, away from the label and helper. */
+	.MyInput-layout-stacked {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-areas:
+			"label label"
+			"field actions"
+			"helper helper";
+		align-items: center;
+	}
+
+	.MyInput-layout-stacked > .MyInputLabel {
+		grid-area: label;
+	}
+
+	.MyInput-layout-stacked
+		> :is(.MyInputBackground, .MyInputBox, .MyInputArea, .MyInputControl, .MyInputTextAreaControl) {
+		grid-area: field;
+	}
+
+	.MyInput-layout-stacked > .MyInputActions {
+		grid-area: actions;
+	}
+
+	.MyInput-layout-stacked > .MyInputHelperText {
+		grid-area: helper;
+	}
 	/* #endregion root */
 
 	/* #region label */
@@ -13,10 +41,11 @@
 
 		font-size: 0.875rem;
 		font-weight: 500;
+		line-height: 20px;
 
 		color: var(--color-fg-08);
 
-		margin-bottom: 6px;
+		padding-bottom: 6px;
 	}
 	/* #endregion label */
 

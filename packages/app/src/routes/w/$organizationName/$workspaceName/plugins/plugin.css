@@ -38,28 +38,6 @@
 		color: var(--color-fg-07);
 	}
 
-	/*
-	MyInput lays the label out in a row next to the control while MyInputBackground/MyInputBox
-	overlay the whole root, so the label is painted over and pushes the control sideways.
-	Stack the label above the box here and start the painted box below it.
-	The secrets modal portals out of the route element, so it needs its own scope.
-	*/
-	:is(.RoutePluginsPlugin, .RoutePluginsPluginSecretsModal) .MyInput {
-		flex-direction: column;
-		align-items: stretch;
-	}
-
-	:is(.RoutePluginsPlugin, .RoutePluginsPluginSecretsModal) .MyInputLabel {
-		line-height: 20px;
-		margin-bottom: 6px;
-	}
-
-	:is(.RoutePluginsPlugin, .RoutePluginsPluginSecretsModal)
-		.MyInput:has(.MyInputLabel)
-		> :is(.MyInputBackground, .MyInputBox) {
-		top: 26px;
-		height: auto;
-	}
 	/* #endregion root */
 
 	/* #region hero */

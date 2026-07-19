@@ -28,25 +28,6 @@
 		color: var(--color-fg-08);
 	}
 
-	/*
-	MyInput lays the label out in a row next to the control while MyInputBackground/MyInputBox
-	overlay the whole root, so the label is painted over and pushes the control sideways.
-	Stack the label above the box here and start the painted box below it.
-	*/
-	.RoutePlugins .MyInput {
-		flex-direction: column;
-		align-items: stretch;
-	}
-
-	.RoutePlugins .MyInputLabel {
-		line-height: 20px;
-		margin-bottom: 6px;
-	}
-
-	.RoutePlugins .MyInput:has(.MyInputLabel) > :is(.MyInputBackground, .MyInputBox) {
-		top: 26px;
-		height: auto;
-	}
 	/* #endregion root */
 
 	/* #region header */

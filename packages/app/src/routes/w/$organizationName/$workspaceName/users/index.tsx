@@ -335,7 +335,7 @@ const RouteUsersInviteModal = memo(function RouteUsersInviteModal(props: RouteUs
 				</MyModalHeader>
 
 				<div className={"RouteUsersInviteModal-form" satisfies RouteUsersInviteModal_ClassNames}>
-					<MyInput>
+					<MyInput layout="stacked">
 						<MyInputLabel>Email</MyInputLabel>
 						<MyInputBackground />
 						<MyInputArea>
@@ -430,7 +430,7 @@ const RouteUsersTransferModal = memo(function RouteUsersTransferModal(props: Rou
 				</MyModalHeader>
 
 				<div className={"RouteUsersTransferModal-form" satisfies RouteUsersTransferModal_ClassNames}>
-					<MyInput>
+					<MyInput layout="stacked">
 						<MyInputLabel>Confirmation</MyInputLabel>
 						<MyInputBackground />
 						<MyInputArea>

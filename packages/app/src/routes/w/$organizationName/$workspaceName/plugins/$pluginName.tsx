@@ -382,7 +382,7 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 						}
 						onSubmit={handleSaveSecret}
 					>
-						<MyInput>
+						<MyInput layout="stacked">
 							<MyInputLabel>Name</MyInputLabel>
 							<MyInputBackground />
 							<MyInputArea>
@@ -397,7 +397,7 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 							</MyInputArea>
 							<MyInputBox />
 						</MyInput>
-						<MyInput>
+						<MyInput layout="stacked">
 							<MyInputLabel>Value</MyInputLabel>
 							<MyInputBackground />
 							<MyInputArea>
