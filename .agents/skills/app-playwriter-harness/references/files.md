@@ -52,6 +52,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 Deterministic assets in `.agents/skills/app-playwriter-harness/assets/files/`:
 
 - `r2-upload-sample.pdf` — PDF source-to-shadow conversion checks.
+- `r2-upload-markdown-sample.md` — Markdown upload checks; it must become a normal editable Markdown node instead of a source-conversion panel.
 - `shapes.png` — image-plugin QA: a red circle, a blue square, a green triangle, and the text `BONOBO QA IMAGE` on a white background.
 - `speakers.wav` — video-plugin QA (audio path, ~39s): two distinct TTS voices alternating scripted lines about the quarterly budget, a penguin research station, the marketing plan, and a solar bicycle.
 - `speakers.mp4` — video-plugin QA (video path, exercises the Modal audio extractor): the same `speakers.wav` audio muxed over a solid-color video track.

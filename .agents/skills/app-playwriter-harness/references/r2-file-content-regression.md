@@ -76,7 +76,7 @@ Expected result: path operations update the tree and routing without losing edit
 7. Upload the same PDF again in the same folder.
 8. Test `Upload renamed file` and verify the renamed source node appears.
 9. Test `Replace` and verify the active source node is replaced while the previous active source is archived.
-10. Upload `packages/app/playwriter-playbooks/fixtures/r2-upload-markdown-sample.md` and verify it becomes a normal editable Markdown node, not a source conversion panel.
+10. Upload `.agents/skills/app-playwriter-harness/assets/files/r2-upload-markdown-sample.md` and verify it becomes a normal editable Markdown node, not a source conversion panel.
 
 Expected result: source uploads use asset-id R2 keys, event handling creates shadows only for source assets, Markdown uploads route to editable nodes, and duplicate PDF paths follow the collision UI.
 

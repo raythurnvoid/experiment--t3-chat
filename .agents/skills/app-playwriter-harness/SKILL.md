@@ -54,6 +54,22 @@ vp env exec pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness
 - Keep each execute call focused on one observation or one action, then observe again.
 - Prefer small observe-act-observe scripts over bundled multi-step runners during interactive debugging and eval inspection. Batch only when the user explicitly asks for a runner or the flow is already stable and repeatable.
 
+# Run Playbooks Step By Step
+
+Use the playbooks in `references/` for manual but repeatable QA when changing live data makes a stable `@playwright/test` setup impractical.
+
+1. Read the routed reference docs and the playbook for the target flow.
+2. Bind to the user's existing app tab or open the exact route required by the playbook.
+3. Run each Playwriter snippet as a separate step and inspect the result before continuing.
+4. Record pass, fail, skipped steps, and the evidence that supports each result.
+5. Perform the playbook's cleanup only when it requests cleanup.
+
+- Use dynamic run ids in temporary comment, folder, and file names.
+- Prefer accessible locators and normal clicks. If actionability fails, inspect and hit-test the blocker; do not use forced clicks or DOM-dispatched clicks.
+- Reopen comment threads after refresh before asserting that replies are missing.
+- Keep snippets small and debuggable. Write runners and output only under `../t3-chat-+personal/+ai/<topic>-YYYY-MM-DD/`.
+- Treat `references/r2-file-content-regression.md` as the currently maintained deep regression playbook. Treat the other playbooks as historical recipes until a focused task revalidates their routes, selectors, and command wrappers.
+
 # Output Artifacts
 
 Write every runner script, screenshot, CPU profile artifact, and scratch file to `../t3-chat-+personal/+ai/` under a descriptive `<topic>-YYYY-MM-DD` folder. The Playwriter CLI reads an `-f` runner before sandboxed code runs, so the runner may stay in the personal AI folder even though sandboxed `fs` cannot read sibling paths. Embed dynamic input in that runner or assign it to `state` in a short separate call. Do not create a second input file in the repository or OS temp directory. Use absolute personal-AI paths for Playwright output APIs. If the host cannot write to the personal AI folder, request approval. Promote a runner into `scripts/` only when it becomes a broadly reusable primitive.
@@ -81,3 +97,11 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 - Read `references/file-node-view.md` for selected-file editor surfaces, comments, diff, and right-sidebar workflows.
 - Read `references/known-hazards.md` before debugging browser interaction failures.
 - Read `references/snippets.md` for short Playwriter commands.
+- Read `references/r2-file-content-regression.md` for deep R2-backed files, uploads, comments, and agent regression QA.
+- Read `references/bash-tool-agent-eval.md` for the Bash agent fixture, scenario matrix, scoring, and acceptance loop.
+- Read `references/bash-cursor-value-store-plan.md` as historical context for the Bash cursor-alias design and its live evaluation.
+- Read `references/files-sidebar-smoke.md` for a historical files-sidebar smoke recipe.
+- Read `references/comment-thread-persistence.md` for a historical comment persistence recipe.
+- Read `references/rich-text-slash-command-keyboard.md` for a historical rich-text slash-menu keyboard recipe.
+- Read `references/image-plugin-description.md` for a historical image-plugin upload and generated-description recipe.
+- Read `references/video-plugin-transcription.md` for a historical audio/video transcription recipe.

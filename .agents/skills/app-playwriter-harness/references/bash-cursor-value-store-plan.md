@@ -22,7 +22,7 @@ The goal is agent smoothness: reduce cursor copy failures without changing DB-ba
   - Treat the map as a best-effort optimization only; correctness must come from Convex.
   - When `search`, `ls`, `find`, or `tree` receives a `continueCursor`, store it with `internal.value_store.put`, cache it in memory, and print `--cursor @<id>`.
   - If alias resolution fails, return a normal Bash error that tells the agent to rerun the original command for a fresh cursor.
-- Update guidance in `packages/app/server/server-ai-tools.ts`, `packages/app/convex/ai_chat.ts`, `.agents/skills/ai-chat-agent/SKILL.md`, and `packages/app/playwriter-playbooks/bash-tool-agent-eval.md` so the agent treats `@...` cursors as normal app Bash syntax and runs the exact printed `Next page:` command.
+- Update guidance in `packages/app/server/server-ai-tools.ts`, `packages/app/convex/ai_chat.ts`, `.agents/skills/ai-chat-agent/SKILL.md`, and `.agents/skills/app-playwriter-harness/references/bash-tool-agent-eval.md` so the agent treats `@...` cursors as normal app Bash syntax and runs the exact printed `Next page:` command.
 
 ## Tests
 
@@ -58,7 +58,7 @@ git diff --check
 vp env exec --node 24.16.0 -- pnpm.CMD --dir packages/app exec convex dev --once --typecheck disable
 ```
 
-- Use the lightweight Playwriter protocol from `packages/app/playwriter-playbooks/bash-tool-agent-eval.md`: bind to the existing app tab, start a fresh chat, send one prompt, capture evidence, and score manually.
+- Use the lightweight Playwriter protocol from `.agents/skills/app-playwriter-harness/references/bash-tool-agent-eval.md`: bind to the existing app tab, start a fresh chat, send one prompt, capture evidence, and score manually.
 - Run each targeted scenario 3 times:
   - `tree <fixture> --limit 3`, then exactly one printed continuation.
   - `search --limit 1 <broad-token>`, then exactly one printed continuation.
