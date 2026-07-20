@@ -5502,6 +5502,172 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(appCopy.stdout).toBe("pending copy created: /docs/guide.md -> /guide-copy.md — review in Files\n");
 		});
 
+		test("proposes and accepts a folder swap cycle through a temp name", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/fsc-a", kind: "folder" },
+					{ path: "/fsc-a/a-child.md", content: "fsc a child\n" },
+					{ path: "/fsc-b", kind: "folder" },
+					{ path: "/fsc-b/b-child.md", content: "fsc b child\n" },
+				],
+			});
+			const folderAId = await get_seeded_node_id(runner, "/fsc-a");
+			const folderBId = await get_seeded_node_id(runner, "/fsc-b");
+			const childAId = await get_seeded_node_id(runner, "/fsc-a/a-child.md");
+			const childBId = await get_seeded_node_id(runner, "/fsc-b/b-child.md");
+
+			// The classic 3-step swap: every mv succeeds and leaves a 2-row folder cycle.
+			const moveBToTemp = await runner.run(`mv ${test_db_files_mount}/fsc-b ${test_db_files_mount}/fsc-temp`);
+			expect(moveBToTemp.metadata.exitCode).toBe(0);
+			const moveAToB = await runner.run(`mv ${test_db_files_mount}/fsc-a ${test_db_files_mount}/fsc-b`);
+			expect(moveAToB.metadata.exitCode).toBe(0);
+			const closing = await runner.run(`mv ${test_db_files_mount}/fsc-temp ${test_db_files_mount}/fsc-a`);
+			expect(closing.metadata.exitCode).toBe(0);
+			expect(closing.stderr).toBe("");
+			expect(closing.stdout).toBe("pending move created: /fsc-temp -> /fsc-a — review in Files\n");
+
+			// Both rows now target each other's committed paths.
+			const rowsA = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderAId))
+					.collect(),
+			);
+			expect(rowsA).toHaveLength(1);
+			expect(rowsA[0].pendingMove).toMatchObject({ destName: "fsc-b", fromPath: "/fsc-a" });
+			const rowsB = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderBId))
+					.collect(),
+			);
+			expect(rowsB).toHaveLength(1);
+			expect(rowsB[0].pendingMove).toMatchObject({ destName: "fsc-a", fromPath: "/fsc-b" });
+
+			// Accepting one member through the real mutation applies the whole cycle.
+			const { api } = await import("../convex/_generated/api.js");
+			const asUser = runner.t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-bash-folder-swap-accept",
+				external_id: runner.seeded.userId,
+				email: "bash-folder-swap-accept@test.local",
+			});
+			const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: folderAId,
+			});
+			expect(accepted._nay).toBeUndefined();
+
+			// Both folders and their children sit at swapped committed paths, rows settled.
+			const movedA = await get_seeded_node(runner, "/fsc-b");
+			expect(movedA._id).toBe(folderAId);
+			const movedB = await get_seeded_node(runner, "/fsc-a");
+			expect(movedB._id).toBe(folderBId);
+			const movedChildA = await get_seeded_node(runner, "/fsc-b/a-child.md");
+			expect(movedChildA._id).toBe(childAId);
+			const movedChildB = await get_seeded_node(runner, "/fsc-a/b-child.md");
+			expect(movedChildB._id).toBe(childBId);
+			const settledRows = await runner.t.run(async (ctx) => [
+				...(await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderAId))
+					.collect()),
+				...(await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderBId))
+					.collect()),
+			]);
+			expect(settledRows).toHaveLength(0);
+		});
+
+		test("proposes a mixed file and folder swap cycle through a temp name", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/fsc-mix-a.md", content: "fsc mix a\n" },
+					{ path: "/fsc-mix-b.md", kind: "folder" },
+				],
+			});
+
+			const moveFileToTemp = await runner.run(
+				`mv ${test_db_files_mount}/fsc-mix-a.md ${test_db_files_mount}/fsc-mix-tmp.md`,
+			);
+			expect(moveFileToTemp.metadata.exitCode).toBe(0);
+			const moveFolderToFilePath = await runner.run(
+				`mv ${test_db_files_mount}/fsc-mix-b.md ${test_db_files_mount}/fsc-mix-a.md`,
+			);
+			expect(moveFolderToFilePath.metadata.exitCode).toBe(0);
+
+			// The closing mv forms a mixed cycle with a folder member: proposable like any swap.
+			const closing = await runner.run(
+				`mv ${test_db_files_mount}/fsc-mix-tmp.md ${test_db_files_mount}/fsc-mix-b.md`,
+			);
+			expect(closing.metadata.exitCode).toBe(0);
+			expect(closing.stderr).toBe("");
+			expect(closing.stdout).toBe("pending move created: /fsc-mix-tmp.md -> /fsc-mix-b.md — review in Files\n");
+		});
+
+		test("proposes a pure file swap cycle through a temp name", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/r16s-swap-a.md", content: "r16s swap a\n" },
+					{ path: "/r16s-swap-b.md", content: "r16s swap b\n" },
+				],
+			});
+
+			const moveAToTemp = await runner.run(
+				`mv ${test_db_files_mount}/r16s-swap-a.md ${test_db_files_mount}/r16s-swap-tmp.md`,
+			);
+			expect(moveAToTemp.metadata.exitCode).toBe(0);
+			const moveBToA = await runner.run(
+				`mv ${test_db_files_mount}/r16s-swap-b.md ${test_db_files_mount}/r16s-swap-a.md`,
+			);
+			expect(moveBToA.metadata.exitCode).toBe(0);
+
+			// A pure file cycle stays proposable: accept applies the whole cycle atomically.
+			const closing = await runner.run(
+				`mv ${test_db_files_mount}/r16s-swap-tmp.md ${test_db_files_mount}/r16s-swap-b.md`,
+			);
+			expect(closing.metadata.exitCode).toBe(0);
+			expect(closing.stderr).toBe("");
+			expect(closing.stdout).toBe("pending move created: /r16s-swap-tmp.md -> /r16s-swap-b.md — review in Files\n");
+
+			// Both rows now target each other's committed paths.
+			const fileAId = await get_seeded_node_id(runner, "/r16s-swap-a.md");
+			const fileBId = await get_seeded_node_id(runner, "/r16s-swap-b.md");
+			const rowsA = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", fileAId))
+					.collect(),
+			);
+			expect(rowsA).toHaveLength(1);
+			expect(rowsA[0].pendingMove).toMatchObject({ destName: "r16s-swap-b.md", fromPath: "/r16s-swap-a.md" });
+			const rowsB = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", fileBId))
+					.collect(),
+			);
+			expect(rowsB).toHaveLength(1);
+			expect(rowsB[0].pendingMove).toMatchObject({ destName: "r16s-swap-a.md", fromPath: "/r16s-swap-b.md" });
+		});
+
+		test("still allows a linear folder move chain onto a vacated path", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/r16s-lin-a", kind: "folder" },
+					{ path: "/r16s-lin-b", kind: "folder" },
+				],
+			});
+
+			// B vacates its path, then A claims it: a chain with no cycle stays allowed.
+			const moveB = await runner.run(`mv ${test_db_files_mount}/r16s-lin-b ${test_db_files_mount}/r16s-lin-c`);
+			expect(moveB.metadata.exitCode).toBe(0);
+			const moveA = await runner.run(`mv ${test_db_files_mount}/r16s-lin-a ${test_db_files_mount}/r16s-lin-b`);
+			expect(moveA.metadata.exitCode).toBe(0);
+			expect(moveA.stdout).toBe("pending move created: /r16s-lin-a -> /r16s-lin-b — review in Files\n");
+		});
+
 		test("overlays pending moves onto ls listings", async () => {
 			const runner = await create_bash_runner();
 

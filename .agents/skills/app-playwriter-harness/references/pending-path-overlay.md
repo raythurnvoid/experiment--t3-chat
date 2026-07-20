@@ -1,6 +1,6 @@
 # Pending Path Overlay (mv/cp) Regression
 
-Goal: validate the bash `mv`/`cp` pending-move overlay end to end: pending update docs, path-overlay reads, accept ordering guard, file-swap cycle accept, cancel-on-return, cp-onto-vacated guard, and the live "Replaces" caption.
+Goal: validate the bash `mv`/`cp` pending-move overlay end to end: pending update docs, path-overlay reads, accept ordering guard, swap cycle accept (files and folders), cancel-on-return, cp-onto-vacated guard, and the live "Replaces" caption.
 
 Route: an already-open Playwriter-enabled `/w/:organizationName/:workspaceName/files` tab.
 
@@ -82,15 +82,25 @@ Expected result: the whole subtree is projected at the new folder path pre-accep
 
 Expected result: single-accept enforces dependency order with the exact toast; Accept all resolves the whole dependency unit itself.
 
-## Scenario 4 — file-swap cycle accepted atomically
+## Scenario 4 — file swap cycle accepted atomically
 
 1. Create `/pwl-x.md` (marker "xray") and `/pwl-y.md` (marker "yankee").
 2. Chat, one turn: `mv pwl-x.md pwl-tmp.md`, then `mv pwl-y.md pwl-x.md`, then `mv pwl-tmp.md pwl-y.md`.
 3. Expect three exit-0 outputs; the third replaces the first proposal so the panel shows exactly TWO mirrored rows (`/pwl-x.md → /pwl-y.md` and `/pwl-y.md → /pwl-x.md`), both caption `Moved`, NEITHER showing `Replaces`.
 4. Accept ONE row (filter by the FULL arrow text — both rows contain both file names).
-5. Expect: the status region fires and BOTH rows clear (the file-swap cycle applies atomically), zero toasts; tree still shows `pwl-x.md` + `pwl-y.md` and no `pwl-tmp.md`; opening the files shows the contents swapped.
+5. Expect: the status region fires and BOTH rows clear (the swap cycle applies atomically), zero toasts; tree still shows `pwl-x.md` + `pwl-y.md` and no `pwl-tmp.md`; opening the files shows the contents swapped.
 
-Regression signature (old bug): toast `Accept the pending move of ...` on a 2-member file-swap cycle and rows surviving.
+Regression signature (old bug): toast `Accept the pending move of ...` on a 2-member swap cycle and rows surviving.
+
+## Scenario 4b — folder swap cycle accepted atomically
+
+1. Create committed folders `/pwl-p` and `/pwl-q`, each with one child file (`/pwl-p/pwl-p-child.md` marker "papa", `/pwl-q/pwl-q-child.md` marker "quebec" — fixture helper step 3).
+2. Chat, one turn: `mv pwl-q pwl-tmp-dir`, then `mv pwl-p pwl-q`, then `mv pwl-tmp-dir pwl-p`.
+3. Expect three exit-0 outputs; the panel shows exactly TWO mirrored rows (`/pwl-p → /pwl-q` and `/pwl-q → /pwl-p`), both caption `Moved`.
+4. Accept ONE row (full arrow text, as in scenario 4).
+5. Expect: the status region fires and BOTH rows clear, zero toasts; tree still shows `pwl-p` + `pwl-q` and no `pwl-tmp-dir`; expanding the folders shows the children traveled with them (`pwl-q` now contains `pwl-p-child.md` and `pwl-p` contains `pwl-q-child.md`), and opening a child shows its marker at the new path.
+
+Regression signature (round-16 bug): the closing `mv` was rejected with `folder swaps are not supported`, or accept left both rows stuck with toast `Accept the pending move of ...`.
 
 ## Scenario 5 — cancel-on-return
 
@@ -127,7 +137,7 @@ Regression signature (old bug): accepting the second link left the first file ac
 
 ## Cleanup
 
-1. Discard any leftover pending rows (scope to `.FileEditorSidebarPending`, filter rows by the FULL `"/x.md → /y.md"` text — file-swap cycles produce mirrored rows where a single file name matches both).
+1. Discard any leftover pending rows (scope to `.FileEditorSidebarPending`, filter rows by the FULL `"/x.md → /y.md"` text — swap cycles produce mirrored rows where a single file name matches both).
 2. Archive every test-prefixed tree row: `role=button[name="More actions for <name>"]` → menuitem `Archive`.
 3. Verify: pending panel `.FileEditorSidebarPending-empty` present, zero test-prefixed `[role="treeitem"]`, no error toasts, `getLatestLogs` clean.
 
@@ -142,7 +152,7 @@ Rules: batch any repo-file writes to BEFORE or AFTER the browser-driving phase; 
 
 ## Failure Triage
 
-- Accept clicked but row survives + toast `Accept the pending move of "..." first`: dependency-ordering guard fired — this is EXPECTED when accepting a move whose destination is vacated by another pending move (see scenario 3); it is a BUG only for 2-member file-swap cycles, which must clear atomically.
+- Accept clicked but row survives + toast `Accept the pending move of "..." first`: dependency-ordering guard fired — this is EXPECTED when accepting a move whose destination is vacated by another pending move (see scenario 3); it is a BUG only for swap cycles (file or folder), which must clear atomically.
 - Click timeouts on pending rows: the pending tab is probably not active — panels stay mounted but hidden; click `#app_file_editor_sidebar_tabs_pending` first.
 - `EROFS: read-only file system`: the prompt used absolute paths; re-send with cwd-relative paths.
 - Turn never goes idle: read `[data-ai-chat-state]` directly (`streaming` vs `tool-running` tells you where it is stuck), then check `.AiChatMessagePartToolStatus-state-loading` and the send/stop button; cold Convex deployments can make the first turn take 30s+.

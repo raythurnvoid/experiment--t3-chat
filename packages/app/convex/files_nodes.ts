@@ -2347,6 +2347,13 @@ export async function files_nodes_db_validate_pending_move_target(
 		 * pending move is rejected. Accept-time callers leave this unset (committed tree).
 		 */
 		overlayUserId?: Id<"users">;
+		/**
+		 * Accept-time only: the accepting user's id. An occupant that vacates through this
+		 * user's own pending move is returned as `replacesNode` even when it is not
+		 * file-replaceable, so the caller can apply a swap cycle or ask to accept the
+		 * occupant's move first.
+		 */
+		acceptUserId?: string;
 	},
 ) {
 	const node = await ctx.db.get("files_nodes", args.nodeId);
@@ -2437,10 +2444,23 @@ export async function files_nodes_db_validate_pending_move_target(
 				node.kind === "file" &&
 				activeSiblingConflict.kind === "file" &&
 				(args.replaceTarget === "any-active-file" || activeSiblingConflict._id === args.replaceTarget);
-			if (!replaceable) {
-				return Result({ _nay: { message: "Path already exists" } });
+			if (replaceable) {
+				return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
 			}
-			return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
+			// A non-replaceable occupant that vacates through the accepting user's own pending
+			// move is still returned: the caller applies a swap cycle or asks to accept it first.
+			if (args.acceptUserId != null) {
+				const occupantPendingUpdate = await files_db_get_pending_update(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.acceptUserId,
+					nodeId: activeSiblingConflict._id,
+				});
+				if (occupantPendingUpdate?.pendingMove) {
+					return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
+				}
+			}
+			return Result({ _nay: { message: "Path already exists" } });
 		}
 	}
 
@@ -2492,7 +2512,7 @@ async function db_apply_node_move(
  * owns the denormalized path fan-out (node, file chunk scope, descendant cascade).
  *
  * `_yay.cycleMemberPendingUpdates` lists the other pending update docs applied together with
- * this one when the user's moves form a file-swap cycle; the caller must settle those docs too.
+ * this one when the user's moves form a swap cycle; the caller must settle those docs too.
  */
 export async function files_nodes_db_apply_pending_move(
 	ctx: MutationCtx,
@@ -2524,7 +2544,8 @@ export async function files_nodes_db_apply_pending_move(
 	}
 
 	// The pending move claims its destination: any file occupying it at accept time is
-	// auto-replaced like `mv -f`. A folder occupant still fails validation.
+	// auto-replaced like `mv -f`. A folder occupant fails validation unless it vacates
+	// through this user's own pending move (swap cycles and chained accepts).
 	const validated = await files_nodes_db_validate_pending_move_target(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -2532,6 +2553,7 @@ export async function files_nodes_db_apply_pending_move(
 		destParentId: args.destParentId,
 		destName: args.destName,
 		replaceTarget: "any-active-file",
+		acceptUserId: args.userId,
 	});
 	if (validated._nay) {
 		return validated;
@@ -2550,8 +2572,8 @@ export async function files_nodes_db_apply_pending_move(
 			nodeId: validated._yay.replacesNode._id,
 		});
 		if (occupantPendingUpdate?.pendingMove) {
-			// The chain of same-user pending moves can close back on this node (a file swap
-			// built through a temp name). Such a file-swap cycle has no acceptable order, so
+			// The chain of same-user pending moves can close back on this node (a swap
+			// built through a temp name). Such a swap cycle has no acceptable order, so
 			// accept applies every member's move together: the destinations are each other's
 			// sources inside one transaction, so no re-validation and no archiving is needed.
 			const cycleMembers: Array<{
@@ -2595,7 +2617,7 @@ export async function files_nodes_db_apply_pending_move(
 					break;
 				}
 				if (visitedNodeIds.has(nextOccupant._id)) {
-					// The chain closed on itself without the accepted node: not this node's file-swap cycle.
+					// The chain closed on itself without the accepted node: not this node's swap cycle.
 					break;
 				}
 				const nextPendingUpdate = await files_db_get_pending_update(ctx, {
@@ -2613,7 +2635,7 @@ export async function files_nodes_db_apply_pending_move(
 				memberPendingMove = nextPendingUpdate.pendingMove;
 			}
 
-			if (isCycle && node.kind === "file" && cycleMembers.every((member) => member.node.kind === "file")) {
+			if (isCycle) {
 				await db_apply_node_move(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,

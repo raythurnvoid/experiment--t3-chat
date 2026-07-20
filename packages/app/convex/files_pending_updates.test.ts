@@ -7042,6 +7042,390 @@ describe("apply_file_pending_move", () => {
 		});
 	});
 
+	test("accepts a two-folder swap cycle in one accept", async () => {
+		const t = test_convex();
+
+		const childA = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/fsc-swap-a/a-child.md",
+				name: "a-child.md",
+				markdown: "# Fsc swap a child base",
+			}),
+		);
+		const membership = {
+			userId: childA.userId,
+			organizationId: childA.organizationId,
+			workspaceId: childA.workspaceId,
+			membershipId: childA.membershipId,
+		};
+		const childB = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/fsc-swap-b/b-child.md",
+				name: "b-child.md",
+				markdown: "# Fsc swap b child base",
+				membership,
+			}),
+		);
+		const { folderAId, folderBId, childAChunkIds } = await t.run(async (ctx) => {
+			const folderAId = await seed_folder_node({
+				ctx,
+				organizationId: childA.organizationId,
+				workspaceId: childA.workspaceId,
+				userId: childA.userId,
+				path: "/fsc-swap-a",
+				name: "fsc-swap-a",
+			});
+			await ctx.db.patch("files_nodes", childA.nodeId, { parentId: folderAId });
+			const folderBId = await seed_folder_node({
+				ctx,
+				organizationId: childA.organizationId,
+				workspaceId: childA.workspaceId,
+				userId: childA.userId,
+				path: "/fsc-swap-b",
+				name: "fsc-swap-b",
+			});
+			await ctx.db.patch("files_nodes", childB.nodeId, { parentId: folderBId });
+			const childAChunkIds = await seed_committed_chunks_for_file({
+				ctx,
+				organizationId: childA.organizationId,
+				workspaceId: childA.workspaceId,
+				nodeId: childA.nodeId,
+				path: "/fsc-swap-a/a-child.md",
+				markdown: childA.baseMarkdown,
+			});
+			return { folderAId, folderBId, childAChunkIds };
+		});
+
+		// mv a→tmp, mv b→a, mv tmp→b: the third mv replaces A's row, so the two rows
+		// left form a folder swap cycle (A: a→b, B: b→a).
+		const moveATmp = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childA.organizationId,
+			workspaceId: childA.workspaceId,
+			userId: childA.userId,
+			nodeId: folderAId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-swap-tmp",
+		});
+		if (moveATmp._nay) {
+			throw new Error(moveATmp._nay.message);
+		}
+		const moveB = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childA.organizationId,
+			workspaceId: childA.workspaceId,
+			userId: childA.userId,
+			nodeId: folderBId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-swap-a",
+		});
+		if (moveB._nay) {
+			throw new Error(moveB._nay.message);
+		}
+		const moveAFinal = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childA.organizationId,
+			workspaceId: childA.workspaceId,
+			userId: childA.userId,
+			nodeId: folderAId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-swap-b",
+		});
+		if (moveAFinal._nay) {
+			throw new Error(moveAFinal._nay.message);
+		}
+
+		// Accepting either row applies the whole cycle inside one transaction.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: childA.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: childA.membershipId,
+			nodeId: folderAId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const folderA = await ctx.db.get("files_nodes", folderAId);
+			expect(folderA?.path).toBe("/fsc-swap-b");
+			expect(folderA?.treePath).toBe("/fsc-swap-b/");
+			expect(folderA?.archiveOperationId).toBeUndefined();
+
+			const folderB = await ctx.db.get("files_nodes", folderBId);
+			expect(folderB?.path).toBe("/fsc-swap-a");
+			expect(folderB?.treePath).toBe("/fsc-swap-a/");
+			expect(folderB?.archiveOperationId).toBeUndefined();
+
+			// Both children cascaded under their folder's swapped path.
+			const movedChildA = await ctx.db.get("files_nodes", childA.nodeId);
+			expect(movedChildA?.path).toBe("/fsc-swap-b/a-child.md");
+			const movedChildB = await ctx.db.get("files_nodes", childB.nodeId);
+			expect(movedChildB?.path).toBe("/fsc-swap-a/b-child.md");
+			const childAChunk = await ctx.db.get("files_plain_text_chunks", childAChunkIds.plainTextChunkId);
+			expect(childAChunk?.path).toBe("/fsc-swap-b/a-child.md");
+
+			const rowA = await read_pending_update_row({
+				ctx,
+				organizationId: childA.organizationId,
+				workspaceId: childA.workspaceId,
+				userId: childA.userId,
+				nodeId: folderAId,
+			});
+			expect(rowA).toBeNull();
+			const rowB = await read_pending_update_row({
+				ctx,
+				organizationId: childA.organizationId,
+				workspaceId: childA.workspaceId,
+				userId: childA.userId,
+				nodeId: folderBId,
+			});
+			expect(rowB).toBeNull();
+		});
+
+		// The bulk accept flow still calls accept for the settled second row: no-op success.
+		const appliedB = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: childA.membershipId,
+			nodeId: folderBId,
+		});
+		expect(appliedB._nay).toBeUndefined();
+	});
+
+	test("accepts a mixed file and folder swap cycle in one accept", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/fsc-mix-a.md",
+				name: "fsc-mix-a.md",
+				markdown: "# Fsc mix a base",
+			}),
+		);
+		const folderBId = await t.run((ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/fsc-mix-b",
+				name: "fsc-mix-b",
+			}),
+		);
+
+		// The file and the folder trade paths through a temp name.
+		const moveATmp = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-mix-tmp.md",
+		});
+		if (moveATmp._nay) {
+			throw new Error(moveATmp._nay.message);
+		}
+		const moveB = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: folderBId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-mix-a.md",
+		});
+		if (moveB._nay) {
+			throw new Error(moveB._nay.message);
+		}
+		const moveAFinal = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-mix-b",
+		});
+		if (moveAFinal._nay) {
+			throw new Error(moveAFinal._nay.message);
+		}
+
+		// Accept from the folder's side: the mixed cycle still applies both moves.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: seeded.membershipId,
+			nodeId: folderBId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const fileA = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(fileA?.path).toBe("/fsc-mix-b");
+			expect(fileA?.archiveOperationId).toBeUndefined();
+			const folderB = await ctx.db.get("files_nodes", folderBId);
+			expect(folderB?.path).toBe("/fsc-mix-a.md");
+			expect(folderB?.archiveOperationId).toBeUndefined();
+
+			const rowA = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			expect(rowA).toBeNull();
+			const rowB = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: folderBId,
+			});
+			expect(rowB).toBeNull();
+		});
+	});
+
+	test("accepts a three-folder rotation cycle in one accept", async () => {
+		const t = test_convex();
+
+		const childA = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/fsc-rot-a/rot-child.md",
+				name: "rot-child.md",
+				markdown: "# Fsc rot child base",
+			}),
+		);
+		const { folderAId, folderBId, folderCId } = await t.run(async (ctx) => {
+			const folderAId = await seed_folder_node({
+				ctx,
+				organizationId: childA.organizationId,
+				workspaceId: childA.workspaceId,
+				userId: childA.userId,
+				path: "/fsc-rot-a",
+				name: "fsc-rot-a",
+			});
+			await ctx.db.patch("files_nodes", childA.nodeId, { parentId: folderAId });
+			const folderBId = await seed_folder_node({
+				ctx,
+				organizationId: childA.organizationId,
+				workspaceId: childA.workspaceId,
+				userId: childA.userId,
+				path: "/fsc-rot-b",
+				name: "fsc-rot-b",
+			});
+			const folderCId = await seed_folder_node({
+				ctx,
+				organizationId: childA.organizationId,
+				workspaceId: childA.workspaceId,
+				userId: childA.userId,
+				path: "/fsc-rot-c",
+				name: "fsc-rot-c",
+			});
+			return { folderAId, folderBId, folderCId };
+		});
+
+		// A→tmp frees a, B claims a, C claims b, and the final move replaces A's tmp
+		// row: the three rows form the A→c, B→a, C→b rotation.
+		const moveATmp = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childA.organizationId,
+			workspaceId: childA.workspaceId,
+			userId: childA.userId,
+			nodeId: folderAId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-rot-tmp",
+		});
+		if (moveATmp._nay) {
+			throw new Error(moveATmp._nay.message);
+		}
+		const moveB = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childA.organizationId,
+			workspaceId: childA.workspaceId,
+			userId: childA.userId,
+			nodeId: folderBId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-rot-a",
+		});
+		if (moveB._nay) {
+			throw new Error(moveB._nay.message);
+		}
+		const moveC = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childA.organizationId,
+			workspaceId: childA.workspaceId,
+			userId: childA.userId,
+			nodeId: folderCId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-rot-b",
+		});
+		if (moveC._nay) {
+			throw new Error(moveC._nay.message);
+		}
+		const moveAFinal = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childA.organizationId,
+			workspaceId: childA.workspaceId,
+			userId: childA.userId,
+			nodeId: folderAId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-rot-c",
+		});
+		if (moveAFinal._nay) {
+			throw new Error(moveAFinal._nay.message);
+		}
+
+		// Accepting any member applies the whole rotation inside one transaction.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: childA.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: childA.membershipId,
+			nodeId: folderBId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const folderA = await ctx.db.get("files_nodes", folderAId);
+			expect(folderA?.path).toBe("/fsc-rot-c");
+			const folderB = await ctx.db.get("files_nodes", folderBId);
+			expect(folderB?.path).toBe("/fsc-rot-a");
+			const folderC = await ctx.db.get("files_nodes", folderCId);
+			expect(folderC?.path).toBe("/fsc-rot-b");
+
+			const movedChild = await ctx.db.get("files_nodes", childA.nodeId);
+			expect(movedChild?.path).toBe("/fsc-rot-c/rot-child.md");
+
+			for (const folderId of [folderAId, folderBId, folderCId]) {
+				const row = await read_pending_update_row({
+					ctx,
+					organizationId: childA.organizationId,
+					workspaceId: childA.workspaceId,
+					userId: childA.userId,
+					nodeId: folderId,
+				});
+				expect(row).toBeNull();
+			}
+		});
+	});
+
 	test("returns success when the move was already applied on a mixed row", async () => {
 		const t = test_convex();
 

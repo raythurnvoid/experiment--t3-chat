@@ -1260,7 +1260,7 @@ export const apply_file_pending_move = mutation({
 			nodeId: args.nodeId,
 		});
 		if (!pendingUpdate) {
-			// A file-swap cycle accept settles the other members' docs too; the bulk accept
+			// A swap cycle accept settles the other members' docs too; the bulk accept
 			// flow still calls accept for them, so a missing doc is a no-op success.
 			return Result({ _yay: null });
 		}
@@ -1286,7 +1286,7 @@ export const apply_file_pending_move = mutation({
 		}
 
 		await files_pending_update_db_settle_move_row(ctx, { pendingUpdate });
-		// A file-swap cycle applies the other members' moves too: settle their docs the same way.
+		// A swap cycle applies the other members' moves too: settle their docs the same way.
 		for (const cycleMemberPendingUpdate of applied._yay.cycleMemberPendingUpdates) {
 			await files_pending_update_db_settle_move_row(ctx, { pendingUpdate: cycleMemberPendingUpdate });
 		}

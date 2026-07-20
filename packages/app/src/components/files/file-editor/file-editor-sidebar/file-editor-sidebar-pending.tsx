@@ -348,7 +348,7 @@ async function files_pending_rows_run_bulk(
 	// Group rows into dependency units. `moveDestinationPath` is the committed destination path,
 	// so it matches the committed `path` of the row it depends on. Move cycles (swaps) can exist;
 	// the chain-membership check stops the walk there, and the cycle lands in one unit — the
-	// server accepts a whole file cycle atomically from its first accepted member.
+	// server accepts a whole swap cycle atomically from its first accepted member.
 	const moveRowByPath = new Map(
 		rows.filter((row) => row.pendingUpdate.pendingMove != null).map((row) => [row.path, row]),
 	);
