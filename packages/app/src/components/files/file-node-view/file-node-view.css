@@ -504,7 +504,6 @@
 	.FileNodeViewFolderExplorer {
 		display: flex;
 		flex-direction: column;
-		gap: 16px;
 		flex: 0 0 auto;
 
 		padding: 0 24px;
@@ -518,6 +517,12 @@
 		border: 1px solid var(--color-fg-03);
 		border-radius: 8px;
 		background: var(--color-base-1-04);
+
+		/* Keep the bottom flat when the show more/less row is attached below. */
+		&:has(+ .FileNodeViewFolderExplorer-show-more, + .FileNodeViewFolderExplorer-show-less) {
+			border-bottom-left-radius: 0;
+			border-bottom-right-radius: 0;
+		}
 	}
 
 	.FileNodeViewFolderExplorer-row {
@@ -634,13 +639,55 @@
 		pointer-events: auto;
 	}
 
-	.FileNodeViewFolderExplorer-show-more {
-		align-self: flex-start;
+	.FileNodeViewFolderExplorer-show-more,
+	.FileNodeViewFolderExplorer-show-less {
+		/*
+		Looks like an extra table row attached below the table. The table's
+		bottom border draws the break line between the last row and this button.
+		*/
+		/* Match the 44px table rows height, plus the 1px bottom border. */
+		height: 45px;
+		padding: 8px 12px;
+		font-weight: 400;
+
+		border: 1px solid var(--color-fg-03);
+		border-top: none;
+		border-radius: 0 0 8px 8px;
+		/*
+		Plain background colors, no gradients: gradients never animate in CSS
+		transitions, so they snap between states. The pressed depth comes from
+		the inset shadows, which are the animated part of regular buttons too.
+		*/
+		background: var(--color-base-1-04);
+		color: var(--color-fg-07);
+
+		transition:
+			background-color 0.1s linear,
+			color 0.1s linear,
+			box-shadow 0.1s linear;
+
+		&:hover,
+		&:focus-visible {
+			background: var(--color-base-1-05);
+			color: var(--color-fg-11);
+		}
+
+		&:active {
+			background: var(--color-base-1-06);
+			color: var(--color-fg-12);
+
+			/*
+			Pressed depth like regular buttons. Keep the -1px line so the
+			sticky show less button keeps its top break line while pressed.
+			*/
+			box-shadow:
+				0 -1px 0 var(--color-fg-03),
+				inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
+				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
+		}
 	}
 
 	.FileNodeViewFolderExplorer-show-less {
-		align-self: flex-start;
-
 		/*
 		Stick to the bottom of the editor scroll area so the user can collapse
 		the list without scrolling back up. Paint above the table cells, which
@@ -649,6 +696,13 @@
 		position: sticky;
 		bottom: 16px;
 		z-index: 1;
+
+		/*
+		Paint a top break line for when the button floats over the rows. When
+		the button rests attached to the table, this line overlaps the table
+		bottom border, so nothing changes visually.
+		*/
+		box-shadow: 0 -1px 0 var(--color-fg-03);
 	}
 	/* #endregion folder explorer */
 

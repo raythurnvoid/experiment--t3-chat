@@ -1919,7 +1919,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			{hiddenChildItemsCount > 0 && (
 				<MyButton
 					className={"FileNodeViewFolderExplorer-show-more" satisfies FileNodeViewFolderExplorer_ClassNames}
-					variant="outline"
+					variant="ghost"
 					onClick={onShowMoreClick}
 				>
 					Show more
@@ -1929,7 +1929,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			{canShowLess && (
 				<MyButton
 					className={"FileNodeViewFolderExplorer-show-less" satisfies FileNodeViewFolderExplorer_ClassNames}
-					variant="outline"
+					variant="ghost"
 					onClick={onShowLessClick}
 				>
 					Show less
