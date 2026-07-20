@@ -528,6 +528,7 @@ async function files_pending_update_upsert_branch_docs(
 		unstagedBranchChanged: boolean;
 		copiedFrom?: app_convex_Doc<"files_pending_updates">["copiedFrom"];
 		eagerCreated?: app_convex_Doc<"files_pending_updates">["eagerCreated"];
+		threadId?: Id<"ai_chat_threads">;
 	},
 ) {
 	const branchDocsHaveChanges = files_pending_update_branch_docs_have_changes({
@@ -623,6 +624,12 @@ async function files_pending_update_upsert_branch_docs(
 			(existingCopiedFrom.archivesSourceOnAccept ?? false) === (args.copiedFrom.archivesSourceOnAccept ?? false));
 	const eagerCreatedAlreadyRecorded =
 		args.eagerCreated === undefined || args.existingPendingUpdate?.eagerCreated !== undefined;
+	// Contributor set: an agent write records its thread once per doc; client writes pass no
+	// threadId and every patch below leaves the field out, so the array survives them.
+	const nextThreadIds =
+		args.threadId && !args.existingPendingUpdate?.threadIds?.includes(args.threadId)
+			? [...(args.existingPendingUpdate?.threadIds ?? []), args.threadId]
+			: undefined;
 	if (
 		copiedFromAlreadyRecorded &&
 		eagerCreatedAlreadyRecorded &&
@@ -636,10 +643,12 @@ async function files_pending_update_upsert_branch_docs(
 		})
 	) {
 		// Same-bytes rewrites still count as activity: refresh the doc's 4h lifetime, or the
-		// cleanup task scheduled for the old updatedAt expires the untouched proposal.
+		// cleanup task scheduled for the old updatedAt expires the untouched proposal. An identical
+		// re-write from another chat still means that chat touched the file.
 		const now = Date.now();
 		await Promise.all([
 			ctx.db.patch("files_pending_updates", args.existingPendingUpdate._id, {
+				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 				updatedAt: now,
 			}),
 			files_db_schedule_pending_update_cleanup(ctx, {
@@ -679,6 +688,7 @@ async function files_pending_update_upsert_branch_docs(
 			unstagedBranchYjsUpdate,
 			...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
 			...(args.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
+			...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 			size: unstagedSize,
 			updatedAt: now,
 		});
@@ -707,6 +717,7 @@ async function files_pending_update_upsert_branch_docs(
 				...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
 				// Never overwrite an existing eagerCreated: its committedSequence stamp must stay immutable.
 				...(args.eagerCreated && !args.existingPendingUpdate.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
+				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 				...(args.unstagedBranchChanged ? { size: unstagedSize } : {}),
 				updatedAt: now,
 			}),
@@ -752,6 +763,7 @@ async function files_pending_update_upsert_updates(
 		copiedFrom?: app_convex_Doc<"files_pending_updates">["copiedFrom"];
 		eagerCreatedCommittedSequence?: number;
 		eagerCreatedAncestorIds?: Id<"files_nodes">[];
+		threadId?: Id<"ai_chat_threads">;
 	},
 ) {
 	const file = await ctx.db.get("files_nodes", args.nodeId);
@@ -842,6 +854,7 @@ async function files_pending_update_upsert_updates(
 		unstagedBranchChanged: unstagedBranchProjection._yay !== false,
 		copiedFrom: args.copiedFrom,
 		eagerCreated,
+		threadId: args.threadId,
 	});
 }
 
@@ -942,6 +955,8 @@ export const upsert_file_pending_update_in_db = internalMutation({
 		 * Pass only together with `eagerCreatedCommittedSequence`; ignored without it.
 		 */
 		eagerCreatedAncestorIds: v.optional(v.array(v.id("files_nodes"))),
+		/** Chat thread making this write; appended (deduped) to the doc's contributor set. */
+		threadId: v.optional(v.id("ai_chat_threads")),
 	},
 	returns: v_result({
 		_yay: v.null(),
@@ -971,6 +986,7 @@ async function action_upsert_file_pending_update_in_db(
 		copiedFrom?: app_convex_Doc<"files_pending_updates">["copiedFrom"];
 		eagerCreatedCommittedSequence?: number;
 		eagerCreatedAncestorIds?: Id<"files_nodes">[];
+		threadId?: Id<"ai_chat_threads">;
 	},
 ) {
 	const result = (await ctx.runMutation(
@@ -1062,6 +1078,8 @@ export const upsert_file_pending_update_internal_action = internalAction({
 		 * Pass only together with `eagerCreatedCommittedSequence`; ignored without it.
 		 */
 		eagerCreatedAncestorIds: v.optional(v.array(v.id("files_nodes"))),
+		/** Chat thread making this write; appended (deduped) to the doc's contributor set. */
+		threadId: v.optional(v.id("ai_chat_threads")),
 	},
 	returns: v_result({
 		_yay: v.null(),
@@ -1112,6 +1130,8 @@ export const upsert_file_pending_move_in_db = internalMutation({
 		 * moves always send it).
 		 */
 		replace: v.optional(v.boolean()),
+		/** Chat thread making this write; appended (deduped) to the doc's contributor set. */
+		threadId: v.optional(v.id("ai_chat_threads")),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -1191,6 +1211,11 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			fromPath: node.path,
 			...(replacesNode ? { replacesNodeId: replacesNode._id } : {}),
 		};
+		// Contributor set: an agent mv records its thread once per doc; client moves pass no threadId.
+		const nextThreadIds =
+			args.threadId && !existingPendingUpdate?.threadIds?.includes(args.threadId)
+				? [...(existingPendingUpdate?.threadIds ?? []), args.threadId]
+				: undefined;
 		if (!existingPendingUpdate) {
 			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
 				organizationId: args.organizationId,
@@ -1198,6 +1223,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 				userId: args.userId,
 				fileNodeId: args.nodeId,
 				pendingMove,
+				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 				size: 0,
 				updatedAt: now,
 			});
@@ -1210,6 +1236,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			await Promise.all([
 				ctx.db.patch("files_pending_updates", existingPendingUpdate._id, {
 					pendingMove,
+					...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 					updatedAt: now,
 				}),
 				files_db_schedule_pending_update_cleanup(ctx, {

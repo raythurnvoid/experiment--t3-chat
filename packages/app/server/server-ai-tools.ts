@@ -1179,9 +1179,9 @@ export function ai_chat_tool_create_bash(
 		organizationName: string;
 		workspaceName: string;
 		userId: Id<"users">;
+		getThreadId: () => Id<"ai_chat_threads"> | null;
 	},
 	options: {
-		getThreadId: () => Id<"ai_chat_threads"> | null;
 		allowDbFilesMkdir: boolean;
 	},
 ) {
@@ -1239,7 +1239,7 @@ export function ai_chat_tool_create_bash(
 				),
 		}),
 		execute: async (args) => {
-			const threadId = options.getThreadId();
+			const threadId = ctxData.getThreadId();
 			if (!threadId) {
 				throw new Error("Cannot run bash before the chat thread has been created.");
 			}
@@ -1280,6 +1280,7 @@ export function ai_chat_tool_create_write_file(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
+		getThreadId: () => Id<"ai_chat_threads"> | null;
 	},
 ) {
 	return tool({
@@ -1478,6 +1479,7 @@ export function ai_chat_tool_create_write_file(
 					// Set only together with the stamp: lets Discard and TTL expiry remove the
 					// parent folders the eager create built.
 					eagerCreatedAncestorIds: createdAncestorIds,
+					threadId: ctxData.getThreadId() ?? undefined,
 				})
 				.catch(async (error: unknown) => {
 					if (eagerCreatedCommittedSequence === undefined) {
@@ -1538,6 +1540,7 @@ export function ai_chat_tool_create_edit_file(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
+		getThreadId: () => Id<"ai_chat_threads"> | null;
 	},
 ) {
 	return tool({
@@ -1620,6 +1623,7 @@ export function ai_chat_tool_create_edit_file(
 				nodeId,
 				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
 				unstagedMarkdown: modifiedText,
+				threadId: ctxData.getThreadId() ?? undefined,
 			});
 			// The node can be archived or deleted between the read above and this upsert;
 			// reporting success would let the model believe the proposal exists.
@@ -1899,8 +1903,6 @@ export function ai_chat_tool_create_execute_code(
 		organizationName: string;
 		workspaceName: string;
 		userId: Id<"users">;
-	},
-	opts: {
 		getThreadId?: () => Id<"ai_chat_threads"> | null;
 	},
 ) {
@@ -1961,7 +1963,7 @@ export function ai_chat_tool_create_execute_code(
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				userId: ctxData.userId,
-				threadId: opts.getThreadId?.() ?? null,
+				threadId: ctxData.getThreadId?.() ?? null,
 				principalKey: executionId,
 				tokenHash: await crypto_sha256_hex(publicApiGrantToken),
 				scopes: [public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ],

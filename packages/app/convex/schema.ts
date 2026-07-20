@@ -278,6 +278,11 @@ const app_convex_schema = defineSchema({
 				createdAncestorIds: v.optional(v.array(v.id("files_nodes"))),
 			}),
 		),
+		/**
+		 * Chat threads that touched this proposal (contributor set, deduped). Agent writes append
+		 * their thread id; client-driven writes preserve the array. Unset for client-only docs.
+		 */
+		threadIds: v.optional(v.array(v.id("ai_chat_threads"))),
 		size: v.number(),
 		updatedAt: v.number(),
 	})

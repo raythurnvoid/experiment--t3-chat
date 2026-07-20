@@ -40,7 +40,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	// Proposals target only the tenant app tree; the reserved mount scopes never back `app.fs`.
 	// Narrow the ctxData union up front for the workspace-only functions below, which declare strict ids.
-	const { organizationId, workspaceId, userId } = dbFilesRoots.app.fs.ctxData;
+	const { organizationId, workspaceId, userId, threadId } = dbFilesRoots.app.fs.ctxData;
 	if (organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)) {
 		throw should_never_happen("cp command created for a reserved mount scope", { organizationId, workspaceId });
 	}
@@ -329,6 +329,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 							// Recorded on the pending update doc so Discard/TTL expiry can also remove the
 							// parent folders this cp eagerly created.
 							eagerCreatedAncestorIds: createdAncestorIds,
+							threadId: threadId ?? undefined,
 						},
 					)) as upsert_file_pending_update_internal_action_Result;
 				} catch (error) {

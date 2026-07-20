@@ -56,6 +56,16 @@ Run these checks before any browser-console or interaction-heavy investigation:
 3. Playwriter executes have a 10s default timeout. Any poll/wait loop longer than that (chat turn waits, accept polling) needs `--timeout <ms>` on the CLI call.
 4. Functions stored on `state` capture the DEFINING run's `console` — their `console.log` output is invisible in later execute calls ("Code executed successfully (no output)"). Always `console.log(JSON.stringify(await state.helper()))` from the calling script.
 5. Through `vp env exec`, both `--% -e` and plain `-e` with nested escaped quotes (`\"`) get mangled into "Unknown command". Use `-f` runner files for anything with quotes; keep `-e` for single-quoted one-liners without nested quoting.
+6. `page.screenshot` on a backgrounded extension-mode tab can fail with `Extension request timeout ... forwardCDPCommand` (30s hang) even when evaluate/click work fine. Order runners as assert -> `console.log` -> screenshot, wrap screenshots in try/catch with an explicit short `timeout`, and when a visual is required do `page.bringToFront()` first — foregrounded shots succeed reliably.
+
+## Ground-truth Convex probes from the live page (t3-chat)
+
+When the UI disagrees with expected server state (e.g. a badge counts but a scoped view stays empty), get ground truth instead of guessing:
+
+1. In `page.evaluate`, `await import("/src/lib/app-convex-client.ts")` — Vite dev returns the app's SAME module instance, so `mod.app_convex` is the live authenticated client and `mod.app_convex_api` the api. Run public queries/mutations directly (e.g. `list_files_pending_updates`, `ai_chat.thread_update` for cleanup) and inspect raw doc keys.
+2. `membershipId` (table `organizations_workspaces_users`) is recoverable from localStorage: keys shaped `app_state::...::scope::<id>`. Several tables use that suffix — loop the distinct ids and try each until the query's arg validation accepts one.
+3. Stale-deploy triage: `pnpx convex function-spec` from `packages/app` (read-only, no deploy) dumps the DEPLOYED functions as `{ url, functions: [{ args, identifier, ... }] }`. Compare a function's `args` validator against the repo source; a field present in source but missing in the spec proves the convex dev watcher has not deployed. Verify `url` matches `VITE_CONVEX_URL` in `packages/app/.env.local` first. Parse with `ConvertFrom-Json` on the whole object (entries list `args` BEFORE `identifier` — naive text search after the identifier reads the NEXT function's args).
+4. Chat tab DOM ids double as thread identity: draft tabs are `ai_thread-<localId>`, and after the first send the selected tab's id becomes the persisted `ai_chat_threads` doc id — usable directly as `threadId` in Convex calls.
 
 ## Visibility-gated features are untestable natively under Playwriter
 

@@ -47,7 +47,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	// Proposals target only the tenant app tree; the reserved mount scopes never back `app.fs`.
 	// Narrow the ctxData union up front for the workspace-only functions below, which declare strict ids.
-	const { organizationId, workspaceId, userId } = dbFilesRoots.app.fs.ctxData;
+	const { organizationId, workspaceId, userId, threadId } = dbFilesRoots.app.fs.ctxData;
 	if (organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)) {
 		throw should_never_happen("mv command created for a reserved mount scope", { organizationId, workspaceId });
 	}
@@ -413,6 +413,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						nodeId: replaceTargetNode._id,
 						unstagedMarkdown: sourceContent.content,
 						copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath, archivesSourceOnAccept: true },
+						threadId: threadId ?? undefined,
 					},
 				)) as upsert_file_pending_update_internal_action_Result;
 				if (upserted._nay) {
@@ -445,6 +446,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			destParentId,
 			destName,
 			replace: force || replaceTargetNode != null || sourceNode.kind === "folder",
+			threadId: threadId ?? undefined,
 		})) as upsert_file_pending_move_in_db_Result;
 		if (proposed._nay) {
 			const message = proposed._nay.message;

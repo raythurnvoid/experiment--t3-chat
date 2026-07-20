@@ -850,6 +850,7 @@ async function bash_fs_create(args: {
 			organizationName: args.organizationName,
 			workspaceName: args.workspaceName,
 			userId: args.userId,
+			threadId: args.threadId,
 		},
 		currentWorkspacePath,
 		allowDbFilesMkdir: args.allowDbFilesMkdir,
@@ -876,6 +877,8 @@ async function bash_fs_create(args: {
 					organizationName: "GLOBAL",
 					workspaceName: "GITHUB",
 					userId: args.userId,
+					// Read-only mount: never writes pending updates, so no thread to stamp.
+					threadId: null,
 				},
 				currentWorkspacePath: mountWorkspacePath,
 				allowDbFilesMkdir: false,
@@ -910,6 +913,8 @@ async function bash_fs_create(args: {
 					organizationName: "GLOBAL",
 					workspaceName: "PLUGINS",
 					userId: args.userId,
+					// Read-only mount: never writes pending updates, so no thread to stamp.
+					threadId: null,
 				},
 				currentWorkspacePath: pluginWorkspacePath,
 				allowDbFilesMkdir: false,
@@ -1880,6 +1885,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				organizationName: test_organization_name,
 				workspaceName: test_workspace_name,
 				userId: actingUserId,
+				threadId,
 			};
 
 			const run = async (command: string) => {
@@ -6191,6 +6197,21 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// The second ls (after the proposal) shows the new name and drops the old one.
 			expect(segments[1]).toContain("guide.md");
 			expect(segments[1]).not.toContain("tutorial.md");
+
+			// The proposal row records the chat thread that ran the mv.
+			const pendingRows = await runner.t.run(async (ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_organization_workspace_user_fileNode", (q) =>
+						q
+							.eq("organizationId", runner.ctxData.organizationId)
+							.eq("workspaceId", runner.ctxData.workspaceId)
+							.eq("userId", runner.ctxData.userId),
+					)
+					.collect(),
+			);
+			expect(pendingRows).toHaveLength(1);
+			expect(pendingRows[0]!.threadIds).toEqual([runner.threadId]);
 		});
 
 		test("keeps Ask mode mv and cp app rejections without creating proposals", async () => {

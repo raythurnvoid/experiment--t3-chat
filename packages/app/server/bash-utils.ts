@@ -256,6 +256,8 @@ export type bash_DbFilesFsOptions = {
 		organizationName: string;
 		workspaceName: string;
 		userId: Id<"users">;
+		/** Chat thread running this bash call; stamped on the pending updates mv/cp create. */
+		threadId: Id<"ai_chat_threads"> | null;
 	};
 	currentWorkspacePath: string;
 	allowDbFilesMkdir: boolean;

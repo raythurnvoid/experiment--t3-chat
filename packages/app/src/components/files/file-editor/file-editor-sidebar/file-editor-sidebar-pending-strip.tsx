@@ -15,15 +15,33 @@ import { cn } from "@/lib/utils.ts";
  */
 export const FILE_EDITOR_SIDEBAR_TAB_ID_PENDING = "app_file_editor_sidebar_tabs_pending" satisfies AppElementId;
 
-/** Count of the user's pending updates in the workspace; 0 while the query loads. */
-function useFilesPendingUpdatesCount() {
+/**
+ * Count of the user's pending updates in the workspace; 0 while the query loads.
+ * `threadId === undefined` keeps the workspace-wide count; any other value (including `null`,
+ * the "New chat" state) counts only the docs whose `threadIds` contributor set includes it, so
+ * a chat with no persisted thread matches nothing. An optimistic (not yet swapped) thread id
+ * also matches nothing — right after a new chat's first message the server may already have
+ * stamped writes with the persisted id; the strip catches up once the id swap lands reactively.
+ */
+function useFilesPendingUpdatesCount(threadId?: string | null) {
 	const { membershipId } = AppTenantProvider.useContext();
 	const pendingUpdates = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, { membershipId });
-	return pendingUpdates?.length ?? 0;
+	if (!pendingUpdates) {
+		return 0;
+	}
+	if (threadId === undefined) {
+		return pendingUpdates.length;
+	}
+	return pendingUpdates.filter((pendingUpdate) => pendingUpdate.threadIds?.some((id) => id === threadId)).length;
 }
 
-function files_pending_strip_label(count: number) {
-	return count === 1 ? "pending file change" : "pending file changes";
+/**
+ * The chat scope says "from this chat" because the count is files this chat TOUCHED — the diff
+ * behind each row is the combined pending state, which other chats may have contributed to.
+ */
+function files_pending_strip_label(count: number, scope: "workspace" | "chat") {
+	const noun = count === 1 ? "pending file change" : "pending file changes";
+	return scope === "chat" ? `${noun} from this chat` : noun;
 }
 
 // #region strip
@@ -37,13 +55,26 @@ export type FileEditorSidebarPendingStrip_ClassNames =
 	| "FileEditorSidebarPendingStrip-review"
 	| "FileEditorSidebarPendingStrip-review-chevron";
 
+export type FileEditorSidebarPendingStrip_Props = {
+	/**
+	 * Persisted id of the open chat thread, or `null` when the chat has no persisted thread yet
+	 * (the "New chat" tab) — both are chat scope, and `null` matches nothing. Omit the prop
+	 * entirely for the user's workspace-wide count.
+	 */
+	threadId?: string | null;
+};
+
 /**
  * One-line notification pinned above the chat composer while pending file changes exist.
  * The whole row is a single button: clicking switches the sidebar to the Pending changes tab.
  * Unmounted at count 0; never dismissable (it represents persistent review state).
  */
-export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPendingStrip() {
-	const count = useFilesPendingUpdatesCount();
+export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPendingStrip(
+	props: FileEditorSidebarPendingStrip_Props,
+) {
+	const { threadId } = props;
+	const labelScope = threadId === undefined ? "workspace" : "chat";
+	const count = useFilesPendingUpdatesCount(threadId);
 
 	// Keep the last non-zero count rendered for 150ms after count drops to 0 so the strip can
 	// play its disappear animation before unmounting (CSS alone cannot animate an unmount).
@@ -82,7 +113,7 @@ export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPend
 				role="status"
 				aria-live="polite"
 			>
-				{count > 0 ? `${count} ${files_pending_strip_label(count)}` : ""}
+				{count > 0 ? `${count} ${files_pending_strip_label(count, labelScope)}` : ""}
 			</span>
 			{displayCount > 0 ? (
 				<button
@@ -91,7 +122,7 @@ export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPend
 						"FileEditorSidebarPendingStrip" satisfies FileEditorSidebarPendingStrip_ClassNames,
 						isLeaving && ("FileEditorSidebarPendingStrip-leaving" satisfies FileEditorSidebarPendingStrip_ClassNames),
 					)}
-					aria-label={`${displayCount} ${files_pending_strip_label(displayCount)}, review`}
+					aria-label={`${displayCount} ${files_pending_strip_label(displayCount, labelScope)}, review`}
 					onClick={handleClick}
 				>
 					<FileDiff
@@ -106,7 +137,7 @@ export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPend
 					<span
 						className={cn("FileEditorSidebarPendingStrip-label" satisfies FileEditorSidebarPendingStrip_ClassNames)}
 					>
-						{files_pending_strip_label(displayCount)}
+						{files_pending_strip_label(displayCount, labelScope)}
 					</span>
 					<span
 						className={cn("FileEditorSidebarPendingStrip-review" satisfies FileEditorSidebarPendingStrip_ClassNames)}
@@ -152,10 +183,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 	describe("files_pending_strip_label", () => {
 		test("uses the singular label only for exactly one change", () => {
-			expect(files_pending_strip_label(1)).toBe("pending file change");
-			expect(files_pending_strip_label(0)).toBe("pending file changes");
-			expect(files_pending_strip_label(2)).toBe("pending file changes");
-			expect(files_pending_strip_label(5)).toBe("pending file changes");
+			expect(files_pending_strip_label(1, "workspace")).toBe("pending file change");
+			expect(files_pending_strip_label(0, "workspace")).toBe("pending file changes");
+			expect(files_pending_strip_label(2, "workspace")).toBe("pending file changes");
+			expect(files_pending_strip_label(5, "workspace")).toBe("pending file changes");
+		});
+
+		test("appends the chat qualifier in the chat scope", () => {
+			expect(files_pending_strip_label(1, "chat")).toBe("pending file change from this chat");
+			expect(files_pending_strip_label(3, "chat")).toBe("pending file changes from this chat");
 		});
 	});
 }

@@ -39,6 +39,7 @@ import { has_defined_property } from "../shared/shared-utils.ts";
 type server_ai_tools_test_user_identity = NonNullable<Awaited<ReturnType<ActionCtx["auth"]["getUserIdentity"]>>>;
 
 const server_ai_tools_test_user_id = test_mocks_hardcoded.user.user_1.id as Id<"users">;
+const server_ai_tools_test_thread_id = "thread_1" as Id<"ai_chat_threads">;
 
 const server_ai_tools_test_ctx_data = {
 	organizationId: test_mocks_hardcoded.organization_id.organization_1 as Id<"organizations">,
@@ -46,6 +47,7 @@ const server_ai_tools_test_ctx_data = {
 	organizationName: "personal",
 	workspaceName: "home",
 	userId: server_ai_tools_test_user_id,
+	getThreadId: () => server_ai_tools_test_thread_id,
 } as const;
 const server_ai_tools_test_db_files_mount = "/home/cloud-usr/w/personal/home";
 
@@ -114,7 +116,6 @@ describe("ai_chat_tool_create_bash", () => {
 			}),
 		});
 		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
-			getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
 			allowDbFilesMkdir: true,
 		});
 
@@ -144,7 +145,6 @@ describe("ai_chat_tool_create_bash", () => {
 	test("describes supported app ls flags and pagination limits", () => {
 		const { ctx } = makeCtx(async () => null);
 		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
-			getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
 			allowDbFilesMkdir: true,
 		});
 
@@ -333,7 +333,6 @@ describe("ai_chat_tool_create_bash", () => {
 	test("describes the reader read cap and find depth filters", () => {
 		const { ctx } = makeCtx(async () => null);
 		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
-			getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
 			allowDbFilesMkdir: true,
 		});
 
@@ -1225,6 +1224,7 @@ test("write_file tool stores pending unstaged branch updates from the agent", as
 		pendingUpdateId,
 		unstagedMarkdown: "# Updated",
 		eagerCreatedCommittedSequence: undefined,
+		threadId: server_ai_tools_test_thread_id,
 	});
 
 	expect(result.metadata.nodeId).toBe(nodeId);
@@ -1301,6 +1301,7 @@ test("write_file tool normalizes missing file paths before creating with the age
 		unstagedMarkdown: "# New",
 		eagerCreatedCommittedSequence: 7,
 		eagerCreatedAncestorIds: [],
+		threadId: server_ai_tools_test_thread_id,
 	});
 
 	expect(result.metadata.nodeId).toBe(nodeId);
@@ -1358,6 +1359,7 @@ test("write_file tool passes created folder ids to the pending upsert after the 
 		unstagedMarkdown: "# New",
 		eagerCreatedCommittedSequence: 7,
 		eagerCreatedAncestorIds: createdAncestorIds,
+		threadId: server_ai_tools_test_thread_id,
 	});
 	expect(result.metadata.exists).toBe(false);
 });
@@ -1536,6 +1538,7 @@ test("write_file tool reports an overwrite when the eager create races with anot
 		pendingUpdateId,
 		unstagedMarkdown: "# Updated\n",
 		eagerCreatedCommittedSequence: undefined,
+		threadId: server_ai_tools_test_thread_id,
 	});
 	// No created folder ids either: this tool created nothing on the raced path.
 	expect(pendingArgs.eagerCreatedAncestorIds).toBeUndefined();
@@ -1875,6 +1878,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		nodeId,
 		pendingUpdateId,
 		unstagedMarkdown: "Hello team",
+		threadId: server_ai_tools_test_thread_id,
 	});
 
 	expect(result.metadata.nodeId).toBe(nodeId);
@@ -2016,6 +2020,7 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 		nodeId,
 		pendingUpdateId,
 		unstagedMarkdown: "Hello team\n",
+		threadId: server_ai_tools_test_thread_id,
 	});
 
 	expect(result.metadata.matcher).toBe("simple");
@@ -2156,7 +2161,6 @@ function execute_code_test_make_tool() {
 		tool: ai_chat_tool_create_execute_code(
 			ctx,
 			server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_execute_code>[1],
-			{ getThreadId: () => "thread123" as Id<"ai_chat_threads"> },
 		),
 		runMutation,
 		runAction,
@@ -2231,7 +2235,7 @@ test("execute_code tool: posts to the runner and formats a succeeded result with
 				organizationId: test_mocks_hardcoded.organization_id.organization_1,
 				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 				userId: server_ai_tools_test_user_id,
-				threadId: "thread123",
+				threadId: server_ai_tools_test_thread_id,
 				principalKey: runnerBody.executionId,
 				tokenHash: expect.any(String),
 				scopes: ["files:list", "files:read"],

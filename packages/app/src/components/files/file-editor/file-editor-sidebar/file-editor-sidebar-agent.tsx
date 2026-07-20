@@ -804,7 +804,7 @@ const FileEditorSidebarAgentChatThread = memo(function FileEditorSidebarAgentCha
 			variant="sidebar"
 			controller={controller}
 			scrollableContainer={scrollableContainer}
-			composerTopSlot={<FileEditorSidebarPendingStrip />}
+			composerTopSlot={<FileEditorSidebarPendingStrip threadId={controller.selectedThreadId} />}
 		/>
 	);
 });

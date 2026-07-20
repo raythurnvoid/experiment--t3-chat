@@ -615,6 +615,26 @@ async function read_pending_update_last_sequence_saved_doc(args: {
 		.first();
 }
 
+async function seed_chat_thread(args: {
+	ctx: MutationCtx;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+	userId: Id<"users">;
+}) {
+	return await args.ctx.db.insert("ai_chat_threads", {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		clientGeneratedId: crypto.randomUUID(),
+		title: null,
+		archived: false,
+		runtime: "aisdk_5",
+		stateId: null,
+		createdBy: args.userId,
+		updatedBy: args.userId,
+		updatedAt: Date.now(),
+	});
+}
+
 async function upsert_file_pending_update_internal_for_test(args: {
 	t: ReturnType<typeof test_convex>;
 	organizationId: Id<"organizations">;
@@ -627,6 +647,7 @@ async function upsert_file_pending_update_internal_for_test(args: {
 	copiedFrom?: { nodeId: Id<"files_nodes">; path: string; archivesSourceOnAccept?: boolean };
 	eagerCreatedCommittedSequence?: number;
 	eagerCreatedAncestorIds?: Id<"files_nodes">[];
+	threadId?: Id<"ai_chat_threads">;
 }) {
 	return await args.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
 		organizationId: args.organizationId,
@@ -641,6 +662,7 @@ async function upsert_file_pending_update_internal_for_test(args: {
 			? { eagerCreatedCommittedSequence: args.eagerCreatedCommittedSequence }
 			: {}),
 		...(args.eagerCreatedAncestorIds !== undefined ? { eagerCreatedAncestorIds: args.eagerCreatedAncestorIds } : {}),
+		...(args.threadId ? { threadId: args.threadId } : {}),
 	});
 }
 
@@ -653,6 +675,7 @@ async function upsert_file_pending_move_for_test(args: {
 	destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 	destName: string;
 	replace?: boolean;
+	threadId?: Id<"ai_chat_threads">;
 }) {
 	return await args.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 		organizationId: args.organizationId,
@@ -662,6 +685,7 @@ async function upsert_file_pending_move_for_test(args: {
 		destParentId: args.destParentId,
 		destName: args.destName,
 		replace: args.replace,
+		...(args.threadId ? { threadId: args.threadId } : {}),
 	});
 }
 
@@ -2175,6 +2199,339 @@ describe("pending update provenance", () => {
 		expect(files_pending_update_has_yjs_content(sourceRow)).toBe(true);
 		const sourceRowMarkdownState = read_pending_row_markdown_state({ pendingUpdate: sourceRow });
 		expect(sourceRowMarkdownState.unstagedMarkdown).toContain("Mixed source change");
+	});
+
+	test("an agent content upsert stamps its thread and dedupes across writers", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/thread-ids-stamp.md",
+				name: "thread-ids-stamp.md",
+				markdown: "# Thread ids stamp base",
+			}),
+		);
+		const [threadA, threadB] = await t.run(async (ctx) =>
+			Promise.all([
+				seed_chat_thread({ ctx, ...seeded }),
+				seed_chat_thread({ ctx, ...seeded }),
+			]),
+		);
+
+		const firstWrite = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nFrom thread A`,
+			threadId: threadA,
+		});
+		if (firstWrite._nay) {
+			throw new Error(firstWrite._nay.message);
+		}
+		const rowAfterFirst = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		expect(rowAfterFirst?.threadIds).toEqual([threadA]);
+
+		const secondWriteSameThread = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nFrom thread A again`,
+			threadId: threadA,
+		});
+		if (secondWriteSameThread._nay) {
+			throw new Error(secondWriteSameThread._nay.message);
+		}
+		const rowAfterSameThread = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		expect(rowAfterSameThread?.threadIds).toEqual([threadA]);
+
+		const thirdWriteOtherThread = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nFrom thread B`,
+			threadId: threadB,
+		});
+		if (thirdWriteOtherThread._nay) {
+			throw new Error(thirdWriteOtherThread._nay.message);
+		}
+		const rowAfterOtherThread = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		expect(rowAfterOtherThread?.threadIds).toEqual([threadA, threadB]);
+	});
+
+	test("an identical re-write from another chat still appends its thread", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/thread-ids-identical.md",
+				name: "thread-ids-identical.md",
+				markdown: "# Thread ids identical base",
+			}),
+		);
+		const [threadA, threadB] = await t.run(async (ctx) =>
+			Promise.all([
+				seed_chat_thread({ ctx, ...seeded }),
+				seed_chat_thread({ ctx, ...seeded }),
+			]),
+		);
+
+		const changedMarkdown = `${seeded.baseMarkdown}\n\nSame bytes from both threads`;
+		for (const threadId of [threadA, threadB]) {
+			const written = await upsert_file_pending_update_internal_for_test({
+				t,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+				unstagedMarkdown: changedMarkdown,
+				threadId,
+			});
+			if (written._nay) {
+				throw new Error(written._nay.message);
+			}
+		}
+
+		const row = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		expect(row?.threadIds).toEqual([threadA, threadB]);
+	});
+
+	test("a client upsert preserves the recorded threads", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/thread-ids-client-preserve.md",
+				name: "thread-ids-client-preserve.md",
+				markdown: "# Thread ids client preserve base",
+			}),
+		);
+		const threadA = await t.run(async (ctx) => seed_chat_thread({ ctx, ...seeded }));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		const agentWrite = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nAgent write`,
+			threadId: threadA,
+		});
+		if (agentWrite._nay) {
+			throw new Error(agentWrite._nay.message);
+		}
+
+		const clientWrite = await asUser.action(api.ai_chat.upsert_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nClient edit on top`,
+		});
+		if (clientWrite._nay) {
+			throw new Error(clientWrite._nay.message);
+		}
+
+		const row = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		expect(row?.threadIds).toEqual([threadA]);
+	});
+
+	test("an agent move stamps a fresh row and appends on an existing content row", async () => {
+		const t = test_convex();
+
+		const moveOnly = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/thread-ids-move-only.md",
+				name: "thread-ids-move-only.md",
+				markdown: "# Thread ids move only",
+			}),
+		);
+		const contentThenMove = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/thread-ids-content-move.md",
+				name: "thread-ids-content-move.md",
+				markdown: "# Thread ids content move",
+				membership: {
+					userId: moveOnly.userId,
+					organizationId: moveOnly.organizationId,
+					workspaceId: moveOnly.workspaceId,
+					membershipId: moveOnly.membershipId,
+				},
+			}),
+		);
+		const [threadA, threadB] = await t.run(async (ctx) =>
+			Promise.all([
+				seed_chat_thread({ ctx, ...moveOnly }),
+				seed_chat_thread({ ctx, ...moveOnly }),
+			]),
+		);
+
+		const freshMove = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: moveOnly.organizationId,
+			workspaceId: moveOnly.workspaceId,
+			userId: moveOnly.userId,
+			nodeId: moveOnly.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "thread-ids-move-only-renamed.md",
+			threadId: threadA,
+		});
+		if (freshMove._nay) {
+			throw new Error(freshMove._nay.message);
+		}
+		const moveOnlyRow = await t.run((ctx) => read_pending_update_row({ ctx, ...moveOnly }));
+		expect(moveOnlyRow?.pendingMove).toBeDefined();
+		expect(moveOnlyRow?.threadIds).toEqual([threadA]);
+
+		const contentWrite = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: contentThenMove.organizationId,
+			workspaceId: contentThenMove.workspaceId,
+			userId: contentThenMove.userId,
+			nodeId: contentThenMove.nodeId,
+			unstagedMarkdown: `${contentThenMove.baseMarkdown}\n\nContent from thread A`,
+			threadId: threadA,
+		});
+		if (contentWrite._nay) {
+			throw new Error(contentWrite._nay.message);
+		}
+		const moveAfterContent = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: contentThenMove.organizationId,
+			workspaceId: contentThenMove.workspaceId,
+			userId: contentThenMove.userId,
+			nodeId: contentThenMove.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "thread-ids-content-move-renamed.md",
+			threadId: threadB,
+		});
+		if (moveAfterContent._nay) {
+			throw new Error(moveAfterContent._nay.message);
+		}
+		const contentMoveRow = await t.run((ctx) => read_pending_update_row({ ctx, ...contentThenMove }));
+		expect(contentMoveRow?.pendingMove).toBeDefined();
+		expect(contentMoveRow?.threadIds).toEqual([threadA, threadB]);
+	});
+
+	test("a structural discard keeps the recorded threads on the surviving content doc", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/thread-ids-discard-preserve.md",
+				name: "thread-ids-discard-preserve.md",
+				markdown: "# Thread ids discard preserve base",
+			}),
+		);
+		const [threadA, threadB] = await t.run(async (ctx) =>
+			Promise.all([
+				seed_chat_thread({ ctx, ...seeded }),
+				seed_chat_thread({ ctx, ...seeded }),
+			]),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		const contentWrite = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nContent from thread A`,
+			threadId: threadA,
+		});
+		if (contentWrite._nay) {
+			throw new Error(contentWrite._nay.message);
+		}
+		const moveWrite = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "thread-ids-discard-preserve-renamed.md",
+			threadId: threadB,
+		});
+		if (moveWrite._nay) {
+			throw new Error(moveWrite._nay.message);
+		}
+
+		// The client-driven structural discard drops the move but keeps the content doc alive —
+		// and with it the recorded contributor set.
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+
+		const row = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		expect(row?.pendingMove).toBeUndefined();
+		expect(files_pending_update_has_yjs_content(row!)).toBe(true);
+		expect(row?.threadIds).toEqual([threadA, threadB]);
+	});
+
+	test("an upsert without a thread leaves threadIds unset until an agent write lands", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/thread-ids-unset.md",
+				name: "thread-ids-unset.md",
+				markdown: "# Thread ids unset base",
+			}),
+		);
+		const threadA = await t.run(async (ctx) => seed_chat_thread({ ctx, ...seeded }));
+
+		const threadlessWrite = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nThreadless write`,
+		});
+		if (threadlessWrite._nay) {
+			throw new Error(threadlessWrite._nay.message);
+		}
+		const rowAfterThreadless = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		expect(rowAfterThreadless?.threadIds).toBeUndefined();
+
+		const agentWrite = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nAgent write after`,
+			threadId: threadA,
+		});
+		if (agentWrite._nay) {
+			throw new Error(agentWrite._nay.message);
+		}
+		const rowAfterAgent = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		expect(rowAfterAgent?.threadIds).toEqual([threadA]);
 	});
 });
 

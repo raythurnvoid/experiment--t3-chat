@@ -36,6 +36,7 @@ function create_db_files_roots(): bash_DbFilesRoots {
 		organizationName: "personal",
 		workspaceName: "home",
 		userId: "user_1" as Id<"users">,
+		threadId: "thread_1" as Id<"ai_chat_threads">,
 	};
 	const appFs = new bash_DbFilesFs({ ctx, ctxData, currentWorkspacePath, allowDbFilesMkdir: false });
 	const mountFs = new bash_DbFilesFs({
@@ -46,6 +47,7 @@ function create_db_files_roots(): bash_DbFilesRoots {
 			organizationName: "GLOBAL",
 			workspaceName: "GITHUB",
 			userId: ctxData.userId,
+			threadId: null,
 		},
 		currentWorkspacePath: `${bash_EXTERNAL_MOUNTS_ROOT}/${MOUNT_NAME}`,
 		allowDbFilesMkdir: false,
@@ -60,6 +62,7 @@ function create_db_files_roots(): bash_DbFilesRoots {
 			organizationName: "GLOBAL",
 			workspaceName: "PLUGINS",
 			userId: ctxData.userId,
+			threadId: null,
 		},
 		currentWorkspacePath: `${bash_PLUGINS_MOUNT_ROOT}/${PLUGIN_NAME}`,
 		allowDbFilesMkdir: false,

@@ -60,9 +60,9 @@ import {
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 
-/** The strip only reads the row count, so opaque placeholder rows are enough. */
-function makeRows(count: number) {
-	return Array.from({ length: count }, (_, index) => ({ _id: `pu_${index}` }));
+/** The strip only reads the row count and `threadIds`, so opaque placeholder rows are enough. */
+function makeRows(count: number, threadIds?: string[]) {
+	return Array.from({ length: count }, (_, index) => ({ _id: `pu_${index}`, threadIds }));
 }
 
 beforeEach(() => {
@@ -148,6 +148,52 @@ describe("FileEditorSidebarPendingStrip", () => {
 		render(<FileEditorSidebarPendingStrip />);
 
 		expect(screen.getByRole("status").textContent).toBe("2 pending file changes");
+	});
+
+	test("with a threadId, counts only the rows that chat touched and says so", () => {
+		queryStore.set([
+			...makeRows(1, ["thread_a", "thread_b"]),
+			...makeRows(1, ["thread_b"]),
+			...makeRows(1, undefined),
+		]);
+
+		const { container } = render(<FileEditorSidebarPendingStrip threadId="thread_a" />);
+
+		expect(screen.getByRole("button", { name: "1 pending file change from this chat, review" })).toBeTruthy();
+		expect(container.querySelector(".FileEditorSidebarPendingStrip-count")?.textContent).toBe("1");
+		expect(container.querySelector(".FileEditorSidebarPendingStrip-label")?.textContent).toBe(
+			"pending file change from this chat",
+		);
+		expect(screen.getByRole("status").textContent).toBe("1 pending file change from this chat");
+	});
+
+	test("with a threadId that touched nothing, renders no strip even when other rows exist", () => {
+		queryStore.set([...makeRows(2, ["thread_b"]), ...makeRows(1, undefined)]);
+
+		render(<FileEditorSidebarPendingStrip threadId="thread_a" />);
+
+		expect(screen.queryByRole("button")).toBeNull();
+		expect(screen.getByRole("status").textContent).toBe("");
+	});
+
+	test("with a null threadId (New chat state), renders no strip even when the workspace has rows", () => {
+		queryStore.set([...makeRows(2, ["thread_b"]), ...makeRows(1, undefined)]);
+
+		render(<FileEditorSidebarPendingStrip threadId={null} />);
+
+		expect(screen.queryByRole("button")).toBeNull();
+		expect(screen.getByRole("status").textContent).toBe("");
+	});
+
+	test("without a threadId, keeps the workspace-wide count over the same rows", () => {
+		queryStore.set([...makeRows(1, ["thread_a"]), ...makeRows(1, ["thread_b"]), ...makeRows(1, undefined)]);
+
+		const { container } = render(<FileEditorSidebarPendingStrip />);
+
+		expect(screen.getByRole("button", { name: "3 pending file changes, review" })).toBeTruthy();
+		expect(container.querySelector(".FileEditorSidebarPendingStrip-label")?.textContent).toBe(
+			"pending file changes",
+		);
 	});
 
 	test("keeps the strip mounted with the leaving class for 150ms after the count drops to 0", () => {

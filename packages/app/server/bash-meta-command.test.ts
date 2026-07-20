@@ -17,6 +17,7 @@ const ctxData = {
 	organizationName: "personal",
 	workspaceName: "home",
 	userId: "user_1" as Id<"users">,
+	threadId: "thread_1" as Id<"ai_chat_threads">,
 };
 
 function create_command_runner() {

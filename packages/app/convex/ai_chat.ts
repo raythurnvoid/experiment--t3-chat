@@ -229,19 +229,22 @@ function build_agent_configuration(input: {
 		getThreadId,
 	} = input;
 
+	// The tools that write pending updates (or grants) read the running chat's thread id from
+	// their ctxData; the lazy getter resolves after the http handler creates/loads the thread.
+	const toolCtxData = { ...ctxData, getThreadId };
+
 	const tools = {
-		bash: ai_chat_tool_create_bash(ctx, ctxData, {
-			getThreadId,
+		bash: ai_chat_tool_create_bash(ctx, toolCtxData, {
 			allowDbFilesMkdir: modeId === "agent",
 		}),
 		read_file: ai_chat_tool_create_read_file(ctx, ctxData),
 		list_files: ai_chat_tool_create_list_files(ctx, ctxData),
 		glob_files: ai_chat_tool_create_glob_files(ctx, ctxData),
 		grep_files: ai_chat_tool_create_grep_files(ctx, ctxData),
-		write_file: ai_chat_tool_create_write_file(ctx, ctxData),
-		edit_file: ai_chat_tool_create_edit_file(ctx, ctxData),
+		write_file: ai_chat_tool_create_write_file(ctx, toolCtxData),
+		edit_file: ai_chat_tool_create_edit_file(ctx, toolCtxData),
 		web_search: ai_chat_tool_create_web_search(),
-		execute_code: ai_chat_tool_create_execute_code(ctx, ctxData, { getThreadId }),
+		execute_code: ai_chat_tool_create_execute_code(ctx, toolCtxData),
 	};
 
 	const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);

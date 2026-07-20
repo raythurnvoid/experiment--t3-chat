@@ -40,6 +40,7 @@ Main table in `packages/app/convex/schema.ts`:
   - optional `pendingMove`
   - optional `copiedFrom`
   - optional `eagerCreated`
+  - optional `threadIds` (contributor set: the chat threads that touched this doc, deduped; agent writes append their thread id, client-driven writes leave the field out of their patches so it survives, and it dies with the doc; unset for client-only docs and rows older than the field)
   - `size` (UTF-8 byte size of current `unstaged` Markdown, or `0` for a structural-only doc)
   - `updatedAt`
 
@@ -243,8 +244,8 @@ Important behavior:
 
 `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx` owns:
 
-- the pending-changes strip above the Agent-tab chat composer (rendered through `AiChatThread`'s `composerTopSlot`): a one-line clickable row showing the user's workspace-wide pending count, hidden at 0, never dismissable
-- the amber count badge inside the "Pending changes" sidebar tab label, hidden at 0
+- the pending-changes strip above the Agent-tab chat composer (rendered through `AiChatThread`'s `composerTopSlot`): a one-line clickable row, hidden at 0, never dismissable. With a `threadId` prop (the agent panel passes the selected persisted thread id) it counts only the docs whose `threadIds` contributor set includes that chat and labels them "from this chat"; without the prop it shows the user's workspace-wide count
+- the amber count badge inside the "Pending changes" sidebar tab label, hidden at 0 (always the workspace-wide count)
 - both switch the sidebar to the Pending changes tab by writing `app_state::files_last_tab` (the strip on click; the badge is display-only)
 - the shared `FILE_EDITOR_SIDEBAR_TAB_ID_PENDING` constant (moved here so the sidebar tabs, the strip, and the agent panel import it without a cycle)
 

@@ -17,8 +17,8 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). E
 | Bash tool disclosure | `summary[aria-label^="Bash"]` (`aria-label="Bash: <cmd>"`, `aria-busy` while running) |
 | Bash terminal output | `[aria-label="Bash terminal output"]` (`role=textbox`) |
 | Failed send | `role=alert` containing `Message failed to send.` + a `Retry` button |
-| Pending-changes strip (above composer, only when pending count > 0) | `.FileEditorSidebarPendingStrip` (whole row is a button; clicking switches to the Pending changes tab) |
-| Pending-changes tab count badge | `.FileEditorSidebarPendingTabBadge` (inside `#app_file_editor_sidebar_tabs_pending`; absent at count 0) |
+| Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (whole row is a button; clicking switches to the Pending changes tab; counts only docs whose `threadIds` include the open chat, so a fresh chat shows no strip even when the workspace has pending changes) |
+| Pending-changes tab count badge | `.FileEditorSidebarPendingTabBadge` (inside `#app_file_editor_sidebar_tabs_pending`; absent at count 0; always the workspace-wide count) |
 
 ## Composer input (ProseMirror)
 
