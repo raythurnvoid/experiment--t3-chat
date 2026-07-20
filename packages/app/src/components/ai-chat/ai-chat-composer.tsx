@@ -74,7 +74,7 @@ export type AiChatComposer_ClassNames =
 	| "AiChatComposer-cancel-icon";
 
 /** Matches Windows (`\r\n`) and old Mac (`\r`) line endings. */
-const CR_LINE_ENDING_RE = /\r\n?/g;
+const CR_LINE_ENDING_REGEX = /\r\n?/g;
 
 /**
  * Serialize the editor content to plain text.
@@ -226,7 +226,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 				clipboardTextParser: (text, _$context, _plain, view) => {
 					const schema = view.state.schema;
 					const inline = [];
-					for (const [index, line] of text.replace(CR_LINE_ENDING_RE, "\n").split("\n").entries()) {
+					for (const [index, line] of text.replace(CR_LINE_ENDING_REGEX, "\n").split("\n").entries()) {
 						if (index > 0) {
 							inline.push(schema.nodes.hardBreak.create());
 						}

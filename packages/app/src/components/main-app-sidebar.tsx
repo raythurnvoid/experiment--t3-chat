@@ -406,7 +406,7 @@ const PLUGIN_PAGE_NAV_ICONS: Record<string, LucideIcon> = {
 } satisfies Record<(typeof plugins_PAGE_NAV_ICON_NAMES)[number], LucideIcon>;
 
 // Plugin pages have their own nav items, so they must not make the Plugins item active.
-const PLUGIN_PAGE_SUBPATH_RE = /\/pages\//;
+const PLUGIN_PAGE_SUBPATH_REGEX = /\/pages\//;
 
 export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar_Props) {
 	const { ref, id, className } = props;
@@ -494,7 +494,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						label="Plugins"
 						icon={Puzzle}
 						tooltip={mainAppSidebarCollapsed ? "Plugins" : undefined}
-						subpathExcludePattern={PLUGIN_PAGE_SUBPATH_RE}
+						subpathExcludePattern={PLUGIN_PAGE_SUBPATH_REGEX}
 					/>
 					{(pluginPages ?? []).flatMap((plugin) =>
 						plugin.pages.map((page) =>

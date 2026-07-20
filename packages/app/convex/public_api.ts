@@ -97,10 +97,10 @@ const TEXT_ENCODER = new TextEncoder();
 const CREDENTIAL_KEY_PREFIX = "pk_";
 const CREDENTIAL_KEY_ID_BYTES = 16;
 const CREDENTIAL_SECRET_BYTES = 32;
-const API_CREDENTIAL_TOKEN_RE = /^pk_[0-9a-f]{32}\.[0-9a-f]{64}$/u;
-const PUBLIC_API_GRANT_TOKEN_RE = /^[0-9a-f]{64}$/u;
-const PLUGIN_RUN_TOKEN_RE = /^plr_[0-9a-f]{64}$/u;
-const PLUGIN_UI_TOKEN_RE = /^plu_[0-9a-f]{64}$/u;
+const API_CREDENTIAL_TOKEN_REGEX = /^pk_[0-9a-f]{32}\.[0-9a-f]{64}$/u;
+const PUBLIC_API_GRANT_TOKEN_REGEX = /^[0-9a-f]{64}$/u;
+const PLUGIN_RUN_TOKEN_REGEX = /^plr_[0-9a-f]{64}$/u;
+const PLUGIN_UI_TOKEN_REGEX = /^plu_[0-9a-f]{64}$/u;
 const PUBLIC_API_GRANT_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_API_GRANT_CLEANUP_BATCH_SIZE = 100;
 // Stages only need to outlive one write action; anything older is a crashed write.
@@ -193,10 +193,10 @@ function get_bearer_token(request: Request) {
 function is_plausible_bearer_token(token: string) {
 	// Reject malformed bearer tokens before credential/grant/run lookup; well-formed tokens still require DB verification.
 	return (
-		API_CREDENTIAL_TOKEN_RE.test(token) ||
-		PUBLIC_API_GRANT_TOKEN_RE.test(token) ||
-		PLUGIN_RUN_TOKEN_RE.test(token) ||
-		PLUGIN_UI_TOKEN_RE.test(token)
+		API_CREDENTIAL_TOKEN_REGEX.test(token) ||
+		PUBLIC_API_GRANT_TOKEN_REGEX.test(token) ||
+		PLUGIN_RUN_TOKEN_REGEX.test(token) ||
+		PLUGIN_UI_TOKEN_REGEX.test(token)
 	);
 }
 
@@ -734,7 +734,7 @@ export const resolve_principal = internalQuery({
 		),
 	}),
 	handler: async (ctx, args) => {
-		if (PLUGIN_RUN_TOKEN_RE.test(args.presented)) {
+		if (PLUGIN_RUN_TOKEN_REGEX.test(args.presented)) {
 			const apiTokenHash = await crypto_sha256_hex(args.presented);
 			const pluginRun = await ctx.db
 				.query("plugins_event_runs")
@@ -805,7 +805,7 @@ export const resolve_principal = internalQuery({
 			});
 		}
 
-		if (PLUGIN_UI_TOKEN_RE.test(args.presented)) {
+		if (PLUGIN_UI_TOKEN_REGEX.test(args.presented)) {
 			const tokenHash = await crypto_sha256_hex(args.presented);
 			const session = await ctx.db
 				.query("plugins_ui_sessions")
