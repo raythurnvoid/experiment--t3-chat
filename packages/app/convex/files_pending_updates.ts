@@ -24,7 +24,7 @@ import {
 	files_nodes_db_hard_delete_node,
 	files_nodes_db_is_eager_node_safe_to_hard_delete,
 	files_nodes_db_remove_created_ancestor_folders_if_safe,
-	files_nodes_db_validate_pending_move_target,
+	files_nodes_db_validate_pending_move_target_for_proposal,
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
 import { billing_event } from "../server/billing.ts";
@@ -1163,14 +1163,14 @@ export const upsert_file_pending_move_in_db = internalMutation({
 
 		// Proposal-time validation runs against the proposer's visible tree: a sibling with a
 		// pending move away does not conflict, and two proposals cannot claim one visible path.
-		const validated = await files_nodes_db_validate_pending_move_target(ctx, {
+		const validated = await files_nodes_db_validate_pending_move_target_for_proposal(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			nodeId: args.nodeId,
 			destParentId: args.destParentId,
 			destName: args.destName,
 			replaceTarget: args.replace ? "any-active-occupant" : undefined,
-			overlayUserId: args.userId,
+			userId: args.userId,
 		});
 		if (validated._nay) {
 			return validated;

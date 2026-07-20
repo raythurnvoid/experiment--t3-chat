@@ -72,7 +72,6 @@ import {
 	type files_ContentType,
 	type files_SpecialFileName,
 	type files_InlineAiModelId,
-	type files_PendingPathOverlay,
 } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
@@ -2335,7 +2334,7 @@ async function db_folder_occupant_is_empty(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		folderId: Id<"files_nodes">;
-		userId: string | null;
+		userId: string;
 	},
 ) {
 	const activeChild = await ctx.db
@@ -2348,24 +2347,23 @@ async function db_folder_occupant_is_empty(
 	if (activeChild) {
 		return false;
 	}
-	if (args.userId != null) {
-		const pendingUpdates = await files_db_list_pending_updates_for_user(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-		});
-		if (pendingUpdates.some((pendingUpdate) => pendingUpdate.pendingMove?.destParentId === args.folderId)) {
-			return false;
-		}
+	const pendingUpdates = await files_db_list_pending_updates_for_user(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+	});
+	if (pendingUpdates.some((pendingUpdate) => pendingUpdate.pendingMove?.destParentId === args.folderId)) {
+		return false;
 	}
 	return true;
 }
 
 /**
- * Shared proposal-time + accept-time validation for a pending move: the node ids are
- * authoritative, so the same checks run when the proposal is created and when it is applied.
+ * Shared base validation for a pending move target: resolve the node and destination and run
+ * the checks both modes need. The node ids are authoritative, so the same resolution runs
+ * when the proposal is created and when it is applied.
  */
-export async function files_nodes_db_validate_pending_move_target(
+async function db_resolve_pending_move_target(
 	ctx: QueryCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -2373,26 +2371,6 @@ export async function files_nodes_db_validate_pending_move_target(
 		nodeId: Id<"files_nodes">;
 		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 		destName: string;
-		/**
-		 * Replace opt-in: file-onto-file, or folder-onto-EMPTY-folder (rename() semantics).
-		 * `"any-active-occupant"` (proposal-time `mv -f`/`mv -T`, and accept) accepts whichever
-		 * active node owns the destination; a node id requires the destination to still be
-		 * exactly that node.
-		 */
-		replaceTarget?: Id<"files_nodes"> | "any-active-occupant";
-		/**
-		 * Proposal-time only: validate against this user's visible tree. A committed sibling with
-		 * a pending move away does not conflict, and a destination already claimed by another
-		 * pending move is rejected. Accept-time callers leave this unset (committed tree).
-		 */
-		overlayUserId?: Id<"users">;
-		/**
-		 * Accept-time only: the accepting user's id. An occupant that vacates through this
-		 * user's own pending move is returned as `replacesNode` even when it is not
-		 * file-replaceable, so the caller can apply a swap cycle or ask to accept the
-		 * occupant's move first.
-		 */
-		acceptUserId?: string;
 	},
 ) {
 	const node = await ctx.db.get("files_nodes", args.nodeId);
@@ -2430,31 +2408,108 @@ export async function files_nodes_db_validate_pending_move_target(
 		return Result({ _nay: { message: "Cannot move a folder into itself" } });
 	}
 
-	let overlay: files_PendingPathOverlay | null = null;
-	if (args.overlayUserId != null) {
-		overlay = await files_db_build_pending_path_overlay(ctx, {
+	return Result({ _yay: { node, destParentPath, destPath } });
+}
+
+/**
+ * Replace rules shared by both modes: file-onto-file when requested, and folder-onto-EMPTY-folder
+ * (rename() semantics; a non-empty one errors "Directory not empty"). File-onto-folder and
+ * folder-onto-file never replace. Echoes the resolved target fields so callers can return the
+ * result directly.
+ */
+async function db_validate_occupant_replace(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		node: Doc<"files_nodes">;
+		destParentPath: string;
+		destPath: string;
+		occupant: Doc<"files_nodes">;
+		replaceTarget: Id<"files_nodes"> | "any-active-occupant" | undefined;
+		userId: string;
+	},
+) {
+	const { node, destParentPath, destPath, occupant } = args;
+	const replaceRequested =
+		args.replaceTarget != null && (args.replaceTarget === "any-active-occupant" || occupant._id === args.replaceTarget);
+	if (replaceRequested && node.kind === "file" && occupant.kind === "file") {
+		return Result({ _yay: { node, destParentPath, destPath, replacesNode: occupant } });
+	}
+	const folderReplaceRequested = replaceRequested && node.kind === "folder" && occupant.kind === "folder";
+	if (
+		folderReplaceRequested &&
+		(await db_folder_occupant_is_empty(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			userId: args.overlayUserId,
-		});
-		// Another pending move already claims this visible destination: reject instead of
-		// double-booking one path (this also covers moved-in occupants, which are never replaceable).
-		const visibleDestParentPath =
-			files_pending_path_overlay_project_committed_path(overlay, destParentPath) ?? destParentPath;
-		const visibleDestPath = path_join(visibleDestParentPath, args.destName);
-		const claimedByOtherMove = overlay.moves.some(
-			(move) => move.nodeId !== args.nodeId && move.visiblePath === visibleDestPath,
-		);
-		if (claimedByOtherMove) {
-			return Result({ _nay: { message: "Path already exists" } });
-		}
-		// The overlay can place the destination inside the folder's own visible subtree even
-		// when the committed paths look unrelated (a parent cycle across two pending moves).
-		if (node.kind === "folder") {
-			const visibleNodePath = files_pending_path_overlay_project_committed_path(overlay, node.path) ?? node.path;
-			if (visibleDestPath === visibleNodePath || visibleDestPath.startsWith(`${visibleNodePath}/`)) {
-				return Result({ _nay: { message: "Cannot move a folder into itself" } });
-			}
+			folderId: occupant._id,
+			userId: args.userId,
+		}))
+	) {
+		return Result({ _yay: { node, destParentPath, destPath, replacesNode: occupant } });
+	}
+	return Result({
+		_nay: { message: folderReplaceRequested ? "Directory not empty" : "Path already exists" },
+	});
+}
+
+/**
+ * Proposal-time validation for a pending move, against the proposer's visible tree: a committed
+ * sibling with a pending move away does not conflict, and a destination already claimed by
+ * another pending move is rejected.
+ */
+export async function files_nodes_db_validate_pending_move_target_for_proposal(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		destName: string;
+		/**
+		 * Replace opt-in: file-onto-file (`mv -f`), or folder-onto-EMPTY-folder (rename()
+		 * semantics). `"any-active-occupant"` accepts whichever active node owns the destination;
+		 * a node id requires the destination to still be exactly that node.
+		 */
+		replaceTarget?: Id<"files_nodes"> | "any-active-occupant";
+		/** The proposing user: their pending updates build the overlay. */
+		userId: string;
+	},
+) {
+	const resolved = await db_resolve_pending_move_target(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		nodeId: args.nodeId,
+		destParentId: args.destParentId,
+		destName: args.destName,
+	});
+	if (resolved._nay) {
+		return resolved;
+	}
+	const { node, destParentPath, destPath } = resolved._yay;
+
+	const overlay = await files_db_build_pending_path_overlay(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+	});
+	// Another pending move already claims this visible destination: reject instead of
+	// double-booking one path (this also covers moved-in occupants, which are never replaceable).
+	const visibleDestParentPath =
+		files_pending_path_overlay_project_committed_path(overlay, destParentPath) ?? destParentPath;
+	const visibleDestPath = path_join(visibleDestParentPath, args.destName);
+	const claimedByOtherMove = overlay.moves.some(
+		(move) => move.nodeId !== args.nodeId && move.visiblePath === visibleDestPath,
+	);
+	if (claimedByOtherMove) {
+		return Result({ _nay: { message: "Path already exists" } });
+	}
+	// The overlay can place the destination inside the folder's own visible subtree even
+	// when the committed paths look unrelated (a parent cycle across two pending moves).
+	if (node.kind === "folder") {
+		const visibleNodePath = files_pending_path_overlay_project_committed_path(overlay, node.path) ?? node.path;
+		if (visibleDestPath === visibleNodePath || visibleDestPath.startsWith(`${visibleNodePath}/`)) {
+			return Result({ _nay: { message: "Cannot move a folder into itself" } });
 		}
 	}
 
@@ -2475,46 +2530,18 @@ export async function files_nodes_db_validate_pending_move_target(
 		// the destination reads as free for them, and accept auto-replaces any replaceable
 		// newcomer occupant.
 		const siblingInvisible =
-			overlay != null &&
-			(overlay.hiddenNodeIds.has(activeSiblingConflict._id) ||
-				overlay.moves.some((move) => move.nodeId === activeSiblingConflict._id));
+			overlay.hiddenNodeIds.has(activeSiblingConflict._id) ||
+			overlay.moves.some((move) => move.nodeId === activeSiblingConflict._id);
 		if (!siblingInvisible) {
-			const replaceRequested =
-				args.replaceTarget != null &&
-				(args.replaceTarget === "any-active-occupant" || activeSiblingConflict._id === args.replaceTarget);
-			if (replaceRequested && node.kind === "file" && activeSiblingConflict.kind === "file") {
-				return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
-			}
-			// rename() semantics: a folder replaces an EMPTY folder; a non-empty one errors
-			// "Directory not empty" below. File-onto-folder and folder-onto-file never replace.
-			const folderReplaceRequested =
-				replaceRequested && node.kind === "folder" && activeSiblingConflict.kind === "folder";
-			if (
-				folderReplaceRequested &&
-				(await db_folder_occupant_is_empty(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					folderId: activeSiblingConflict._id,
-					userId: args.overlayUserId ?? args.acceptUserId ?? null,
-				}))
-			) {
-				return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
-			}
-			// A non-replaceable occupant that vacates through the accepting user's own pending
-			// move is still returned: the caller applies a swap cycle or asks to accept it first.
-			if (args.acceptUserId != null) {
-				const occupantPendingUpdate = await files_db_get_pending_update(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					userId: args.acceptUserId,
-					nodeId: activeSiblingConflict._id,
-				});
-				if (occupantPendingUpdate?.pendingMove) {
-					return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
-				}
-			}
-			return Result({
-				_nay: { message: folderReplaceRequested ? "Directory not empty" : "Path already exists" },
+			return await db_validate_occupant_replace(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				node,
+				destParentPath,
+				destPath,
+				occupant: activeSiblingConflict,
+				replaceTarget: args.replaceTarget,
+				userId: args.userId,
 			});
 		}
 	}
@@ -2522,7 +2549,82 @@ export async function files_nodes_db_validate_pending_move_target(
 	return Result({ _yay: { node, destParentPath, destPath, replacesNode: null } });
 }
 
-/** Patch one node to its destination and fan out the denormalized paths (chunk scope, descendants). */
+/**
+ * Accept-time validation for a pending move, against the committed tree. The pending move
+ * claims its destination, so any replaceable active occupant is auto-replaced like rename();
+ * a non-replaceable occupant that vacates through the accepting user's own pending move is
+ * still returned as `replacesNode`, so the caller can apply a swap cycle or ask to accept
+ * the occupant's move first.
+ */
+export async function files_nodes_db_validate_pending_move_target_for_accept(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		destName: string;
+		/** The accepting user: the occupant's vacating pending move must be theirs. */
+		userId: string;
+	},
+) {
+	const resolved = await db_resolve_pending_move_target(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		nodeId: args.nodeId,
+		destParentId: args.destParentId,
+		destName: args.destName,
+	});
+	if (resolved._nay) {
+		return resolved;
+	}
+	const { node, destParentPath, destPath } = resolved._yay;
+
+	// Check whether an active sibling already owns the destination name.
+	const activeSiblingConflict = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("parentId", args.destParentId)
+				.eq("name", args.destName)
+				.eq("archiveOperationId", undefined),
+		)
+		.first();
+	if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
+		const replaced = await db_validate_occupant_replace(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			node,
+			destParentPath,
+			destPath,
+			occupant: activeSiblingConflict,
+			replaceTarget: "any-active-occupant",
+			userId: args.userId,
+		});
+		if (replaced._nay) {
+			// A non-replaceable occupant that vacates through the accepting user's own pending
+			// move is still returned: the caller applies a swap cycle or asks to accept it first.
+			const occupantPendingUpdate = await files_db_get_pending_update(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				nodeId: activeSiblingConflict._id,
+			});
+			if (occupantPendingUpdate?.pendingMove) {
+				return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
+			}
+		}
+		return replaced;
+	}
+
+	return Result({ _yay: { node, destParentPath, destPath, replacesNode: null } });
+}
+
+/**
+ * Patch one node to its destination and fan out the denormalized paths (chunk scope, descendants).
+ **/
 async function db_apply_node_move(
 	ctx: MutationCtx,
 	args: {
@@ -2598,17 +2700,13 @@ export async function files_nodes_db_apply_pending_move(
 		});
 	}
 
-	// The pending move claims its destination: a file or EMPTY folder occupying it at accept
-	// time is auto-replaced like rename(). A non-empty folder occupant fails validation unless
-	// it vacates through this user's own pending move (swap cycles and chained accepts).
-	const validated = await files_nodes_db_validate_pending_move_target(ctx, {
+	const validated = await files_nodes_db_validate_pending_move_target_for_accept(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		nodeId: args.nodeId,
 		destParentId: args.destParentId,
 		destName: args.destName,
-		replaceTarget: "any-active-occupant",
-		acceptUserId: args.userId,
+		userId: args.userId,
 	});
 	if (validated._nay) {
 		return validated;
@@ -4629,18 +4727,18 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 				return null;
 			}
 
-			content = await files_nodes_reconstruct_latest_file_content_from_materialization_state({ state: materializationState }).then(
-				(reconstructed) => {
-					if (reconstructed._nay) {
-						throw convex_error({
-							message: "Failed to reconstruct latest file content",
-							cause: reconstructed._nay,
-						});
-					}
+			content = await files_nodes_reconstruct_latest_file_content_from_materialization_state({
+				state: materializationState,
+			}).then((reconstructed) => {
+				if (reconstructed._nay) {
+					throw convex_error({
+						message: "Failed to reconstruct latest file content",
+						cause: reconstructed._nay,
+					});
+				}
 
-					return reconstructed._yay.markdown;
-				},
-			);
+				return reconstructed._yay.markdown;
+			});
 		} else {
 			const asset = contentState.asset;
 			if (maxBytes !== undefined && asset && asset.size > maxBytes) {
