@@ -6,9 +6,14 @@ import type {
 	files_nodes_create_file_by_path_Result,
 	files_nodes_get_by_path_Result,
 	files_nodes_get_file_last_available_markdown_content_by_path_Result,
+	files_nodes_remove_eager_created_node_if_safe_Result,
 } from "../convex/files_nodes.ts";
 import type { upsert_file_pending_update_internal_action_Result } from "../convex/files_pending_updates.ts";
-import { files_SYNTHETIC_ROOT_FOLDER, files_get_normalized_node_path_segments } from "../shared/files.ts";
+import {
+	files_SYNTHETIC_ROOT_FOLDER,
+	files_get_normalized_node_path_segments,
+	files_pending_path_overlay_translate_path,
+} from "../shared/files.ts";
 import { organizations_is_global_organization_id, organizations_is_reserved_workspace_id } from "../shared/organizations.ts";
 import { path_name_of, should_never_happen } from "../shared/shared-utils.ts";
 import { path_join } from "./server-utils.ts";
@@ -95,10 +100,13 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
+				// Resolutions run through the calling user's pending path overlay: their earlier
+				// pending moves are already visible, so sources read through pending moves work.
 				const sourceNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 					organizationId,
 					workspaceId,
 					path: sourceDbFilesPath,
+					overlayUserId: userId,
 				})) as files_nodes_get_by_path_Result;
 				if (!sourceNode) {
 					return {
@@ -128,15 +136,26 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 								organizationId,
 								workspaceId,
 								path: rawDestDbFilesPath,
+								overlayUserId: userId,
 							})) as files_nodes_get_by_path_Result);
 				let destPath: string;
+				// Where create_file_by_path writes when nothing occupies the destination. It differs
+				// from destPath only for a moved destination folder: the committed join keeps the
+				// eager node under the moved folder, so it travels with it on accept.
+				let creationDestPath: string;
 				if (destNode && destNode.kind === "folder") {
-					// An existing folder destination keeps the source name inside it, like native cp.
-					destPath = path_join(destNode.path, sourceNode.name);
+					// An existing folder destination keeps the source's visible basename inside it,
+					// like native cp (a moved source's committed name may differ). Occupants and
+					// stdout use the REQUESTED visible join: a moved destination folder's committed
+					// path reads as vacated and would miss the visible occupant.
+					destPath = path_join(rawDestDbFilesPath, path_name_of(sourceDbFilesPath));
+					creationDestPath = path_join(destNode.path, path_name_of(sourceDbFilesPath));
 				} else if (destNode) {
 					// Existing file destination: like native cp, the copy replaces its content — as a
-					// pending proposal the user reviews before anything is committed.
-					destPath = destNode.path;
+					// pending proposal the user reviews before anything is committed. Keep the requested
+					// path for display: the overlay can present a moved node here (identical without one).
+					destPath = rawDestDbFilesPath;
+					creationDestPath = destPath;
 				} else {
 					// Missing parent folders are fine; create_file_by_path creates them below.
 					const normalizedDestSegments = files_get_normalized_node_path_segments({
@@ -153,6 +172,22 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						};
 					}
 					destPath = `/${normalizedDestSegments.normalizedPathSegments.join("/")}`;
+					// Implicit parent creation must not build committed folders under a visible file
+					// ancestor (committed, or a pending file move's claim); real cp fails with ENOTDIR.
+					const nearestAncestor = await dbFilesRoots.app.fs.getNearestVisibleAncestor(destPath);
+					if (nearestAncestor?.kind === "file") {
+						return {
+							stdout: "",
+							stderr: `cp: cannot create regular file '${destPath}': Not a directory\n`,
+							exitCode: bash_COMMAND_EXIT_FAILURE,
+						};
+					}
+					// A missing dest inside a moved folder's claimed area creates at the COMMITTED
+					// join (like write_file), so the eager node travels with the folder on accept.
+					// "hidden" keeps the requested path; the vacated guard below handles it.
+					const overlay = await dbFilesRoots.app.fs.getOverlay();
+					const translated = overlay == null ? null : files_pending_path_overlay_translate_path(overlay, destPath);
+					creationDestPath = translated?.kind === "redirected" ? translated.committedPath : destPath;
 				}
 				// Resolve the final (joined/normalized) path: an existing file there becomes the
 				// replace target instead of an eagerly-created node.
@@ -163,6 +198,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 								organizationId,
 								workspaceId,
 								path: destPath,
+								overlayUserId: userId,
 							})) as files_nodes_get_by_path_Result);
 				if (occupant && occupant._id === sourceNode._id) {
 					return {
@@ -187,6 +223,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						workspaceId,
 						userId,
 						path: sourceDbFilesPath,
+						overlayUserId: userId,
 					},
 				)) as files_nodes_get_file_last_available_markdown_content_by_path_Result;
 				if (!sourceContent) {
@@ -198,15 +235,40 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				}
 				let destNodeId: Id<"files_nodes">;
 				let replacesExisting: boolean;
+				let eagerCreatedCommittedSequence: number | undefined;
+				let createdAncestorIds: Id<"files_nodes">[] | undefined;
 				if (occupant) {
 					destNodeId = occupant._id;
 					replacesExisting = true;
 				} else {
+					// The overlay can present this path as free while a committed node is still there
+					// mid-move (vacated source or replaced path). Creating here would reuse that
+					// committed node and silently turn the copy into a content replacement on it. A fresh
+					// name under a moved folder also translates hidden but has no committed occupant
+					// there, so it may proceed.
+					const overlay = await dbFilesRoots.app.fs.getOverlay();
+					if (
+						overlay != null &&
+						files_pending_path_overlay_translate_path(overlay, creationDestPath).kind === "hidden"
+					) {
+						const committedOccupant = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+							organizationId,
+							workspaceId,
+							path: creationDestPath,
+						})) as files_nodes_get_by_path_Result;
+						if (committedOccupant) {
+							return {
+								stdout: "",
+								stderr: `cp: cannot create '${creationDestPath}': the path is vacated by your pending move. Accept or discard that proposal first, or choose a different destination path.\n`,
+								exitCode: bash_COMMAND_EXIT_FAILURE,
+							};
+						}
+					}
 					const created = (await ctx.runAction(internal.files_nodes.create_file_by_path, {
 						organizationId,
 						workspaceId,
 						userId,
-						path: destPath,
+						path: creationDestPath,
 					})) as files_nodes_create_file_by_path_Result;
 					if (created._nay) {
 						return {
@@ -216,29 +278,79 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						};
 					}
 					destNodeId = created._yay.nodeId;
-					// A raced creation reuses the pre-existing node: degrade to a replace proposal so
-					// discard/expiry can never hard-delete a node this command did not create.
+					// A raced creation reuses the pre-existing node: degrade to a content replacement so
+					// discard/expiry can never hard-delete a node this command did not create. The
+					// stamp is the creation-time sequence captured by create_file_by_path, so a save
+					// landing before the upsert below keeps the node safe from hard deletes.
 					replacesExisting = !created._yay.created;
+					if (created._yay.created) {
+						eagerCreatedCommittedSequence = created._yay.createdCommittedSequence;
+						createdAncestorIds = created._yay.createdAncestorIds;
+					}
 				}
-				const upserted = (await ctx.runAction(
-					internal.files_pending_updates.upsert_file_pending_update_internal_action,
-					{
-						organizationId,
-						workspaceId,
-						userId,
-						nodeId: destNodeId,
-						unstagedMarkdown: sourceContent.content,
-						copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath },
-						eagerCreated: !replacesExisting,
-					},
-				)) as upsert_file_pending_update_internal_action_Result;
-				if (upserted._nay) {
+				// A failed upsert after the eager create would leave the just-created empty node behind.
+				// Best-effort compensation: remove it while it is still provably untouched; a
+				// cleanup failure must never mask the original upsert error.
+				const eager_created_failure_note = async () => {
+					if (eagerCreatedCommittedSequence === undefined) {
+						return "";
+					}
+					try {
+						const removal = (await ctx.runMutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+							organizationId,
+							workspaceId,
+							userId,
+							nodeId: destNodeId,
+							eagerCreatedCommittedSequence,
+							createdAncestorIds,
+						})) as files_nodes_remove_eager_created_node_if_safe_Result;
+						if (removal._yay?.removed) {
+							return removal._yay.ancestorsLeft > 0
+								? ` — empty folders created for '${destPath}' were left behind; remove them in Files if they are not wanted`
+								: ` — nothing was created at '${destPath}'`;
+						}
+					} catch (cleanupError) {
+						console.error("cp failed to remove the eagerly created node after a failed upsert", cleanupError);
+					}
+					return ` — an empty file was left behind at '${destPath}'; remove it in Files if it is not wanted`;
+				};
+				let upserted: upsert_file_pending_update_internal_action_Result;
+				try {
+					upserted = (await ctx.runAction(
+						internal.files_pending_updates.upsert_file_pending_update_internal_action,
+						{
+							organizationId,
+							workspaceId,
+							userId,
+							nodeId: destNodeId,
+							unstagedMarkdown: sourceContent.content,
+							copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath },
+							eagerCreatedCommittedSequence,
+							// Recorded on the pending update doc so Discard/TTL expiry can also remove the
+							// parent folders this cp eagerly created.
+							eagerCreatedAncestorIds: createdAncestorIds,
+						},
+					)) as upsert_file_pending_update_internal_action_Result;
+				} catch (error) {
+					if (eagerCreatedCommittedSequence === undefined) {
+						throw error;
+					}
+					const message = error instanceof Error ? error.message : String(error);
 					return {
 						stdout: "",
-						stderr: `cp: cannot copy '${operands[0]}': ${upserted._nay.message}\n`,
+						stderr: `cp: cannot copy '${operands[0]}': ${message}${await eager_created_failure_note()}\n`,
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
+				if (upserted._nay) {
+					return {
+						stdout: "",
+						stderr: `cp: cannot copy '${operands[0]}': ${upserted._nay.message}${await eager_created_failure_note()}\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
+				// Later commands chained in this same bash call must see the new proposal.
+				dbFilesRoots.app.fs.resetProposalCaches();
 				return {
 					stdout: replacesExisting
 						? `pending copy created: ${sourceDbFilesPath} -> ${destPath} — replaces the existing file's content when accepted; review in Files\n`

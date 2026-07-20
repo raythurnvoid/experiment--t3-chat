@@ -23,11 +23,24 @@ import type {
 	files_nodes_get_by_path_Result,
 	files_nodes_get_file_last_available_markdown_content_by_path_Result,
 	files_nodes_read_file_content_from_chunks_Result,
+	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
-import type { files_pending_updates_get_by_file_node_Result } from "../convex/files_pending_updates.ts";
+import type {
+	files_pending_updates_get_by_file_node_Result,
+	files_pending_updates_get_pending_path_overlay_data_Result,
+} from "../convex/files_pending_updates.ts";
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, files_node_has_editable_yjs_state } from "../shared/files.ts";
+import {
+	files_ROOT_ID,
+	files_SYNTHETIC_ROOT_FOLDER,
+	files_node_has_editable_yjs_state,
+	files_pending_path_overlay_build,
+	files_pending_path_overlay_project_committed_path,
+	files_pending_path_overlay_translate_path,
+	files_pending_update_has_yjs_content,
+	type files_PendingPathOverlay,
+} from "../shared/files.ts";
 import { LruCache, math_clamp, path_name_of, should_never_happen } from "../shared/shared-utils.ts";
 import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { pagination_fan_out_paginate } from "../shared/pagination.ts";
@@ -333,9 +346,18 @@ export class bash_DbFilesFs implements IFileSystem {
 	readonly readOnlySource: bash_DbFilesFsOptions["readOnlySource"];
 	/** Stored path of this mount's root (`"/"`, or the prefix itself for prefixed mounts). */
 	readonly dbFilesRootPath: string;
+	/**
+	 * Tenant app tree only: resolve lookups through this user's pending path overlay, so the
+	 * proposer's later reads see their pending moves applied. Mounted sources never have
+	 * pending proposals, so they stay on the committed lookup.
+	 */
+	readonly overlayUserId: Id<"users"> | undefined;
 	pathIndexTruncated = false;
 	private entryCache = new Map<string, DbFilesCacheEntry>();
 	private contentCache = new Map<string, string>();
+	private overlayPromise: Promise<files_PendingPathOverlay> | null = null;
+	/** Command-owned per-run caches (cat's content cache) cleared together with resetProposalCaches. */
+	private linkedProposalCaches: Array<Map<string, string>> = [];
 
 	constructor(options: bash_DbFilesFsOptions) {
 		this.ctx = options.ctx;
@@ -343,11 +365,16 @@ export class bash_DbFilesFs implements IFileSystem {
 		this.currentWorkspacePath = options.currentWorkspacePath;
 		this.allowDbFilesMkdir = options.allowDbFilesMkdir;
 		this.readOnlySource = options.readOnlySource;
+		this.overlayUserId = options.readOnlySource == null ? options.ctxData.userId : undefined;
 		this.dbFilesPathPrefix = options.dbFilesPathPrefix == null ? "" : bash_normalize_path(options.dbFilesPathPrefix);
 		this.dbFilesRootPath = this.dbFilesPathPrefix === "" || this.dbFilesPathPrefix === "/" ? "/" : this.dbFilesPathPrefix;
-		// A prefixed mount root (`/<prefix>`) is a real files_nodes folder, not the scope's
-		// synthetic "/" root: keep the seeded entry id-less so callers resolve the real node id
-		// instead of inheriting files_ROOT_ID and listing the reserved scope root's children.
+		this.seedRootEntry();
+	}
+
+	// A prefixed mount root (`/<prefix>`) is a real files_nodes folder, not the scope's
+	// synthetic "/" root: keep the seeded entry id-less so callers resolve the real node id
+	// instead of inheriting files_ROOT_ID and listing the reserved scope root's children.
+	private seedRootEntry() {
 		this.rememberEntry(
 			this.dbFilesRootPath === "/"
 				? files_SYNTHETIC_ROOT_FOLDER
@@ -422,6 +449,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			workspaceId: this.ctxData.workspaceId,
 			userId: this.ctxData.userId,
 			path: dbFilesPath,
+			overlayUserId: this.overlayUserId,
 			mode: {
 				kind: "full",
 				maxBytes: bash_READ_INLINE_MAX_BYTES,
@@ -441,6 +469,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				workspaceId: this.ctxData.workspaceId,
 				userId: this.ctxData.userId,
 				path: dbFilesPath,
+				overlayUserId: this.overlayUserId,
 			},
 		) as Promise<files_nodes_get_file_last_available_markdown_content_by_path_Result>;
 		const dbFilePromise: Promise<files_nodes_get_by_path_Result> =
@@ -450,11 +479,17 @@ export class bash_DbFilesFs implements IFileSystem {
 						organizationId: this.ctxData.organizationId,
 						workspaceId: this.ctxData.workspaceId,
 						path: dbFilesPath,
+						overlayUserId: this.overlayUserId,
 					}) as Promise<files_nodes_get_by_path_Result>);
 		const [fileContent, dbFilesDoc] = await Promise.all([fileContentPromise, dbFilePromise]);
 
 		if (!fileContent) {
-			const cacheEntry = dbFilesPath === "/" ? files_SYNTHETIC_ROOT_FOLDER : dbFilesDoc;
+			// The overlay can present a moved node here: cache it under the requested path,
+			// never the node's committed path.
+			const cacheEntry =
+				dbFilesPath === "/"
+					? files_SYNTHETIC_ROOT_FOLDER
+					: dbFilesDoc && { ...dbFilesDoc, path: dbFilesPath, name: path_name_of(dbFilesPath) };
 			if (cacheEntry?.kind === "file") {
 				this.rememberEntry(cacheEntry);
 				throw new bash_DbFilesContentUnavailableError({
@@ -471,7 +506,8 @@ export class bash_DbFilesFs implements IFileSystem {
 
 		this.contentCache.set(dbFilesPath, fileContent.content);
 		if (dbFilesDoc?.kind === "file") {
-			this.rememberEntry(dbFilesDoc);
+			// Same requested-path caching as above: the doc may live at a different committed path.
+			this.rememberEntry({ ...dbFilesDoc, path: dbFilesPath, name: path_name_of(dbFilesPath) });
 		} else {
 			this.rememberEntry({
 				_id: fileContent.nodeId,
@@ -548,6 +584,27 @@ export class bash_DbFilesFs implements IFileSystem {
 			if (!parent || parent.kind !== "folder") {
 				throw new Error(`ENOENT: no such file or directory, mkdir '${this.shellPathOf(dbFilesPath)}'`);
 			}
+		} else {
+			// -p creates missing parents: reject when the nearest existing visible ancestor is
+			// a file (committed, or a pending move's claim), like a real filesystem's ENOTDIR.
+			const nearestAncestor = await this.getNearestVisibleAncestor(dbFilesPath);
+			if (nearestAncestor?.kind === "file") {
+				throw new Error("Not a directory");
+			}
+		}
+
+		// A path under a moved folder's visible destination creates at the COMMITTED join,
+		// so the new folder travels with the folder on accept. A vacated committed path has
+		// no visible parent, so mkdir there fails like any other missing parent (for -p,
+		// which skips the parent check, the ancestor-kind guard above enforces the folder
+		// kind and the hidden case below still rejects vacated paths).
+		let creationPath = dbFilesPath;
+		const overlay = await this.getOverlay();
+		const translated = overlay == null ? null : files_pending_path_overlay_translate_path(overlay, dbFilesPath);
+		if (translated?.kind === "redirected") {
+			creationPath = translated.committedPath;
+		} else if (translated?.kind === "hidden") {
+			throw new Error(`ENOENT: no such file or directory, mkdir '${this.shellPathOf(dbFilesPath)}'`);
 		}
 
 		// mkdir only runs for the tenant app db-files root: the external mount and plugin
@@ -561,7 +618,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			organizationId,
 			workspaceId,
 			userId,
-			path: dbFilesPath,
+			path: creationPath,
 		})) as files_nodes_create_folder_node_by_path_Result;
 		if (created._nay) {
 			throw new Error(created._nay.message);
@@ -648,6 +705,61 @@ export class bash_DbFilesFs implements IFileSystem {
 		throw this.readOnlyFileSystemError(path);
 	}
 
+	/**
+	 * The user's pending path overlay for multi-result listings, fetched at most once per
+	 * command run (the query result itself is also cached by Convex per (function, args)).
+	 *
+	 * Returns null for mounted sources and when the overlay changes nothing, so listing
+	 * code can keep the committed fast path byte-identical to today.
+	 */
+	async getOverlay(): Promise<files_PendingPathOverlay | null> {
+		const overlayUserId = this.overlayUserId;
+		if (overlayUserId == null) {
+			return null;
+		}
+		// An overlay user only exists on the tenant app scope, so the reserved mount
+		// scopes cannot reach this point. Narrow the ctxData union for the query args.
+		const { organizationId, workspaceId } = this.ctxData;
+		if (organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)) {
+			throw should_never_happen("pending path overlay reached the reserved mount scope", { organizationId, workspaceId });
+		}
+		this.overlayPromise ??= (async (/* iife */) => {
+			const overlayData = (await this.ctx.runQuery(internal.files_pending_updates.get_pending_path_overlay_data, {
+				organizationId,
+				workspaceId,
+				userId: overlayUserId,
+			})) as files_pending_updates_get_pending_path_overlay_data_Result;
+			return files_pending_path_overlay_build({
+				pendingUpdates: overlayData.pendingUpdates,
+				nodesById: new Map(overlayData.referencedNodes.map((node) => [node._id, node])),
+			});
+		})();
+		const overlay = await this.overlayPromise;
+		return overlay.moves.length === 0 && overlay.hiddenCommittedPaths.size === 0 ? null : overlay;
+	}
+
+	/**
+	 * Drop the memoized overlay and the per-run entry/content caches after a command
+	 * changes the user's proposal set, so later commands chained in the same bash
+	 * call see the new visible tree instead of the view cached before the proposal.
+	 */
+	resetProposalCaches() {
+		this.overlayPromise = null;
+		this.entryCache.clear();
+		this.contentCache.clear();
+		for (const cache of this.linkedProposalCaches) {
+			cache.clear();
+		}
+		this.seedRootEntry();
+	}
+
+	/**
+	 * Link a command-owned cache so resetProposalCaches clears it too.
+	 */
+	linkProposalCache(cache: Map<string, string>) {
+		this.linkedProposalCaches.push(cache);
+	}
+
 	rememberEntry(cacheEntry: DbFilesCacheEntry) {
 		const normalizedPath = bash_normalize_path(cacheEntry.path);
 		const segments = normalizedPath.split("/").filter(Boolean);
@@ -682,16 +794,19 @@ export class bash_DbFilesFs implements IFileSystem {
 			organizationId: this.ctxData.organizationId,
 			workspaceId: this.ctxData.workspaceId,
 			path: normalizedPath,
+			overlayUserId: this.overlayUserId,
 		})) as files_nodes_get_by_path_Result;
 
 		if (!dbFilesDoc) {
 			return null;
 		}
 
+		// The overlay can present a moved node here: cache it under the requested path,
+		// never the node's committed path (identical without an overlay).
 		const cacheEntry = {
 			_id: dbFilesDoc._id,
-			path: dbFilesDoc.path,
-			name: dbFilesDoc.name,
+			path: normalizedPath,
+			name: path_name_of(normalizedPath),
 			kind: dbFilesDoc.kind,
 			updatedAt: dbFilesDoc.updatedAt,
 			updatedBy: dbFilesDoc.updatedBy,
@@ -699,6 +814,23 @@ export class bash_DbFilesFs implements IFileSystem {
 		} satisfies DbFilesCacheEntry;
 		this.rememberEntry(cacheEntry);
 		return cacheEntry;
+	}
+
+	/**
+	 * Nearest existing visible entry strictly above a stored path (the mount root, always
+	 * a folder, is excluded and reads as null). Recursive creators (mkdir -p, cp/write_file
+	 * implicit parents) reject a file result before building committed folders under it.
+	 */
+	async getNearestVisibleAncestor(path: string) {
+		let ancestorPath = bash_normalize_path(`${bash_normalize_path(path)}/..`);
+		while (ancestorPath !== "/" && ancestorPath !== this.dbFilesRootPath) {
+			const entry = await this.getEntry(ancestorPath);
+			if (entry) {
+				return entry;
+			}
+			ancestorPath = bash_normalize_path(`${ancestorPath}/..`);
+		}
+		return null;
 	}
 }
 
@@ -1567,6 +1699,148 @@ export function bash_external_mounts_fan_out_db_files_path(mount: bash_ExternalS
 }
 
 // #endregion shared command helpers
+// #region pending path overlay listings
+
+const OVERLAY_PATH_WORD_SPLIT_REGEX = /[^a-z0-9]+/u;
+
+/**
+ * Return the committed folder path a visible folder scope reads from.
+ *
+ * A folder that is a pending-move destination redirects to the moved source folder;
+ * any other folder keeps its own path.
+ */
+export function bash_overlay_committed_scope_path(overlay: files_PendingPathOverlay, visibleFolderPath: string) {
+	const translated = files_pending_path_overlay_translate_path(overlay, visibleFolderPath);
+	return translated.kind === "redirected" ? translated.committedPath : visibleFolderPath;
+}
+
+/**
+ * Check whether a visible path is `visibleScopePath` itself or inside it.
+ */
+export function bash_overlay_path_in_scope(visibleScopePath: string, visiblePath: string) {
+	return visibleScopePath === "/" || bash_is_path_under(visibleScopePath, visiblePath);
+}
+
+/**
+ * Map one committed listing or search hit path to the path the proposing user sees.
+ *
+ * Returns null when the node is hidden from the visible tree or its visible path
+ * leaves the listed scope (moved elsewhere). `visibleScopePath` null means the whole
+ * workspace (no scope filter).
+ */
+export function bash_overlay_project_scoped_path(args: {
+	overlay: files_PendingPathOverlay;
+	committedPath: string;
+	visibleScopePath: string | null;
+}) {
+	const visiblePath = files_pending_path_overlay_project_committed_path(args.overlay, args.committedPath);
+	if (visiblePath == null) {
+		return null;
+	}
+	if (args.visibleScopePath != null && !bash_overlay_path_in_scope(args.visibleScopePath, visiblePath)) {
+		return null;
+	}
+	return visiblePath;
+}
+
+/**
+ * List the moves a recursive listing of `visibleScopePath` must add as extra entries.
+ *
+ * Walking the committed scope already surfaces moves whose committed source is inside
+ * it (projection maps them to their visible paths), so only moves coming in from outside inject.
+ */
+export function bash_overlay_subtree_injections(
+	overlay: files_PendingPathOverlay,
+	args: { visibleScopePath: string; committedScopePath: string },
+) {
+	return overlay.moves.filter(
+		(move) =>
+			move.visiblePath !== args.visibleScopePath &&
+			bash_overlay_path_in_scope(args.visibleScopePath, move.visiblePath) &&
+			!bash_overlay_path_in_scope(args.committedScopePath, move.committedPath),
+	);
+}
+
+/**
+ * Extra content-search hits for moves whose committed chunks sit outside the
+ * scoped committed prefix (an ancestor scope of the visible destination).
+ *
+ * One first-page query runs per such move. The chunk scope bound excludes the
+ * prefix path itself, so a moved file searches its committed parent folder and
+ * keeps only its own chunks. Returned items already carry visible paths.
+ */
+export async function bash_overlay_content_search_injections(args: {
+	ctx: ActionCtx;
+	ctxData: bash_DbFilesFsOptions["ctxData"];
+	overlay: files_PendingPathOverlay;
+	visibleScopePath: string;
+	committedScopePath: string;
+	query: string;
+	numItems: number;
+}): Promise<files_nodes_text_search_files_Result["items"]> {
+	const injectedItems: files_nodes_text_search_files_Result["items"] = [];
+	const seenChunkKeys = new Set<string>();
+	for (const move of bash_overlay_subtree_injections(args.overlay, {
+		visibleScopePath: args.visibleScopePath,
+		committedScopePath: args.committedScopePath,
+	})) {
+		const committedQueryPrefix =
+			move.kind === "folder"
+				? move.committedPath
+				: move.committedPath.slice(0, move.committedPath.lastIndexOf("/")) || "/";
+		const res = (await args.ctx.runQuery(internal.files_nodes.text_search_files, {
+			organizationId: args.ctxData.organizationId,
+			workspaceId: args.ctxData.workspaceId,
+			userId: args.ctxData.userId,
+			query: args.query,
+			numItems: args.numItems,
+			cursor: null,
+			pathPrefix: committedQueryPrefix,
+		})) as files_nodes_text_search_files_Result;
+		for (const item of res.items) {
+			// The parent-folder scan for a moved file also returns sibling chunks; skip them.
+			if (move.kind === "file" && item.path !== move.committedPath) {
+				continue;
+			}
+			const visiblePath = bash_overlay_project_scoped_path({
+				overlay: args.overlay,
+				committedPath: item.path,
+				visibleScopePath: args.visibleScopePath,
+			});
+			if (visiblePath == null) {
+				continue;
+			}
+			// Nested moves can surface the same chunk from two scans; keep the first.
+			const chunkKey = `${visiblePath}#${item.chunkIndex}`;
+			if (seenChunkKeys.has(chunkKey)) {
+				continue;
+			}
+			seenChunkKeys.add(chunkKey);
+			injectedItems.push({ ...item, path: visiblePath });
+		}
+	}
+	return injectedItems;
+}
+
+/**
+ * Client-side stand-in for the indexed path word search, used to match a query
+ * against overlay-visible paths. Words split on non-alphanumeric characters,
+ * matching is case-insensitive, and the final query word prefix-matches.
+ */
+export function bash_overlay_path_query_matches(pathQuery: string, visiblePath: string) {
+	const pathWords = visiblePath.toLowerCase().split(OVERLAY_PATH_WORD_SPLIT_REGEX).filter(Boolean);
+	const queryWords = pathQuery.toLowerCase().split(OVERLAY_PATH_WORD_SPLIT_REGEX).filter(Boolean);
+	return (
+		queryWords.length > 0 &&
+		queryWords.every((queryWord, index) =>
+			index === queryWords.length - 1
+				? pathWords.some((pathWord) => pathWord.startsWith(queryWord))
+				: pathWords.includes(queryWord),
+		)
+	);
+}
+
+// #endregion pending path overlay listings
 // #region reader helpers
 
 /**
@@ -1637,7 +1911,8 @@ export async function bash_get_db_file_byte_size(args: {
 			userId: args.ctxData.userId,
 			fileNodeId: args.dbFilesDoc._id,
 		})) as files_pending_updates_get_by_file_node_Result;
-		if (pendingUpdate) {
+		// A move-only pending update doc stores size 0; only a content-bearing doc may shadow the committed asset size.
+		if (files_pending_update_has_yjs_content(pendingUpdate)) {
 			return pendingUpdate.size;
 		}
 	}

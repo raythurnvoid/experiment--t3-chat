@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { toast } from "sonner";
 
 import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
 
@@ -136,6 +137,7 @@ function makeNode(args: { id: string; path: string; kind?: "file" | "folder" }):
 		_id: args.id,
 		_creationTime: 0,
 		path: args.path,
+		name: args.path.split("/").pop() ?? args.path,
 		kind: args.kind ?? "file",
 	} as unknown as app_convex_Doc<"files_nodes">;
 }
@@ -158,6 +160,7 @@ beforeEach(() => {
 	truncatePathForWidthMock.mockImplementation((args: { path: string }) => args.path);
 	useQueryMock.mockReset();
 	useStableQueryMock.mockReset();
+	vi.mocked(toast.error).mockClear();
 });
 
 afterEach(() => {
@@ -261,6 +264,24 @@ describe("FileEditorSidebarPending", () => {
 			nodeId: "node_a",
 			pendingUpdateId: "pu_a",
 		});
+	});
+
+	test("a stale save resolves silently without an error toast", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
+		actionMock.mockReset();
+		// The upsert lands, then another tab's save advances the row before this save runs; the
+		// reactive query renders the real state, so no error and no success announcement.
+		actionMock.mockResolvedValueOnce({ _yay: null }).mockResolvedValue({ _nay: { message: "Stale save" } });
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept"));
+
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
+		expect(toast.error).not.toHaveBeenCalled();
+		expect(screen.getByRole("status").textContent).toBe("");
 	});
 
 	test("Discard reverts the unstaged content back to staged", async () => {
@@ -384,11 +405,108 @@ describe("FileEditorSidebarPending", () => {
 			expect(mutationMock).toHaveBeenLastCalledWith("discard_file_pending_structural", {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: "node_a",
-				pendingUpdateId: "pu_move",
 			});
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	test("Accept all retries a row whose mutation throws once", async () => {
+		vi.useFakeTimers();
+		try {
+			useQueryMock.mockReturnValue([
+				makePendingUpdate({
+					id: "pu_move",
+					fileNodeId: "node_a",
+					pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+				}),
+			]);
+			useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+			mutationMock.mockReset();
+			// A Convex write conflict surfaces as a THROWN error, not a `_nay` result.
+			mutationMock.mockRejectedValueOnce(new Error("Documents changed while this mutation was being run"));
+			mutationMock.mockResolvedValue({ _yay: null });
+
+			render(<FileEditorSidebarPending />);
+			fireEvent.click(screen.getByText("Accept all"));
+			expect(mutationMock).toHaveBeenCalledTimes(1);
+
+			// Flush the rejection so the 5s retry timer gets scheduled, then fire it.
+			await act(async () => {});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_000);
+			});
+			await act(async () => {});
+
+			expect(mutationMock).toHaveBeenCalledTimes(2);
+			expect(mutationMock).toHaveBeenLastCalledWith("apply_file_pending_move", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: "node_a",
+			});
+			expect(toast.error).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("Accept all counts a row whose mutation keeps throwing in the failure toast", async () => {
+		vi.useFakeTimers();
+		try {
+			useQueryMock.mockReturnValue([
+				makePendingUpdate({
+					id: "pu_move",
+					fileNodeId: "node_a",
+					pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+				}),
+			]);
+			useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+			mutationMock.mockReset();
+			mutationMock.mockRejectedValue(new Error("Documents changed while this mutation was being run"));
+
+			render(<FileEditorSidebarPending />);
+			fireEvent.click(screen.getByText("Accept all"));
+
+			// Initial call + 6 retries, each behind a 5s backoff.
+			for (let attempt = 0; attempt < 6; attempt++) {
+				await act(async () => {});
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(5_000);
+				});
+			}
+			await act(async () => {});
+
+			expect(mutationMock).toHaveBeenCalledTimes(7);
+			expect(toast.error).toHaveBeenCalledWith("Failed to accept 1 of 1 pending changes");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("Accept all treats a row's stale save as benign, not a failure", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_A", unstaged: "UNSTAGED_A" }),
+			makePendingUpdate({ id: "pu_b", fileNodeId: "node_b", staged: "STAGED_B", unstaged: "UNSTAGED_B" }),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "alpha/intro.md" }),
+			makeNode({ id: "node_b", path: "beta/readme.md" }),
+		]);
+		actionMock.mockReset();
+		// Another tab's save advances node_a's row before this bulk save runs; the reactive query
+		// renders the real state, so the row is benign — not a failure, no error toast.
+		actionMock.mockImplementation((fn: unknown, args: { nodeId?: string }) =>
+			fn === "save_file_pending_update" && args.nodeId === "node_a"
+				? Promise.resolve({ _nay: { message: "Stale save" } })
+				: Promise.resolve({ _yay: null }),
+		);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept all"));
+
+		// 2 rows x (upsert + save) = 4 action calls
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(4));
+		await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Accepted 2 pending changes"));
+		expect(toast.error).not.toHaveBeenCalled();
 	});
 
 	test("move row renders from → dest without an accordion or diff link", () => {
@@ -541,7 +659,7 @@ describe("FileEditorSidebarPending", () => {
 		expect(screen.getByText("Accept")).toBeTruthy();
 	});
 
-	test("move replace row shows the Replaced caption", () => {
+	test("move row ignores a declared target that left the destination path", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_move",
@@ -552,14 +670,104 @@ describe("FileEditorSidebarPending", () => {
 		useStableQueryMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
+			// The declared target moved away after the proposal; nothing occupies /docs/a.md, so
+			// accepting is a plain move and no file gets replaced.
+			makeNode({ id: "node_dest", path: "/docs/renamed.md" }),
 		]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Moved");
 	});
 
-	test("mixed replace row shows the Replaced caption instead of Added", () => {
+	test("move row names the live occupant of the destination over a stale declared target", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_move",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "node_docs", destName: "dest.md", fromPath: "/a.md", replacesNodeId: "node_t" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md" }),
+			makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
+			// The declared target moved to /elsewhere.md after the proposal while a different
+			// active file took /docs/dest.md; accepting archives that occupant, so name it.
+			makeNode({ id: "node_t", path: "/elsewhere.md" }),
+			makeNode({ id: "node_o", path: "/docs/dest.md" }),
+		]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaces dest.md");
+	});
+
+	test("move row onto an occupied destination shows Replaces, a free one shows Moved", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_occupied",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "node_docs", destName: "b.md", fromPath: "/a.md" },
+			}),
+			makePendingUpdate({
+				id: "pu_free",
+				fileNodeId: "node_c",
+				pendingMove: { destParentId: "node_docs", destName: "free.md", fromPath: "/c.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md" }),
+			makeNode({ id: "node_c", path: "/c.md" }),
+			makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
+			makeNode({ id: "node_b", path: "/docs/b.md" }),
+		]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		const captions = Array.from(container.querySelectorAll(".FileEditorSidebarPending-item-caption")).map(
+			(element) => element.textContent,
+		);
+		expect(captions).toEqual(["Replaces b.md", "Moved"]);
+	});
+
+	test("move row onto an occupant with its own pending move shows Moved, not Replaces", () => {
+		useQueryMock.mockReturnValue([
+			// /a.md → /b.md while /b.md has its own pending move away: accept forces B's move
+			// first, so nothing is left at /b.md to replace.
+			makePendingUpdate({
+				id: "pu_chain_a",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+			makePendingUpdate({
+				id: "pu_chain_b",
+				fileNodeId: "node_b",
+				pendingMove: { destParentId: "root", destName: "c.md", fromPath: "/b.md" },
+			}),
+			// /d.md → /e.md where /e.md has no pending move: accept still replaces it.
+			makePendingUpdate({
+				id: "pu_replace",
+				fileNodeId: "node_d",
+				pendingMove: { destParentId: "root", destName: "e.md", fromPath: "/d.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md" }),
+			makeNode({ id: "node_b", path: "/b.md" }),
+			makeNode({ id: "node_d", path: "/d.md" }),
+			makeNode({ id: "node_e", path: "/e.md" }),
+		]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		const captions = Array.from(container.querySelectorAll(".FileEditorSidebarPending-item-caption")).map(
+			(element) => element.textContent,
+		);
+		// Rows sort by path: /a.md, /b.md, /d.md.
+		expect(captions).toEqual(["Moved", "Moved", "Replaces e.md"]);
+	});
+
+	test("mixed replace row shows the Replaces caption instead of Added", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_mixed",
@@ -570,11 +778,14 @@ describe("FileEditorSidebarPending", () => {
 				eagerCreated: { committedSequence: 0 },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md" }),
+			makeNode({ id: "node_dest", path: "/b.md" }),
+		]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaces b.md");
 		expect(screen.queryByText("Added")).toBeNull();
 	});
 
@@ -595,9 +806,33 @@ describe("FileEditorSidebarPending", () => {
 		expect(mutationMock).toHaveBeenCalledWith("apply_file_pending_move", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
-			pendingUpdateId: "pu_move",
 		});
 		expect(actionMock).not.toHaveBeenCalled();
+	});
+
+	test("a move-step conflict stops the mixed chain and surfaces the error", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_mixed",
+				fileNodeId: "node_a",
+				staged: "STAGED_MD",
+				unstaged: "UNSTAGED_MD",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		mutationMock.mockReset();
+		// Missing or settled rows resolve as no-op `_yay`, so a `_nay` is a real conflict.
+		mutationMock.mockResolvedValue({ _nay: { message: "Path already exists" } });
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept"));
+
+		// The failed move stops the chain: no content save, an error toast, no success announcement.
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(actionMock).not.toHaveBeenCalled();
+		expect(toast.error).toHaveBeenCalledWith("Path already exists");
+		expect(screen.getByRole("status").textContent).toBe("");
 	});
 
 	test("move Discard issues a single structural discard", async () => {
@@ -617,9 +852,48 @@ describe("FileEditorSidebarPending", () => {
 		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
-			pendingUpdateId: "pu_move",
 		});
 		expect(actionMock).not.toHaveBeenCalled();
+	});
+
+	test("a structural discard conflict surfaces the error toast", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_move",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		mutationMock.mockReset();
+		// The discard is idempotent (missing or settled rows resolve `_yay`), so a `_nay` is a
+		// real conflict the user must see.
+		mutationMock.mockResolvedValue({ _nay: { message: "Discard conflict" } });
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Discard"));
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(toast.error).toHaveBeenCalledWith("Discard conflict");
+	});
+
+	test("Discard all counts a structural discard conflict as a failure", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_move",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		mutationMock.mockReset();
+		mutationMock.mockResolvedValue({ _nay: { message: "Discard conflict" } });
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Discard all"));
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Failed to discard 1 of 1 pending changes"));
+		expect(mutationMock).toHaveBeenCalledTimes(1);
 	});
 
 	test("copy Discard issues only the structural discard, never the content-revert upsert", async () => {
@@ -641,7 +915,32 @@ describe("FileEditorSidebarPending", () => {
 		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
-			pendingUpdateId: "pu_copy",
+		});
+		expect(actionMock).not.toHaveBeenCalled();
+	});
+
+	test("replace-move Discard issues only the structural discard", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_replace_move",
+				fileNodeId: "node_a",
+				staged: "STAGED_MD",
+				unstaged: "UNSTAGED_MD",
+				copiedFrom: { nodeId: "node_src", path: "/source.md", archivesSourceOnAccept: true },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/target.md" }),
+			makeNode({ id: "node_src", path: "/source.md" }),
+		]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Discard"));
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
 		});
 		expect(actionMock).not.toHaveBeenCalled();
 	});
@@ -665,7 +964,6 @@ describe("FileEditorSidebarPending", () => {
 		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
-			pendingUpdateId: "pu_added",
 		});
 		expect(actionMock).not.toHaveBeenCalled();
 	});
@@ -721,7 +1019,6 @@ describe("FileEditorSidebarPending", () => {
 		expect(mutationMock).toHaveBeenCalledWith("apply_file_pending_move", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
-			pendingUpdateId: "pu_mixed",
 		});
 		expect(actionMock).toHaveBeenNthCalledWith(1, "upsert_file_pending_update", {
 			membershipId: MEMBERSHIP_ID,
@@ -765,9 +1062,74 @@ describe("FileEditorSidebarPending", () => {
 		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
-			pendingUpdateId: "pu_mixed",
 		});
 		expect(actionMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(mutationMock.mock.invocationCallOrder[0] ?? 0);
+	});
+
+	test("mixed Discard stops before the structural discard when the content revert fails", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_mixed",
+				fileNodeId: "node_a",
+				staged: "STAGED_MD",
+				unstaged: "UNSTAGED_MD",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		actionMock.mockReset();
+		// A failed revert must not discard the move: a retry needs the row intact.
+		actionMock.mockResolvedValue({ _nay: { message: "Revert failed" } });
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Discard"));
+
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).not.toHaveBeenCalled();
+		expect(toast.error).toHaveBeenCalledWith("Revert failed");
+	});
+
+	test("copy and eager mixed Discards run the structural discard and skip the content revert", async () => {
+		useQueryMock.mockReturnValue([
+			// Mixed rows whose structural discard hard-deletes or fully removes the row: the
+			// content revert would hit a dead id, so only the structural discard may run.
+			makePendingUpdate({
+				id: "pu_mixed_copy",
+				fileNodeId: "node_a",
+				staged: "STAGED_A",
+				unstaged: "UNSTAGED_A",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+				copiedFrom: { nodeId: "node_src", path: "/source.md" },
+			}),
+			makePendingUpdate({
+				id: "pu_mixed_eager",
+				fileNodeId: "node_c",
+				staged: "STAGED_C",
+				unstaged: "UNSTAGED_C",
+				pendingMove: { destParentId: "root", destName: "d.md", fromPath: "/c.md" },
+				eagerCreated: { committedSequence: 0 },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md" }),
+			makeNode({ id: "node_c", path: "/c.md" }),
+		]);
+
+		render(<FileEditorSidebarPending />);
+		for (const button of screen.getAllByText("Discard")) {
+			fireEvent.click(button);
+		}
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+		});
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_c",
+		});
+		expect(actionMock).not.toHaveBeenCalled();
 	});
 
 	test("Accept all routes each row through its kind dispatcher", async () => {
@@ -793,7 +1155,6 @@ describe("FileEditorSidebarPending", () => {
 		expect(mutationMock).toHaveBeenCalledWith("apply_file_pending_move", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_b",
-			pendingUpdateId: "pu_move",
 		});
 		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
 			membershipId: MEMBERSHIP_ID,
@@ -841,7 +1202,6 @@ describe("FileEditorSidebarPending", () => {
 		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_b",
-			pendingUpdateId: "pu_copy",
 		});
 	});
 });

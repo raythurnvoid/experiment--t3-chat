@@ -5,6 +5,7 @@ import { encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
 import {
 	db_insert_file_text_content,
+	files_db_yjs_push_update,
 	files_line_range_from_text,
 	files_tail_lines_from_text,
 } from "./files_nodes.ts";
@@ -2135,6 +2136,449 @@ test("create_file_by_path can reuse an existing active file", async () => {
 
 	expect(reusedFile._yay.nodeId).toBe(createdFile._yay.nodeId);
 	expect(reusedFile._yay.created).toBe(false);
+	// No folder was created in either call: a root-level create and a reuse both report none.
+	expect(createdFile._yay.createdAncestorIds).toEqual([]);
+	expect(reusedFile._yay.createdAncestorIds).toEqual([]);
+});
+
+test("create_file_by_path reports created ancestor folders deepest-first", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+
+	const created = await t.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId: db.userId,
+		path: "/r12a/deep/x.md",
+	});
+	if (created._nay) {
+		throw new Error(created._nay.message);
+	}
+	expect(created._yay.created).toBe(true);
+	expect(created._yay.createdAncestorIds).toHaveLength(2);
+
+	const [deepAncestorId, shallowAncestorId] = created._yay.createdAncestorIds;
+	if (!deepAncestorId || !shallowAncestorId) {
+		throw new Error("Expected two created ancestor folder ids");
+	}
+	await t.run(async (ctx) => {
+		const deepFolder = await ctx.db.get("files_nodes", deepAncestorId);
+		const shallowFolder = await ctx.db.get("files_nodes", shallowAncestorId);
+		expect(deepFolder?.path).toBe("/r12a/deep");
+		expect(deepFolder?.kind).toBe("folder");
+		expect(shallowFolder?.path).toBe("/r12a");
+		expect(shallowFolder?.kind).toBe("folder");
+	});
+});
+
+describe("files_nodes.remove_eager_created_node_if_safe", () => {
+	async function create_eager_node(t: ReturnType<typeof test_convex>, path: string) {
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const created = await t.action(internal.files_nodes.create_file_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		if (!created._yay.created || created._yay.createdCommittedSequence === undefined) {
+			throw new Error("Expected create_file_by_path to create a fresh node");
+		}
+		return {
+			db,
+			nodeId: created._yay.nodeId,
+			eagerCreatedCommittedSequence: created._yay.createdCommittedSequence,
+			createdAncestorIds: created._yay.createdAncestorIds,
+		};
+	}
+
+	test("removes an untouched eager node with no pending row", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, nodeId, eagerCreatedCommittedSequence } = await create_eager_node(t, "/eager-cleanup-untouched.md");
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+		});
+		expect(removed._yay.removed).toBe(true);
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
+		});
+	});
+
+	test("keeps the node when another user has a pending row on it", async () => {
+		const t = test_convex();
+		const { db, nodeId, eagerCreatedCommittedSequence } = await create_eager_node(t, "/eager-cleanup-other-user.md");
+
+		// Another user drafts on the node before the compensation runs; a hard delete would
+		// destroy their draft.
+		const otherUserRowId = await t.run((ctx) =>
+			ctx.db.insert("files_pending_updates", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: "other_user_eager_cleanup_guard",
+				fileNodeId: nodeId,
+				size: 0,
+				updatedAt: Date.now(),
+			}),
+		);
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+		});
+		expect(removed._yay.removed).toBe(false);
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).not.toBeNull();
+			expect(await ctx.db.get("files_pending_updates", otherUserRowId)).not.toBeNull();
+		});
+	});
+
+	test("keeps a node whose committed content advanced since the eager create", async () => {
+		const t = test_convex();
+		const { db, nodeId, eagerCreatedCommittedSequence } = await create_eager_node(t, "/eager-cleanup-saved.md");
+
+		// A real save advances the committed Yjs sequence past the creation-time stamp.
+		const savedYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "# Saved by the user" });
+		if ("_nay" in savedYjsDoc) {
+			throw new Error(savedYjsDoc._nay.message);
+		}
+		await t.run((ctx) =>
+			files_db_yjs_push_update(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				nodeId,
+				update: files_u8_to_array_buffer(encodeStateAsUpdate(savedYjsDoc)),
+				sessionId: "eager-cleanup-saved-session",
+			}),
+		);
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+		});
+		expect(removed._yay.removed).toBe(false);
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).not.toBeNull();
+		});
+	});
+
+	test("reports removed false without throwing when the node is missing", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, nodeId, eagerCreatedCommittedSequence } = await create_eager_node(t, "/eager-cleanup-missing.md");
+
+		const firstRemoval = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+		});
+		expect(firstRemoval._yay.removed).toBe(true);
+
+		// A retry against the already-removed node stays benign for the compensation caller.
+		const secondRemoval = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+		});
+		expect(secondRemoval._yay.removed).toBe(false);
+	});
+
+	test("removes created ancestor folders together with the leaf", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
+			t,
+			"/r12a/deep/x.md",
+		);
+		expect(createdAncestorIds).toHaveLength(2);
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+			createdAncestorIds,
+		});
+		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 0 });
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
+			for (const ancestorId of createdAncestorIds) {
+				expect(await ctx.db.get("files_nodes", ancestorId)).toBeNull();
+			}
+		});
+	});
+
+	test("keeps an ancestor folder that gained another committed child", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
+			t,
+			"/r12a/deep/x.md",
+		);
+
+		// A second committed file under /r12a makes that folder non-empty once the deep
+		// branch is compensated away.
+		const sibling = await t.action(internal.files_nodes.create_file_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/r12a/other.md",
+		});
+		if (sibling._nay) {
+			throw new Error(sibling._nay.message);
+		}
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+			createdAncestorIds,
+		});
+		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 1 });
+
+		const [deepAncestorId, shallowAncestorId] = createdAncestorIds;
+		if (!deepAncestorId || !shallowAncestorId) {
+			throw new Error("Expected two created ancestor folder ids");
+		}
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
+			expect(await ctx.db.get("files_nodes", deepAncestorId)).toBeNull();
+			expect(await ctx.db.get("files_nodes", shallowAncestorId)).not.toBeNull();
+		});
+	});
+
+	test("keeps an ancestor folder another user renamed since the create", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
+			t,
+			"/r13f/deep/x.md",
+		);
+		const [deepAncestorId, shallowAncestorId] = createdAncestorIds;
+		if (!deepAncestorId || !shallowAncestorId) {
+			throw new Error("Expected two created ancestor folder ids");
+		}
+
+		// Another workspace member renames the created folder through the REAL rename_node
+		// mutation, which stamps updatedBy; the compensation must not delete their rename.
+		const other = await t.run(async (ctx) => {
+			const otherUserId = await ctx.db.insert("users", {
+				clerkUserId: "clerk_eager_ancestor_renamed_other",
+			});
+			const otherMembershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: otherUserId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+			return { otherUserId, otherMembershipId };
+		});
+		const asOtherUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: other.otherUserId,
+			name: "Other User",
+		});
+		const renamed = await asOtherUser.mutation(api.files_nodes.rename_node, {
+			membershipId: other.otherMembershipId,
+			nodeId: deepAncestorId,
+			path: "deep-renamed",
+		});
+		if (renamed._nay) {
+			throw new Error(renamed._nay.message);
+		}
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+			createdAncestorIds,
+		});
+		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 2 });
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
+			const deepFolder = await ctx.db.get("files_nodes", deepAncestorId);
+			expect(deepFolder?.path).toBe("/r13f/deep-renamed");
+			expect(await ctx.db.get("files_nodes", shallowAncestorId)).not.toBeNull();
+		});
+	});
+
+	test("keeps an ancestor folder referenced by a pending row", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
+			t,
+			"/r13g/deep/x.md",
+		);
+		const [deepAncestorId, shallowAncestorId] = createdAncestorIds;
+		if (!deepAncestorId || !shallowAncestorId) {
+			throw new Error("Expected two created ancestor folder ids");
+		}
+
+		// A pending move of the created folder itself, proposed through the REAL move-upsert:
+		// deleting the folder would orphan this row.
+		const movedProposal = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId: deepAncestorId,
+			destParentId: files_ROOT_ID,
+			destName: "deep-moved",
+		});
+		if (movedProposal._nay) {
+			throw new Error(movedProposal._nay.message);
+		}
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+			createdAncestorIds,
+		});
+		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 2 });
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
+			expect(await ctx.db.get("files_nodes", deepAncestorId)).not.toBeNull();
+			const folderPendingRow = await ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", deepAncestorId))
+				.first();
+			expect(folderPendingRow).not.toBeNull();
+			expect(await ctx.db.get("files_nodes", shallowAncestorId)).not.toBeNull();
+		});
+	});
+
+	test("keeps an ancestor folder that is another user's pending move destination", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
+			t,
+			"/r13h/deep/x.md",
+		);
+		const [deepAncestorId, shallowAncestorId] = createdAncestorIds;
+		if (!deepAncestorId || !shallowAncestorId) {
+			throw new Error("Expected two created ancestor folder ids");
+		}
+
+		// Another user proposes moving their own file INTO the created folder through the REAL
+		// move-upsert: the row lives on their file, not on the folder, but its destination is
+		// the folder and deleting it would break their Accept later.
+		const otherUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "clerk_eager_move_dest_other" }));
+		const otherFile = await t.action(internal.files_nodes.create_file_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: otherUserId,
+			path: "/move-dest-source.md",
+		});
+		if (otherFile._nay) {
+			throw new Error(otherFile._nay.message);
+		}
+		const movedProposal = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: otherUserId,
+			nodeId: otherFile._yay.nodeId,
+			destParentId: deepAncestorId,
+			destName: "move-dest-source.md",
+		});
+		if (movedProposal._nay) {
+			throw new Error(movedProposal._nay.message);
+		}
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+			createdAncestorIds,
+		});
+		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 2 });
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
+			expect(await ctx.db.get("files_nodes", deepAncestorId)).not.toBeNull();
+			expect(await ctx.db.get("files_nodes", shallowAncestorId)).not.toBeNull();
+			const otherRow = await ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", otherFile._yay.nodeId))
+				.first();
+			expect(otherRow?.pendingMove?.destParentId).toBe(deepAncestorId);
+		});
+	});
+
+	test("keeps created ancestor folders when the leaf is unsafe to delete", async () => {
+		const t = test_convex();
+		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
+			t,
+			"/r12b/deep/x.md",
+		);
+
+		// A real save advances the committed Yjs sequence past the creation-time stamp,
+		// so the leaf gate blocks and no folder may be touched either.
+		const savedYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "# Saved by the user" });
+		if ("_nay" in savedYjsDoc) {
+			throw new Error(savedYjsDoc._nay.message);
+		}
+		await t.run((ctx) =>
+			files_db_yjs_push_update(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				nodeId,
+				update: files_u8_to_array_buffer(encodeStateAsUpdate(savedYjsDoc)),
+				sessionId: "eager-cleanup-ancestors-saved-session",
+			}),
+		);
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+			createdAncestorIds,
+		});
+		expect(removed._yay).toEqual({ removed: false, ancestorsLeft: 2 });
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).not.toBeNull();
+			for (const ancestorId of createdAncestorIds) {
+				expect(await ctx.db.get("files_nodes", ancestorId)).not.toBeNull();
+			}
+		});
+	});
 });
 
 describe("files_nodes.get_authorized_by_path", () => {
@@ -3070,6 +3514,9 @@ test("N08 move_nodes idempotency: same parent no-op", async () => {
 	const after = await t.run(async (ctx) => ctx.db.get("files_nodes", db.files.file_root_1_child_1._id));
 	expect(after?.parentId).toBe(before?.parentId);
 	expect(after?.path).toBe(before?.path);
+	// A same-parent drop is a full no-op: no updatedBy/updatedAt stamp.
+	expect(after?.updatedBy).toBe(before?.updatedBy);
+	expect(after?.updatedAt).toBe(before?.updatedAt);
 });
 
 test("N09 archive idempotency", async () => {
@@ -3262,13 +3709,24 @@ test("files_tree_write rate limit runs before membership validation", async () =
 		createdNodeIds.push(result._yay.nodeId);
 	}
 
-	const blocked = await asUser.mutation(api.files_nodes.rename_node, {
-		membershipId: otherDb.membershipId,
-		nodeId: createdNodeIds[0],
-		path: "should-rate-limit-before-membership.md",
-	});
+	// `files_tree_write` is a BULK_FILES_WRITE bucket (capacity 50), so drain it with cheap
+	// wrong-membership renames: each consumes a token before membership validation fails,
+	// until the limiter answers first — which is the ordering this test pins.
+	let blockedMessage: string | undefined;
+	for (let i = 0; i < 60 && blockedMessage == null; i++) {
+		const result = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: otherDb.membershipId,
+			nodeId: createdNodeIds[0],
+			path: "should-rate-limit-before-membership.md",
+		});
+		if (result._nay?.message === "Rate limit exceeded") {
+			blockedMessage = result._nay.message;
+		} else {
+			expect(result._nay?.message).toBe("Unauthorized");
+		}
+	}
 
-	expect(blocked._nay?.message).toBe("Rate limit exceeded");
+	expect(blockedMessage).toBe("Rate limit exceeded");
 });
 
 test("files_snapshot_write rate limit runs before restore snapshot validation", async () => {
@@ -4963,6 +5421,96 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 
 	const otherUserPendingMiss = await searchAs(otherUserId, "pending@example.com");
 	expect(otherUserPendingMiss.items).toEqual([]);
+});
+
+test("a pure-move row keeps committed metadata visible", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Move Metadata User",
+		email: "move-metadata-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const path = "/meta-move/message.md";
+	const nodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		path,
+		["---", "from: committed@example.com", "---", "Committed body"].join("\n"),
+	);
+
+	// A pure move row (mv without edits) carries no content and must not mask metadata.
+	const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId: db.userId,
+		nodeId,
+		destParentId: files_ROOT_ID,
+		destName: "meta-moved.md",
+	});
+	if (moved._nay) throw new Error(moved._nay.message);
+
+	const search = () =>
+		asUser.query(internal.files_metadata.search, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			plan: { op: "eq", qualifiedField: "frontmatter.from", value: "committed@example.com" },
+			numItems: 20,
+			cursor: null,
+		});
+
+	// Search still surfaces the file's committed metadata docs.
+	const committedHit = await search();
+	expect(committedHit.items).toMatchObject([{ path, nodeId, sourceKind: "committed" }]);
+
+	// The get path resolves the visible destination and reports committed metadata.
+	const metadata = await asUser.query(internal.files_metadata.get_by_path, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId: db.userId,
+		path: "/meta-moved.md",
+		overlayUserId: db.userId,
+	});
+	expect(metadata).toMatchObject({
+		path: "/meta-moved.md",
+		nodeId,
+		sourceKind: "committed",
+		fields: expect.arrayContaining(["frontmatter.from"]),
+		values: expect.arrayContaining([
+			expect.objectContaining({
+				qualifiedField: "frontmatter.from",
+				valueKind: "string",
+				stringValue: "committed@example.com",
+			}),
+		]),
+	});
+
+	// A content-bearing row on the same node still overlays the committed metadata.
+	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId: db.userId,
+		nodeId,
+		unstagedMarkdown: ["---", "from: pending@example.com", "---", "Pending body"].join("\n"),
+	});
+	if (pending._nay) throw new Error(pending._nay.message);
+
+	const pendingMetadata = await asUser.query(internal.files_metadata.get_by_path, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId: db.userId,
+		path: "/meta-moved.md",
+		overlayUserId: db.userId,
+	});
+	expect(pendingMetadata).toMatchObject({ sourceKind: "pending" });
+	const staleCommittedMiss = await search();
+	expect(staleCommittedMiss.items).toEqual([]);
 });
 
 test("metadata search updates indexed scope when files are renamed and moved", async () => {

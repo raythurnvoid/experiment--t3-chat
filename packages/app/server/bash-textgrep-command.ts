@@ -1,4 +1,4 @@
-import { defineCommand } from "just-bash/browser";
+import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type {
@@ -12,6 +12,9 @@ import {
 	bash_cursor_id_create,
 	bash_format_multiline_hint,
 	bash_GLOB_METACHARACTER_REGEX,
+	bash_overlay_committed_scope_path,
+	bash_overlay_content_search_injections,
+	bash_overlay_project_scoped_path,
 	bash_read_option_value,
 	bash_regex_validation_error,
 	bash_resolve_path,
@@ -222,7 +225,9 @@ function guidance() {
 	};
 }
 
-export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+// The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
+// type would otherwise flow through internal.* into the bash action and back into this command.
+export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
 	return defineCommand("textgrep", async (args, commandCtx) => {
 		const parsed = parse_args(args);
 		if (parsed._nay) {
@@ -259,9 +264,14 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 							organizationId: pathResolution.ctxData.organizationId,
 							workspaceId: pathResolution.ctxData.workspaceId,
 							path: dbFilesPath,
+							overlayUserId: pathResolution.fs.overlayUserId,
 						})) as files_nodes_get_by_path_Result);
 
 			if (dbFilesPath != null && (dbFilesPath === "/" || folderNode?.kind === "folder")) {
+				// The proposer's pending moves translate the scope and project the results: chunks
+				// keep committed paths until accept, so a moved-in scope must query its committed source path.
+				const overlay = await pathResolution.fs.getOverlay();
+				const committedScopePath = overlay == null ? dbFilesPath : bash_overlay_committed_scope_path(overlay, dbFilesPath);
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
@@ -269,21 +279,50 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 					query: pattern,
 					numItems: TEXTGREP_RECURSIVE_PAGE_LIMIT,
 					cursor: null,
-					pathPrefix: dbFilesPath,
+					pathPrefix: committedScopePath,
 				})) as files_nodes_text_search_files_Result;
+
+				// Hidden results and results projected outside the scope drop; the rest report their visible path.
+				const visibleItems =
+					overlay == null
+						? res.items
+						: res.items.flatMap((item) => {
+								const visiblePath = bash_overlay_project_scoped_path({
+									overlay,
+									committedPath: item.path,
+									visibleScopePath: dbFilesPath,
+								});
+								return visiblePath == null ? [] : [{ ...item, path: visiblePath }];
+							});
+
+				// An ancestor scope of a move's visible destination misses that move's committed
+				// chunks (they sit outside the scoped prefix); inject them into this single page.
+				const injectedItems =
+					overlay == null
+						? []
+						: await bash_overlay_content_search_injections({
+								ctx,
+								ctxData: pathResolution.ctxData,
+								overlay,
+								visibleScopePath: dbFilesPath,
+								committedScopePath,
+								query: pattern,
+								numItems: TEXTGREP_RECURSIVE_PAGE_LIMIT,
+							});
+				const allItems = [...visibleItems, ...injectedItems];
 
 				const scopePath = pathResolution.renderShellPath(dbFilesPath);
 				const exactQueryFilter = bash_search_command_exact_query_filter(pattern);
 				const blocks =
-					res.items.length > 0
+					allItems.length > 0
 						? [
 								"textgrep -R over app folders uses indexed full-text search, not exact recursive regex grep.",
-								`Found ${res.items.length} results under ${scopePath}${bash_search_command_exact_query_summary(
+								`Found ${allItems.length} results under ${scopePath}${bash_search_command_exact_query_summary(
 									exactQueryFilter,
-									res.items.map((item) => item.markdownChunk ?? ""),
+									allItems.map((item) => item.markdownChunk ?? ""),
 								)}`,
 								"",
-								...res.items.map((item) => {
+								...allItems.map((item) => {
 									const markdownChunk = item.markdownChunk ?? "";
 									return [
 										`${pathResolution.renderShellPath(item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(
@@ -348,6 +387,7 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 								organizationId: pathResolution.ctxData.organizationId,
 								workspaceId: pathResolution.ctxData.workspaceId,
 								path: dbFilesPath,
+								overlayUserId: pathResolution.fs.overlayUserId,
 							})) as files_nodes_get_by_path_Result);
 
 				if (!dbFilesDoc || dbFilesDoc.kind !== "file") {

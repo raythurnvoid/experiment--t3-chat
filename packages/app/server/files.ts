@@ -11,7 +11,17 @@
 import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
-import { files_pending_update_has_yjs_content } from "../shared/files.ts";
+import {
+	files_pending_update_has_yjs_content,
+	files_pending_path_overlay_build,
+	files_pending_path_overlay_translate_path,
+	files_pending_path_overlay_pick_visible_entry,
+	files_ROOT_ID,
+} from "../shared/files.ts";
+import {
+	organizations_is_global_organization_id,
+	organizations_is_reserved_workspace_id,
+} from "../shared/organizations.ts";
 import { should_never_happen } from "./server-utils.ts";
 
 export * from "../shared/files.ts";
@@ -168,8 +178,169 @@ export async function files_db_get_pending_update(
 }
 
 /**
+ * Indexed read of one user's pending update docs. Shared by the FE list query and the
+ * pending path overlay reads so both always see the same docs.
+ */
+export async function files_db_list_pending_updates_for_user(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: string;
+	},
+) {
+	return await ctx.db
+		.query("files_pending_updates")
+		.withIndex("by_organization_workspace_user_fileNode", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
+		)
+		.order("asc")
+		.collect();
+}
+
+/**
+ * Load one user's pending update docs plus the active nodes their move/replace fields
+ * reference — the exact inputs `files_pending_path_overlay_build` needs. Full docs,
+ * overfetched on purpose so one read serves every overlay consumer.
+ */
+export async function files_db_get_pending_path_overlay_data(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: string;
+	},
+) {
+	const pendingUpdates = await files_db_list_pending_updates_for_user(ctx, args);
+
+	const referencedNodeIds = new Set<Id<"files_nodes">>();
+	for (const pendingUpdate of pendingUpdates) {
+		if (pendingUpdate.pendingMove) {
+			referencedNodeIds.add(pendingUpdate.fileNodeId);
+			if (pendingUpdate.pendingMove.destParentId !== files_ROOT_ID) {
+				referencedNodeIds.add(pendingUpdate.pendingMove.destParentId);
+			}
+			if (pendingUpdate.pendingMove.replacesNodeId) {
+				referencedNodeIds.add(pendingUpdate.pendingMove.replacesNodeId);
+			}
+		}
+		if (pendingUpdate.copiedFrom?.archivesSourceOnAccept) {
+			referencedNodeIds.add(pendingUpdate.copiedFrom.nodeId);
+		}
+	}
+
+	// Archived or out-of-scope nodes stay out of the map, so the overlay treats their
+	// docs as missing and the affected docs go inert on the next build.
+	const referencedNodes = (
+		await Promise.all([...referencedNodeIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)))
+	).filter(
+		(node): node is Doc<"files_nodes"> =>
+			node != null &&
+			node.organizationId === args.organizationId &&
+			node.workspaceId === args.workspaceId &&
+			node.archiveOperationId === undefined,
+	);
+
+	return { pendingUpdates, referencedNodes };
+}
+
+/**
+ * Build the user's pending path overlay from direct db reads.
+ */
+export async function files_db_build_pending_path_overlay(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: string;
+	},
+) {
+	const overlayData = await files_db_get_pending_path_overlay_data(ctx, args);
+	return files_pending_path_overlay_build({
+		pendingUpdates: overlayData.pendingUpdates,
+		nodesById: new Map(overlayData.referencedNodes.map((node) => [node._id, node])),
+	});
+}
+
+/**
+ * Path lookup that can see one user's pending path overlay.
+ *
+ * Without `overlayUserId` this is the plain committed lookup. With it, the requested path is
+ * translated through the user's pending moves first: a claimed destination resolves to the
+ * moved node's committed doc (returned unchanged — callers display the requested path), a
+ * vacated or replaced path reads as missing, and an unrelated live node found at the path
+ * stays visible. Committed nodes inside a moved folder's subtree follow the folder, so their
+ * old descendant paths read as missing too. Reserved scopes never have pending docs, so the
+ * overlay is skipped there.
+ */
+export async function files_db_get_visible_node_by_path(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		path: string;
+		overlayUserId?: Id<"users">;
+	},
+): Promise<Doc<"files_nodes"> | null> {
+	if (args.path === "/") {
+		return null;
+	}
+
+	const lookup = (path: string) =>
+		ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("path", path)
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+
+	const overlayUserId = args.overlayUserId;
+	if (
+		overlayUserId == null ||
+		organizations_is_global_organization_id(args.organizationId) ||
+		organizations_is_reserved_workspace_id(args.workspaceId)
+	) {
+		return await lookup(args.path);
+	}
+
+	const overlay = await files_db_build_pending_path_overlay(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: overlayUserId,
+	});
+	const translated = files_pending_path_overlay_translate_path(overlay, args.path);
+	if (translated.kind === "redirected") {
+		// A pending move claims this path: present the moved node here, doc unchanged.
+		return await lookup(translated.committedPath);
+	}
+
+	const occupant = await lookup(args.path);
+	if (!occupant) {
+		return null;
+	}
+	const pick = files_pending_path_overlay_pick_visible_entry(overlay, {
+		requestedPath: args.path,
+		occupantNodeId: occupant._id,
+	});
+	if (pick !== "occupant") {
+		return null;
+	}
+	if (translated.kind === "hidden") {
+		// A live occupant under a hidden verdict is a committed descendant of a moved folder:
+		// it follows its ancestor to the destination, so its old path reads as missing here.
+		// (Exact-path hides always surface the moved/replaced node itself, which `pick` drops.)
+		return null;
+	}
+	return occupant;
+}
+
+/**
  * Return the pending update's content proposal (the 4 Yjs fields, set together or not at all),
- * or `null` for structural-only rows (pure move).
+ * or `null` for move-only pending update docs.
  */
 export function files_pending_update_content_of(
 	pendingUpdate: Pick<

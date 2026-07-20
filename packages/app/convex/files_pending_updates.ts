@@ -13,7 +13,7 @@ import type { RegisteredAction, RegisteredMutation, RegisteredQuery } from "conv
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { api, internal } from "./_generated/api.js";
@@ -23,6 +23,7 @@ import {
 	files_nodes_db_archive_nodes,
 	files_nodes_db_hard_delete_node,
 	files_nodes_db_is_eager_node_safe_to_hard_delete,
+	files_nodes_db_remove_created_ancestor_folders_if_safe,
 	files_nodes_db_validate_pending_move_target,
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
@@ -35,7 +36,9 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_ROOT_ID,
 	files_db_cancel_pending_update_cleanup_tasks,
+	files_db_get_pending_path_overlay_data,
 	files_db_get_pending_update,
+	files_db_list_pending_updates_for_user,
 	files_db_schedule_pending_update_cleanup,
 	files_pending_update_content_of,
 	files_yjs_doc_apply_array_buffer_update,
@@ -308,6 +311,42 @@ function files_pending_update_log_replace_chunks_nay(
 	}
 }
 
+/**
+ * Drop a doc's pending move and settle the doc: content-plus-move and copy docs keep their
+ * content proposal (a copiedFrom doc must never be deleted here, or the eager-created
+ * destination node would be left orphaned), move-only docs are deleted with their chunks
+ * and cleanup tasks.
+ */
+async function files_pending_update_db_settle_move_row(
+	ctx: MutationCtx,
+	args: { pendingUpdate: app_convex_Doc<"files_pending_updates"> },
+) {
+	const { pendingUpdate } = args;
+	if (files_pending_update_content_of(pendingUpdate) || pendingUpdate.copiedFrom) {
+		const now = Date.now();
+		await Promise.all([
+			ctx.db.patch("files_pending_updates", pendingUpdate._id, {
+				pendingMove: undefined,
+				updatedAt: now,
+			}),
+			files_db_schedule_pending_update_cleanup(ctx, {
+				pendingUpdateId: pendingUpdate._id,
+				expectedUpdatedAt: now,
+			}),
+		]);
+	} else {
+		await Promise.all([
+			files_db_cancel_pending_update_cleanup_tasks(ctx, {
+				pendingUpdateId: pendingUpdate._id,
+			}),
+			files_pending_update_db_delete_chunks(ctx, {
+				pendingUpdateId: pendingUpdate._id,
+			}),
+			ctx.db.delete("files_pending_updates", pendingUpdate._id),
+		]);
+	}
+}
+
 function files_pending_update_workspace_markdown_to_branch(args: { mut_yjsDoc: YDoc; markdown: string }) {
 	const currentMarkdown = files_yjs_doc_get_markdown({
 		yjsDoc: args.mut_yjsDoc,
@@ -422,8 +461,20 @@ async function files_pending_update_resolve_branch_docs(
 		pendingUpdateId: args.pendingUpdateId,
 	});
 
-	// Structural-only rows (pure move) fall through to the args-base branch but still return
-	// `existingPendingUpdate`, so write_file onto a move row patches it (mixed) instead of duplicating.
+	// Only the exact doc the caller synced: a provided id that resolves to a doc with a
+	// different id means a new proposal replaced it, and writing would overwrite the new
+	// proposal's branches with the dead proposal's stale editor content. A dead id with no
+	// current doc still falls through to the create path (the normal new-proposal flow).
+	if (args.pendingUpdateId != null && existingPendingUpdate && existingPendingUpdate._id !== args.pendingUpdateId) {
+		return Result({
+			_nay: {
+				message: "Not found",
+			},
+		});
+	}
+
+	// Move-only docs fall through to the args-base branch but still return `existingPendingUpdate`,
+	// so write_file onto a move-only doc patches it (content-plus-move) instead of duplicating.
 	const existingContent = existingPendingUpdate ? files_pending_update_content_of(existingPendingUpdate) : null;
 	if (existingPendingUpdate && existingContent) {
 		return Result({
@@ -494,9 +545,9 @@ async function files_pending_update_upsert_branch_docs(
 	}
 
 	if (!branchDocsHaveChanges._yay) {
-		// No-change rows normally delete/degrade, but two kinds must persist: eager rows (empty
-		// write_file / empty-source copy) store base == staged == unstaged so the yjs fields
-		// survive and the eager node stays discardable; `mv -f` replace-moves must exist to
+		// No-change docs normally delete/degrade, but two kinds must persist: eager-created docs
+		// (empty write_file / empty-source copy) store base == staged == unstaged so the yjs fields
+		// survive and the eager-created node stays discardable; `mv -f` replace-moves must exist to
 		// accept, because accepting an identical-content replace still archives the source.
 		if (
 			!args.existingPendingUpdate?.eagerCreated &&
@@ -505,9 +556,9 @@ async function files_pending_update_upsert_branch_docs(
 			!args.existingPendingUpdate?.copiedFrom?.archivesSourceOnAccept
 		) {
 			if (args.existingPendingUpdate?.pendingMove) {
-				// Content collapsed back to base under a move proposal: degrade to a pure move, keep
-				// the row. Only non-eager, non-replace-move rows reach here, so copiedFrom is stale
-				// provenance — clear it.
+				// Content collapsed back to base under a move proposal: degrade to a move-only doc,
+				// keep the doc. Only docs that are neither eager-created nor replace-moves reach here,
+				// so copiedFrom is stale provenance — clear it.
 				const now = Date.now();
 				await Promise.all([
 					ctx.db.patch("files_pending_updates", args.existingPendingUpdate._id, {
@@ -557,7 +608,25 @@ async function files_pending_update_upsert_branch_docs(
 		yjsDoc: args.unstagedBranchYjsDoc,
 	});
 
+	// The newest structural intent must land even when the content already matches: a later
+	// `mv -f` onto an existing copy doc carries the same bytes but still has to record
+	// `archivesSourceOnAccept` (and the current source), or accept would never archive the
+	// source. Same for the eager-create stamp: a racing identical write_file that carries
+	// `eagerCreated` must still stamp the doc, or discard/expiry could never hard-delete
+	// the eager-created node.
+	const existingCopiedFrom = args.existingPendingUpdate?.copiedFrom;
+	const copiedFromAlreadyRecorded =
+		args.copiedFrom === undefined ||
+		(existingCopiedFrom != null &&
+			existingCopiedFrom.nodeId === args.copiedFrom.nodeId &&
+			existingCopiedFrom.path === args.copiedFrom.path &&
+			(existingCopiedFrom.archivesSourceOnAccept ?? false) === (args.copiedFrom.archivesSourceOnAccept ?? false));
+	const eagerCreatedAlreadyRecorded =
+		args.eagerCreated === undefined || args.existingPendingUpdate?.eagerCreated !== undefined;
 	if (
+		copiedFromAlreadyRecorded &&
+		eagerCreatedAlreadyRecorded &&
+		args.existingPendingUpdate &&
 		files_pending_update_branch_docs_match_existing_doc({
 			existingPendingUpdate: args.existingPendingUpdate,
 			baseYjsSequence: args.baseYjsSequence,
@@ -566,7 +635,33 @@ async function files_pending_update_upsert_branch_docs(
 			unstagedBranchYjsUpdate,
 		})
 	) {
+		// Same-bytes rewrites still count as activity: refresh the doc's 4h lifetime, or the
+		// cleanup task scheduled for the old updatedAt expires the untouched proposal.
+		const now = Date.now();
+		await Promise.all([
+			ctx.db.patch("files_pending_updates", args.existingPendingUpdate._id, {
+				updatedAt: now,
+			}),
+			files_db_schedule_pending_update_cleanup(ctx, {
+				pendingUpdateId: args.existingPendingUpdate._id,
+				expectedUpdatedAt: now,
+			}),
+		]);
 		return Result({ _yay: null });
+	}
+
+	// The newest structural intent wins: a replace-move archives its source on accept, so the
+	// source's own stale pending move (mv a→b before mv -f b→c) must not survive it.
+	if (args.copiedFrom?.archivesSourceOnAccept) {
+		const sourcePendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: args.copiedFrom.nodeId,
+		});
+		if (sourcePendingUpdate?.pendingMove) {
+			await files_pending_update_db_settle_move_row(ctx, { pendingUpdate: sourcePendingUpdate });
+		}
 	}
 
 	const now = Date.now();
@@ -655,7 +750,8 @@ async function files_pending_update_upsert_updates(
 		stagedMarkdown?: string;
 		unstagedMarkdown: string;
 		copiedFrom?: app_convex_Doc<"files_pending_updates">["copiedFrom"];
-		eagerCreated?: boolean;
+		eagerCreatedCommittedSequence?: number;
+		eagerCreatedAncestorIds?: Id<"files_nodes">[];
 	},
 ) {
 	const file = await ctx.db.get("files_nodes", args.nodeId);
@@ -663,17 +759,21 @@ async function files_pending_update_upsert_updates(
 		return Result({ _nay: { message: "Not found" } });
 	}
 
-	// Stamp eager creation with the node's committed last sequence so the hard-delete safety
-	// check compares against an immutable value that later rebases can never bring back in sync.
-	// No resolvable sequence -> no stamp: the proposal degrades to a plain edit and the node is
-	// never hard-deleted.
-	let eagerCreated: app_convex_Doc<"files_pending_updates">["eagerCreated"];
-	if (args.eagerCreated && file.yjsLastSequenceId) {
-		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", file.yjsLastSequenceId);
-		if (yjsLastSequenceDoc) {
-			eagerCreated = { committedSequence: yjsLastSequenceDoc.lastSequence };
-		}
-	}
+	// Stamp the eager create with the sequence the creator captured in the mutation that created
+	// the node — never a read taken here. This upsert can land after a user saved the brand-new
+	// file, and a fresh read would stamp the post-save sequence, letting discard/expiry
+	// hard-delete the node together with the saved content. No capture -> no stamp: the proposal
+	// degrades to a plain edit and the node is never hard-deleted. The created ancestor ids
+	// ride on the stamp only: without it there is no eager hard-delete to clean up after.
+	const eagerCreated: app_convex_Doc<"files_pending_updates">["eagerCreated"] =
+		args.eagerCreatedCommittedSequence !== undefined
+			? {
+					committedSequence: args.eagerCreatedCommittedSequence,
+					...(args.eagerCreatedAncestorIds !== undefined
+						? { createdAncestorIds: args.eagerCreatedAncestorIds }
+						: {}),
+				}
+			: undefined;
 
 	const branchDocsResult = await files_pending_update_resolve_branch_docs(ctx, {
 		organizationId: args.organizationId,
@@ -690,6 +790,14 @@ async function files_pending_update_upsert_updates(
 
 	const { existingPendingUpdate, baseYjsSequence, baseYjsDoc, stagedBranchYjsDoc, unstagedBranchYjsDoc } =
 		branchDocsResult._yay;
+
+	// The node can be archived between the caller's read and this upsert: a new doc on it
+	// could never be saved, so reject before any write. An existing doc must stay editable
+	// and discardable — docs legitimately survive on archived files, and the panel's
+	// content-discard revert runs through this upsert.
+	if (!existingPendingUpdate && file.archiveOperationId !== undefined) {
+		return Result({ _nay: { message: "Not found" } });
+	}
 
 	if (args.stagedMarkdown !== undefined) {
 		const stagedBranchProjection = files_pending_update_workspace_markdown_to_branch({
@@ -774,17 +882,24 @@ export const remove_file_pending_update_if_expired = internalMutation({
 				pendingUpdate,
 			});
 			if (safeToHardDelete) {
-				// Expired eager proposal: remove the eagerly-created destination node entirely. The hard
-				// delete also removes this row, its chunks, and the remaining cleanup tasks.
+				// Expired eager-create proposal: remove the eager-created destination node entirely. The
+				// hard delete also removes this doc, its chunks, and the remaining cleanup tasks.
 				await files_nodes_db_hard_delete_node(ctx, {
 					organizationId: pendingUpdate.organizationId,
 					workspaceId: pendingUpdate.workspaceId,
 					nodeId: pendingUpdate.fileNodeId,
 				});
+				// The leaf is gone: also remove the still-empty folders its eager create committed.
+				await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
+					organizationId: pendingUpdate.organizationId,
+					workspaceId: pendingUpdate.workspaceId,
+					userId: pendingUpdate.userId,
+					createdAncestorIds: pendingUpdate.eagerCreated.createdAncestorIds ?? [],
+				});
 				return null;
 			}
 			// The node became a real file (committed content or another user's draft):
-			// fall through and delete only this row.
+			// fall through and delete only this doc.
 		}
 
 		await Promise.all([
@@ -814,8 +929,19 @@ export const upsert_file_pending_update_in_db = internalMutation({
 		copiedFrom: v.optional(
 			v.object({ nodeId: v.id("files_nodes"), path: v.string(), archivesSourceOnAccept: v.optional(v.boolean()) }),
 		),
-		/** True when the caller eagerly created the node for this proposal (write_file/cp on a new path). */
-		eagerCreated: v.optional(v.boolean()),
+		/**
+		 * The committed last sequence captured by the mutation that eagerly created the node for
+		 * this proposal (write_file/cp on a new path). Internal-only: never expose it to clients,
+		 * or a caller could forge a stamp that lets discard/expiry hard-delete a real file.
+		 */
+		eagerCreatedCommittedSequence: v.optional(v.number()),
+		/**
+		 * `_id`s of the folders the eager create committed for this node, deepest first
+		 * (`createdAncestorIds` from `create_file_by_path`). Stored on the eager-create stamp so
+		 * discard/expiry can remove still-empty created folders together with the leaf.
+		 * Pass only together with `eagerCreatedCommittedSequence`; ignored without it.
+		 */
+		eagerCreatedAncestorIds: v.optional(v.array(v.id("files_nodes"))),
 	},
 	returns: v_result({
 		_yay: v.null(),
@@ -843,7 +969,8 @@ async function action_upsert_file_pending_update_in_db(
 		stagedMarkdown?: string | undefined;
 		unstagedMarkdown: string;
 		copiedFrom?: app_convex_Doc<"files_pending_updates">["copiedFrom"];
-		eagerCreated?: boolean;
+		eagerCreatedCommittedSequence?: number;
+		eagerCreatedAncestorIds?: Id<"files_nodes">[];
 	},
 ) {
 	const result = (await ctx.runMutation(
@@ -922,8 +1049,19 @@ export const upsert_file_pending_update_internal_action = internalAction({
 		copiedFrom: v.optional(
 			v.object({ nodeId: v.id("files_nodes"), path: v.string(), archivesSourceOnAccept: v.optional(v.boolean()) }),
 		),
-		/** True when the caller eagerly created the node for this proposal (write_file/cp on a new path). */
-		eagerCreated: v.optional(v.boolean()),
+		/**
+		 * The committed last sequence captured by the mutation that eagerly created the node for
+		 * this proposal (write_file/cp on a new path). Internal-only: never expose it to clients,
+		 * or a caller could forge a stamp that lets discard/expiry hard-delete a real file.
+		 */
+		eagerCreatedCommittedSequence: v.optional(v.number()),
+		/**
+		 * `_id`s of the folders the eager create committed for this node, deepest first
+		 * (`createdAncestorIds` from `create_file_by_path`). Stored on the eager-create stamp so
+		 * discard/expiry can remove still-empty created folders together with the leaf.
+		 * Pass only together with `eagerCreatedCommittedSequence`; ignored without it.
+		 */
+		eagerCreatedAncestorIds: v.optional(v.array(v.id("files_nodes"))),
 	},
 	returns: v_result({
 		_yay: v.null(),
@@ -976,9 +1114,51 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			fromPath: v.string(),
 			destPath: v.string(),
 			replacesExistingFile: v.boolean(),
+			/** True when the mv targeted the node's committed path and only cancelled its pending move. */
+			cancelledExistingMove: v.boolean(),
 		}),
 	}),
 	handler: async (ctx, args) => {
+		// mv back to the committed source path cancels the pending move instead of failing
+		// the "Source and destination are the same" validation.
+		const sourceNode = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			sourceNode &&
+			sourceNode.organizationId === args.organizationId &&
+			sourceNode.workspaceId === args.workspaceId &&
+			sourceNode.archiveOperationId === undefined
+		) {
+			let destParentPath: string | null = "/";
+			if (args.destParentId !== files_ROOT_ID) {
+				const destParent = await ctx.db.get("files_nodes", args.destParentId);
+				destParentPath =
+					destParent && destParent.organizationId === args.organizationId && destParent.workspaceId === args.workspaceId
+						? destParent.path
+						: null;
+			}
+			if (destParentPath != null && path_join(destParentPath, args.destName) === sourceNode.path) {
+				const pendingUpdateToCancel = await files_db_get_pending_update(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					nodeId: args.nodeId,
+				});
+				if (pendingUpdateToCancel?.pendingMove) {
+					await files_pending_update_db_settle_move_row(ctx, { pendingUpdate: pendingUpdateToCancel });
+					return Result({
+						_yay: {
+							fromPath: sourceNode.path,
+							destPath: sourceNode.path,
+							replacesExistingFile: false,
+							cancelledExistingMove: true,
+						},
+					});
+				}
+			}
+		}
+
+		// Proposal-time validation runs against the proposer's visible tree: a sibling with a
+		// pending move away does not conflict, and two proposals cannot claim one visible path.
 		const validated = await files_nodes_db_validate_pending_move_target(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -986,6 +1166,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			destParentId: args.destParentId,
 			destName: args.destName,
 			replaceTarget: args.replace ? "any-active-file" : undefined,
+			overlayUserId: args.userId,
 		});
 		if (validated._nay) {
 			return validated;
@@ -1021,7 +1202,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 				expectedUpdatedAt: now,
 			});
 		} else {
-			// mv after write_file makes the row mixed; mv after mv replaces the proposal.
+			// mv after write_file makes the doc content-plus-move; mv after mv replaces the proposal.
 			await Promise.all([
 				ctx.db.patch("files_pending_updates", existingPendingUpdate._id, {
 					pendingMove,
@@ -1034,7 +1215,9 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			]);
 		}
 
-		return Result({ _yay: { fromPath: node.path, destPath, replacesExistingFile: replacesNode != null } });
+		return Result({
+			_yay: { fromPath: node.path, destPath, replacesExistingFile: replacesNode != null, cancelledExistingMove: false },
+		});
 	},
 });
 
@@ -1047,7 +1230,6 @@ export const apply_file_pending_move = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
-		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 	},
 	returns: v_result({
 		_yay: v.null(),
@@ -1076,10 +1258,16 @@ export const apply_file_pending_move = mutation({
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 			nodeId: args.nodeId,
-			pendingUpdateId: args.pendingUpdateId,
 		});
-		if (!pendingUpdate || !pendingUpdate.pendingMove) {
-			return Result({ _nay: { message: "Not found" } });
+		if (!pendingUpdate) {
+			// A file-swap cycle accept settles the other members' docs too; the bulk accept
+			// flow still calls accept for them, so a missing doc is a no-op success.
+			return Result({ _yay: null });
+		}
+		if (!pendingUpdate.pendingMove) {
+			// Bulk retries re-run the whole accept with a stale doc snapshot; a doc whose
+			// move was already applied is a no-op success so the content step can proceed.
+			return Result({ _yay: null });
 		}
 
 		const applied = await files_nodes_db_apply_pending_move(ctx, {
@@ -1088,38 +1276,19 @@ export const apply_file_pending_move = mutation({
 			nodeId: args.nodeId,
 			destParentId: pendingUpdate.pendingMove.destParentId,
 			destName: pendingUpdate.pendingMove.destName,
-			replacesNodeId: pendingUpdate.pendingMove.replacesNodeId,
+			userId: userAuth.id,
 			updatedBy: userAuth.id,
 		});
 		if (applied._nay) {
-			// Leave the row intact so the user can retry or discard after a conflict.
+			// Leave the doc intact so the user can retry or discard after a conflict
+			// (for example a folder occupying the destination path).
 			return Result({ _nay: applied._nay });
 		}
 
-		if (files_pending_update_content_of(pendingUpdate) || pendingUpdate.copiedFrom) {
-			// Mixed/copy row: the content proposal survives the applied move, and a copiedFrom row
-			// must never be deleted here — that would strand the eagerly-created destination node.
-			const now = Date.now();
-			await Promise.all([
-				ctx.db.patch("files_pending_updates", pendingUpdate._id, {
-					pendingMove: undefined,
-					updatedAt: now,
-				}),
-				files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-					expectedUpdatedAt: now,
-				}),
-			]);
-		} else {
-			await Promise.all([
-				files_db_cancel_pending_update_cleanup_tasks(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-				}),
-				files_pending_update_db_delete_chunks(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-				}),
-				ctx.db.delete("files_pending_updates", pendingUpdate._id),
-			]);
+		await files_pending_update_db_settle_move_row(ctx, { pendingUpdate });
+		// A file-swap cycle applies the other members' moves too: settle their docs the same way.
+		for (const cycleMemberPendingUpdate of applied._yay.cycleMemberPendingUpdates) {
+			await files_pending_update_db_settle_move_row(ctx, { pendingUpdate: cycleMemberPendingUpdate });
 		}
 
 		return Result({ _yay: null });
@@ -1130,7 +1299,6 @@ export const discard_file_pending_structural = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
-		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 	},
 	returns: v_result({
 		_yay: v.null(),
@@ -1159,10 +1327,10 @@ export const discard_file_pending_structural = mutation({
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 			nodeId: args.nodeId,
-			pendingUpdateId: args.pendingUpdateId,
 		});
 		if (!pendingUpdate) {
-			return Result({ _nay: { message: "Nothing to discard" } });
+			// Already gone (another tab discarded or accepted it): a no-op success.
+			return Result({ _yay: null });
 		}
 
 		if (pendingUpdate.copiedFrom || pendingUpdate.eagerCreated) {
@@ -1173,12 +1341,19 @@ export const discard_file_pending_structural = mutation({
 				pendingUpdate,
 			});
 			if (safeToHardDelete) {
-				// Discarding an eager proposal removes the eagerly-created destination node entirely;
-				// the hard delete subsumes this row and its chunks.
+				// Discarding an eager-create proposal removes the eager-created destination node
+				// entirely; the hard delete subsumes this doc and its chunks.
 				await files_nodes_db_hard_delete_node(ctx, {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					nodeId: args.nodeId,
+				});
+				// The leaf is gone: also remove the still-empty folders its eager create committed.
+				await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: pendingUpdate.userId,
+					createdAncestorIds: pendingUpdate.eagerCreated?.createdAncestorIds ?? [],
 				});
 				return Result({ _yay: null });
 			}
@@ -1198,11 +1373,12 @@ export const discard_file_pending_structural = mutation({
 		}
 
 		if (!pendingUpdate.pendingMove) {
-			return Result({ _nay: { message: "Nothing to discard" } });
+			// No structural aspect left (a content-only doc): a no-op success.
+			return Result({ _yay: null });
 		}
 
 		if (files_pending_update_content_of(pendingUpdate)) {
-			// Mixed row: drop the move proposal, keep the content proposal.
+			// Content-plus-move doc: drop the move proposal, keep the content proposal.
 			const now = Date.now();
 			await Promise.all([
 				ctx.db.patch("files_pending_updates", pendingUpdate._id, {
@@ -1278,6 +1454,43 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 			});
 		}
 
+		// Update-only, and only the exact doc the client synced: a missing doc means the
+		// proposal was discarded or fully accepted while this sync was in flight; a doc with a
+		// different id means a new proposal replaced it, and patching that doc would overwrite
+		// it with the dead proposal's branches. Inserting would resurrect the dead proposal.
+		if (
+			!existingPendingUpdate ||
+			(args.pendingUpdateId != null && existingPendingUpdate._id !== args.pendingUpdateId)
+		) {
+			return Result({
+				_nay: {
+					message: "Not found",
+				},
+			});
+		}
+
+		// A revert in another tab can degrade the doc to move-only: patching the dead
+		// content branches back would resurrect the reverted proposal.
+		const existingContent = files_pending_update_content_of(existingPendingUpdate);
+		if (!existingContent) {
+			return Result({
+				_nay: {
+					message: "Not found",
+				},
+			});
+		}
+
+		// The doc's base only advances to live sequences, so a captured base below it means
+		// the sync inputs predate the doc's last save (e.g. another tab's save landing while
+		// this sync was in flight). Reject before any write; the caller must re-read.
+		if (args.baseYjsSequence < existingContent.baseYjsSequence) {
+			return Result({
+				_nay: {
+					message: "Stale save",
+				},
+			});
+		}
+
 		const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(args.baseYjsUpdate);
 		const stagedBranchYjsDoc = files_yjs_doc_create_from_array_buffer_update(args.stagedBranchYjsUpdate);
 		const unstagedBranchYjsDoc = files_yjs_doc_create_from_array_buffer_update(args.unstagedBranchYjsUpdate);
@@ -1302,15 +1515,15 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 		}
 
 		if (!branchDocsHaveChanges._yay) {
-			// No-change rows normally delete/degrade, but two kinds must persist: eager rows (empty
-			// write_file / empty-source copy) store base == staged == unstaged so the yjs fields
-			// survive and the eager node stays discardable; `mv -f` replace-moves must exist to
+			// No-change docs normally delete/degrade, but two kinds must persist: eager-created docs
+			// (empty write_file / empty-source copy) store base == staged == unstaged so the yjs fields
+			// survive and the eager-created node stays discardable; `mv -f` replace-moves must exist to
 			// accept, because accepting an identical-content replace still archives the source.
 			if (!existingPendingUpdate?.eagerCreated && !existingPendingUpdate?.copiedFrom?.archivesSourceOnAccept) {
 				if (existingPendingUpdate?.pendingMove) {
-					// Content collapsed back to base under a move proposal: degrade to a pure move, keep
-					// the row. Only non-eager, non-replace-move rows reach here, so copiedFrom is stale
-					// provenance — clear it.
+					// Content collapsed back to base under a move proposal: degrade to a move-only doc,
+					// keep the doc. Only docs that are neither eager-created nor replace-moves reach here,
+					// so copiedFrom is stale provenance — clear it.
 					const now = Date.now();
 					await Promise.all([
 						ctx.db.patch("files_pending_updates", existingPendingUpdate._id, {
@@ -1367,9 +1580,21 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 				unstagedBranchYjsUpdate: args.unstagedBranchYjsUpdate,
 			})
 		) {
+			// Same-bytes rewrites still count as activity: refresh the doc's 4h lifetime, or the
+			// cleanup task scheduled for the old updatedAt expires the untouched proposal.
+			const now = Date.now();
+			await Promise.all([
+				ctx.db.patch("files_pending_updates", existingPendingUpdate._id, {
+					updatedAt: now,
+				}),
+				files_db_schedule_pending_update_cleanup(ctx, {
+					pendingUpdateId: existingPendingUpdate._id,
+					expectedUpdatedAt: now,
+				}),
+			]);
 			return Result({
 				_yay: {
-					pendingUpdate: existingPendingUpdate,
+					pendingUpdate: { ...existingPendingUpdate, updatedAt: now },
 				},
 			});
 		}
@@ -1384,65 +1609,37 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 			});
 		}
 		const now = Date.now();
-		let pendingUpdateId = existingPendingUpdate?._id ?? null;
+		const pendingUpdateId = existingPendingUpdate._id;
 
-		if (!existingPendingUpdate) {
-			pendingUpdateId = await ctx.db.insert("files_pending_updates", {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: userAuth.id,
-				fileNodeId: args.nodeId,
+		await Promise.all([
+			ctx.db.patch("files_pending_updates", pendingUpdateId, {
 				baseYjsSequence: args.baseYjsSequence,
 				baseYjsUpdate: args.baseYjsUpdate,
 				stagedBranchYjsUpdate: args.stagedBranchYjsUpdate,
 				unstagedBranchYjsUpdate: args.unstagedBranchYjsUpdate,
 				size: files_get_utf8_byte_size(unstagedMarkdown._yay),
 				updatedAt: now,
-			});
-		} else {
-			await Promise.all([
-				ctx.db.patch("files_pending_updates", existingPendingUpdate._id, {
-					baseYjsSequence: args.baseYjsSequence,
-					baseYjsUpdate: args.baseYjsUpdate,
-					stagedBranchYjsUpdate: args.stagedBranchYjsUpdate,
-					unstagedBranchYjsUpdate: args.unstagedBranchYjsUpdate,
-					size: files_get_utf8_byte_size(unstagedMarkdown._yay),
-					updatedAt: now,
-				}),
-				// Refresh the expiry window from this latest doc version because rebasing
-				// changes the authoritative pending snapshot.
-				files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: existingPendingUpdate._id,
-					expectedUpdatedAt: now,
-				}),
-			]);
-		}
-		const schedulePendingUpdateCleanupPromise =
-			pendingUpdateId && !existingPendingUpdate
-				? // Reset the pending update expiry on rebase.
-					files_db_schedule_pending_update_cleanup(ctx, {
-						pendingUpdateId,
-						expectedUpdatedAt: now,
-					})
-				: null;
+			}),
+			// Refresh the expiry window from this latest doc version because rebasing
+			// changes the authoritative pending snapshot.
+			files_db_schedule_pending_update_cleanup(ctx, {
+				pendingUpdateId,
+				expectedUpdatedAt: now,
+			}),
+		]);
 
 		// Rebase rewrites the unstaged branch, so always refresh pending Markdown/plain-text chunk docs and metadata docs.
-		if (pendingUpdateId) {
-			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: userAuth.id,
-				nodeId: args.nodeId,
-				pendingUpdateId,
-				unstagedMarkdown: unstagedMarkdown._yay,
-			});
-			files_pending_update_log_replace_chunks_nay(chunksReplaced, { pendingUpdateId, nodeId: args.nodeId });
-		}
+		const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			nodeId: args.nodeId,
+			pendingUpdateId,
+			unstagedMarkdown: unstagedMarkdown._yay,
+		});
+		files_pending_update_log_replace_chunks_nay(chunksReplaced, { pendingUpdateId, nodeId: args.nodeId });
 
-		const [, nextPendingUpdate] = await Promise.all([
-			schedulePendingUpdateCleanupPromise,
-			pendingUpdateId ? ctx.db.get("files_pending_updates", pendingUpdateId) : Promise.resolve(null),
-		]);
+		const nextPendingUpdate = await ctx.db.get("files_pending_updates", pendingUpdateId);
 		if (!nextPendingUpdate) {
 			return Result({
 				_nay: {
@@ -1601,20 +1798,38 @@ export const list_files_pending_updates = query({
 			return [];
 		}
 
-		const filesPendingUpdates = await ctx.db
-			.query("files_pending_updates")
-			.withIndex("by_organization_workspace_user_fileNode", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("userId", userAuth.id),
-			)
-			.order("asc")
-			.collect();
-
-		return filesPendingUpdates;
+		return await files_db_list_pending_updates_for_user(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+		});
 	},
 });
+
+/**
+ * One user's pending update docs plus the nodes their move/replace fields reference —
+ * the inputs the pending path overlay is built from. Server callers (bash, AI tools)
+ * fetch this once per user; Convex caches it per args until the docs change.
+ */
+export const get_pending_path_overlay_data = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+	},
+	returns: v.object({
+		pendingUpdates: v.array(doc(app_convex_schema, "files_pending_updates")),
+		referencedNodes: v.array(doc(app_convex_schema, "files_nodes")),
+	}),
+	handler: async (ctx, args) => {
+		return await files_db_get_pending_path_overlay_data(ctx, args);
+	},
+});
+
+export type files_pending_updates_get_pending_path_overlay_data_Result =
+	typeof get_pending_path_overlay_data extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const get_file_pending_update_last_sequence_saved = query({
 	args: {
@@ -1649,11 +1864,15 @@ export const get_file_pending_update_last_sequence_saved = query({
 });
 
 /**
- * A replace-move is a copy that must also archive its source when accepted: run on any save
- * that publishes content. A save that publishes nothing only clears the provenance (the
- * proposal degrades to a plain edit). No-op when the source is gone, archived, or out of scope.
+ * A replace-move is a copy that must also archive its source when accepted. A full save
+ * always runs this — even an identical-content save that publishes nothing, because
+ * accepting the replace must still consume the source. A partial save runs this only when
+ * it published staged content; one that publishes nothing only clears the provenance (the
+ * proposal degrades to a plain edit). When the archived source's own doc is again a
+ * replace-move, the deeper sources are archived too (chained mv -f). Each hop no-ops when
+ * its source is gone, archived, or out of scope.
  */
-async function archive_replace_source_node(
+async function files_pending_update_db_archive_replace_source_chain(
 	ctx: MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -1663,20 +1882,49 @@ async function archive_replace_source_node(
 		now: number;
 	},
 ) {
-	if (!args.copiedFrom?.archivesSourceOnAccept) {
-		return;
+	// Walk the whole replace chain (mv -f a b, then mv -f b c): the accepted content was copied
+	// from the visible chain result, so accepting the head consumes every hop. The visited set
+	// bounds the walk if provenance ever loops.
+	const visitedNodeIds = new Set<Id<"files_nodes">>();
+	let copiedFrom = args.copiedFrom;
+	while (copiedFrom?.archivesSourceOnAccept && !visitedNodeIds.has(copiedFrom.nodeId)) {
+		visitedNodeIds.add(copiedFrom.nodeId);
+		const sourceNode = await ctx.db.get("files_nodes", copiedFrom.nodeId);
+		if (
+			!sourceNode ||
+			sourceNode.organizationId !== args.organizationId ||
+			sourceNode.workspaceId !== args.workspaceId ||
+			sourceNode.kind !== "file" ||
+			sourceNode.archiveOperationId !== undefined
+		) {
+			return;
+		}
+		await files_nodes_db_archive_nodes(ctx, { nodeIds: [sourceNode._id], updatedBy: args.updatedBy, now: args.now });
+
+		// The acting user's leftover doc on the source must not stay acceptable on the archived
+		// file: it is either a pre-mv content edit whose content the replace proposal already
+		// carries, or itself a replace-move doc (chained mv -f) whose own source the next hop
+		// archives. Other users' docs stay untouched.
+		const sourcePendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.updatedBy,
+			nodeId: sourceNode._id,
+		});
+		if (!sourcePendingUpdate) {
+			return;
+		}
+		await Promise.all([
+			files_db_cancel_pending_update_cleanup_tasks(ctx, {
+				pendingUpdateId: sourcePendingUpdate._id,
+			}),
+			files_pending_update_db_delete_chunks(ctx, {
+				pendingUpdateId: sourcePendingUpdate._id,
+			}),
+			ctx.db.delete("files_pending_updates", sourcePendingUpdate._id),
+		]);
+		copiedFrom = sourcePendingUpdate.copiedFrom;
 	}
-	const sourceNode = await ctx.db.get("files_nodes", args.copiedFrom.nodeId);
-	if (
-		!sourceNode ||
-		sourceNode.organizationId !== args.organizationId ||
-		sourceNode.workspaceId !== args.workspaceId ||
-		sourceNode.kind !== "file" ||
-		sourceNode.archiveOperationId !== undefined
-	) {
-		return;
-	}
-	await files_nodes_db_archive_nodes(ctx, { nodeIds: [sourceNode._id], updatedBy: args.updatedBy, now: args.now });
 }
 
 export const save_file_pending_update_in_db = internalMutation({
@@ -1715,6 +1963,20 @@ export const save_file_pending_update_in_db = internalMutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		// The target file can be archived (or removed) after the proposal, e.g. from the Files UI.
+		// Fail before any writes, or the save would bill, publish onto the archived file, and a
+		// replace-move would still archive its source with no active result. The doc stays intact.
+		const targetNode = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!targetNode ||
+			targetNode.organizationId !== membership.organizationId ||
+			targetNode.workspaceId !== membership.workspaceId ||
+			targetNode.kind !== "file" ||
+			targetNode.archiveOperationId !== undefined
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
 		const pendingUpdate = await files_db_get_pending_update(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1723,7 +1985,11 @@ export const save_file_pending_update_in_db = internalMutation({
 			pendingUpdateId: args.pendingUpdateId,
 		});
 
-		if (!pendingUpdate) {
+		// Only the exact doc the client had open: a missing doc means the proposal was
+		// discarded or fully accepted while this save was in flight; a doc with a different id
+		// means a new proposal replaced it, and saving that doc would publish (and for a
+		// replace-move, accept) a proposal the user never accepted.
+		if (!pendingUpdate || (args.pendingUpdateId != null && pendingUpdate._id !== args.pendingUpdateId)) {
 			return Result({
 				_nay: {
 					message: "Not found",
@@ -1733,11 +1999,28 @@ export const save_file_pending_update_in_db = internalMutation({
 
 		const pendingUpdateContent = files_pending_update_content_of(pendingUpdate);
 		if (!pendingUpdateContent) {
-			// Structural-only rows (pure move) have nothing to publish; Accept goes through
+			// Move-only docs have nothing to publish; Accept goes through
 			// apply_file_pending_move instead.
 			return Result({
 				_nay: {
 					message: "No content to save",
+				},
+			});
+		}
+
+		// The action-read base must still be the node's current last sequence: the doc's next
+		// base is rebuilt from the action-read bytes, so stamping the pushed sequence onto a
+		// base that misses a commit landed during the action gap would hide that commit from
+		// pending reads. A mismatch covers both a second tab replaying an old save and another
+		// user committing between the action read and this mutation. Reject before any write
+		// or billing; the caller must re-read.
+		const lastSequenceDoc = targetNode.yjsLastSequenceId
+			? await ctx.db.get("files_yjs_docs_last_sequences", targetNode.yjsLastSequenceId)
+			: null;
+		if (lastSequenceDoc?.lastSequence !== args.baseYjsSequence) {
+			return Result({
+				_nay: {
+					message: "Stale save",
 				},
 			});
 		}
@@ -1875,8 +2158,9 @@ export const save_file_pending_update_in_db = internalMutation({
 		const nextBaseYjsSequence = newSequence ?? args.baseYjsSequence;
 
 		if (unstagedMatchesSavedBase._yay) {
-			// Archiving touches only the source node, so it runs in parallel with the row writes below.
-			const archiveSourcePromise = archive_replace_source_node(ctx, {
+			// Archiving walks the replace chain: each hop's source node and the acting user's own
+			// doc on it — never this doc — so it runs in parallel with the doc writes below.
+			const archiveSourcePromise = files_pending_update_db_archive_replace_source_chain(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				copiedFrom: pendingUpdate.copiedFrom,
@@ -1885,9 +2169,9 @@ export const save_file_pending_update_in_db = internalMutation({
 			});
 
 			if (pendingUpdate.pendingMove) {
-				// Save publishes the content only; the move proposal survives as a pure-move row.
+				// Save publishes the content only; the move proposal survives as a move-only doc.
 				// The content is committed now, so expiry must never hard-delete the node: clear the
-				// eager stamp (and the now-stale copy provenance).
+				// eager-create stamp (and the now-stale copy provenance).
 				await Promise.all([
 					archiveSourcePromise,
 					files_pending_update_upsert_last_sequence_saved(ctx, {
@@ -1969,7 +2253,7 @@ export const save_file_pending_update_in_db = internalMutation({
 			// A partial save that published nothing (nothing staged) must not complete the move;
 			// the patch below still clears the provenance, so the proposal degrades to a plain edit.
 			diffUpdateForLatestFileYjsDoc
-				? archive_replace_source_node(ctx, {
+				? files_pending_update_db_archive_replace_source_chain(ctx, {
 						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
 						copiedFrom: pendingUpdate.copiedFrom,

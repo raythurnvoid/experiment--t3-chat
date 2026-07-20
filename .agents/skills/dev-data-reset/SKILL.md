@@ -85,5 +85,5 @@ For each plugin, in order:
 
 - `plugins_versions` has all four plugins with `reviewStatus: "passed"`; `plugins_workspace_installations` has one installation doc per plugin for the workspace; the seven expected publisher-secret docs show `valuePreview: "configured"` (1 image + 4 video + 2 pdf; Gallery has none).
 - Open the Gallery page once and confirm its iframe reaches the grid or empty state. This checks the published frontend asset, SDK handshake, session mint, and installation together.
-- Functional smoke: upload a small image into a files workspace and poll for the `.description.md` sibling (~2 min). For deep QA use the playbooks: `packages/app/playwriter-playbooks/image-plugin-description.md` and `video-plugin-transcription.md`.
+- Functional smoke: upload a small image into a files workspace and poll for the `.description.md` sibling (~2 min). For deep QA use the playbooks in `.agents/skills/app-playwriter-harness/references/`: `image-plugin-description.md` and `video-plugin-transcription.md`.
 - Report which deployment was reset, every user id and purge mode used, and any skipped step with its real blocker.

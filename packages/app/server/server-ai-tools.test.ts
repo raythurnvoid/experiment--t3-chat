@@ -33,6 +33,7 @@ import {
 	ai_chat_tool_create_execute_code,
 	replace_once_or_all,
 } from "./server-ai-tools.ts";
+import { files_ROOT_ID } from "./files.ts";
 import { has_defined_property } from "../shared/shared-utils.ts";
 
 type server_ai_tools_test_user_identity = NonNullable<Awaited<ReturnType<ActionCtx["auth"]["getUserIdentity"]>>>;
@@ -47,6 +48,9 @@ const server_ai_tools_test_ctx_data = {
 	userId: server_ai_tools_test_user_id,
 } as const;
 const server_ai_tools_test_db_files_mount = "/home/cloud-usr/w/personal/home";
+
+// Empty pending path overlay data: the tools fetch this before listing or creating.
+const server_ai_tools_test_overlay_empty = { pendingUpdates: [], referencedNodes: [] };
 
 const server_ai_tools_test_user_identity_default = {
 	issuer: "https://clerk.test",
@@ -648,8 +652,9 @@ test("list_files tool: execute renders files and folders, applies ignore, and ca
 		truncated: false,
 	};
 
-	const { ctx, runQuery } = makeCtx(async (_ref, _args) => {
-		// Only list_files is called by this tool
+	const { ctx, runQuery } = makeCtx(async (_ref, args) => {
+		// The tool fetches the pending path overlay first, then list_files
+		if (!("path" in args)) return server_ai_tools_test_overlay_empty;
 		return listReturn;
 	});
 
@@ -670,10 +675,10 @@ test("list_files tool: execute renders files and folders, applies ignore, and ca
 		throw new Error("`result` is AsyncIterable but expected sync object");
 	}
 
-	// Verify convex call
-	expect(runQuery).toHaveBeenCalledTimes(1);
+	// Verify convex calls (overlay fetch first, then the listing)
+	expect(runQuery).toHaveBeenCalledTimes(2);
 	const calls = runQuery.mock.calls;
-	const [, args] = calls[0];
+	const [, args] = calls[1];
 	expect(args).toEqual({
 		path: "/",
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
@@ -693,6 +698,138 @@ test("list_files tool: execute renders files and folders, applies ignore, and ca
 	);
 });
 
+test("list_files tool: shows a pending rename at its new path and not the old one", async () => {
+	const now = Date.now();
+	const { ctx, runQuery } = makeCtx(async (_ref, args) => {
+		if (!("path" in args)) {
+			return {
+				pendingUpdates: [{ fileNodeId: "node_old", pendingMove: { destParentId: "folder_docs", destName: "new.md" } }],
+				referencedNodes: [
+					{ _id: "node_old", path: "/docs/old.md", kind: "file" },
+					{ _id: "folder_docs", path: "/docs", kind: "folder" },
+				],
+			};
+		}
+		return {
+			items: [
+				{ path: "/docs", kind: "folder", updatedAt: now, depthTruncated: false },
+				{ path: "/docs/old.md", kind: "file", updatedAt: now, depthTruncated: false },
+			],
+			truncated: false,
+		};
+	});
+
+	const tool = ai_chat_tool_create_list_files(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_list_files>[1],
+	);
+	const result = await tool.execute?.({ path: "/", maxDepth: 5, limit: 100 }, { toolCallId: "test", messages: [] });
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	// The rename is covered by projecting the committed result, so no injection lookup runs.
+	expect(runQuery).toHaveBeenCalledTimes(2);
+	expect(result.output).toBe("/docs/\n/docs/new.md");
+});
+
+test("list_files tool: lists a moved folder's new path from its committed source", async () => {
+	const now = Date.now();
+	const { ctx, runQuery } = makeCtx(async (_ref, args) => {
+		if (!("path" in args)) {
+			return {
+				pendingUpdates: [{ fileNodeId: "node_docs", pendingMove: { destParentId: files_ROOT_ID, destName: "docs2" } }],
+				referencedNodes: [{ _id: "node_docs", path: "/docs", kind: "folder" }],
+			};
+		}
+		return {
+			items: [{ path: "/docs/a.md", kind: "file", updatedAt: now, depthTruncated: false }],
+			truncated: false,
+		};
+	});
+
+	const tool = ai_chat_tool_create_list_files(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_list_files>[1],
+	);
+	const result = await tool.execute?.({ path: "/docs2", maxDepth: 5, limit: 100 }, { toolCallId: "test", messages: [] });
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	// The visible scope translates to the committed source folder before the query.
+	const [, listArgs] = runQuery.mock.calls[1]!;
+	expect(listArgs).toEqual(expect.objectContaining({ path: "/docs" }));
+	expect(result.output).toBe("/docs2/a.md");
+});
+
+test("list_files tool: splices a moved-in folder's committed subtree", async () => {
+	const now = Date.now();
+	const { ctx, runQuery } = makeCtx(async (_ref, args) => {
+		if ("folderPath" in args) {
+			// list_subtree splice of the moved folder's committed source
+			return {
+				page: [
+					{ path: "/archive/reports-2024", kind: "folder", updatedAt: now },
+					{ path: "/archive/reports-2024/deep.md", kind: "file", updatedAt: now },
+				],
+				continueCursor: "",
+				isDone: true,
+			};
+		}
+		if (!("path" in args)) {
+			return {
+				pendingUpdates: [{ fileNodeId: "node_r2024", pendingMove: { destParentId: "folder_reports", destName: "2024" } }],
+				referencedNodes: [
+					{ _id: "node_r2024", path: "/archive/reports-2024", kind: "folder" },
+					{ _id: "folder_reports", path: "/reports", kind: "folder" },
+				],
+			};
+		}
+		if ("maxDepth" in args) {
+			return {
+				items: [{ path: "/reports/summary.md", kind: "file", updatedAt: now, depthTruncated: false }],
+				truncated: false,
+			};
+		}
+		// get_by_path fetch of the injected committed folder doc
+		return { _id: "node_r2024", path: "/archive/reports-2024", kind: "folder", updatedAt: now };
+	});
+
+	const tool = ai_chat_tool_create_list_files(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_list_files>[1],
+	);
+	const result = await tool.execute?.({ path: "/reports", maxDepth: 5, limit: 100 }, { toolCallId: "test", messages: [] });
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	// The committed subtree is fetched from the moved folder's source path, first page.
+	const subtreeCall = runQuery.mock.calls.find(([, callArgs]) => "folderPath" in callArgs);
+	expect(subtreeCall?.[1]).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		folderPath: "/archive/reports-2024",
+		numItems: 20,
+		cursor: null,
+	});
+	expect(result.output).toBe("/reports/summary.md\n/reports/2024/\n/reports/2024/deep.md");
+	expect(result.metadata.truncated).toBe(false);
+});
+
 test("glob_files tool: executes traversal with include pattern and sorts newest matches first", async () => {
 	const listReturn = {
 		items: [
@@ -702,7 +839,9 @@ test("glob_files tool: executes traversal with include pattern and sorts newest 
 		truncated: false,
 	};
 
-	const { ctx, runQuery } = makeCtx(async (_ref, _args) => listReturn);
+	const { ctx, runQuery } = makeCtx(async (_ref, args) =>
+		"path" in args ? listReturn : server_ai_tools_test_overlay_empty,
+	);
 	const tool = ai_chat_tool_create_glob_files(
 		ctx,
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_glob_files>[1],
@@ -719,8 +858,8 @@ test("glob_files tool: executes traversal with include pattern and sorts newest 
 		throw new Error("`result` is AsyncIterable but expected sync object");
 	}
 
-	expect(runQuery).toHaveBeenCalledTimes(1);
-	const [, args] = runQuery.mock.calls[0]!;
+	expect(runQuery).toHaveBeenCalledTimes(2);
+	const [, args] = runQuery.mock.calls[1]!;
 	expect(args).toEqual({
 		path: "/docs",
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
@@ -733,6 +872,145 @@ test("glob_files tool: executes traversal with include pattern and sorts newest 
 	expect(result.output).toBe("/docs/new-target.md\n/docs/old-target.md");
 });
 
+test("glob_files tool: a pending rename matches by its new name via injection", async () => {
+	const { ctx, runQuery } = makeCtx(async (_ref, args) => {
+		if (!("path" in args)) {
+			return {
+				pendingUpdates: [
+					{ fileNodeId: "node_old", pendingMove: { destParentId: "folder_docs", destName: "target-notes.md" } },
+				],
+				referencedNodes: [
+					{ _id: "node_old", path: "/docs/old-name.md", kind: "file" },
+					{ _id: "folder_docs", path: "/docs", kind: "folder" },
+				],
+			};
+		}
+		if ("include" in args) {
+			// The committed traversal matched nothing for the new-name pattern
+			return { items: [], truncated: false };
+		}
+		// get_by_path fetch of the injected committed doc
+		return { _id: "node_old", path: "/docs/old-name.md", kind: "file", updatedAt: 42 };
+	});
+
+	const tool = ai_chat_tool_create_glob_files(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_glob_files>[1],
+	);
+	const result = await tool.execute?.(
+		{ pattern: "**/target*.md", path: "/docs", limit: 100 },
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	expect(result.output).toBe("/docs/target-notes.md");
+	// The injected doc is fetched as the committed doc, without the overlay arg.
+	const getByPathCall = runQuery.mock.calls.find(([, callArgs]) => "path" in callArgs && !("include" in callArgs));
+	expect(getByPathCall?.[1]).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		path: "/docs/old-name.md",
+	});
+});
+
+test("glob_files tool: drops a result that only matches by its old name", async () => {
+	const { ctx, runQuery } = makeCtx(async (_ref, args) => {
+		if (!("path" in args)) {
+			return {
+				pendingUpdates: [
+					{ fileNodeId: "node_old", pendingMove: { destParentId: "folder_docs", destName: "target-notes.md" } },
+				],
+				referencedNodes: [
+					{ _id: "node_old", path: "/docs/old-name.md", kind: "file" },
+					{ _id: "folder_docs", path: "/docs", kind: "folder" },
+				],
+			};
+		}
+		return {
+			items: [{ path: "/docs/old-name.md", kind: "file", updatedAt: 42, depthTruncated: false }],
+			truncated: false,
+		};
+	});
+
+	const tool = ai_chat_tool_create_glob_files(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_glob_files>[1],
+	);
+	const result = await tool.execute?.(
+		{ pattern: "**/old-name*.md", path: "/docs", limit: 100 },
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	// The renamed file no longer matches by its old name, and nothing else does.
+	expect(runQuery).toHaveBeenCalledTimes(2);
+	expect(result.output).toBe("No files found");
+	expect(result.metadata).toEqual({ count: 0, truncated: false });
+});
+
+test("glob_files tool: matches files inside a moved-in folder by their visible path", async () => {
+	const { ctx } = makeCtx(async (_ref, args) => {
+		if ("folderPath" in args) {
+			// list_subtree splice of the moved folder's committed source
+			return {
+				page: [
+					{ path: "/archive/reports-2024", kind: "folder", updatedAt: 5 },
+					{ path: "/archive/reports-2024/deep.md", kind: "file", updatedAt: 6 },
+				],
+				continueCursor: "",
+				isDone: true,
+			};
+		}
+		if (!("path" in args)) {
+			return {
+				pendingUpdates: [{ fileNodeId: "node_r2024", pendingMove: { destParentId: "folder_reports", destName: "2024" } }],
+				referencedNodes: [
+					{ _id: "node_r2024", path: "/archive/reports-2024", kind: "folder" },
+					{ _id: "folder_reports", path: "/reports", kind: "folder" },
+				],
+			};
+		}
+		if ("include" in args) {
+			// The committed traversal of the scope has no matching files of its own
+			return { items: [], truncated: false };
+		}
+		// get_by_path fetch of the injected committed folder doc
+		return { _id: "node_r2024", path: "/archive/reports-2024", kind: "folder", updatedAt: 5 };
+	});
+
+	const tool = ai_chat_tool_create_glob_files(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_glob_files>[1],
+	);
+	const result = await tool.execute?.(
+		{ pattern: "**/*.md", path: "/reports", limit: 100 },
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	// The folder itself does not match *.md, but its spliced descendant does.
+	expect(result.output).toBe("/reports/2024/deep.md");
+	expect(result.metadata).toEqual({ count: 1, truncated: false });
+});
+
 test("grep_files tool: searches markdown content for listed files", async () => {
 	const listReturn = {
 		items: [
@@ -742,14 +1020,17 @@ test("grep_files tool: searches markdown content for listed files", async () => 
 		truncated: false,
 	};
 
-	const { ctx, runQuery, runAction } = makeCtx(async (_ref, _args) => listReturn, {
-		runActionImpl: async () => ({
-			nodeId: "readme",
-			displayNodeId: "readme",
-			content: "# Title\nneedle here",
-			pendingUpdateId: undefined,
-		}),
-	});
+	const { ctx, runQuery, runAction } = makeCtx(
+		async (_ref, args) => ("path" in args ? listReturn : server_ai_tools_test_overlay_empty),
+		{
+			runActionImpl: async () => ({
+				nodeId: "readme",
+				displayNodeId: "readme",
+				content: "# Title\nneedle here",
+				pendingUpdateId: undefined,
+			}),
+		},
+	);
 	const tool = ai_chat_tool_create_grep_files(
 		ctx,
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_grep_files>[1],
@@ -766,8 +1047,8 @@ test("grep_files tool: searches markdown content for listed files", async () => 
 		throw new Error("`result` is AsyncIterable but expected sync object");
 	}
 
-	expect(runQuery).toHaveBeenCalledTimes(1);
-	const [, queryArgs] = runQuery.mock.calls[0]!;
+	expect(runQuery).toHaveBeenCalledTimes(2);
+	const [, queryArgs] = runQuery.mock.calls[1]!;
 	expect(queryArgs).toEqual({
 		path: "/docs",
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
@@ -783,6 +1064,7 @@ test("grep_files tool: searches markdown content for listed files", async () => 
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		userId: server_ai_tools_test_user_id,
+		overlayUserId: server_ai_tools_test_user_id,
 	});
 	expect(result.metadata).toEqual({ matches: 1, truncated: false });
 	expect(result.output).toContain("/docs/readme.md:");
@@ -823,6 +1105,7 @@ test("read_file tool forwards pendingUpdateId and returns it in metadata", async
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		userId: server_ai_tools_test_user_id,
 		pendingUpdateId,
+		overlayUserId: server_ai_tools_test_user_id,
 	});
 	expect(runQuery).not.toHaveBeenCalled();
 
@@ -833,6 +1116,63 @@ test("read_file tool forwards pendingUpdateId and returns it in metadata", async
 	expect(result.metadata.nodeId).toBe("p123");
 	expect(result.metadata.contentNodeId).toBe("p123");
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
+});
+
+test("read_file suggestions show visible paths through pending moves", async () => {
+	const { ctx, runQuery } = makeCtx(
+		async (_ref, args) => {
+			if ("parentId" in args) {
+				return {
+					items: [
+						{ name: "old-thing.md", kind: "file", path: "/docs/old-thing.md", updatedAt: 0, updatedBy: "user_1" },
+						{ name: "best-setup.md", kind: "file", path: "/docs/best-setup.md", updatedAt: 0, updatedBy: "user_1" },
+					],
+					continueCursor: "",
+					isDone: true,
+				};
+			}
+			if ("path" in args) {
+				return { _id: "folder_docs", kind: "folder", path: "/docs" };
+			}
+			return {
+				// One sibling is renamed to a matching name; another matching sibling is hidden
+				// because a pending replace-copy archives it on accept.
+				pendingUpdates: [
+					{ fileNodeId: "node_old_thing", pendingMove: { destParentId: "folder_docs", destName: "new-setup.md" } },
+					{ fileNodeId: "node_copy_dest", copiedFrom: { nodeId: "node_best", archivesSourceOnAccept: true } },
+				],
+				referencedNodes: [
+					{ _id: "node_old_thing", path: "/docs/old-thing.md", kind: "file" },
+					{ _id: "folder_docs", path: "/docs", kind: "folder" },
+					{ _id: "node_best", path: "/docs/best-setup.md", kind: "file" },
+				],
+			};
+		},
+		{ runActionImpl: async () => null },
+	);
+
+	const tool = ai_chat_tool_create_read_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_read_file>[1],
+	);
+	const result = await tool.execute?.({ path: "/docs/setup.md", limit: 2000 }, { toolCallId: "test", messages: [] });
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	expect(result.output).toBe("File not found. Did you mean one of these?\n/docs/new-setup.md");
+	// The parent lookup resolves through the overlay too.
+	const parentCall = runQuery.mock.calls.find(([, callArgs]) => "path" in callArgs);
+	expect(parentCall?.[1]).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		path: "/docs",
+		overlayUserId: server_ai_tools_test_user_id,
+	});
 });
 
 test("write_file tool stores pending unstaged branch updates from the agent", async () => {
@@ -874,6 +1214,7 @@ test("write_file tool stores pending unstaged branch updates from the agent", as
 		userId: server_ai_tools_test_user_id,
 		path: "/docs/plan.md",
 		pendingUpdateId: undefined,
+		overlayUserId: server_ai_tools_test_user_id,
 	});
 	const [, pendingArgs] = runAction.mock.calls[1]!;
 	expect(pendingArgs).toEqual({
@@ -883,6 +1224,7 @@ test("write_file tool stores pending unstaged branch updates from the agent", as
 		nodeId,
 		pendingUpdateId,
 		unstagedMarkdown: "# Updated",
+		eagerCreatedCommittedSequence: undefined,
 	});
 
 	expect(result.metadata.nodeId).toBe(nodeId);
@@ -896,18 +1238,22 @@ test("write_file tool normalizes missing file paths before creating with the age
 	const pendingUpdateId = "pending999";
 
 	let runActionCallCount = 0;
-	const { ctx, runQuery, runMutation, runAction } = makeCtx(async () => ({ _id: pendingUpdateId }), {
-		runActionImpl: async () => {
-			runActionCallCount += 1;
-			if (runActionCallCount === 1) {
-				return null;
-			}
-			if (runActionCallCount === 2) {
-				return { _yay: { nodeId } };
-			}
-			return null;
+	const { ctx, runQuery, runMutation, runAction } = makeCtx(
+		async (_ref, args) =>
+			"nodeId" in args ? { _id: pendingUpdateId } : "path" in args ? null : server_ai_tools_test_overlay_empty,
+		{
+			runActionImpl: async () => {
+				runActionCallCount += 1;
+				if (runActionCallCount === 1) {
+					return null;
+				}
+				if (runActionCallCount === 2) {
+					return { _yay: { nodeId, created: true, createdCommittedSequence: 7, createdAncestorIds: [] } };
+				}
+				return { _yay: null };
+			},
 		},
-	});
+	);
 	const tool = ai_chat_tool_create_write_file(
 		ctx,
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
@@ -925,7 +1271,8 @@ test("write_file tool normalizes missing file paths before creating with the age
 	}
 
 	expect(runAction).toHaveBeenCalledTimes(3);
-	expect(runQuery).toHaveBeenCalledTimes(1);
+	// Overlay fetch, the visible-ancestor walk under /docs, and the pending update doc read.
+	expect(runQuery).toHaveBeenCalledTimes(3);
 	const [, firstQueryArgs] = runAction.mock.calls[0]!;
 	expect(firstQueryArgs).toEqual({
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
@@ -933,6 +1280,7 @@ test("write_file tool normalizes missing file paths before creating with the age
 		userId: server_ai_tools_test_user_id,
 		path: "/docs/new-plan.md",
 		pendingUpdateId: undefined,
+		overlayUserId: server_ai_tools_test_user_id,
 	});
 
 	expect(runMutation).not.toHaveBeenCalled();
@@ -951,12 +1299,526 @@ test("write_file tool normalizes missing file paths before creating with the age
 		nodeId,
 		pendingUpdateId: undefined,
 		unstagedMarkdown: "# New",
+		eagerCreatedCommittedSequence: 7,
+		eagerCreatedAncestorIds: [],
 	});
 
 	expect(result.metadata.nodeId).toBe(nodeId);
 	expect(result.metadata.contentNodeId).toBe(nodeId);
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.exists).toBe(false);
+});
+
+test("write_file tool passes created folder ids to the pending upsert after the eager create", async () => {
+	const nodeId = "p_deep";
+	const pendingUpdateId = "pending_deep";
+	const createdAncestorIds = ["folder_deep", "folder_shallow"];
+
+	let runActionCallCount = 0;
+	const { ctx, runAction } = makeCtx(
+		async (_ref, args) =>
+			"nodeId" in args ? { _id: pendingUpdateId } : "path" in args ? null : server_ai_tools_test_overlay_empty,
+		{
+			runActionImpl: async () => {
+				runActionCallCount += 1;
+				if (runActionCallCount === 1) {
+					return null;
+				}
+				if (runActionCallCount === 2) {
+					return { _yay: { nodeId, created: true, createdCommittedSequence: 7, createdAncestorIds } };
+				}
+				return { _yay: null };
+			},
+		},
+	);
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	const result = await tool.execute?.(
+		{ path: "/docs/deep/new.md", content: "# New" },
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	// Discard and TTL expiry can only remove the created folders if the upsert stores their ids.
+	const [, pendingArgs] = runAction.mock.calls[2]!;
+	expect(pendingArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		userId: server_ai_tools_test_user_id,
+		nodeId,
+		pendingUpdateId: undefined,
+		unstagedMarkdown: "# New",
+		eagerCreatedCommittedSequence: 7,
+		eagerCreatedAncestorIds: createdAncestorIds,
+	});
+	expect(result.metadata.exists).toBe(false);
+});
+
+test("write_file tool refuses the eager create at a path vacated by a pending move", async () => {
+	const { ctx, runQuery, runAction } = makeCtx(
+		async () => ({
+			pendingUpdates: [{ fileNodeId: "node_a", pendingMove: { destParentId: files_ROOT_ID, destName: "b.md" } }],
+			referencedNodes: [{ _id: "node_a", path: "/a.md", kind: "file" }],
+		}),
+		{ runActionImpl: async () => null },
+	);
+
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	await expect(tool.execute?.({ path: "/a.md", content: "# New" }, { toolCallId: "test", messages: [] })).rejects.toThrow(
+		"a pending move or replace vacated this path",
+	);
+
+	// Only the content read ran: no committed node is created and no pending update is stored.
+	expect(runAction).toHaveBeenCalledTimes(1);
+	expect(runQuery).toHaveBeenCalledTimes(1);
+});
+
+test("write_file tool refuses the eager create under a pending file-move claim", async () => {
+	// `mv /x.md /foo.md` pending: /foo.md reads as a FILE while nothing sits there committed.
+	const { ctx, runAction } = makeCtx(
+		async (_ref, args) =>
+			"path" in args
+				? args.path === "/foo.md"
+					? { _id: "node_x", path: "/foo.md", kind: "file" }
+					: null
+				: {
+						pendingUpdates: [{ fileNodeId: "node_x", pendingMove: { destParentId: files_ROOT_ID, destName: "foo.md" } }],
+						referencedNodes: [{ _id: "node_x", path: "/x.md", kind: "file" }],
+					},
+		{ runActionImpl: async () => null },
+	);
+
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	await expect(
+		tool.execute?.({ path: "/foo.md/sub/y.md", content: "# New" }, { toolCallId: "test", messages: [] }),
+	).rejects.toThrow("is a file, not a folder");
+
+	// Only the content read ran: no committed folders are created under the file claim.
+	expect(runAction).toHaveBeenCalledTimes(1);
+});
+
+test("write_file tool creates inside a moved folder at the committed source path", async () => {
+	const nodeId = "node_new";
+	const pendingUpdateId = "pending_new";
+	let runActionCallCount = 0;
+	const { ctx, runAction } = makeCtx(
+		async (_ref, args) =>
+			"nodeId" in args
+				? { _id: pendingUpdateId }
+				: {
+						pendingUpdates: [{ fileNodeId: "node_docs", pendingMove: { destParentId: files_ROOT_ID, destName: "docs2" } }],
+						referencedNodes: [{ _id: "node_docs", path: "/docs", kind: "folder" }],
+					},
+		{
+			runActionImpl: async () => {
+				runActionCallCount += 1;
+				if (runActionCallCount === 1) {
+					return null;
+				}
+				if (runActionCallCount === 2) {
+					return { _yay: { nodeId, created: true } };
+				}
+				return { _yay: null };
+			},
+		},
+	);
+
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	const result = await tool.execute?.(
+		{ path: "/docs2/new.md", content: "# New" },
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	// The claimed visible path translates to the committed source before the eager create,
+	// so the new node lands inside the moved folder instead of duplicating the visible path.
+	const [, createArgs] = runAction.mock.calls[1]!;
+	expect(createArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		userId: server_ai_tools_test_user_id,
+		path: "/docs/new.md",
+	});
+	expect(result.metadata.path).toBe("/docs2/new.md");
+	expect(result.metadata.exists).toBe(false);
+});
+
+test("write_file tool reports an overwrite when the eager create races with another writer", async () => {
+	const nodeId = "p_raced";
+	const pendingUpdateId = "pending_raced";
+	const racedContent = {
+		nodeId,
+		displayNodeId: nodeId,
+		content: "# Raced base\n",
+		pendingUpdateId,
+	};
+
+	let runActionCallCount = 0;
+	const { ctx, runAction, runMutation } = makeCtx(
+		async (_ref, args) =>
+			"nodeId" in args ? { _id: pendingUpdateId } : "path" in args ? null : server_ai_tools_test_overlay_empty,
+		{
+			runActionImpl: async () => {
+				runActionCallCount += 1;
+				if (runActionCallCount === 1) {
+					// The visible path is still free at the first read.
+					return null;
+				}
+				if (runActionCallCount === 2) {
+					// Another writer created the node between the read and the create.
+					return { _yay: { nodeId, created: false } };
+				}
+				if (runActionCallCount === 3) {
+					// The re-read now sees the raced node's real content.
+					return racedContent;
+				}
+				return { _yay: null };
+			},
+		},
+	);
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	const result = await tool.execute?.(
+		{ path: "/docs/raced.md", content: "# Updated" },
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	// Read, create, re-read, upsert.
+	expect(runAction).toHaveBeenCalledTimes(4);
+	const [, rereadArgs] = runAction.mock.calls[2]!;
+	expect(rereadArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		userId: server_ai_tools_test_user_id,
+		path: "/docs/raced.md",
+		pendingUpdateId: undefined,
+		overlayUserId: server_ai_tools_test_user_id,
+	});
+	// The raced node was not created by this tool, so no eager stamp reaches the upsert.
+	const [, pendingArgs] = runAction.mock.calls[3]!;
+	expect(pendingArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		userId: server_ai_tools_test_user_id,
+		nodeId,
+		pendingUpdateId,
+		unstagedMarkdown: "# Updated\n",
+		eagerCreatedCommittedSequence: undefined,
+	});
+	// No created folder ids either: this tool created nothing on the raced path.
+	expect(pendingArgs.eagerCreatedAncestorIds).toBeUndefined();
+	expect(runMutation).not.toHaveBeenCalled();
+
+	expect(result.output).toBe("File overwritten");
+	expect(result.metadata.exists).toBe(true);
+	expect(result.metadata.diff).toContain("-# Raced base");
+	expect(result.metadata.diff).toContain("+# Updated");
+	expect(result.metadata.modifiedContent).toBe("# Updated\n");
+	expect(result.metadata.nodeId).toBe(nodeId);
+	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
+});
+
+test("write_file tool throws when the raced node vanishes before the re-read", async () => {
+	const nodeId = "p_raced";
+
+	let runActionCallCount = 0;
+	const { ctx, runAction, runMutation } = makeCtx(
+		async (_ref, args) => ("path" in args ? null : server_ai_tools_test_overlay_empty),
+		{
+			runActionImpl: async () => {
+				runActionCallCount += 1;
+				if (runActionCallCount === 1) {
+					// The visible path is still free at the first read.
+					return null;
+				}
+				if (runActionCallCount === 2) {
+					// Another writer created the node between the read and the create.
+					return { _yay: { nodeId, created: false } };
+				}
+				if (runActionCallCount === 3) {
+					// The raced node was moved or archived before the re-read.
+					return null;
+				}
+				return { _yay: null };
+			},
+		},
+	);
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	await expect(
+		tool.execute?.({ path: "/docs/raced.md", content: "# Updated" }, { toolCallId: "test", messages: [] }),
+	).rejects.toThrow(
+		"Cannot write to /docs/raced.md: the file changed while this write was running. Re-check the path and try again.",
+	);
+
+	// The tool stops at the failed re-read: read, create, re-read. No upsert runs.
+	expect(runAction).toHaveBeenCalledTimes(3);
+	// This tool created nothing on the raced path, so no compensation runs either.
+	expect(runMutation).not.toHaveBeenCalled();
+});
+
+test("write_file tool surfaces the upsert rejection when the file is archived after the read", async () => {
+	const nodeId = "p123";
+	const currentContent = {
+		nodeId,
+		displayNodeId: nodeId,
+		content: "# Base",
+		pendingUpdateId: "pending123",
+	};
+
+	let runActionCallCount = 0;
+	const { ctx, runQuery, runAction } = makeCtx(async () => null, {
+		runActionImpl: async () => {
+			runActionCallCount += 1;
+			if (runActionCallCount === 1) {
+				return currentContent;
+			}
+			// The node was archived (or deleted) between the read and the upsert.
+			return { _nay: { message: "Not found" } };
+		},
+	});
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	await expect(
+		tool.execute?.({ path: "/docs/plan.md", content: "# Updated" }, { toolCallId: "test", messages: [] }),
+	).rejects.toThrow("the proposal was not recorded");
+
+	// The tool stops at the failed upsert: no success payload, no follow-up pending update doc read.
+	expect(runAction).toHaveBeenCalledTimes(2);
+	expect(runQuery).not.toHaveBeenCalled();
+});
+
+test("write_file tool removes the eager node when the pending upsert throws after the eager create", async () => {
+	const nodeId = "p_orphan";
+
+	let runActionCallCount = 0;
+	const { ctx, runAction, runMutation } = makeCtx(
+		async (_ref, args) => ("path" in args ? null : server_ai_tools_test_overlay_empty),
+		{
+			// The compensation mutation removes the untouched eager node and its created folders.
+			runMutationImpl: async () => ({ _yay: { removed: true, ancestorsLeft: 0 } }),
+			runActionImpl: async () => {
+				runActionCallCount += 1;
+				if (runActionCallCount === 1) {
+					return null;
+				}
+				if (runActionCallCount === 2) {
+					return { _yay: { nodeId, created: true, createdCommittedSequence: 7, createdAncestorIds: [] } };
+				}
+				// The pending upsert action reads R2 and can fail transiently after the create.
+				throw new Error("simulated transient upsert failure");
+			},
+		},
+	);
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	await expect(
+		tool.execute?.({ path: "/docs/orphan.md", content: "# New" }, { toolCallId: "test", messages: [] }),
+	).rejects.toThrow("Cannot write to /docs/orphan.md: the proposal was not recorded. Nothing was created at /docs/orphan.md.");
+
+	// The tool stops at the failed upsert: content read, eager create, failed upsert.
+	expect(runAction).toHaveBeenCalledTimes(3);
+	// The cleanup targeted the eager node with its creation-time stamp and created folders.
+	expect(runMutation).toHaveBeenCalledTimes(1);
+	expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
+		organizationId: server_ai_tools_test_ctx_data.organizationId,
+		workspaceId: server_ai_tools_test_ctx_data.workspaceId,
+		userId: server_ai_tools_test_ctx_data.userId,
+		nodeId,
+		eagerCreatedCommittedSequence: 7,
+		createdAncestorIds: [],
+	});
+});
+
+test("write_file tool removes the eager node when the pending upsert rejects after the eager create", async () => {
+	const nodeId = "p_orphan";
+
+	let runActionCallCount = 0;
+	const { ctx, runAction, runMutation } = makeCtx(
+		async (_ref, args) => ("path" in args ? null : server_ai_tools_test_overlay_empty),
+		{
+			// The compensation mutation removes the untouched eager node and its created folders.
+			runMutationImpl: async () => ({ _yay: { removed: true, ancestorsLeft: 0 } }),
+			runActionImpl: async () => {
+				runActionCallCount += 1;
+				if (runActionCallCount === 1) {
+					return null;
+				}
+				if (runActionCallCount === 2) {
+					return { _yay: { nodeId, created: true, createdCommittedSequence: 7, createdAncestorIds: [] } };
+				}
+				return { _nay: { message: "Not found" } };
+			},
+		},
+	);
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	await expect(
+		tool.execute?.({ path: "/docs/orphan.md", content: "# New" }, { toolCallId: "test", messages: [] }),
+	).rejects.toThrow(
+		"Cannot write to /docs/orphan.md: the file is gone or archived, so the proposal was not recorded. Re-check the path and try again. Nothing was created at /docs/orphan.md.",
+	);
+
+	// The tool stops at the failed upsert: content read, eager create, rejected upsert.
+	expect(runAction).toHaveBeenCalledTimes(3);
+	expect(runMutation).toHaveBeenCalledTimes(1);
+});
+
+test("write_file tool keeps the leftover note when the eager node cleanup is blocked", async () => {
+	const nodeId = "p_orphan";
+
+	let runActionCallCount = 0;
+	const { ctx, runAction, runMutation } = makeCtx(
+		async (_ref, args) => ("path" in args ? null : server_ai_tools_test_overlay_empty),
+		{
+			// The cleanup gate refused the hard delete (e.g. another user's pending update doc).
+			runMutationImpl: async () => ({ _yay: { removed: false, ancestorsLeft: 0 } }),
+			runActionImpl: async () => {
+				runActionCallCount += 1;
+				if (runActionCallCount === 1) {
+					return null;
+				}
+				if (runActionCallCount === 2) {
+					return { _yay: { nodeId, created: true, createdCommittedSequence: 7, createdAncestorIds: [] } };
+				}
+				throw new Error("simulated transient upsert failure");
+			},
+		},
+	);
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	await expect(
+		tool.execute?.({ path: "/docs/orphan.md", content: "# New" }, { toolCallId: "test", messages: [] }),
+	).rejects.toThrow("An empty file was left behind at /docs/orphan.md");
+
+	// The tool stops at the failed upsert: content read, eager create, failed upsert.
+	expect(runAction).toHaveBeenCalledTimes(3);
+	// The cleanup was attempted but blocked, so the note must survive.
+	expect(runMutation).toHaveBeenCalledTimes(1);
+});
+
+test("write_file tool notes leftover folders when the eager cleanup leaves created ancestors", async () => {
+	const nodeId = "p_orphan";
+	const createdAncestorIds = ["folder_deep", "folder_shallow"];
+
+	let runActionCallCount = 0;
+	const { ctx, runAction, runMutation } = makeCtx(
+		async (_ref, args) => ("path" in args ? null : server_ai_tools_test_overlay_empty),
+		{
+			// The eager node was removed but its created parent folders were not.
+			runMutationImpl: async () => ({ _yay: { removed: true, ancestorsLeft: 2 } }),
+			runActionImpl: async () => {
+				runActionCallCount += 1;
+				if (runActionCallCount === 1) {
+					return null;
+				}
+				if (runActionCallCount === 2) {
+					return { _yay: { nodeId, created: true, createdCommittedSequence: 7, createdAncestorIds } };
+				}
+				throw new Error("simulated transient upsert failure");
+			},
+		},
+	);
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	await expect(
+		tool.execute?.({ path: "/docs/deep/orphan.md", content: "# New" }, { toolCallId: "test", messages: [] }),
+	).rejects.toThrow(
+		"Empty folders created for /docs/deep/orphan.md were left behind; remove them in Files if they are not wanted.",
+	);
+
+	// The tool stops at the failed upsert: content read, eager create, failed upsert.
+	expect(runAction).toHaveBeenCalledTimes(3);
+	// The cleanup received the created folder ids so it can remove them too.
+	expect(runMutation).toHaveBeenCalledTimes(1);
+	expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
+		organizationId: server_ai_tools_test_ctx_data.organizationId,
+		workspaceId: server_ai_tools_test_ctx_data.workspaceId,
+		userId: server_ai_tools_test_ctx_data.userId,
+		nodeId,
+		eagerCreatedCommittedSequence: 7,
+		createdAncestorIds,
+	});
+});
+
+test("edit_file tool surfaces the upsert rejection when the file is archived after the read", async () => {
+	const nodeId = "p456";
+	const currentContent = {
+		nodeId,
+		displayNodeId: nodeId,
+		content: "Hello world",
+		pendingUpdateId: "pending456",
+	};
+
+	let runActionCallCount = 0;
+	const { ctx, runQuery, runAction } = makeCtx(async () => null, {
+		runActionImpl: async () => {
+			runActionCallCount += 1;
+			if (runActionCallCount === 1) {
+				return currentContent;
+			}
+			// The node was archived (or deleted) between the read and the upsert.
+			return { _nay: { message: "Not found" } };
+		},
+	});
+	const tool = ai_chat_tool_create_edit_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
+	);
+	await expect(
+		tool.execute?.(
+			{ path: "/docs/hello.md", oldString: "world", newString: "team", replaceAll: false },
+			{ toolCallId: "test", messages: [] },
+		),
+	).rejects.toThrow("the proposal was not recorded");
+
+	// The tool stops at the failed upsert: no success payload, no follow-up pending update doc read.
+	expect(runAction).toHaveBeenCalledTimes(2);
+	expect(runQuery).not.toHaveBeenCalled();
 });
 
 test("edit_file tool stores pending unstaged branch updates from the agent", async () => {
@@ -1003,6 +1865,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		userId: server_ai_tools_test_user_id,
 		path: "/docs/hello.md",
 		pendingUpdateId: undefined,
+		overlayUserId: server_ai_tools_test_user_id,
 	});
 	const [, pendingArgs] = runAction.mock.calls[1]!;
 	expect(pendingArgs).toEqual({
@@ -1142,6 +2005,7 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 		userId: server_ai_tools_test_user_id,
 		path: "/docs/newline.md",
 		pendingUpdateId: undefined,
+		overlayUserId: server_ai_tools_test_user_id,
 	});
 
 	const [, args] = runAction.mock.calls[1]!;

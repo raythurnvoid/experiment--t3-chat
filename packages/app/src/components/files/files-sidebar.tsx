@@ -535,7 +535,12 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 // #region tree item arrow
 type FilesSidebarTreeItemArrow_ClassNames = "FilesSidebarTreeItemArrow" | "FilesSidebarTreeItemArrow-icon-button";
 
+function files_sidebar_tree_item_arrow_dom_id(itemId: string) {
+	return `files_sidebar_tree_item_arrow_${itemId}`;
+}
+
 type FilesSidebarTreeItemArrow_Props = {
+	itemId: string;
 	label: string;
 	isExpanded: boolean;
 	isPending: boolean;
@@ -544,12 +549,13 @@ type FilesSidebarTreeItemArrow_Props = {
 };
 
 const FilesSidebarTreeItemArrow = memo(function FilesSidebarTreeItemArrow(props: FilesSidebarTreeItemArrow_Props) {
-	const { label, isExpanded, isPending, isFocused, onClick } = props;
+	const { itemId, label, isExpanded, isPending, isFocused, onClick } = props;
 	const actionLabel = isExpanded ? "Collapse folder" : "Expand folder";
 
 	return (
 		<div className={"FilesSidebarTreeItemArrow" satisfies FilesSidebarTreeItemArrow_ClassNames}>
 			<MyIconButton
+				id={files_sidebar_tree_item_arrow_dom_id(itemId)}
 				className={"FilesSidebarTreeItemArrow-icon-button" satisfies FilesSidebarTreeItemArrow_ClassNames}
 				tooltip={actionLabel}
 				tooltipSide="bottom"
@@ -740,6 +746,8 @@ type FilesSidebarTreeItemPrimaryAction_ClassNames =
 
 type FilesSidebarTreeItemPrimaryAction_Props = {
 	itemProps: ReturnType<FilesSidebarTreeItem_Instance["getProps"]>;
+	itemId: string;
+	kind: files_TreeItem["kind"];
 	updatedAt: files_TreeItem["updatedAt"];
 	updatedByDisplayName: string;
 	isPending: boolean;
@@ -747,6 +755,7 @@ type FilesSidebarTreeItemPrimaryAction_Props = {
 	isDropZoneIncluded: boolean;
 	isTreeDragging: boolean;
 	isFocused: boolean;
+	isFallbackTabStop: boolean;
 	ariaLabel: string;
 };
 
@@ -755,6 +764,8 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 ) {
 	const {
 		itemProps,
+		itemId,
+		kind,
 		updatedAt,
 		updatedByDisplayName,
 		isPending,
@@ -762,6 +773,7 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 		isDropZoneIncluded,
 		isTreeDragging,
 		isFocused,
+		isFallbackTabStop,
 		ariaLabel,
 	} = props;
 
@@ -770,6 +782,8 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 	return (
 		<MyPrimaryAction
 			{...itemProps}
+			// Keep one row Tab-reachable when the focused item is no longer rendered (e.g. archived away).
+			{...(isFallbackTabStop ? { tabIndex: 0 } : null)}
 			className={cn(
 				"FilesSidebarTreeItemPrimaryAction" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames,
 				isDropZoneIncluded &&
@@ -783,6 +797,11 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 			data-focused={isFocused || undefined}
 			aria-selected={isSelected ? "true" : "false"}
 			aria-label={ariaLabel}
+			// The expand/collapse button renders as a sibling; own it so it stays associated with this row.
+			aria-owns={kind === "folder" ? files_sidebar_tree_item_arrow_dom_id(itemId) : undefined}
+			{...({
+				"data-file-id": itemId,
+			} satisfies Partial<FilesSidebarTreeItem_CustomAttributes>)}
 		>
 			<span
 				className={"FilesSidebarTreeItemPrimaryAction-surface" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames}
@@ -1028,6 +1047,7 @@ type FilesSidebarTreeItem_Props = {
 	pendingActionNodeIds: Set<string>;
 	renameError: string | undefined;
 	isTreeDragging: boolean;
+	isFallbackTabStop: boolean;
 	expandedFolderActionsVisible: boolean;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
@@ -1050,6 +1070,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		pendingActionNodeIds,
 		renameError,
 		isTreeDragging,
+		isFallbackTabStop,
 		expandedFolderActionsVisible,
 		onCreateNode,
 		onStartRename,
@@ -1226,6 +1247,8 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					>
 						<FilesSidebarTreeItemPrimaryAction
 							itemProps={itemProps}
+							itemId={itemId}
+							kind={itemData.kind}
 							updatedAt={itemData.updatedAt}
 							updatedByDisplayName={updatedByDisplayName}
 							isPending={isPending}
@@ -1233,6 +1256,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 							isDropZoneIncluded={isDropZoneIncluded}
 							isTreeDragging={isTreeDragging}
 							isFocused={isFocused}
+							isFallbackTabStop={isFallbackTabStop}
 							ariaLabel={label}
 						/>
 
@@ -1254,6 +1278,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 						{itemData.kind === "folder" ? (
 							<FilesSidebarTreeItemArrow
+								itemId={itemId}
 								label={label}
 								isExpanded={isExpanded}
 								isPending={isPending}
@@ -1597,13 +1622,16 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		onUnarchive,
 	} = props;
 
-	const treeContainerProps = tree().getContainerProps("files_nodes");
+	const treeContainerProps = tree().getContainerProps("Files");
 	const { ref: treeContainerRef, ...treeContainerRest } = treeContainerProps;
 
 	const [expandedFolderActionsVisible, setExpandedFolderActionsVisible] = useState(false);
 
 	const isTreeDragging = (tree().getState().dnd?.draggedItems?.length ?? 0) > 0;
 	const renderedTreeItems = tree().getItems();
+	// When the focused item is no longer rendered (e.g. archived away), no row keeps tabIndex 0
+	// and the tree drops out of the Tab order; fall back to the first row as the tab stop.
+	const hasFocusedRenderedItem = renderedTreeItems.some((item) => item.isFocused());
 
 	const treeRootElementRef = useRef<HTMLDivElement | null>(null);
 	const treeRootResizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -1776,7 +1804,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 							{isSearchActive ? "No files match your search." : "No files yet."}
 						</div>
 					) : null}
-					{renderedTreeItems.map((item) => {
+					{renderedTreeItems.map((item, itemIndex) => {
 						const itemId = item.getId();
 						return (
 							<FilesSidebarTreeItem
@@ -1793,6 +1821,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 								pendingActionNodeIds={pendingActionNodeIds}
 								renameError={renameErrorByNodeId.get(itemId)}
 								isTreeDragging={isTreeDragging}
+								isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
 								expandedFolderActionsVisible={expandedFolderActionsVisible}
 								onCreateNode={onCreateNode}
 								onStartRename={onStartRename}

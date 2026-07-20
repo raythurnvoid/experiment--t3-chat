@@ -1,4 +1,4 @@
-import { defineCommand } from "just-bash/browser";
+import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
@@ -9,6 +9,9 @@ import {
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
 	bash_normalize_path,
+	bash_overlay_committed_scope_path,
+	bash_overlay_project_scoped_path,
+	bash_overlay_subtree_injections,
 	bash_parse_limit,
 	bash_read_option_value,
 	bash_resolve_path,
@@ -407,7 +410,9 @@ function get_value(value: NonNullable<files_metadata_get_by_path_Result>["values
 	}
 }
 
-export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+// The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
+// type would otherwise flow through internal.* into the bash action and back into this command.
+export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
 	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("meta", async (args, commandCtx) => {
 		const subcommand = args[0];
@@ -463,6 +468,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				workspaceId: target.ctxData.workspaceId,
 				userId: target.ctxData.userId,
 				path: target.dbFilesPath,
+				overlayUserId: target.fs.overlayUserId,
 			})) as files_metadata_get_by_path_Result;
 			if (!result) {
 				return {
@@ -559,6 +565,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				organizationId: scope.ctxData.organizationId,
 				workspaceId: scope.ctxData.workspaceId,
 				path: scope.dbFilesPath,
+				overlayUserId: scope.fs.overlayUserId,
 			})) as files_nodes_get_by_path_Result;
 			const scopedShellPath = scope.renderShellPath(scope.dbFilesPath);
 			if (!scopedFolder) {
@@ -579,6 +586,10 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 		// Scope the metadata scan to the classified folder; the workspace/mount root maps to the whole tree.
 		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
+		// The proposer's pending moves translate the scope and project the results: metadata
+		// rows keep committed paths until accept, so a moved-in scope must query its committed source.
+		const overlay = await scope.fs.getOverlay();
+		const committedPathPrefix = overlay == null || path == null ? path : bash_overlay_committed_scope_path(overlay, path);
 		const result = (await ctx.runQuery(internal.files_metadata.search, {
 			organizationId: scope.ctxData.organizationId,
 			workspaceId: scope.ctxData.workspaceId,
@@ -586,11 +597,66 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			plan: parsed._yay.plan,
 			numItems: parsed._yay.limit,
 			cursor,
-			pathPrefix: path,
+			pathPrefix: committedPathPrefix,
 		})) as files_metadata_search_Result;
 
+		// Hidden results and results projected outside the scope drop; the rest report their visible path.
+		const visibleItems =
+			overlay == null
+				? result.items
+				: result.items.flatMap((item) => {
+						const visiblePath = bash_overlay_project_scoped_path({
+							overlay,
+							committedPath: item.path,
+							visibleScopePath: path ?? null,
+						});
+						return visiblePath == null ? [] : [{ ...item, path: visiblePath }];
+					});
+
+		// An ancestor scope of a move's visible destination misses that move's metadata
+		// rows (they keep committed paths outside the scoped prefix); one extra first-page
+		// scan per such move injects them. The nodeId dedupe below drops duplicates.
+		const injectedItems: files_metadata_search_Result["items"] = [];
+		if (overlay != null && path != null && committedPathPrefix != null && cursor == null) {
+			for (const move of bash_overlay_subtree_injections(overlay, {
+				visibleScopePath: path,
+				committedScopePath: committedPathPrefix,
+			})) {
+				// The scoped bound is a folder prefix, so a moved file scans its committed
+				// parent folder and keeps only its own metadata rows.
+				const movePrefix =
+					move.kind === "folder"
+						? move.committedPath
+						: move.committedPath.slice(0, move.committedPath.lastIndexOf("/")) || "/";
+				const moveResult = (await ctx.runQuery(internal.files_metadata.search, {
+					organizationId: scope.ctxData.organizationId,
+					workspaceId: scope.ctxData.workspaceId,
+					userId: scope.ctxData.userId,
+					plan: parsed._yay.plan,
+					numItems: parsed._yay.limit,
+					cursor: null,
+					pathPrefix: movePrefix,
+				})) as files_metadata_search_Result;
+				for (const item of moveResult.items) {
+					if (move.kind === "file" && item.path !== move.committedPath) {
+						continue;
+					}
+					const visiblePath = bash_overlay_project_scoped_path({
+						overlay,
+						committedPath: item.path,
+						visibleScopePath: path,
+					});
+					if (visiblePath != null) {
+						injectedItems.push({ ...item, path: visiblePath });
+					}
+				}
+			}
+		}
+
 		// A file can match through multiple metadata values; command output lists each path once.
-		const dedupedItems = [...new Map(result.items.map((item) => [item.nodeId, item])).values()];
+		const dedupedItems = [
+			...new Map([...visibleItems, ...injectedItems].map((item) => [item.nodeId, item])).values(),
+		];
 		const nextCursor = result.isDone ? null : await bash_cursor_id_create(ctx, result.continueCursor);
 		if (parsed._yay.format === "json") {
 			return {

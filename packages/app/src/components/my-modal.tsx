@@ -130,11 +130,12 @@ export type MyModalHeading_ClassNames = "MyModalHeading";
 export type MyModalHeading_Props = ComponentPropsWithRef<"h1">;
 
 export const MyModalHeading = memo(function MyModalHeading(props: MyModalHeading_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	// Leave `id` inside `rest`: passing an explicit `id={undefined}` overrides the auto id
+	// Ariakit generates for the heading, which breaks the dialog's `aria-labelledby` name.
+	const { ref, className, children, ...rest } = props;
 
 	return (
 		<Ariakit.DialogHeading
-			id={id}
 			ref={ref}
 			className={cn("MyModalHeading" satisfies MyModalHeading_ClassNames, className)}
 			{...rest}
@@ -149,11 +150,11 @@ export type MyModalDescription_ClassNames = "MyModalDescription";
 export type MyModalDescription_Props = ComponentPropsWithRef<"p">;
 
 export const MyModalDescription = memo(function MyModalDescription(props: MyModalDescription_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	// Leave `id` inside `rest` for the same reason as MyModalHeading (`aria-describedby`).
+	const { ref, className, children, ...rest } = props;
 
 	return (
 		<Ariakit.DialogDescription
-			id={id}
 			ref={ref}
 			className={cn("MyModalDescription" satisfies MyModalDescription_ClassNames, className)}
 			{...rest}

@@ -56,6 +56,18 @@ export default defineConfig({
 			optimize: false,
 		}),
 	],
+	server: {
+		watch: {
+			// Agent and docs files live under the watched tree but are not app sources; editing
+			// them during a live session must not trigger HMR or full reloads.
+			ignored: [
+				"**/.claude/**",
+				"**/.agents/**",
+				"**/AGENTS.md",
+				"**/CLAUDE.md",
+			],
+		},
+	},
 	build: {
 		target: "esnext",
 		cssTarget: "esnext",

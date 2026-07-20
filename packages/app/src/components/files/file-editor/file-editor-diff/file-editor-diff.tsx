@@ -1327,6 +1327,40 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		});
 	});
 
+	// A hidden tab can miss monaco's async diff update when the pending update doc dies in another tab:
+	// the throttled worker roundtrip can fail ("no diff result available") and never re-runs once
+	// the model content has settled, leaving stale hunk widgets over already-converged identical
+	// models. On foregrounding, detect that settled-but-stale state and rebuild the diff session
+	// so the editor always lands in the plain live-file view.
+	const handleVisibilityChangeDiffRecovery = useFn(() => {
+		if (document.visibilityState !== "visible") return;
+
+		const editor = editorRef.current;
+		const models = editorModelsRef.current;
+		if (!editor || !models) return;
+
+		const isLiveFileContentState =
+			editorContentState.baselineMarkdown === editorContentState.stagedMarkdown &&
+			editorContentState.stagedMarkdown === editorContentState.unstagedMarkdown;
+		const hasSettledIdenticalModels = models.original.getValue() === models.modified.getValue();
+		if (!isLiveFileContentState || !hasSettledIdenticalModels || contentWidgetsRef.current.length === 0) {
+			return;
+		}
+
+		for (const widget of contentWidgetsRef.current) {
+			widget.dispose();
+		}
+		setContentWidgets([]);
+
+		// Re-setting the same models rebuilds the diff session, so the broken diff computation
+		// re-runs against the identical models and clears the stale diff rendering.
+		const viewState = editor.saveViewState();
+		editor.setModel(models);
+		if (viewState) {
+			editor.restoreViewState(viewState);
+		}
+	});
+
 	// Reconcile the remote editor content state with the local editor values,
 	// Needs to be a layout effect to ensure the `isDirty` state calculated
 	// when the editor model value changes is updated before paint.
@@ -1378,7 +1412,11 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		// Ensure we don't permanently disable host registration after the first cleanup.
 		isUnmountingRef.current = false;
 
+		document.addEventListener("visibilitychange", handleVisibilityChangeDiffRecovery);
+
 		return () => {
+			document.removeEventListener("visibilitychange", handleVisibilityChangeDiffRecovery);
+
 			monacoListenersDisposeAbortControllers.current?.abort();
 			monacoListenersDisposeAbortControllers.current = null;
 
@@ -1487,7 +1525,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		nodeId,
 		pendingUpdateId,
 	});
-	// Structural-only rows (pure move) carry no content to diff: treat them as "no pending update"
+	// Move-only pending update docs carry no content to diff: treat them as "no pending update"
 	// so the editor degrades to the plain live-file view. Loading (`undefined`) passes through.
 	const pendingUpdate =
 		pendingUpdateResult && !files_pending_update_has_yjs_content(pendingUpdateResult) ? null : pendingUpdateResult;
@@ -1563,6 +1601,12 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				pendingUpdateId: currentPendingUpdateId,
 			});
 			if (savePendingResult._nay) {
+				// "Stale save" means another tab's save advanced the pending update doc before this
+				// save's read landed; nothing was written and the reactive queries already show the truth, so
+				// resolve silently (like handleClickSync) — the user can just click Save again.
+				if (savePendingResult._nay.message === "Stale save") {
+					return;
+				}
 				toast.error(savePendingResult._nay.message ?? "Failed to save pending updates");
 				return;
 			}
@@ -1690,7 +1734,16 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 					),
 				},
 			);
-			if (persistRebasedStateResult._nay) {
+			// "Not found" means the pending update doc was discarded, fully accepted, or replaced
+			// by a newer proposal in another tab while this sync was in flight (persistence is
+			// update-only and patches only the exact synced doc). "Stale save" means another tab's
+			// save advanced the doc past this sync's captured base. Both are benign races, not
+			// errors: fall through so the refreshed queries below let the editor converge.
+			if (
+				persistRebasedStateResult._nay &&
+				persistRebasedStateResult._nay.message !== "Not found" &&
+				persistRebasedStateResult._nay.message !== "Stale save"
+			) {
 				return persistRebasedStateResult;
 			}
 

@@ -1,8 +1,9 @@
-import { defineCommand } from "just-bash/browser";
+import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_get_by_path_Result, files_nodes_text_search_files_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
+import type { files_PendingPathOverlay } from "../shared/files.ts";
 import { files_chunk_BITMASK_FLAGS, files_chunk_has_bitmask_flag } from "./files-markdown-chunking-mastra.ts";
 import {
 	bash_clamp_listing_page_limit,
@@ -11,6 +12,9 @@ import {
 	bash_is_path_under_current_workspace_path,
 	bash_is_path_under_read_only_mounts,
 	bash_normalize_path,
+	bash_overlay_committed_scope_path,
+	bash_overlay_content_search_injections,
+	bash_overlay_project_scoped_path,
 	bash_parse_limit,
 	bash_external_mounts_fan_out_db_files_path,
 	bash_external_mounts_fan_out_paginate,
@@ -146,7 +150,9 @@ function parse_args(args: string[], options: { currentWorkspacePath: string; cwd
 	});
 }
 
-export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+// The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
+// type would otherwise flow through internal.* into the bash action and back into this command.
+export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
 	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("search", async (args, commandCtx) => {
 		const parsed = parse_args(args, { currentWorkspacePath, cwd: commandCtx.cwd });
@@ -222,6 +228,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				organizationId: scope.ctxData.organizationId,
 				workspaceId: scope.ctxData.workspaceId,
 				path: scope.dbFilesPath,
+				overlayUserId: scope.fs.overlayUserId,
 			})) as files_nodes_get_by_path_Result;
 			const scopedShellPath = scope.renderShellPath(scope.dbFilesPath);
 			if (!scopedFolder) {
@@ -247,6 +254,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 		const scopePath = scope.kind === "plugins_root" || scope.kind === "external_mounts_root" ? "/" : path;
 
 		let res: files_nodes_text_search_files_Result;
+		let overlay: files_PendingPathOverlay | null = null;
 		if (scope.kind === "external_mounts_root") {
 			// One text search per synced mount, each scoped to its commit-keyed tree.
 			const fanOut = await bash_external_mounts_fan_out_paginate({
@@ -326,6 +334,11 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				isDone: fanOut._yay.isDone,
 			};
 		} else {
+			// The proposer's pending moves translate the scope and project the results: chunks
+			// keep committed paths until accept, so a moved-in scope must query its committed source path.
+			overlay = await scope.fs.getOverlay();
+			const committedPathPrefix =
+				overlay == null || path == null ? path : bash_overlay_committed_scope_path(overlay, path);
 			res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 				organizationId: scope.ctxData.organizationId,
 				workspaceId: scope.ctxData.workspaceId,
@@ -333,13 +346,43 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				query: parsed._yay.query,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
-				pathPrefix: path,
+				pathPrefix: committedPathPrefix,
 			})) as files_nodes_text_search_files_Result;
 		}
 
+		// Project result paths into the proposer's visible tree; hidden results and results
+		// projected outside the scope drop from the page.
+		const activeOverlay = overlay;
+		const visibleItems =
+			activeOverlay == null
+				? res.items
+				: res.items.flatMap((item) => {
+						const visiblePath = bash_overlay_project_scoped_path({
+							overlay: activeOverlay,
+							committedPath: item.path,
+							visibleScopePath: path ?? null,
+						});
+						return visiblePath == null ? [] : [{ ...item, path: visiblePath }];
+					});
+
+		// An ancestor scope of a move's visible destination misses that move's committed
+		// chunks (they sit outside the scoped prefix); inject them on the first page.
+		const injectedItems =
+			activeOverlay == null || path == null || cursor != null
+				? []
+				: await bash_overlay_content_search_injections({
+						ctx,
+						ctxData: scope.ctxData,
+						overlay: activeOverlay,
+						visibleScopePath: path,
+						committedScopePath: bash_overlay_committed_scope_path(activeOverlay, path),
+						query: parsed._yay.query,
+						numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
+					});
+
 		const exactQueryFilter = bash_search_command_exact_query_filter(parsed._yay.query);
 		const searchResult = {
-			items: res.items.map((item) => ({
+			items: [...visibleItems, ...injectedItems].map((item) => ({
 				...item,
 				path: scope.renderShellPath(item.path),
 			})),
@@ -359,6 +402,28 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 			`YAML frontmatter fields are indexed separately from body text, so a frontmatter field or value will not match here; ` +
 			`use meta search (e.g. exists/eq) to find files by a frontmatter field or value. ` +
 			`Retry with shorter distinctive content terms if needed.`;
+
+		// Built outside the results branch: a page whose hits were all projected away by the
+		// pending path overlay must still print its continuation, or the search dead-ends.
+		const continuationBlocks: string[] = [];
+		if (!res.isDone) {
+			// Print a complete command before long result snippets so an agent asked to
+			// continue sees the exact command before a large content block.
+			const cursorId = await bash_cursor_id_create(ctx, res.continueCursor);
+			continuationBlocks.push(
+				"",
+				bash_search_command_build_continuation({
+					currentWorkspacePath: scope.basePath,
+					path: scopePath,
+					limit: parsed._yay.limit,
+					cursor: cursorId,
+					query: parsed._yay.query,
+				}),
+				parsed._yay.cursor == null
+					? "Note: if the user asked for a continuation, run the exact Next page command before answering."
+					: "Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
+			);
+		}
 
 		if (searchResult.items.length) {
 			const outputBlocks = searchResult.items.map((item) => {
@@ -411,26 +476,11 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 					searchResult.items.map((item) => item.markdownChunk),
 				)}`,
 			];
-			if (!res.isDone) {
-				// Print a complete command before long result snippets so an agent asked to
-				// continue sees the exact command before a large content block.
-				const cursorId = await bash_cursor_id_create(ctx, res.continueCursor);
-				blocks.push(
-					"",
-					bash_search_command_build_continuation({
-						currentWorkspacePath: scope.basePath,
-						path: scopePath,
-						limit: parsed._yay.limit,
-						cursor: cursorId,
-						query: parsed._yay.query,
-					}),
-					parsed._yay.cursor == null
-						? "Note: if the user asked for a continuation, run the exact Next page command before answering."
-						: "Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
-				);
-			}
+			blocks.push(...continuationBlocks);
 			blocks.push("", ...outputBlocks);
 			output = blocks.join("\n");
+		} else if (continuationBlocks.length) {
+			output = [`No matches on this page${scopeNote}; more pages remain.`, ...continuationBlocks].join("\n");
 		}
 
 		return {

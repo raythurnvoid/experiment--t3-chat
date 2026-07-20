@@ -1,4 +1,4 @@
-import { defineCommand } from "just-bash/browser";
+import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type {
@@ -7,7 +7,7 @@ import type {
 	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_format_multiline_hint, bash_GLOB_METACHARACTER_REGEX, bash_read_option_value, bash_regex_validation_error, bash_resolve_path, bash_search_command_build_continuation, bash_search_command_exact_query_filter, bash_search_command_exact_query_note, bash_search_command_exact_query_summary, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, bash_NON_NEGATIVE_INTEGER_REGEX, bash_TERMINAL_LINE_ENDING_REGEX, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_format_multiline_hint, bash_GLOB_METACHARACTER_REGEX, bash_overlay_committed_scope_path, bash_overlay_content_search_injections, bash_overlay_project_scoped_path, bash_read_option_value, bash_regex_validation_error, bash_resolve_path, bash_search_command_build_continuation, bash_search_command_exact_query_filter, bash_search_command_exact_query_note, bash_search_command_exact_query_summary, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, bash_NON_NEGATIVE_INTEGER_REGEX, bash_TERMINAL_LINE_ENDING_REGEX, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
 
 const GREP_ATTACHED_CONTEXT_REGEX = /^-([ABC])(\d+)$/u;
@@ -395,7 +395,9 @@ function slice_mode_stderr(window: NonNullable<ReturnType<typeof parse_args>["_y
 		: "";
 }
 
-export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+// The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
+// type would otherwise flow through internal.* into the bash action and back into this command.
+export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
 	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("grep", async (args, commandCtx) => {
 		// Parse only the bounded grep subset that maps cleanly to app-file queries.
@@ -450,6 +452,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 								organizationId: pathResolution.ctxData.organizationId,
 								workspaceId: pathResolution.ctxData.workspaceId,
 								path: target.dbFilesPath,
+								overlayUserId: pathResolution.fs.overlayUserId,
 							})) as files_nodes_get_by_path_Result);
 				if (!dbFilesDoc || dbFilesDoc.kind !== "file") {
 					return {
@@ -725,6 +728,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 							organizationId: pathResolution.ctxData.organizationId,
 							workspaceId: pathResolution.ctxData.workspaceId,
 							path: target.dbFilesPath,
+							overlayUserId: pathResolution.fs.overlayUserId,
 						})) as files_nodes_get_by_path_Result);
 
 			if (target.dbFilesPath != null && (target.dbFilesPath === "/" || dbFilesDoc?.kind === "folder")) {
@@ -738,6 +742,13 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					};
 				}
 
+				// The proposer's pending moves translate the scope and project the results: chunks
+				// keep committed paths until accept, so a moved-in scope must query its committed source path.
+				const overlay = await pathResolution.fs.getOverlay();
+				const visibleScopePath = target.dbFilesPath;
+				const committedScopePath =
+					overlay == null ? visibleScopePath : bash_overlay_committed_scope_path(overlay, visibleScopePath);
+
 				const recursivePattern = parsed._yay.pattern;
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 					organizationId: pathResolution.ctxData.organizationId,
@@ -746,8 +757,37 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					query: recursivePattern,
 					numItems: 20,
 					cursor: null,
-					pathPrefix: target.dbFilesPath,
+					pathPrefix: committedScopePath,
 				})) as files_nodes_text_search_files_Result;
+
+				// Hidden results and results projected outside the scope drop; the rest report their visible path.
+				const visibleItems =
+					overlay == null
+						? res.items
+						: res.items.flatMap((item) => {
+								const visiblePath = bash_overlay_project_scoped_path({
+									overlay,
+									committedPath: item.path,
+									visibleScopePath,
+								});
+								return visiblePath == null ? [] : [{ ...item, path: visiblePath }];
+							});
+
+				// An ancestor scope of a move's visible destination misses that move's committed
+				// chunks (they sit outside the scoped prefix); inject them into this single page.
+				const injectedItems =
+					overlay == null
+						? []
+						: await bash_overlay_content_search_injections({
+								ctx,
+								ctxData: pathResolution.ctxData,
+								overlay,
+								visibleScopePath,
+								committedScopePath,
+								query: recursivePattern,
+								numItems: 20,
+							});
+				const allItems = [...visibleItems, ...injectedItems];
 
 				const scopePath = pathResolution.renderShellPath(target.dbFilesPath);
 
@@ -755,15 +795,15 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				// per-hit note saying whether the literal pattern appears in the shown chunk.
 				const exactQueryFilter = bash_search_command_exact_query_filter(recursivePattern);
 				const blocks =
-					res.items.length > 0
+					allItems.length > 0
 						? [
 								`grep -R over app folders uses indexed full-text search, not exact recursive regex grep.`,
-								`Found ${res.items.length} results under ${scopePath}${bash_search_command_exact_query_summary(
+								`Found ${allItems.length} results under ${scopePath}${bash_search_command_exact_query_summary(
 									exactQueryFilter,
-									res.items.map((item) => item.markdownChunk ?? ""),
+									allItems.map((item) => item.markdownChunk ?? ""),
 								)}`,
 								"",
-								...res.items.map((item) => {
+								...allItems.map((item) => {
 									const markdownChunk = item.markdownChunk ?? "";
 									return [
 										`${pathResolution.renderShellPath(item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(exactQueryFilter, recursivePattern, markdownChunk)}`,
@@ -863,6 +903,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 								organizationId: pathResolution.ctxData.organizationId,
 								workspaceId: pathResolution.ctxData.workspaceId,
 								path: target.dbFilesPath,
+								overlayUserId: pathResolution.fs.overlayUserId,
 							})) as files_nodes_get_by_path_Result);
 
 				if (target.dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {

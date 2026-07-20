@@ -12,6 +12,7 @@ import {
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
 import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
+import { files_db_get_visible_node_by_path, files_pending_update_content_of } from "../server/files.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -243,7 +244,11 @@ async function db_list_pending_file_node_ids(
 		)
 		.order("asc")
 		.collect();
-	return pendingUpdates.map((pendingUpdate) => pendingUpdate.fileNodeId);
+	// Move-only docs have no pending metadata docs: only content-bearing
+	// docs hide their file's committed docs.
+	return pendingUpdates
+		.filter((pendingUpdate) => files_pending_update_content_of(pendingUpdate) != null)
+		.map((pendingUpdate) => pendingUpdate.fileNodeId);
 }
 
 function format_search_result(doc: Doc<"files_metadata_docs">) {
@@ -632,6 +637,8 @@ export const get_by_path = internalQuery({
 		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
 		userId: v.id("users"),
 		path: v.string(),
+		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
+		overlayUserId: v.optional(v.id("users")),
 	},
 	returns: v.union(
 		v.object({
@@ -652,16 +659,12 @@ export const get_by_path = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const fileNode = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("path", args.path)
-					.eq("archiveOperationId", undefined),
-			)
-			.first();
+		const fileNode = await files_db_get_visible_node_by_path(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			path: args.path,
+			overlayUserId: args.overlayUserId,
+		});
 		if (!fileNode || fileNode.kind !== "file") {
 			return null;
 		}
@@ -673,7 +676,7 @@ export const get_by_path = internalQuery({
 		) {
 			const organizationId: Id<"organizations"> = args.organizationId;
 			const workspaceId: Id<"organizations_workspaces"> = args.workspaceId;
-			pendingUpdate = await ctx.db
+			const row = await ctx.db
 				.query("files_pending_updates")
 				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
@@ -683,6 +686,11 @@ export const get_by_path = internalQuery({
 						.eq("fileNodeId", fileNode._id),
 				)
 				.first();
+			// A move-only doc carries no pending metadata docs: committed
+			// metadata stays authoritative for it.
+			if (row && files_pending_update_content_of(row) != null) {
+				pendingUpdate = row;
+			}
 		}
 
 		const sourceKind = pendingUpdate ? ("pending" as const) : ("committed" as const);
@@ -703,7 +711,9 @@ export const get_by_path = internalQuery({
 					.collect();
 
 		return {
-			path: fileNode.path,
+			// The overlay can present a moved node here: echo the requested path, not the
+			// node's committed path (identical without an overlay).
+			path: args.path,
 			nodeId: fileNode._id,
 			sourceKind,
 			fields: docs.filter((doc) => doc.docKind === "field").map((doc) => doc.qualifiedField),

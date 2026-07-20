@@ -5,6 +5,7 @@ import { memo, useState, useEffect, useRef, useDeferredValue, useMemo } from "re
 import { useFn, useLiveRef, useStateRef, useThrottle } from "@/hooks/utils-hooks.ts";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
+import { isToolOrDynamicToolUIPart } from "ai";
 import { ArrowDown, PanelLeft } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
@@ -391,6 +392,7 @@ export type AiChatThread_Props = {
 
 export type AiChatThread_CustomAttributes = {
 	"data-thread-id": string;
+	"data-ai-chat-state": "idle" | "streaming" | "tool-running";
 };
 
 export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props) {
@@ -750,6 +752,18 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		return `${selectedThreadId ?? "new"}:${controller.activeBranchMessages.anchorId ?? "root"}`;
 	};
 
+	// Machine-readable turn state for automation. Derived from values that already flow through
+	// this component while a turn streams, so it adds no new subscriptions or re-renders.
+	const lastMessage = controller.activeBranchMessages.list.at(-1);
+	const isToolRunning =
+		controller.isRunning &&
+		lastMessage?.role === "assistant" &&
+		lastMessage.parts.some(
+			(part) =>
+				isToolOrDynamicToolUIPart(part) && (part.state === "input-streaming" || part.state === "input-available"),
+		);
+	const aiChatState = isToolRunning ? "tool-running" : controller.isRunning ? "streaming" : "idle";
+
 	return (
 		<div
 			className={cn(
@@ -757,9 +771,10 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 				variant === "default" && ("AiChatThread-variant-default" satisfies AiChatThread_ClassNames),
 				variant === "sidebar" && ("AiChatThread-variant-sidebar" satisfies AiChatThread_ClassNames),
 			)}
-			{...((selectedThreadId
-				? { "data-thread-id": selectedThreadId }
-				: {}) satisfies Partial<AiChatThread_CustomAttributes>)}
+			{...({
+				...(selectedThreadId ? { "data-thread-id": selectedThreadId } : {}),
+				"data-ai-chat-state": aiChatState,
+			} satisfies Partial<AiChatThread_CustomAttributes>)}
 			onKeyDown={handleKeyDown}
 		>
 			<CatchBoundary

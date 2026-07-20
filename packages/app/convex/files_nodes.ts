@@ -64,9 +64,14 @@ import {
 	files_node_has_editable_yjs_state,
 	files_pending_update_content_of,
 	files_db_cancel_pending_update_cleanup_tasks,
+	files_db_build_pending_path_overlay,
+	files_db_get_pending_update,
+	files_db_get_visible_node_by_path,
+	files_pending_path_overlay_project_committed_path,
 	type files_ContentType,
 	type files_SpecialFileName,
 	type files_InlineAiModelId,
+	type files_PendingPathOverlay,
 } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
@@ -629,23 +634,12 @@ export const get_by_path = internalQuery({
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		path: v.string(),
+		/** When set, resolve through this user's pending path overlay (their pending moves). */
+		overlayUserId: v.optional(v.id("users")),
 	},
 	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
 	handler: async (ctx, args) => {
-		if (args.path === "/") {
-			return null;
-		}
-
-		return await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("path", args.path)
-					.eq("archiveOperationId", undefined),
-			)
-			.first();
+		return await files_db_get_visible_node_by_path(ctx, args);
 	},
 });
 
@@ -969,6 +963,11 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		textContent?: string;
 		readOnly?: boolean;
 		now: number;
+		/**
+		 * When set, receives the `_id` of every intermediate folder this call creates (reused
+		 * folders are skipped), in creation order (shallowest first).
+		 */
+		mut_createdAncestorIds?: Array<Id<"files_nodes">>;
 	},
 ) {
 	let currentParent: Doc<"files_nodes">["parentId"] = args.parentId;
@@ -1075,6 +1074,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			return Result({ _yay: nodeIdResult._yay });
 		}
 
+		args.mut_createdAncestorIds?.push(nodeIdResult._yay);
 		currentParent = nodeIdResult._yay;
 		currentParentPath = path;
 	}
@@ -1203,7 +1203,25 @@ export const create_file_node = internalMutation({
 		mountId: v.optional(v.id("github_mounts")),
 		syncRunId: v.optional(v.string()),
 	},
-	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
+	returns: v_result({
+		_yay: v.object({
+			nodeId: v.id("files_nodes"),
+			/**
+			 * The node's committed Yjs last sequence, captured in this same mutation. Eager-create
+			 * callers stamp their pending update doc with it, so a save landing after this mutation
+			 * always advances the node past the stamp and the hard-delete gate fails closed.
+			 * Undefined when the node has no Yjs docs (read-only files).
+			 */
+			createdCommittedSequence: v.optional(v.number()),
+			/**
+			 * `_id`s of the intermediate folders this mutation created (reused folders are
+			 * skipped), ordered deepest first; empty when no folder was created. Eager-create
+			 * callers hand them to the compensation mutation so a failed proposal upsert can
+			 * remove them too.
+			 */
+			createdAncestorIds: v.array(v.id("files_nodes")),
+		}),
+	}),
 	handler: async (ctx, args) => {
 		if ((args.mountId == null) !== (args.syncRunId == null)) {
 			return Result({ _nay: { message: "External mount sync run requires mountId and syncRunId" } });
@@ -1222,6 +1240,7 @@ export const create_file_node = internalMutation({
 				return Result({ _nay: { message: "External mount sync was superseded" } });
 			}
 		}
+		const createdAncestorIds: Array<Id<"files_nodes">> = [];
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: args.userId,
 			organizationId: args.organizationId,
@@ -1236,12 +1255,26 @@ export const create_file_node = internalMutation({
 			textContent: args.textContent,
 			readOnly: args.readOnly,
 			now: Date.now(),
+			mut_createdAncestorIds: createdAncestorIds,
 		});
 		if (nodeIdResult._nay) {
 			return nodeIdResult;
 		}
+		// The helper records shallowest first; compensation walks deepest first.
+		createdAncestorIds.reverse();
 
-		return Result({ _yay: { nodeId: nodeIdResult._yay } });
+		// Capture the committed last sequence inside the creating transaction: no save can land
+		// between the node creation and this read, so the value is the true creation-time state.
+		let createdCommittedSequence: number | undefined;
+		const createdNode = await ctx.db.get("files_nodes", nodeIdResult._yay);
+		if (createdNode?.yjsLastSequenceId) {
+			const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", createdNode.yjsLastSequenceId);
+			if (yjsLastSequenceDoc) {
+				createdCommittedSequence = yjsLastSequenceDoc.lastSequence;
+			}
+		}
+
+		return Result({ _yay: { nodeId: nodeIdResult._yay, createdCommittedSequence, createdAncestorIds } });
 	},
 });
 
@@ -1433,11 +1466,15 @@ export async function files_nodes_db_delete_subtree_batch(
 }
 
 /**
- * An eagerly-created destination (write_file or cp onto a new path) may only be hard-deleted
+ * An eager-created destination (write_file or cp onto a new path) may only be hard-deleted
  * while it is still the near-empty node the proposal created: no content committed since the
  * proposal (the committed Yjs sequence still matches the immutable `eagerCreated.committedSequence`
- * stamp) and no other user's pending row on the node. Anything else means the node became a real
- * file; callers must then drop only the proposer's row and keep the node.
+ * stamp), no committed rename/move of the node itself by another user (`updatedBy` is still
+ * the proposer; rename_node and move_nodes both stamp it), and no other user's pending update
+ * doc on the node. An ancestor-folder move rewrites descendant paths without restamping them —
+ * that is deliberate: hard-deleting the eager-created node does not undo the ancestor's own
+ * move. Anything else means the node became a real file; callers must then drop only the
+ * proposer's doc and keep the node.
  */
 export async function files_nodes_db_is_eager_node_safe_to_hard_delete(
 	ctx: QueryCtx,
@@ -1445,7 +1482,10 @@ export async function files_nodes_db_is_eager_node_safe_to_hard_delete(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
-		pendingUpdate: Pick<Doc<"files_pending_updates">, "_id" | "eagerCreated">;
+		// `_id` is absent for the compensation caller whose doc was never written: any real
+		// pending update doc on the node then blocks the hard delete.
+		pendingUpdate: Pick<Doc<"files_pending_updates">, "userId" | "eagerCreated"> &
+			Partial<Pick<Doc<"files_pending_updates">, "_id">>;
 	},
 ) {
 	// Proposals against pre-existing files (edits, replace-copies): never hard-delete those.
@@ -1458,6 +1498,11 @@ export async function files_nodes_db_is_eager_node_safe_to_hard_delete(
 	if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
 		// Node already gone: the hard delete no-ops, so running it is safe.
 		return true;
+	}
+	if (node.updatedBy !== args.pendingUpdate.userId) {
+		// Someone else committed a structural change (rename/move) since the eager creation;
+		// structural changes never advance the Yjs sequence, so the stamp cannot catch them.
+		return false;
 	}
 	if (!node.yjsLastSequenceId) {
 		return false;
@@ -1480,7 +1525,7 @@ export async function files_nodes_db_is_eager_node_safe_to_hard_delete(
 }
 
 /**
- * Hard-delete one FILE node with every dependent doc, every user's pending update rows, and its
+ * Hard-delete one file node with every dependent doc, every user's pending update docs, and its
  * R2 assets/objects. Built for pending-copy destination cleanup, not a general delete: copy
  * destinations are fresh near-empty nodes, so no batching is needed. Missing/mismatched nodes
  * are a no-op so discard stays idempotent.
@@ -1518,7 +1563,7 @@ export async function files_nodes_db_hard_delete_node(
 		pendingUpdates,
 		lastSequenceSavedDocs,
 	] = await Promise.all([
-		// The by-fileNode chunk indexes cover committed AND pending chunk docs.
+		// The by-fileNode chunk indexes cover both committed and pending chunk docs.
 		ctx.db
 			.query("files_plain_text_chunks")
 			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
@@ -1631,6 +1676,154 @@ export async function files_nodes_db_hard_delete_node(
 
 	await ctx.db.delete("files_nodes", node._id);
 }
+
+/**
+ * Remove the folders an eager create committed for a removed leaf, deepest first. A folder is
+ * only deleted while it is still the empty folder the proposer created: same scope, still
+ * a folder, created and last updated by `userId` (a rename/move by another user stamps
+ * `updatedBy` and must survive), no pending update doc referencing it (on the folder itself
+ * or as a pending move destination), and no child. A kept folder makes every shallower
+ * ancestor non-empty, so the walk stops there and counts the rest as left without further
+ * reads.
+ */
+export async function files_nodes_db_remove_created_ancestor_folders_if_safe(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: string;
+		createdAncestorIds: Id<"files_nodes">[];
+	},
+) {
+	let ancestorsLeft = 0;
+	for (const [i, ancestorId] of args.createdAncestorIds.entries()) {
+		const ancestor = await ctx.db.get("files_nodes", ancestorId);
+		if (!ancestor) {
+			// Already gone (e.g. a repeated compensation): nothing left here.
+			continue;
+		}
+		if (
+			ancestor.organizationId !== args.organizationId ||
+			ancestor.workspaceId !== args.workspaceId ||
+			ancestor.kind !== "folder" ||
+			ancestor.createdBy !== args.userId ||
+			ancestor.updatedBy !== args.userId
+		) {
+			ancestorsLeft = args.createdAncestorIds.length - i;
+			break;
+		}
+		const pendingUpdateOnFolder = await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", ancestor._id))
+			.first();
+		if (pendingUpdateOnFolder) {
+			// Deleting the folder would orphan the doc (e.g. a pending move of the folder).
+			ancestorsLeft = args.createdAncestorIds.length - i;
+			break;
+		}
+		const pendingMoveIntoFolder = await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_pendingMove_destParentId", (q) => q.eq("pendingMove.destParentId", ancestor._id))
+			.first();
+		if (pendingMoveIntoFolder) {
+			// A pending move targeting this folder must keep its destination alive.
+			ancestorsLeft = args.createdAncestorIds.length - i;
+			break;
+		}
+		const child = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", ancestor._id),
+			)
+			.first();
+		if (child) {
+			ancestorsLeft = args.createdAncestorIds.length - i;
+			break;
+		}
+		// Folder creation writes only the files_nodes doc (db_insert_node returns before
+		// any side docs for folders), so one delete removes the whole folder.
+		await ctx.db.delete("files_nodes", ancestor._id);
+	}
+	return { ancestorsLeft };
+}
+
+/**
+ * Compensation for a failed eager create's proposal upsert (write_file or cp onto a new path):
+ * the node was committed but the pending update doc was never recorded, so remove the
+ * just-created empty node — only while it is still provably untouched. The safety gate runs
+ * with a synthetic pending update doc that has no real `_id`, so any existing pending update
+ * doc on the node blocks the hard delete.
+ * When the eager create also committed missing parent folders, `createdAncestorIds`
+ * lets a removed leaf take those still-empty folders with it. Never errors for the compensation
+ * caller: a missing, out-of-scope, archived, or already-real node reports `removed: false`.
+ */
+export const remove_eager_created_node_if_safe = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+		eagerCreatedCommittedSequence: v.number(),
+		/**
+		 * `_id`s of the folders the eager create committed for this leaf, deepest first
+		 * (`createdAncestorIds` from `create_file_by_path`). After the leaf is removed, each
+		 * is removed too while it is still an empty folder only touched by `userId`.
+		 */
+		createdAncestorIds: v.optional(v.array(v.id("files_nodes"))),
+	},
+	returns: v_result({
+		_yay: v.object({
+			removed: v.boolean(),
+			/** How many of the passed ancestor folders still exist after this attempt. */
+			ancestorsLeft: v.number(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const createdAncestorIds = args.createdAncestorIds ?? [];
+		const node = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!node ||
+			node.organizationId !== args.organizationId ||
+			node.workspaceId !== args.workspaceId ||
+			node.archiveOperationId !== undefined ||
+			node.kind !== "file"
+		) {
+			return Result({ _yay: { removed: false, ancestorsLeft: createdAncestorIds.length } });
+		}
+
+		const safeToHardDelete = await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			pendingUpdate: {
+				userId: args.userId,
+				eagerCreated: { committedSequence: args.eagerCreatedCommittedSequence },
+			},
+		});
+		if (!safeToHardDelete) {
+			return Result({ _yay: { removed: false, ancestorsLeft: createdAncestorIds.length } });
+		}
+
+		await files_nodes_db_hard_delete_node(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+		});
+
+		const { ancestorsLeft } = await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			createdAncestorIds,
+		});
+		return Result({ _yay: { removed: true, ancestorsLeft } });
+	},
+});
+
+export type files_nodes_remove_eager_created_node_if_safe_Result =
+	typeof remove_eager_created_node_if_safe extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const finalize_markdown_node_creation = internalMutation({
 	args: {
@@ -1823,7 +2016,14 @@ export type files_nodes_create_file_node_internal_Result =
 		: never;
 
 type action_create_markdown_node_Result =
-	| { _yay: { nodeId: Id<"files_nodes"> }; _nay?: undefined }
+	| {
+			_yay: {
+				nodeId: Id<"files_nodes">;
+				createdCommittedSequence?: number;
+				createdAncestorIds: Id<"files_nodes">[];
+			};
+			_nay?: undefined;
+	  }
 	| {
 			_nay: {
 				name?: string;
@@ -1943,7 +2143,13 @@ async function action_create_markdown_node(
 		versionSnapshotSize: files_get_utf8_byte_size(args.markdownContent),
 	});
 
-	return Result({ _yay: { nodeId: created._yay.nodeId } });
+	return Result({
+		_yay: {
+			nodeId: created._yay.nodeId,
+			createdCommittedSequence: created._yay.createdCommittedSequence,
+			createdAncestorIds: created._yay.createdAncestorIds,
+		},
+	});
 }
 
 export const create_markdown_node = action({
@@ -1971,7 +2177,7 @@ export const create_markdown_node = action({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		return await action_create_markdown_node(ctx, {
+		const created = await action_create_markdown_node(ctx, {
 			userId: userAuth.id,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1979,6 +2185,12 @@ export const create_markdown_node = action({
 			markdownContent: files_INITIAL_CONTENT,
 			path: args.path,
 		});
+		if (created._nay) {
+			return created;
+		}
+
+		// The creation-time sequence capture is internal plumbing; keep the public shape.
+		return Result({ _yay: { nodeId: created._yay.nodeId } });
 	},
 });
 
@@ -2124,11 +2336,17 @@ export async function files_nodes_db_validate_pending_move_target(
 		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 		destName: string;
 		/**
-		 * File-onto-file replace opt-in. `"any-active-file"` at proposal time (`mv -f`) accepts
-		 * whichever active file owns the destination; a node id at accept time requires the
-		 * destination to still be exactly that node.
+		 * File-onto-file replace opt-in. `"any-active-file"` (proposal-time `mv -f`, and accept)
+		 * accepts whichever active file owns the destination; a node id requires the destination
+		 * to still be exactly that node.
 		 */
 		replaceTarget?: Id<"files_nodes"> | "any-active-file";
+		/**
+		 * Proposal-time only: validate against this user's visible tree. A committed sibling with
+		 * a pending move away does not conflict, and a destination already claimed by another
+		 * pending move is rejected. Accept-time callers leave this unset (committed tree).
+		 */
+		overlayUserId?: Id<"users">;
 	},
 ) {
 	const node = await ctx.db.get("files_nodes", args.nodeId);
@@ -2166,6 +2384,34 @@ export async function files_nodes_db_validate_pending_move_target(
 		return Result({ _nay: { message: "Cannot move a folder into itself" } });
 	}
 
+	let overlay: files_PendingPathOverlay | null = null;
+	if (args.overlayUserId != null) {
+		overlay = await files_db_build_pending_path_overlay(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.overlayUserId,
+		});
+		// Another pending move already claims this visible destination: reject instead of
+		// double-booking one path (this also covers moved-in occupants, which are never replaceable).
+		const visibleDestParentPath =
+			files_pending_path_overlay_project_committed_path(overlay, destParentPath) ?? destParentPath;
+		const visibleDestPath = path_join(visibleDestParentPath, args.destName);
+		const claimedByOtherMove = overlay.moves.some(
+			(move) => move.nodeId !== args.nodeId && move.visiblePath === visibleDestPath,
+		);
+		if (claimedByOtherMove) {
+			return Result({ _nay: { message: "Path already exists" } });
+		}
+		// The overlay can place the destination inside the folder's own visible subtree even
+		// when the committed paths look unrelated (a parent cycle across two pending moves).
+		if (node.kind === "folder") {
+			const visibleNodePath = files_pending_path_overlay_project_committed_path(overlay, node.path) ?? node.path;
+			if (visibleDestPath === visibleNodePath || visibleDestPath.startsWith(`${visibleNodePath}/`)) {
+				return Result({ _nay: { message: "Cannot move a folder into itself" } });
+			}
+		}
+	}
+
 	// Check whether an active sibling already owns the destination name.
 	const activeSiblingConflict = await ctx.db
 		.query("files_nodes")
@@ -2179,23 +2425,74 @@ export async function files_nodes_db_validate_pending_move_target(
 		)
 		.first();
 	if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
-		const replaceable =
-			args.replaceTarget != null &&
-			node.kind === "file" &&
-			activeSiblingConflict.kind === "file" &&
-			(args.replaceTarget === "any-active-file" || activeSiblingConflict._id === args.replaceTarget);
-		if (!replaceable) {
-			return Result({ _nay: { message: "Path already exists" } });
+		// A sibling the proposer's overlay moves away or hides is not a visible occupant:
+		// the destination reads as free for them, and accept auto-replaces any newcomer file.
+		const siblingInvisible =
+			overlay != null &&
+			(overlay.hiddenNodeIds.has(activeSiblingConflict._id) ||
+				overlay.moves.some((move) => move.nodeId === activeSiblingConflict._id));
+		if (!siblingInvisible) {
+			const replaceable =
+				args.replaceTarget != null &&
+				node.kind === "file" &&
+				activeSiblingConflict.kind === "file" &&
+				(args.replaceTarget === "any-active-file" || activeSiblingConflict._id === args.replaceTarget);
+			if (!replaceable) {
+				return Result({ _nay: { message: "Path already exists" } });
+			}
+			return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
 		}
-		return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
 	}
 
 	return Result({ _yay: { node, destParentPath, destPath, replacesNode: null } });
 }
 
+/** Patch one node to its destination and fan out the denormalized paths (chunk scope, descendants). */
+async function db_apply_node_move(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		node: Doc<"files_nodes">;
+		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		destName: string;
+		destPath: string;
+		updatedBy: Id<"users">;
+		now: number;
+	},
+) {
+	await ctx.db.patch("files_nodes", args.node._id, {
+		parentId: args.destParentId,
+		name: args.destName,
+		path: args.destPath,
+		treePath: derive_tree_path_for_file_node(args.destPath, args.node.kind),
+		pathDepth: files_path_depth(args.destPath),
+		lowercaseExtension: files_lowercase_extension(args.destPath, args.node.kind),
+		updatedBy: args.updatedBy,
+		updatedAt: args.now,
+	});
+	if (args.node.kind === "file") {
+		await db_patch_file_chunks_scope(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.node._id,
+			path: args.destPath,
+		});
+	}
+	await cascade_file_descendants_path(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		parentId: args.node._id,
+		parentPath: args.destPath,
+	});
+}
+
 /**
  * Apply an accepted pending move. Re-validates, then mirrors `rename_node`'s tail; this helper
  * owns the denormalized path fan-out (node, file chunk scope, descendant cascade).
+ *
+ * `_yay.cycleMemberPendingUpdates` lists the other pending update docs applied together with
+ * this one when the user's moves form a file-swap cycle; the caller must settle those docs too.
  */
 export async function files_nodes_db_apply_pending_move(
 	ctx: MutationCtx,
@@ -2205,17 +2502,36 @@ export async function files_nodes_db_apply_pending_move(
 		nodeId: Id<"files_nodes">;
 		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 		destName: string;
-		replacesNodeId?: Id<"files_nodes">;
+		userId: string;
 		updatedBy: Id<"users">;
 	},
 ) {
+	// A committed rename can land the node at the proposed destination before the accept
+	// (validation would call that "Source and destination are the same"). Treat it as an
+	// already-applied move: a success no-op, so the caller settles the doc normally.
+	const acceptedNode = await ctx.db.get("files_nodes", args.nodeId);
+	if (
+		acceptedNode &&
+		acceptedNode.organizationId === args.organizationId &&
+		acceptedNode.workspaceId === args.workspaceId &&
+		acceptedNode.archiveOperationId === undefined &&
+		acceptedNode.parentId === args.destParentId &&
+		acceptedNode.name === args.destName
+	) {
+		return Result({
+			_yay: { destPath: acceptedNode.path, cycleMemberPendingUpdates: [] as Doc<"files_pending_updates">[] },
+		});
+	}
+
+	// The pending move claims its destination: any file occupying it at accept time is
+	// auto-replaced like `mv -f`. A folder occupant still fails validation.
 	const validated = await files_nodes_db_validate_pending_move_target(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		nodeId: args.nodeId,
 		destParentId: args.destParentId,
 		destName: args.destName,
-		replaceTarget: args.replacesNodeId,
+		replaceTarget: "any-active-file",
 	});
 	if (validated._nay) {
 		return validated;
@@ -2225,39 +2541,129 @@ export async function files_nodes_db_apply_pending_move(
 	// Update the node once and then rebase descendants under the new materialized path.
 	const now = Date.now();
 	if (validated._yay.replacesNode) {
-		// Replace proposal: archive (never hard-delete) the file that owns the destination path.
-		// If it moved away since the proposal, `replacesNode` is null and the move proceeds plainly.
+		// An occupant that is itself the source of this user's chained pending move must
+		// move away first: archiving it here would silently break that other proposal.
+		const occupantPendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: validated._yay.replacesNode._id,
+		});
+		if (occupantPendingUpdate?.pendingMove) {
+			// The chain of same-user pending moves can close back on this node (a file swap
+			// built through a temp name). Such a file-swap cycle has no acceptable order, so
+			// accept applies every member's move together: the destinations are each other's
+			// sources inside one transaction, so no re-validation and no archiving is needed.
+			const cycleMembers: Array<{
+				node: Doc<"files_nodes">;
+				pendingUpdate: Doc<"files_pending_updates">;
+				destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+				destName: string;
+				destPath: string;
+			}> = [];
+			let isCycle = false;
+			let memberNode = validated._yay.replacesNode;
+			let memberPendingUpdate = occupantPendingUpdate;
+			let memberPendingMove = occupantPendingUpdate.pendingMove;
+			// Each hop consumes one of the user's pending moves, so the visited set bounds the
+			// walk: the chain ends, reaches the accepted node, or revisits a member.
+			const visitedNodeIds = new Set<Id<"files_nodes">>([memberNode._id]);
+			while (true) {
+				const nextOccupant = await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("parentId", memberPendingMove.destParentId)
+							.eq("name", memberPendingMove.destName)
+							.eq("archiveOperationId", undefined),
+					)
+					.first();
+				if (!nextOccupant) {
+					break;
+				}
+				cycleMembers.push({
+					node: memberNode,
+					pendingUpdate: memberPendingUpdate,
+					destParentId: memberPendingMove.destParentId,
+					destName: memberPendingMove.destName,
+					destPath: nextOccupant.path,
+				});
+				if (nextOccupant._id === args.nodeId) {
+					isCycle = true;
+					break;
+				}
+				if (visitedNodeIds.has(nextOccupant._id)) {
+					// The chain closed on itself without the accepted node: not this node's file-swap cycle.
+					break;
+				}
+				const nextPendingUpdate = await files_db_get_pending_update(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					nodeId: nextOccupant._id,
+				});
+				if (!nextPendingUpdate?.pendingMove) {
+					break;
+				}
+				visitedNodeIds.add(nextOccupant._id);
+				memberNode = nextOccupant;
+				memberPendingUpdate = nextPendingUpdate;
+				memberPendingMove = nextPendingUpdate.pendingMove;
+			}
+
+			if (isCycle && node.kind === "file" && cycleMembers.every((member) => member.node.kind === "file")) {
+				await db_apply_node_move(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					node,
+					destParentId: args.destParentId,
+					destName: args.destName,
+					destPath,
+					updatedBy: args.updatedBy,
+					now,
+				});
+				for (const member of cycleMembers) {
+					await db_apply_node_move(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						node: member.node,
+						destParentId: member.destParentId,
+						destName: member.destName,
+						destPath: member.destPath,
+						updatedBy: args.updatedBy,
+						now,
+					});
+				}
+				return Result({
+					_yay: { destPath, cycleMemberPendingUpdates: cycleMembers.map((member) => member.pendingUpdate) },
+				});
+			}
+
+			return Result({
+				_nay: { message: `Accept the pending move of "${validated._yay.replacesNode.name}" first` },
+			});
+		}
+		// Archive (never hard-delete) the file that owns the destination path, whether it was
+		// the proposed replace target or a newcomer created after the proposal.
 		await files_nodes_db_archive_nodes(ctx, {
 			nodeIds: [validated._yay.replacesNode._id],
 			updatedBy: args.updatedBy,
 			now,
 		});
 	}
-	await ctx.db.patch("files_nodes", args.nodeId, {
-		parentId: args.destParentId,
-		name: args.destName,
-		path: destPath,
-		treePath: derive_tree_path_for_file_node(destPath, node.kind),
-		pathDepth: files_path_depth(destPath),
-		lowercaseExtension: files_lowercase_extension(destPath, node.kind),
-		updatedBy: args.updatedBy,
-		updatedAt: now,
-	});
-	if (node.kind === "file") {
-		await db_patch_file_chunks_scope(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.nodeId,
-			path: destPath,
-		});
-	}
-	await cascade_file_descendants_path(ctx, {
+	await db_apply_node_move(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		parentId: args.nodeId,
-		parentPath: destPath,
+		node,
+		destParentId: args.destParentId,
+		destName: args.destName,
+		destPath,
+		updatedBy: args.updatedBy,
+		now,
 	});
-	return Result({ _yay: { destPath } });
+	return Result({ _yay: { destPath, cycleMemberPendingUpdates: [] as Doc<"files_pending_updates">[] } });
 }
 
 export const rename_node = mutation({
@@ -2550,6 +2956,15 @@ export const move_nodes = mutation({
 
 		const now = Date.now();
 		for (const fileNodeToMove of fileNodesToMove) {
+			// Same-parent drag: no structural change, so skip the patch entirely. Stamping
+			// updatedBy here would mark the node as touched by this user and wrongly block
+			// the eager hard-delete gate on discard/expiry.
+			if (
+				fileNodeToMove.movedPath === fileNodeToMove.fileNode.path &&
+				fileNodeToMove.fileNode.parentId === args.targetParentId
+			) {
+				continue;
+			}
 			await ctx.db.patch("files_nodes", fileNodeToMove.itemId, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -2558,6 +2973,7 @@ export const move_nodes = mutation({
 				treePath: derive_tree_path_for_file_node(fileNodeToMove.movedPath, fileNodeToMove.fileNode.kind),
 				pathDepth: files_path_depth(fileNodeToMove.movedPath),
 				lowercaseExtension: files_lowercase_extension(fileNodeToMove.movedPath, fileNodeToMove.fileNode.kind),
+				updatedBy: userAuth.id,
 				updatedAt: now,
 			});
 			if (fileNodeToMove.fileNode.kind === "file") {
@@ -3854,6 +4270,8 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		includePending: v.optional(v.boolean()),
+		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
+		overlayUserId: v.optional(v.id("users")),
 		/**
 		 * Max byte size for merging the committed chunks below. If the file is bigger, we skip the
 		 * merge and return no `content`, so the caller can reject using `asset.size` without
@@ -3873,19 +4291,14 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const fileNode =
-			args.path === "/"
-				? null
-				: await ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("path", args.path)
-								.eq("archiveOperationId", undefined),
-						)
-						.first();
+		// Translate the path through the overlay first; the per-user pending-content logic
+		// below then runs on the resolved node, so content-plus-move docs compose.
+		const fileNode = await files_db_get_visible_node_by_path(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			path: args.path,
+			overlayUserId: args.overlayUserId,
+		});
 
 		if (fileNode == null) return null;
 		if (fileNode.kind !== "file") return null;
@@ -3947,8 +4360,8 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 									.eq("fileNodeId", fileNode._id),
 							)
 							.first();
-		// Structural-only rows (pure move) carry no content; keep returning their `pendingUpdateId`
-		// below so write_file/edit_file mix onto them, while content resolves from the committed tree.
+		// Move-only docs carry no content; keep returning their `pendingUpdateId` below so
+		// write_file/edit_file mix onto them, while content resolves from the committed tree.
 		const pendingUpdateContent = pendingUpdate ? files_pending_update_content_of(pendingUpdate) : null;
 		if (pendingUpdate && pendingUpdateContent) {
 			// Rebuild the pending branch from its recorded base so readers see the same document
@@ -4058,6 +4471,8 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		includePending: v.optional(v.boolean()),
+		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
+		overlayUserId: v.optional(v.id("users")),
 		maxBytes: v.optional(v.number()),
 	},
 	returns: v.union(
@@ -4077,6 +4492,7 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
 			includePending: args.includePending,
+			overlayUserId: args.overlayUserId,
 			maxBytes: args.maxBytes,
 		})) as get_file_markdown_content_db_state_by_path_Result;
 		if (!contentState) {
@@ -4235,6 +4651,7 @@ async function files_resolve_readable_content_or_window(
 		userId: Id<"users">;
 		path: string;
 		pendingUpdateId?: Id<"files_pending_updates">;
+		overlayUserId?: Id<"users">;
 	},
 ): Promise<{ nodeId: Id<"files_nodes">; text: string; fetchedAllBytes: boolean; totalBytes: number } | null> {
 	const state = (await ctx.runQuery(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
@@ -4243,6 +4660,7 @@ async function files_resolve_readable_content_or_window(
 		userId: args.userId,
 		path: args.path,
 		pendingUpdateId: args.pendingUpdateId,
+		overlayUserId: args.overlayUserId,
 	})) as get_file_markdown_content_db_state_by_path_Result;
 	if (!state) {
 		return null;
@@ -4301,6 +4719,7 @@ async function db_resolve_committed_chunk_source(
 		userId: Id<"users">;
 		path: string;
 		pendingUpdateId?: Id<"files_pending_updates">;
+		overlayUserId?: Id<"users">;
 	},
 ): Promise<{
 	nodeId: Id<"files_nodes">;
@@ -4310,16 +4729,12 @@ async function db_resolve_committed_chunk_source(
 	// An explicit pending view is requested → committed chunks are not what the caller wants.
 	if (args.pendingUpdateId || args.path === "/") return null;
 
-	const fileNode = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("path", args.path)
-				.eq("archiveOperationId", undefined),
-		)
-		.first();
+	const fileNode = await files_db_get_visible_node_by_path(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		path: args.path,
+		overlayUserId: args.overlayUserId,
+	});
 	if (fileNode == null) return null;
 	if (fileNode.kind !== "file") return null;
 
@@ -4484,6 +4899,8 @@ export const read_committed_file_chunks_line_range = internalQuery({
 		maxLines: v.number(),
 		fromEnd: v.boolean(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
+		overlayUserId: v.optional(v.id("users")),
 	},
 	returns: v.union(
 		v.object({ usable: v.literal(false) }),
@@ -4604,6 +5021,8 @@ export const read_file_content_from_chunks = internalQuery({
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
+		overlayUserId: v.optional(v.id("users")),
 		mode: v.union(
 			v.object({
 				kind: v.literal("full"),
@@ -4626,17 +5045,14 @@ export const read_file_content_from_chunks = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		if (args.path === "/") return null;
-		const fileNode = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("path", args.path)
-					.eq("archiveOperationId", undefined),
-			)
-			.first();
+		// Translate the path through the overlay first; the per-user pending-content logic
+		// below then runs on the resolved node, so content-plus-move docs compose.
+		const fileNode = await files_db_get_visible_node_by_path(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			path: args.path,
+			overlayUserId: args.overlayUserId,
+		});
 		if (fileNode == null) return null;
 		if (fileNode.kind !== "file") return null;
 		const requestedOrganizationId = args.organizationId;
@@ -4688,8 +5104,8 @@ export const read_file_content_from_chunks = internalQuery({
 						.first();
 				}
 
-				// Structural-only rows (pure move) have no pending content; fall through to the
-				// committed chunks so reads do not return an empty file behind a pure-move row.
+				// Move-only docs have no pending content; fall through to the committed chunks
+				// so reads do not return an empty file behind a move-only doc.
 				if (pendingUpdate != null && files_pending_update_content_of(pendingUpdate) != null) {
 					// Pending chunks are already the markdown text the user sees. Full reads
 					// still honor maxBytes; line reads stream only the overlapping chunks.
@@ -4850,6 +5266,8 @@ export const read_committed_file_chunk_stats = internalQuery({
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
+		overlayUserId: v.optional(v.id("users")),
 	},
 	returns: v.union(
 		v.object({ usable: v.literal(false) }),
@@ -5430,8 +5848,9 @@ export const match_markdown_file_lines = internalQuery({
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
 			const organizationId = args.organizationId;
 			const workspaceId = args.workspaceId;
+			let pendingUpdate: Doc<"files_pending_updates"> | null = null;
 			if (args.pendingUpdateId != null) {
-				const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
+				pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
 				if (
 					!pendingUpdate ||
 					pendingUpdate.organizationId !== organizationId ||
@@ -5441,9 +5860,8 @@ export const match_markdown_file_lines = internalQuery({
 				) {
 					return null;
 				}
-				pendingUpdateId = pendingUpdate._id;
 			} else {
-				const pendingUpdate = await ctx.db
+				pendingUpdate = await ctx.db
 					.query("files_pending_updates")
 					.withIndex("by_organization_workspace_user_fileNode", (q) =>
 						q
@@ -5453,7 +5871,11 @@ export const match_markdown_file_lines = internalQuery({
 							.eq("fileNodeId", fileNode._id),
 					)
 					.first();
-				pendingUpdateId = pendingUpdate?._id ?? null;
+			}
+			// Move-only docs have no pending chunks; leave the id null so the scan falls
+			// through to the committed chunks instead of a silent no-match.
+			if (pendingUpdate != null && files_pending_update_content_of(pendingUpdate) != null) {
+				pendingUpdateId = pendingUpdate._id;
 			}
 		} else if (args.pendingUpdateId != null) {
 			// External (reserved) nodes never have pending docs; an explicit pending view cannot resolve.
@@ -5645,8 +6067,9 @@ export const match_plain_text_file_lines = internalQuery({
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
 			const organizationId = args.organizationId;
 			const workspaceId = args.workspaceId;
+			let pendingUpdate: Doc<"files_pending_updates"> | null = null;
 			if (args.pendingUpdateId != null) {
-				const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
+				pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
 				if (
 					!pendingUpdate ||
 					pendingUpdate.organizationId !== organizationId ||
@@ -5656,9 +6079,8 @@ export const match_plain_text_file_lines = internalQuery({
 				) {
 					return null;
 				}
-				pendingUpdateId = pendingUpdate._id;
 			} else {
-				const pendingUpdate = await ctx.db
+				pendingUpdate = await ctx.db
 					.query("files_pending_updates")
 					.withIndex("by_organization_workspace_user_fileNode", (q) =>
 						q
@@ -5668,7 +6090,11 @@ export const match_plain_text_file_lines = internalQuery({
 							.eq("fileNodeId", fileNode._id),
 					)
 					.first();
-				pendingUpdateId = pendingUpdate?._id ?? null;
+			}
+			// Move-only docs have no pending chunks; leave the id null so the scan falls
+			// through to the committed chunks instead of a silent no-match.
+			if (pendingUpdate != null && files_pending_update_content_of(pendingUpdate) != null) {
+				pendingUpdateId = pendingUpdate._id;
 			}
 		} else if (args.pendingUpdateId != null) {
 			// External (reserved) nodes never have pending docs; an explicit pending view cannot resolve.
@@ -5753,6 +6179,8 @@ export const read_file_line_range = internalAction({
 		startLine: v.number(),
 		maxLines: v.number(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
+		overlayUserId: v.optional(v.id("users")),
 	},
 	returns: v.union(
 		v.object({
@@ -5772,6 +6200,7 @@ export const read_file_line_range = internalAction({
 			userId: args.userId,
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
+			overlayUserId: args.overlayUserId,
 			mode: {
 				kind: "lines",
 				startLine,
@@ -5821,6 +6250,8 @@ export const read_file_tail_lines = internalAction({
 		path: v.string(),
 		maxLines: v.number(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
+		overlayUserId: v.optional(v.id("users")),
 	},
 	returns: v.union(
 		v.object({
@@ -5844,6 +6275,7 @@ export const read_file_tail_lines = internalAction({
 			maxLines,
 			fromEnd: true,
 			pendingUpdateId: args.pendingUpdateId,
+			overlayUserId: args.overlayUserId,
 		})) as files_nodes_read_committed_file_chunks_line_range_Result;
 		if (chunked.usable) {
 			return { nodeId: chunked.nodeId, content: chunked.content, moreLines: chunked.moreLines, scanTruncated: false };
@@ -5855,6 +6287,7 @@ export const read_file_tail_lines = internalAction({
 			userId: args.userId,
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
+			overlayUserId: args.overlayUserId,
 		})) as get_file_markdown_content_db_state_by_path_Result;
 		if (!state) {
 			return null;
@@ -5916,6 +6349,8 @@ export const read_file_content_stats = internalAction({
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
+		overlayUserId: v.optional(v.id("users")),
 	},
 	returns: v.union(
 		v.object({
@@ -5936,6 +6371,7 @@ export const read_file_content_stats = internalAction({
 			userId: args.userId,
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
+			overlayUserId: args.overlayUserId,
 		})) as files_nodes_read_committed_file_chunk_stats_Result;
 		if (chunked.usable) {
 			return {
@@ -6142,7 +6578,11 @@ export const text_search_files = internalQuery({
 				)
 				.order("asc")
 				.collect();
-			pendingNodeIds = pendingUpdates.map((pendingUpdate) => pendingUpdate.fileNodeId);
+			// Only docs with a content proposal have pending chunks to search instead.
+			// Move-only docs must keep their committed chunks searchable.
+			pendingNodeIds = pendingUpdates
+				.filter((pendingUpdate) => files_pending_update_content_of(pendingUpdate) != null)
+				.map((pendingUpdate) => pendingUpdate.fileNodeId);
 		}
 
 		const result = await db_text_search_filtered_query(ctx, {
@@ -6221,7 +6661,25 @@ export const create_file_by_path = internalAction({
 		path: v.string(),
 		markdownContent: v.optional(v.string()),
 	},
-	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes"), created: v.boolean() }) }),
+	returns: v_result({
+		_yay: v.object({
+			nodeId: v.id("files_nodes"),
+			created: v.boolean(),
+			/**
+			 * The node's committed Yjs last sequence, captured in the mutation that created the
+			 * node. Eager-create callers pass it to the pending-update upsert as the immutable
+			 * `eagerCreated.committedSequence` stamp. Only set when `created` is true.
+			 */
+			createdCommittedSequence: v.optional(v.number()),
+			/**
+			 * `_id`s of the intermediate folders created for this path (reused folders are
+			 * skipped), ordered deepest first; empty when no folder was created. Eager-create
+			 * callers hand them to `remove_eager_created_node_if_safe` so a failed proposal
+			 * upsert also removes the folders it committed.
+			 */
+			createdAncestorIds: v.array(v.id("files_nodes")),
+		}),
+	}),
 	handler: async (ctx, args) => {
 		const activeFileNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 			organizationId: args.organizationId,
@@ -6231,7 +6689,7 @@ export const create_file_by_path = internalAction({
 		if (activeFileNode?.kind === "file") {
 			// `created: false` marks a pre-existing file. Callers that need a fresh node (e.g.
 			// pending-copy destinations, which are later hard-deleted) must treat this as a conflict.
-			return Result({ _yay: { nodeId: activeFileNode._id, created: false } });
+			return Result({ _yay: { nodeId: activeFileNode._id, created: false, createdAncestorIds: [] } });
 		}
 
 		const created = await action_create_markdown_node(ctx, {
@@ -6246,7 +6704,14 @@ export const create_file_by_path = internalAction({
 			return created;
 		}
 
-		return Result({ _yay: { nodeId: created._yay.nodeId, created: true } });
+		return Result({
+			_yay: {
+				nodeId: created._yay.nodeId,
+				created: true,
+				createdCommittedSequence: created._yay.createdCommittedSequence,
+				createdAncestorIds: created._yay.createdAncestorIds,
+			},
+		});
 	},
 });
 

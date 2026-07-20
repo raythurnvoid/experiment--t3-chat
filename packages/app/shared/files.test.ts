@@ -9,10 +9,18 @@ import {
 	files_normalize_name_input,
 	files_normalize_name,
 	files_parse_markdown_to_html,
+	files_pending_path_overlay_build,
+	files_pending_path_overlay_list_injections,
+	files_pending_path_overlay_pick_visible_entry,
+	files_pending_path_overlay_project_committed_path,
+	files_pending_path_overlay_translate_path,
+	files_ROOT_ID,
 	files_tiptap_markdown_to_json,
 	files_tiptap_markdown_to_plain_text,
 	files_yjs_doc_get_markdown,
 	files_yjs_doc_update_from_markdown,
+	type files_PendingPathOverlayNode,
+	type files_PendingPathOverlayRow,
 } from "./files.ts";
 import { Doc as YDoc } from "yjs";
 import stringByteLength from "string-byte-length";
@@ -839,5 +847,667 @@ describe("frontmatter round-trip through Yjs", () => {
 		}
 
 		expect(markdownResult._yay).toBe(input);
+	});
+});
+
+describe("files_pending_path_overlay", () => {
+	function make_overlay_node_id(value: string) {
+		return value as app_convex_Doc<"files_nodes">["_id"];
+	}
+
+	function make_overlay_node(id: string, path: string, kind: "file" | "folder"): files_PendingPathOverlayNode {
+		return { _id: make_overlay_node_id(id), path, kind };
+	}
+
+	function make_move_row(args: {
+		nodeId: string;
+		destParentId: string | typeof files_ROOT_ID;
+		destName: string;
+		replacesNodeId?: string;
+	}): files_PendingPathOverlayRow {
+		return {
+			fileNodeId: make_overlay_node_id(args.nodeId),
+			pendingMove: {
+				destParentId: args.destParentId === files_ROOT_ID ? files_ROOT_ID : make_overlay_node_id(args.destParentId),
+				destName: args.destName,
+				fromPath: "",
+				replacesNodeId: args.replacesNodeId ? make_overlay_node_id(args.replacesNodeId) : undefined,
+			},
+		};
+	}
+
+	function make_copy_row(args: {
+		destNodeId: string;
+		sourceNodeId: string;
+		sourcePath: string;
+		archivesSourceOnAccept?: boolean;
+	}): files_PendingPathOverlayRow {
+		return {
+			fileNodeId: make_overlay_node_id(args.destNodeId),
+			copiedFrom: {
+				nodeId: make_overlay_node_id(args.sourceNodeId),
+				path: args.sourcePath,
+				archivesSourceOnAccept: args.archivesSourceOnAccept,
+			},
+		};
+	}
+
+	function build_overlay(rows: files_PendingPathOverlayRow[], nodes: files_PendingPathOverlayNode[]) {
+		return files_pending_path_overlay_build({
+			pendingUpdates: rows,
+			nodesById: new Map<string, files_PendingPathOverlayNode>(nodes.map((node) => [node._id, node])),
+		});
+	}
+
+	describe("rows that never affect paths", () => {
+		test("an empty overlay leaves every path unchanged", () => {
+			const overlay = build_overlay([], []);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_translate_path(overlay, "/")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/a.md");
+			expect(files_pending_path_overlay_list_injections(overlay, "/")).toEqual([]);
+		});
+
+		test("a content-only row leaves every path unchanged", () => {
+			const overlay = build_overlay(
+				[{ fileNodeId: make_overlay_node_id("a") }],
+				[make_overlay_node("a", "/a.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/a.md");
+		});
+
+		test("a plain copy row (no archivesSourceOnAccept) leaves the source visible", () => {
+			// The copy destination is a real committed node already, so the overlay has nothing to add.
+			const overlay = build_overlay(
+				[make_copy_row({ destNodeId: "dest", sourceNodeId: "src", sourcePath: "/a.md" })],
+				[make_overlay_node("src", "/a.md", "file"), make_overlay_node("dest", "/copy.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_translate_path(overlay, "/copy.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/a.md");
+			// The copy destination is an eagerly created committed node; listings show it as-is.
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/copy.md")).toBe("/copy.md");
+		});
+	});
+
+	describe("file move", () => {
+		const nodes = [make_overlay_node("a", "/a.md", "file"), make_overlay_node("docs", "/docs", "folder")];
+		const rows = [make_move_row({ nodeId: "a", destParentId: "docs", destName: "b.md" })];
+
+		test("the destination path redirects to the committed source path", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(files_pending_path_overlay_translate_path(overlay, "/docs/b.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/a.md",
+			});
+		});
+
+		test("the vacated source path is hidden", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "hidden" });
+		});
+
+		test("the committed source path projects onto the destination path", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/docs/b.md");
+		});
+
+		test("a file move hides only the exact source path, not lookalike siblings", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(files_pending_path_overlay_translate_path(overlay, "/ab.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/ab.md")).toBe("/ab.md");
+		});
+
+		test("a committed node at the claimed destination path is hidden from listings", () => {
+			// A file created at /docs/b.md after the proposal is shadowed for the proposer;
+			// accept auto-replaces it. Projection drops it so listings show the moved node once.
+			const overlay = build_overlay(rows, nodes);
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/docs/b.md")).toBe(null);
+		});
+
+		test("the destination folder listing injects the moved file under its new name", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(files_pending_path_overlay_list_injections(overlay, "/docs")).toEqual([
+				{ nodeId: make_overlay_node_id("a"), kind: "file", committedPath: "/a.md", visibleName: "b.md" },
+			]);
+			expect(files_pending_path_overlay_list_injections(overlay, "/")).toEqual([]);
+		});
+
+		test("a move to the root folder works like any other destination", () => {
+			const overlay = build_overlay(
+				[make_move_row({ nodeId: "a", destParentId: files_ROOT_ID, destName: "b.md" })],
+				[make_overlay_node("a", "/docs/a.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/b.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/docs/a.md",
+			});
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/docs/a.md")).toBe("/b.md");
+			expect(files_pending_path_overlay_list_injections(overlay, "/")).toEqual([
+				{ nodeId: make_overlay_node_id("a"), kind: "file", committedPath: "/docs/a.md", visibleName: "b.md" },
+			]);
+		});
+
+		test("an in-place rename projects the new name and adds no injection", () => {
+			// The committed listing of /docs already contains the node; projection renames it.
+			// An injection on top would show the same node twice.
+			const overlay = build_overlay(
+				[make_move_row({ nodeId: "a", destParentId: "docs", destName: "b.md" })],
+				[make_overlay_node("a", "/docs/a.md", "file"), make_overlay_node("docs", "/docs", "folder")],
+			);
+
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/docs/a.md")).toBe("/docs/b.md");
+			expect(files_pending_path_overlay_translate_path(overlay, "/docs/b.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/docs/a.md",
+			});
+			expect(files_pending_path_overlay_list_injections(overlay, "/docs")).toEqual([]);
+		});
+	});
+
+	describe("folder move", () => {
+		const nodes = [make_overlay_node("a", "/a", "folder"), make_overlay_node("b", "/b", "folder")];
+		const rows = [make_move_row({ nodeId: "a", destParentId: "b", destName: "c" })];
+
+		test("the destination folder path and its descendants redirect into the source subtree", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(files_pending_path_overlay_translate_path(overlay, "/b/c")).toEqual({
+				kind: "redirected",
+				committedPath: "/a",
+			});
+			expect(files_pending_path_overlay_translate_path(overlay, "/b/c/sub/file.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/a/sub/file.md",
+			});
+		});
+
+		test("the vacated folder path and its descendants are hidden", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(files_pending_path_overlay_translate_path(overlay, "/a")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_translate_path(overlay, "/a/sub/file.md")).toEqual({ kind: "hidden" });
+		});
+
+		test("committed descendant paths project onto the destination subtree", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a")).toBe("/b/c");
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a/sub/file.md")).toBe("/b/c/sub/file.md");
+		});
+
+		test("prefix matching respects path segment boundaries", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(files_pending_path_overlay_translate_path(overlay, "/ab.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_translate_path(overlay, "/b/cd.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/ab.md")).toBe("/ab.md");
+		});
+
+		test("committed paths at or under the claimed destination are hidden from listings", () => {
+			// A committed folder or file created inside the claimed /b/c area after the
+			// proposal is shadowed by the redirect; the source subtree shows there instead.
+			const overlay = build_overlay(rows, nodes);
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/b/c")).toBe(null);
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/b/c/late.md")).toBe(null);
+		});
+	});
+
+	describe("stacked moves", () => {
+		test("a move into a moved folder resolves through the parent's visible path", () => {
+			// Folder /a becomes /b, and /x.md moves into that folder: the file shows at /b/x.md.
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: files_ROOT_ID, destName: "b" }),
+					make_move_row({ nodeId: "x", destParentId: "a", destName: "x.md" }),
+				],
+				[make_overlay_node("a", "/a", "folder"), make_overlay_node("x", "/x.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/b/x.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/x.md",
+			});
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/x.md")).toBe("/b/x.md");
+			expect(files_pending_path_overlay_list_injections(overlay, "/b")).toEqual([
+				{ nodeId: make_overlay_node_id("x"), kind: "file", committedPath: "/x.md", visibleName: "x.md" },
+			]);
+		});
+
+		test("a rename inside a moved folder projects once and adds no injection", () => {
+			// /a/x.md is already a committed child of the moved folder, so listing the
+			// redirected folder /b covers it; its own rename row only changes the name.
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: files_ROOT_ID, destName: "b" }),
+					make_move_row({ nodeId: "x", destParentId: "a", destName: "y.md" }),
+				],
+				[make_overlay_node("a", "/a", "folder"), make_overlay_node("x", "/a/x.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a/x.md")).toBe("/b/y.md");
+			expect(files_pending_path_overlay_list_injections(overlay, "/b")).toEqual([]);
+		});
+
+		test("a renamed child's old visible path under a moved folder is hidden", () => {
+			// /a/x.md is renamed to y.md inside the moved folder: the folder-prefix redirect
+			// for /b/x.md no longer projects back onto /b/x.md, so the old path reads as gone.
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: files_ROOT_ID, destName: "b" }),
+					make_move_row({ nodeId: "x", destParentId: "a", destName: "y.md" }),
+				],
+				[make_overlay_node("a", "/a", "folder"), make_overlay_node("x", "/a/x.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/b/x.md")).toEqual({ kind: "hidden" });
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, { requestedPath: "/b/x.md", occupantNodeId: null }),
+			).toBe("none");
+			// The child's own rename keeps working through the exact-redirect branch.
+			expect(files_pending_path_overlay_translate_path(overlay, "/b/y.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/a/x.md",
+			});
+		});
+
+		test("an untouched sibling under the same moved folder still redirects", () => {
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: files_ROOT_ID, destName: "b" }),
+					make_move_row({ nodeId: "x", destParentId: "a", destName: "y.md" }),
+				],
+				[make_overlay_node("a", "/a", "folder"), make_overlay_node("x", "/a/x.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/b/s.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/a/s.md",
+			});
+		});
+
+		test("a move claiming a vacated visible path inside a moved folder shadows the committed child", () => {
+			// Folder /a becomes /b and /z.md moves onto /b/x.md (the visible path of the
+			// committed child /a/x.md). The exact claim wins: lookups at /b/x.md read Z, so
+			// projecting the committed child there too would make listings disagree with reads.
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: files_ROOT_ID, destName: "b" }),
+					make_move_row({ nodeId: "z", destParentId: "a", destName: "x.md" }),
+				],
+				[
+					make_overlay_node("a", "/a", "folder"),
+					make_overlay_node("x", "/a/x.md", "file"),
+					make_overlay_node("z", "/z.md", "file"),
+				],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/b/x.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/z.md",
+			});
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/z.md")).toBe("/b/x.md");
+			// The committed child is shadowed by the exact claim; the injection owns the path.
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a/x.md")).toBe(null);
+			expect(files_pending_path_overlay_list_injections(overlay, "/b")).toEqual([
+				{ nodeId: make_overlay_node_id("z"), kind: "file", committedPath: "/z.md", visibleName: "x.md" },
+			]);
+		});
+
+		test("siblings inside the moved folder still project when another move claims one child path", () => {
+			// The producing ancestor's own visible path prefixes every rewritten child, so only
+			// EXACT claims may shadow: siblings of the claimed path keep projecting through.
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: files_ROOT_ID, destName: "b" }),
+					make_move_row({ nodeId: "z", destParentId: "a", destName: "x.md" }),
+				],
+				[
+					make_overlay_node("a", "/a", "folder"),
+					make_overlay_node("x", "/a/x.md", "file"),
+					make_overlay_node("s", "/a/s.md", "file"),
+					make_overlay_node("z", "/z.md", "file"),
+				],
+			);
+
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a/s.md")).toBe("/b/s.md");
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a/sub/deep.md")).toBe("/b/sub/deep.md");
+			expect(files_pending_path_overlay_translate_path(overlay, "/b/s.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/a/s.md",
+			});
+		});
+
+		test("chained moves keep each mapping single-hop", () => {
+			// /a.md -> /b.md while /c.md -> /a.md: the vacated path is reused, no transitive chasing.
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: files_ROOT_ID, destName: "b.md" }),
+					make_move_row({ nodeId: "c", destParentId: files_ROOT_ID, destName: "a.md" }),
+				],
+				[make_overlay_node("a", "/a.md", "file"), make_overlay_node("c", "/c.md", "file")],
+			);
+
+			// The redirect into /a.md wins over the "moved away" hiding of the same path.
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/c.md",
+			});
+			expect(files_pending_path_overlay_translate_path(overlay, "/b.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/a.md",
+			});
+			expect(files_pending_path_overlay_translate_path(overlay, "/c.md")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/b.md");
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/c.md")).toBe("/a.md");
+		});
+
+		test("two files can swap paths", () => {
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: files_ROOT_ID, destName: "b.md" }),
+					make_move_row({ nodeId: "b", destParentId: files_ROOT_ID, destName: "a.md" }),
+				],
+				[make_overlay_node("a", "/a.md", "file"), make_overlay_node("b", "/b.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/b.md",
+			});
+			expect(files_pending_path_overlay_translate_path(overlay, "/b.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/a.md",
+			});
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/b.md");
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/b.md")).toBe("/a.md");
+		});
+
+		test("a destination-parent cycle drops all cycling rows", () => {
+			// Folder /a into /b while folder /b into /a: no visible path can resolve, so
+			// both rows are ignored instead of guessing an order.
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: "b", destName: "a" }),
+					make_move_row({ nodeId: "b", destParentId: "a", destName: "b" }),
+				],
+				[make_overlay_node("a", "/a", "folder"), make_overlay_node("b", "/b", "folder")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/a")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_translate_path(overlay, "/b")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a")).toBe("/a");
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/b")).toBe("/b");
+		});
+
+		test("a destination-parent cycle leaves unrelated rows applied", () => {
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: "b", destName: "a" }),
+					make_move_row({ nodeId: "b", destParentId: "a", destName: "b" }),
+					make_move_row({ nodeId: "x", destParentId: "docs", destName: "x.md" }),
+				],
+				[
+					make_overlay_node("a", "/a", "folder"),
+					make_overlay_node("b", "/b", "folder"),
+					make_overlay_node("x", "/x.md", "file"),
+					make_overlay_node("docs", "/docs", "folder"),
+				],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/docs/x.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/x.md",
+			});
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/x.md")).toBe("/docs/x.md");
+		});
+
+		test("a move into a committed subfolder of a moved folder resolves through the prefix rewrite", () => {
+			// Folder /a becomes /b; /a/sub has NO row of its own, its visible path /b/sub
+			// exists only through the ancestor rewrite. A move whose destination parent is
+			// that committed subfolder must land under the rewritten path.
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: files_ROOT_ID, destName: "b" }),
+					make_move_row({ nodeId: "x", destParentId: "sub", destName: "x.md" }),
+				],
+				[
+					make_overlay_node("a", "/a", "folder"),
+					make_overlay_node("sub", "/a/sub", "folder"),
+					make_overlay_node("x", "/x.md", "file"),
+				],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/b/sub/x.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/x.md",
+			});
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/x.md")).toBe("/b/sub/x.md");
+			expect(files_pending_path_overlay_list_injections(overlay, "/b/sub")).toEqual([
+				{ nodeId: make_overlay_node_id("x"), kind: "file", committedPath: "/x.md", visibleName: "x.md" },
+			]);
+		});
+
+		test("two moves onto the same visible path drop all colliding rows", () => {
+			// Proposal-time validation prevents this state; if rows still collide, do not
+			// guess a winner — both nodes stay visible at their committed paths.
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "x", destParentId: files_ROOT_ID, destName: "n.md" }),
+					make_move_row({ nodeId: "y", destParentId: files_ROOT_ID, destName: "n.md" }),
+				],
+				[make_overlay_node("x", "/x.md", "file"), make_overlay_node("y", "/y.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/n.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_translate_path(overlay, "/x.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_translate_path(overlay, "/y.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/x.md")).toBe("/x.md");
+			expect(files_pending_path_overlay_list_injections(overlay, "/")).toEqual([]);
+		});
+	});
+
+	describe("replace-move", () => {
+		test("a structural replace shows the source at the destination and hides the replaced node", () => {
+			// mv -f between non-editable files: the SOURCE node moves onto the destination
+			// path and the current destination owner is archived on accept.
+			const overlay = build_overlay(
+				[make_move_row({ nodeId: "src", destParentId: "media", destName: "new.mp4", replacesNodeId: "target" })],
+				[
+					make_overlay_node("src", "/old.mp4", "file"),
+					make_overlay_node("media", "/media", "folder"),
+					make_overlay_node("target", "/media/new.mp4", "file"),
+				],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/media/new.mp4")).toEqual({
+				kind: "redirected",
+				committedPath: "/old.mp4",
+			});
+			expect(files_pending_path_overlay_translate_path(overlay, "/old.mp4")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/old.mp4")).toBe("/media/new.mp4");
+			// The replaced node leaves the visible tree entirely.
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/media/new.mp4")).toBe(null);
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, {
+					requestedPath: "/media/new.mp4",
+					occupantNodeId: "target",
+				}),
+			).toBe("redirected");
+			// The moved-away source at its vacated path reads as missing.
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, { requestedPath: "/old.mp4", occupantNodeId: "src" }),
+			).toBe("none");
+		});
+
+		test("a replace whose target node is missing degrades to a plain move", () => {
+			// The target was archived or deleted after the proposal. Accept then performs a
+			// plain move, so the overlay must show the same thing instead of going inert.
+			const overlay = build_overlay(
+				[make_move_row({ nodeId: "src", destParentId: "media", destName: "new.mp4", replacesNodeId: "ghost" })],
+				[make_overlay_node("src", "/old.mp4", "file"), make_overlay_node("media", "/media", "folder")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/media/new.mp4")).toEqual({
+				kind: "redirected",
+				committedPath: "/old.mp4",
+			});
+			expect(files_pending_path_overlay_translate_path(overlay, "/old.mp4")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/old.mp4")).toBe("/media/new.mp4");
+		});
+
+		test("a replace whose target has its own pending move lets both rows apply", () => {
+			// Node a is moving to /docs/b.md, and node c replaces it at /a.md. Node a follows
+			// its own move instead of being hidden as a replaced target. This matches the
+			// non-destructive accept order (accept a's move first, then c's move onto the
+			// vacated path proceeds plainly).
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "a", destParentId: "docs", destName: "b.md" }),
+					make_move_row({ nodeId: "c", destParentId: files_ROOT_ID, destName: "a.md", replacesNodeId: "a" }),
+				],
+				[
+					make_overlay_node("a", "/a.md", "file"),
+					make_overlay_node("c", "/c.md", "file"),
+					make_overlay_node("docs", "/docs", "folder"),
+				],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/docs/b.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/a.md",
+			});
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/c.md",
+			});
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/docs/b.md");
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/c.md")).toBe("/a.md");
+		});
+
+		test("an editable replace hides the source and keeps the destination committed", () => {
+			// mv -f between editable files is stored as a copy on the destination node plus
+			// archivesSourceOnAccept: only the source disappears from the visible tree.
+			const overlay = build_overlay(
+				[
+					make_copy_row({
+						destNodeId: "dest",
+						sourceNodeId: "src",
+						sourcePath: "/a.md",
+						archivesSourceOnAccept: true,
+					}),
+				],
+				[make_overlay_node("src", "/a.md", "file"), make_overlay_node("dest", "/b.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe(null);
+			expect(files_pending_path_overlay_translate_path(overlay, "/b.md")).toEqual({ kind: "unchanged" });
+			// The destination keeps its identity; listings show it at its own path.
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/b.md")).toBe("/b.md");
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, { requestedPath: "/b.md", occupantNodeId: "dest" }),
+			).toBe("occupant");
+			// The copy-archived source at its own path reads as missing.
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, { requestedPath: "/a.md", occupantNodeId: "src" }),
+			).toBe("none");
+		});
+	});
+
+	describe("files_pending_path_overlay_pick_visible_entry", () => {
+		const nodes = [make_overlay_node("a", "/a.md", "file"), make_overlay_node("docs", "/docs", "folder")];
+		const rows = [make_move_row({ nodeId: "a", destParentId: "docs", destName: "b.md" })];
+
+		test("an untouched committed occupant wins", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, { requestedPath: "/other.md", occupantNodeId: "n" }),
+			).toBe("occupant");
+		});
+
+		test("a redirect with no committed occupant is presented", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, { requestedPath: "/docs/b.md", occupantNodeId: null }),
+			).toBe("redirected");
+		});
+
+		test("the moved-away occupant of a vacated path reads as missing", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, { requestedPath: "/a.md", occupantNodeId: "a" }),
+			).toBe("none");
+		});
+
+		test("a node created at a vacated path after the proposal stays visible", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, {
+					requestedPath: "/a.md",
+					occupantNodeId: "newcomer",
+				}),
+			).toBe("occupant");
+		});
+
+		test("a pending move claims its destination even over a newer committed node", () => {
+			// Someone created /docs/b.md after the proposal. The move keeps its claim: the
+			// proposer sees the moved node there, and accept auto-replaces (soft-archives)
+			// the occupant like mv -f. The pending panel shows "Replaces" before accept.
+			const overlay = build_overlay(rows, nodes);
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, {
+					requestedPath: "/docs/b.md",
+					occupantNodeId: "newcomer",
+				}),
+			).toBe("redirected");
+		});
+
+		test("a missing path with no redirect reads as missing", () => {
+			const overlay = build_overlay(rows, nodes);
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, { requestedPath: "/nope.md", occupantNodeId: null }),
+			).toBe("none");
+		});
+	});
+
+	describe("rows with missing node data are inert", () => {
+		test("a move row whose node is not in nodesById does nothing", () => {
+			const overlay = build_overlay(
+				[make_move_row({ nodeId: "ghost", destParentId: files_ROOT_ID, destName: "b.md" })],
+				[],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/b.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_list_injections(overlay, "/")).toEqual([]);
+		});
+
+		test("a move row whose destination parent is not in nodesById does nothing", () => {
+			// The source must stay visible: a half-applied overlay would hide the node everywhere.
+			const overlay = build_overlay(
+				[make_move_row({ nodeId: "a", destParentId: "ghost-folder", destName: "b.md" })],
+				[make_overlay_node("a", "/a.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/a.md");
+		});
+
+		test("an editable replace row whose source node is not in nodesById hides nothing", () => {
+			const overlay = build_overlay(
+				[
+					make_copy_row({
+						destNodeId: "dest",
+						sourceNodeId: "ghost",
+						sourcePath: "/a.md",
+						archivesSourceOnAccept: true,
+					}),
+				],
+				[make_overlay_node("dest", "/b.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "unchanged" });
+		});
 	});
 });

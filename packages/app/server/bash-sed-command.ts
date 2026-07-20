@@ -105,6 +105,7 @@ export function bash_sed_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					path: dbFilesPath,
 					startLine: fastPath.startLine,
 					maxLines,
+					overlayUserId: pathResolution.fs.overlayUserId,
 				})) as files_nodes_read_file_line_range_Result;
 				if (!result) {
 					const dbFilesDoc: files_nodes_get_by_path_Result =
@@ -114,6 +115,7 @@ export function bash_sed_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 									organizationId: pathResolution.ctxData.organizationId,
 									workspaceId: pathResolution.ctxData.workspaceId,
 									path: dbFilesPath,
+									overlayUserId: pathResolution.fs.overlayUserId,
 								})) as files_nodes_get_by_path_Result);
 
 					if (dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {

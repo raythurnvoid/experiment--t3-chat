@@ -7,11 +7,23 @@ import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
 import { internal } from "../convex/_generated/api.js";
 import { public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ } from "../convex/public_api.ts";
-import { files_READ_RANGE_MAX_LINES } from "../convex/files_nodes.ts";
+import {
+	files_READ_RANGE_MAX_LINES,
+	type files_nodes_get_by_path_Result,
+	type files_nodes_list_subtree_Result,
+} from "../convex/files_nodes.ts";
+import type { files_pending_updates_get_pending_path_overlay_data_Result } from "../convex/files_pending_updates.ts";
 import { path_name_of, server_path_normalize, server_path_parent_of } from "./server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "./crypto-utils.ts";
 import { minimatch } from "minimatch";
-import { files_ROOT_ID, files_get_normalized_node_path_segments } from "./files.ts";
+import {
+	files_ROOT_ID,
+	files_get_normalized_node_path_segments,
+	files_pending_path_overlay_build,
+	files_pending_path_overlay_project_committed_path,
+	files_pending_path_overlay_translate_path,
+	type files_PendingPathOverlay,
+} from "./files.ts";
 import { bash_EXTERNAL_MOUNTS_ROOT, bash_PLUGINS_MOUNT_ROOT, bash_is_path_under } from "./bash-utils.ts";
 
 /**
@@ -524,6 +536,144 @@ export function replace_once_or_all(
 	throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.");
 }
 
+/**
+ * Build the calling user's pending path overlay once per tool call. The agent's own pending
+ * mv proposals re-shape the tree it sees: moved nodes appear at their destination path and
+ * vacated or replaced paths read as missing. Convex caches the data query per args, so all
+ * tool calls share one cache entry until the user's pending updates change.
+ */
+async function fetch_pending_path_overlay(
+	ctx: ActionCtx,
+	ctxData: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+	},
+): Promise<files_PendingPathOverlay> {
+	const overlayData = (await ctx.runQuery(internal.files_pending_updates.get_pending_path_overlay_data, {
+		organizationId: ctxData.organizationId,
+		workspaceId: ctxData.workspaceId,
+		userId: ctxData.userId,
+	})) as files_pending_updates_get_pending_path_overlay_data_Result;
+	return files_pending_path_overlay_build({
+		pendingUpdates: overlayData.pendingUpdates,
+		nodesById: new Map(overlayData.referencedNodes.map((node) => [node._id, node])),
+	});
+}
+
+/**
+ * Overlay post-processing for the list_files-backed tools (list_files, glob_files, grep_files).
+ * Projects each committed result path to its visible path (dropping nodes the overlay hides or
+ * moves out of scope), re-checks the include pattern against the visible path so a renamed node
+ * matches by its new name, and injects pending moves whose visible path lands in scope so a
+ * moved-in node shows up under its new path. A moved-in folder's committed subtree is spliced
+ * in (first page, projected to the visible destination, same as the bash listings);
+ * `spliceTruncated` reports when a splice had more pages.
+ */
+async function project_listing_through_pending_path_overlay(
+	ctx: ActionCtx,
+	ctxData: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+	},
+	args: {
+		overlay: files_PendingPathOverlay;
+		scopePath: string;
+		items: Array<{ path: string; kind: "folder" | "file"; updatedAt: number; depthTruncated: boolean }>;
+		include?: string;
+		maxDepth: number;
+		limit: number;
+	},
+) {
+	const { overlay, scopePath, include, maxDepth } = args;
+	if (overlay.moves.length === 0 && overlay.hiddenCommittedPaths.size === 0) {
+		return { items: args.items, spliceTruncated: false };
+	}
+
+	const scopePrefix = scopePath === "/" ? "/" : `${scopePath}/`;
+	const relative_depth_of = (visiblePath: string) => visiblePath.slice(scopePrefix.length).split("/").length - 1;
+	const projectedItems: typeof args.items = [];
+	const seenVisiblePaths = new Set<string>();
+	for (const item of args.items) {
+		const visiblePath = files_pending_path_overlay_project_committed_path(overlay, item.path);
+		if (visiblePath == null || !visiblePath.startsWith(scopePrefix)) {
+			continue;
+		}
+		if (include && !minimatch(visiblePath, include)) {
+			continue;
+		}
+		seenVisiblePaths.add(visiblePath);
+		projectedItems.push({ ...item, path: visiblePath });
+	}
+
+	// Pending moves whose destination lands in scope surface as extra entries. Fetch the
+	// committed doc (no overlay) and present it under the visible path.
+	let spliceTruncated = false;
+	// Same clamp list_files applies to its own traversal, so splices share the page budget.
+	const spliceNumItems = Math.max(1, Math.min(20, args.limit));
+	for (const move of overlay.moves) {
+		if (!move.visiblePath.startsWith(scopePrefix) || seenVisiblePaths.has(move.visiblePath)) {
+			continue;
+		}
+		if (relative_depth_of(move.visiblePath) > maxDepth) {
+			continue;
+		}
+		// A non-matching moved folder still splices below (its descendants can match).
+		const moveMatchesInclude = !include || minimatch(move.visiblePath, include);
+		if (move.kind !== "folder" && !moveMatchesInclude) {
+			continue;
+		}
+		const committedDoc = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+			organizationId: ctxData.organizationId,
+			workspaceId: ctxData.workspaceId,
+			path: move.committedPath,
+		})) as files_nodes_get_by_path_Result;
+		if (committedDoc == null) {
+			continue;
+		}
+		if (moveMatchesInclude) {
+			seenVisiblePaths.add(move.visiblePath);
+			projectedItems.push({
+				path: move.visiblePath,
+				kind: committedDoc.kind,
+				updatedAt: committedDoc.updatedAt,
+				depthTruncated: false,
+			});
+		}
+		if (move.kind !== "folder") {
+			continue;
+		}
+		// A moved-in folder brings its committed descendants: splice the first subtree page
+		// in, projected to their visible paths, with the pattern and depth re-checked there.
+		const splice = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+			organizationId: ctxData.organizationId,
+			workspaceId: ctxData.workspaceId,
+			folderPath: move.committedPath,
+			numItems: spliceNumItems,
+			cursor: null,
+		})) as files_nodes_list_subtree_Result;
+		if (!splice.isDone) {
+			spliceTruncated = true;
+		}
+		for (const item of splice.page) {
+			const visiblePath = files_pending_path_overlay_project_committed_path(overlay, item.path);
+			if (visiblePath == null || !visiblePath.startsWith(scopePrefix) || seenVisiblePaths.has(visiblePath)) {
+				continue;
+			}
+			if (relative_depth_of(visiblePath) > maxDepth) {
+				continue;
+			}
+			if (include && !minimatch(visiblePath, include)) {
+				continue;
+			}
+			seenVisiblePaths.add(visiblePath);
+			projectedItems.push({ path: visiblePath, kind: item.kind, updatedAt: item.updatedAt, depthTruncated: false });
+		}
+	}
+
+	return { items: projectedItems, spliceTruncated };
+}
+
 // #region read file
 /**
  * Inspired by `opencode/packages/opencode/src/tool/read.ts`
@@ -573,6 +723,7 @@ export function ai_chat_tool_create_read_file(
 				userId: ctxData.userId,
 				path: normalizedPath,
 				pendingUpdateId,
+				overlayUserId: ctxData.userId,
 			});
 
 			if (!fileContent) {
@@ -586,6 +737,7 @@ export function ai_chat_tool_create_read_file(
 									organizationId: ctxData.organizationId,
 									workspaceId: ctxData.workspaceId,
 									path: parentPath,
+									overlayUserId: ctxData.userId,
 								});
 					const parentId = parentPath === "/" ? files_ROOT_ID : parentNode?.kind === "folder" ? parentNode._id : null;
 
@@ -602,18 +754,20 @@ export function ai_chat_tool_create_read_file(
 							numItems: 200,
 						});
 
+						// Suggest visible paths: a pending rename matches by its new name and
+						// hidden or moved-away siblings drop out.
+						const overlay = await fetch_pending_path_overlay(ctx, ctxData);
 						suggestions.push(
 							...siblings.items
-								.map((item) => item.name)
-								.filter(
-									(name) =>
+								.map((item) => files_pending_path_overlay_project_committed_path(overlay, item.path))
+								.filter((visiblePath): visiblePath is string => {
+									if (visiblePath == null) return false;
+									const name = path_name_of(visiblePath);
+									return (
 										name.trim() !== "" &&
 										(name.toLowerCase().includes(fileName.toLowerCase()) ||
-											fileName.toLowerCase().includes(name.toLowerCase())),
-								)
-								.map((name) => {
-									const trimmedName = name.trim();
-									return parentPath === "/" ? `/${trimmedName}` : `${parentPath}/${trimmedName}`;
+											fileName.toLowerCase().includes(name.toLowerCase()))
+									);
 								})
 								.slice(0, 3),
 						);
@@ -717,16 +871,30 @@ export function ai_chat_tool_create_list_files(
 
 			const path = server_path_normalize(args.path || "/");
 
-			const list = await ctx.runQuery(internal.files_nodes.list_files, {
-				path: path,
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
+			// The user's pending moves re-shape the listing: translate the scope, project each
+			// result to its visible path, and inject moved-in nodes.
+			const overlay = await fetch_pending_path_overlay(ctx, ctxData);
+			const translatedScope = files_pending_path_overlay_translate_path(overlay, path);
+			const list =
+				translatedScope.kind === "hidden"
+					? { items: [], truncated: false }
+					: await ctx.runQuery(internal.files_nodes.list_files, {
+							path: translatedScope.kind === "redirected" ? translatedScope.committedPath : path,
+							organizationId: ctxData.organizationId,
+							workspaceId: ctxData.workspaceId,
+							maxDepth: args.maxDepth,
+							limit: args.limit,
+						});
+			const { items, spliceTruncated } = await project_listing_through_pending_path_overlay(ctx, ctxData, {
+				overlay,
+				scopePath: path,
+				items: list.items,
 				maxDepth: args.maxDepth,
 				limit: args.limit,
 			});
 
 			// Apply ignore filters (on absolute paths)
-			const visiblePaths = list.items.filter((p) => !matchesAnyIgnore(p.path, args.ignore));
+			const visiblePaths = items.filter((p) => !matchesAnyIgnore(p.path, args.ignore));
 
 			const output = visiblePaths
 				.map((item) => `${item.path}${item.kind === "folder" ? "/" : ""}${item.depthTruncated ? " (...)" : ""}`)
@@ -736,7 +904,7 @@ export function ai_chat_tool_create_list_files(
 				title: path,
 				metadata: {
 					count: visiblePaths.length,
-					truncated: list.truncated,
+					truncated: list.truncated || spliceTruncated,
 				},
 				output,
 			};
@@ -784,25 +952,43 @@ export function ai_chat_tool_create_glob_files(
 		execute: async (args) => {
 			const searchPath = server_path_normalize(args.path || "/");
 
+			// The user's pending moves re-shape the results: translate the scope, re-check the
+			// pattern against visible paths (a renamed file matches by its new name), and
+			// inject moved-in matches.
+			const overlay = await fetch_pending_path_overlay(ctx, ctxData);
+			const translatedScope = files_pending_path_overlay_translate_path(overlay, searchPath);
+
 			// Get all files under the search path
-			const list = await ctx.runQuery(internal.files_nodes.list_files, {
-				path: searchPath,
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
+			const list =
+				translatedScope.kind === "hidden"
+					? { items: [], truncated: false }
+					: await ctx.runQuery(internal.files_nodes.list_files, {
+							path: translatedScope.kind === "redirected" ? translatedScope.committedPath : searchPath,
+							organizationId: ctxData.organizationId,
+							workspaceId: ctxData.workspaceId,
+							maxDepth: 10,
+							limit: args.limit,
+							include: args.pattern,
+						});
+			const { items, spliceTruncated } = await project_listing_through_pending_path_overlay(ctx, ctxData, {
+				overlay,
+				scopePath: searchPath,
+				items: list.items,
+				include: args.pattern,
 				maxDepth: 10,
 				limit: args.limit,
-				include: args.pattern,
 			});
+			const truncated = list.truncated || spliceTruncated;
 
 			// Sort by modification time (newest first)
-			list.items.sort((a, b) => b.updatedAt - a.updatedAt);
+			items.sort((a, b) => b.updatedAt - a.updatedAt);
 
 			const output: string[] = [];
-			if (list.items.length === 0) {
+			if (items.length === 0) {
 				output.push("No files found");
 			} else {
-				output.push(...list.items.map((f) => f.path));
-				if (list.truncated) {
+				output.push(...items.map((f) => f.path));
+				if (truncated) {
 					output.push("");
 					output.push("(Results are truncated. Consider using a more specific path or pattern.)");
 				}
@@ -811,8 +997,8 @@ export function ai_chat_tool_create_glob_files(
 			return {
 				title: searchPath,
 				metadata: {
-					count: list.items.length,
-					truncated: list.truncated,
+					count: items.length,
+					truncated,
 				},
 				output: output.join("\n"),
 			};
@@ -881,30 +1067,48 @@ export function ai_chat_tool_create_grep_files(
 				throw new Error(`Invalid regex pattern: ${args.pattern}. ${(error instanceof Error && error.message) || ""}`);
 			}
 
+			// The user's pending moves re-shape the results: translate the scope, project result
+			// paths, and inject moved-in files so they are searched under their new path.
+			const overlay = await fetch_pending_path_overlay(ctx, ctxData);
+			const translatedScope = files_pending_path_overlay_translate_path(overlay, searchPath);
+
 			// Discover candidate files using the same traversal logic as list_files
-			const list = await ctx.runQuery(internal.files_nodes.list_files, {
-				path: searchPath,
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
+			const list =
+				translatedScope.kind === "hidden"
+					? { items: [], truncated: false }
+					: await ctx.runQuery(internal.files_nodes.list_files, {
+							path: translatedScope.kind === "redirected" ? translatedScope.committedPath : searchPath,
+							organizationId: ctxData.organizationId,
+							workspaceId: ctxData.workspaceId,
+							maxDepth: args.maxDepth,
+							limit: args.limit,
+							include: args.include,
+						});
+			const { items, spliceTruncated } = await project_listing_through_pending_path_overlay(ctx, ctxData, {
+				overlay,
+				scopePath: searchPath,
+				items: list.items,
+				include: args.include,
 				maxDepth: args.maxDepth,
 				limit: args.limit,
-				include: args.include,
 			});
+			const truncated = list.truncated || spliceTruncated;
 
 			type Match = { path: string; updatedAt: number; lineNum: number; lineText: string };
 			const matches: Match[] = [];
 
-			for (const item of list.items) {
+			for (const item of items) {
 				if (item.kind !== "file") {
 					continue;
 				}
 
-				// Read file content
+				// Read file content (visible path; the overlay translates it back to the node)
 				const fileContent = await ctx.runAction(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
 					path: item.path,
 					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
 					userId: ctxData.userId,
+					overlayUserId: ctxData.userId,
 				});
 
 				const fileName = path_name_of(item.path);
@@ -931,7 +1135,7 @@ export function ai_chat_tool_create_grep_files(
 			if (matches.length === 0) {
 				return {
 					title: args.pattern,
-					metadata: { matches: 0, truncated: list.truncated },
+					metadata: { matches: 0, truncated },
 					output: "No files found",
 				};
 			}
@@ -947,14 +1151,14 @@ export function ai_chat_tool_create_grep_files(
 				outputLines.push(`  Line ${m.lineNum}: ${m.lineText}`);
 			}
 
-			if (list.truncated) {
+			if (truncated) {
 				outputLines.push("");
 				outputLines.push("(Results may be truncated due to traversal limits. Consider adjusting maxDepth or limit.)");
 			}
 
 			return {
 				title: args.pattern,
-				metadata: { matches: matches.length, truncated: list.truncated },
+				metadata: { matches: matches.length, truncated },
 				output: outputLines.join("\n"),
 			};
 		},
@@ -1015,7 +1219,7 @@ export function ai_chat_tool_create_bash(
 			For recursive grep requests over an app folder, the first Bash command should be search --path <folder> <content terms>; do not run ls, native rg, or multi-file grep first.
 			When listing the current directory, prefer ls --limit N over ls --limit N <current-cwd>. Do not restate the current cwd as a path argument just for certainty.
 			Use ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...] for app listings. Bare ls --limit N lists the current directory. --cursor continues one listing target only; when asked to continue, run the printed Next page command as the next Bash call and do not invent --next-page. Listings are paginated in small pages; raising --limit past its cap (20 for ls/find) returns no more items — page through with the printed Next page command instead. ls -t (newest first) and ls -rt (oldest first) without PATH list the whole workspace ordered by update time; with PATH they list that directory's immediate children by update time. For recent immediate children after cd into a folder, use ls -t --limit N .; bare ls -t is still workspace-wide. ls -Rt PATH is unsupported.
-			ls -R lists a paginated subtree as full app shell paths; when the user asks for tree-shaped output, use tree, not ls -R. ls -d lists the target entry itself and wins over -R; ls -l uses app metadata, not POSIX permissions, owners, groups, inodes, blocks, symlinks, or real sizes; stat reports the same app metadata, so its Access/owner/group fields are placeholders, not real POSIX values. ls -l and stat sizes are committed asset sizes; readers such as cat/head/tail/wc serve the current user's pending write_file/edit_file content, so byte counts can differ from stat while edits are pending. Unsupported sort/filter flags still fail.
+			ls -R lists a paginated subtree as full app shell paths; when the user asks for tree-shaped output, use tree, not ls -R. ls -d lists the target entry itself and wins over -R; ls -l uses app metadata, not POSIX permissions, owners, groups, inodes, blocks, symlinks, or real sizes; stat reports the same app metadata, so its Access/owner/group fields are placeholders, not real POSIX values. ls -l does not report file size; stat size is the current user's pending write_file/edit_file content size when present, otherwise the committed asset size, so stat matches what cat/head/tail/wc serve. Unsupported sort/filter flags still fail.
 			Use find -name QUERY or find --path-query QUERY only for indexed app-file path/name word search; find -name is case-insensitive like -iname. Prefer --path-query QUERY for natural "path/name contains QUERY" requests; pass a plain token such as readme, not *readme*. For regex path requests against app files, say regex is unsupported and use token search when a plain token is obvious; do not summarize successful --path-query output as native glob/regex syntax. Use find <dir> -maxdepth 1 -name QUERY for indexed immediate-child app-file path search under one directory. Use find <path> --extension md -type f for exact indexed extension search; simple find -name '*.md' and find <dir>/*.md are accepted as extension-search recovery, not general glob support. Use find <path> --limit N [--cursor CURSOR] for subtree pages, and find --prefix <prefix> --limit N [--cursor CURSOR] for a folder-boundary subtree scan that does not require the prefix to resolve to an existing folder first; sibling-prefix paths such as /docs-archive are excluded from /docs. find searches app paths/names only, not file content. When asked for app files under a folder, include -type f; when asked for folders, include -type d. find -maxdepth N and find -mindepth N filter non-search app subtree results by depth. find -type f and find -type d restrict app results to files or folders. General glob/regex patterns and GNU find extensions such as -printf, -mtime, -newer, -exec, and -ok are not supported for app paths; omit them there. Native find syntax can be used for /tmp paths.
 			Use search [--limit N] [--cursor CURSOR] <content terms...> for full-text content search across Markdown/text content. Pass one distinctive word or a few plain terms that should appear in the document body; the text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. It overlays the current user's pending write_file/edit_file unstaged changes before returning results. It is implemented with db full-text search, but it is not regex, glob, path/name search, or exact grep. For requests like "where does X appear" or "which files mention X", run search first; do not substitute find, which only searches paths/names. For recursive grep, grep -R, or rg wording over an app folder, do not try native rg or multi-file grep first; run search --path <folder> <content terms> directly. Scope to one folder with search --path <folder> <content terms...> when useful, but broad folder scopes with common terms can be heavier. Raising --limit past 100 has no effect; page with the printed Next page command. If cwd is inside the app tree, bare search scopes to that cwd; pass a folder via --path, not as a positional operand, and do not use search as a pipeline filter.
 			Use exact app paths with cat [-n] [--] [FILE...], head, tail, wc, and stat; these readers fetch at most 10 app files per command — to READ specific known files, cat them in batches of 10 or fewer across multiple commands; to FIND which files mention something, use search (it returns matching snippets, not whole files). The 10-file cap is a per-command batch limit, not a total ceiling. cat unreadable-file advisories are stderr, not file content, so do not parse them as content. Large files are not read inline: a single cat shows a bounded first page (with a footer telling you how to page on), and a multi-file cat refuses when any file is too large to inline. Read a large file in bounded pages with head -n N (first lines; prints the next sed -n page command to continue), sed -n 'A,Bp' (any line range), or tail -n N (last lines) — up to ${files_READ_RANGE_MAX_LINES} lines per read; wc reports line/word/byte/character counts (use wc -m for characters) so you know its size first (line/word/character counts are lower bounds for files beyond the scan window); wc accepts multiple files (per-file counts plus a total) and does not refuse a large member. Use search to find content across files. Pipelines with sed/awk/sort/uniq/cut/grep/head process already emitted text, but direct app-aware grep/head path operands are preferred for app files.
@@ -1023,7 +1227,7 @@ export function ai_chat_tool_create_bash(
 			To search content across files use search (or search --path <folder> for one folder); to find lines in a SINGLE file use grep [-n] [-i] [-F] PATTERN <file> over Markdown chunks. Normal single-file grep uses regex matching; -F/--fixed-strings uses literal substring matching; -n prints lineNumber:line, and without -n it prints raw matching lines; also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context. For rendered plain-text chunk scans, use textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file> for one app file (regex by default; -F/--fixed-strings uses literal substring matching; -v inverts; -c counts; -l prints the path if matched), or textgrep -R PATTERN <folder> for a recursive folder scan via indexed full-text search (not exact recursive regex/fixed-string grep). Single-file textgrep has no line numbers or context flags; use grep for -n or -A/-B/-C context. Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer search --path. Use tree [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape; unsupported native tree flags fail for app paths.
 			Keep commands simple: avoid strict-mode boilerplate such as set -euo pipefail because pipefail is unsupported, comments in command strings, and process substitution. For multi-command inspection or eval checks, do not use set -e or hide stderr with 2>/dev/null; later commands and visible stderr should still be observed. Only summarize actual Bash stdout/stderr; the blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents. Do not work around app read-only write or delete requests by copying app files to /tmp unless the user asked for a scratch copy.
 			App file tree mkdir is available only when this tool is configured for Agent mode; /tmp scratch does not create app file tree folders.
-			File writes, redirects, and deletes under ${currentWorkspacePath} are not supported shell operations; rm and ln are not available for app files. mv <app-path> <app-path> proposes a pending move/rename (one source only): the committed path changes only after the user accepts it in the Files sidebar, and until then reads keep showing the old path. Plain mv never overwrites an existing destination; mv -f <app-file> <existing-app-file> proposes a replace: the destination file keeps its identity and gets the source's content as a pending content replacement, and accepting saves that as a new version of the destination and archives the source file (folders can never replace or be replaced). cp <app-file> <app-path> proposes a pending copy (one source only): a new destination file appears immediately with the copied content pending review, your reads at the destination show that pending content, accepting publishes it, and discarding removes the destination file. When the cp destination file already exists, the copy becomes a pending content replacement on that file (like write_file), and discarding keeps the destination file with its committed content. cp <app-file> /tmp/<name> stays an immediate durable per-thread scratch copy. Persistent Markdown edits belong in write_file or edit_file with app paths such as /docs/readme.md. If a user asks to delete a file, explain that deletes are not available as shell operations.
+			File writes, redirects, and deletes under ${currentWorkspacePath} are not supported shell operations; rm and ln are not available for app files. mv <app-path> <app-path> proposes a pending move/rename (one source only): your own reads (bash and the file tools) see your pending proposals as if applied, while other users and the Files UI see the committed tree until the user accepts in the Files sidebar; accepting a move onto an occupied path replaces that file. Plain mv never overwrites an existing destination; mv -f <app-file> <existing-app-file> proposes a replace: the destination file keeps its identity and gets the source's content as a pending content replacement, and accepting saves that as a new version of the destination and archives the source file (folders can never replace or be replaced). cp <app-file> <app-path> proposes a pending copy (one source only): a new destination file appears immediately with the copied content pending review, your reads at the destination show that pending content, accepting publishes it, and discarding removes the destination file. When the cp destination file already exists, the copy becomes a pending content replacement on that file (like write_file), and discarding keeps the destination file with its committed content. cp <app-file> /tmp/<name> stays an immediate durable per-thread scratch copy. Persistent Markdown edits belong in write_file or edit_file with app paths such as /docs/readme.md. If a user asks to delete a file, explain that deletes are not available as shell operations.
 			Convert bash paths under ${currentWorkspacePath} to app paths for write_file/edit_file by removing the current workspace path prefix. Preserve the full remaining suffix: ${currentWorkspacePath}/folder/README.md becomes /folder/README.md, never /README.md.`,
 		inputSchema: z.object({
 			command: z
@@ -1129,7 +1333,7 @@ export function ai_chat_tool_create_write_file(
 			const path = `/${normalizedPathSegments.normalizedPathSegments.join("/")}`;
 			const pendingUpdateId = args.pendingUpdateId as Id<"files_pending_updates"> | undefined;
 
-			const currentFileContent = await ctx.runAction(
+			let currentFileContent = await ctx.runAction(
 				internal.files_nodes.get_file_last_available_markdown_content_by_path,
 				{
 					organizationId: ctxData.organizationId,
@@ -1137,23 +1341,57 @@ export function ai_chat_tool_create_write_file(
 					userId: ctxData.userId,
 					path,
 					pendingUpdateId,
+					overlayUserId: ctxData.userId,
 				},
 			);
 
 			let exists = !!currentFileContent;
-			const oldText = currentFileContent?.content ?? "";
-			const newText = normalize_ai_edit_content(normalize_lf_newlines(args.content), oldText);
-			const diff = createPatch(path, oldText, newText);
-
 			let nodeId = currentFileContent?.nodeId;
-			let eagerCreated = false;
+			let eagerCreatedCommittedSequence: number | undefined;
+			let createdAncestorIds: Id<"files_nodes">[] | undefined;
 
 			if (!nodeId) {
+				// The visible path resolved to nothing, but the eager create must still respect the
+				// user's pending moves: a vacated path keeps its committed occupant (creating there
+				// would silently reuse the node whose pending move claims another path), and a path
+				// inside a moved folder's claimed area creates at the committed source path so the
+				// new file shows up under the requested visible path.
+				const overlay = await fetch_pending_path_overlay(ctx, ctxData);
+				const translated = files_pending_path_overlay_translate_path(overlay, path);
+				if (translated.kind === "hidden") {
+					throw new Error(
+						`Cannot write to ${path}: a pending move or replace vacated this path. Use the file's new path, or accept or discard the pending proposal first.`,
+					);
+				}
+				// The eager create builds missing parent folders: reject when the nearest existing
+				// visible ancestor is a file (committed, or a pending move's claim), or committed
+				// folders would grow under a file path.
+				for (
+					let ancestorPath = server_path_parent_of(path);
+					ancestorPath !== "/";
+					ancestorPath = server_path_parent_of(ancestorPath)
+				) {
+					const ancestor = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+						organizationId: ctxData.organizationId,
+						workspaceId: ctxData.workspaceId,
+						path: ancestorPath,
+						overlayUserId: ctxData.userId,
+					})) as files_nodes_get_by_path_Result;
+					if (ancestor) {
+						if (ancestor.kind === "file") {
+							throw new Error(
+								`Cannot write to ${path}: ${ancestorPath} is a file, not a folder. Choose a destination under an existing folder.`,
+							);
+						}
+						break;
+					}
+				}
+				const createPath = translated.kind === "redirected" ? translated.committedPath : path;
 				const created = await ctx.runAction(internal.files_nodes.create_file_by_path, {
 					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
 					userId: ctxData.userId,
-					path,
+					path: createPath,
 				});
 				if (created._nay) {
 					throw new Error("[server-ai-tools.ai_chat_tool_create_write_file] Error creating file by path", {
@@ -1162,20 +1400,101 @@ export function ai_chat_tool_create_write_file(
 				}
 				exists = false;
 				nodeId = created._yay.nodeId;
-				// A raced creation reuses a pre-existing node: never mark it as eagerly created, or
-				// discard/expiry could hard-delete a node this tool did not create.
-				eagerCreated = created._yay.created;
+				// A raced creation reuses a pre-existing node: never stamp it as eagerly created, or
+				// discard/expiry could hard-delete a node this tool did not create. The stamp is the
+				// CREATION-time sequence captured by create_file_by_path, so a save landing before
+				// the upsert below keeps the node safe from hard deletes.
+				if (created._yay.created) {
+					eagerCreatedCommittedSequence = created._yay.createdCommittedSequence;
+					createdAncestorIds = created._yay.createdAncestorIds;
+				} else {
+					// The raced node has real content: re-read it so the result reports an overwrite
+					// with a diff against that content instead of a fake new file.
+					currentFileContent = await ctx.runAction(
+						internal.files_nodes.get_file_last_available_markdown_content_by_path,
+						{
+							organizationId: ctxData.organizationId,
+							workspaceId: ctxData.workspaceId,
+							userId: ctxData.userId,
+							path,
+							pendingUpdateId,
+							overlayUserId: ctxData.userId,
+						},
+					);
+					// The raced node can be moved or archived before the re-read; proceeding would
+					// attach the proposal to a node no longer at this path. Nothing to clean up:
+					// this tool created nothing on the raced path.
+					if (!currentFileContent) {
+						throw new Error(
+							`Cannot write to ${path}: the file changed while this write was running. Re-check the path and try again.`,
+						);
+					}
+					exists = true;
+					nodeId = currentFileContent.nodeId;
+				}
 			}
 
-			await ctx.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
-				userId: ctxData.userId,
-				nodeId,
-				pendingUpdateId: currentFileContent?.pendingUpdateId ?? undefined,
-				unstagedMarkdown: newText,
-				eagerCreated,
-			});
+			// oldText drives both the diff and the trailing-newline normalization, so it must come
+			// from the resolved node (a raced create re-reads the pre-existing content above).
+			const oldText = currentFileContent?.content ?? "";
+			const newText = normalize_ai_edit_content(normalize_lf_newlines(args.content), oldText);
+			const diff = createPatch(path, oldText, newText);
+
+			// A failed upsert after the eager create would leave the just-created committed node behind.
+			// Best-effort compensation: remove it while it is still provably untouched; a cleanup
+			// failure must never mask the original upsert error.
+			const eager_created_failure_note = async () => {
+				if (nodeId === undefined || eagerCreatedCommittedSequence === undefined) {
+					return "";
+				}
+				try {
+					const removal = await ctx.runMutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+						organizationId: ctxData.organizationId,
+						workspaceId: ctxData.workspaceId,
+						userId: ctxData.userId,
+						nodeId,
+						eagerCreatedCommittedSequence,
+						createdAncestorIds,
+					});
+					if (removal._yay?.removed) {
+						return removal._yay.ancestorsLeft > 0
+							? ` Empty folders created for ${path} were left behind; remove them in Files if they are not wanted.`
+							: ` Nothing was created at ${path}.`;
+					}
+				} catch (cleanupError) {
+					console.error("write_file failed to remove the eagerly created node after a failed upsert", cleanupError);
+				}
+				return ` An empty file was left behind at ${path}; remove it in Files if it is not wanted.`;
+			};
+			const upserted = await ctx
+				.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+					organizationId: ctxData.organizationId,
+					workspaceId: ctxData.workspaceId,
+					userId: ctxData.userId,
+					nodeId,
+					pendingUpdateId: currentFileContent?.pendingUpdateId ?? undefined,
+					unstagedMarkdown: newText,
+					eagerCreatedCommittedSequence,
+					// Set only together with the stamp: lets Discard and TTL expiry remove the
+					// parent folders the eager create built.
+					eagerCreatedAncestorIds: createdAncestorIds,
+				})
+				.catch(async (error: unknown) => {
+					if (eagerCreatedCommittedSequence === undefined) {
+						throw error;
+					}
+					throw new Error(`Cannot write to ${path}: the proposal was not recorded.${await eager_created_failure_note()}`, {
+						cause: error,
+					});
+				});
+			// The node can be archived or deleted between the read above and this upsert;
+			// reporting success would let the model believe the proposal exists.
+			if (upserted._nay) {
+				throw new Error(
+					`Cannot write to ${path}: the file is gone or archived, so the proposal was not recorded. Re-check the path and try again.${await eager_created_failure_note()}`,
+					{ cause: upserted._nay },
+				);
+			}
 			const nextPendingUpdate = await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
@@ -1271,6 +1590,7 @@ export function ai_chat_tool_create_edit_file(
 					userId: ctxData.userId,
 					path: normalizedPath,
 					pendingUpdateId,
+					overlayUserId: ctxData.userId,
 				},
 			);
 			if (!currentFileContent) {
@@ -1293,7 +1613,7 @@ export function ai_chat_tool_create_edit_file(
 
 			const nodeId = currentFileContent.nodeId;
 
-			await ctx.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			const upserted = await ctx.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				userId: ctxData.userId,
@@ -1301,6 +1621,14 @@ export function ai_chat_tool_create_edit_file(
 				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
 				unstagedMarkdown: modifiedText,
 			});
+			// The node can be archived or deleted between the read above and this upsert;
+			// reporting success would let the model believe the proposal exists.
+			if (upserted._nay) {
+				throw new Error(
+					`Cannot edit ${normalizedPath}: the file is gone or archived, so the proposal was not recorded. Re-check the path and try again.`,
+					{ cause: upserted._nay },
+				);
+			}
 			const nextPendingUpdate = await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,

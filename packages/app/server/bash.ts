@@ -50,7 +50,7 @@ import type {
 	ai_chat_files_load_thread_tmp_files_Result,
 	ai_chat_files_patch_thread_tmp_files_Args,
 } from "../convex/ai_chat_files.ts";
-import { files_ROOT_ID, files_get_utf8_byte_size } from "../shared/files.ts";
+import { files_ROOT_ID, files_get_utf8_byte_size, files_pending_path_overlay_project_committed_path } from "../shared/files.ts";
 import type { plugins_list_bash_source_mounts_Result } from "../convex/plugins.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -80,6 +80,8 @@ import {
 	bash_EXTERNAL_MOUNTS_ROOT,
 	bash_PLUGINS_MOUNT_ROOT,
 	bash_command_has_disallowed_source_target,
+	bash_current_workspace_path_to_db_files_path,
+	bash_db_files_path_to_current_workspace_path,
 	bash_DEV_NULL_PATH,
 	bash_DEV_ZERO_BYTE_COUNT,
 	bash_DEV_ZERO_PATH,
@@ -956,10 +958,34 @@ async function bash_fs_create(args: {
 		},
 	};
 
+	// The visible path the user's own pending move gives this app path, or null when untouched.
+	const project_pending_moved_path = async (path: string) => {
+		const dbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, bash_normalize_path(path));
+		if (dbFilesPath == null || dbFilesPath === "/") {
+			return null;
+		}
+		const overlay = await appDbFilesFs.getOverlay();
+		if (overlay == null) {
+			return null;
+		}
+		const visiblePath = files_pending_path_overlay_project_committed_path(overlay, dbFilesPath);
+		if (visiblePath == null || visiblePath === dbFilesPath) {
+			return null;
+		}
+		return bash_db_files_path_to_current_workspace_path(currentWorkspacePath, visiblePath);
+	};
+
 	// The persisted cwd can vanish between runs (deleted folder, pruned /tmp).
-	const cwd =
-		(await nearest_existing_dir(fs, args.persistedCwd === DEFAULT_CWD ? currentWorkspacePath : args.persistedCwd)) ??
-		currentWorkspacePath;
+	const requestedCwd = args.persistedCwd === DEFAULT_CWD ? currentWorkspacePath : args.persistedCwd;
+	let cwd = (await nearest_existing_dir(fs, requestedCwd)) ?? currentWorkspacePath;
+	// A persisted cwd vacated by the user's own pending move (proposed in another chat)
+	// follows the move to its visible destination instead of climbing out of it.
+	if (cwd !== bash_normalize_path(requestedCwd)) {
+		const movedCwd = await project_pending_moved_path(requestedCwd);
+		if (movedCwd != null && (await nearest_existing_dir(fs, movedCwd)) === movedCwd) {
+			cwd = movedCwd;
+		}
+	}
 
 	const bash = new Bash({
 		fs,
@@ -1038,6 +1064,7 @@ async function bash_fs_create(args: {
 			}));
 		},
 		nearest_existing_dir: (path: string) => nearest_existing_dir(fs, path),
+		project_pending_moved_path,
 		evict_tmp_to_limits: () => tmp_fs_evict_to_limits(tmpFs),
 		create_tmp_patch: async () => {
 			if (!tmpFs.dirty) {
@@ -1111,6 +1138,14 @@ export async function bash_run_command(
 	const rawNextCwd = result.env.PWD || bashFs.cwd;
 	// A command can delete its own cwd; climb to the nearest surviving directory.
 	let nextCwd = (await bashFs.nearest_existing_dir(rawNextCwd)) ?? bashFs.currentWorkspacePath;
+	// A cwd vacated by the user's own pending move (mv of the cwd or an ancestor) follows
+	// the move to its visible destination instead of climbing out of it.
+	if (nextCwd !== bash_normalize_path(rawNextCwd)) {
+		const movedCwd = await bashFs.project_pending_moved_path(rawNextCwd);
+		if (movedCwd != null && (await bashFs.nearest_existing_dir(movedCwd)) === movedCwd) {
+			nextCwd = movedCwd;
+		}
+	}
 	const redirectsStderrToStdout = REDIRECTS_STDERR_TO_STDOUT_REGEX.test(args.command);
 
 	if (
@@ -2060,6 +2095,28 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout.split("# Readme").length - 1).toBe(2);
 			expect(readCalls).toHaveLength(1);
+		});
+
+		test("cat does not serve stale cached content after a same-call mv", async () => {
+			const runner = await create_bash_runner();
+
+			// The mv vacates the old path mid-call, so the second cat must fail instead of
+			// replaying the first cat's cached content.
+			const chained = await runner.run(
+				`cat ${test_db_files_mount}/docs/readme.md && mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/moved.md && cat ${test_db_files_mount}/docs/readme.md`,
+			);
+			expect(chained.metadata.exitCode).not.toBe(0);
+			expect(chained.stderr).toContain("No such file or directory");
+			// Only the first cat prints the content.
+			expect(chained.stdout.split("# Readme").length - 1).toBe(1);
+
+			// cat at the NEW path in the same call serves the moved content.
+			const movedChain = await runner.run(
+				`cat ${test_db_files_mount}/docs/tutorial.md && mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md && cat ${test_db_files_mount}/docs/guide.md`,
+			);
+			expect(movedChain.stderr).toBe("");
+			expect(movedChain.metadata.exitCode).toBe(0);
+			expect(movedChain.stdout.split("zeta").length - 1).toBe(2);
 		});
 
 		test("reads current app file byte size after an unsaved edit is created", async () => {
@@ -4302,6 +4359,32 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "r2:get_asset_by_id")).toBe(false);
 		});
 
+		test("stat reports the committed size after a pure move", async () => {
+			const runner = await create_bash_runner({ extraFiles: [big_md_file] });
+			const bigNode = await get_seeded_node(runner, "/big.md");
+			if (bigNode.assetId == null) {
+				throw new Error("expected /big.md to have a committed asset");
+			}
+			const asset = await runner.t.query(internal.r2.get_asset_by_id, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				assetId: bigNode.assetId,
+			});
+			if (asset?.size == null) {
+				throw new Error("expected a committed asset size for /big.md");
+			}
+			expect(asset.size).toBeGreaterThan(bash_READ_INLINE_MAX_BYTES);
+
+			const moved = await runner.run(`mv ${test_db_files_mount}/big.md ${test_db_files_mount}/renamed-big.md`);
+			expect(moved.metadata.exitCode).toBe(0);
+
+			// The move-only pending update doc stores size 0; stat must report the committed asset size, not 0.
+			const result = await runner.run(`stat -c %s ${test_db_files_mount}/renamed-big.md`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe(`${asset.size}\n`);
+		});
+
 		test("rejects stat format options without a value", async () => {
 			const { run } = await create_bash_runner();
 
@@ -4782,6 +4865,26 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "r2:get_asset_by_id")).toBe(false);
 		});
 
+		test("large cat oversize gate still fires behind a pure move", async () => {
+			const runner = await create_bash_runner({ extraFiles: [big_md_file] });
+
+			const moved = await runner.run(`mv ${test_db_files_mount}/big.md ${test_db_files_mount}/renamed-big.md`);
+			expect(moved.metadata.exitCode).toBe(0);
+
+			// The move-only pending update doc stores size 0; both cat gates must keep using the committed asset size.
+			const multi = await runner.run(
+				`cat ${test_db_files_mount}/renamed-big.md ${test_db_files_mount}/docs/readme.md`,
+			);
+			expect(multi.metadata.exitCode).toBe(1);
+			expect(multi.stderr).toContain("too large to concatenate");
+			expect(multi.stdout).not.toContain("# Readme");
+
+			const single = await runner.run(`cat ${test_db_files_mount}/renamed-big.md`);
+			expect(single.metadata.exitCode).toBe(0);
+			expect(single.stdout).toContain("line 1\n");
+			expect(single.stderr).toContain("showing the first");
+		});
+
 		test("sed app line-range fast path supports -- and unreadable source advisories", async () => {
 			const { run } = await create_bash_runner();
 			const readmePath = `${test_db_files_mount}/docs/readme.md`;
@@ -4997,7 +5100,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).toBe("");
 			expect(result.stdout).toBe("pending move created: /docs/tutorial.md -> /docs/guide.md — review in Files\n");
 
-			// The committed node stays at the old path; only a structural pending row exists.
+			// The committed node stays at the old path; only a move-only pending update doc exists.
 			const sourceId = await get_seeded_node_id(runner, "/docs/tutorial.md");
 			const rows = await runner.t.run((ctx) =>
 				ctx.db
@@ -5015,12 +5118,47 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(rows[0].stagedBranchYjsUpdate).toBeUndefined();
 			expect(rows[0].unstagedBranchYjsUpdate).toBeUndefined();
 
+			// The proposer's later commands see the pending path overlay: the vacated path reads
+			// as gone and the claimed destination serves the moved file.
 			const oldRead = await runner.run(`cat ${test_db_files_mount}/docs/tutorial.md`);
-			expect(oldRead.metadata.exitCode).toBe(0);
-			expect(oldRead.stdout).toContain("zeta");
+			expect(oldRead.metadata.exitCode).not.toBe(0);
+			expect(oldRead.stderr).toContain("No such file or directory");
 			const newRead = await runner.run(`cat ${test_db_files_mount}/docs/guide.md`);
-			expect(newRead.metadata.exitCode).not.toBe(0);
-			expect(newRead.stderr).toContain("No such file or directory");
+			expect(newRead.metadata.exitCode).toBe(0);
+			expect(newRead.stdout).toContain("zeta");
+			const newStat = await runner.run(`stat ${test_db_files_mount}/docs/guide.md`);
+			expect(newStat.metadata.exitCode).toBe(0);
+			expect(newStat.stdout).toContain("regular file");
+			const oldStat = await runner.run(`stat ${test_db_files_mount}/docs/tutorial.md`);
+			expect(oldStat.metadata.exitCode).not.toBe(0);
+			expect(oldStat.stderr).toContain("No such file or directory");
+		});
+
+		test("mv back to the original path cancels the pending move", async () => {
+			const runner = await create_bash_runner();
+
+			const moved = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`);
+			expect(moved.metadata.exitCode).toBe(0);
+
+			const cancelled = await runner.run(
+				`mv ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/docs/tutorial.md`,
+			);
+			expect(cancelled.metadata.exitCode).toBe(0);
+			expect(cancelled.stderr).toBe("");
+			expect(cancelled.stdout).toBe("pending move cancelled: the file stays at /docs/tutorial.md\n");
+
+			// The move-only pending update doc is gone and the file reads at its committed path again.
+			const sourceId = await get_seeded_node_id(runner, "/docs/tutorial.md");
+			const rows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+					.collect(),
+			);
+			expect(rows).toHaveLength(0);
+			const restoredRead = await runner.run(`cat ${test_db_files_mount}/docs/tutorial.md`);
+			expect(restoredRead.metadata.exitCode).toBe(0);
+			expect(restoredRead.stdout).toContain("zeta");
 		});
 
 		test("creates pending move proposals into an existing folder and for folders", async () => {
@@ -5117,6 +5255,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				// The pending upsert fetches the target's committed yjs snapshot from R2.
 				extraFiles: [
 					{ path: "/docs/replace-me.md", content: "old target\n", withRealYjsSnapshot: true },
+					{ path: "/docs/nested/readme.md", content: "second source\n", withRealYjsSnapshot: true },
 					{ path: "/reports/readme.md", content: "occupied\n", withRealYjsSnapshot: true },
 				],
 			});
@@ -5131,7 +5270,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(fileOntoFile.stdout).toBe(
 				"pending replace created: /docs/readme.md -> /docs/replace-me.md — replaces the file's content and archives the source when accepted; review in Files\n",
 			);
-			// The proposal lands on the TARGET node as a content replace; the source has no row.
+			// The proposal lands on the target node as a content replacement; the source has no pending update doc.
 			const targetRows = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_pending_updates")
@@ -5160,12 +5299,24 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(overlayRead.metadata.exitCode).toBe(0);
 			expect(overlayRead.stdout).toContain("# Readme");
 
-			// A folder destination replaces its occupant file through the same -f opt-in.
+			// The replace proposal hides its source from the proposer's overlay, so a later mv of
+			// the same source path reads as missing (the file is already spoken for).
+			const hiddenSource = await runner.run(
+				`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`,
+			);
+			expect(hiddenSource.metadata.exitCode).not.toBe(0);
+			expect(hiddenSource.stderr).toContain("No such file or directory");
+
+			// A folder destination replaces its occupant file through the same -f opt-in
+			// (mv into a folder keeps the source name, so the nested readme collides).
+			const secondSourceId = await get_seeded_node_id(runner, "/docs/nested/readme.md");
 			const occupantId = await get_seeded_node_id(runner, "/reports/readme.md");
-			const folderDest = await runner.run(`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`);
+			const folderDest = await runner.run(
+				`mv -f ${test_db_files_mount}/docs/nested/readme.md ${test_db_files_mount}/reports`,
+			);
 			expect(folderDest.metadata.exitCode).toBe(0);
 			expect(folderDest.stdout).toBe(
-				"pending replace created: /docs/readme.md -> /reports/readme.md — replaces the file's content and archives the source when accepted; review in Files\n",
+				"pending replace created: /docs/nested/readme.md -> /reports/readme.md — replaces the file's content and archives the source when accepted; review in Files\n",
 			);
 			const occupantRows = await runner.t.run((ctx) =>
 				ctx.db
@@ -5174,7 +5325,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					.collect(),
 			);
 			expect(occupantRows).toHaveLength(1);
-			expect(occupantRows[0].copiedFrom).toMatchObject({ nodeId: sourceId, archivesSourceOnAccept: true });
+			expect(occupantRows[0].copiedFrom).toMatchObject({ nodeId: secondSourceId, archivesSourceOnAccept: true });
 
 			// Folders can never replace or be replaced, even with -f.
 			const folderOntoFile = await runner.run(
@@ -5186,13 +5337,70 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		});
 
+		test("mv -f rejects a source path re-occupied by a different file mid-action", async () => {
+			const runner = await create_bash_runner({
+				// The pending upsert fetches the target's committed yjs snapshot from R2.
+				extraFiles: [{ path: "/docs/replace-me.md", content: "old target\n", withRealYjsSnapshot: true }],
+			});
+			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
+			const targetId = await get_seeded_node_id(runner, "/docs/replace-me.md");
+			const otherId = await get_seeded_node_id(runner, "/docs/tutorial.md");
+
+			// Simulate another user racing the action window: after mv resolved the source node,
+			// the source moves away and a DIFFERENT file lands on its path, right before the
+			// content read re-resolves the same path.
+			const baseImpl = runner.runAction.getMockImplementation();
+			if (baseImpl == null) {
+				throw new Error("expected the runner runAction spy to have an implementation");
+			}
+			let swapped = false;
+			runner.runAction.mockImplementation(async (ref, actionArgs) => {
+				if (!swapped && function_name_of(ref) === "files_nodes:get_file_last_available_markdown_content_by_path") {
+					swapped = true;
+					await runner.t.run(async (ctx) => {
+						await ctx.db.patch("files_nodes", sourceId, {
+							name: "readme-moved.md",
+							path: "/docs/readme-moved.md",
+							treePath: "/docs/readme-moved.md",
+						});
+						await ctx.db.patch("files_nodes", otherId, {
+							name: "readme.md",
+							path: "/docs/readme.md",
+							treePath: "/docs/readme.md",
+						});
+					});
+				}
+				return await baseImpl(ref, actionArgs);
+			});
+
+			const result = await runner.run(
+				`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/replace-me.md`,
+			);
+			expect(result.metadata.exitCode).not.toBe(0);
+			expect(result.stderr).toBe(
+				`mv: '${test_db_files_mount}/docs/readme.md' changed while the command was running. Re-run the command.\n`,
+			);
+
+			// Nothing was proposed: the copy must not carry the re-occupier's content while
+			// archiving the original source. No pending update doc lands on any of the three nodes.
+			for (const nodeId of [sourceId, targetId, otherId]) {
+				const rows = await runner.t.run((ctx) =>
+					ctx.db
+						.query("files_pending_updates")
+						.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+						.collect(),
+				);
+				expect(rows).toHaveLength(0);
+			}
+		});
+
 		test("keeps the structural replace for mv -f onto a non-editable file", async () => {
 			const runner = await create_bash_runner();
 			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
 			const uploadedId = await get_seeded_node_id(runner, "/uploaded.md");
 
-			// A non-editable target has no version history to keep, so the source row records a
-			// structural replace: accepting archives the target and moves the source onto its path.
+			// A non-editable target has no version history to keep, so the source's pending update doc
+			// records a structural replacement: accepting archives the target and moves the source onto its path.
 			const result = await runner.run(`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/uploaded.md`);
 			expect(result.stderr).toBe("");
 			expect(result.metadata.exitCode).toBe(0);
@@ -5215,12 +5423,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const firstMove = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/first.md`);
 			expect(firstMove.metadata.exitCode).toBe(0);
-			const secondMove = await runner.run(
-				`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/second.md`,
-			);
+			// The overlay already shows the file at /docs/first.md, so the follow-up mv uses the
+			// visible path (the vacated /docs/tutorial.md reads as gone).
+			const secondMove = await runner.run(`mv ${test_db_files_mount}/docs/first.md ${test_db_files_mount}/docs/second.md`);
 			expect(secondMove.metadata.exitCode).toBe(0);
 
-			// mv after mv replaces the proposal on the same single row.
+			// mv after mv replaces the proposal on the same single pending update doc.
 			const moveRows = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_pending_updates")
@@ -5230,7 +5438,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(moveRows).toHaveLength(1);
 			expect(moveRows[0].pendingMove).toMatchObject({ destName: "second.md" });
 
-			// mv after a write_file-style content upsert degrades to one mixed row.
+			// mv after a write_file-style content upsert degrades to one content-plus-move pending update doc.
 			const { files_yjs_doc_create_from_markdown, files_u8_to_array_buffer } = await import("./files.ts");
 			const { encodeStateAsUpdate } = await import("yjs");
 			const baseYjsDoc = files_yjs_doc_create_from_markdown({
@@ -5267,6 +5475,407 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(mixedRows[0].pendingMove).toMatchObject({ destName: "renamed-readme.md" });
 			expect(mixedRows[0].unstagedBranchYjsUpdate).toBeDefined();
 			expect(mixedRows[0].size).toBeGreaterThan(0);
+		});
+
+		test("reuses a vacated path and reads a moved source through the overlay", async () => {
+			const runner = await create_bash_runner();
+
+			const firstMove = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`);
+			expect(firstMove.metadata.exitCode).toBe(0);
+
+			// The vacated path reads as free for the proposer, so another mv can claim it.
+			const reuseMove = await runner.run(
+				`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/tutorial.md`,
+			);
+			expect(reuseMove.metadata.exitCode).toBe(0);
+			expect(reuseMove.stdout).toBe("pending move created: /docs/readme.md -> /docs/tutorial.md — review in Files\n");
+
+			// cp reads the moved source through the overlay at its claimed destination.
+			const scratchCopy = await runner.run(
+				`cp ${test_db_files_mount}/docs/guide.md /tmp/guide-copy.md && cat /tmp/guide-copy.md`,
+			);
+			expect(scratchCopy.metadata.exitCode).toBe(0);
+			expect(scratchCopy.stdout).toContain("zeta");
+
+			const appCopy = await runner.run(`cp ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/guide-copy.md`);
+			expect(appCopy.metadata.exitCode).toBe(0);
+			expect(appCopy.stdout).toBe("pending copy created: /docs/guide.md -> /guide-copy.md — review in Files\n");
+		});
+
+		test("overlays pending moves onto ls listings", async () => {
+			const runner = await create_bash_runner();
+
+			const move = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/reports/guide.md`);
+			expect(move.metadata.exitCode).toBe(0);
+
+			// The destination folder shows the moved file under its new name.
+			const destList = await runner.run(`ls ${test_db_files_mount}/reports`);
+			expect(destList.metadata.exitCode).toBe(0);
+			expect(destList.stdout.trim().split("\n")).toEqual(["summary.md", "guide.md"]);
+
+			// The source folder no longer lists it.
+			const sourceList = await runner.run(`ls ${test_db_files_mount}/docs`);
+			expect(sourceList.metadata.exitCode).toBe(0);
+			expect(sourceList.stdout.trim().split("\n")).toEqual(["nested/", "readme.md"]);
+
+			// A move to the workspace root shows up in the root listing.
+			const rootMove = await runner.run(`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/root-readme.md`);
+			expect(rootMove.metadata.exitCode).toBe(0);
+			const rootList = await runner.run(`ls ${test_db_files_mount}`);
+			const rootLines = rootList.stdout.trim().split("\n");
+			expect(rootLines).toContain("root-readme.md");
+			expect(rootLines).not.toContain("readme.md");
+
+			// The workspace recency view shows the visible path of a moved file.
+			const recency = await runner.run("ls -t --limit 50");
+			expect(recency.stdout).toContain(`${test_db_files_mount}/reports/guide.md`);
+			expect(recency.stdout).not.toContain(`${test_db_files_mount}/docs/tutorial.md`);
+		});
+
+		test("shows an in-place rename exactly once in listings", async () => {
+			const runner = await create_bash_runner();
+
+			await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`);
+
+			const list = await runner.run(`ls ${test_db_files_mount}/docs`);
+			expect(list.metadata.exitCode).toBe(0);
+			expect(list.stdout.trim().split("\n")).toEqual(["nested/", "readme.md", "guide.md"]);
+		});
+
+		test("shadows a committed newcomer at a claimed destination in listings", async () => {
+			const runner = await create_bash_runner();
+
+			await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/claimed.md`);
+
+			// A committed node appears at the claimed path after the proposal.
+			await runner.t.run((ctx) =>
+				seed_organization_node(
+					ctx,
+					{
+						organizationId: runner.seeded.organizationId,
+						workspaceId: runner.seeded.workspaceId,
+						userId: runner.seeded.userId,
+					},
+					{ path: "/docs/claimed.md", content: "newcomer\n" },
+					99,
+				),
+			);
+
+			// The mover appears exactly once; the newcomer stays hidden from the proposer.
+			const list = await runner.run(`ls ${test_db_files_mount}/docs`);
+			const lines = list.stdout.trim().split("\n");
+			expect(lines.filter((line) => line === "claimed.md")).toHaveLength(1);
+			expect(lines).not.toContain("tutorial.md");
+			const read = await runner.run(`cat ${test_db_files_mount}/docs/claimed.md`);
+			expect(read.metadata.exitCode).toBe(0);
+			expect(read.stdout).toContain("zeta");
+		});
+
+		test("splices a moved folder's subtree into tree and recursive ls", async () => {
+			const runner = await create_bash_runner();
+
+			const move = await runner.run(`mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`);
+			expect(move.metadata.exitCode).toBe(0);
+
+			// The destination parent shows the moved folder with its subtree spliced in.
+			const destTree = await runner.run(`tree ${test_db_files_mount}/reports`);
+			expect(destTree.metadata.exitCode).toBe(0);
+			expect(destTree.stdout).toContain("nested/");
+			expect(destTree.stdout).toContain("deep.md");
+
+			// Listing the moved folder itself walks its committed source subtree.
+			const movedTree = await runner.run(`tree ${test_db_files_mount}/reports/nested`);
+			expect(movedTree.metadata.exitCode).toBe(0);
+			expect(movedTree.stdout).toContain("deep.md");
+
+			// The old location is gone from listings.
+			const sourceTree = await runner.run(`tree ${test_db_files_mount}/docs`);
+			expect(sourceTree.stdout).not.toContain("nested");
+			expect(sourceTree.stdout).not.toContain("deep.md");
+
+			const destRecursive = await runner.run(`ls -R ${test_db_files_mount}/reports`);
+			expect(destRecursive.metadata.exitCode).toBe(0);
+			expect(destRecursive.stdout).toContain(`${test_db_files_mount}/reports/nested/`);
+			expect(destRecursive.stdout).toContain(`${test_db_files_mount}/reports/nested/deep.md`);
+			const sourceRecursive = await runner.run(`ls -R ${test_db_files_mount}/docs`);
+			expect(sourceRecursive.stdout).not.toContain("deep.md");
+
+			const destFind = await runner.run(`find ${test_db_files_mount}/reports --limit 20`);
+			expect(destFind.metadata.exitCode).toBe(0);
+			expect(destFind.stdout).toContain(`${test_db_files_mount}/reports/nested/`);
+			expect(destFind.stdout).toContain(`${test_db_files_mount}/reports/nested/deep.md`);
+			const sourceFind = await runner.run(`find ${test_db_files_mount}/docs --limit 20`);
+			expect(sourceFind.stdout).not.toContain("deep.md");
+		});
+
+		test("lists a pending move nested under a moved folder exactly once", async () => {
+			const runner = await create_bash_runner();
+
+			const folderMove = await runner.run(`mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`);
+			expect(folderMove.metadata.exitCode).toBe(0);
+			// The follow-up mv uses the moved folder's visible path, nesting one pending move
+			// under another.
+			const nestedMove = await runner.run(
+				`mv ${test_db_files_mount}/reports/nested/deep.md ${test_db_files_mount}/reports/nested/renamed.md`,
+			);
+			expect(nestedMove.metadata.exitCode).toBe(0);
+
+			// Each visible path appears exactly once: the folder splice and the file's own
+			// injection must not both emit /reports/nested/renamed.md.
+			const destFind = await runner.run(`find ${test_db_files_mount}/reports --limit 20`);
+			expect(destFind.metadata.exitCode).toBe(0);
+			const findLines = destFind.stdout.trim().split("\n");
+			expect(findLines.filter((line) => line === `${test_db_files_mount}/reports/nested/renamed.md`)).toHaveLength(1);
+			expect(findLines.filter((line) => line === `${test_db_files_mount}/reports/nested/deep.md`)).toHaveLength(0);
+
+			const destTree = await runner.run(`tree ${test_db_files_mount}/reports`);
+			expect(destTree.metadata.exitCode).toBe(0);
+			expect(destTree.stdout.match(/renamed\.md/gu) ?? []).toHaveLength(1);
+		});
+
+		test("ls -R lists a pending move nested under a moved folder exactly once", async () => {
+			const runner = await create_bash_runner();
+
+			const folderMove = await runner.run(`mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`);
+			expect(folderMove.metadata.exitCode).toBe(0);
+			const nestedMove = await runner.run(
+				`mv ${test_db_files_mount}/reports/nested/deep.md ${test_db_files_mount}/reports/nested/renamed.md`,
+			);
+			expect(nestedMove.metadata.exitCode).toBe(0);
+
+			// The folder splice and the file's own injection must not both emit renamed.md.
+			const destRecursive = await runner.run(`ls -R ${test_db_files_mount}/reports`);
+			expect(destRecursive.metadata.exitCode).toBe(0);
+			const recursiveLines = destRecursive.stdout.trim().split("\n");
+			expect(recursiveLines.filter((line) => line === `${test_db_files_mount}/reports/nested/renamed.md`)).toHaveLength(
+				1,
+			);
+			expect(recursiveLines.filter((line) => line === `${test_db_files_mount}/reports/nested/deep.md`)).toHaveLength(0);
+		});
+
+		test("lists a claimed vacated path inside a moved folder exactly once and agrees with cat", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/a/x.md", content: "X body\n" },
+					{ path: "/z.md", content: "Z body\n" },
+				],
+			});
+
+			const folderMove = await runner.run(`mv ${test_db_files_mount}/a ${test_db_files_mount}/b`);
+			expect(folderMove.metadata.exitCode).toBe(0);
+			const childRename = await runner.run(`mv ${test_db_files_mount}/b/x.md ${test_db_files_mount}/b/y.md`);
+			expect(childRename.metadata.exitCode).toBe(0);
+			// The child rename vacated /b/x.md, so another file can claim that visible path.
+			const claim = await runner.run(`mv ${test_db_files_mount}/z.md ${test_db_files_mount}/b/x.md`);
+			expect(claim.metadata.exitCode).toBe(0);
+
+			// Discard the child rename pending update doc (as the pending panel would): only
+			// the folder move and the claim remain.
+			const childId = await get_seeded_node_id(runner, "/a/x.md");
+			await runner.t.run(async (ctx) => {
+				const rows = await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", childId))
+					.collect();
+				for (const row of rows) {
+					await ctx.db.delete("files_pending_updates", row._id);
+				}
+			});
+
+			// Listings and exact reads agree: /b/x.md appears exactly once and serves Z's
+			// content (the claim shadows the committed child for the proposer).
+			const list = await runner.run(`ls ${test_db_files_mount}/b`);
+			expect(list.metadata.exitCode).toBe(0);
+			const lines = list.stdout.trim().split("\n");
+			expect(lines.filter((line) => line === "x.md")).toHaveLength(1);
+			// The recency view projects every committed node: the shadowed child must not
+			// emit a second /b/x.md line next to the claiming move's line.
+			const recency = await runner.run("ls -t --limit 50");
+			expect(recency.metadata.exitCode).toBe(0);
+			const recencyLines = recency.stdout.trim().split("\n");
+			expect(recencyLines.filter((line) => line.endsWith(`${test_db_files_mount}/b/x.md`))).toHaveLength(1);
+			const read = await runner.run(`cat ${test_db_files_mount}/b/x.md`);
+			expect(read.metadata.exitCode).toBe(0);
+			expect(read.stdout).toContain("Z body");
+		});
+
+		test("find matches moved files by their visible name only", async () => {
+			const runner = await create_bash_runner({
+				// convex-test's search index splits path words on whitespace only, so the
+				// stale-name hit needs a space before the searched word.
+				extraFiles: [{ path: "/docs/word tutorial.md", content: "word search fixture\n" }],
+			});
+
+			// mv normalizes app file names, so the visible destination becomes word-guide.md.
+			await runner.run(`mv '${test_db_files_mount}/docs/word tutorial.md' '${test_db_files_mount}/docs/word guide.md'`);
+
+			// The NEW name finds the moved file at its visible path (overlay injection).
+			const byNewName = await runner.run("find -name guide --limit 10");
+			expect(byNewName.metadata.exitCode).toBe(0);
+			expect(byNewName.stdout).toContain(`${test_db_files_mount}/docs/word-guide.md`);
+
+			// The old name no longer matches: the committed-index hit projects to the new
+			// name and fails the re-check.
+			const byOldName = await runner.run("find -name tutorial --limit 10");
+			expect(byOldName.metadata.exitCode).toBe(0);
+			expect(byOldName.stdout.trim()).toBe("0 matches.");
+		});
+
+		test("reports visible paths for search and recursive grep over pending moves", async () => {
+			const runner = await create_bash_runner();
+
+			await runner.run(`mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`);
+
+			// An unscoped search finds content inside the moved folder at its visible path.
+			const unscoped = await runner.run("search three");
+			expect(unscoped.metadata.exitCode).toBe(0);
+			expect(unscoped.stdout).toContain(`${test_db_files_mount}/reports/nested/deep.md`);
+			expect(unscoped.stdout).not.toContain(`${test_db_files_mount}/docs/nested/deep.md`);
+
+			// A --path scope at the visible destination folder translates to the committed source.
+			const scoped = await runner.run(`search --path ${test_db_files_mount}/reports/nested three`);
+			expect(scoped.metadata.exitCode).toBe(0);
+			expect(scoped.stdout).toContain(`${test_db_files_mount}/reports/nested/deep.md`);
+
+			const grepScoped = await runner.run(`grep -R three ${test_db_files_mount}/reports/nested`);
+			expect(grepScoped.metadata.exitCode).toBe(0);
+			expect(grepScoped.stdout).toContain(`${test_db_files_mount}/reports/nested/deep.md`);
+
+			// A moved file's content match reports the file's visible path too.
+			await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/reports/moved-guide.md`);
+			const movedFile = await runner.run("search alpha");
+			expect(movedFile.metadata.exitCode).toBe(0);
+			expect(movedFile.stdout).toContain(`${test_db_files_mount}/reports/moved-guide.md`);
+			expect(movedFile.stdout).not.toContain(`${test_db_files_mount}/docs/tutorial.md`);
+		});
+
+		test("grep finds matches in a file with a pending move-only row", async () => {
+			const runner = await create_bash_runner();
+
+			const moved = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`);
+			expect(moved.metadata.exitCode).toBe(0);
+
+			// The move-only pending update doc has no pending chunks; grep must fall back to the
+			// committed chunks instead of silently reporting no matches.
+			const hit = await runner.run(`grep alpha ${test_db_files_mount}/docs/guide.md`);
+			expect(hit.metadata.exitCode).toBe(0);
+			expect(hit.stderr).toBe("");
+			expect(hit.stdout).toBe("alpha\n");
+		});
+
+		test("textgrep finds matches in a file with a pending move-only row", async () => {
+			const runner = await create_bash_runner();
+
+			const moved = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`);
+			expect(moved.metadata.exitCode).toBe(0);
+
+			// Same committed fallback for the plain-text matcher behind a move-only pending update doc.
+			const hit = await runner.run(`textgrep alpha ${test_db_files_mount}/docs/guide.md`);
+			expect(hit.metadata.exitCode).toBe(0);
+			expect(hit.stderr).toBe("");
+			expect(hit.stdout).toBe("alpha\n");
+		});
+
+		test("grep reads the pending chunks when the pending row has content", async () => {
+			const runner = await create_bash_runner();
+
+			// cp proposes content on the fresh destination node, so its pending update doc has
+			// chunks and the pending view must win over the (empty) committed one.
+			const copied = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/readme-copy.md`,
+			);
+			expect(copied.metadata.exitCode).toBe(0);
+
+			const hit = await runner.run(`grep unique-token ${test_db_files_mount}/docs/readme-copy.md`);
+			expect(hit.metadata.exitCode).toBe(0);
+			expect(hit.stderr).toBe("");
+			expect(hit.stdout).toBe("unique-token here\nmore unique-token below\n");
+		});
+
+		test("multi-operand grep recovery hint keeps the moved-folder scope", async () => {
+			const runner = await create_bash_runner();
+
+			await runner.run(`mv ${test_db_files_mount}/docs ${test_db_files_mount}/reports2`);
+
+			// The fallback hint must scope to the moved folder's visible path, not suggest a
+			// whole-workspace search.
+			const result = await runner.run(
+				`grep alpha ${test_db_files_mount}/reports2 ${test_db_files_mount}/reports2/readme.md`,
+			);
+			expect(result.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
+			expect(result.stdout).toContain(`Try: search --path ${test_db_files_mount}/reports2 --limit 20 alpha`);
+		});
+
+		test("injects moved-in content into searches scoped at an ancestor of the destination", async () => {
+			const runner = await create_bash_runner();
+
+			await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/reports/moved-guide.md`);
+
+			// /reports is an ancestor of the destination, not itself a redirected folder,
+			// so the committed chunks under /docs sit outside the scoped committed prefix.
+			const scoped = await runner.run(`search --path ${test_db_files_mount}/reports alpha`);
+			expect(scoped.metadata.exitCode).toBe(0);
+			expect(scoped.stdout).toContain(`${test_db_files_mount}/reports/moved-guide.md`);
+
+			const grepScoped = await runner.run(`grep -R alpha ${test_db_files_mount}/reports`);
+			expect(grepScoped.metadata.exitCode).toBe(0);
+			expect(grepScoped.stdout).toContain(`${test_db_files_mount}/reports/moved-guide.md`);
+
+			const textgrepScoped = await runner.run(`textgrep -R alpha ${test_db_files_mount}/reports`);
+			expect(textgrepScoped.metadata.exitCode).toBe(0);
+			expect(textgrepScoped.stdout).toContain(`${test_db_files_mount}/reports/moved-guide.md`);
+
+			// A moved folder's children inject the same way at the ancestor scope.
+			await runner.run(`mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`);
+			const folderScoped = await runner.run(`search --path ${test_db_files_mount}/reports three`);
+			expect(folderScoped.metadata.exitCode).toBe(0);
+			expect(folderScoped.stdout).toContain(`${test_db_files_mount}/reports/nested/deep.md`);
+		});
+
+		test("keeps the search continuation when the overlay empties a page", async () => {
+			// The file moved outside the scope is seeded first so the limit-1 first page holds only its
+			// committed chunk, which the overlay drops from the /docs scope; the visible
+			// match lives on the next page.
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/docs/paged-moved.md", content: "dropscope alpha\n" },
+					{ path: "/docs/paged-kept.md", content: "dropscope beta\n" },
+				],
+			});
+
+			await runner.run(`mv ${test_db_files_mount}/docs/paged-moved.md ${test_db_files_mount}/reports/paged-moved.md`);
+
+			const firstPage = await runner.run(`search --path ${test_db_files_mount}/docs --limit 1 dropscope`);
+
+			expect(firstPage.metadata.exitCode).toBe(0);
+			// The underlying result has another page, so an emptied page must keep the
+			// continuation reachable instead of reading like a finished search.
+			expect(firstPage.stdout).toMatch(/Next page: search --path \S+ --limit 1 --cursor \S+ dropscope/u);
+
+			const continuation = firstPage.stdout.match(/Next page: (search .+)/u)?.[1];
+			if (continuation == null) {
+				throw new Error("expected a search continuation in the emptied first page stdout");
+			}
+			const secondPage = await runner.run(continuation);
+			expect(secondPage.metadata.exitCode).toBe(0);
+			expect(secondPage.stdout).toContain(`${test_db_files_mount}/docs/paged-kept.md`);
+		});
+
+		test("chained commands in one bash call see the proposal made by an earlier mv", async () => {
+			const runner = await create_bash_runner();
+
+			const chained = await runner.run(
+				`ls ${test_db_files_mount}/docs && mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md && ls ${test_db_files_mount}/docs`,
+			);
+			expect(chained.metadata.exitCode).toBe(0);
+			// The mv confirmation line splits the first ls output from the second.
+			const segments = chained.stdout.split("review in Files\n");
+			expect(segments).toHaveLength(2);
+			// The first ls (before the proposal) shows the committed name.
+			expect(segments[0]).toContain("tutorial.md");
+			// The second ls (after the proposal) shows the new name and drops the old one.
+			expect(segments[1]).toContain("guide.md");
+			expect(segments[1]).not.toContain("tutorial.md");
 		});
 
 		test("keeps Ask mode mv and cp app rejections without creating proposals", async () => {
@@ -5309,7 +5918,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).toBe("");
 			expect(result.stdout).toBe("pending copy created: /docs/readme.md -> /docs/readme-copy.md — review in Files\n");
 
-			// The destination node exists eagerly; the content lives in a pending row with provenance.
+			// The destination node exists eagerly; the content lives in a pending update doc with provenance.
 			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
 			const destNode = await get_seeded_node(runner, "/docs/readme-copy.md");
 			expect(destNode.kind).toBe("file");
@@ -5334,6 +5943,29 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const folderDest = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`);
 			expect(folderDest.metadata.exitCode).toBe(0);
 			expect(folderDest.stdout).toBe("pending copy created: /docs/readme.md -> /reports/readme.md — review in Files\n");
+		});
+
+		test("cp into a new deep path records the created ancestor ids on the pending row", async () => {
+			const runner = await create_bash_runner();
+
+			const result = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/new/deep/copy.md`);
+			expect(result.stderr).toBe("");
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe("pending copy created: /docs/readme.md -> /new/deep/copy.md — review in Files\n");
+
+			// The eager stamp carries the created parent folders (deepest first), so a normal
+			// Discard/TTL expiry can remove them together with the leaf node.
+			const destNode = await get_seeded_node(runner, "/new/deep/copy.md");
+			const newFolderId = await get_seeded_node_id(runner, "/new");
+			const deepFolderId = await get_seeded_node_id(runner, "/new/deep");
+			const rows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", destNode._id))
+					.collect(),
+			);
+			expect(rows).toHaveLength(1);
+			expect(rows[0].eagerCreated).toMatchObject({ createdAncestorIds: [deepFolderId, newFolderId] });
 		});
 
 		test("cp onto an existing file proposes replacing its content", async () => {
@@ -5369,6 +6001,530 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const overlayRead = await runner.run(`cat ${test_db_files_mount}/docs/replace-target.md`);
 			expect(overlayRead.metadata.exitCode).toBe(0);
 			expect(overlayRead.stdout).toContain("unique-token");
+		});
+
+		test("cp onto a path vacated by the user's own pending move is rejected", async () => {
+			const runner = await create_bash_runner();
+
+			const move = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`);
+			expect(move.metadata.exitCode).toBe(0);
+			const tutorialId = await get_seeded_node_id(runner, "/docs/tutorial.md");
+
+			// The vacated path must not become a silent content replacement on the moving node.
+			const vacatedCopy = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/tutorial.md`,
+			);
+			expect(vacatedCopy.metadata.exitCode).not.toBe(0);
+			expect(vacatedCopy.stderr).toBe(
+				"cp: cannot create '/docs/tutorial.md': the path is vacated by your pending move. Accept or discard that proposal first, or choose a different destination path.\n",
+			);
+
+			// The moving node keeps its single move-only pending update doc without attached content.
+			const rows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", tutorialId))
+					.collect(),
+			);
+			expect(rows).toHaveLength(1);
+			expect(rows[0].pendingMove).toMatchObject({ destName: "guide.md" });
+			expect(rows[0].unstagedBranchYjsUpdate).toBeUndefined();
+
+			// The vacated path still reads as missing; the claimed destination keeps the moved content.
+			const vacatedRead = await runner.run(`cat ${test_db_files_mount}/docs/tutorial.md`);
+			expect(vacatedRead.metadata.exitCode).not.toBe(0);
+			const movedRead = await runner.run(`cat ${test_db_files_mount}/docs/guide.md`);
+			expect(movedRead.metadata.exitCode).toBe(0);
+			expect(movedRead.stdout).toContain("zeta");
+
+			// A genuinely free path still takes a plain pending copy.
+			const freeCopy = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/fresh.md`);
+			expect(freeCopy.metadata.exitCode).toBe(0);
+			expect(freeCopy.stdout).toBe("pending copy created: /docs/readme.md -> /docs/fresh.md — review in Files\n");
+		});
+
+		test("mv of the current working folder follows the pending move for cwd", async () => {
+			const runner = await create_bash_runner();
+
+			const cdResult = await runner.run(`cd ${test_db_files_mount}/docs`);
+			expect(cdResult.metadata.nextCwd).toBe(`${test_db_files_mount}/docs`);
+
+			// Moving the cwd's own folder keeps the shell inside it at its new visible path
+			// instead of resetting to the workspace root.
+			const moved = await runner.run("mv ../docs ../archive");
+			expect(moved.metadata.exitCode).toBe(0);
+			expect(moved.metadata.nextCwd).toBe(`${test_db_files_mount}/archive`);
+
+			// The next call runs from the moved folder and reads through the overlay.
+			const read = await runner.run("cat readme.md");
+			expect(read.metadata.exitCode).toBe(0);
+			expect(read.stdout).toContain("# Readme");
+		});
+
+		test("a stale thread cwd follows a pending move proposed outside the thread", async () => {
+			const runner = await create_bash_runner();
+
+			const cdResult = await runner.run(`cd ${test_db_files_mount}/reports`);
+			expect(cdResult.metadata.nextCwd).toBe(`${test_db_files_mount}/reports`);
+
+			// The same user proposes the folder move from another thread at the workspace
+			// root, so this thread's persisted cwd is never touched by the end-of-command
+			// projection of that call.
+			const otherThread = await create_bash_runner({ shared: { t: runner.t, seeded: runner.seeded } });
+			const moved = await otherThread.run(`mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`);
+			expect(moved.metadata.exitCode).toBe(0);
+			expect(moved.metadata.nextCwd).toBe(test_db_files_mount);
+
+			// The next call in the original thread starts inside the moved folder's visible
+			// path instead of resetting to the workspace root.
+			const read = await runner.run("pwd && cat summary.md");
+			expect(read.metadata.exitCode).toBe(0);
+			expect(read.metadata.cwd).toBe(`${test_db_files_mount}/archive`);
+			expect(read.stdout).toContain(`${test_db_files_mount}/archive`);
+			expect(read.stdout).toContain("summary");
+		});
+
+		test("mv into an existing folder keeps the visible name of a moved source", async () => {
+			const runner = await create_bash_runner();
+
+			await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`);
+
+			// Moving by the visible path into a folder keeps the visible basename, like real mv,
+			// and stdout prints the visible source path the agent used, not the committed one.
+			const folderMove = await runner.run(`mv ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/reports`);
+			expect(folderMove.metadata.exitCode).toBe(0);
+			expect(folderMove.stdout).toBe("pending move created: /docs/guide.md -> /reports/guide.md — review in Files\n");
+
+			const list = await runner.run(`ls ${test_db_files_mount}/reports`);
+			expect(list.metadata.exitCode).toBe(0);
+			expect(list.stdout.trim().split("\n")).toContain("guide.md");
+			expect(list.stdout).not.toContain("tutorial.md");
+		});
+
+		test("mv into a moved destination folder prints the visible destination", async () => {
+			const runner = await create_bash_runner();
+
+			const folderMove = await runner.run(`mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`);
+			expect(folderMove.metadata.exitCode).toBe(0);
+
+			// The mutation joins the committed parent path (/reports); stdout must keep the
+			// visible join the agent asked for, or the model follows up on a hidden path.
+			const move = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive`);
+			expect(move.stderr).toBe("");
+			expect(move.metadata.exitCode).toBe(0);
+			expect(move.stdout).toBe("pending move created: /docs/tutorial.md -> /archive/tutorial.md — review in Files\n");
+
+			const list = await runner.run(`ls ${test_db_files_mount}/archive`);
+			expect(list.metadata.exitCode).toBe(0);
+			expect(list.stdout.trim().split("\n")).toContain("tutorial.md");
+		});
+
+		test("mv into a moved destination folder surfaces the visible-name conflict", async () => {
+			const runner = await create_bash_runner({
+				// The -f content replacement fetches the committed child's yjs snapshot from R2.
+				extraFiles: [
+					{ path: "/old/report.md", content: "old report\n", withRealYjsSnapshot: true },
+					{ path: "/other/report.md", content: "new report\n", withRealYjsSnapshot: true },
+					{ path: "/other/claim.md", content: "claim body\n" },
+					{ path: "/third/claim.md", content: "third body\n" },
+				],
+			});
+
+			const folderMove = await runner.run(`mv ${test_db_files_mount}/old ${test_db_files_mount}/new`);
+			expect(folderMove.metadata.exitCode).toBe(0);
+
+			// The committed child at the visible destination is a real conflict, not a claim.
+			const conflict = await runner.run(`mv ${test_db_files_mount}/other/report.md ${test_db_files_mount}/new`);
+			expect(conflict.metadata.exitCode).not.toBe(0);
+			expect(conflict.stderr).toBe(
+				"mv: destination '/new/report.md' already exists. To propose replacing the existing file, add -f: the replacement only applies after the user accepts it in Files.\n",
+			);
+
+			// A visible path claimed by a file's own pending move is still rejected: one visible path, one proposal.
+			const claim = await runner.run(`mv ${test_db_files_mount}/other/claim.md ${test_db_files_mount}/new/claim.md`);
+			expect(claim.metadata.exitCode).toBe(0);
+			const claimedDest = await runner.run(`mv ${test_db_files_mount}/third/claim.md ${test_db_files_mount}/new`);
+			expect(claimedDest.metadata.exitCode).not.toBe(0);
+			expect(claimedDest.stderr).toBe(
+				"mv: destination '/new/claim.md' is already claimed by a pending move. Choose a different destination path.\n",
+			);
+
+			// -f takes the normal content replacement flow on the committed child.
+			const forced = await runner.run(`mv -f ${test_db_files_mount}/other/report.md ${test_db_files_mount}/new`);
+			expect(forced.stderr).toBe("");
+			expect(forced.metadata.exitCode).toBe(0);
+			expect(forced.stdout).toBe(
+				"pending replace created: /other/report.md -> /new/report.md — replaces the file's content and archives the source when accepted; review in Files\n",
+			);
+			const targetId = await get_seeded_node_id(runner, "/old/report.md");
+			const sourceId = await get_seeded_node_id(runner, "/other/report.md");
+			const targetRows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+					.collect(),
+			);
+			expect(targetRows).toHaveLength(1);
+			expect(targetRows[0].copiedFrom).toEqual({
+				nodeId: sourceId,
+				path: "/other/report.md",
+				archivesSourceOnAccept: true,
+			});
+			expect(targetRows[0].pendingMove).toBeUndefined();
+		});
+
+		test("mv -f onto a committed child of a moved destination folder proposes the replace", async () => {
+			const runner = await create_bash_runner({
+				// The -f content replacement fetches the committed child's yjs snapshot from R2.
+				extraFiles: [
+					{ path: "/docs/incoming.md", content: "incoming body\n", withRealYjsSnapshot: true },
+					{ path: "/reports/existing.md", content: "existing target\n", withRealYjsSnapshot: true },
+					{ path: "/reports/plain.md", content: "plain target\n" },
+				],
+			});
+			const reportsId = await get_seeded_node_id(runner, "/reports");
+
+			const folderMove = await runner.run(`mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`);
+			expect(folderMove.metadata.exitCode).toBe(0);
+
+			// Without -f the committed child at the exact visible path is a normal conflict,
+			// not a claimed-by-pending-move rejection.
+			const conflict = await runner.run(
+				`mv ${test_db_files_mount}/docs/incoming.md ${test_db_files_mount}/archive/existing.md`,
+			);
+			expect(conflict.metadata.exitCode).not.toBe(0);
+			expect(conflict.stderr).toBe(
+				"mv: destination '/archive/existing.md' already exists. To propose replacing the existing file, add -f: the replacement only applies after the user accepts it in Files.\n",
+			);
+
+			// -f takes the normal content replacement flow on the committed child.
+			const forced = await runner.run(
+				`mv -f ${test_db_files_mount}/docs/incoming.md ${test_db_files_mount}/archive/existing.md`,
+			);
+			expect(forced.stderr).toBe("");
+			expect(forced.metadata.exitCode).toBe(0);
+			expect(forced.stdout).toBe(
+				"pending replace created: /docs/incoming.md -> /archive/existing.md — replaces the file's content and archives the source when accepted; review in Files\n",
+			);
+			const targetId = await get_seeded_node_id(runner, "/reports/existing.md");
+			const sourceId = await get_seeded_node_id(runner, "/docs/incoming.md");
+			const targetRows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+					.collect(),
+			);
+			expect(targetRows).toHaveLength(1);
+			expect(targetRows[0].copiedFrom).toEqual({
+				nodeId: sourceId,
+				path: "/docs/incoming.md",
+				archivesSourceOnAccept: true,
+			});
+			expect(targetRows[0].pendingMove).toBeUndefined();
+
+			// A non-editable source keeps the structural replacement on the committed identity,
+			// so the replacement travels with the folder when the move is accepted.
+			const uploadedId = await get_seeded_node_id(runner, "/uploaded.md");
+			const plainId = await get_seeded_node_id(runner, "/reports/plain.md");
+			const structural = await runner.run(
+				`mv -f ${test_db_files_mount}/uploaded.md ${test_db_files_mount}/archive/plain.md`,
+			);
+			expect(structural.stderr).toBe("");
+			expect(structural.metadata.exitCode).toBe(0);
+			expect(structural.stdout).toBe(
+				"pending move created: /uploaded.md -> /archive/plain.md — replaces the existing file when accepted; review in Files\n",
+			);
+			const structuralRows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", uploadedId))
+					.collect(),
+			);
+			expect(structuralRows).toHaveLength(1);
+			expect(structuralRows[0].pendingMove).toMatchObject({
+				destParentId: reportsId,
+				destName: "plain.md",
+				replacesNodeId: plainId,
+			});
+
+			// An exact dest path presented by its own pending move is still rejected.
+			const claim = await runner.run(`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/claim.md`);
+			expect(claim.metadata.exitCode).toBe(0);
+			const claimedDest = await runner.run(
+				`mv -f ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/claim.md`,
+			);
+			expect(claimedDest.metadata.exitCode).not.toBe(0);
+			expect(claimedDest.stderr).toBe(
+				"mv: destination '/docs/claim.md' is already claimed by a pending move. Choose a different destination path.\n",
+			);
+		});
+
+		test("cp into an existing folder keeps the visible name of a moved source", async () => {
+			const runner = await create_bash_runner();
+
+			await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`);
+
+			// Copying by the visible path into a folder keeps the visible basename, like real cp.
+			const folderCopy = await runner.run(`cp ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/reports`);
+			expect(folderCopy.metadata.exitCode).toBe(0);
+			expect(folderCopy.stdout).toBe("pending copy created: /docs/guide.md -> /reports/guide.md — review in Files\n");
+
+			const read = await runner.run(`cat ${test_db_files_mount}/reports/guide.md`);
+			expect(read.metadata.exitCode).toBe(0);
+			expect(read.stdout).toContain("zeta");
+		});
+
+		test("cp into a moved destination folder creates the file under the committed folder", async () => {
+			const runner = await create_bash_runner();
+			const reportsId = await get_seeded_node_id(runner, "/reports");
+
+			const folderMove = await runner.run(`mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`);
+			expect(folderMove.metadata.exitCode).toBe(0);
+
+			// cp into the moved folder's VISIBLE path succeeds; stdout shows the visible join.
+			const copy = await runner.run(`cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive`);
+			expect(copy.stderr).toBe("");
+			expect(copy.metadata.exitCode).toBe(0);
+			expect(copy.stdout).toBe("pending copy created: /docs/tutorial.md -> /archive/tutorial.md — review in Files\n");
+
+			// The new file lists under the visible folder path and reads back.
+			const list = await runner.run(`ls ${test_db_files_mount}/archive`);
+			expect(list.metadata.exitCode).toBe(0);
+			expect(list.stdout.trim().split("\n")).toContain("tutorial.md");
+			const read = await runner.run(`cat ${test_db_files_mount}/archive/tutorial.md`);
+			expect(read.metadata.exitCode).toBe(0);
+			expect(read.stdout).toContain("zeta");
+
+			// The eager committed node sits under the moved folder's COMMITTED path, so it
+			// travels with the folder when the move is accepted.
+			const createdNode = await get_seeded_node(runner, "/reports/tutorial.md");
+			expect(createdNode.parentId).toBe(reportsId);
+		});
+
+		test("cp with an explicit dest path under a moved folder creates under the committed folder", async () => {
+			const runner = await create_bash_runner();
+			const reportsId = await get_seeded_node_id(runner, "/reports");
+
+			const folderMove = await runner.run(`mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`);
+			expect(folderMove.metadata.exitCode).toBe(0);
+
+			// cp to an explicit missing name under the moved folder's VISIBLE path succeeds;
+			// stdout shows the visible join.
+			const copy = await runner.run(`cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive/copy.md`);
+			expect(copy.stderr).toBe("");
+			expect(copy.metadata.exitCode).toBe(0);
+			expect(copy.stdout).toBe("pending copy created: /docs/tutorial.md -> /archive/copy.md — review in Files\n");
+
+			// The eager node lives under the moved folder's COMMITTED path, and no committed
+			// /archive node exists, so the folder move stays acceptable.
+			const createdNode = await get_seeded_node(runner, "/reports/copy.md");
+			expect(createdNode.parentId).toBe(reportsId);
+			const committedArchive = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", runner.seeded.organizationId)
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("path", "/archive")
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+			);
+			expect(committedArchive).toBeNull();
+
+			const list = await runner.run(`ls ${test_db_files_mount}/archive`);
+			expect(list.metadata.exitCode).toBe(0);
+			expect(list.stdout.trim().split("\n")).toContain("copy.md");
+
+			// Accepting the folder move through the real mutation moves the copy with it.
+			const { api } = await import("../convex/_generated/api.js");
+			const asUser = runner.t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-bash-cp-accept",
+				external_id: runner.seeded.userId,
+				email: "bash-cp-accept@test.local",
+			});
+			const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: reportsId,
+			});
+			expect(accepted._nay).toBeUndefined();
+			const movedFolder = await get_seeded_node(runner, "/archive");
+			expect(movedFolder._id).toBe(reportsId);
+			const movedCopy = await get_seeded_node(runner, "/archive/copy.md");
+			expect(movedCopy._id).toBe(createdNode._id);
+		});
+
+		test("mkdir under a moved folder's visible path creates under the committed folder", async () => {
+			const runner = await create_bash_runner();
+			const reportsId = await get_seeded_node_id(runner, "/reports");
+
+			const folderMove = await runner.run(`mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`);
+			expect(folderMove.metadata.exitCode).toBe(0);
+
+			// mkdir at the moved folder's VISIBLE path succeeds, plain and -p.
+			const made = await runner.run(`mkdir ${test_db_files_mount}/archive/sub`);
+			expect(made.stderr).toBe("");
+			expect(made.metadata.exitCode).toBe(0);
+			const madeRecursive = await runner.run(`mkdir -p ${test_db_files_mount}/archive/deep/sub`);
+			expect(madeRecursive.stderr).toBe("");
+			expect(madeRecursive.metadata.exitCode).toBe(0);
+
+			const list = await runner.run(`ls ${test_db_files_mount}/archive`);
+			expect(list.metadata.exitCode).toBe(0);
+			expect(list.stdout.trim().split("\n")).toContain("sub/");
+			expect(list.stdout.trim().split("\n")).toContain("deep/");
+
+			// The committed folders live under the moved folder's COMMITTED path, and no
+			// committed /archive node exists, so the folder move stays acceptable.
+			const subNode = await get_seeded_node(runner, "/reports/sub");
+			expect(subNode.parentId).toBe(reportsId);
+			const deepSubNode = await get_seeded_node(runner, "/reports/deep/sub");
+			const committedArchive = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", runner.seeded.organizationId)
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("path", "/archive")
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+			);
+			expect(committedArchive).toBeNull();
+
+			// Accepting the folder move through the real mutation moves the new folders with it.
+			const { api } = await import("../convex/_generated/api.js");
+			const asUser = runner.t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-bash-mkdir-accept",
+				external_id: runner.seeded.userId,
+				email: "bash-mkdir-accept@test.local",
+			});
+			const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: reportsId,
+			});
+			expect(accepted._nay).toBeUndefined();
+			const movedSub = await get_seeded_node(runner, "/archive/sub");
+			expect(movedSub._id).toBe(subNode._id);
+			const movedDeepSub = await get_seeded_node(runner, "/archive/deep/sub");
+			expect(movedDeepSub._id).toBe(deepSubNode._id);
+		});
+
+		test("mkdir at a path vacated by the user's own pending move is rejected", async () => {
+			const runner = await create_bash_runner();
+
+			const folderMove = await runner.run(`mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`);
+			expect(folderMove.metadata.exitCode).toBe(0);
+
+			// The vacated committed area must not silently regrow committed folders.
+			const plain = await runner.run(`mkdir ${test_db_files_mount}/reports/sub`);
+			expect(plain.metadata.exitCode).not.toBe(0);
+			expect(plain.stderr).toContain(
+				`mkdir: cannot create directory '${test_db_files_mount}/reports/sub': No such file or directory`,
+			);
+			const recursive = await runner.run(`mkdir -p ${test_db_files_mount}/reports/sub`);
+			expect(recursive.metadata.exitCode).not.toBe(0);
+			expect(recursive.stderr).toContain(
+				`mkdir: cannot create directory '${test_db_files_mount}/reports/sub': No such file or directory`,
+			);
+
+			// No committed node was created under the vacated path.
+			const committedSub = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", runner.seeded.organizationId)
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("path", "/reports/sub")
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+			);
+			expect(committedSub).toBeNull();
+		});
+
+		test("mkdir -p under a pending file-move claim is rejected without creating committed folders", async () => {
+			const runner = await create_bash_runner();
+
+			// The pending file move makes /foo.md a visible file; nothing sits there committed.
+			const fileMove = await runner.run(`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/foo.md`);
+			expect(fileMove.metadata.exitCode).toBe(0);
+
+			const made = await runner.run(`mkdir -p ${test_db_files_mount}/foo.md/sub`);
+			expect(made.metadata.exitCode).not.toBe(0);
+			expect(made.stderr).toContain(
+				`mkdir: cannot create directory '${test_db_files_mount}/foo.md/sub': Not a directory`,
+			);
+
+			// No committed folder grew under the pending file claim.
+			const committedFoo = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", runner.seeded.organizationId)
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("path", "/foo.md")
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+			);
+			expect(committedFoo).toBeNull();
+		});
+
+		test("cp under a pending file-move claim is rejected without creating committed folders", async () => {
+			const runner = await create_bash_runner();
+
+			const fileMove = await runner.run(`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/foo.md`);
+			expect(fileMove.metadata.exitCode).toBe(0);
+
+			const copy = await runner.run(`cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/foo.md/sub/y.md`);
+			expect(copy.metadata.exitCode).not.toBe(0);
+			expect(copy.stderr).toBe("cp: cannot create regular file '/foo.md/sub/y.md': Not a directory\n");
+
+			// No committed folder grew under the pending file claim.
+			const committedFoo = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", runner.seeded.organizationId)
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("path", "/foo.md")
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+			);
+			expect(committedFoo).toBeNull();
+		});
+
+		test("mkdir -p under a committed file fails without creating committed folders", async () => {
+			const runner = await create_bash_runner();
+
+			const made = await runner.run(`mkdir -p ${test_db_files_mount}/docs/readme.md/sub`);
+			expect(made.metadata.exitCode).not.toBe(0);
+			expect(made.stderr).toContain(
+				`mkdir: cannot create directory '${test_db_files_mount}/docs/readme.md/sub': Not a directory`,
+			);
+
+			const committedSub = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", runner.seeded.organizationId)
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("path", "/docs/readme.md/sub")
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+			);
+			expect(committedSub).toBeNull();
 		});
 
 		test("rejects unsupported app copy shapes without creating proposals", async () => {
@@ -5457,6 +6613,108 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(pendingRows).toHaveLength(1);
 			expect(pendingRows[0].copiedFrom).toBeDefined();
 			expect(pendingRows[0].eagerCreated).toBeUndefined();
+		});
+
+		test("cp removes the eager node when the pending upsert fails after the eager create", async () => {
+			const runner = await create_bash_runner();
+			const { R2 } = await import("@convex-dev/r2");
+			vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+
+			// Force the pending upsert action (R2 reads, can fail transiently) to fail AFTER
+			// the eager create committed a real empty node.
+			const baseImpl = runner.runAction.getMockImplementation();
+			if (baseImpl == null) {
+				throw new Error("expected the runner runAction spy to have an implementation");
+			}
+			let upsertMode: "throw" | "nay" = "throw";
+			runner.runAction.mockImplementation(async (ref, actionArgs) => {
+				if (function_name_of(ref) === "files_pending_updates:upsert_file_pending_update_internal_action") {
+					if (upsertMode === "throw") {
+						throw new Error("simulated transient upsert failure");
+					}
+					return { _nay: { message: "simulated upsert rejection" } };
+				}
+				return await baseImpl(ref, actionArgs);
+			});
+
+			const find_orphan_node = (path: string) =>
+				runner.t.run((ctx) =>
+					ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+							q
+								.eq("organizationId", runner.seeded.organizationId)
+								.eq("workspaceId", runner.seeded.workspaceId)
+								.eq("path", path)
+								.eq("archiveOperationId", undefined),
+						)
+						.first(),
+				);
+
+			const thrown = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/orphan-copy.md`,
+			);
+			expect(thrown.metadata.exitCode).not.toBe(0);
+			expect(thrown.stderr).toContain("simulated transient upsert failure");
+			expect(thrown.stderr).toContain("nothing was created at '/docs/orphan-copy.md'");
+			expect(thrown.stderr).not.toContain("left behind");
+
+			// The compensation removed the untouched eager-created node: no leftover empty file remains.
+			expect(await find_orphan_node("/docs/orphan-copy.md")).toBeNull();
+
+			upsertMode = "nay";
+			const nayed = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/orphan-copy-2.md`,
+			);
+			expect(nayed.metadata.exitCode).not.toBe(0);
+			expect(nayed.stderr).toContain("simulated upsert rejection");
+			expect(nayed.stderr).toContain("nothing was created at '/docs/orphan-copy-2.md'");
+			expect(nayed.stderr).not.toContain("left behind");
+			expect(await find_orphan_node("/docs/orphan-copy-2.md")).toBeNull();
+		});
+
+		test("cp keeps the leftover note when the eager node cleanup is blocked", async () => {
+			const runner = await create_bash_runner();
+
+			const baseImpl = runner.runAction.getMockImplementation();
+			if (baseImpl == null) {
+				throw new Error("expected the runner runAction spy to have an implementation");
+			}
+			runner.runAction.mockImplementation(async (ref, actionArgs) => {
+				if (function_name_of(ref) === "files_pending_updates:upsert_file_pending_update_internal_action") {
+					// Another user drafts on the eager node before the upsert fails: the cleanup
+					// gate must refuse the hard delete and keep their draft.
+					await runner.t.run(async (ctx) => {
+						await ctx.db.insert("files_pending_updates", {
+							organizationId: runner.seeded.organizationId,
+							workspaceId: runner.seeded.workspaceId,
+							userId: "other_user_cp_cleanup_guard",
+							fileNodeId: actionArgs.nodeId as Id<"files_nodes">,
+							size: 0,
+							updatedAt: Date.now(),
+						});
+					});
+					throw new Error("simulated transient upsert failure");
+				}
+				return await baseImpl(ref, actionArgs);
+			});
+
+			const thrown = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/orphan-copy-blocked.md`,
+			);
+			expect(thrown.metadata.exitCode).not.toBe(0);
+			expect(thrown.stderr).toContain("an empty file was left behind at '/docs/orphan-copy-blocked.md'");
+
+			// The blocked cleanup keeps the node and the other user's draft on it.
+			const orphanNode = await get_seeded_node(runner, "/docs/orphan-copy-blocked.md");
+			const orphanRows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", orphanNode._id))
+					.collect(),
+			);
+			expect(orphanRows).toHaveLength(1);
+			expect(orphanRows[0].userId).toBe("other_user_cp_cleanup_guard");
 		});
 
 		test("supports the broader Native Just Bash /tmp command surface", async () => {

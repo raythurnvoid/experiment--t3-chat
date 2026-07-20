@@ -1,4 +1,4 @@
-import { defineCommand } from "just-bash/browser";
+import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
@@ -8,8 +8,9 @@ import type {
 	files_nodes_list_subtree_Result,
 } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER } from "../shared/files.ts";
-import { bash_APP_MOUNT_PATH, bash_db_files_path_to_current_workspace_path, bash_clamp_listing_page_limit, bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_cursor_id_resolve, bash_GLOB_METACHARACTER_REGEX, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT, bash_parse_limit, bash_read_option_value, bash_resolve_path, bash_shell_arg_quote, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, bash_resolve_db_files_shell_path, type bash_DbFilesFs, type bash_DbFilesFsOptions, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { path_name_of } from "../shared/shared-utils.ts";
+import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, files_pending_path_overlay_list_injections, files_pending_path_overlay_project_committed_path } from "../shared/files.ts";
+import { bash_APP_MOUNT_PATH, bash_db_files_path_to_current_workspace_path, bash_clamp_listing_page_limit, bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_cursor_id_resolve, bash_GLOB_METACHARACTER_REGEX, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT, bash_overlay_committed_scope_path, bash_overlay_project_scoped_path, bash_overlay_subtree_injections, bash_parse_limit, bash_read_option_value, bash_resolve_path, bash_shell_arg_quote, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, bash_resolve_db_files_shell_path, type bash_DbFilesFs, type bash_DbFilesFsOptions, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 const PATH_OPERAND_MAX = 20;
@@ -232,12 +233,15 @@ async function get_path_entry(args: {
 		organizationId: args.ctxData.organizationId,
 		workspaceId: args.ctxData.workspaceId,
 		path: args.dbFilesPath,
+		overlayUserId: args.dbFilesFs.overlayUserId,
 	})) as files_nodes_get_by_path_Result;
 	if (dbFilesDoc) {
+		// The overlay can present a moved node here: cache it under the requested path,
+		// never the node's committed path (identical without an overlay).
 		args.dbFilesFs.rememberEntry({
 			_id: dbFilesDoc._id,
-			path: dbFilesDoc.path,
-			name: dbFilesDoc.name,
+			path: args.dbFilesPath,
+			name: path_name_of(args.dbFilesPath),
 			kind: dbFilesDoc.kind,
 			updatedAt: dbFilesDoc.updatedAt,
 			updatedBy: dbFilesDoc.updatedBy,
@@ -272,7 +276,9 @@ function build_continuation(args: {
 	return continuationParts.join(" ");
 }
 
-export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+// The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
+// type would otherwise flow through internal.* into the bash action and back into this command.
+export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
 	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("ls", async (args, commandCtx) => {
 		const parsed = parse_args(args);
@@ -352,7 +358,18 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				order: parsed._yay.reverse ? "asc" : "desc",
 			})) as files_nodes_list_children_Result;
 
-			const lines = result.items.map(
+			// The proposer's pending moves project recency entries into the visible tree: moved
+			// nodes show their visible path and hidden ones (replaced, shadowed) drop out.
+			const overlay = await targets[0].pathResolution.fs.getOverlay();
+			const visibleItems =
+				overlay == null
+					? result.items
+					: result.items.flatMap((item) => {
+							const visiblePath = files_pending_path_overlay_project_committed_path(overlay, item.path);
+							return visiblePath == null ? [] : [{ ...item, path: visiblePath }];
+						});
+
+			const lines = visibleItems.map(
 				(item) =>
 					`${new Date(item.updatedAt).toISOString()}\t${bash_db_files_path_to_current_workspace_path(currentWorkspacePath, item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
@@ -496,18 +513,34 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			} else if (parsed._yay.recursive) {
 				// Recursive listings use the subtree index and print absolute shell
 				// paths, since children can be nested at different depths.
+				// The listed folder may be a pending-move destination: walk its committed
+				// source subtree and project every entry back into the visible tree.
+				const overlay = await target.pathResolution.fs.getOverlay();
+				const committedFolderPath = overlay == null ? dbFilesPath : bash_overlay_committed_scope_path(overlay, dbFilesPath);
 				const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 					organizationId: target.pathResolution.ctxData.organizationId,
 					workspaceId: target.pathResolution.ctxData.workspaceId,
-					folderPath: dbFilesPath,
+					folderPath: committedFolderPath,
 					numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 					cursor,
 					minDepth: 1,
 					order: parsed._yay.reverse ? "desc" : "asc",
 				})) as files_nodes_list_subtree_Result;
 
+				const visibleItems =
+					overlay == null
+						? result.page
+						: result.page.flatMap((item) => {
+								const visiblePath = bash_overlay_project_scoped_path({
+									overlay,
+									committedPath: item.path,
+									visibleScopePath: dbFilesPath,
+								});
+								return visiblePath == null ? [] : [{ ...item, path: visiblePath }];
+							});
+
 				lines.push(
-					...result.page.map((item) =>
+					...visibleItems.map((item) =>
 						format_item({
 							kind: item.kind,
 							updatedAt: item.updatedAt,
@@ -518,6 +551,85 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						}),
 					),
 				);
+
+				// Moved-in entries live outside the walked committed subtree: add them once,
+				// on the first page, with each moved folder's committed subtree spliced in.
+				if (overlay != null && cursor == null) {
+					// A nested pending move can surface twice: once projected out of its moved parent's
+					// splice and once as its own injection. Keep the first appearance of each visible path.
+					const seenVisiblePaths = new Set(visibleItems.map((item) => item.path));
+					for (const move of bash_overlay_subtree_injections(overlay, {
+						visibleScopePath: dbFilesPath,
+						committedScopePath: committedFolderPath,
+					})) {
+						const injectedDoc = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+							organizationId: target.pathResolution.ctxData.organizationId,
+							workspaceId: target.pathResolution.ctxData.workspaceId,
+							path: move.committedPath,
+						})) as files_nodes_get_by_path_Result;
+						if (!injectedDoc) {
+							continue;
+						}
+						if (!seenVisiblePaths.has(move.visiblePath)) {
+							seenVisiblePaths.add(move.visiblePath);
+							lines.push(
+								format_item({
+									kind: injectedDoc.kind,
+									updatedAt: injectedDoc.updatedAt,
+									updatedBy: injectedDoc.updatedBy,
+									contentType: injectedDoc.contentType,
+									display: target.pathResolution.renderShellPath(move.visiblePath),
+									long: parsed._yay.long,
+								}),
+							);
+						}
+						if (injectedDoc.kind !== "folder") {
+							continue;
+						}
+						// The splice repeats this branch's own query shape, so a leftover splice
+						// cursor can continue through `ls -R <visible destination> --cursor ...`.
+						const splice = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+							organizationId: target.pathResolution.ctxData.organizationId,
+							workspaceId: target.pathResolution.ctxData.workspaceId,
+							folderPath: move.committedPath,
+							numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
+							cursor: null,
+							minDepth: 1,
+							order: parsed._yay.reverse ? "desc" : "asc",
+						})) as files_nodes_list_subtree_Result;
+						for (const item of splice.page) {
+							const visiblePath = bash_overlay_project_scoped_path({
+								overlay,
+								committedPath: item.path,
+								visibleScopePath: dbFilesPath,
+							});
+							if (visiblePath == null || seenVisiblePaths.has(visiblePath)) {
+								continue;
+							}
+							seenVisiblePaths.add(visiblePath);
+							lines.push(
+								format_item({
+									kind: item.kind,
+									updatedAt: item.updatedAt,
+									updatedBy: item.updatedBy,
+									contentType: item.contentType,
+									display: target.pathResolution.renderShellPath(visiblePath),
+									long: parsed._yay.long,
+								}),
+							);
+						}
+						if (!splice.isDone) {
+							lines.push(
+								"",
+								build_continuation({
+									parsed: parsed._yay,
+									absoluteShellPath: target.pathResolution.renderShellPath(move.visiblePath),
+									cursor: await bash_cursor_id_create(ctx, splice.continueCursor),
+								}),
+							);
+						}
+					}
+				}
 				if (!result.isDone) {
 					lines.push(
 						"",
@@ -547,8 +659,54 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					order: parsed._yay.time ? (parsed._yay.reverse ? "asc" : "desc") : parsed._yay.reverse ? "desc" : "asc",
 				})) as files_nodes_list_children_Result;
 
+				// Children come from the committed folder (a redirected folder lists its
+				// committed source's children); keep each child only when its visible
+				// parent is still this folder, showing renamed children under the new name.
+				const overlay = await target.pathResolution.fs.getOverlay();
+				const visibleItems =
+					overlay == null
+						? result.items
+						: result.items.flatMap((item) => {
+								const visiblePath = files_pending_path_overlay_project_committed_path(overlay, item.path);
+								if (visiblePath == null) {
+									return [];
+								}
+								const visibleParentPath = visiblePath.slice(0, visiblePath.lastIndexOf("/")) || "/";
+								if (visibleParentPath !== dbFilesPath) {
+									return [];
+								}
+								return [{ ...item, path: visiblePath, name: visiblePath.slice(visiblePath.lastIndexOf("/") + 1) }];
+							});
+				// Moved-in children appear once, on the first page, from their committed docs.
+				// Skip injections whose visible path a projected child already owns.
+				if (overlay != null && cursor == null) {
+					const seenVisiblePaths = new Set(visibleItems.map((item) => item.path));
+					for (const injection of files_pending_path_overlay_list_injections(overlay, dbFilesPath)) {
+						const injectedPath = dbFilesPath === "/" ? `/${injection.visibleName}` : `${dbFilesPath}/${injection.visibleName}`;
+						if (seenVisiblePaths.has(injectedPath)) {
+							continue;
+						}
+						const injectedDoc = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+							organizationId: target.pathResolution.ctxData.organizationId,
+							workspaceId: target.pathResolution.ctxData.workspaceId,
+							path: injection.committedPath,
+						})) as files_nodes_get_by_path_Result;
+						if (!injectedDoc) {
+							continue;
+						}
+						visibleItems.push({
+							name: injection.visibleName,
+							kind: injectedDoc.kind,
+							path: injectedPath,
+							updatedAt: injectedDoc.updatedAt,
+							updatedBy: injectedDoc.updatedBy,
+							contentType: injectedDoc.contentType,
+						});
+					}
+				}
+
 				lines.push(
-					...result.items.map((item) =>
+					...visibleItems.map((item) =>
 						format_item({
 							kind: item.kind,
 							updatedAt: item.updatedAt,

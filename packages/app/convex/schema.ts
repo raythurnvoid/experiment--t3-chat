@@ -228,9 +228,12 @@ const app_convex_schema = defineSchema({
 				destName: v.string(),
 				fromPath: v.string(),
 				/**
-				 * `mv -f` replace proposal: the active file node that owned the destination path at
-				 * proposal time. Accept archives exactly this node before moving; if a different node
-				 * occupies the path at accept time, the apply fails with a conflict instead.
+				 * `mv -f` structural replacement: the active file node that owned the destination
+				 * path at proposal time. Provenance metadata for the proposer's path overlay, which
+				 * hides the replaced occupant from their reads. The panel's "Replaces" caption
+				 * derives from live path occupancy instead. Accept re-validates and auto-replaces
+				 * whichever file occupies the destination then, with or without this field; a
+				 * folder occupant fails.
 				 */
 				replacesNodeId: v.optional(v.id("files_nodes")),
 			}),
@@ -250,17 +253,29 @@ const app_convex_schema = defineSchema({
 		),
 		/**
 		 * Set when this proposal eagerly created the file node (write_file or cp onto a new path):
-		 * the file shows as Added, and discard/expiry hard-deletes the node. Absent for proposals
-		 * against pre-existing files, which must never hard-delete.
+		 * the file shows as Added, and discard/expiry hard-deletes the node — but only when the
+		 * safety gate passes: no content committed since the stamp, no rename/move of the node
+		 * itself by another user, and no other user's pending update doc on it (an ancestor-folder
+		 * move does not count). Otherwise only the doc is deleted and the node stays. Absent for
+		 * proposals against pre-existing files, which must never hard-delete.
 		 */
 		eagerCreated: v.optional(
 			v.object({
 				/**
-				 * The node's committed Yjs last sequence when the row was first created. Immutable
-				 * (never re-stamped on later patches/rebases): the hard-delete safety check compares
-				 * it against the current committed sequence.
+				 * The node's committed Yjs last sequence, captured in the same mutation that
+				 * created the node (not at upsert time: the proposal upsert can land after a user
+				 * already saved the brand-new file). Any save that commits content advances the
+				 * node past this stamp, so the hard-delete safety check fails closed and the saved
+				 * content survives. Immutable (never re-stamped on later patches/rebases).
 				 */
 				committedSequence: v.number(),
+				/**
+				 * `_id`s of the folders the eager create committed for this leaf, deepest first
+				 * (`createdAncestorIds` from `create_file_by_path`). After a safe leaf hard-delete,
+				 * discard/expiry remove each one while it is still an empty folder only touched by
+				 * the proposer.
+				 */
+				createdAncestorIds: v.optional(v.array(v.id("files_nodes"))),
 			}),
 		),
 		size: v.number(),
@@ -268,7 +283,8 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_organization_workspace_user_fileNode", ["organizationId", "workspaceId", "userId", "fileNodeId"])
 		.index("by_user_fileNode", ["userId", "fileNodeId"])
-		.index("by_fileNode", ["fileNodeId"]),
+		.index("by_fileNode", ["fileNodeId"])
+		.index("by_pendingMove_destParentId", ["pendingMove.destParentId"]),
 
 	files_pending_updates_last_sequence_saved: defineTable({
 		organizationId: v.id("organizations"),
@@ -283,8 +299,8 @@ const app_convex_schema = defineSchema({
 		.index("by_user_fileNode", ["userId", "fileNodeId"]),
 
 	/**
-	 * Tracks scheduled cleanup tasks for each pending update row.
-	 * The task is rescheduled whenever the row changes and becomes a no-op if the row
+	 * Tracks scheduled cleanup tasks for each pending update doc.
+	 * The task is rescheduled whenever the doc changes and becomes a no-op if the doc
 	 * was updated after the task was created.
 	 */
 	files_pending_updates_cleanup_tasks: defineTable({

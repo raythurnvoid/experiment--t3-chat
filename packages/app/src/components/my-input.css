@@ -41,7 +41,8 @@
 
 		font-size: 0.875rem;
 		font-weight: 500;
-		line-height: 20px;
+		/* Unitless so it scales with font-size; prefer this over px/em for line-height. */
+		line-height: 1.25;
 
 		color: var(--color-fg-08);
 

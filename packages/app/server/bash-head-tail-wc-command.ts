@@ -198,6 +198,7 @@ async function find_oversized_file_operand(
 						organizationId: pathResolution.ctxData.organizationId,
 						workspaceId: pathResolution.ctxData.workspaceId,
 						path: pathResolution.dbFilesPath,
+						overlayUserId: pathResolution.fs.overlayUserId,
 					})) as files_nodes_get_by_path_Result);
 		if (dbFilesDoc == null) continue;
 
@@ -288,6 +289,7 @@ export function bash_head_tail_wc_command_create(
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
 					path: dbFilesPath,
+					overlayUserId: pathResolution.fs.overlayUserId,
 				})) as files_nodes_read_file_content_stats_Result;
 				if (!stats) {
 					const dbFilesDoc: files_nodes_get_by_path_Result =
@@ -297,6 +299,7 @@ export function bash_head_tail_wc_command_create(
 									organizationId: pathResolution.ctxData.organizationId,
 									workspaceId: pathResolution.ctxData.workspaceId,
 									path: dbFilesPath,
+									overlayUserId: pathResolution.fs.overlayUserId,
 								})) as files_nodes_get_by_path_Result);
 
 					if (dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
@@ -370,6 +373,7 @@ export function bash_head_tail_wc_command_create(
 						path: oversized.dbFilesPath,
 						startLine,
 						maxLines,
+						overlayUserId: oversized.pathResolution.fs.overlayUserId,
 					})) as files_nodes_read_file_line_range_Result;
 
 					if (!result) {
@@ -421,6 +425,7 @@ export function bash_head_tail_wc_command_create(
 						path: oversized.dbFilesPath,
 						startLine: 1,
 						maxLines,
+						overlayUserId: oversized.pathResolution.fs.overlayUserId,
 					})) as files_nodes_read_file_line_range_Result;
 
 					if (!result) {
@@ -464,6 +469,7 @@ export function bash_head_tail_wc_command_create(
 					userId: oversized.pathResolution.ctxData.userId,
 					path: oversized.dbFilesPath,
 					maxLines,
+					overlayUserId: oversized.pathResolution.fs.overlayUserId,
 				})) as files_nodes_read_file_tail_lines_Result;
 
 				if (!result) {
@@ -524,6 +530,7 @@ export function bash_head_tail_wc_command_create(
 						workspaceId: pathResolution.ctxData.workspaceId,
 						userId: pathResolution.ctxData.userId,
 						path: dbFilesPath,
+						overlayUserId: pathResolution.fs.overlayUserId,
 						mode: {
 							kind: "full",
 							maxBytes: bash_READ_INLINE_MAX_BYTES,
@@ -558,6 +565,7 @@ export function bash_head_tail_wc_command_create(
 									organizationId: pathResolution.ctxData.organizationId,
 									workspaceId: pathResolution.ctxData.workspaceId,
 									path: dbFilesPath,
+									overlayUserId: pathResolution.fs.overlayUserId,
 								})) as files_nodes_get_by_path_Result);
 
 					if (dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
