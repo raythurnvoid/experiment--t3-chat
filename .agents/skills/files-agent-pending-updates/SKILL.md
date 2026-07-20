@@ -239,6 +239,13 @@ Important behavior:
 - move-before-content ordering for content-plus-move row acceptance
 - safe eager-created destination deletion during discard
 
+`packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx` owns:
+
+- the pending-changes strip above the Agent-tab chat composer (rendered through `AiChatThread`'s `composerTopSlot`): a one-line clickable row showing the user's workspace-wide pending count, hidden at 0, never dismissable
+- the amber count badge inside the "Pending changes" sidebar tab label, hidden at 0
+- both switch the sidebar to the Pending changes tab by writing `app_state::files_last_tab` (the strip on click; the badge is display-only)
+- the shared `FILE_EDITOR_SIDEBAR_TAB_ID_PENDING` constant (moved here so the sidebar tabs, the strip, and the agent panel import it without a cycle)
+
 # Cleanup And Expiry Model
 
 - Every write that leaves a pending update doc alive refreshes its four-hour cleanup task. This includes content upserts, move upserts, rebases, partial saves, and structural accept/discard paths that preserve part of a content-plus-move doc.

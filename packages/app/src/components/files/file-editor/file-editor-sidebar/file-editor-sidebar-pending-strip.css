@@ -1,0 +1,130 @@
+@layer components {
+	/* #region strip */
+	.FileEditorSidebarPendingStrip {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 8px;
+
+		flex: none;
+		width: 100%;
+		height: 42px;
+		margin-bottom: 8px;
+		padding: 0px 12px;
+
+		border: 1px solid var(--color-fg-02);
+		border-radius: 10px;
+		background: color-mix(in oklch, var(--color-accent-07) 12%, var(--color-base-1-03));
+
+		font-size: 0.875rem;
+		line-height: 1;
+		cursor: pointer;
+		user-select: none;
+
+		transition: background-color 0.15s ease;
+
+		/* Focus-visible outline color comes from the global `*:focus-visible` rule. */
+		&:hover {
+			background: color-mix(in oklch, var(--color-accent-07) 12%, var(--color-base-1-04));
+		}
+	}
+
+	.FileEditorSidebarPendingStrip-icon {
+		flex: none;
+		width: 16px;
+		height: 16px;
+		color: var(--color-accent-07);
+	}
+
+	.FileEditorSidebarPendingStrip-count {
+		flex: none;
+		color: var(--color-accent-08);
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.FileEditorSidebarPendingStrip-label {
+		flex: 1;
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		text-align: left;
+
+		color: var(--color-fg-06);
+	}
+
+	.FileEditorSidebarPendingStrip-review {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+
+		flex: none;
+		color: var(--color-fg-05);
+		transition: color 0.15s ease;
+	}
+
+	.FileEditorSidebarPendingStrip:hover .FileEditorSidebarPendingStrip-review {
+		color: var(--color-fg-08);
+	}
+
+	.FileEditorSidebarPendingStrip-review-chevron {
+		width: 14px;
+		height: 14px;
+	}
+
+	@media (prefers-reduced-motion: no-preference) {
+		.FileEditorSidebarPendingStrip {
+			animation: FileEditorSidebarPendingStrip-appear 0.15s ease-out;
+		}
+
+		.FileEditorSidebarPendingStrip-leaving {
+			animation: FileEditorSidebarPendingStrip-disappear 0.15s ease-in forwards;
+		}
+	}
+
+	@keyframes FileEditorSidebarPendingStrip-appear {
+		from {
+			opacity: 0;
+			transform: translateY(4px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0px);
+		}
+	}
+
+	@keyframes FileEditorSidebarPendingStrip-disappear {
+		from {
+			opacity: 1;
+			transform: translateY(0px);
+		}
+		to {
+			opacity: 0;
+			transform: translateY(4px);
+		}
+	}
+	/* #endregion strip */
+
+	/* #region tab badge */
+	.FileEditorSidebarPendingTabBadge {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+
+		min-width: 18px;
+		height: 17px;
+		padding: 0px 5px;
+		border-radius: 999px;
+
+		font-size: 11px;
+		font-weight: 600;
+		line-height: 1;
+		font-variant-numeric: tabular-nums;
+
+		color: var(--color-accent-08);
+		background: color-mix(in oklch, var(--color-accent-07) 18%, transparent);
+	}
+	/* #endregion tab badge */
+}

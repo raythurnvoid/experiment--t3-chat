@@ -117,9 +117,18 @@
 		position: sticky;
 		bottom: 0;
 
-		> .AiChatComposer {
+		/* The stack owns the centered column so slot rows (pending strip, future message queue)
+		   share the exact same width as the composer. */
+		> .AiChatThread-composer-stack {
+			display: flex;
+			flex-direction: column;
+
 			width: 100%;
 			max-width: 780px;
+
+			> .AiChatComposer {
+				width: 100%;
+			}
 		}
 	}
 

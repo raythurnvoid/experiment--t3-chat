@@ -1,6 +1,6 @@
 import "./ai-chat.css";
 
-import type { ComponentPropsWithRef, Ref } from "react";
+import type { ComponentPropsWithRef, ReactNode, Ref } from "react";
 import { memo, useState, useEffect, useRef, useDeferredValue, useMemo } from "react";
 import { useFn, useLiveRef, useStateRef, useThrottle } from "@/hooks/utils-hooks.ts";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
@@ -382,12 +382,18 @@ export type AiChatThread_ClassNames =
 	| "AiChatThread-scroll-to-bottom"
 	| "AiChatThread-scroll-to-bottom-card"
 	| "AiChatThread-scroll-to-bottom-icon"
-	| "AiChatThread-composer";
+	| "AiChatThread-composer"
+	| "AiChatThread-composer-stack";
 
 export type AiChatThread_Props = {
 	variant?: AiChatThread_Variant;
 	controller: AiChatThreadRuntime;
 	scrollableContainer: HTMLElement | null;
+	/**
+	 * Rendered inside the composer column, above the composer. The stack is a vertical flex
+	 * column: future rows (e.g. the message queue) append below existing slot content.
+	 */
+	composerTopSlot?: ReactNode;
 };
 
 export type AiChatThread_CustomAttributes = {
@@ -396,7 +402,7 @@ export type AiChatThread_CustomAttributes = {
 };
 
 export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props) {
-	const { variant = "default", controller, scrollableContainer } = props;
+	const { variant = "default", controller, scrollableContainer, composerTopSlot } = props;
 
 	const selectedThreadId = controller.selectedThreadId;
 	const selectedModelId = controller.selectedModelId;
@@ -808,20 +814,23 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 					</MyFloatingSurface>
 				</div>
 				<div className={"AiChatThread-composer" satisfies AiChatThread_ClassNames}>
-					<AiChatComposer
-						key={selectedThreadId ?? "new"}
-						canCancel={controller.isRunning}
-						canSend={!selectedThreadId || controller.canSendUserText}
-						isRunning={controller.isRunning}
-						initialValue={initialComposerValue}
-						selectedModelId={selectedModelId}
-						selectedModeId={selectedModeId}
-						onValueChange={handleComposerValueChange}
-						onSelectedModelIdChange={handleSelectedModelIdChange}
-						onSelectedModeIdChange={handleSelectedModeIdChange}
-						onSubmit={handleComposerSubmit}
-						onCancel={handleComposerCancel}
-					/>
+					<div className={"AiChatThread-composer-stack" satisfies AiChatThread_ClassNames}>
+						{composerTopSlot}
+						<AiChatComposer
+							key={selectedThreadId ?? "new"}
+							canCancel={controller.isRunning}
+							canSend={!selectedThreadId || controller.canSendUserText}
+							isRunning={controller.isRunning}
+							initialValue={initialComposerValue}
+							selectedModelId={selectedModelId}
+							selectedModeId={selectedModeId}
+							onValueChange={handleComposerValueChange}
+							onSelectedModelIdChange={handleSelectedModelIdChange}
+							onSelectedModeIdChange={handleSelectedModeIdChange}
+							onSubmit={handleComposerSubmit}
+							onCancel={handleComposerCancel}
+						/>
+					</div>
 				</div>
 			</CatchBoundary>
 		</div>

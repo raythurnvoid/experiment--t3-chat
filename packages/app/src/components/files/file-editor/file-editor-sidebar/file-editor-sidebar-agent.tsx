@@ -16,6 +16,7 @@ import {
 	X,
 } from "lucide-react";
 import { AiChatThread } from "@/components/ai-chat/ai-chat.tsx";
+import { FileEditorSidebarPendingStrip } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx";
 import { MyContextMenu, MyContextMenuPopover, MyContextMenuTrigger } from "@/components/my-context-menu.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -798,7 +799,14 @@ const FileEditorSidebarAgentChatThread = memo(function FileEditorSidebarAgentCha
 	const { scrollableContainer } = props;
 	const controller = AiChatController.useThreadRuntime();
 
-	return <AiChatThread variant="sidebar" controller={controller} scrollableContainer={scrollableContainer} />;
+	return (
+		<AiChatThread
+			variant="sidebar"
+			controller={controller}
+			scrollableContainer={scrollableContainer}
+			composerTopSlot={<FileEditorSidebarPendingStrip />}
+		/>
+	);
 });
 
 export type FileEditorSidebarAgent_Props = {
