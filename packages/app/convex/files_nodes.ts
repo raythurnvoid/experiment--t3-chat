@@ -67,6 +67,7 @@ import {
 	files_db_build_pending_path_overlay,
 	files_db_get_pending_update,
 	files_db_get_visible_node_by_path,
+	files_db_list_pending_updates_for_user,
 	files_pending_path_overlay_project_committed_path,
 	type files_ContentType,
 	type files_SpecialFileName,
@@ -2324,6 +2325,43 @@ export const create_upload_node = mutation({
 });
 
 /**
+ * rename() semantics: only an EMPTY folder can be replaced. Committed active children count
+ * as occupancy, and so do the user's own pending moves into the folder (replacing it would
+ * break their destinations).
+ */
+async function db_folder_occupant_is_empty(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		folderId: Id<"files_nodes">;
+		userId: string | null;
+	},
+) {
+	const activeChild = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", args.folderId),
+		)
+		.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+		.first();
+	if (activeChild) {
+		return false;
+	}
+	if (args.userId != null) {
+		const pendingUpdates = await files_db_list_pending_updates_for_user(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+		});
+		if (pendingUpdates.some((pendingUpdate) => pendingUpdate.pendingMove?.destParentId === args.folderId)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
  * Shared proposal-time + accept-time validation for a pending move: the node ids are
  * authoritative, so the same checks run when the proposal is created and when it is applied.
  */
@@ -2336,11 +2374,12 @@ export async function files_nodes_db_validate_pending_move_target(
 		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 		destName: string;
 		/**
-		 * File-onto-file replace opt-in. `"any-active-file"` (proposal-time `mv -f`, and accept)
-		 * accepts whichever active file owns the destination; a node id requires the destination
-		 * to still be exactly that node.
+		 * Replace opt-in: file-onto-file, or folder-onto-EMPTY-folder (rename() semantics).
+		 * `"any-active-occupant"` (proposal-time `mv -f`/`mv -T`, and accept) accepts whichever
+		 * active node owns the destination; a node id requires the destination to still be
+		 * exactly that node.
 		 */
-		replaceTarget?: Id<"files_nodes"> | "any-active-file";
+		replaceTarget?: Id<"files_nodes"> | "any-active-occupant";
 		/**
 		 * Proposal-time only: validate against this user's visible tree. A committed sibling with
 		 * a pending move away does not conflict, and a destination already claimed by another
@@ -2433,18 +2472,32 @@ export async function files_nodes_db_validate_pending_move_target(
 		.first();
 	if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
 		// A sibling the proposer's overlay moves away or hides is not a visible occupant:
-		// the destination reads as free for them, and accept auto-replaces any newcomer file.
+		// the destination reads as free for them, and accept auto-replaces any replaceable
+		// newcomer occupant.
 		const siblingInvisible =
 			overlay != null &&
 			(overlay.hiddenNodeIds.has(activeSiblingConflict._id) ||
 				overlay.moves.some((move) => move.nodeId === activeSiblingConflict._id));
 		if (!siblingInvisible) {
-			const replaceable =
+			const replaceRequested =
 				args.replaceTarget != null &&
-				node.kind === "file" &&
-				activeSiblingConflict.kind === "file" &&
-				(args.replaceTarget === "any-active-file" || activeSiblingConflict._id === args.replaceTarget);
-			if (replaceable) {
+				(args.replaceTarget === "any-active-occupant" || activeSiblingConflict._id === args.replaceTarget);
+			if (replaceRequested && node.kind === "file" && activeSiblingConflict.kind === "file") {
+				return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
+			}
+			// rename() semantics: a folder replaces an EMPTY folder; a non-empty one errors
+			// "Directory not empty" below. File-onto-folder and folder-onto-file never replace.
+			const folderReplaceRequested =
+				replaceRequested && node.kind === "folder" && activeSiblingConflict.kind === "folder";
+			if (
+				folderReplaceRequested &&
+				(await db_folder_occupant_is_empty(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					folderId: activeSiblingConflict._id,
+					userId: args.overlayUserId ?? args.acceptUserId ?? null,
+				}))
+			) {
 				return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
 			}
 			// A non-replaceable occupant that vacates through the accepting user's own pending
@@ -2460,7 +2513,9 @@ export async function files_nodes_db_validate_pending_move_target(
 					return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
 				}
 			}
-			return Result({ _nay: { message: "Path already exists" } });
+			return Result({
+				_nay: { message: folderReplaceRequested ? "Directory not empty" : "Path already exists" },
+			});
 		}
 	}
 
@@ -2543,16 +2598,16 @@ export async function files_nodes_db_apply_pending_move(
 		});
 	}
 
-	// The pending move claims its destination: any file occupying it at accept time is
-	// auto-replaced like `mv -f`. A folder occupant fails validation unless it vacates
-	// through this user's own pending move (swap cycles and chained accepts).
+	// The pending move claims its destination: a file or EMPTY folder occupying it at accept
+	// time is auto-replaced like rename(). A non-empty folder occupant fails validation unless
+	// it vacates through this user's own pending move (swap cycles and chained accepts).
 	const validated = await files_nodes_db_validate_pending_move_target(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		nodeId: args.nodeId,
 		destParentId: args.destParentId,
 		destName: args.destName,
-		replaceTarget: "any-active-file",
+		replaceTarget: "any-active-occupant",
 		acceptUserId: args.userId,
 	});
 	if (validated._nay) {
@@ -2581,7 +2636,6 @@ export async function files_nodes_db_apply_pending_move(
 				pendingUpdate: Doc<"files_pending_updates">;
 				destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 				destName: string;
-				destPath: string;
 			}> = [];
 			let isCycle = false;
 			let memberNode = validated._yay.replacesNode;
@@ -2610,7 +2664,6 @@ export async function files_nodes_db_apply_pending_move(
 					pendingUpdate: memberPendingUpdate,
 					destParentId: memberPendingMove.destParentId,
 					destName: memberPendingMove.destName,
-					destPath: nextOccupant.path,
 				});
 				if (nextOccupant._id === args.nodeId) {
 					isCycle = true;
@@ -2636,30 +2689,69 @@ export async function files_nodes_db_apply_pending_move(
 			}
 
 			if (isCycle) {
-				await db_apply_node_move(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					node,
-					destParentId: args.destParentId,
-					destName: args.destName,
-					destPath,
-					updatedBy: args.updatedBy,
-					now,
-				});
-				for (const member of cycleMembers) {
-					await db_apply_node_move(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
+				// A destination can sit inside a folder that is itself a cycle member, so paths
+				// captured before the apply go stale mid-transaction. Compute every member's
+				// final path from the FINAL parent chain (moved parents use their destination,
+				// committed parents their stored fields) before writing anything. A chain that
+				// revisits a node means the final tree would contain a parent loop — possible
+				// when another user nested a destination parent under its mover after the
+				// proposal — so refuse it instead of applying.
+				const finalMoves = [
+					{ node, destParentId: args.destParentId, destName: args.destName },
+					...cycleMembers.map((member) => ({
 						node: member.node,
 						destParentId: member.destParentId,
 						destName: member.destName,
-						destPath: member.destPath,
+					})),
+				];
+				const finalMovesByNodeId = new Map(finalMoves.map((move) => [move.node._id, move]));
+				const finalPaths: string[] = [];
+				for (const move of finalMoves) {
+					const chainNodeIds = new Set<Id<"files_nodes">>([move.node._id]);
+					const segments = [move.destName];
+					let parentId = move.destParentId;
+					let loops = false;
+					while (parentId !== files_ROOT_ID) {
+						if (chainNodeIds.has(parentId)) {
+							loops = true;
+							break;
+						}
+						chainNodeIds.add(parentId);
+						const parentMove = finalMovesByNodeId.get(parentId);
+						if (parentMove) {
+							segments.unshift(parentMove.destName);
+							parentId = parentMove.destParentId;
+							continue;
+						}
+						const parent = await ctx.db.get("files_nodes", parentId);
+						if (!parent) {
+							return Result({ _nay: { message: "Destination folder is missing" } });
+						}
+						segments.unshift(parent.name);
+						parentId = parent.parentId;
+					}
+					if (loops) {
+						return Result({ _nay: { message: "Cannot move a folder into itself" } });
+					}
+					finalPaths.push(`/${segments.join("/")}`);
+				}
+				for (const [index, move] of finalMoves.entries()) {
+					await db_apply_node_move(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						node: move.node,
+						destParentId: move.destParentId,
+						destName: move.destName,
+						destPath: finalPaths[index],
 						updatedBy: args.updatedBy,
 						now,
 					});
 				}
 				return Result({
-					_yay: { destPath, cycleMemberPendingUpdates: cycleMembers.map((member) => member.pendingUpdate) },
+					_yay: {
+						destPath: finalPaths[0],
+						cycleMemberPendingUpdates: cycleMembers.map((member) => member.pendingUpdate),
+					},
 				});
 			}
 
@@ -2667,8 +2759,9 @@ export async function files_nodes_db_apply_pending_move(
 				_nay: { message: `Accept the pending move of "${validated._yay.replacesNode.name}" first` },
 			});
 		}
-		// Archive (never hard-delete) the file that owns the destination path, whether it was
-		// the proposed replace target or a newcomer created after the proposal.
+		// Archive (never hard-delete) the occupant of the destination path — a file, or an
+		// empty folder — whether it was the proposed replace target or a newcomer created
+		// after the proposal.
 		await files_nodes_db_archive_nodes(ctx, {
 			nodeIds: [validated._yay.replacesNode._id],
 			updatedBy: args.updatedBy,

@@ -1106,14 +1106,18 @@ export const upsert_file_pending_move_in_db = internalMutation({
 		nodeId: v.id("files_nodes"),
 		destParentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
 		destName: v.string(),
-		/** `mv -f`: allow a file-onto-file replace proposal when an active file owns the destination. */
+		/**
+		 * Allow a replace proposal when an active occupant owns the destination — file-onto-file
+		 * (`mv -f`), or folder-onto-EMPTY-folder (rename() semantics, no -f needed, so folder
+		 * moves always send it).
+		 */
 		replace: v.optional(v.boolean()),
 	},
 	returns: v_result({
 		_yay: v.object({
 			fromPath: v.string(),
 			destPath: v.string(),
-			replacesExistingFile: v.boolean(),
+			replacesExistingOccupant: v.boolean(),
 			/** True when the mv targeted the node's committed path and only cancelled its pending move. */
 			cancelledExistingMove: v.boolean(),
 		}),
@@ -1149,7 +1153,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 						_yay: {
 							fromPath: sourceNode.path,
 							destPath: sourceNode.path,
-							replacesExistingFile: false,
+							replacesExistingOccupant: false,
 							cancelledExistingMove: true,
 						},
 					});
@@ -1165,7 +1169,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			nodeId: args.nodeId,
 			destParentId: args.destParentId,
 			destName: args.destName,
-			replaceTarget: args.replace ? "any-active-file" : undefined,
+			replaceTarget: args.replace ? "any-active-occupant" : undefined,
 			overlayUserId: args.userId,
 		});
 		if (validated._nay) {
@@ -1216,7 +1220,12 @@ export const upsert_file_pending_move_in_db = internalMutation({
 		}
 
 		return Result({
-			_yay: { fromPath: node.path, destPath, replacesExistingFile: replacesNode != null, cancelledExistingMove: false },
+			_yay: {
+				fromPath: node.path,
+				destPath,
+				replacesExistingOccupant: replacesNode != null,
+				cancelledExistingMove: false,
+			},
 		});
 	},
 });

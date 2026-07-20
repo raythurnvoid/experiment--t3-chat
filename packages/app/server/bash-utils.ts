@@ -1286,14 +1286,16 @@ export function bash_disallowed_source_target_error() {
 /**
  * Extract `cp`/`mv` path operands for app-path routing.
  *
- * This is intentionally smaller than a full parser: it tracks recursive flags
- * including short clusters and `--`, then preserves every following token as a
- * path operand so dash-leading app file names cannot bypass the app-mutation guards.
+ * This is intentionally smaller than a full parser: it tracks the supported recursive,
+ * force, and no-target-directory flags, including short clusters and `--`, then preserves
+ * every following token as a path operand so dash-leading app file names cannot bypass
+ * the app-mutation guards.
  */
 export function bash_parse_cp_mv_operands(args: string[]) {
 	const operands: string[] = [];
 	let recursive = false;
 	let force = false;
+	let noTargetDirectory = false;
 	let optionsEnded = false;
 
 	for (const arg of args) {
@@ -1313,6 +1315,10 @@ export function bash_parse_cp_mv_operands(args: string[]) {
 			force = true;
 			continue;
 		}
+		if (arg === "-T" || arg === "--no-target-directory") {
+			noTargetDirectory = true;
+			continue;
+		}
 		if (arg.startsWith("-")) {
 			if (!arg.startsWith("--")) {
 				const flags = [...arg.slice(1)];
@@ -1322,12 +1328,15 @@ export function bash_parse_cp_mv_operands(args: string[]) {
 				if (flags.some((flag) => flag === "f")) {
 					force = true;
 				}
+				if (flags.some((flag) => flag === "T")) {
+					noTargetDirectory = true;
+				}
 			}
 			continue;
 		}
 		operands.push(arg);
 	}
-	return { operands, recursive, force };
+	return { operands, recursive, force, noTargetDirectory };
 }
 
 /**

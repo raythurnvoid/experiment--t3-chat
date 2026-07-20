@@ -53,7 +53,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 	}
 
 	return defineCommand("mv", async (args, commandCtx) => {
-		const { operands, force } = bash_parse_cp_mv_operands(args);
+		const { operands, force, noTargetDirectory } = bash_parse_cp_mv_operands(args);
 
 		// Mounts are read-only: mv would delete a mount source or write a mount destination, so reject
 		// any operand under /.mounts or /.plugins before native delegation. (cp <mount> /tmp covers
@@ -185,19 +185,25 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			};
 		}
 
-		const destNode: files_nodes_get_by_path_Result | typeof files_SYNTHETIC_ROOT_FOLDER =
+		// The underlying committed doc resolved from the VISIBLE destination path (never the
+		// synthetic root); feeds the direct-rename branch below.
+		const destNodeDoc: files_nodes_get_by_path_Result =
 			destDbFilesPath === "/"
-				? files_SYNTHETIC_ROOT_FOLDER
+				? null
 				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 						organizationId,
 						workspaceId,
 						path: destDbFilesPath,
 						overlayUserId: userId,
 					})) as files_nodes_get_by_path_Result);
+		const destNode: files_nodes_get_by_path_Result | typeof files_SYNTHETIC_ROOT_FOLDER =
+			destDbFilesPath === "/" ? files_SYNTHETIC_ROOT_FOLDER : destNodeDoc;
 
 		let destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 		let destName: string;
 		let intendedDestPath: string;
+		// The destination as the caller spelled it; errors echo this, like real mv.
+		let intendedDestOperand: string;
 		// The active file that `mv -f` would replace at the destination, when there is one.
 		let replaceTargetNode: NonNullable<files_nodes_get_by_path_Result> | null = null;
 		if (destNode) {
@@ -208,14 +214,26 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
-			if (destNode.kind !== "folder") {
-				// A file presented here by its own pending move (committed path differs from the
+			// `mv -T` onto the root can never replace it; real mv fails the same way (the
+			// cross-kind check for a file source, EBUSY from rename() for a folder source).
+			if (noTargetDirectory && destDbFilesPath === "/") {
+				return {
+					stdout: "",
+					stderr:
+						sourceNode.kind === "folder"
+							? `mv: cannot move '${sourceOperand}' to '${destOperand}': Device or resource busy\n`
+							: `mv: cannot overwrite directory '${destOperand}' with non-directory\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
+			if (destNodeDoc && (destNodeDoc.kind !== "folder" || noTargetDirectory)) {
+				// A node presented here by its own pending move (committed path differs from the
 				// requested path) is never a replace target: one visible path, one proposal.
 				// A committed child of a moved ancestor folder (no pending move of its own,
 				// presented by the ancestor's projection) is a real conflict/replace target.
-				if (destNode.path !== destDbFilesPath) {
+				if (destNodeDoc.path !== destDbFilesPath) {
 					const overlay = await dbFilesRoots.app.fs.getOverlay();
-					if (overlay?.moves.some((move) => move.nodeId === destNode._id)) {
+					if (overlay?.moves.some((move) => move.nodeId === destNodeDoc._id)) {
 						return {
 							stdout: "",
 							stderr: `mv: destination '${destDbFilesPath}' is already claimed by a pending move. Choose a different destination path.\n`,
@@ -223,20 +241,38 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						};
 					}
 				}
-				// `mv -f` file-onto-file proposes a replace; folders can never replace or be replaced.
-				if (!force || sourceNode.kind !== "file") {
+				if (destNodeDoc.kind === "folder") {
+					// `mv -T` folder destination: rename() semantics. Only a folder can replace a
+					// folder, and validation still rejects a non-empty one ("Directory not empty").
+					if (sourceNode.kind !== "folder") {
+						return {
+							stdout: "",
+							stderr: `mv: cannot overwrite directory '${destOperand}' with non-directory\n`,
+							exitCode: bash_COMMAND_EXIT_FAILURE,
+						};
+					}
+				} else if (sourceNode.kind !== "file") {
+					// A folder never replaces a file; real mv reports the cross-kind mismatch.
 					return {
 						stdout: "",
-						stderr: create_dest_exists_error(destDbFilesPath, sourceNode.kind === "file", force),
+						stderr: `mv: cannot overwrite non-directory '${destOperand}' with directory '${sourceOperand}'\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				} else if (!force) {
+					// `mv -f` file-onto-file proposes a replace.
+					return {
+						stdout: "",
+						stderr: create_dest_exists_error(destDbFilesPath, true, force),
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 				// The committed parent/name keep the node's identity, so a structural replacement
 				// travels with a moved ancestor folder; display keeps the requested visible path.
-				destParentId = destNode.parentId;
-				destName = destNode.name;
+				destParentId = destNodeDoc.parentId;
+				destName = destNodeDoc.name;
 				intendedDestPath = destDbFilesPath;
-				replaceTargetNode = destNode;
+				intendedDestOperand = destOperand;
+				replaceTargetNode = destNodeDoc;
 			} else {
 				// An existing folder destination keeps the source's visible basename inside it,
 				// like native mv (a moved source's committed name may differ). The occupant
@@ -245,6 +281,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				destParentId = destNode._id;
 				destName = path_name_of(sourceDbFilesPath);
 				intendedDestPath = path_join(destDbFilesPath, destName);
+				intendedDestOperand = path_join(destOperand, destName);
 				const occupant = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 					organizationId,
 					workspaceId,
@@ -273,18 +310,26 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 							};
 						}
 					}
-					if (!force || sourceNode.kind !== "file" || occupant.kind !== "file") {
+					if (sourceNode.kind === "folder" && occupant.kind === "folder") {
+						// Real mv: rename() at the resolved path replaces an EMPTY folder silently
+						// (no -f); validation rejects a non-empty one with "Directory not empty".
+						replaceTargetNode = occupant;
+					} else if (sourceNode.kind !== "file") {
+						// A folder never replaces a file; real mv reports the cross-kind mismatch.
 						return {
 							stdout: "",
-							stderr: create_dest_exists_error(
-								intendedDestPath,
-								sourceNode.kind === "file" && occupant.kind === "file",
-								force,
-							),
+							stderr: `mv: cannot overwrite non-directory '${intendedDestOperand}' with directory '${sourceOperand}'\n`,
 							exitCode: bash_COMMAND_EXIT_FAILURE,
 						};
+					} else if (!force || occupant.kind !== "file") {
+						return {
+							stdout: "",
+							stderr: create_dest_exists_error(intendedDestPath, occupant.kind === "file", force),
+							exitCode: bash_COMMAND_EXIT_FAILURE,
+						};
+					} else {
+						replaceTargetNode = occupant;
 					}
-					replaceTargetNode = occupant;
 				}
 			}
 		} else {
@@ -326,6 +371,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			// The raw name has no path separators, so normalization yields exactly one segment.
 			destName = normalizedDestName.normalizedPathSegments.join("/");
 			intendedDestPath = path_join(destParentPath, destName);
+			intendedDestOperand = destOperand;
 		}
 
 		// `mv -f` between editable files proposes a copy on the TARGET plus `archivesSourceOnAccept`:
@@ -387,6 +433,10 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			// Unreadable source content: fall through to the structural replacement, which still moves the file.
 		}
 
+		// A folder source always sends `replace`: folder replacement never needs -f (rename()
+		// replaces an empty folder silently) and the mutation still rejects every unsafe case,
+		// so an occupant created between the reads above and the mutation cannot fail a move
+		// that real mv would allow.
 		const proposed = (await ctx.runMutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 			organizationId,
 			workspaceId,
@@ -394,7 +444,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			nodeId: sourceNode._id,
 			destParentId,
 			destName,
-			replace: force,
+			replace: force || replaceTargetNode != null || sourceNode.kind === "folder",
 		})) as upsert_file_pending_move_in_db_Result;
 		if (proposed._nay) {
 			const message = proposed._nay.message;
@@ -403,11 +453,13 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				stderr:
 					message === "Path already exists"
 						? create_dest_exists_error(intendedDestPath, sourceNode.kind === "file", force)
-						: message === "Cannot move a folder into itself"
-							? `mv: cannot move '${sourceOperand}' to a subdirectory of itself\n`
-							: message === "Source and destination are the same"
-								? `mv: '${sourceOperand}' and '${destOperand}' are the same file\n`
-								: `mv: ${message.toLowerCase()}\n`,
+						: message === "Directory not empty"
+							? `mv: cannot move '${sourceOperand}' to '${intendedDestOperand}': Directory not empty\n`
+							: message === "Cannot move a folder into itself"
+								? `mv: cannot move '${sourceOperand}' to a subdirectory of itself\n`
+								: message === "Source and destination are the same"
+									? `mv: '${sourceOperand}' and '${destOperand}' are the same file\n`
+									: `mv: ${message.toLowerCase()}\n`,
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
@@ -421,8 +473,12 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		return {
 			stdout: proposed._yay.cancelledExistingMove
 				? `pending move cancelled: the file stays at ${proposed._yay.destPath}\n`
-				: proposed._yay.replacesExistingFile
-					? `pending move created: ${sourceDbFilesPath} -> ${intendedDestPath} — replaces the existing file when accepted; review in Files\n`
+				: proposed._yay.replacesExistingOccupant
+					? // Only same-kind replacements ever validate, so the source kind names the occupant
+						// (the replaced occupant can be a newcomer the pre-mutation reads never saw).
+						sourceNode.kind === "folder"
+						? `pending move created: ${sourceDbFilesPath} -> ${intendedDestPath} — replaces the empty folder when accepted; review in Files\n`
+						: `pending move created: ${sourceDbFilesPath} -> ${intendedDestPath} — replaces the existing file when accepted; review in Files\n`
 					: `pending move created: ${sourceDbFilesPath} -> ${intendedDestPath} — review in Files\n`,
 			stderr: "",
 			exitCode: 0,

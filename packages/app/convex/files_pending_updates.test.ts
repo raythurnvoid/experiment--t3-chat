@@ -5241,7 +5241,7 @@ describe("upsert_file_pending_move_in_db", () => {
 		expect(created._yay).toEqual({
 			fromPath: "/move-upsert-src.md",
 			destPath: "/move-upsert-dest/moved.md",
-			replacesExistingFile: false,
+			replacesExistingOccupant: false,
 			cancelledExistingMove: false,
 		});
 
@@ -5525,7 +5525,7 @@ describe("upsert_file_pending_move_in_db", () => {
 		expect(withReplace._yay).toEqual({
 			fromPath: "/move-replace-src.md",
 			destPath: "/move-replace-dest.md",
-			replacesExistingFile: true,
+			replacesExistingOccupant: true,
 			cancelledExistingMove: false,
 		});
 
@@ -5545,7 +5545,7 @@ describe("upsert_file_pending_move_in_db", () => {
 			replacesNodeId: occupant.nodeId,
 		});
 
-		// A folder occupant is never replaceable, even with the opt-in.
+		// A file never replaces a folder occupant, even with the opt-in.
 		await t.run((ctx) =>
 			seed_folder_node({
 				ctx,
@@ -5624,7 +5624,7 @@ describe("upsert_file_pending_move_in_db", () => {
 			throw new Error(reuseMove._nay.message);
 		}
 		expect(reuseMove._yay.destPath).toBe("/vacated-src.md");
-		expect(reuseMove._yay.replacesExistingFile).toBe(false);
+		expect(reuseMove._yay.replacesExistingOccupant).toBe(false);
 	});
 
 	test("rejects a destination already claimed by another pending move", async () => {
@@ -5769,6 +5769,145 @@ describe("upsert_file_pending_move_in_db", () => {
 		expect(moveC._yay.destPath).toBe("/parent-cycle-a/c");
 	});
 
+	test("rejects a folder replace proposal onto a non-empty folder", async () => {
+		const t = test_convex();
+
+		const occupantChild = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/edr-p-full/keep.md",
+				name: "keep.md",
+				markdown: "# Edr proposal keep base",
+			}),
+		);
+		const { folderId } = await t.run(async (ctx) => {
+			const folderId = await seed_folder_node({
+				ctx,
+				organizationId: occupantChild.organizationId,
+				workspaceId: occupantChild.workspaceId,
+				userId: occupantChild.userId,
+				path: "/edr-p-src",
+				name: "edr-p-src",
+			});
+			const occupantId = await seed_folder_node({
+				ctx,
+				organizationId: occupantChild.organizationId,
+				workspaceId: occupantChild.workspaceId,
+				userId: occupantChild.userId,
+				path: "/edr-p-full",
+				name: "edr-p-full",
+			});
+			await ctx.db.patch("files_nodes", occupantChild.nodeId, { parentId: occupantId });
+			return { folderId };
+		});
+
+		const proposed = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: occupantChild.organizationId,
+			workspaceId: occupantChild.workspaceId,
+			userId: occupantChild.userId,
+			nodeId: folderId,
+			destParentId: files_ROOT_ID,
+			destName: "edr-p-full",
+			replace: true,
+		});
+		expect(proposed._nay?.message).toBe("Directory not empty");
+	});
+
+	test("rejects replacing an empty folder occupant that a pending move targets into", async () => {
+		const t = test_convex();
+
+		const seededFile = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/edr-p-into-file.md",
+				name: "edr-p-into-file.md",
+				markdown: "# Edr into base",
+			}),
+		);
+		const { folderId, emptyFolderId } = await t.run(async (ctx) => {
+			const folderId = await seed_folder_node({
+				ctx,
+				organizationId: seededFile.organizationId,
+				workspaceId: seededFile.workspaceId,
+				userId: seededFile.userId,
+				path: "/edr-p-into-src",
+				name: "edr-p-into-src",
+			});
+			const emptyFolderId = await seed_folder_node({
+				ctx,
+				organizationId: seededFile.organizationId,
+				workspaceId: seededFile.workspaceId,
+				userId: seededFile.userId,
+				path: "/edr-p-into",
+				name: "edr-p-into",
+			});
+			return { folderId, emptyFolderId };
+		});
+
+		// The user proposes moving a file INTO the empty folder: replacing the folder would
+		// break that proposal's destination, so the folder no longer counts as empty.
+		const movedIn = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seededFile.organizationId,
+			workspaceId: seededFile.workspaceId,
+			userId: seededFile.userId,
+			nodeId: seededFile.nodeId,
+			destParentId: emptyFolderId,
+			destName: "moved.md",
+		});
+		if (movedIn._nay) {
+			throw new Error(movedIn._nay.message);
+		}
+		const proposed = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seededFile.organizationId,
+			workspaceId: seededFile.workspaceId,
+			userId: seededFile.userId,
+			nodeId: folderId,
+			destParentId: files_ROOT_ID,
+			destName: "edr-p-into",
+			replace: true,
+		});
+		expect(proposed._nay?.message).toBe("Directory not empty");
+	});
+
+	test("keeps a file replace proposal onto an empty folder rejected", async () => {
+		const t = test_convex();
+
+		const seededFile = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/edr-p-file-src.md",
+				name: "edr-p-file-src.md",
+				markdown: "# Edr file src base",
+			}),
+		);
+		await t.run((ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seededFile.organizationId,
+				workspaceId: seededFile.workspaceId,
+				userId: seededFile.userId,
+				path: "/edr-p-dstdir",
+				name: "edr-p-dstdir",
+			}),
+		);
+
+		// rename() fails EISDIR here: a file never replaces a folder, empty or not.
+		const proposed = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seededFile.organizationId,
+			workspaceId: seededFile.workspaceId,
+			userId: seededFile.userId,
+			nodeId: seededFile.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "edr-p-dstdir",
+			replace: true,
+		});
+		expect(proposed._nay?.message).toBe("Path already exists");
+	});
+
 	test("mv back to the original path cancels a pure pending move", async () => {
 		const t = test_convex();
 
@@ -5822,7 +5961,7 @@ describe("upsert_file_pending_move_in_db", () => {
 		expect(cancelled._yay).toEqual({
 			fromPath: "/cancel-move-src.md",
 			destPath: "/cancel-move-src.md",
-			replacesExistingFile: false,
+			replacesExistingOccupant: false,
 			cancelledExistingMove: true,
 		});
 
@@ -7297,6 +7436,129 @@ describe("apply_file_pending_move", () => {
 		});
 	});
 
+	test("settles a content-plus-move cycle member and keeps its content", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/fsc-cnm-a.md",
+				name: "fsc-cnm-a.md",
+				markdown: "# Fsc cnm base",
+			}),
+		);
+		const folderBId = await t.run((ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/fsc-cnm-b",
+				name: "fsc-cnm-b",
+			}),
+		);
+
+		// The file carries a content proposal, then joins the swap: its doc is content-plus-move.
+		const changedMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nCnm change`);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: changedMarkdown,
+			unstagedMarkdown: changedMarkdown,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const moveATmp = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-cnm-tmp.md",
+		});
+		if (moveATmp._nay) {
+			throw new Error(moveATmp._nay.message);
+		}
+		const moveB = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: folderBId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-cnm-a.md",
+		});
+		if (moveB._nay) {
+			throw new Error(moveB._nay.message);
+		}
+		const moveAFinal = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-cnm-b",
+		});
+		if (moveAFinal._nay) {
+			throw new Error(moveAFinal._nay.message);
+		}
+
+		// Accept from the folder's side: the file is the NON-clicked cycle member.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: seeded.membershipId,
+			nodeId: folderBId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const fileA = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(fileA?.path).toBe("/fsc-cnm-b");
+			const folderB = await ctx.db.get("files_nodes", folderBId);
+			expect(folderB?.path).toBe("/fsc-cnm-a.md");
+
+			// The content doc survives without the move, and its pending chunks follow the file.
+			const rowA = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			if (!rowA) {
+				throw new Error("Expected the content proposal to survive the cycle accept");
+			}
+			expect(rowA.pendingMove).toBeUndefined();
+			expect(files_pending_update_has_yjs_content(rowA)).toBe(true);
+			const pendingChunks = await list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: rowA._id });
+			expect(pendingChunks.length).toBeGreaterThan(0);
+			for (const chunk of pendingChunks) {
+				expect(chunk.path).toBe("/fsc-cnm-b");
+			}
+
+			const rowB = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: folderBId,
+			});
+			expect(rowB).toBeNull();
+		});
+	});
+
 	test("accepts a three-folder rotation cycle in one accept", async () => {
 		const t = test_convex();
 
@@ -7423,6 +7685,706 @@ describe("apply_file_pending_move", () => {
 				});
 				expect(row).toBeNull();
 			}
+		});
+	});
+
+	test("keeps cycle member paths correct when the destination parent also moves in the cycle", async () => {
+		const t = test_convex();
+
+		// M=/fsc-nest-m holds C=child.md; K=/fsc-nest-k.md is a file with committed chunks.
+		const childC = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/fsc-nest-m/child.md",
+				name: "child.md",
+				markdown: "# Fsc nest child base",
+			}),
+		);
+		const membership = {
+			userId: childC.userId,
+			organizationId: childC.organizationId,
+			workspaceId: childC.workspaceId,
+			membershipId: childC.membershipId,
+		};
+		const fileK = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/fsc-nest-k.md",
+				name: "fsc-nest-k.md",
+				markdown: "# Fsc nest k base",
+				membership,
+			}),
+		);
+		const { folderMId, fileKChunkIds } = await t.run(async (ctx) => {
+			const folderMId = await seed_folder_node({
+				ctx,
+				organizationId: childC.organizationId,
+				workspaceId: childC.workspaceId,
+				userId: childC.userId,
+				path: "/fsc-nest-m",
+				name: "fsc-nest-m",
+			});
+			await ctx.db.patch("files_nodes", childC.nodeId, { parentId: folderMId });
+			const fileKChunkIds = await seed_committed_chunks_for_file({
+				ctx,
+				organizationId: childC.organizationId,
+				workspaceId: childC.workspaceId,
+				nodeId: fileK.nodeId,
+				path: "/fsc-nest-k.md",
+				markdown: fileK.baseMarkdown,
+			});
+			return { folderMId, fileKChunkIds };
+		});
+
+		// C→tmp frees child.md, K claims it INSIDE M, M claims K's path, and the final
+		// move replaces C's tmp row: the cycle is C→/fsc-nest-m, M→/fsc-nest-k.md,
+		// K→(M)/child.md — K's destination parent M moves in the same cycle.
+		const moveCTmp = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childC.organizationId,
+			workspaceId: childC.workspaceId,
+			userId: childC.userId,
+			nodeId: childC.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-nest-tmp.md",
+		});
+		if (moveCTmp._nay) {
+			throw new Error(moveCTmp._nay.message);
+		}
+		const moveK = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childC.organizationId,
+			workspaceId: childC.workspaceId,
+			userId: childC.userId,
+			nodeId: fileK.nodeId,
+			destParentId: folderMId,
+			destName: "child.md",
+		});
+		if (moveK._nay) {
+			throw new Error(moveK._nay.message);
+		}
+		const moveM = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childC.organizationId,
+			workspaceId: childC.workspaceId,
+			userId: childC.userId,
+			nodeId: folderMId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-nest-k.md",
+		});
+		if (moveM._nay) {
+			throw new Error(moveM._nay.message);
+		}
+		const moveCFinal = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childC.organizationId,
+			workspaceId: childC.workspaceId,
+			userId: childC.userId,
+			nodeId: childC.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-nest-m",
+		});
+		if (moveCFinal._nay) {
+			throw new Error(moveCFinal._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: childC.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: childC.membershipId,
+			nodeId: childC.nodeId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const fileC = await ctx.db.get("files_nodes", childC.nodeId);
+			expect(fileC?.path).toBe("/fsc-nest-m");
+			const folderM = await ctx.db.get("files_nodes", folderMId);
+			expect(folderM?.path).toBe("/fsc-nest-k.md");
+			expect(folderM?.treePath).toBe("/fsc-nest-k.md/");
+
+			// K's path must come from M's FINAL location, not M's pre-move path.
+			const nodeK = await ctx.db.get("files_nodes", fileK.nodeId);
+			expect(nodeK?.parentId).toBe(folderMId);
+			expect(nodeK?.path).toBe("/fsc-nest-k.md/child.md");
+			const chunkK = await ctx.db.get("files_plain_text_chunks", fileKChunkIds.plainTextChunkId);
+			expect(chunkK?.path).toBe("/fsc-nest-k.md/child.md");
+
+			for (const nodeId of [childC.nodeId, folderMId, fileK.nodeId]) {
+				const node = await ctx.db.get("files_nodes", nodeId);
+				expect(node?.archiveOperationId).toBeUndefined();
+				const row = await read_pending_update_row({
+					ctx,
+					organizationId: childC.organizationId,
+					workspaceId: childC.workspaceId,
+					userId: childC.userId,
+					nodeId,
+				});
+				expect(row).toBeNull();
+			}
+		});
+	});
+
+	test("rejects the accept when a concurrent move gave the cycle a parent loop", async () => {
+		const t = test_convex();
+
+		// A=/fsc-loop-q/a and B=/fsc-loop-b swap; Q is A's committed parent.
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/fsc-loop-file.md",
+				name: "fsc-loop-file.md",
+				markdown: "# Fsc loop base",
+			}),
+		);
+		const { folderQId, folderAId, folderBId } = await t.run(async (ctx) => {
+			const folderQId = await seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/fsc-loop-q",
+				name: "fsc-loop-q",
+			});
+			const folderAId = await seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				parentId: folderQId,
+				path: "/fsc-loop-q/a",
+				name: "a",
+			});
+			const folderBId = await seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/fsc-loop-b",
+				name: "fsc-loop-b",
+			});
+			return { folderQId, folderAId, folderBId };
+		});
+
+		// The swap cycle: A→/fsc-loop-b, B→(Q)/a.
+		const moveATmp = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: folderAId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-loop-tmp",
+		});
+		if (moveATmp._nay) {
+			throw new Error(moveATmp._nay.message);
+		}
+		const moveB = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: folderBId,
+			destParentId: folderQId,
+			destName: "a",
+		});
+		if (moveB._nay) {
+			throw new Error(moveB._nay.message);
+		}
+		const moveAFinal = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: folderAId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-loop-b",
+		});
+		if (moveAFinal._nay) {
+			throw new Error(moveAFinal._nay.message);
+		}
+
+		// Another user commits Q under B after the proposals: the final tree would nest
+		// B under Q and Q under B — a parent loop.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", folderQId, {
+				parentId: folderBId,
+				path: "/fsc-loop-b/fsc-loop-q",
+				treePath: "/fsc-loop-b/fsc-loop-q/",
+				pathDepth: 2,
+			});
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: seeded.membershipId,
+			nodeId: folderAId,
+		});
+		expect(applied._nay?.message).toBe("Cannot move a folder into itself");
+
+		await t.run(async (ctx) => {
+			// Nothing moved or archived, and both rows survive for retry or discard.
+			const folderA = await ctx.db.get("files_nodes", folderAId);
+			expect(folderA?.path).toBe("/fsc-loop-q/a");
+			expect(folderA?.archiveOperationId).toBeUndefined();
+			const folderB = await ctx.db.get("files_nodes", folderBId);
+			expect(folderB?.path).toBe("/fsc-loop-b");
+			expect(folderB?.archiveOperationId).toBeUndefined();
+			for (const nodeId of [folderAId, folderBId]) {
+				const row = await read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId,
+				});
+				expect(row?.pendingMove).toBeDefined();
+			}
+		});
+	});
+
+	test("accepts a folder swap when the accepted member targets an empty folder occupant", async () => {
+		const t = test_convex();
+
+		// A holds a child (with chunks); B is EMPTY, so A's destination occupant is
+		// replaceable on its own — the cycle must still swap, never archive B.
+		const childA = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/fsc-empty-a/a-child.md",
+				name: "a-child.md",
+				markdown: "# Fsc empty a child base",
+			}),
+		);
+		const { folderAId, folderBId, childAChunkIds } = await t.run(async (ctx) => {
+			const folderAId = await seed_folder_node({
+				ctx,
+				organizationId: childA.organizationId,
+				workspaceId: childA.workspaceId,
+				userId: childA.userId,
+				path: "/fsc-empty-a",
+				name: "fsc-empty-a",
+			});
+			await ctx.db.patch("files_nodes", childA.nodeId, { parentId: folderAId });
+			const folderBId = await seed_folder_node({
+				ctx,
+				organizationId: childA.organizationId,
+				workspaceId: childA.workspaceId,
+				userId: childA.userId,
+				path: "/fsc-empty-b",
+				name: "fsc-empty-b",
+			});
+			const childAChunkIds = await seed_committed_chunks_for_file({
+				ctx,
+				organizationId: childA.organizationId,
+				workspaceId: childA.workspaceId,
+				nodeId: childA.nodeId,
+				path: "/fsc-empty-a/a-child.md",
+				markdown: childA.baseMarkdown,
+			});
+			return { folderAId, folderBId, childAChunkIds };
+		});
+
+		const moveATmp = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childA.organizationId,
+			workspaceId: childA.workspaceId,
+			userId: childA.userId,
+			nodeId: folderAId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-empty-tmp",
+		});
+		if (moveATmp._nay) {
+			throw new Error(moveATmp._nay.message);
+		}
+		const moveB = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childA.organizationId,
+			workspaceId: childA.workspaceId,
+			userId: childA.userId,
+			nodeId: folderBId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-empty-a",
+		});
+		if (moveB._nay) {
+			throw new Error(moveB._nay.message);
+		}
+		const moveAFinal = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: childA.organizationId,
+			workspaceId: childA.workspaceId,
+			userId: childA.userId,
+			nodeId: folderAId,
+			destParentId: files_ROOT_ID,
+			destName: "fsc-empty-b",
+		});
+		if (moveAFinal._nay) {
+			throw new Error(moveAFinal._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: childA.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: childA.membershipId,
+			nodeId: folderAId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const folderA = await ctx.db.get("files_nodes", folderAId);
+			expect(folderA?.path).toBe("/fsc-empty-b");
+			expect(folderA?.archiveOperationId).toBeUndefined();
+			const folderB = await ctx.db.get("files_nodes", folderBId);
+			expect(folderB?.path).toBe("/fsc-empty-a");
+			expect(folderB?.archiveOperationId).toBeUndefined();
+
+			const movedChild = await ctx.db.get("files_nodes", childA.nodeId);
+			expect(movedChild?.path).toBe("/fsc-empty-b/a-child.md");
+			const childAChunk = await ctx.db.get("files_plain_text_chunks", childAChunkIds.plainTextChunkId);
+			expect(childAChunk?.path).toBe("/fsc-empty-b/a-child.md");
+
+			for (const nodeId of [folderAId, folderBId]) {
+				const row = await read_pending_update_row({
+					ctx,
+					organizationId: childA.organizationId,
+					workspaceId: childA.workspaceId,
+					userId: childA.userId,
+					nodeId,
+				});
+				expect(row).toBeNull();
+			}
+		});
+	});
+
+	test("accepts a folder move that replaces an empty folder occupant", async () => {
+		const t = test_convex();
+
+		const child = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/edr-src/child.md",
+				name: "child.md",
+				markdown: "# Edr child base",
+			}),
+		);
+		const { folderId, occupantId } = await t.run(async (ctx) => {
+			const folderId = await seed_folder_node({
+				ctx,
+				organizationId: child.organizationId,
+				workspaceId: child.workspaceId,
+				userId: child.userId,
+				path: "/edr-src",
+				name: "edr-src",
+			});
+			await ctx.db.patch("files_nodes", child.nodeId, { parentId: folderId });
+			const occupantId = await seed_folder_node({
+				ctx,
+				organizationId: child.organizationId,
+				workspaceId: child.workspaceId,
+				userId: child.userId,
+				path: "/edr-dst",
+				name: "edr-dst",
+			});
+			return { folderId, occupantId };
+		});
+
+		// rename() semantics: a folder may replace an EMPTY folder occupant.
+		const proposed = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: child.organizationId,
+			workspaceId: child.workspaceId,
+			userId: child.userId,
+			nodeId: folderId,
+			destParentId: files_ROOT_ID,
+			destName: "edr-dst",
+			replace: true,
+		});
+		if (proposed._nay) {
+			throw new Error(proposed._nay.message);
+		}
+		expect(proposed._yay.replacesExistingOccupant).toBe(true);
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: child.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: child.membershipId,
+			nodeId: folderId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			// The empty occupant is archived (never hard-deleted), the mover owns the path.
+			const occupant = await ctx.db.get("files_nodes", occupantId);
+			expect(occupant?.archiveOperationId).toBeDefined();
+			const folder = await ctx.db.get("files_nodes", folderId);
+			expect(folder?.path).toBe("/edr-dst");
+			expect(folder?.archiveOperationId).toBeUndefined();
+			const movedChild = await ctx.db.get("files_nodes", child.nodeId);
+			expect(movedChild?.path).toBe("/edr-dst/child.md");
+
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: child.organizationId,
+				workspaceId: child.workspaceId,
+				userId: child.userId,
+				nodeId: folderId,
+			});
+			expect(row).toBeNull();
+		});
+	});
+
+	test("auto-replaces an empty folder newcomer at accept", async () => {
+		const t = test_convex();
+
+		const child = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/edr-new-src/child.md",
+				name: "child.md",
+				markdown: "# Edr newcomer child base",
+			}),
+		);
+		const folderId = await t.run(async (ctx) => {
+			const folderId = await seed_folder_node({
+				ctx,
+				organizationId: child.organizationId,
+				workspaceId: child.workspaceId,
+				userId: child.userId,
+				path: "/edr-new-src",
+				name: "edr-new-src",
+			});
+			await ctx.db.patch("files_nodes", child.nodeId, { parentId: folderId });
+			return folderId;
+		});
+
+		// Propose while the destination is free, then an empty folder lands there.
+		const proposed = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: child.organizationId,
+			workspaceId: child.workspaceId,
+			userId: child.userId,
+			nodeId: folderId,
+			destParentId: files_ROOT_ID,
+			destName: "edr-new",
+		});
+		if (proposed._nay) {
+			throw new Error(proposed._nay.message);
+		}
+		const newcomerId = await t.run((ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: child.organizationId,
+				workspaceId: child.workspaceId,
+				userId: child.userId,
+				path: "/edr-new",
+				name: "edr-new",
+			}),
+		);
+
+		// Accept replays rename(): the empty folder occupant is auto-replaced like a file.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: child.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: child.membershipId,
+			nodeId: folderId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const newcomer = await ctx.db.get("files_nodes", newcomerId);
+			expect(newcomer?.archiveOperationId).toBeDefined();
+			const folder = await ctx.db.get("files_nodes", folderId);
+			expect(folder?.path).toBe("/edr-new");
+			const movedChild = await ctx.db.get("files_nodes", child.nodeId);
+			expect(movedChild?.path).toBe("/edr-new/child.md");
+		});
+	});
+
+	test("rejects the accept when a pending move targets into the empty folder newcomer", async () => {
+		const t = test_convex();
+
+		const file = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/edr-claim-file.md",
+				name: "edr-claim-file.md",
+				markdown: "# Edr claim base",
+			}),
+		);
+		const folderId = await t.run((ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: file.organizationId,
+				workspaceId: file.workspaceId,
+				userId: file.userId,
+				path: "/edr-claim-src",
+				name: "edr-claim-src",
+			}),
+		);
+
+		// Propose while the destination is free, then an empty folder lands there and this
+		// user proposes a move INTO it: that pending move counts as occupancy.
+		const proposed = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: file.organizationId,
+			workspaceId: file.workspaceId,
+			userId: file.userId,
+			nodeId: folderId,
+			destParentId: files_ROOT_ID,
+			destName: "edr-claim",
+		});
+		if (proposed._nay) {
+			throw new Error(proposed._nay.message);
+		}
+		const newcomerId = await t.run((ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: file.organizationId,
+				workspaceId: file.workspaceId,
+				userId: file.userId,
+				path: "/edr-claim",
+				name: "edr-claim",
+			}),
+		);
+		const movedInto = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: file.organizationId,
+			workspaceId: file.workspaceId,
+			userId: file.userId,
+			nodeId: file.nodeId,
+			destParentId: newcomerId,
+			destName: "into.md",
+		});
+		if (movedInto._nay) {
+			throw new Error(movedInto._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: file.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: file.membershipId,
+			nodeId: folderId,
+		});
+		expect(applied._nay?.message).toBe("Directory not empty");
+
+		await t.run(async (ctx) => {
+			// Nothing moved or archived, and both pending docs survive.
+			const newcomer = await ctx.db.get("files_nodes", newcomerId);
+			expect(newcomer?.archiveOperationId).toBeUndefined();
+			const folder = await ctx.db.get("files_nodes", folderId);
+			expect(folder?.path).toBe("/edr-claim-src");
+			for (const nodeId of [folderId, file.nodeId]) {
+				const row = await read_pending_update_row({
+					ctx,
+					organizationId: file.organizationId,
+					workspaceId: file.workspaceId,
+					userId: file.userId,
+					nodeId,
+				});
+				expect(row?.pendingMove).toBeDefined();
+			}
+		});
+	});
+
+	test("rejects the accept when the folder occupant is not empty", async () => {
+		const t = test_convex();
+
+		const occupantChild = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/edr-full/keep.md",
+				name: "keep.md",
+				markdown: "# Edr keep base",
+			}),
+		);
+		const folderId = await t.run((ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: occupantChild.organizationId,
+				workspaceId: occupantChild.workspaceId,
+				userId: occupantChild.userId,
+				path: "/edr-full-src",
+				name: "edr-full-src",
+			}),
+		);
+
+		// Propose while the destination is free, then a NON-empty folder lands there.
+		const proposed = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: occupantChild.organizationId,
+			workspaceId: occupantChild.workspaceId,
+			userId: occupantChild.userId,
+			nodeId: folderId,
+			destParentId: files_ROOT_ID,
+			destName: "edr-full",
+		});
+		if (proposed._nay) {
+			throw new Error(proposed._nay.message);
+		}
+		const occupantId = await t.run(async (ctx) => {
+			const occupantId = await seed_folder_node({
+				ctx,
+				organizationId: occupantChild.organizationId,
+				workspaceId: occupantChild.workspaceId,
+				userId: occupantChild.userId,
+				path: "/edr-full",
+				name: "edr-full",
+			});
+			await ctx.db.patch("files_nodes", occupantChild.nodeId, { parentId: occupantId });
+			return occupantId;
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: occupantChild.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: occupantChild.membershipId,
+			nodeId: folderId,
+		});
+		expect(applied._nay?.message).toBe("Directory not empty");
+
+		await t.run(async (ctx) => {
+			// Nothing moved or archived, and the row survives for retry or discard.
+			const occupant = await ctx.db.get("files_nodes", occupantId);
+			expect(occupant?.archiveOperationId).toBeUndefined();
+			const folder = await ctx.db.get("files_nodes", folderId);
+			expect(folder?.path).toBe("/edr-full-src");
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: occupantChild.organizationId,
+				workspaceId: occupantChild.workspaceId,
+				userId: occupantChild.userId,
+				nodeId: folderId,
+			});
+			expect(row?.pendingMove).toBeDefined();
 		});
 	});
 
@@ -7729,6 +8691,117 @@ describe("discard_file_pending_structural", () => {
 			expect(rowAfterDiscard).toBeNull();
 			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
 			expect(cleanupTasks).toHaveLength(0);
+		});
+	});
+
+	test("archives the discarded swap member when the other member's accept replaces it", async () => {
+		const t = test_convex();
+
+		// Two EMPTY folders swap; discarding one side turns the other accept into a
+		// plain empty-folder replacement of the now-stationary occupant.
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/edr-disc-file.md",
+				name: "edr-disc-file.md",
+				markdown: "# Edr disc base",
+			}),
+		);
+		const { folderAId, folderBId } = await t.run(async (ctx) => {
+			const folderAId = await seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/edr-disc-a",
+				name: "edr-disc-a",
+			});
+			const folderBId = await seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/edr-disc-b",
+				name: "edr-disc-b",
+			});
+			return { folderAId, folderBId };
+		});
+
+		const moveATmp = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: folderAId,
+			destParentId: files_ROOT_ID,
+			destName: "edr-disc-tmp",
+		});
+		if (moveATmp._nay) {
+			throw new Error(moveATmp._nay.message);
+		}
+		const moveB = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: folderBId,
+			destParentId: files_ROOT_ID,
+			destName: "edr-disc-a",
+		});
+		if (moveB._nay) {
+			throw new Error(moveB._nay.message);
+		}
+		const moveAFinal = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: folderAId,
+			destParentId: files_ROOT_ID,
+			destName: "edr-disc-b",
+		});
+		if (moveAFinal._nay) {
+			throw new Error(moveAFinal._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
+			membershipId: seeded.membershipId,
+			nodeId: folderBId,
+		});
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: seeded.membershipId,
+			nodeId: folderAId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			// B no longer vacates, so A's accept soft-archives it and takes the path.
+			const folderB = await ctx.db.get("files_nodes", folderBId);
+			expect(folderB?.archiveOperationId).toBeDefined();
+			const folderA = await ctx.db.get("files_nodes", folderAId);
+			expect(folderA?.path).toBe("/edr-disc-b");
+			expect(folderA?.archiveOperationId).toBeUndefined();
+			for (const nodeId of [folderAId, folderBId]) {
+				const row = await read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId,
+				});
+				expect(row).toBeNull();
+			}
 		});
 	});
 

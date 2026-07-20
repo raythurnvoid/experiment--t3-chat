@@ -132,13 +132,19 @@ function makePendingUpdate(args: {
 	} as unknown as app_convex_Doc<"files_pending_updates">;
 }
 
-function makeNode(args: { id: string; path: string; kind?: "file" | "folder" }): app_convex_Doc<"files_nodes"> {
+function makeNode(args: {
+	id: string;
+	path: string;
+	kind?: "file" | "folder";
+	parentId?: string;
+}): app_convex_Doc<"files_nodes"> {
 	return {
 		_id: args.id,
 		_creationTime: 0,
 		path: args.path,
 		name: args.path.split("/").pop() ?? args.path,
 		kind: args.kind ?? "file",
+		parentId: args.parentId ?? "root",
 	} as unknown as app_convex_Doc<"files_nodes">;
 }
 
@@ -730,6 +736,36 @@ describe("FileEditorSidebarPending", () => {
 		expect(captions).toEqual(["Replaces b.md", "Moved"]);
 	});
 
+	test("folder move row shows Replaces only for an empty folder occupant", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_folder_empty",
+				fileNodeId: "node_dir_a",
+				pendingMove: { destParentId: "root", destName: "empty-dst", fromPath: "/dir-a" },
+			}),
+			makePendingUpdate({
+				id: "pu_folder_full",
+				fileNodeId: "node_dir_b",
+				pendingMove: { destParentId: "root", destName: "full-dst", fromPath: "/dir-b" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_dir_a", path: "/dir-a", kind: "folder" }),
+			makeNode({ id: "node_dir_b", path: "/dir-b", kind: "folder" }),
+			makeNode({ id: "node_empty_dst", path: "/empty-dst", kind: "folder" }),
+			makeNode({ id: "node_full_dst", path: "/full-dst", kind: "folder" }),
+			makeNode({ id: "node_full_child", path: "/full-dst/keep.md", parentId: "node_full_dst" }),
+		]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		// rename() semantics: only the empty folder occupant is replaced on accept.
+		const captions = Array.from(container.querySelectorAll(".FileEditorSidebarPending-item-caption")).map(
+			(element) => element.textContent,
+		);
+		expect(captions).toEqual(["Replaces empty-dst", "Moved"]);
+	});
+
 	test("move row onto an occupant with its own pending move shows Moved, not Replaces", () => {
 		useQueryMock.mockReturnValue([
 			// /a.md → /b.md while /b.md has its own pending move away: accept forces B's move
@@ -1168,6 +1204,57 @@ describe("FileEditorSidebarPending", () => {
 			nodeId: "node_a",
 			pendingUpdateId: "pu_content",
 		});
+	});
+
+	test("Accept all runs a folder swap cycle as one sequential unit", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_folder_a",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "root", destName: "fsc-b", fromPath: "/fsc-a" },
+			}),
+			makePendingUpdate({
+				id: "pu_folder_b",
+				fileNodeId: "node_b",
+				pendingMove: { destParentId: "root", destName: "fsc-a", fromPath: "/fsc-b" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/fsc-a", kind: "folder" }),
+			makeNode({ id: "node_b", path: "/fsc-b", kind: "folder" }),
+		]);
+		// Hold the first accept open: the cycle partner must wait for it, not run in parallel.
+		let resolveFirst: (value: { _yay: null }) => void = () => {};
+		mutationMock.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					resolveFirst = resolve;
+				}),
+		);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept all"));
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).toHaveBeenNthCalledWith(1, "apply_file_pending_move", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_b",
+		});
+		// Flush microtasks: the second accept must NOT begin while the first is open.
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(mutationMock).toHaveBeenCalledTimes(1);
+
+		await act(async () => {
+			resolveFirst({ _yay: null });
+		});
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+		expect(mutationMock).toHaveBeenNthCalledWith(2, "apply_file_pending_move", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+		});
+		expect(actionMock).not.toHaveBeenCalled();
 	});
 
 	test("Discard all routes each row through its kind dispatcher", async () => {

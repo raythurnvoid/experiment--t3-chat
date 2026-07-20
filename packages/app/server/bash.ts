@@ -5327,13 +5327,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(occupantRows).toHaveLength(1);
 			expect(occupantRows[0].copiedFrom).toMatchObject({ nodeId: secondSourceId, archivesSourceOnAccept: true });
 
-			// Folders can never replace or be replaced, even with -f.
+			// Folders can never replace a file, even with -f; real mv reports the kind mismatch.
 			const folderOntoFile = await runner.run(
 				`mv -f ${test_db_files_mount}/docs/nested ${test_db_files_mount}/docs/replace-me.md`,
 			);
 			expect(folderOntoFile.metadata.exitCode).not.toBe(0);
 			expect(folderOntoFile.stderr).toBe(
-				"mv: destination '/docs/replace-me.md' already exists; only a file can replace an existing file with mv -f. Choose a different destination path.\n",
+				`mv: cannot overwrite non-directory '${test_db_files_mount}/docs/replace-me.md' with directory '${test_db_files_mount}/docs/nested'\n`,
 			);
 		});
 
@@ -5606,6 +5606,91 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(closing.stdout).toBe("pending move created: /fsc-mix-tmp.md -> /fsc-mix-b.md — review in Files\n");
 		});
 
+		test("mv -T proposes and accepts replacing an empty folder occupant", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/edr-src", kind: "folder" },
+					{ path: "/edr-src/child.md", content: "edr child\n" },
+					{ path: "/edr-dst", kind: "folder" },
+				],
+			});
+			const sourceId = await get_seeded_node_id(runner, "/edr-src");
+			const destId = await get_seeded_node_id(runner, "/edr-dst");
+			const childId = await get_seeded_node_id(runner, "/edr-src/child.md");
+
+			// rename() semantics: the empty folder occupant is replaced, no -f needed.
+			const moved = await runner.run(`mv -T ${test_db_files_mount}/edr-src ${test_db_files_mount}/edr-dst`);
+			expect(moved.stderr).toBe("");
+			expect(moved.metadata.exitCode).toBe(0);
+			expect(moved.stdout).toBe(
+				"pending move created: /edr-src -> /edr-dst — replaces the empty folder when accepted; review in Files\n",
+			);
+
+			// Accepting through the real mutation archives the empty occupant and moves the subtree.
+			const { api } = await import("../convex/_generated/api.js");
+			const asUser = runner.t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-bash-edr-accept",
+				external_id: runner.seeded.userId,
+				email: "bash-edr-accept@test.local",
+			});
+			const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: sourceId,
+			});
+			expect(accepted._nay).toBeUndefined();
+
+			const movedFolder = await get_seeded_node(runner, "/edr-dst");
+			expect(movedFolder._id).toBe(sourceId);
+			const movedChild = await get_seeded_node(runner, "/edr-dst/child.md");
+			expect(movedChild._id).toBe(childId);
+			const occupant = await runner.t.run((ctx) => ctx.db.get("files_nodes", destId));
+			expect(occupant?.archiveOperationId).toBeDefined();
+		});
+
+		test("mv -T onto a non-empty folder fails like rename()", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/edr-full-src", kind: "folder" },
+					{ path: "/edr-full", kind: "folder" },
+					{ path: "/edr-full/keep.md", content: "edr keep\n" },
+					{ path: "/edr-full-file.md", content: "edr file\n" },
+				],
+			});
+
+			const moved = await runner.run(`mv -T ${test_db_files_mount}/edr-full-src ${test_db_files_mount}/edr-full`);
+			expect(moved.metadata.exitCode).not.toBe(0);
+			expect(moved.stderr).toBe(
+				`mv: cannot move '${test_db_files_mount}/edr-full-src' to '${test_db_files_mount}/edr-full': Directory not empty\n`,
+			);
+
+			// A file never replaces a folder, matching rename()'s EISDIR.
+			const fileMove = await runner.run(`mv -T ${test_db_files_mount}/edr-full-file.md ${test_db_files_mount}/edr-full`);
+			expect(fileMove.metadata.exitCode).not.toBe(0);
+			expect(fileMove.stderr).toBe(
+				`mv: cannot overwrite directory '${test_db_files_mount}/edr-full' with non-directory\n`,
+			);
+		});
+
+		test("mv into a folder replaces an empty same-named child folder", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/edr-mv-a", kind: "folder" },
+					{ path: "/edr-mv-a/child.md", content: "edr mv child\n" },
+					{ path: "/edr-into", kind: "folder" },
+					{ path: "/edr-into/edr-mv-a", kind: "folder" },
+				],
+			});
+
+			// Real mv: rename() at /edr-into/edr-mv-a replaces the empty folder silently.
+			const moved = await runner.run(`mv ${test_db_files_mount}/edr-mv-a ${test_db_files_mount}/edr-into`);
+			expect(moved.stderr).toBe("");
+			expect(moved.metadata.exitCode).toBe(0);
+			expect(moved.stdout).toBe(
+				"pending move created: /edr-mv-a -> /edr-into/edr-mv-a — replaces the empty folder when accepted; review in Files\n",
+			);
+		});
+
 		test("proposes a pure file swap cycle through a temp name", async () => {
 			const runner = await create_bash_runner({
 				extraFiles: [
@@ -5666,6 +5751,70 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const moveA = await runner.run(`mv ${test_db_files_mount}/r16s-lin-a ${test_db_files_mount}/r16s-lin-b`);
 			expect(moveA.metadata.exitCode).toBe(0);
 			expect(moveA.stdout).toBe("pending move created: /r16s-lin-a -> /r16s-lin-b — review in Files\n");
+		});
+
+		test("mv -T claims a folder path vacated by the same user's pending move", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/edr-vac-a", kind: "folder" },
+					{ path: "/edr-vac-a/child.md", content: "edr vac child\n" },
+					{ path: "/edr-vac-b", kind: "folder" },
+				],
+			});
+			const folderAId = await get_seeded_node_id(runner, "/edr-vac-a");
+			const folderBId = await get_seeded_node_id(runner, "/edr-vac-b");
+
+			// B vacates its path, then -T claims it: the direct rename sees the path as free.
+			const moveB = await runner.run(`mv ${test_db_files_mount}/edr-vac-b ${test_db_files_mount}/edr-vac-c`);
+			expect(moveB.metadata.exitCode).toBe(0);
+			const moveA = await runner.run(`mv -T ${test_db_files_mount}/edr-vac-a ${test_db_files_mount}/edr-vac-b`);
+			expect(moveA.stderr).toBe("");
+			expect(moveA.metadata.exitCode).toBe(0);
+			expect(moveA.stdout).toBe("pending move created: /edr-vac-a -> /edr-vac-b — review in Files\n");
+
+			// Accepting A first hits the order guard: B still occupies the committed path.
+			const { api } = await import("../convex/_generated/api.js");
+			const asUser = runner.t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-bash-edr-vac",
+				external_id: runner.seeded.userId,
+				email: "bash-edr-vac@test.local",
+			});
+			const acceptedAFirst = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: folderAId,
+			});
+			expect(acceptedAFirst._nay?.message).toBe('Accept the pending move of "edr-vac-b" first');
+
+			// Accepting in order settles both rows at their final paths.
+			const acceptedB = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: folderBId,
+			});
+			expect(acceptedB._nay).toBeUndefined();
+			const acceptedA = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: folderAId,
+			});
+			expect(acceptedA._nay).toBeUndefined();
+
+			const movedA = await get_seeded_node(runner, "/edr-vac-b");
+			expect(movedA._id).toBe(folderAId);
+			const movedChild = await get_seeded_node(runner, "/edr-vac-b/child.md");
+			expect(movedChild.kind).toBe("file");
+			const movedB = await get_seeded_node(runner, "/edr-vac-c");
+			expect(movedB._id).toBe(folderBId);
+			const settledRows = await runner.t.run(async (ctx) => [
+				...(await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderAId))
+					.collect()),
+				...(await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderBId))
+					.collect()),
+			]);
+			expect(settledRows).toHaveLength(0);
 		});
 
 		test("overlays pending moves onto ls listings", async () => {

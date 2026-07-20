@@ -100,7 +100,7 @@ Regression signature (old bug): toast `Accept the pending move of ...` on a 2-me
 4. Accept ONE row (full arrow text, as in scenario 4).
 5. Expect: the status region fires and BOTH rows clear, zero toasts; tree still shows `pwl-p` + `pwl-q` and no `pwl-tmp-dir`; expanding the folders shows the children traveled with them (`pwl-q` now contains `pwl-p-child.md` and `pwl-p` contains `pwl-q-child.md`), and opening a child shows its marker at the new path.
 
-Regression signature (round-16 bug): the closing `mv` was rejected with `folder swaps are not supported`, or accept left both rows stuck with toast `Accept the pending move of ...`.
+Regression signature (round-16 bug): the closing `mv` fails instead of creating the swap cycle, or accept leaves both rows stuck with toast `Accept the pending move of ...`.
 
 ## Scenario 5 — cancel-on-return
 

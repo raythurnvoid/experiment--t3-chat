@@ -43,11 +43,12 @@ type FileEditorSidebarPendingRow = {
 	nodeKind: app_convex_Doc<"files_nodes">["kind"] | undefined;
 	moveDestinationPath: string | undefined;
 	/**
-	 * Name of the active file that accepting this move will replace (soft-archive, like `mv -f`):
-	 * the file that occupies the destination path right now, ignoring the declared replace target.
-	 * Unset when nothing occupies the destination (accept is then a plain move), when the occupant
-	 * has this user's own pending move (it vacates first), and for folders on either side
-	 * (auto-replace is file-onto-file only). Editable-file replaces use `replaceSourcePath` instead.
+	 * Name of the active node that accepting this move will replace (soft-archive, like `mv -f`):
+	 * the node that occupies the destination path right now, ignoring the declared replace target.
+	 * File moves replace a file occupant; folder moves replace an EMPTY folder occupant (rename()
+	 * semantics). Unset when nothing occupies the destination (accept is then a plain move), when
+	 * the occupant has this user's own pending move (it vacates first), and for other kind mixes.
+	 * Editable-file replaces use `replaceSourcePath` instead.
 	 */
 	replacesName: string | undefined;
 	/** True when the proposal created the file (write_file/cp onto a new path): shown as Added. */
@@ -70,7 +71,7 @@ function build_pending_rows(
 	pendingUpdates: readonly app_convex_Doc<"files_pending_updates">[],
 	nodesById: Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>,
 ): FileEditorSidebarPendingRow[] {
-	// Active nodes keyed by path, to spot the file a pending move's accept would replace.
+	// Active nodes keyed by path, to spot the occupant a pending move's accept would replace.
 	const activeNodesByPath = new Map(
 		Array.from(nodesById.values())
 			.filter((node) => node.archiveOperationId === undefined)
@@ -81,6 +82,20 @@ function build_pending_rows(
 	const movingNodeIds = new Set(
 		pendingUpdates.filter((update) => update.pendingMove != null).map((update) => update.fileNodeId),
 	);
+	// Folders that count as non-empty: a folder occupant is only replaced when it is empty
+	// (rename() semantics), so a non-empty one gets no "Replaces" caption. Accept-time
+	// validation also counts this user's pending moves INTO the folder as occupancy, so a
+	// pending destination parent is non-empty too.
+	const parentIdsWithActiveChildren = new Set(
+		Array.from(nodesById.values())
+			.filter((node) => node.archiveOperationId === undefined)
+			.map((node) => node.parentId),
+	);
+	for (const update of pendingUpdates) {
+		if (update.pendingMove) {
+			parentIdsWithActiveChildren.add(update.pendingMove.destParentId);
+		}
+	}
 
 	return pendingUpdates
 		.map((pendingUpdate) => {
@@ -105,18 +120,23 @@ function build_pending_rows(
 					moveDestinationPath = destParent ? `${destParent.path}/${pendingMove.destName}` : `…/${pendingMove.destName}`;
 				}
 
-				// Accepting replaces (soft-archives) whichever file occupies the destination path at
+				// Accepting replaces (soft-archives) whichever node occupies the destination path at
 				// that moment, so the caption only trusts live path occupancy — a declared `mv -f`
 				// target that was renamed or moved away is no longer the one replaced. No occupant,
 				// or the node itself, means accept degrades to a plain move: no indicator.
-				// Auto-replace is file-onto-file only, so a folder on either side keeps the plain
-				// caption (accept surfaces the conflict).
+				// Auto-replace is file-onto-file, or folder-onto-EMPTY-folder (rename() semantics);
+				// other kind mixes keep the plain caption (accept surfaces the conflict).
 				// An occupant with its own pending move vacates before this one applies: no replace.
 				const replacedNode = activeNodesByPath.get(moveDestinationPath);
+				const replaceKindsMatch =
+					node?.kind === "file"
+						? replacedNode?.kind === "file"
+						: node?.kind === "folder" &&
+							replacedNode?.kind === "folder" &&
+							!parentIdsWithActiveChildren.has(replacedNode._id);
 				if (
-					node?.kind === "file" &&
 					replacedNode &&
-					replacedNode.kind === "file" &&
+					replaceKindsMatch &&
 					replacedNode._id !== pendingUpdate.fileNodeId &&
 					!movingNodeIds.has(replacedNode._id)
 				) {
@@ -932,12 +952,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			...(args.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
 		}) as unknown as app_convex_Doc<"files_pending_updates">;
 
-	const makeNode = (args: { id: string; path: string; kind?: "file" | "folder" }) =>
+	const makeNode = (args: { id: string; path: string; kind?: "file" | "folder"; parentId?: string }) =>
 		({
 			_id: args.id,
 			path: args.path,
 			name: args.path.split("/").pop() ?? args.path,
 			kind: args.kind ?? "file",
+			parentId: args.parentId ?? "root",
 		}) as unknown as app_convex_Doc<"files_nodes">;
 
 	const makeNodesById = (nodes: app_convex_Doc<"files_nodes">[]) =>
@@ -1048,7 +1069,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(rows[1]?.nodeKind).toBe("folder");
 		});
 
-		test("derives the replaced file name for move rows from live path occupancy only", () => {
+		test("derives the replaced occupant name for move rows from live path occupancy only", () => {
 			const updates = [
 				// Destination occupied by another file → its name.
 				makePendingUpdate({
@@ -1091,11 +1112,29 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						replacesNodeId: "node_gone",
 					},
 				}),
-				// Folder occupant: auto-replace is file-onto-file only → no indicator.
+				// Empty folder occupant: folder-onto-EMPTY-folder follows rename() semantics → its name.
 				makePendingUpdate({
 					id: "pu_folder_move",
 					fileNodeId: "node_m6",
 					pendingMove: { destParentId: files_ROOT_ID, destName: "taken-folder", fromPath: "/m6" },
+				}),
+				// Non-empty folder occupant: never replaced → no indicator.
+				makePendingUpdate({
+					id: "pu_folder_move_full",
+					fileNodeId: "node_m8",
+					pendingMove: { destParentId: files_ROOT_ID, destName: "full-folder", fromPath: "/m8" },
+				}),
+				// Folder occupant with no committed children but another pending move targeting
+				// INTO it: accept-time validation counts that as occupancy → no indicator.
+				makePendingUpdate({
+					id: "pu_folder_move_claimed",
+					fileNodeId: "node_m9",
+					pendingMove: { destParentId: files_ROOT_ID, destName: "claimed-folder", fromPath: "/m9" },
+				}),
+				makePendingUpdate({
+					id: "pu_into_claimed",
+					fileNodeId: "node_incoming",
+					pendingMove: { destParentId: "node_claimed_folder", destName: "incoming.md", fromPath: "/incoming.md" },
 				}),
 				// Occupant with its own pending move by the same user: accept forces that move
 				// first, so nothing is left at the destination to replace → no indicator.
@@ -1118,23 +1157,32 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				makeNode({ id: "node_m5", path: "/m5.md" }),
 				makeNode({ id: "node_m6", path: "/m6", kind: "folder" }),
 				makeNode({ id: "node_m7", path: "/m7.md" }),
+				makeNode({ id: "node_m8", path: "/m8", kind: "folder" }),
+				makeNode({ id: "node_m9", path: "/m9", kind: "folder" }),
+				makeNode({ id: "node_incoming", path: "/incoming.md" }),
+				makeNode({ id: "node_claimed_folder", path: "/claimed-folder", kind: "folder" }),
 				makeNode({ id: "node_vacating", path: "/vacating.md" }),
 				makeNode({ id: "node_taken", path: "/taken.md" }),
 				makeNode({ id: "node_declared", path: "/renamed-target.md" }),
 				makeNode({ id: "node_taken_folder", path: "/taken-folder", kind: "folder" }),
+				makeNode({ id: "node_full_folder", path: "/full-folder", kind: "folder" }),
+				makeNode({ id: "node_full_child", path: "/full-folder/keep.md", parentId: "node_full_folder" }),
 			]);
 
 			const rows = build_pending_rows(updates, nodesById);
 
-			expect(rows.map((row) => row.replacesName)).toEqual([
-				"taken.md",
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
+			expect(rows.map((row) => [row.path, row.replacesName])).toEqual([
+				["/incoming.md", undefined],
+				["/m1.md", "taken.md"],
+				["/m2.md", undefined],
+				["/m3.md", undefined],
+				["/m4.md", undefined],
+				["/m5.md", undefined],
+				["/m6", "taken-folder"],
+				["/m7.md", undefined],
+				["/m8", undefined],
+				["/m9", undefined],
+				["/vacating.md", undefined],
 			]);
 		});
 
