@@ -235,11 +235,12 @@
 	}
 	/* #endregion user message send error */
 
-	/* #region markdown user */
-	.AiChatMessagePartMarkdownUser-content {
+	/* #region text user */
+	.AiChatMessagePartTextUser {
 		white-space: pre-wrap;
+		overflow-wrap: anywhere;
 	}
-	/* #endregion markdown user */
+	/* #endregion text user */
 
 	/* #region content */
 	.AiChatMessageContent {
@@ -654,14 +655,8 @@
 		background: var(--color-base-1-02);
 	}
 
-	.AiChatMessagePart-markdown-user {
+	.AiChatMessagePart-text-user {
 		contain: content;
-
-		.AiChatMarkdown.app-doc {
-			p {
-				margin-block: 0;
-			}
-		}
 	}
 	/* #endregion part */
 

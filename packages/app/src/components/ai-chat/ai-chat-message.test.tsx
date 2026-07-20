@@ -172,6 +172,27 @@ describe("AiChatMessage", () => {
 		});
 	});
 
+	test("renders user message text as plain text, without markdown parsing", () => {
+		const text = "test\n\n- Prefer `internal.*` refs";
+		renderMessage({
+			message: {
+				id: "msg_user_plain",
+				role: "user",
+				parts: [{ type: "text", text }],
+				metadata: {
+					convexParentId: null,
+					parentClientGeneratedId: null,
+					selectedModelId: "gpt-5.4-nano",
+					selectedModeId: "ask",
+				},
+			} satisfies ai_chat_AiSdk5UiMessage,
+		});
+
+		const part = document.querySelector(".AiChatMessagePartTextUser");
+		expect(part?.textContent).toBe(text);
+		expect(part?.querySelector("code")).toBeNull();
+	});
+
 	test("keeps assistant stream errors separate from failed-send feedback", () => {
 		renderMessage({
 			message: createAssistantErrorMessage(),

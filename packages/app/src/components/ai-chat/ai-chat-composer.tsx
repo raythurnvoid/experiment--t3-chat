@@ -1,9 +1,16 @@
+// The composer is a plain text input. User messages must never be changed:
+// no markdown parsing. The message is stored as one string, so the editor
+// keeps all content in one paragraph where every newline is a hard break
+// (a hard break = one "\n" in the string).
+
 import "./ai-chat-composer.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
 import { memo, useEffect, useRef, useState } from "react";
 import type { ExtractStrict } from "type-fest";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
+import type { JSONContent } from "@tiptap/core";
+import { Fragment, Slice } from "@tiptap/pm/model";
 import Document from "@tiptap/extension-document";
 import { HardBreak } from "@tiptap/extension-hard-break";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -42,11 +49,7 @@ import {
 	MySearchSelectTrigger,
 } from "@/components/my-search-select.tsx";
 import { cn, forward_ref } from "@/lib/utils.ts";
-import {
-	files_get_tiptap_shared_extensions,
-	files_tiptap_empty_doc_json,
-	files_tiptap_markdown_to_json,
-} from "@/lib/files.ts";
+import { files_tiptap_empty_doc_json } from "@/lib/files.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
@@ -70,10 +73,40 @@ export type AiChatComposer_ClassNames =
 	| "AiChatComposer-send-icon"
 	| "AiChatComposer-cancel-icon";
 
-const AiChatComposer_HardBreakMarkdown = HardBreak.extend({
-	// Prevent regular \n to become paragraphs
-	renderMarkdown: () => "\n",
-});
+/** Matches Windows (`\r\n`) and old Mac (`\r`) line endings. */
+const CR_LINE_ENDING_RE = /\r\n?/g;
+
+/**
+ * Serialize the editor content to plain text.
+ *
+ * One editor line (paragraph or hard break) = one "\n".
+ */
+function get_composer_plain_text(editor: Editor) {
+	return editor.getText({ blockSeparator: "\n" });
+}
+
+/**
+ * Convert plain text to Tiptap JSON.
+ *
+ * One paragraph for the whole text; every newline becomes a hard break.
+ */
+function convert_plain_text_to_tiptap_json(text: string): JSONContent {
+	if (!text) {
+		return files_tiptap_empty_doc_json();
+	}
+
+	const content: JSONContent[] = [];
+	for (const [index, line] of text.split("\n").entries()) {
+		if (index > 0) {
+			content.push({ type: "hardBreak" });
+		}
+		if (line) {
+			content.push({ type: "text", text: line });
+		}
+	}
+
+	return { type: "doc", content: [{ type: "paragraph", content }] };
+}
 
 export type AiChatComposer_Props = Omit<
 	ComponentPropsWithRef<"form">,
@@ -126,7 +159,9 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 
 	const rootRef = useRef<HTMLFormElement | null>(null);
 	const editorRef = useRef<Editor | null>(null);
+	/** Pending debounce timer for syncing the editor text into React state. */
 	const composerSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	/** Mirror of `composerText` so editor callbacks can read the latest value. */
 	const composerTextRef = useRef(initialValue);
 
 	const [composerText, setComposerText] = useState(initialValue);
@@ -147,141 +182,146 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 
 	const canSend = canSendProp && !isRunning && !isEmpty;
 
+	/** Store the current text and notify the parent (used for drafts). */
 	const syncComposerText = (value: string) => {
 		composerTextRef.current = value;
 		setComposerText(value);
 		onValueChange?.(value);
 	};
 
-	const [{ extensions, editorProps }] = useState<{
-		extensions: Parameters<typeof useEditor>[0]["extensions"];
-		editorProps: Parameters<typeof useEditor>[0];
-	}>(() => {
+	/**
+	 * Editor config, created once. Only plain text extensions: paragraphs,
+	 * text, and hard breaks (Shift+Enter). No marks, no markdown.
+	 */
+	const [editorProps] = useState<Parameters<typeof useEditor>[0]>(() => {
 		const extensions = [
 			Document,
 			Paragraph,
 			Text,
-			AiChatComposer_HardBreakMarkdown,
-			files_get_tiptap_shared_extensions().markdown,
+			HardBreak,
 			Placeholder.configure({
 				placeholder,
 			}),
 		];
 
 		return {
+			autofocus: false,
+			injectCSS: false,
 			extensions,
+			content: files_tiptap_empty_doc_json(),
 			editorProps: {
-				autofocus: false,
-				injectCSS: false,
-				extensions,
-				content: ((/* iife */) => {
-					const result = files_tiptap_markdown_to_json({
-						markdown: "",
-						extensions,
-					});
-
-					if (result._nay) {
-						console.error("[AiChatComposer] Error while setting initial empty content", result._nay);
-						return files_tiptap_empty_doc_json();
+				attributes: {
+					class: cn(
+						"app-doc" satisfies AppClassName,
+						"AiChatComposer-editor-content" satisfies AiChatComposer_ClassNames,
+						"MyInputControl" satisfies MyInputControl_ClassNames,
+					),
+					role: "textbox",
+					"aria-multiline": "true",
+					"aria-label": placeholder,
+				},
+				// The default ProseMirror plain-text paste collapses consecutive
+				// newlines, dropping empty lines. Paste every newline as a hard
+				// break instead, keeping the whole text in one paragraph.
+				clipboardTextParser: (text, _$context, _plain, view) => {
+					const schema = view.state.schema;
+					const inline = [];
+					for (const [index, line] of text.replace(CR_LINE_ENDING_RE, "\n").split("\n").entries()) {
+						if (index > 0) {
+							inline.push(schema.nodes.hardBreak.create());
+						}
+						if (line) {
+							inline.push(schema.text(line));
+						}
+					}
+					return Slice.maxOpen(Fragment.fromArray([schema.nodes.paragraph.createChecked(null, inline)]));
+				},
+				handleKeyDown: (view, event) => {
+					if (event.isComposing) {
+						return false;
 					}
 
-					return result._yay;
-				})(),
-				editorProps: {
-					attributes: {
-						class: cn(
-							"app-doc" satisfies AppClassName,
-							"AiChatComposer-editor-content" satisfies AiChatComposer_ClassNames,
-							"MyInputControl" satisfies MyInputControl_ClassNames,
-						),
-						role: "textbox",
-						"aria-multiline": "true",
-						"aria-label": placeholder,
-					},
-					handleKeyDown: (view, event) => {
-						if (event.isComposing) {
+					// Mark a state to indicate the selection is either at the start or end of the document.
+					// when pressing arrow up or down.
+					if (event.key === "ArrowUp") {
+						const selection = view.state.selection;
+						if (
+							!(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) &&
+							selection.empty &&
+							selection.from <= 1 &&
+							view.endOfTextblock("up")
+						) {
+							useAppGlobalStore.setState((prev) => ({
+								...prev,
+								ai_chat_composer_selection_collapsed_and_at_start: true,
+							}));
+
+							// Clear the state to prevent it from leaking after the event has been handled.
+							setTimeout(() => {
+								useAppGlobalStore.setState((prev) => ({
+									...prev,
+									ai_chat_composer_selection_collapsed_and_at_start: undefined,
+								}));
+							});
+
+							// Do not return `true` or tiptap will set preventDefault
 							return false;
 						}
+					} else if (event.key === "ArrowDown") {
+						const selection = view.state.selection;
+						if (
+							!(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) &&
+							selection.empty &&
+							selection.to >= view.state.doc.content.size - 1 &&
+							view.endOfTextblock("down")
+						) {
+							useAppGlobalStore.setState((prev) => ({
+								...prev,
+								ai_chat_composer_selection_collapsed_and_at_end: true,
+							}));
 
-						// Mark a state to indicate the selection is either at the start or end of the document.
-						// when pressing arrow up or down.
-						if (event.key === "ArrowUp") {
-							const selection = view.state.selection;
-							if (
-								!(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) &&
-								selection.empty &&
-								selection.from <= 1 &&
-								view.endOfTextblock("up")
-							) {
+							// Clear the state to prevent it from leaking after the event has been handled.
+							setTimeout(() => {
 								useAppGlobalStore.setState((prev) => ({
 									...prev,
-									ai_chat_composer_selection_collapsed_and_at_start: true,
+									ai_chat_composer_selection_collapsed_and_at_end: undefined,
 								}));
+							});
 
-								// Clear the state to prevent it from leaking after the event has been handled.
-								setTimeout(() => {
-									useAppGlobalStore.setState((prev) => ({
-										...prev,
-										ai_chat_composer_selection_collapsed_and_at_start: undefined,
-									}));
-								});
-
-								// Do not return `true` or tiptap will set preventDefault
-								return false;
-							}
-						} else if (event.key === "ArrowDown") {
-							const selection = view.state.selection;
-							if (
-								!(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) &&
-								selection.empty &&
-								selection.to >= view.state.doc.content.size - 1 &&
-								view.endOfTextblock("down")
-							) {
-								useAppGlobalStore.setState((prev) => ({
-									...prev,
-									ai_chat_composer_selection_collapsed_and_at_end: true,
-								}));
-
-								// Clear the state to prevent it from leaking after the event has been handled.
-								setTimeout(() => {
-									useAppGlobalStore.setState((prev) => ({
-										...prev,
-										ai_chat_composer_selection_collapsed_and_at_end: undefined,
-									}));
-								});
-
-								// Do not return `true` or tiptap will set preventDefault
-								return false;
-							}
-						} else if (event.key === "Enter" && !event.shiftKey) {
-							event.preventDefault();
-							rootRef.current?.requestSubmit();
-							return true;
+							// Do not return `true` or tiptap will set preventDefault
+							return false;
 						}
-
-						return false;
-					},
-				},
-				onUpdate: ({ editor }) => {
-					if (composerSyncTimeoutRef.current) {
-						clearTimeout(composerSyncTimeoutRef.current);
+					} else if (event.key === "Enter" && !event.shiftKey) {
+						// Enter sends the message. Shift+Enter inserts a line break.
+						event.preventDefault();
+						rootRef.current?.requestSubmit();
+						return true;
 					}
 
-					const previousIsEmpty = composerTextRef.current.trim().length === 0;
-					const nextIsEmpty = editor.isEmpty;
-
-					// Update immediately when the composer goes from
-					// empty to non-empty or vice versa.
-					if (previousIsEmpty !== nextIsEmpty) {
-						syncComposerText(editor.getMarkdown());
-						return;
-					}
-
-					composerSyncTimeoutRef.current = setTimeout(() => {
-						composerSyncTimeoutRef.current = null;
-						syncComposerText(editor.getMarkdown());
-					}, 350);
+					return false;
 				},
+			},
+			onUpdate: ({ editor }) => {
+				if (composerSyncTimeoutRef.current) {
+					clearTimeout(composerSyncTimeoutRef.current);
+				}
+
+				const previousIsEmpty = composerTextRef.current.trim().length === 0;
+				const nextIsEmpty = editor.isEmpty;
+
+				// Update immediately when the composer goes from
+				// empty to non-empty or vice versa.
+				if (previousIsEmpty !== nextIsEmpty) {
+					syncComposerText(get_composer_plain_text(editor));
+					return;
+				}
+
+				// Otherwise sync with a small delay to avoid
+				// serializing the document on every keystroke.
+				composerSyncTimeoutRef.current = setTimeout(() => {
+					composerSyncTimeoutRef.current = null;
+					syncComposerText(get_composer_plain_text(editor));
+				}, 350);
 			},
 		};
 	});
@@ -295,32 +335,26 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 
 		let nextComposerText = composerText;
 		const currentEditor = editorRef.current ?? editor;
+		// A debounced sync may still be pending: read the latest
+		// text straight from the editor before sending.
 		if (composerSyncTimeoutRef.current) {
 			clearTimeout(composerSyncTimeoutRef.current);
 			composerSyncTimeoutRef.current = null;
 
 			if (currentEditor) {
-				nextComposerText = currentEditor.getMarkdown();
+				nextComposerText = get_composer_plain_text(currentEditor);
 				syncComposerText(nextComposerText);
 			}
 		}
 
 		onSubmit(nextComposerText);
 
+		// Clear the composer for the next message.
 		composerTextRef.current = "";
 		setComposerText("");
 
 		if (currentEditor) {
-			const json = files_tiptap_markdown_to_json({
-				markdown: "",
-				extensions,
-			});
-
-			if (json._nay) {
-				console.error("[AiChatComposer.handleSend] Error while clearing content", json._nay);
-			} else {
-				currentEditor.commands.setContent(json._yay, { emitUpdate: false });
-			}
+			currentEditor.commands.setContent(files_tiptap_empty_doc_json(), { emitUpdate: false });
 		}
 	};
 
@@ -347,6 +381,8 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		editor.commands.focus();
 	};
 
+	// Enable the outside-interaction callback one frame later, so the
+	// interaction that opened the composer does not trigger it right away.
 	useEffect(() => {
 		setEnableInteractedOutside(false);
 		if (!onInteractedOutside) {
@@ -367,6 +403,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		enable: Boolean(onInteractedOutside) && enableInteractedOutside,
 	});
 
+	// Load `initialValue` into the editor: a saved draft or a message being edited.
 	useEffect(() => {
 		if (!editor) {
 			return;
@@ -378,23 +415,13 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			}
 		};
 
-		const editorMarkdown = editor.getMarkdown();
-		if (editorMarkdown === initialValue) {
+		const editorText = get_composer_plain_text(editor);
+		if (editorText === initialValue) {
 			focusEditor();
 			return;
 		}
 
-		const json = files_tiptap_markdown_to_json({
-			markdown: initialValue,
-			extensions,
-			replaceNewLineToBr: true,
-		});
-
-		if (json._nay) {
-			console.error("[AiChatComposer.useEffect[editor]] Error while setting initial value", json._nay);
-		} else {
-			editor.commands.setContent(json._yay, { emitUpdate: false });
-		}
+		editor.commands.setContent(convert_plain_text_to_tiptap_json(initialValue), { emitUpdate: false });
 
 		focusEditor();
 	}, [editor]);
@@ -507,7 +534,14 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 						<Square className={"AiChatComposer-cancel-icon" satisfies AiChatComposer_ClassNames} />
 					</MyIconButton>
 				) : (
-					<MyIconButton type="button" variant="default" tooltip="Send message" data-testid="ai-chat-send-button" onClick={handleSend} disabled={!canSend}>
+					<MyIconButton
+						type="button"
+						variant="default"
+						tooltip="Send message"
+						data-testid="ai-chat-send-button"
+						onClick={handleSend}
+						disabled={!canSend}
+					>
 						<ArrowUp className={"AiChatComposer-send-icon" satisfies AiChatComposer_ClassNames} />
 					</MyIconButton>
 				)}
@@ -515,3 +549,30 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		</form>
 	);
 });
+
+if (import.meta.vitest) {
+	const { describe, test, expect } = import.meta.vitest;
+
+	describe("convert_plain_text_to_tiptap_json", () => {
+		test("maps each newline to a hard break and keeps empty lines", () => {
+			expect(convert_plain_text_to_tiptap_json("test\n\n- item")).toEqual({
+				type: "doc",
+				content: [
+					{
+						type: "paragraph",
+						content: [
+							{ type: "text", text: "test" },
+							{ type: "hardBreak" },
+							{ type: "hardBreak" },
+							{ type: "text", text: "- item" },
+						],
+					},
+				],
+			});
+		});
+
+		test("maps empty text to an empty doc", () => {
+			expect(convert_plain_text_to_tiptap_json("")).toEqual({ type: "doc", content: [{ type: "paragraph" }] });
+		});
+	});
+}

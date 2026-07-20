@@ -884,33 +884,20 @@ const AiChatMessagePartMarkdownAgent = memo(function AiChatMessagePartMarkdownAg
 });
 // #endregion markdown assistant
 
-// #region markdown user
-type AiChatMessagePartMarkdownUser_ClassNames =
-	| "AiChatMessagePartMarkdownUser"
-	| "AiChatMessagePartMarkdownUser-content";
+// #region text user
+type AiChatMessagePartTextUser_ClassNames = "AiChatMessagePartTextUser";
 
-type AiChatMessagePartMarkdownUser_Props = {
-	markdown: string;
+type AiChatMessagePartTextUser_Props = {
+	text: string;
 };
 
-const AiChatMessagePartMarkdownUser = memo(function AiChatMessagePartMarkdownUser(
-	props: AiChatMessagePartMarkdownUser_Props,
-) {
-	const { markdown, ...rest } = props;
+// User messages are plain text: render them as-is, without markdown parsing.
+const AiChatMessagePartTextUser = memo(function AiChatMessagePartTextUser(props: AiChatMessagePartTextUser_Props) {
+	const { text } = props;
 
-	const deferredMarkdown = useDeferredValue(markdown);
-
-	return (
-		<AiChatMarkdown
-			className={"AiChatMessagePartMarkdownUser" satisfies AiChatMessagePartMarkdownUser_ClassNames}
-			contentClassName={"AiChatMessagePartMarkdownUser-content" satisfies AiChatMessagePartMarkdownUser_ClassNames}
-			markdown={deferredMarkdown}
-			replaceNewLineToBr={true}
-			{...rest}
-		/>
-	);
+	return <div className={"AiChatMessagePartTextUser" satisfies AiChatMessagePartTextUser_ClassNames}>{text}</div>;
 });
-// #endregion markdown user
+// #endregion text user
 
 // #region part thinking
 type AiChatMessagePartThinking_ClassNames =
@@ -1088,7 +1075,7 @@ type AiChatMessagePart_ClassNames =
 	| "AiChatMessagePart"
 	| "AiChatMessagePart-tool"
 	| "AiChatMessagePart-markdown-assistant"
-	| "AiChatMessagePart-markdown-user"
+	| "AiChatMessagePart-text-user"
 	| "AiChatMessagePart-image"
 	| "AiChatMessagePart-file"
 	| "AiChatMessagePart-source";
@@ -1111,7 +1098,7 @@ const AiChatMessagePart = memo(function AiChatMessagePart(props: AiChatMessagePa
 		if (isTextUIPart(part) && role === "assistant")
 			return "AiChatMessagePart-markdown-assistant" satisfies AiChatMessagePart_ClassNames;
 		if (isTextUIPart(part) && role === "user")
-			return "AiChatMessagePart-markdown-user" satisfies AiChatMessagePart_ClassNames;
+			return "AiChatMessagePart-text-user" satisfies AiChatMessagePart_ClassNames;
 		if (isFileUIPart(part))
 			return part.mediaType.startsWith("image/")
 				? ("AiChatMessagePart-image" satisfies AiChatMessagePart_ClassNames)
@@ -1237,7 +1224,7 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 		return role === "assistant" ? (
 			<AiChatMessagePartMarkdownAgent markdown={part.text} />
 		) : (
-			<AiChatMessagePartMarkdownUser markdown={part.text} />
+			<AiChatMessagePartTextUser text={part.text} />
 		);
 	}
 
