@@ -75,7 +75,7 @@ For `POST /api/chat`:
 
 Non-obvious runtime details:
 
-- Ask mode keeps the full tool registry for UI-message validation, but removes `write_file` and `edit_file` from `activeTools`.
+- Ask mode keeps the full tool registry for UI-message validation, but removes `write_file` and `edit_file` from `activeTools`. `write_file` is additionally in `BASH_REPLACED_TOOL_NAMES`, so it is registered-but-inactive in every mode: Agent-mode file writes go through `bash` shell writes instead.
 - User messages are persisted before generation so they survive aborts/stopped generations.
 - Pre-stream send failures, such as rate-limit or credit-gate HTTP failures, remain transient client state in AI SDK `chat.error`; the UI shows inline feedback on the failed user message and retries by replacing that same client-only message from its original parent without appending a duplicate.
 - Thread/file access is scoped by a `membershipId` doc that determines the effective organization/workspace scope.
@@ -96,7 +96,7 @@ The main tool object currently contains:
 - `list_files`
 - `glob_files`
 - `grep_files`
-- `write_file`
+- `write_file` (registered for validation only; inactive for new generation — bash shell writes replaced it)
 - `edit_file`
 - `web_search`
 - `execute_code`
@@ -105,7 +105,7 @@ Important limitation:
 
 - These tools operate on db-backed app files, not repo files on disk.
 - `bash` is the active shell interface for the cloud file environment. It is still not the host shell, but `/tmp` exposes the safe Just Bash native-style scratch command surface while the app mount stays db-backed.
-- `bash` mounts app files at the current workspace path `/home/cloud-usr/w/{organizationName}/{workspaceName}` and provides durable per-thread scratch space at `/tmp`. Direct app writes, redirects, links, and deletes remain read-only. In Agent mode, `mkdir` creates folders, app-to-app `mv` creates pending move or rename proposals, and app-to-app `cp` creates pending copy or replacement proposals. Ask mode rejects these durable app mutations.
+- `bash` mounts app files at the current workspace path `/home/cloud-usr/w/{organizationName}/{workspaceName}` and provides durable per-thread scratch space at `/tmp`. In Agent mode, shell content writes (`>`, `>>`, heredoc redirects, `touch`, `tee`) create pending content proposals through `bash_DbFilesFs.writeFile`/`appendFile`, `mkdir` creates folders, app-to-app `mv` creates pending move or rename proposals, and app-to-app `cp` creates pending copy or replacement proposals. Links and deletes (`rm`, `sed -i`) remain rejected. Ask mode rejects all these durable app mutations.
 - App-mount limitations apply only to paths under `/home/cloud-usr/w/{organizationName}/{workspaceName}` or the app mount `/home/cloud-usr/w`. Do not describe those limits as global Bash limitations. For commands that touch only `/tmp` paths or stdin, use normal scratch command behavior.
 - Native-style `/tmp` commands use Just Bash's own argument parsing and include safe text/file utilities such as `du`, `diff`, `rg`, `jq`, `base64`, `sha256sum`, `nl`, `rev`, and `tac`; the Unix `file` command is intentionally unavailable.
 - If `file` fails or the user asks for it, do not stop after reporting that it is unavailable; run supported recovery commands such as `stat`, `wc`, `head`, or `cat` on the same `/tmp` path when that answers the request.
@@ -147,9 +147,9 @@ Important limitation:
 - `sort`, `uniq`, `cut`, `sed`, `awk`, and the broader native-style scratch utilities are stream or `/tmp` processors for app work. Use `cat exact-app-file | sort` or similar pipelines; do not pass app files as direct operands to scratch/native utilities unless that command has an explicit app-aware implementation.
 - Keep Bash commands simple: avoid strict-mode boilerplate such as `set -euo pipefail` because `pipefail` is unsupported, comments inside command strings, and process substitution. For multi-command inspection or eval checks, do not use `set -e` or hide stderr with `2>/dev/null`; later commands and visible stderr should still be observed.
 - Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.
-- Use `write_file` and `edit_file` for authored Markdown changes. Direct app writes, redirects, links, and deletes are not shell operations. Agent-mode app-to-app `mv` and `cp` are reviewable structural proposals, not immediate committed filesystem mutations. App-to-`/tmp` copy remains immediate thread scratch. Do not work around a rejected app write or delete by copying app files to `/tmp` unless the user asked for a scratch copy.
-- Legacy `read_file`, `list_files`, `glob_files`, and `grep_files` tool definitions may remain in the runtime registry for historical message validation, but new generation should prefer `bash` plus `write_file` / `edit_file`.
-- When using the agent itself to create large QA corpora, keep prompts to small batches and verify actual app files after each batch. Assistant summary text can say a batch succeeded even when the model stopped before issuing every requested `write_file` call.
+- In Agent mode, create or overwrite app files with shell redirects (`cat > file <<'EOF' ... EOF`, `>`), append with `>>`, and use `edit_file` for targeted edits. These shell writes, like Agent-mode app-to-app `mv` and `cp`, are reviewable pending proposals, not immediate committed filesystem mutations. Links and deletes are still not shell operations. App-to-`/tmp` copy remains immediate thread scratch. Do not work around a rejected app delete by copying app files to `/tmp` unless the user asked for a scratch copy.
+- Legacy `read_file`, `list_files`, `glob_files`, `grep_files`, and `write_file` tool definitions remain in the runtime registry for historical message validation, but new generation should prefer `bash` (including shell writes) plus `edit_file`.
+- When using the agent itself to create large QA corpora, keep prompts to small batches and verify actual app files after each batch. Assistant summary text can say a batch succeeded even when the model stopped before issuing every requested write.
 - The agent does not currently read raw R2 binaries through this toolbelt.
 - `read_file` and `grep_files` read Markdown-backed content through Convex actions that overlay pending edits and fetch committed Markdown from R2 when needed. Uploaded source paths do not alias to generated Markdown outputs.
 - Uploaded source files are discoverable through path listing; their raw R2 binaries are not directly read by this toolbelt.
@@ -187,8 +187,8 @@ Important limitation:
 - Does not alias `/` to app files; `/` only exposes normal mount-point directories such as `/home` and `/tmp`.
 - `cat` reads app-file operands from materialized Markdown chunks and preserves the current user's pending-update overlay. It does not fall back to full-content reconstruction for unreadable or unmaterialized files; summarize stderr as an advisory or failure, not file content.
 - Lists direct app children through `files_nodes.list_children`, and folder subtrees through `files_nodes.list_subtree` after exact targets are resolved with `files_nodes.get_by_path`.
-- Treats direct content writes under the app file tree as read-only; persistent content changes must use `write_file` or `edit_file`. Agent-mode `mv` and `cp` use pending structural proposals instead of direct writes.
-- Convert bash paths to app paths before calling `write_file` or `edit_file` by removing the current workspace path prefix `/home/cloud-usr/w/{organizationName}/{workspaceName}` while preserving the full remaining suffix. For example, `/home/cloud-usr/w/personal/home/folder/README.md` becomes `/folder/README.md`, never `/README.md`.
+- Agent-mode shell content writes (`>`, `>>`, heredoc redirects, `touch`, `tee`) create pending content proposals through `bash_DbFilesFs.writeFile`/`appendFile` in `server/bash-utils.ts`; a missing target is eagerly created empty (like `write_file` did) and stamped `eagerCreated`. An existing target at the requested path is always written as-is; a missing target whose name normalization would silently change the path (README casing, leading dots, spaces) is refused with the normalized path in the error, while normalization that lands on an existing file overwrites that file. Ask mode rejects app writes; `rm` and `sed -i` stay rejected in both modes. Agent-mode `mv` and `cp` use pending structural proposals instead of direct writes.
+- Convert bash paths to app paths before calling `edit_file` by removing the current workspace path prefix `/home/cloud-usr/w/{organizationName}/{workspaceName}` while preserving the full remaining suffix. For example, `/home/cloud-usr/w/personal/home/folder/README.md` becomes `/folder/README.md`, never `/README.md`.
 - Creates persistent folders only through `mkdir` under the app file tree in Agent-mode `bash`; Ask-mode `bash` rejects durable folder creation.
 - Provides `/tmp` as writable durable scratch space scoped to the chat thread. `/tmp` persists across later `bash` calls in the same chat and reloads from Convex if the warm backend runtime cache is gone, but a new chat has a separate scratch filesystem. App-mount guards should not prevent `/tmp`-only commands from using native-style scratch utilities.
 - Persists `cd` only when the final cwd is `~` or a directory below `/home/cloud-usr`. It does not persist `/tmp` or other paths outside the cloud user home.
@@ -207,7 +207,7 @@ Important limitation:
 - Visibility is gated per bash run: `bash_run_command` fetches the raw mount docs via `internal.github_mounts.list_mounts` (name-ordered by index; no bash knowledge in `github_mounts.ts`), and `bash_fs_create` mounts only docs with a non-null `lastCommitSha`, creating one `bash_DbFilesFs` per mount with `dbFilesPathPrefix: "/<name>/<commitSha>"`, mounted at `/.mounts/<name>` — the same shape as plugin mounts. The sha is pinned for the whole run, so a pointer flip mid-run never tears reads; an in-progress or failed first sync exposes nothing. `/.mounts` itself does not exist with zero synced mounts, and `/.mounts/<unknown>` resolves to plain ENOENT (no existence leak). `bash_resolve_db_files_shell_path` in `bash-utils.ts` maps each shell path against the available `bash_DbFilesRoots` (`app`, per-mount `externalMounts`, and per-plugin `plugins` mounts) to a `bash_DbFilesShellPathResolution` (`app | outside_db_files | external_mount | external_mounts_root | plugins_root`) and read commands branch on it.
 - External mount content is committed-only: it has no Yjs snapshot/sequence docs, never creates `files_pending_updates`, and reads through committed chunks/assets only.
 - Read commands (`ls`, `find`, `tree`, `cat`, `head`, `tail`, `wc`, `stat`, `sed`, `grep`, `textgrep`) work against mounts exactly like app files. Bare `ls /.mounts` lists the mounted names (synthesized from the mount table, no Convex call). Root-scope `search`, `tree`, and `find` at `/.mounts` fan out across every mount in name order via `bash_external_mounts_fan_out_paginate` with a composite cursor pinning the `[name, commitSha]` listing snapshot — a resync between pages fails the continuation with "listing changed; rerun without --cursor". `meta search` and `find --prefix` still require a single-mount scope.
-- Agent-only external mounts are strictly read-only. `touch`, `rm`, `mv`, `tee`, and `cp` into `/.mounts` are rejected with `bash_read_only_mount_error`; `cp /.mounts/<name>/<file> /tmp/<name>` (copy OUT to scratch) is allowed; `bash /.mounts/...`, `source /.mounts/...`, and `. /.mounts/...` script execution are rejected. `source` and `.` remain available for `/tmp` scratch scripts when their literal path resolves outside the app file tree and external mount trees. `write_file`/`edit_file` reject `/.mounts` paths.
+- Agent-only external mounts are strictly read-only. Shell redirects, `touch`, `rm`, `mv`, `tee`, and `cp` into `/.mounts` are rejected with `bash_read_only_mount_error`; `cp /.mounts/<name>/<file> /tmp/<name>` (copy OUT to scratch) is allowed; `bash /.mounts/...`, `source /.mounts/...`, and `. /.mounts/...` script execution are rejected. `source` and `.` remain available for `/tmp` scratch scripts when their literal path resolves outside the app file tree and external mount trees. `write_file`/`edit_file` reject `/.mounts` paths.
 - Agent-only external mounts never appear in the Files sidebar or public file API. They are a Bash-only read surface; `execute_code` reads files through tenant-scoped `/api/v1/files/*` grants and cannot list/read `GLOBAL`/`GITHUB` mount docs.
 
 ### Workspace-gated plugin source mounts (`/.plugins`)
@@ -217,7 +217,7 @@ Important limitation:
 - Visibility is gated per workspace by enabled `plugins_workspace_installations` rows: `bash_run_command` calls `internal.plugins.list_bash_source_mounts` (backed by the `by_organization_workspace_status_pluginName` index) and creates one `bash_DbFilesFs` per installed plugin with `dbFilesPathPrefix: "/<pluginVersionId>"`, mounted at `/.plugins/<pluginName>`. The installation row acts as the symlink: upgrades retarget the version root atomically, uninstall removes visibility, and workspaces share one tree with zero copies.
 - No installation → no existence: `/.plugins` itself does not exist when the workspace has zero enabled installations, and `/.plugins/<notInstalled>` resolves to plain ENOENT (no existence leak). Publishers get no special access; they must install the plugin to browse its source via the agent.
 - Bare `ls /.plugins` lists installed plugin names (synthesized from the mount table, no Convex call). Inside one plugin, read commands (`ls`, `cat`, `head`, `tail`, `wc`, `stat`, `sed`, `grep`, `textgrep`, `search`, `meta search`, `tree`, `find`) work exactly like `/.mounts` through the translated `dbFilesPath`. Root-scope `search`, `tree`, and `find` at `/.plugins` fan out across every installed plugin in plugin-name order via `bash_plugins_fan_out_paginate` (`bash-utils.ts`): each plugin's version-keyed tree is paged sequentially with the existing single-scope queries, results are rewritten to `/.plugins/<pluginName>/...` paths, and the continuation carries a composite cursor pinning the `[pluginName, pluginVersionId]` listing snapshot — if installations change between pages the continuation fails with "listing changed; rerun without --cursor". `find` depth predicates are translated by -1 per plugin (plugin folders sit at depth 1 under `/.plugins`); `find --prefix /.plugins` and root-scope `meta search` still print guidance to scope to one plugin.
-- Same read-only rules as `/.mounts`: all writes (`touch`, `rm`, `mv`, `tee`, `cp` destination, `write_file`, `edit_file`) are rejected, `bash`/`source`/`.` script execution from `/.plugins` is rejected, `cp /.plugins/<pluginName>/<file> /tmp/<name>` (copy OUT to scratch) is allowed, and `cd` into a plugin mount persists across turns. Plugin source is committed-only content with no pending-update overlay.
+- Same read-only rules as `/.mounts`: all writes (shell redirects, `touch`, `rm`, `mv`, `tee`, `cp` destination, `write_file`, `edit_file`) are rejected, `bash`/`source`/`.` script execution from `/.plugins` is rejected, `cp /.plugins/<pluginName>/<file> /tmp/<name>` (copy OUT to scratch) is allowed, and `cd` into a plugin mount persists across turns. Plugin source is committed-only content with no pending-update overlay.
 - Registry hard deletes sweep each version's `GLOBAL`/`PLUGINS` tree (`db_delete_plugin_source_tree_batch`) before deleting the version doc; `plugins.delete_plugin_source_tree_batch` drains one version's tree standalone.
 - `execute_code` and the public file API cannot reach `/.plugins`: grants are tenant-scoped and never authorize reserved-scope docs.
 
@@ -258,6 +258,7 @@ Legacy file tools stay documented because old assistant messages may need valida
 
 ## `write_file`
 
+- Registered-but-inactive: it stays in the tool registry so old threads validate and render, but it is in `BASH_REPLACED_TOOL_NAMES` and never active for new generation. Agent-mode file creation/overwrite now goes through `bash` shell writes with the same pending-proposal behavior.
 - Proposes full Markdown file content for review.
 - Does not directly commit file content.
 - Creates the file path if it does not exist; intermediate path segments become folders.
@@ -317,9 +318,9 @@ Reads:
 
 Writes:
 
-- `write_file` and `edit_file` call action-aware pending-update helpers so the latest R2-backed base Yjs state is resolved before internal mutations write docs.
+- Agent-mode bash shell writes (`bash_DbFilesFs.writeFile`/`appendFile`), `write_file`, and `edit_file` call action-aware pending-update helpers so the latest R2-backed base Yjs state is resolved before internal mutations write docs.
 - They update the current user's pending `unstaged` branch.
-- Agent-mode app-to-app `mv` stores `pendingMove`. App-to-app `cp` stores `copiedFrom` and may mark a newly created destination as `eagerCreated` so discard or expiry can remove it safely. A replacement proposal records the replaced destination instead of committing over it immediately.
+- Agent-mode app-to-app `mv` stores `pendingMove`. App-to-app `cp` stores `copiedFrom` and may mark a newly created destination as `eagerCreated` so discard or expiry can remove it safely. A replacement proposal records the replaced destination instead of committing over it immediately. Bash shell writes to a missing path also eagerly create the node and stamp `eagerCreated`.
 - The client is expected to open the diff/review UI before live file content changes.
 
 # Current Invariants
@@ -327,10 +328,10 @@ Writes:
 1. The agent operates on db-backed app files, not repo files.
 2. Folder nodes are not content-readable or content-writable by AI file tools.
 3. File reads are user-scoped because pending overlays are user-scoped.
-4. `bash` can read, list, navigate, and search app files. In Agent mode it can create folders and propose app-to-app moves and copies; direct writes, redirects, links, and deletes still fail.
-5. `mkdir`, nested `write_file` paths, and pending copy destinations may create persistent intermediate folders. Do not claim `mkdir` is the only AI path that creates folders.
-6. `write_file`, `edit_file`, app-to-app `mv`, and app-to-app `cp` create pending review state rather than immediately committing the proposed content or structure.
-7. `write_file` passes the already-resolved `userId` into `create_file_by_path`; pending-update docs store the same id.
+4. `bash` can read, list, navigate, and search app files. In Agent mode it can create folders, write file content as pending proposals (redirects, `tee`, and `touch` on a new path; `touch` on an existing app file is a no-op), and propose app-to-app moves and copies; links and deletes still fail.
+5. `mkdir`, nested bash write and `write_file` paths, and pending copy destinations may create persistent intermediate folders. Do not claim `mkdir` is the only AI path that creates folders.
+6. Bash shell writes, `write_file`, `edit_file`, app-to-app `mv`, and app-to-app `cp` create pending review state rather than immediately committing the proposed content or structure.
+7. Bash shell writes and `write_file` pass the already-resolved `userId` into `create_file_by_path`; pending-update docs store the same id.
 8. New generation uses Bash `search` for full-text content search, Bash `meta search` for indexed frontmatter metadata, and Bash `find` for path discovery; legacy `grep_files` / `glob_files` are validation-only surfaces.
 9. Legacy `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
 10. Request messages are persisted before generation; assistant responses are persisted after streaming finishes. `thread_messages_add` is idempotent by thread and client-generated message id so finish/abort/retry overlap cannot create duplicate sibling messages.
@@ -351,15 +352,15 @@ Writes:
 - `execute_code` can list and read app files by fetching `/api/v1/files/list` and `/api/v1/files/read-many` from inside the snippet, so folder calculations such as summing `/payments/*.md` happen in code without passing paths or file contents through `input`.
 - `bash` can run `pwd`, `ls /home/cloud-usr/w/{organizationName}/{workspaceName}`, `cat /home/cloud-usr/w/{organizationName}/{workspaceName}/<path>`, `search --limit N <content terms>`, and preserves cwd across turns.
 - `/tmp` is durable per-thread scratch. It persists across later `bash` calls in the same chat, reloads from Convex after warm runtime cache loss, and is not app file storage.
-- `bash` file writes under the app file tree fail with a read-only filesystem error.
-- Agent mode can create folders with `bash` `mkdir`, propose app-to-app moves and copies with `mv` and `cp`, and call `write_file` and `edit_file`; Ask mode can call `bash` for reads/searches but rejects durable app mutations and does not expose the write tools.
+- Agent-mode `bash` file writes under the app file tree create pending proposals; Ask-mode writes and mount writes fail with clear errors.
+- Agent mode can create folders with `bash` `mkdir`, write files with shell redirects/`tee` (and `touch` for new empty files only), propose app-to-app moves and copies with `mv` and `cp`, and call `edit_file`; Ask mode can call `bash` for reads/searches but rejects durable app mutations and does not expose `edit_file`.
 - Bash exact reads, Bash discovery/search surfaces, and legacy file tools see the current user's structural path overlay and pending unstaged content when present.
-- `write_file`, `edit_file`, app-to-app `mv`, and app-to-app `cp` create reviewable pending state instead of silently committing live changes.
+- Bash shell writes, `edit_file`, app-to-app `mv`, and app-to-app `cp` create reviewable pending state instead of silently committing live changes.
 - Accept and discard checks cover pending moves, copies, replacements, eager-created destinations, and mixed content-plus-structure rows.
 - `edit_file` fails on missing/ambiguous single-match replacements.
 - Legacy `grep_files` behaves like regex/line search when validating old tool calls.
 - Uploaded source files are not described as raw-binary-readable until a native source-file tool exists.
-- With the matching upload plugin installed and enabled, generated outputs are read, searched, edited, and listed by their actual visible paths, preferably through Bash plus `write_file` / `edit_file`.
+- With the matching upload plugin installed and enabled, generated outputs are read, searched, edited, and listed by their actual visible paths, preferably through Bash (including shell writes) plus `edit_file`.
 - Tool descriptions stay aligned with actual behavior.
 
 # TODO / Hardening Backlog

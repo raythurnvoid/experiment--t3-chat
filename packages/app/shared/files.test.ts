@@ -508,6 +508,9 @@ describe("files_tiptap_markdown_to_json", () => {
 		const trailingNewline = files_tiptap_markdown_to_json({
 			markdown: "hello\n",
 		});
+		const trailingBlankLine = files_tiptap_markdown_to_json({
+			markdown: "hello\n\n",
+		});
 
 		if (noTrailingWhitespace._nay) {
 			throw new Error("Expected markdown conversion without trailing whitespace to succeed", {
@@ -524,6 +527,11 @@ describe("files_tiptap_markdown_to_json", () => {
 				cause: trailingNewline._nay,
 			});
 		}
+		if (trailingBlankLine._nay) {
+			throw new Error("Expected markdown conversion with trailing blank line to succeed", {
+				cause: trailingBlankLine._nay,
+			});
+		}
 
 		expect(trailingSpace._yay).not.toEqual(noTrailingWhitespace._yay);
 		expect(trailingSpace._yay.content?.[0]).toMatchObject({
@@ -531,9 +539,11 @@ describe("files_tiptap_markdown_to_json", () => {
 			content: [{ type: "text", text: "hello " }],
 		});
 
-		expect(trailingNewline._yay).not.toEqual(noTrailingWhitespace._yay);
-		expect((trailingNewline._yay.content ?? []).length).toBeGreaterThan(
-			(noTrailingWhitespace._yay.content ?? []).length,
+		// One final `\n` is a plain line terminator, not an empty line; only newlines
+		// beyond it become empty paragraphs.
+		expect(trailingNewline._yay).toEqual(noTrailingWhitespace._yay);
+		expect((trailingBlankLine._yay.content ?? []).length).toBeGreaterThan(
+			(trailingNewline._yay.content ?? []).length,
 		);
 	});
 
@@ -631,7 +641,8 @@ describe("files_parse_markdown_to_html", () => {
 	test("preserves trailing newline shape at EOF", () => {
 		const noTrailingNewline = files_parse_markdown_to_html("hello");
 		const oneTrailingNewline = files_parse_markdown_to_html("hello\n");
-		const threeTrailingNewlines = files_parse_markdown_to_html("hello\n\n\n");
+		const twoTrailingNewlines = files_parse_markdown_to_html("hello\n\n");
+		const fourTrailingNewlines = files_parse_markdown_to_html("hello\n\n\n\n");
 
 		if (noTrailingNewline._nay) {
 			throw new Error("Expected markdown to HTML conversion without trailing newline to succeed", {
@@ -643,15 +654,23 @@ describe("files_parse_markdown_to_html", () => {
 				cause: oneTrailingNewline._nay,
 			});
 		}
-		if (threeTrailingNewlines._nay) {
-			throw new Error("Expected markdown to HTML conversion with three trailing newlines to succeed", {
-				cause: threeTrailingNewlines._nay,
+		if (twoTrailingNewlines._nay) {
+			throw new Error("Expected markdown to HTML conversion with two trailing newlines to succeed", {
+				cause: twoTrailingNewlines._nay,
+			});
+		}
+		if (fourTrailingNewlines._nay) {
+			throw new Error("Expected markdown to HTML conversion with four trailing newlines to succeed", {
+				cause: fourTrailingNewlines._nay,
 			});
 		}
 
-		expect(oneTrailingNewline._yay).not.toBe(noTrailingNewline._yay);
-		expect(oneTrailingNewline._yay.match(/<p><\/p>/g) ?? []).toHaveLength(1);
-		expect(threeTrailingNewlines._yay.match(/<p><\/p>/g) ?? []).toHaveLength(2);
+		// One final `\n` is a plain line terminator, not an empty line; each extra
+		// pair of newlines beyond it is one empty paragraph.
+		expect(oneTrailingNewline._yay).toBe(noTrailingNewline._yay);
+		expect(oneTrailingNewline._yay.match(/<p><\/p>/g) ?? []).toHaveLength(0);
+		expect(twoTrailingNewlines._yay.match(/<p><\/p>/g) ?? []).toHaveLength(1);
+		expect(fourTrailingNewlines._yay.match(/<p><\/p>/g) ?? []).toHaveLength(2);
 	});
 
 	test("preserves trailing space at EOF", () => {
@@ -696,7 +715,8 @@ describe("files_yjs_doc_update_from_markdown", () => {
 			});
 		}
 
-		expect(markdownResult._yay).toBe("hello ");
+		// The trailing space survives; serialized non-empty file content ends with one `\n`.
+		expect(markdownResult._yay).toBe("hello \n");
 	});
 
 	test("preserves trailing whitespace-only line at EOF through the Yjs round-trip", () => {
@@ -721,7 +741,8 @@ describe("files_yjs_doc_update_from_markdown", () => {
 			});
 		}
 
-		expect(markdownResult._yay).toBe("# Base\n\n ");
+		// The whitespace-only line survives; serialized non-empty file content ends with one `\n`.
+		expect(markdownResult._yay).toBe("# Base\n\n \n");
 	});
 });
 
@@ -775,6 +796,7 @@ describe("frontmatter round-trip through Yjs", () => {
 			"Hi team,",
 			"",
 			"We're seeing a short burst of failed authentication events around the `gateway-aurora` edge.",
+			"",
 		].join("\n");
 
 		const yjsDoc = new YDoc();
@@ -826,7 +848,7 @@ describe("frontmatter round-trip through Yjs", () => {
 	});
 
 	test("does not invent a frontmatter node for a body-only document", () => {
-		const input = "# Heading\n\nBody text";
+		const input = "# Heading\n\nBody text\n";
 
 		const yjsDoc = new YDoc();
 		const updateResult = files_yjs_doc_update_from_markdown({

@@ -2262,6 +2262,7 @@ describe("files_nodes.remove_eager_created_node_if_safe", () => {
 				nodeId,
 				update: files_u8_to_array_buffer(encodeStateAsUpdate(savedYjsDoc)),
 				sessionId: "eager-cleanup-saved-session",
+				materializeImmediately: false,
 			}),
 		);
 
@@ -2559,6 +2560,7 @@ describe("files_nodes.remove_eager_created_node_if_safe", () => {
 				nodeId,
 				update: files_u8_to_array_buffer(encodeStateAsUpdate(savedYjsDoc)),
 				sessionId: "eager-cleanup-ancestors-saved-session",
+				materializeImmediately: false,
 			}),
 		);
 
@@ -3984,7 +3986,7 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 		throw new Error(createdFile._nay.message);
 	}
 
-	const markdown = "# Café\n\nEmoji 🙂";
+	const markdown = "# Café\n\nEmoji 🙂\n";
 	const yjsDoc = files_yjs_doc_create_from_markdown({ markdown });
 	if ("_nay" in yjsDoc) {
 		throw new Error(yjsDoc._nay.message);
@@ -4485,7 +4487,6 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 		{ lineNumber: 3, line: "committedneedle one", matched: true },
 		{ lineNumber: 4, line: "middle", matched: false },
 		{ lineNumber: 5, line: "committedneedle two", matched: true },
-		{ lineNumber: 6, line: "", matched: false },
 	]);
 	expect(committedScan.selectedCount).toBe(2);
 	expect(committedScan.scanTruncated).toBe(false);
@@ -6115,7 +6116,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	if (createdFile._nay) {
 		throw new Error(createdFile._nay.message);
 	}
-	const currentMarkdown = "# Current\n\nBefore restore.";
+	const currentMarkdown = "# Current\n\nBefore restore.\n";
 	const currentYjsDoc = files_yjs_doc_create_from_markdown({ markdown: currentMarkdown });
 	if ("_nay" in currentYjsDoc) {
 		throw new Error(currentYjsDoc._nay.message);
@@ -6141,7 +6142,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 		throw new Error(materialized._nay.message);
 	}
 
-	const restoredMarkdown = "# Restored\n\nFrom R2 snapshot.";
+	const restoredMarkdown = "# Restored\n\nFrom R2 snapshot.\n";
 	const { snapshotId } = await t.run(async (ctx) => {
 		const snapshotAssetId = await ctx.db.insert("files_r2_assets", {
 			organizationId: db.organizationId,

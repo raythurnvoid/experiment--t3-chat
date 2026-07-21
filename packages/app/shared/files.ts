@@ -97,6 +97,33 @@ export function files_get_utf8_byte_size(content: string) {
 	return stringByteLength(content);
 }
 
+export function files_normalize_lf_newlines(content: string) {
+	return content.replace(/\r\n?/g, "\n");
+}
+
+/**
+ * Align proposed content's trailing-newline shape to the baseline so AI edits
+ * do not flip the file's trailing-newline style.
+ */
+export function files_normalize_ai_edit_content(content: string, baselineContent: string) {
+	if (content.length === 0) {
+		return content;
+	}
+
+	const baselineHasTrailingNewline = baselineContent.endsWith("\n");
+	const contentHasTrailingNewline = content.endsWith("\n");
+
+	if (baselineHasTrailingNewline && !contentHasTrailingNewline) {
+		return `${content}\n`;
+	}
+
+	if (!baselineHasTrailingNewline && contentHasTrailingNewline) {
+		return content.replace(/\n+$/g, "");
+	}
+
+	return content;
+}
+
 /**
  * 50 MiB.
  *
@@ -1086,13 +1113,15 @@ function tiptap_markdown_to_html(args: { markdown: string; extensions?: Extensio
 	}
 
 	// Preserve trailing empty lines at EOF (Markdown usually ignores them).
-	// - every 2 `\n` => 1 empty paragraph
-	// - odd counts round up
+	// A single final `\n` is a plain line terminator (POSIX file shape), not an empty
+	// line, so only the newlines beyond it become empty paragraphs (2 `\n` each, odd
+	// counts round up). files_yjs_doc_get_markdown mirrors this by ending non-empty
+	// file content with one `\n`, so newline-terminated text round-trips byte-exact.
 	const trailingNewlines = markdown.match(TRAILING_NEWLINES_REGEX)?.[0] ?? "";
 	const newlineCount = trailingNewlines.length;
-	if (newlineCount === 0) return Result({ _yay: html });
+	const paragraphCount = Math.ceil(Math.max(0, newlineCount - 1) / 2);
+	if (paragraphCount === 0) return Result({ _yay: html });
 
-	const paragraphCount = Math.max(1, Math.ceil(newlineCount / 2));
 	return Result({
 		_yay: html + "<p></p>".repeat(paragraphCount),
 	});
@@ -1325,7 +1354,10 @@ export function files_yjs_doc_get_markdown(args: { yjsDoc: YDoc }) {
 		const json = node.toJSON();
 		editor._yay.commands.setContent(json);
 		const markdown = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
-		return Result({ _yay: markdown });
+		// Non-empty file content ends with one `\n` (POSIX shape). The parse side treats a
+		// single final `\n` as a line terminator (tiptap_markdown_to_html), so
+		// newline-terminated text round-trips byte-exact through the editor doc.
+		return Result({ _yay: markdown === "" || markdown.endsWith("\n") ? markdown : markdown + "\n" });
 	} catch (error) {
 		return Result({
 			_nay: {

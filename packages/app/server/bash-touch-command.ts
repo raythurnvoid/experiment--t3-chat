@@ -1,5 +1,5 @@
 import { defineCommand } from "just-bash/browser";
-import { bash_current_workspace_path_to_db_files_path, bash_is_path_under_read_only_mounts, bash_resolve_path, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE } from "./bash-utils.ts";
+import { bash_current_workspace_path_to_db_files_path, bash_is_path_under_read_only_mounts, bash_resolve_path, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
@@ -69,12 +69,18 @@ function path_operands(args: string[]) {
 }
 
 /**
- * Keep app files read-only for shell `touch`.
+ * Guard shell `touch` before builtin delegation.
  *
- * The first app operand aborts the batch before delegation, so mixed app and
- * `/tmp` invocations cannot leave partial scratch side effects.
+ * Mount targets and app reference reads stay rejected, and Ask mode keeps app
+ * targets read-only. The first rejected operand aborts the batch before
+ * delegation, so mixed app and `/tmp` invocations cannot leave partial scratch
+ * side effects. In Agent mode app targets delegate to the builtin, whose
+ * `fs.writeFile("")` on a missing file creates an empty pending proposal
+ * (an Added file the user reviews in Files); `utimes` on existing app files
+ * is a no-op.
  */
-export function bash_touch_command_create(currentWorkspacePath: string) {
+export function bash_touch_command_create(dbFilesRoots: bash_DbFilesRoots) {
+	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("touch", async (args, commandCtx) => {
 		for (const { file, kind } of path_operands(args)) {
 			const resolvedPath = bash_resolve_path(commandCtx.cwd, file);
@@ -98,14 +104,15 @@ export function bash_touch_command_create(currentWorkspacePath: string) {
 					};
 				}
 
-				return {
-					stdout: "",
-					stderr:
-						`touch: cannot create or update app file '${file}' through bash.\n` +
-						`Use write_file with path '${dbFilesPath}' to create a new file (strip the current workspace path prefix '${currentWorkspacePath}' from the bash path).\n` +
-						`Use edit_file with path '${dbFilesPath}' to update an existing file.\n`,
-					exitCode: bash_COMMAND_EXIT_FAILURE,
-				};
+				if (!dbFilesRoots.app.fs.allowDbFilesMkdir) {
+					return {
+						stdout: "",
+						stderr:
+							`touch: cannot create or update app file '${file}' in Ask mode.\n` +
+							"App file writes are available in Agent mode; Ask mode is read-only for app files.\n",
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
 			}
 		}
 

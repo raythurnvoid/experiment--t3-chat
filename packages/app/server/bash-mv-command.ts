@@ -125,11 +125,23 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				!bash_is_path_under_current_workspace_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand)),
 		);
 		if (nonAppSourceOperand != null) {
+			// `cat` on a folder source would create the destination proposal first and then fail,
+			// so the redirect recovery is only suggested for a file source.
+			let sourceIsFile = false;
+			try {
+				sourceIsFile = (await commandCtx.fs.stat(bash_resolve_path(commandCtx.cwd, nonAppSourceOperand))).isFile;
+			} catch {
+				// A missing source keeps the generic guidance.
+			}
 			return {
 				stdout: "",
 				stderr:
 					`mv: cannot write to app file '${destOperand}': only app files can be moved within the app tree.\n` +
-					`To create or replace durable content at '${destDbFilesPath}', use write_file with path '${destDbFilesPath}' and the content read from the source.\n` +
+					(dbFilesRoots.app.fs.allowDbFilesMkdir
+						? sourceIsFile
+							? `To propose that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(nonAppSourceOperand)} > ${bash_shell_arg_quote(destOperand)} — it creates a pending proposal the user reviews in Files.\n`
+							: ""
+						: "App file writes are available in Agent mode; Ask mode is read-only for app files.\n") +
 					"Moving /tmp files into the app tree through bash is not supported.\n",
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
@@ -154,7 +166,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				stdout: "",
 				stderr:
 					"mv: cannot move or rename app files through bash.\n" +
-					`Use the Files sidebar rename/move UI for app path '${sourceDbFilesPath}' -> '${destDbFilesPath}'. For content changes, use edit_file on '${sourceDbFilesPath}' or write_file with path '${destDbFilesPath}'.\n`,
+					`Use the Files sidebar rename/move UI for app path '${sourceDbFilesPath}' -> '${destDbFilesPath}'. For content changes, use edit_file on '${sourceDbFilesPath}'.\n`,
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}

@@ -7390,6 +7390,12 @@ export async function files_db_yjs_push_update(
 		update: ArrayBuffer;
 		sessionId: string;
 		userId: Id<"users">;
+		/**
+		 * True for one-shot commits (save/accept) so committed chunks refresh right away
+		 * and readers do not see stale content. False for live editor keystreams:
+		 * materialization keeps the 30s debounce (each push reschedules the job).
+		 */
+		materializeImmediately: boolean;
 	},
 ) {
 	const now = Date.now();
@@ -7414,8 +7420,11 @@ export async function files_db_yjs_push_update(
 		createdAt: now,
 	});
 
-	const snapshotScheduleDelayMs =
-		newSequenceData.lastSequence > 0 && newSequenceData.lastSequence % 50 === 0 ? 0 : 30_000;
+	const snapshotScheduleDelayMs = args.materializeImmediately
+		? 0
+		: newSequenceData.lastSequence > 0 && newSequenceData.lastSequence % 50 === 0
+			? 0
+			: 30_000;
 
 	await enqueue_file_content_materialization(ctx, {
 		userId: args.userId,
@@ -7522,6 +7531,8 @@ export const yjs_push_update = mutation({
 			update: args.update,
 			sessionId: args.sessionId,
 			userId: user._id,
+			// Live editor keystream: keep the materialization debounce.
+			materializeImmediately: false,
 		});
 		if (pushResult._nay) {
 			return pushResult;

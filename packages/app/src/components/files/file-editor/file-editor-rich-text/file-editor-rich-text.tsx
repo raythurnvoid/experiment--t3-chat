@@ -149,7 +149,12 @@ const FileEditorRichTextToolbarActions = memo(function FileEditorRichTextToolbar
 ) {
 	const { editor, nodeId, sessionId, syncChanged, syncStatus, toolbarPortalHost } = props;
 
-	const getCurrentMarkdown = useFn(() => editor.getMarkdown());
+	const getCurrentMarkdown = useFn(() => {
+		const markdown = editor.getMarkdown();
+		// Match files_yjs_doc_get_markdown: non-empty file content ends with one `\n`,
+		// so the snapshot preview does not show a fake final-newline diff.
+		return markdown === "" || markdown.endsWith("\n") ? markdown : markdown + "\n";
+	});
 
 	return createPortal(
 		<div

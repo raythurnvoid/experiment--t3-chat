@@ -2134,6 +2134,9 @@ export const save_file_pending_update_in_db = internalMutation({
 				update: files_u8_to_array_buffer(diffUpdateForLatestFileYjsDoc),
 				sessionId: `files_pending_update:${user._id}`,
 				userId: user._id,
+				// A save is a one-shot commit, not a keystroke stream: materialize now so
+				// committed reads (bash cat, exports) see the accepted content right away.
+				materializeImmediately: true,
 			});
 			if (result._nay) {
 				return result;

@@ -488,7 +488,7 @@ describe("r2 asset content", () => {
 			throw new Error("Expected Yjs snapshot bytes in R2");
 		}
 
-		const updatedMarkdown = "# Stale read\n\nThis content only exists in Yjs updates.";
+		const updatedMarkdown = "# Stale read\n\nThis content only exists in Yjs updates.\n";
 		const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(baseSnapshotBytes));
 		const nextYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(baseSnapshotBytes));
 		const nextProjection = files_yjs_doc_update_from_markdown({
@@ -547,7 +547,7 @@ describe("r2 asset content", () => {
 			throw new Error(created._nay.message);
 		}
 
-		const pendingMarkdown = "# Pending edit\n\nThis content is still in the agent draft.";
+		const pendingMarkdown = "# Pending edit\n\nThis content is still in the agent draft.\n";
 		const upsertResult = await asUser.action(
 			internal.files_pending_updates.upsert_file_pending_update_internal_action,
 			{

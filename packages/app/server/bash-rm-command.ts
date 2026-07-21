@@ -55,7 +55,7 @@ export function bash_rm_command_create(currentWorkspacePath: string) {
 					stdout: "",
 					stderr:
 						`rm: cannot delete app file '${file}' through bash.\n` +
-						`App files cannot be deleted via shell commands. Use the Files sidebar Archive action for path '${dbFilesPath}', or use write_file/edit_file for content changes.\n`,
+						`App files cannot be deleted via shell commands. Use the Files sidebar Archive action for path '${dbFilesPath}', or use edit_file for content changes.\n`,
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}

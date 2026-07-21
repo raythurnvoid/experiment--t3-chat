@@ -1367,7 +1367,9 @@ describe("upsert_file_pending_update", () => {
 		});
 		expect(pendingRowMarkdownState.baseMarkdown).toBe(seeded.baseMarkdown);
 		expect(pendingRowMarkdownState.stagedMarkdown).toBe(seeded.baseMarkdown);
-		expect(pendingRowMarkdownState.unstagedMarkdown).toBe(whitespaceMarkdown);
+		// The whitespace lands on its own trailing paragraph and file content always
+		// ends with one `\n`, so the read-back shape differs from the raw input.
+		expect(pendingRowMarkdownState.unstagedMarkdown).toBe("# Base\n\n \n");
 	});
 
 	test("upsert_file_pending_update clears the doc when agent changes collapse to base", async () => {

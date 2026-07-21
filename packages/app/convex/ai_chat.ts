@@ -116,12 +116,12 @@ function ai_chat_system_prompt(args: { organizationName: string; workspaceName: 
 		"Uploaded source files do not alias to generated Markdown outputs. If an unreadable-source advisory suggests generated output paths such as `<source>.pdf.md`, read the exact generated output path when the user wants converted text; do not expect the original source path to auto-read that sibling.",
 		"Keep Bash commands simple: avoid strict-mode boilerplate such as `set -euo pipefail` because `pipefail` is unsupported, comments in command strings, and process substitution. For multi-command inspection or eval checks, do not use `set -e` or hide stderr with `2>/dev/null`; later commands and visible stderr should still be observed.",
 		"Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
-		"App `mv` and `cp` create pending move/copy proposals the user reviews, like `write_file`. Do not work around unsupported app operations such as `rm` by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
+		"In Agent mode, app `mv` and `cp` create pending move/copy proposals the user reviews in Files. Do not work around unsupported app operations such as `rm` by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
 		"In Agent mode, `mkdir` under the app file tree creates durable folders.",
-		"File content changes use `write_file` or `edit_file` so the user can review them.",
-		`Convert bash paths under \`${currentWorkspacePath}\` to app paths before calling \`write_file\` or \`edit_file\`; for example \`${currentWorkspacePath}/docs/readme.md\` becomes \`/docs/readme.md\`. Preserve the full remaining suffix: \`${currentWorkspacePath}/folder/README.md\` becomes \`/folder/README.md\`, never \`/README.md\`.`,
-		"`write_file` and `edit_file` create pending review changes for the user to apply.",
-		"After `write_file` or `edit_file`, Bash exact readers (`cat`, `head`, `tail`, `wc`, `grep`) and Bash `search` read the current user's pending unstaged version, so use them normally to verify follow-up edits before the user applies the changes.",
+		`In Agent mode, create or overwrite an app file with a Bash heredoc redirect (\`cat > '${currentWorkspacePath}/<path>' <<'EOF' ... EOF\`) or a plain redirect, and append with \`>>\`. Use \`edit_file\` for targeted edits to existing files.`,
+		`Convert bash paths under \`${currentWorkspacePath}\` to app paths before calling \`edit_file\`; for example \`${currentWorkspacePath}/docs/readme.md\` becomes \`/docs/readme.md\`. Preserve the full remaining suffix: \`${currentWorkspacePath}/folder/README.md\` becomes \`/folder/README.md\`, never \`/README.md\`.`,
+		"Bash app-file writes (redirects, `tee`, `touch` on a new path) and `edit_file` create pending review changes for the user to apply; `touch` on an existing app file changes nothing. A brand-new file appears in Files right away as an empty placeholder; its content and all other changes apply only after the user accepts.",
+		"After a Bash app-file write or `edit_file`, Bash exact readers (`cat`, `head`, `tail`, `wc`, `grep`) and Bash `search` read the current user's pending unstaged version, so use them normally to verify follow-up edits before the user applies the changes.",
 		"Use tools to clarify uncertain reads, searches, and path lookups instead of inventing content or paths.",
 		"Use `web_search` for current public facts, official documentation, release notes, news, and other information outside this organization when file tools are not enough.",
 		"Summarize `web_search` highlight snippets in your own words.",
@@ -138,7 +138,10 @@ function ai_chat_system_prompt(args: { organizationName: string; workspaceName: 
 const ASK_MODE_SYSTEM_PROMPT_SUFFIX =
 	"Ask mode is for reading, searching, and answering. Durable folder and file changes are handled in Agent mode; /tmp scratch is durable per chat thread but is not app file storage.";
 
-const BASH_REPLACED_TOOL_NAMES = ["read_file", "list_files", "glob_files", "grep_files"] as const;
+// write_file is replaced by Bash heredoc/redirect writes for NEW generations; it stays in the
+// tools registry (and in ai_chat_WRITE_TOOL_NAMES) so historical thread messages keep validating
+// and Ask mode keeps stripping edit_file.
+const BASH_REPLACED_TOOL_NAMES = ["read_file", "list_files", "glob_files", "grep_files", "write_file"] as const;
 
 /**
  * Resolve the persisted context for a client-provided parent message id.
@@ -2143,7 +2146,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("build_agent_configuration", () => {
-		test("returns the full tool registry and keeps write tools active in Agent mode", () => {
+		test("returns the full tool registry and keeps edit_file active in Agent mode", () => {
 			const { ctx } = makeCtx();
 			const configuration = build_agent_configuration({
 				ctx,
@@ -2155,7 +2158,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			expect(Object.keys(configuration.tools)).toEqual(build_agent_configuration_expected_tool_keys);
-			expect(configuration.activeTools).toEqual(["bash", "write_file", "edit_file", "web_search", "execute_code"]);
+			// write_file stays registered for historical messages but is bash-replaced for generation.
+			expect(configuration.activeTools).toEqual(["bash", "edit_file", "web_search", "execute_code"]);
 		});
 
 		test("keeps the full tool registry but excludes write tools from activeTools in Ask mode", () => {
@@ -2420,10 +2424,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(configuration.systemPrompt).toContain(
 				"The blank line between the shell prompt and output is transcript formatting, not file content.",
 			);
-			expect(configuration.systemPrompt).toContain("Do not work around app read-only write, move, or delete requests");
+			expect(configuration.systemPrompt).toContain("Do not work around unsupported app operations such as `rm`");
 			expect(configuration.systemPrompt).toContain(
-				"Convert bash paths under `/home/cloud-usr/w/personal/home` to app paths before calling `write_file` or `edit_file`",
+				"Convert bash paths under `/home/cloud-usr/w/personal/home` to app paths before calling `edit_file`",
 			);
+			expect(configuration.systemPrompt).toContain("create or overwrite an app file with a Bash heredoc redirect");
 			expect(configuration.systemPrompt).toContain("never `/README.md`");
 			expect(configuration.systemPrompt).not.toContain("convenience mount root");
 			expect(configuration.systemPrompt).not.toContain('words like "files"');

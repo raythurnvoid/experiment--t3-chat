@@ -816,17 +816,19 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 type FilesSidebarTreeItemSecondaryContent_ClassNames =
 	| "FilesSidebarTreeItemSecondaryContent"
 	| "FilesSidebarTreeItemSecondaryContent-text"
+	| "FilesSidebarTreeItemSecondaryContent-added"
 	| "FilesSidebarTreeItemSecondaryContent-processing";
 
 type FilesSidebarTreeItemSecondaryContent_Props = {
 	nodeId: app_convex_Id<"files_nodes"> | null;
 	secondaryText: string;
+	isAddedFile: boolean;
 };
 
 const FilesSidebarTreeItemSecondaryContent = memo(function FilesSidebarTreeItemSecondaryContent(
 	props: FilesSidebarTreeItemSecondaryContent_Props,
 ) {
-	const { nodeId, secondaryText } = props;
+	const { nodeId, secondaryText, isAddedFile } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const activities = useFileNodeActivities({ membershipId, nodeId });
@@ -841,6 +843,15 @@ const FilesSidebarTreeItemSecondaryContent = memo(function FilesSidebarTreeItemS
 			>
 				{secondaryText}
 			</div>
+			{isAddedFile ? (
+				<div
+					className={
+						"FilesSidebarTreeItemSecondaryContent-added" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames
+					}
+				>
+					Added
+				</div>
+			) : null}
 			{isProcessing ? (
 				<div
 					className={
@@ -1133,7 +1144,19 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	const updatedByDisplayName = displayNameByUserId.get(itemData.updatedBy) ?? "Unknown";
 	const metaText = `${format_relative_time(itemData.updatedAt)} · ${updatedByDisplayName}`;
 	const shouldRenderPlaceholder = !isSearchActive && itemData.kind === "folder" && !hasChildren && isExpanded;
-	const label = isArchived ? `${itemData.name} archived` : itemData.name;
+
+	// Convex dedupes this subscription across rows; eagerCreated marks files that exist
+	// only as this user's pending Added proposal (bash writes, write_file, cp). Computed
+	// here so the row's aria label announces the Added state like the archived one.
+	const { membershipId } = AppTenantProvider.useContext();
+	const pendingUpdates = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, { membershipId });
+	const isAddedFile =
+		files_is_node(itemData) &&
+		(pendingUpdates ?? []).some(
+			(pendingUpdate) => pendingUpdate.fileNodeId === itemId && pendingUpdate.eagerCreated != null,
+		);
+
+	const label = `${itemData.name}${isAddedFile ? " added" : ""}${isArchived ? " archived" : ""}`;
 
 	const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 		onCreateNode(itemId, "file");
@@ -1295,6 +1318,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 						<FilesSidebarTreeItemSecondaryContent
 							nodeId={files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : null}
 							secondaryText={metaText}
+							isAddedFile={isAddedFile}
 						/>
 
 						<FilesSidebarTreeItemActions

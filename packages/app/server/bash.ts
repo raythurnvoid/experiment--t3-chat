@@ -512,7 +512,7 @@ class ReadOnlyFileSystemError extends Error {
 	constructor(path: string) {
 		const normalizedPath = bash_normalize_path(path);
 		super(
-			`EROFS: read-only file system, '${normalizedPath}'. Persistent app-file writes must use write_file/edit_file; shell redirects into app files are unsupported.`,
+			`EROFS: read-only file system, '${normalizedPath}'. Writes are only supported under the current workspace app path or /tmp.`,
 		);
 		this.name = "ReadOnlyFileSystemError";
 		this.path = normalizedPath;
@@ -1017,11 +1017,11 @@ async function bash_fs_create(args: {
 			...stream_utility_command_create_all(currentWorkspacePath),
 			bash_sed_command_create(args.ctx, dbFilesRoots),
 			// Guarded mutators.
-			bash_touch_command_create(currentWorkspacePath),
+			bash_touch_command_create(dbFilesRoots),
 			bash_rm_command_create(currentWorkspacePath),
 			bash_cp_command_create(args.ctx, dbFilesRoots),
 			bash_mv_command_create(args.ctx, dbFilesRoots),
-			bash_tee_command_create(currentWorkspacePath),
+			bash_tee_command_create(dbFilesRoots),
 			// Nested execution.
 			bash_nested_shell_command_create("bash", currentWorkspacePath),
 			bash_nested_shell_command_create("sh", currentWorkspacePath),
@@ -1928,6 +1928,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		async function get_seeded_node_id(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
 			return (await get_seeded_node(runner, path))._id;
+		}
+
+		async function list_pending_updates(runner: Awaited<ReturnType<typeof create_bash_runner>>) {
+			return await runner.t.run(async (ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_organization_workspace_user_fileNode", (q) =>
+						q
+							.eq("organizationId", runner.ctxData.organizationId)
+							.eq("workspaceId", runner.ctxData.workspaceId)
+							.eq("userId", runner.ctxData.userId),
+					)
+					.collect(),
+			);
 		}
 
 		test("runs pwd and persists cd across invocations", async () => {
@@ -3113,12 +3127,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(suggestionLine).toContain(`${test_db_files_mount}/uploaded.txt`);
 		});
 
-		test("rejects organization writes and persists same-thread /tmp scratch files", async () => {
+		test("app redirect writes become pending proposals and same-thread /tmp scratch files persist", async () => {
 			const { run, runMutation } = await create_bash_runner();
 
 			const organizationWrite = await run(`echo nope > ${test_db_files_mount}/docs/new.md`);
-			expect(organizationWrite.metadata.exitCode).not.toBe(0);
-			expect(organizationWrite.stderr).toContain("read-only file system");
+			expect(organizationWrite.metadata.exitCode).toBe(0);
+			expect(organizationWrite.stderr).toBe("");
 
 			const tmpWrite = await run("printf hi > /tmp/a.txt");
 			expect(tmpWrite.metadata.exitCode).toBe(0);
@@ -3127,7 +3141,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(nextInvocation.metadata.exitCode).toBe(0);
 			expect(nextInvocation.stdout).toBe("hi");
 
-			// Only the tmp write flushes; the failed organization write and the read do not.
+			// Only the tmp write flushes; the app proposal write and the read do not.
 			const patchCalls = runMutation.mock.calls.filter(
 				([ref]) => function_name_of(ref) === "ai_chat_files:patch_thread_tmp_files",
 			);
@@ -4967,19 +4981,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).not.toContain("Native Just Bash /tmp commands cannot access app files directly");
 		});
 
-		test("rejects app writes and prevents mixed /tmp partial side effects", async () => {
+		test("rejects unsupported app mutations and prevents mixed /tmp partial side effects", async () => {
 			const { run } = await create_bash_runner({
 				initialCwd: test_db_files_mount,
-				extraFiles: [
-					{ path: "/-delete.md", content: "dash delete\n" },
-					{ path: "/-tee.md", content: "dash tee\n" },
-				],
+				extraFiles: [{ path: "/-delete.md", content: "dash delete\n" }],
 			});
 
-			const touchResult = await run(`touch ${test_db_files_mount}/docs/readme.md`);
-			const touchDashResult = await run("touch -- -new.md");
-			const touchDateResult = await run(`touch --date=@0 ${test_db_files_mount}/docs/readme.md`);
-			const touchTimestampResult = await run(`touch -t 202001010000 ${test_db_files_mount}/docs/readme.md`);
 			const touchReferenceResult = await run(`touch -r ${test_db_files_mount}/docs/readme.md /tmp/from-ref`);
 			const rmResult = await run(`rm -f ${test_db_files_mount}/docs/readme.md`);
 			const rmFolderResult = await run(`rm -rf ${test_db_files_mount}/docs`);
@@ -4994,25 +5001,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const mvAppToAppResult = await run(`mv ${test_db_files_mount}/docs/readme.md renamed.md`);
 			const mvGlobResult = await run(`mv '${test_db_files_mount}/docs/*.md' /tmp/moved.md`);
 			const mvDashResult = await run("mv -- -delete.md /tmp/moved-dash.md");
-			const teeResult = await run(
-				`printf hi | tee /tmp/out.txt ${test_db_files_mount}/docs/readme.md; cat /tmp/out.txt`,
-			);
-			const teeAppendResult = await run(
-				`printf before > /tmp/appended.txt; printf hi | tee -a /tmp/appended.txt ${test_db_files_mount}/docs/readme.md`,
-			);
-			const teeAppendRead = await run("cat /tmp/appended.txt");
-			const teeDashResult = await run("printf hi | tee -- -tee.md");
-			const teeNoStdinResult = await run(`tee ${test_db_files_mount}/docs/readme.md`);
-			const redirectResult = await run(`printf hi > ${test_db_files_mount}/docs/redirect.md`);
 
-			expect(touchResult.metadata.exitCode).not.toBe(0);
-			expect(touchResult.stderr).toContain("write_file");
-			expect(touchResult.stderr).toContain("edit_file");
-			for (const result of [touchDashResult, touchDateResult, touchTimestampResult]) {
-				expect(result.metadata.exitCode).not.toBe(0);
-				expect(result.stderr).toContain("write_file");
-				expect(result.stderr).toContain("edit_file");
-			}
 			expect(touchReferenceResult.metadata.exitCode).not.toBe(0);
 			expect(touchReferenceResult.stderr).toContain("reference file");
 			expect(rmResult.metadata.exitCode).not.toBe(0);
@@ -5026,18 +5015,18 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(rmDashResult.stderr).toContain("path '/-delete.md'");
 			expect(cpAppDestResult.metadata.exitCode).not.toBe(0);
 			expect(cpAppDestResult.stderr).toContain("cannot write to app file");
-			expect(cpAppDestResult.stderr).toContain("write_file");
+			expect(cpAppDestResult.stderr).toContain("redirect instead");
 			expect(cpAppFolderDestResult.metadata.exitCode).not.toBe(0);
 			expect(cpAppFolderDestResult.stderr).toContain("cannot write to app file");
-			expect(cpAppFolderDestResult.stderr).toContain("write_file");
-			expect(cpAppFolderDestResult.stderr).toContain("path '/docs/native-output.md'");
+			expect(cpAppFolderDestResult.stderr).toContain("redirect instead");
+			expect(cpAppFolderDestResult.stderr).toContain("'/docs/native-output.md'");
 			expect(mvResult.metadata.exitCode).not.toBe(0);
 			expect(mvResult.stderr).toContain("cannot move or rename app file");
 			expect(mvResult.stderr).toContain("non-app destination");
 			expect(mvResult.stderr).toContain("cp");
 			expect(mvAppDestResult.metadata.exitCode).not.toBe(0);
 			expect(mvAppDestResult.stderr).toContain("cannot write to app file");
-			expect(mvAppDestResult.stderr).toContain("write_file");
+			expect(mvAppDestResult.stderr).toContain("redirect instead");
 			expect(mvAppDestResult.stderr).toContain("Moving /tmp files into the app tree");
 			expect(mvAppDestSource.metadata.exitCode).toBe(0);
 			expect(mvAppDestSource.stdout).toBe("move");
@@ -5049,23 +5038,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(mvGlobResult.stderr).toContain("find");
 			expect(mvDashResult.metadata.exitCode).not.toBe(0);
 			expect(mvDashResult.stderr).toContain("cannot move or rename app file");
-			expect(teeResult.metadata.exitCode).not.toBe(0);
-			expect(teeResult.stdout).toBe("");
-			expect(teeResult.stderr).toContain("write_file");
-			expect(teeAppendResult.metadata.exitCode).not.toBe(0);
-			expect(teeAppendResult.stdout).toBe("");
-			expect(teeAppendResult.stderr).toContain("write_file");
-			expect(teeAppendRead.stdout).toBe("before");
-			expect(teeDashResult.metadata.exitCode).not.toBe(0);
-			expect(teeDashResult.stdout).toBe("");
-			expect(teeDashResult.stderr).toContain("write_file");
-			expect(teeDashResult.stderr).toContain("path '/-tee.md'");
-			expect(teeNoStdinResult.metadata.exitCode).not.toBe(0);
-			expect(teeNoStdinResult.stdout).toBe("");
-			expect(teeNoStdinResult.stderr).toContain("write_file");
-			expect(redirectResult.metadata.exitCode).not.toBe(0);
-			expect(redirectResult.stderr).toContain("write_file/edit_file");
-			expect(redirectResult.stderr).toContain("shell redirects into app files are unsupported");
 		});
 
 		test("copies one exact readable app file to scratch and rejects unreadable app copies", async () => {
@@ -6223,7 +6195,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(mvResult.metadata.exitCode).not.toBe(0);
 			expect(mvResult.stderr).toBe(
 				"mv: cannot move or rename app files through bash.\n" +
-					"Use the Files sidebar rename/move UI for app path '/docs/readme.md' -> '/docs/renamed.md'. For content changes, use edit_file on '/docs/readme.md' or write_file with path '/docs/renamed.md'.\n",
+					"Use the Files sidebar rename/move UI for app path '/docs/readme.md' -> '/docs/renamed.md'. For content changes, use edit_file on '/docs/readme.md'.\n",
 			);
 
 			const cpResult = await runner.run(
@@ -6231,7 +6203,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(cpResult.metadata.exitCode).not.toBe(0);
 			expect(cpResult.stderr).toContain("cannot write to app file");
-			expect(cpResult.stderr).toContain("write_file");
+			expect(cpResult.stderr).toContain("Agent mode");
 
 			expect(
 				runner.runMutation.mock.calls.some(
@@ -6241,6 +6213,249 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(
 				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:create_file_by_path"),
 			).toBe(false);
+		});
+
+		test("keeps Ask mode redirect, touch, and tee app writes rejected without creating proposals", async () => {
+			const runner = await create_bash_runner({ allowDbFilesMkdir: false });
+
+			const redirect = await runner.run(`printf hi > ${test_db_files_mount}/ask.md`);
+			const touched = await runner.run(`touch ${test_db_files_mount}/ask.md`);
+			const teed = await runner.run(`printf hi | tee ${test_db_files_mount}/ask.md`);
+
+			for (const result of [redirect, touched, teed]) {
+				expect(result.metadata.exitCode).not.toBe(0);
+				expect(result.stderr).toContain("Agent mode");
+			}
+			expect(
+				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:create_file_by_path"),
+			).toBe(false);
+			expect(await list_pending_updates(runner)).toHaveLength(0);
+		});
+
+		test("redirect write creates a pending proposal with eager creation and thread provenance", async () => {
+			const runner = await create_bash_runner();
+
+			const written = await runner.run(
+				`printf hello > ${test_db_files_mount}/note.md && cat ${test_db_files_mount}/note.md`,
+			);
+			expect(written.metadata.exitCode).toBe(0);
+			expect(written.stderr).toBe("");
+			// The chained cat proves resetProposalCaches: the same bash call reads the proposal back.
+			expect(written.stdout).toBe("hello");
+
+			// The destination node exists eagerly; the content lives in a pending update doc.
+			const destNode = await get_seeded_node(runner, "/note.md");
+			const pendingRows = await list_pending_updates(runner);
+			expect(pendingRows).toHaveLength(1);
+			expect(pendingRows[0]!.fileNodeId).toBe(destNode._id);
+			expect(pendingRows[0]!.eagerCreated).toBeDefined();
+			expect(pendingRows[0]!.threadIds).toEqual([runner.threadId]);
+		});
+
+		test("redirect overwrite and append on an existing file stay pending proposals", async () => {
+			// Pending upserts fetch the committed base yjs snapshot, so the target needs a real one.
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/docs/existing.md", content: "committed body\n", withRealYjsSnapshot: true }],
+			});
+
+			const overwritten = await runner.run(
+				`printf replaced > ${test_db_files_mount}/docs/existing.md && cat ${test_db_files_mount}/docs/existing.md`,
+			);
+			expect(overwritten.metadata.exitCode).toBe(0);
+			// Overwrite stores the bytes as written, like a real shell (printf adds no newline).
+			expect(overwritten.stdout).toBe("replaced");
+
+			const appended = await runner.run(
+				`printf ' extra' >> ${test_db_files_mount}/docs/existing.md && cat ${test_db_files_mount}/docs/existing.md`,
+			);
+			expect(appended.metadata.exitCode).toBe(0);
+			// Append builds on the user's own pending content and stays byte-faithful.
+			expect(appended.stdout).toBe("replaced extra");
+
+			const existingNode = await get_seeded_node(runner, "/docs/existing.md");
+			const pendingRows = await list_pending_updates(runner);
+			expect(pendingRows).toHaveLength(1);
+			expect(pendingRows[0]!.fileNodeId).toBe(existingNode._id);
+			// Pre-existing files must never carry the eager-created hard-delete stamp.
+			expect(pendingRows[0]!.eagerCreated).toBeUndefined();
+		});
+
+		test("heredoc redirect writes a multi-line pending proposal", async () => {
+			const runner = await create_bash_runner();
+
+			const heredoc = await runner.run(
+				[
+					`cat > ${test_db_files_mount}/heredoc.md <<'EOF'`,
+					"# Title",
+					"",
+					"Body line",
+					"EOF",
+					`cat ${test_db_files_mount}/heredoc.md`,
+				].join("\n"),
+			);
+			expect(heredoc.metadata.exitCode).toBe(0);
+			expect(heredoc.stderr).toBe("");
+			// A new file's baseline is empty, so the content is stored exactly as written,
+			// including the heredoc's trailing newline.
+			expect(heredoc.stdout).toBe("# Title\n\nBody line\n");
+		});
+
+		test("keeps the trailing newline on new files so appends start a new line", async () => {
+			const runner = await create_bash_runner();
+
+			const result = await runner.run(
+				`printf 'one\\n' > ${test_db_files_mount}/lines.md && printf 'two\\n' >> ${test_db_files_mount}/lines.md && cat ${test_db_files_mount}/lines.md`,
+			);
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe("one\ntwo\n");
+		});
+
+		test("bare redirect truncation becomes a pending empty-content proposal", async () => {
+			// Pending upserts fetch the committed base yjs snapshot, so the target needs a real one.
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/docs/existing.md", content: "committed body\n", withRealYjsSnapshot: true }],
+			});
+
+			const truncated = await runner.run(`> ${test_db_files_mount}/docs/existing.md`);
+			expect(truncated.metadata.exitCode).toBe(0);
+
+			// The next bash call still sees the pending truncation; the committed file is untouched.
+			const readBack = await runner.run(`cat ${test_db_files_mount}/docs/existing.md`);
+			expect(readBack.metadata.exitCode).toBe(0);
+			expect(readBack.stdout).toBe("");
+
+			const existingNode = await get_seeded_node(runner, "/docs/existing.md");
+			const pendingRows = await list_pending_updates(runner);
+			expect(pendingRows).toHaveLength(1);
+			expect(pendingRows[0]!.fileNodeId).toBe(existingNode._id);
+		});
+
+		test("touch creates an empty-file pending proposal and is a no-op on existing files", async () => {
+			const runner = await create_bash_runner();
+
+			const created = await runner.run(`touch ${test_db_files_mount}/new-note.md`);
+			expect(created.metadata.exitCode).toBe(0);
+			expect(created.stderr).toBe("");
+			expect(created.stdout).toBe("");
+
+			const destNode = await get_seeded_node(runner, "/new-note.md");
+			const pendingRows = await list_pending_updates(runner);
+			expect(pendingRows).toHaveLength(1);
+			expect(pendingRows[0]!.fileNodeId).toBe(destNode._id);
+			expect(pendingRows[0]!.eagerCreated).toBeDefined();
+
+			const existing = await runner.run(`touch ${test_db_files_mount}/docs/readme.md`);
+			expect(existing.metadata.exitCode).toBe(0);
+			expect(existing.stderr).toBe("");
+			// utimes is a no-op for app files: no new proposal on the existing file.
+			expect(await list_pending_updates(runner)).toHaveLength(1);
+		});
+
+		test("refuses creating a file at a silently normalized path but overwrites an existing normalized target", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/docs/my-note.md", content: "note body\n", withRealYjsSnapshot: true }],
+			});
+
+			// A missing dot-leading target would be created as 'hidden.md'; refuse instead of
+			// silently writing a different path than the shell reported success for.
+			const dotted = await runner.run(`printf x > ${test_db_files_mount}/.hidden.md`);
+			expect(dotted.metadata.exitCode).not.toBe(0);
+			expect(dotted.stderr).toContain("app file names are normalized");
+			expect(dotted.stderr).toContain(`${test_db_files_mount}/hidden.md`);
+			expect(
+				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:create_file_by_path"),
+			).toBe(false);
+			expect(await list_pending_updates(runner)).toHaveLength(0);
+
+			// When the normalized name lands on an existing file, that file is the overwrite
+			// target (cp's replace-target behavior), not a rejected create.
+			const normalizedHit = await runner.run(
+				`printf replaced > '${test_db_files_mount}/docs/my note.md' && cat ${test_db_files_mount}/docs/my-note.md`,
+			);
+			expect(normalizedHit.metadata.exitCode).toBe(0);
+			expect(normalizedHit.stdout).toBe("replaced");
+			const noteNode = await get_seeded_node(runner, "/docs/my-note.md");
+			const pendingRows = await list_pending_updates(runner);
+			expect(pendingRows).toHaveLength(1);
+			expect(pendingRows[0]!.fileNodeId).toBe(noteNode._id);
+			expect(pendingRows[0]!.eagerCreated).toBeUndefined();
+		});
+
+		test("tee writes app targets as pending proposals", async () => {
+			const runner = await create_bash_runner();
+
+			const teed = await runner.run(`printf hi | tee /tmp/out.txt ${test_db_files_mount}/tee-note.md`);
+			expect(teed.metadata.exitCode).toBe(0);
+			expect(teed.stderr).toBe("");
+			expect(teed.stdout).toBe("hi");
+
+			const readBack = await runner.run(`cat ${test_db_files_mount}/tee-note.md && cat /tmp/out.txt`);
+			expect(readBack.metadata.exitCode).toBe(0);
+			expect(readBack.stdout).toBe("hihi");
+
+			const appendTee = await runner.run(`printf ' more' | tee -a ${test_db_files_mount}/tee-note.md`);
+			expect(appendTee.metadata.exitCode).toBe(0);
+			expect(appendTee.stdout).toBe(" more");
+			const appendRead = await runner.run(`cat ${test_db_files_mount}/tee-note.md`);
+			expect(appendRead.stdout).toBe("hi more");
+
+			// A folder target surfaces the real error instead of the builtin's generic message.
+			const folderTee = await runner.run(`printf hi | tee ${test_db_files_mount}/docs`);
+			expect(folderTee.metadata.exitCode).not.toBe(0);
+			expect(folderTee.stderr).toContain("EISDIR");
+		});
+
+		test("tee mirrors builtin option handling before writing app targets", async () => {
+			const runner = await create_bash_runner();
+
+			// --help and invalid options delegate: the builtin exits before touching any file.
+			const help = await runner.run(`printf hi | tee --help ${test_db_files_mount}/tee-opt.md`);
+			expect(help.metadata.exitCode).toBe(0);
+			expect(help.stdout).toContain("Usage: tee");
+			const bogus = await runner.run(`printf hi | tee --bogus ${test_db_files_mount}/tee-opt.md`);
+			expect(bogus.metadata.exitCode).not.toBe(0);
+			expect(bogus.stderr).toContain("unrecognized option '--bogus'");
+			const badCluster = await runner.run(`printf hi | tee -ax ${test_db_files_mount}/tee-opt.md`);
+			expect(badCluster.metadata.exitCode).not.toBe(0);
+			expect(badCluster.stderr).toContain("invalid option -- 'x'");
+			expect(await list_pending_updates(runner)).toHaveLength(0);
+
+			// A clustered append flag still appends instead of silently overwriting.
+			const first = await runner.run(`printf hi | tee ${test_db_files_mount}/tee-opt.md`);
+			expect(first.metadata.exitCode).toBe(0);
+			const clustered = await runner.run(`printf ' more' | tee -aa ${test_db_files_mount}/tee-opt.md`);
+			expect(clustered.metadata.exitCode).toBe(0);
+			const readBack = await runner.run(`cat ${test_db_files_mount}/tee-opt.md`);
+			expect(readBack.stdout).toBe("hi more");
+		});
+
+		test("an oversized redirect to a new path removes the eager-created node", async () => {
+			const runner = await create_bash_runner();
+
+			// seq stops at 100k iterations (~589KB), so cat the file twice to pass the 900k
+			// byte cap, which fires after the eager create.
+			const result = await runner.run(
+				`seq 1 100000 > /tmp/big.txt && cat /tmp/big.txt /tmp/big.txt > ${test_db_files_mount}/big.md`,
+			);
+			expect(result.metadata.exitCode).not.toBe(0);
+			expect(result.stderr).toContain("exceeds the");
+			expect(result.stderr).toContain(`nothing was created at '${test_db_files_mount}/big.md'`);
+
+			// No committed node or pending row is left behind.
+			expect(await list_pending_updates(runner)).toHaveLength(0);
+			const orphan = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", runner.seeded.organizationId)
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("path", "/big.md")
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+			);
+			expect(orphan).toBeNull();
 		});
 
 		test("creates a pending copy proposal for app-to-app cp", async () => {
@@ -7216,7 +7431,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const nested = await run(`bash -c 'ls --limit 1 ${test_db_files_mount}/docs'`);
 			const nestedLoginForm = await run(`bash -lc 'ls --limit 1 ${test_db_files_mount}/docs'`);
 			const nestedMixed = await run(
-				`bash -c 'printf nested-ok > /tmp/nested-ok.txt && cat /tmp/nested-ok.txt'; bash -c 'printf blocked > ${test_db_files_mount}/nested-blocked.md'`,
+				`bash -c 'printf nested-ok > /tmp/nested-ok.txt && cat /tmp/nested-ok.txt'; bash -c 'printf blocked > /home/cloud-usr/nested-blocked.md'`,
+			);
+			const nestedAppWrite = await run(
+				`bash -c 'printf nested-app > ${test_db_files_mount}/nested-app.md && cat ${test_db_files_mount}/nested-app.md'`,
 			);
 			const xargsResult = await run(`printf '${test_db_files_mount}/docs/readme.md\\n' | xargs cat`);
 			const xargsParallel = await run("printf hi | xargs -P 2 echo");
@@ -7236,7 +7454,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(nestedLoginForm.stdout).toContain("nested/");
 			expect(nestedMixed.metadata.exitCode).not.toBe(0);
 			expect(nestedMixed.stdout).toContain("nested-ok");
-			expect(nestedMixed.stderr).toContain("shell redirects into app files are unsupported");
+			expect(nestedMixed.stderr).toContain("read-only file system");
+			// Nested shells share the outer fs, so app redirects create pending proposals there too.
+			expect(nestedAppWrite.metadata.exitCode).toBe(0);
+			expect(nestedAppWrite.stdout).toBe("nested-app");
 			expect(xargsResult.metadata.exitCode).toBe(0);
 			expect(xargsResult.stdout).toContain("unique-token");
 			expect(xargsParallel.metadata.exitCode).toBe(2);

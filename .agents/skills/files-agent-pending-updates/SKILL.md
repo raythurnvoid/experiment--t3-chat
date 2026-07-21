@@ -1,6 +1,6 @@
 ---
 name: files-agent-pending-updates
-description: Current `/files` pending-changes system: per-user Yjs content branches plus structural move, copy, replace, and eager-create proposals; diff review; accept, discard, save, and sync; AI and Bash file-tool overlays; indexed pending content; and TTL cleanup. Use when changing pending banners or tabs, write_file/edit_file/cp/mv proposals, pending path or content reads, search overlays, review actions, rebase/save behavior, or expiry.
+description: Current `/files` pending-changes system: per-user Yjs content branches plus structural move, copy, replace, and eager-create proposals; diff review; accept, discard, save, and sync; AI and Bash file-tool overlays; indexed pending content; and TTL cleanup. Use when changing pending banners or tabs, bash shell write/write_file/edit_file/cp/mv proposals, pending path or content reads, search overlays, review actions, rebase/save behavior, or expiry.
 ---
 
 # Content And Structural Proposal States
@@ -19,7 +19,7 @@ Structural state uses:
 
 - `pendingMove` for move or rename intent.
 - `copiedFrom` for copy or replace provenance.
-- `eagerCreated` when `write_file` or `cp` eagerly created a destination node so discard or expiry can remove it safely.
+- `eagerCreated` when `write_file`, a bash shell write, or `cp` eagerly created a destination node so discard or expiry can remove it safely.
 
 Move-only docs have no Yjs fields and use `size: 0`. Docs do not always disappear when the three content states match: eager-created docs, replace-move docs, and content-plus-move docs (`content_and_move` in code) may still need structural review.
 
@@ -136,9 +136,9 @@ Pending updates attach to Markdown-backed `files_nodes` docs.
 
 1. AI tools in `packages/app/server/server-ai-tools.ts` translate visible paths to committed paths through the current user's pending structural overlay, then read file content through `internal.files_nodes.get_file_last_available_markdown_content_by_path`, an internal action that can fetch committed Markdown from R2.
 2. That read path overlays the current user's pending `unstaged` branch when content exists. Pending destinations are visible, vacated or replaced paths are hidden, and descendants follow a pending folder move.
-3. `write_file` and `edit_file` normalize line endings/trailing newline shape, compute a preview diff, and call `internal.files_pending_updates.upsert_file_pending_update_internal_action` so the base Yjs state can be fetched from R2 before the mutation writes.
+3. `write_file`, `edit_file`, and Agent-mode bash shell writes (`bash_DbFilesFs.writeFile`/`appendFile` in `packages/app/server/bash-utils.ts`, reached by `>`/`>>` redirects, heredocs, `tee`, and `touch` on a new path — `touch` on an existing app file is a no-op) normalize CRLF line endings to LF (bash writes are otherwise byte-faithful, like a real shell) and call `internal.files_pending_updates.upsert_file_pending_update_internal_action` so the base Yjs state can be fetched from R2 before the mutation writes.
 4. Agent calls omit `stagedMarkdown`, so the backend preserves the current `staged` branch and updates only `unstaged`.
-5. `files_pending_updates` creates or updates a doc for `(organizationId, workspaceId, userId, fileNodeId)`. A missing `write_file` target may be eagerly created and recorded with `eagerCreated`.
+5. `files_pending_updates` creates or updates a doc for `(organizationId, workspaceId, userId, fileNodeId)`. A missing `write_file` or bash shell write target may be eagerly created and recorded with `eagerCreated`.
 6. `FileNodeView` queries `list_files_pending_updates`, filters content-bearing docs into the diff queue, and passes that queue to `FileEditor`, which renders the floating banner and pager.
 7. `Review changes` switches the `/files` route to `view=diff_editor`.
 8. `FileEditorDiff` bootstraps from the pending update doc if present, otherwise from live file Yjs state.

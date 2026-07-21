@@ -19,22 +19,29 @@ import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type {
+	files_nodes_create_file_by_path_Result,
 	files_nodes_create_folder_node_by_path_Result,
 	files_nodes_get_by_path_Result,
 	files_nodes_get_file_last_available_markdown_content_by_path_Result,
 	files_nodes_read_file_content_from_chunks_Result,
+	files_nodes_remove_eager_created_node_if_safe_Result,
 	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
 import type {
 	files_pending_updates_get_by_file_node_Result,
 	files_pending_updates_get_pending_path_overlay_data_Result,
+	upsert_file_pending_update_internal_action_Result,
 } from "../convex/files_pending_updates.ts";
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
+	files_MAX_TEXT_CONTENT_BYTES,
 	files_ROOT_ID,
 	files_SYNTHETIC_ROOT_FOLDER,
+	files_get_normalized_node_path_segments,
+	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
+	files_normalize_lf_newlines,
 	files_pending_path_overlay_build,
 	files_pending_path_overlay_project_committed_path,
 	files_pending_path_overlay_translate_path,
@@ -316,17 +323,53 @@ class ReadOnlyFileSystemError extends Error {
 	constructor(path: string, readOnlySource: bash_DbFilesFsOptions["readOnlySource"]) {
 		const normalizedPath = bash_normalize_path(path);
 		// The same filesystem class backs tenant app files, external mounts, and plugin
-		// source mounts. Read-only mount writes need separate messages because
-		// write_file/edit_file cannot edit read-only mounted sources.
+		// source mounts. Read-only mount writes need separate messages because no tool
+		// can edit read-only mounted sources. The tenant branch is only reachable from
+		// still-unsupported operations (rm, fs-level cp/mv, chmod, symlink, link).
 		const message =
 			readOnlySource === "codebase"
 				? `EROFS: read-only file system, '${normalizedPath}'. '${bash_EXTERNAL_MOUNTS_ROOT}' is a read-only mount of an external source.`
 				: readOnlySource === "plugins"
 					? `EROFS: read-only file system, '${normalizedPath}'. '${bash_PLUGINS_MOUNT_ROOT}' is a read-only mount of installed plugin sources.`
-					: `EROFS: read-only file system, '${normalizedPath}'. Persistent app-file writes must use write_file/edit_file; shell redirects into app files are unsupported.`;
+					: `EROFS: read-only file system, '${normalizedPath}'. This operation is not supported for app files. Create or overwrite app files with shell redirection (> or a heredoc), append with >>, or use edit_file for targeted edits.`;
 		super(message);
 		this.name = "ReadOnlyFileSystemError";
 		this.path = normalizedPath;
+	}
+}
+
+/**
+ * Decode Just Bash write content to a UTF-8 text string.
+ *
+ * Mirrors just-bash `toBuffer` for the encodings our callers use: redirection and
+ * `tee` pass `"binary"` (latin1, one byte per char code) for byte-shaped output and
+ * plain utf8 strings otherwise; builtin `touch` passes no encoding. App files store
+ * UTF-8 Markdown/text, so byte content that is not valid UTF-8 is rejected.
+ */
+function decode_write_content(
+	content: FileContent,
+	options: Parameters<IFileSystem["writeFile"]>[2],
+	shellPath: string,
+): string {
+	const encoding = typeof options === "string" ? options : options?.encoding;
+	let bytes: Uint8Array;
+	if (typeof content === "string") {
+		if (encoding !== "binary" && encoding !== "latin1") {
+			return content;
+		}
+		bytes = new Uint8Array(content.length);
+		for (let index = 0; index < content.length; index++) {
+			bytes[index] = content.charCodeAt(index) & 0xff;
+		}
+	} else {
+		bytes = content;
+	}
+	try {
+		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	} catch {
+		throw new Error(
+			`cannot write '${shellPath}': content is not valid UTF-8 text; app files store Markdown and plain text only`,
+		);
 	}
 }
 
@@ -526,12 +569,254 @@ export class bash_DbFilesFs implements IFileSystem {
 		return textEncoder.encode(await this.readFile(path));
 	}
 
-	async writeFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["writeFile"]>[2]) {
-		throw this.readOnlyFileSystemError(path);
+	async writeFile(path: string, content: FileContent, options?: Parameters<IFileSystem["writeFile"]>[2]) {
+		await this.proposeWrite(path, content, options, "overwrite");
 	}
 
-	async appendFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["appendFile"]>[2]) {
-		throw this.readOnlyFileSystemError(path);
+	async appendFile(path: string, content: FileContent, options?: Parameters<IFileSystem["appendFile"]>[2]) {
+		await this.proposeWrite(path, content, options, "append");
+	}
+
+	/**
+	 * Propose an app-file write as a pending update for shell writes (`>`, `>>`, `tee`,
+	 * builtin `touch`), Agent mode only. The committed file never changes here: a missing
+	 * target is eagerly created empty (like `write_file`/`cp`) and the content lands on the
+	 * user's pending unstaged branch for review in Files.
+	 *
+	 * Thrown errors become the whole command's stderr (redirection has no per-write catch
+	 * in Just Bash), so every message must tell the model what to do instead.
+	 *
+	 * Compound redirects (`{ ...; } > f`, bare `> f`, `exec > f`) pre-truncate with an
+	 * empty write before the content write: two upserts on the same pending doc, correct
+	 * end state, and the `eagerCreated` stamp from the first upsert survives.
+	 */
+	private async proposeWrite(
+		path: string,
+		content: FileContent,
+		options: Parameters<IFileSystem["writeFile"]>[2],
+		mode: "overwrite" | "append",
+	) {
+		const normalizedPath = bash_normalize_path(path);
+		if (this.readOnlySource != null) {
+			throw this.readOnlyFileSystemError(normalizedPath);
+		}
+		const requestedDbFilesPath = this.toDbFilesPath(normalizedPath);
+		const shellPath = this.shellPathOf(requestedDbFilesPath);
+		if (!this.allowDbFilesMkdir) {
+			throw new Error(
+				`App file writes are available in Agent mode. Ask mode cannot create or change app files: '${shellPath}'.`,
+			);
+		}
+		if (bash_GLOB_METACHARACTER_REGEX.test(requestedDbFilesPath)) {
+			throw new Error(`app file glob patterns are not supported: '${shellPath}'`);
+		}
+		// An existing occupant at the requested path always wins untouched: draft-name
+		// normalization (README casing, extension fixes) must never redirect a write away from
+		// a real target. Only a missing target normalizes, so eager creation names new files
+		// exactly like cp and the UI create flow.
+		let dbFilesPath = requestedDbFilesPath;
+		let entry = await this.getEntry(dbFilesPath);
+		if (!entry) {
+			const normalizedSegments = files_get_normalized_node_path_segments({
+				kind: "file",
+				nameOrPath: requestedDbFilesPath,
+			});
+			if (!normalizedSegments || "validationMessage" in normalizedSegments) {
+				throw new Error(
+					`cannot write '${shellPath}': invalid app file path${
+						normalizedSegments ? `: ${normalizedSegments.validationMessage}` : ""
+					}`,
+				);
+			}
+			const normalizedDbFilesPath = `/${normalizedSegments.normalizedPathSegments.join("/")}`;
+			if (normalizedDbFilesPath !== dbFilesPath) {
+				// The normalized name can land on an existing node; that node becomes the
+				// overwrite target (cp's replace-target re-check). Creating at a silently
+				// renamed path is a trap instead: the redirect reports success while the
+				// requested path stays missing, so refuse and name the valid path.
+				entry = await this.getEntry(normalizedDbFilesPath);
+				if (!entry) {
+					throw new Error(
+						`cannot write '${shellPath}': app file names are normalized; write to '${this.shellPathOf(normalizedDbFilesPath)}' instead`,
+					);
+				}
+				dbFilesPath = normalizedDbFilesPath;
+			}
+		}
+		if (entry?.kind === "folder") {
+			throw new Error(`EISDIR: illegal operation on a directory, open '${shellPath}'`);
+		}
+		const chunk = decode_write_content(content, options, shellPath);
+
+		// Writes only run for the tenant app db-files root: the mounted sources threw above,
+		// so the scope here is never reserved. Narrow the union for the workspace-only functions.
+		const { organizationId, workspaceId, userId, threadId } = this.ctxData;
+		if (organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)) {
+			throw should_never_happen("app file write reached the reserved mount scope", { organizationId, workspaceId });
+		}
+
+		// Full current content including the user's own pending overlay; never this.readFile,
+		// which caps inline reads and would truncate the append baseline. The chunk read
+		// serves the stored markdown verbatim; the last-available action reconstructs
+		// through the yjs branch, which is not always byte-identical to the stored text,
+		// so it stays the fallback for content chunks cannot serve.
+		let currentContent: {
+			nodeId: Id<"files_nodes">;
+			content: string;
+			pendingUpdateId: Id<"files_pending_updates"> | null;
+		} | null = (await this.ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId,
+			workspaceId,
+			userId,
+			path: dbFilesPath,
+			overlayUserId: userId,
+			mode: { kind: "full", maxBytes: files_MAX_TEXT_CONTENT_BYTES },
+		})) as files_nodes_read_file_content_from_chunks_Result;
+		if (!currentContent && entry != null) {
+			currentContent = (await this.ctx.runAction(
+				internal.files_nodes.get_file_last_available_markdown_content_by_path,
+				{
+					organizationId,
+					workspaceId,
+					userId,
+					path: dbFilesPath,
+					overlayUserId: userId,
+				},
+			)) as files_nodes_get_file_last_available_markdown_content_by_path_Result;
+		}
+		if (!currentContent && entry?.kind === "file") {
+			throw new Error(
+				`cannot write '${shellPath}': this file's content type ('${entry.contentType ?? "unknown"}') is not editable as text`,
+			);
+		}
+
+		let nodeId: Id<"files_nodes">;
+		let eagerCreatedCommittedSequence: number | undefined;
+		let createdAncestorIds: Id<"files_nodes">[] | undefined;
+		if (currentContent) {
+			nodeId = currentContent.nodeId;
+		} else {
+			// Missing target: eager create like write_file/cp. The visible path must respect the
+			// user's pending moves: a vacated path keeps its committed occupant, and a path inside
+			// a moved folder's claimed area creates at the committed join so the new file travels
+			// with the folder on accept.
+			const overlay = await this.getOverlay();
+			const translated = overlay == null ? null : files_pending_path_overlay_translate_path(overlay, dbFilesPath);
+			if (translated?.kind === "hidden") {
+				throw new Error(
+					`cannot write '${shellPath}': a pending move or replace vacated this path. Accept or discard that proposal first, or choose a different destination path.`,
+				);
+			}
+			const nearestAncestor = await this.getNearestVisibleAncestor(dbFilesPath);
+			if (nearestAncestor?.kind === "file") {
+				throw new Error(
+					`cannot write '${shellPath}': '${this.shellPathOf(nearestAncestor.path)}' is a file, not a folder`,
+				);
+			}
+			const creationPath = translated?.kind === "redirected" ? translated.committedPath : dbFilesPath;
+			const created = (await this.ctx.runAction(internal.files_nodes.create_file_by_path, {
+				organizationId,
+				workspaceId,
+				userId,
+				path: creationPath,
+			})) as files_nodes_create_file_by_path_Result;
+			if (created._nay) {
+				throw new Error(`cannot write '${shellPath}': ${created._nay.message}`);
+			}
+			nodeId = created._yay.nodeId;
+			if (created._yay.created) {
+				// The stamp is the creation-time sequence, so a save landing before the upsert
+				// below keeps the node safe from discard/expiry hard deletes.
+				eagerCreatedCommittedSequence = created._yay.createdCommittedSequence;
+				createdAncestorIds = created._yay.createdAncestorIds;
+			} else {
+				// A raced creation reused a pre-existing node: re-read so the proposal overwrites
+				// that content instead of pretending the file is new.
+				currentContent = (await this.ctx.runAction(
+					internal.files_nodes.get_file_last_available_markdown_content_by_path,
+					{
+						organizationId,
+						workspaceId,
+						userId,
+						path: dbFilesPath,
+						overlayUserId: userId,
+					},
+				)) as files_nodes_get_file_last_available_markdown_content_by_path_Result;
+				if (!currentContent) {
+					throw new Error(
+						`cannot write '${shellPath}': the file changed while the command was running. Re-run the command.`,
+					);
+				}
+				nodeId = currentContent.nodeId;
+			}
+		}
+
+		const oldText = currentContent?.content ?? "";
+		// Real shell behavior: overwrite stores the bytes as written (only CRLF is
+		// normalized) and append concatenates, so a shell-written trailing newline
+		// survives and a later `>>` starts on a new line instead of gluing.
+		const normalizedChunk = files_normalize_lf_newlines(chunk);
+		const newText = mode === "append" ? oldText + normalizedChunk : normalizedChunk;
+
+		// A failure after the eager create (size cap, upsert) would leave the just-created empty node behind.
+		// Best-effort compensation: remove it while it is still provably untouched; a cleanup
+		// failure must never mask the original write error.
+		const eager_created_failure_note = async () => {
+			if (eagerCreatedCommittedSequence === undefined) {
+				return "";
+			}
+			try {
+				const removal = (await this.ctx.runMutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+					organizationId,
+					workspaceId,
+					userId,
+					nodeId,
+					eagerCreatedCommittedSequence,
+					createdAncestorIds,
+				})) as files_nodes_remove_eager_created_node_if_safe_Result;
+				if (removal._yay?.removed) {
+					return removal._yay.ancestorsLeft > 0
+						? ` — empty folders created for '${shellPath}' were left behind; remove them in Files if they are not wanted`
+						: ` — nothing was created at '${shellPath}'`;
+				}
+			} catch (cleanupError) {
+				console.error("bash app-file write failed to remove the eagerly created node after a failed write", cleanupError);
+			}
+			return ` — an empty file was left behind at '${shellPath}'; remove it in Files if it is not wanted`;
+		};
+		if (files_get_utf8_byte_size(newText) > files_MAX_TEXT_CONTENT_BYTES) {
+			throw new Error(
+				`cannot write '${shellPath}': content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte app file limit${await eager_created_failure_note()}`,
+			);
+		}
+		let upserted: upsert_file_pending_update_internal_action_Result;
+		try {
+			upserted = (await this.ctx.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+				organizationId,
+				workspaceId,
+				userId,
+				nodeId,
+				pendingUpdateId: currentContent?.pendingUpdateId ?? undefined,
+				unstagedMarkdown: newText,
+				eagerCreatedCommittedSequence,
+				// Recorded on the pending update doc so Discard/TTL expiry can also remove the
+				// parent folders this write eagerly created.
+				eagerCreatedAncestorIds: createdAncestorIds,
+				threadId: threadId ?? undefined,
+			})) as upsert_file_pending_update_internal_action_Result;
+		} catch (error) {
+			if (eagerCreatedCommittedSequence === undefined) {
+				throw error;
+			}
+			throw new Error(`cannot write '${shellPath}': the proposal was not recorded.${await eager_created_failure_note()}`, {
+				cause: error,
+			});
+		}
+		if (upserted._nay) {
+			throw new Error(`cannot write '${shellPath}': ${upserted._nay.message}${await eager_created_failure_note()}`);
+		}
+		// Later commands chained in this same bash call must see the new proposal.
+		this.resetProposalCaches();
 	}
 
 	async exists(path: string) {
@@ -704,7 +989,18 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	async utimes(path: string, _atime: Date, _mtime: Date) {
-		throw this.readOnlyFileSystemError(path);
+		// Builtin touch always calls utimes after creating or finding its target. App files
+		// keep their own updatedAt, so Agent-mode app-tree utimes is a silent no-op; mounts
+		// and Ask mode keep rejecting like every other write.
+		if (this.readOnlySource != null) {
+			throw this.readOnlyFileSystemError(path);
+		}
+		if (!this.allowDbFilesMkdir) {
+			const shellPath = this.shellPathOf(this.toDbFilesPath(bash_normalize_path(path)));
+			throw new Error(
+				`App file writes are available in Agent mode. Ask mode cannot create or change app files: '${shellPath}'.`,
+			);
+		}
 	}
 
 	/**

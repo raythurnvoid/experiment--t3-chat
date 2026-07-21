@@ -361,7 +361,7 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 	test("adopts the incoming remote branch when local and remote markdown already match", () => {
 		const previousRemoteYjsDoc = createYjsDocFromMarkdown("# Base");
 		const nextRemoteYjsDoc = files_yjs_doc_clone({ yjsDoc: previousRemoteYjsDoc });
-		const matchingMarkdown = "# Base\n\nAlready synced";
+		const matchingMarkdown = "# Base\n\nAlready synced\n";
 
 		const nextRemoteProjectionResult = files_yjs_doc_update_from_markdown({
 			mut_yjsDoc: nextRemoteYjsDoc,

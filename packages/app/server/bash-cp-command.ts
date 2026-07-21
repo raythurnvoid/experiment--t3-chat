@@ -83,7 +83,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			}
 		}
 		// App destinations: an app→app copy becomes a pending proposal in Agent mode; every
-		// other write INTO the app tree stays rejected and routes straight to write_file so
+		// other write INTO the app tree stays rejected and routes to a shell redirect so
 		// the model does not retry cp.
 		if (
 			operands.length === 2 &&
@@ -362,22 +362,37 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			}
 			let destDbFilesPath =
 				bash_current_workspace_path_to_db_files_path(currentWorkspacePath, destShellPath) ?? operands[1];
+			let redirectDestShellPath = destShellPath;
 			try {
 				const destStat = await commandCtx.fs.stat(destShellPath);
 				if (destStat.isDirectory) {
 					const nativeDirectoryDestPath = bash_normalize_path(`${destShellPath}/${path_name_of(sourceShellPath)}`);
 					destDbFilesPath =
 						bash_current_workspace_path_to_db_files_path(currentWorkspacePath, nativeDirectoryDestPath) ?? destDbFilesPath;
+					redirectDestShellPath = nativeDirectoryDestPath;
 				}
 			} catch {
 				// Missing destinations are normal; the rejected write target is the operand itself.
 			}
+			// Agent mode only reaches here with a non-app source (app→app already proposed above);
+			// Ask mode reaches here for every app destination.
+			// `cat` on a folder source would create the destination proposal first and then fail,
+			// so the redirect recovery is only suggested for a file source.
+			let sourceIsFile = false;
+			try {
+				sourceIsFile = (await commandCtx.fs.stat(sourceShellPath)).isFile;
+			} catch {
+				// A missing source keeps the generic guidance.
+			}
 			return {
 				stdout: "",
-				stderr:
-					`cp: cannot write to app file '${operands[1]}': the app file tree is read-only for cp.\n` +
-					`To create a durable copy at '${destDbFilesPath}', use write_file with path '${destDbFilesPath}' and the content read from the source.\n` +
-					`cp into the app tree is never supported; only cp <app-file> /tmp[/<name>] (scratch copy) is allowed.\n`,
+				stderr: dbFilesRoots.app.fs.allowDbFilesMkdir
+					? `cp: cannot write to app file '${operands[1]}': only app files can be copied within the app tree.\n` +
+						(sourceIsFile
+							? `To propose that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(operands[0])} > ${bash_shell_arg_quote(redirectDestShellPath)} — it creates a pending proposal the user reviews in Files.\n`
+							: "")
+					: `cp: cannot write to app file '${operands[1]}' in Ask mode.\n` +
+						"App file writes are available in Agent mode; Ask mode is read-only for app files.\n",
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
@@ -388,7 +403,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				stderr:
 					"cp: app files can only be copied as one exact readable file to a /tmp destination.\n" +
 					"Usage: cp <app-file> /tmp[/<name>] - copies the file content to durable per-thread /tmp scratch space.\n" +
-					"To duplicate an app file as a new durable file, use write_file with the new app file path (strip the current workspace path prefix).\n",
+					"To duplicate an app file as a new durable file, use cp <app-file> <new-app-path> — it creates a pending copy the user reviews in Files.\n",
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
@@ -399,7 +414,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			const destDbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, destShellPath);
 			const destHint =
 				destDbFilesPath != null
-					? `To create a durable copy at '${destDbFilesPath}', use write_file with path '${destDbFilesPath}' and the content read from the source.`
+					? `To propose that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(operands[0])} > ${bash_shell_arg_quote(destShellPath)}`
 					: "Choose a /tmp/<name> destination for a scratch copy.";
 			return {
 				stdout: "",

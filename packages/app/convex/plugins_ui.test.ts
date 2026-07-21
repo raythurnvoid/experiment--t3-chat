@@ -296,6 +296,7 @@ async function seed_pending_markdown_node(
 			nodeId: created._yay.nodeId,
 			update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
 			sessionId: `plugin-ui-ttl-${filename}`,
+			materializeImmediately: false,
 		}),
 	);
 	yjsDoc.destroy();
