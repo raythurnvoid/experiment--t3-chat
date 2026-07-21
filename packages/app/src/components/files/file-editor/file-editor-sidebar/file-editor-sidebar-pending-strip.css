@@ -9,36 +9,62 @@
 		flex: none;
 		width: 100%;
 		height: 42px;
-		margin-bottom: 8px;
 		padding: 0px 12px;
 
-		border: 1px solid var(--color-fg-02);
-		border-radius: 10px;
-		background: color-mix(in oklch, var(--color-accent-07) 12%, var(--color-base-1-03));
+		/*
+		Looks like a table row attached on top of the composer input. The input
+		top border draws the break line between the strip and the input.
+		*/
+		border: 1px solid var(--color-base-1-07);
+		border-bottom: none;
+		border-radius: 6px 6px 0 0;
+		background: var(--color-base-1-04);
 
 		font-size: 0.875rem;
 		line-height: 1;
+		color: var(--color-fg-07);
 		cursor: pointer;
 		user-select: none;
 
-		transition: background-color 0.15s ease;
+		transition:
+			background-color 0.1s linear,
+			color 0.1s linear,
+			box-shadow 0.1s linear;
 
 		/* Focus-visible outline color comes from the global `*:focus-visible` rule. */
-		&:hover {
-			background: color-mix(in oklch, var(--color-accent-07) 12%, var(--color-base-1-04));
+		&:hover,
+		&:focus-visible {
+			background: var(--color-base-1-05);
+			color: var(--color-fg-11);
 		}
+
+		&:active {
+			background: var(--color-base-1-06);
+			color: var(--color-fg-12);
+
+			/* Pressed depth like regular buttons. */
+			box-shadow:
+				inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
+				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
+		}
+	}
+
+	/* Square the input's top corners while the strip is attached above it. */
+	.AiChatThread-composer-stack:has(> .FileEditorSidebarPendingStrip)
+		.AiChatComposer-editor
+		> :is(.MyInputBackground, .MyInputBox) {
+		border-top-left-radius: 0;
+		border-top-right-radius: 0;
 	}
 
 	.FileEditorSidebarPendingStrip-icon {
 		flex: none;
 		width: 16px;
 		height: 16px;
-		color: var(--color-accent-07);
 	}
 
 	.FileEditorSidebarPendingStrip-count {
 		flex: none;
-		color: var(--color-accent-08);
 		font-weight: 600;
 		font-variant-numeric: tabular-nums;
 	}
@@ -51,8 +77,6 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		text-align: left;
-
-		color: var(--color-fg-06);
 	}
 
 	.FileEditorSidebarPendingStrip-review {
@@ -61,12 +85,16 @@
 		gap: 2px;
 
 		flex: none;
-		color: var(--color-fg-05);
-		transition: color 0.15s ease;
+		color: var(--color-accent-07);
+		transition: color 0.1s linear;
 	}
 
 	.FileEditorSidebarPendingStrip:hover .FileEditorSidebarPendingStrip-review {
-		color: var(--color-fg-08);
+		color: var(--color-accent-08);
+	}
+
+	.FileEditorSidebarPendingStrip:active .FileEditorSidebarPendingStrip-review {
+		color: var(--color-accent-09);
 	}
 
 	.FileEditorSidebarPendingStrip-review-chevron {
