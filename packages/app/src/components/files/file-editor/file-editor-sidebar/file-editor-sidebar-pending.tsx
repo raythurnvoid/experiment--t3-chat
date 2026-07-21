@@ -1,6 +1,6 @@
 import "./file-editor-sidebar-pending.css";
 import { CheckCheck, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
-import { memo, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPatch } from "diff";
 import { useConvex, useQuery } from "convex/react";
 import { toast } from "sonner";
@@ -15,6 +15,7 @@ import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block
 import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
 import {
 	files_ROOT_ID,
+	files_fetch_file_yjs_state_and_markdown,
 	files_pending_update_has_yjs_content,
 	files_yjs_doc_create_from_array_buffer_update,
 	files_yjs_doc_get_markdown,
@@ -39,7 +40,7 @@ const PENDING_BENIGN_NAY_MESSAGES = new Set(["Stale save"]);
 type FileEditorSidebarPendingRow = {
 	pendingUpdate: app_convex_Doc<"files_pending_updates">;
 	path: string;
-	kind: "content" | "move" | "copy" | "content_and_move";
+	kind: "content" | "move" | "copy" | "content_and_move" | "delete";
 	nodeKind: app_convex_Doc<"files_nodes">["kind"] | undefined;
 	moveDestinationPath: string | undefined;
 	/**
@@ -100,15 +101,19 @@ function build_pending_rows(
 	return pendingUpdates
 		.map((pendingUpdate) => {
 			const node = nodesById.get(pendingUpdate.fileNodeId);
-			const { pendingMove, copiedFrom } = pendingUpdate;
+			const { pendingMove, copiedFrom, pendingArchive } = pendingUpdate;
 
-			const kind = pendingMove
-				? files_pending_update_has_yjs_content(pendingUpdate)
-					? ("content_and_move" as const)
-					: ("move" as const)
-				: copiedFrom
-					? ("copy" as const)
-					: ("content" as const);
+			// A pending delete supersedes every other aspect of the doc (the upsert already
+			// clears pendingMove; content branches survive but accept ignores them).
+			const kind = pendingArchive
+				? ("delete" as const)
+				: pendingMove
+					? files_pending_update_has_yjs_content(pendingUpdate)
+						? ("content_and_move" as const)
+						: ("move" as const)
+					: copiedFrom
+						? ("copy" as const)
+						: ("content" as const);
 
 			let moveDestinationPath: string | undefined;
 			let replacesName: string | undefined;
@@ -146,7 +151,7 @@ function build_pending_rows(
 
 			return {
 				pendingUpdate,
-				path: node?.path ?? pendingMove?.fromPath ?? PENDING_MISSING_PATH_LABEL,
+				path: node?.path ?? pendingArchive?.fromPath ?? pendingMove?.fromPath ?? PENDING_MISSING_PATH_LABEL,
 				kind,
 				nodeKind: node?.kind,
 				moveDestinationPath,
@@ -308,6 +313,15 @@ async function files_pending_row_accept(
 	membershipId: app_convex_Id<"organizations_workspaces_users">,
 	pendingUpdate: app_convex_Doc<"files_pending_updates">,
 ) {
+	// A delete row never falls through: accept archives the node (a folder with its whole
+	// subtree) and ignores any content branches left on the doc.
+	if (pendingUpdate.pendingArchive) {
+		return await convex.mutation(app_convex_api.files_pending_updates.apply_file_pending_archive, {
+			membershipId,
+			nodeId: pendingUpdate.fileNodeId,
+		});
+	}
+
 	if (pendingUpdate.pendingMove) {
 		const moved = await convex.mutation(app_convex_api.files_pending_updates.apply_file_pending_move, {
 			membershipId,
@@ -335,6 +349,15 @@ async function files_pending_row_discard(
 	membershipId: app_convex_Id<"organizations_workspaces_users">,
 	pendingUpdate: app_convex_Doc<"files_pending_updates">,
 ) {
+	// A delete row discards structurally only: committed content never changed under the
+	// delete, and the server keeps a content proposal on the doc alive as a Modified row.
+	if (pendingUpdate.pendingArchive) {
+		return await convex.mutation(app_convex_api.files_pending_updates.discard_file_pending_structural, {
+			membershipId,
+			nodeId: pendingUpdate.fileNodeId,
+		});
+	}
+
 	if (!pendingUpdate.pendingMove && !pendingUpdate.copiedFrom && !pendingUpdate.eagerCreated) {
 		return await files_pending_discard(convex, membershipId, pendingUpdate);
 	}
@@ -364,7 +387,25 @@ async function files_pending_row_discard(
 async function files_pending_rows_run_bulk(
 	rows: FileEditorSidebarPendingRow[],
 	run: (row: FileEditorSidebarPendingRow) => Promise<{ _nay?: { message?: string } | null }>,
-) {
+): Promise<number> {
+	// Delete rows run as their own trailing phase, one at a time with parent folders first:
+	// accepting a folder delete archives its whole subtree, which would fail content/move
+	// accepts inside it that are still running, and a descendant delete accepted concurrently
+	// (or before its folder) would archive under its own operation id, so unarchiving the
+	// folder would leave that descendant archived.
+	const deleteRows = rows.filter((row) => row.pendingUpdate.pendingArchive != null);
+	if (deleteRows.length > 0 && rows.length > 1) {
+		const otherRows = rows.filter((row) => row.pendingUpdate.pendingArchive == null);
+		let failedCount = otherRows.length > 0 ? await files_pending_rows_run_bulk(otherRows, run) : 0;
+		// Plain string order puts a folder before its descendants because the folder path is
+		// a strict prefix of theirs.
+		const orderedDeleteRows = [...deleteRows].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+		for (const deleteRow of orderedDeleteRows) {
+			failedCount += await files_pending_rows_run_bulk([deleteRow], run);
+		}
+		return failedCount;
+	}
+
 	// Group rows into dependency units. `moveDestinationPath` is the committed destination path,
 	// so it matches the committed `path` of the row it depends on. Move cycles (swaps) can exist;
 	// the chain-membership check stops the walk there, and the cycle lands in one unit — the
@@ -467,6 +508,7 @@ type FileEditorSidebarPendingItem_Props = {
 	pendingUpdate: app_convex_Doc<"files_pending_updates">;
 	path: string;
 	kind: FileEditorSidebarPendingRow["kind"];
+	nodeKind: FileEditorSidebarPendingRow["nodeKind"];
 	moveDestinationPath: string | undefined;
 	replacesName: string | undefined;
 	isAddedFile: boolean;
@@ -482,6 +524,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		pendingUpdate,
 		path,
 		kind,
+		nodeKind,
 		moveDestinationPath,
 		replacesName,
 		isAddedFile,
@@ -495,16 +538,55 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	const [isOpen, setIsOpen] = useState(false);
 	const [isBusy, setIsBusy] = useState(false);
 
+	// Deletion diff data: a delete doc has no content branches, so the committed markdown
+	// loads lazily on first expand (same helper the diff editor uses).
+	const [deletedCommittedMarkdown, setDeletedCommittedMarkdown] = useState<string | null>(null);
+	useEffect(() => {
+		if (kind !== "delete") {
+			// Discarding a delete can flip this row back to a content kind while the doc (and
+			// this item) survives; drop the cache so a later delete reloads fresh committed content.
+			setDeletedCommittedMarkdown(null);
+			return;
+		}
+		if (!isOpen || deletedCommittedMarkdown != null) {
+			return;
+		}
+		let cancelled = false;
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
+			const fileContentData = await files_fetch_file_yjs_state_and_markdown({
+				membershipId,
+				nodeId: pendingUpdate.fileNodeId,
+			});
+			if (cancelled || !fileContentData || fileContentData.markdown._nay) {
+				return;
+			}
+			setDeletedCommittedMarkdown(fileContentData.markdown._yay);
+		})().catch((error) => {
+			console.error("[FileEditorSidebarPending] Failed to load the deleted file content", {
+				error,
+				nodeId: pendingUpdate.fileNodeId,
+			});
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [isOpen, kind, deletedCommittedMarkdown, membershipId, pendingUpdate.fileNodeId]);
+
 	// Decode lazily: `files_yjs_doc_get_markdown` spins up a headless Tiptap editor, so only build the
 	// diff once the accordion is open. The pending-update prop ref changes only when the doc data changes.
 	const diffText = useMemo(() => {
 		if (!isOpen) return null;
+		if (kind === "delete") {
+			// The whole committed content shows as removed lines.
+			return deletedCommittedMarkdown != null ? createPatch(path, deletedCommittedMarkdown, "") : null;
+		}
 		const decoded = decode_staged_unstaged(pendingUpdate);
 		if (decoded._nay) {
 			return null;
 		}
 		return createPatch(path, decoded._yay.stagedMarkdown, decoded._yay.unstagedMarkdown);
-	}, [isOpen, pendingUpdate, path]);
+	}, [isOpen, kind, deletedCommittedMarkdown, pendingUpdate, path]);
 
 	const handleToggle = useFn((event: { currentTarget: HTMLDetailsElement }) => {
 		setIsOpen(event.currentTarget.open);
@@ -520,9 +602,11 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// Names the row for the action buttons' aria-labels and the panel's status announcements, so
 	// "Accept" reads as for example "Accept move of /a.md to /b.md".
 	const actionLabel =
-		(kind === "move" || kind === "content_and_move") && moveDestinationPath != null
-			? `move of ${path} to ${moveDestinationPath}`
-			: `changes to ${path}`;
+		kind === "delete"
+			? `delete of ${path}`
+			: (kind === "move" || kind === "content_and_move") && moveDestinationPath != null
+				? `move of ${path} to ${moveDestinationPath}`
+				: `changes to ${path}`;
 
 	// `preventDefault()` stops the native <summary> from toggling when the action buttons are clicked.
 	const handleAccept = useFn((event: MouseEvent<HTMLButtonElement>) => {
@@ -583,10 +667,10 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 			});
 	});
 
-	// Move-only rows have no content to diff: render a plain row (no accordion, no diff link)
-	// with the source and destination paths in a single truncatable label.
-	if (kind === "move") {
-		const moveLabel = moveDestinationPath != null ? `${path} → ${moveDestinationPath}` : path;
+	// Move-only rows have no content to diff, and neither do folder (or unknown-node) delete
+	// rows: render a plain row (no accordion, no diff link) with a single truncatable label.
+	if (kind === "move" || (kind === "delete" && nodeKind !== "file")) {
+		const moveLabel = kind === "move" && moveDestinationPath != null ? `${path} → ${moveDestinationPath}` : path;
 		return (
 			<li>
 				<div
@@ -603,17 +687,21 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						aria-label={moveLabel}
 						title={moveLabel}
 					>
-						{moveDestinationPath != null ? (
+						{kind === "move" && moveDestinationPath != null ? (
 							<PendingMoveLabel path={path} moveDestinationPath={moveDestinationPath} />
 						) : (
 							<span
-								className={cn("FileEditorSidebarPending-item-move-label" satisfies FileEditorSidebarPending_ClassNames)}
+								className={cn(
+									"FileEditorSidebarPending-item-move-label" satisfies FileEditorSidebarPending_ClassNames,
+									kind === "delete" &&
+										("FileEditorSidebarPending-item-path-text-deleted" satisfies FileEditorSidebarPending_ClassNames),
+								)}
 							>
 								{path}
 							</span>
 						)}
 						<span className={cn("FileEditorSidebarPending-item-caption" satisfies FileEditorSidebarPending_ClassNames)}>
-							{replacesName != null ? `Replaces ${replacesName}` : "Moved"}
+							{kind === "delete" ? "Deleted" : replacesName != null ? `Replaces ${replacesName}` : "Moved"}
 						</span>
 					</MyLink>
 					<span className={cn("FileEditorSidebarPending-item-actions" satisfies FileEditorSidebarPending_ClassNames)}>
@@ -642,28 +730,32 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		);
 	}
 
-	// Short neutral helper describing what accepting does, always visible. The replace indicator
-	// wins the slot: a move onto an occupied destination archives that file, so name it live.
+	// Short neutral helper describing what accepting does, always visible. Deleted wins over
+	// everything (a delete supersedes the doc's other aspects). The replace indicator wins the
+	// next slot: a move onto an occupied destination archives that file, so name it live.
 	// Replace-moves and non-eager-created copies replace the target's content (a replace-move also
 	// archives the source). Plain edits show Modified.
 	const caption =
-		replacesName != null
-			? `Replaces ${replacesName}`
-			: isAddedFile
-				? "Added"
-				: kind === "content_and_move"
-					? "Moved"
-					: kind === "copy"
-						? "Replaced"
-						: "Modified";
+		kind === "delete"
+			? "Deleted"
+			: replacesName != null
+				? `Replaces ${replacesName}`
+				: isAddedFile
+					? "Added"
+					: kind === "content_and_move"
+						? "Moved"
+						: kind === "copy"
+							? "Replaced"
+							: "Modified";
 
 	// Content-plus-move rows show the same red → green move label as move-only rows; the link
 	// still opens the diff. Replace-move rows (`mv -f`) show "source → target": the source
-	// disappears (red) and its content lands on the target (green).
+	// disappears (red) and its content lands on the target (green). Delete rows always show
+	// only their own path.
 	const rowLabel =
 		kind === "content_and_move" && moveDestinationPath != null
 			? `${path} → ${moveDestinationPath}`
-			: replaceSourcePath != null
+			: kind !== "delete" && replaceSourcePath != null
 				? `${replaceSourcePath} → ${path}`
 				: path;
 
@@ -682,20 +774,28 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						className={cn("FileEditorSidebarPending-item-path" satisfies FileEditorSidebarPending_ClassNames)}
 						to="/w/$organizationName/$workspaceName/files"
 						params={{ organizationName, workspaceName }}
-						search={{ nodeId: pendingUpdate.fileNodeId, view: "diff_editor" }}
+						search={
+							// The diff editor cannot represent a deleted file; the inline preview below
+							// is the deletion diff, and the link opens the file itself.
+							kind === "delete"
+								? { nodeId: pendingUpdate.fileNodeId }
+								: { nodeId: pendingUpdate.fileNodeId, view: "diff_editor" }
+						}
 						aria-label={rowLabel}
 						title={rowLabel}
 					>
 						{kind === "content_and_move" && moveDestinationPath != null ? (
 							<PendingMoveLabel path={path} moveDestinationPath={moveDestinationPath} />
-						) : replaceSourcePath != null ? (
+						) : kind !== "delete" && replaceSourcePath != null ? (
 							<PendingMoveLabel path={replaceSourcePath} moveDestinationPath={path} />
 						) : (
 							<PendingPathText
 								path={path}
 								className={cn(
-									isAddedFile &&
-										("FileEditorSidebarPending-item-path-text-added" satisfies FileEditorSidebarPending_ClassNames),
+									kind === "delete"
+										? ("FileEditorSidebarPending-item-path-text-deleted" satisfies FileEditorSidebarPending_ClassNames)
+										: isAddedFile &&
+												("FileEditorSidebarPending-item-path-text-added" satisfies FileEditorSidebarPending_ClassNames),
 								)}
 							/>
 						)}
@@ -759,7 +859,8 @@ export type FileEditorSidebarPending_ClassNames =
 	| "FileEditorSidebarPending-item-move-label-from"
 	| "FileEditorSidebarPending-item-move-label-to"
 	| "FileEditorSidebarPending-item-caption"
-	| "FileEditorSidebarPending-item-path-text-added";
+	| "FileEditorSidebarPending-item-path-text-added"
+	| "FileEditorSidebarPending-item-path-text-deleted";
 
 export const FileEditorSidebarPending = memo(function FileEditorSidebarPending() {
 	const { membershipId } = AppTenantProvider.useContext();
@@ -906,6 +1007,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							pendingUpdate={row.pendingUpdate}
 							path={row.path}
 							kind={row.kind}
+							nodeKind={row.nodeKind}
 							moveDestinationPath={row.moveDestinationPath}
 							replacesName={row.replacesName}
 							isAddedFile={row.isAddedFile}
@@ -934,6 +1036,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		pendingMove?: { destParentId: string; destName: string; fromPath: string; replacesNodeId?: string };
 		copiedFrom?: { nodeId: string; path: string; archivesSourceOnAccept?: boolean };
 		eagerCreated?: { committedSequence: number };
+		pendingArchive?: { fromPath: string };
 	}) =>
 		({
 			_id: args.id,
@@ -950,6 +1053,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			...(args.pendingMove ? { pendingMove: args.pendingMove } : {}),
 			...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
 			...(args.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
+			...(args.pendingArchive ? { pendingArchive: args.pendingArchive } : {}),
 		}) as unknown as app_convex_Doc<"files_pending_updates">;
 
 	const makeNode = (args: { id: string; path: string; kind?: "file" | "folder"; parentId?: string }) =>
@@ -1186,6 +1290,39 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			]);
 		});
 
+		test("marks delete rows and lets the delete win over other kinds", () => {
+			const updates = [
+				// Delete-only doc on a file.
+				makePendingUpdate({ id: "pu_del", fileNodeId: "node_a", pendingArchive: { fromPath: "/a.md" } }),
+				// Content branches survive an rm on an edited file; the row still shows as delete.
+				makePendingUpdate({
+					id: "pu_del_content",
+					fileNodeId: "node_b",
+					staged: "s",
+					unstaged: "u",
+					pendingArchive: { fromPath: "/b.md" },
+				}),
+				// Folder delete keeps the node kind for the plain-row rendering.
+				makePendingUpdate({ id: "pu_del_folder", fileNodeId: "node_f", pendingArchive: { fromPath: "/f" } }),
+				// Missing node falls back to the delete's fromPath.
+				makePendingUpdate({ id: "pu_del_gone", fileNodeId: "node_gone", pendingArchive: { fromPath: "/gone.md" } }),
+			];
+			const nodesById = makeNodesById([
+				makeNode({ id: "node_a", path: "/a.md" }),
+				makeNode({ id: "node_b", path: "/b.md" }),
+				makeNode({ id: "node_f", path: "/f", kind: "folder" }),
+			]);
+
+			const rows = build_pending_rows(updates, nodesById);
+
+			expect(rows.map((row) => [row.path, row.kind, row.nodeKind])).toEqual([
+				["/a.md", "delete", "file"],
+				["/b.md", "delete", "file"],
+				["/f", "delete", "folder"],
+				["/gone.md", "delete", undefined],
+			]);
+		});
+
 		test("marks rows whose proposal created the file as added", () => {
 			const updates = [
 				makePendingUpdate({
@@ -1205,6 +1342,44 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const rows = build_pending_rows(updates, nodesById);
 
 			expect(rows.map((row) => row.isAddedFile)).toEqual([true, false]);
+		});
+	});
+
+	describe("files_pending_rows_run_bulk", () => {
+		test("runs delete rows last, one at a time, parent folders first", async () => {
+			const updates = [
+				makePendingUpdate({ id: "pu_content", fileNodeId: "node_c", staged: "s", unstaged: "u" }),
+				makePendingUpdate({ id: "pu_del_child", fileNodeId: "node_z", pendingArchive: { fromPath: "/docs/z.md" } }),
+				makePendingUpdate({ id: "pu_del_docs", fileNodeId: "node_docs", pendingArchive: { fromPath: "/docs" } }),
+			];
+			const nodesById = makeNodesById([
+				makeNode({ id: "node_c", path: "/notes.md" }),
+				makeNode({ id: "node_z", path: "/docs/z.md" }),
+				makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
+			]);
+			const rows = build_pending_rows(updates, nodesById);
+
+			// A concurrent child delete would archive under its own operation id (breaking a later
+			// folder Unarchive), so deletes must run strictly one at a time after the other rows.
+			const order: string[] = [];
+			let activeDeletes = 0;
+			let sawParallelDelete = false;
+			const failedCount = await files_pending_rows_run_bulk(rows, async (row) => {
+				order.push(row.path);
+				if (row.pendingUpdate.pendingArchive != null) {
+					activeDeletes += 1;
+					if (activeDeletes > 1) {
+						sawParallelDelete = true;
+					}
+					await new Promise((resolve) => setTimeout(resolve, 0));
+					activeDeletes -= 1;
+				}
+				return {};
+			});
+
+			expect(failedCount).toBe(0);
+			expect(order).toEqual(["/notes.md", "/docs", "/docs/z.md"]);
+			expect(sawParallelDelete).toBe(false);
 		});
 	});
 }

@@ -116,7 +116,7 @@ function ai_chat_system_prompt(args: { organizationName: string; workspaceName: 
 		"Uploaded source files do not alias to generated Markdown outputs. If an unreadable-source advisory suggests generated output paths such as `<source>.pdf.md`, read the exact generated output path when the user wants converted text; do not expect the original source path to auto-read that sibling.",
 		"Keep Bash commands simple: avoid strict-mode boilerplate such as `set -euo pipefail` because `pipefail` is unsupported, comments in command strings, and process substitution. For multi-command inspection or eval checks, do not use `set -e` or hide stderr with `2>/dev/null`; later commands and visible stderr should still be observed.",
 		"Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
-		"In Agent mode, app `mv` and `cp` create pending move/copy proposals the user reviews in Files. Do not work around unsupported app operations such as `rm` by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
+		"In Agent mode, app `mv`, `cp`, and `rm` create pending move/copy/delete proposals the user reviews in Files (accepting an `rm` archives the file; `rm -r` archives a folder with its contents; `rm` on your own not-yet-accepted new file may just remove it with no proposal). Do not work around unsupported app operations by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
 		"In Agent mode, `mkdir` under the app file tree creates durable folders.",
 		`In Agent mode, create or overwrite an app file with a Bash heredoc redirect (\`cat > '${currentWorkspacePath}/<path>' <<'EOF' ... EOF\`) or a plain redirect, and append with \`>>\`. Use \`edit_file\` for targeted edits to existing files.`,
 		`Convert bash paths under \`${currentWorkspacePath}\` to app paths before calling \`edit_file\`; for example \`${currentWorkspacePath}/docs/readme.md\` becomes \`/docs/readme.md\`. Preserve the full remaining suffix: \`${currentWorkspacePath}/folder/README.md\` becomes \`/folder/README.md\`, never \`/README.md\`.`,
@@ -2424,7 +2424,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(configuration.systemPrompt).toContain(
 				"The blank line between the shell prompt and output is transcript formatting, not file content.",
 			);
-			expect(configuration.systemPrompt).toContain("Do not work around unsupported app operations such as `rm`");
+			expect(configuration.systemPrompt).toContain(
+				"app `mv`, `cp`, and `rm` create pending move/copy/delete proposals",
+			);
 			expect(configuration.systemPrompt).toContain(
 				"Convert bash paths under `/home/cloud-usr/w/personal/home` to app paths before calling `edit_file`",
 			);

@@ -279,10 +279,14 @@ export function files_pending_update_has_yjs_content<
 // - A pending move claims its destination path. A committed node that appears there later is
 //   shadowed for the proposer: lookups redirect, listings hide it. Accept auto-replaces it like
 //   `mv -f` (file onto file; the pending panel shows a live "Replaces" indicator before accept).
+// - A pending delete (`rm`) hides its node; a deleted folder hides its whole committed subtree.
+//   A deeper pending move wins over the delete-hiding (a subtree moved out of a deleted folder
+//   stays visible at its destination), while a delete deeper inside a moved folder still hides
+//   that area — the deepest structural claim over a path decides.
 
 export type files_PendingPathOverlayRow = Pick<
 	app_convex_Doc<"files_pending_updates">,
-	"fileNodeId" | "pendingMove" | "copiedFrom"
+	"fileNodeId" | "pendingMove" | "copiedFrom" | "pendingArchive"
 >;
 
 export type files_PendingPathOverlayNode = Pick<app_convex_Doc<"files_nodes">, "_id" | "path" | "kind">;
@@ -295,20 +299,23 @@ export type files_PendingPathOverlay = {
 		committedPath: string;
 		visiblePath: string;
 	}>;
-	/** Nodes that disappear from the visible tree: replaced targets and replace-move sources. */
+	/** Nodes that disappear from the visible tree: replaced targets, replace-move sources, and pending deletes. */
 	hiddenNodeIds: Set<string>;
 	hiddenCommittedPaths: Set<string>;
+	/** Committed folder paths with a pending delete: their whole subtree reads as gone. */
+	hiddenCommittedFolderPaths: Set<string>;
 };
 
 /**
  * Build the overlay from the user's pending update docs.
  *
  * `nodesById` must contain the nodes the docs reference: each move doc's `fileNodeId` and
- * `destParentId` node, each `pendingMove.replacesNodeId` node, and each
- * `copiedFrom.nodeId` node of a replace-move (`archivesSourceOnAccept`). A doc with a
- * missing moved node, destination parent, or replace-copy source is inert; a missing
- * `replacesNodeId` node only degrades the replace to a plain move (accept does the same).
- * Content-only docs and plain copies never affect paths.
+ * `destParentId` node, each `pendingMove.replacesNodeId` node, each
+ * `copiedFrom.nodeId` node of a replace-move (`archivesSourceOnAccept`), and each
+ * `pendingArchive` doc's `fileNodeId` node. A doc with a
+ * missing moved node, destination parent, replace-copy source, or deleted node is inert;
+ * a missing `replacesNodeId` node only degrades the replace to a plain move (accept does
+ * the same). Content-only docs and plain copies never affect paths.
  */
 export function files_pending_path_overlay_build(args: {
 	pendingUpdates: readonly files_PendingPathOverlayRow[];
@@ -331,7 +338,8 @@ export function files_pending_path_overlay_build(args: {
 	const candidateMoveByNodeId = new Map<string, CandidateMove>();
 	for (const row of pendingUpdates) {
 		const pendingMove = row.pendingMove;
-		if (!pendingMove) {
+		// A pending delete supersedes a pending move (the upsert clears it; skip defensively).
+		if (!pendingMove || row.pendingArchive) {
 			continue;
 		}
 		const node = nodesById.get(row.fileNodeId);
@@ -470,8 +478,24 @@ export function files_pending_path_overlay_build(args: {
 		hiddenNodeIds.add(source._id);
 		hiddenCommittedPaths.add(source.path);
 	}
+	// Pending deletes (`rm`) hide their node; a deleted folder hides its whole subtree.
+	const hiddenCommittedFolderPaths = new Set<string>();
+	for (const row of pendingUpdates) {
+		if (!row.pendingArchive) {
+			continue;
+		}
+		const node = nodesById.get(row.fileNodeId);
+		if (!node) {
+			continue;
+		}
+		hiddenNodeIds.add(node._id);
+		hiddenCommittedPaths.add(node.path);
+		if (node.kind === "folder") {
+			hiddenCommittedFolderPaths.add(node.path);
+		}
+	}
 
-	return { moves, hiddenNodeIds, hiddenCommittedPaths };
+	return { moves, hiddenNodeIds, hiddenCommittedPaths, hiddenCommittedFolderPaths };
 }
 
 /**
@@ -513,9 +537,14 @@ export function files_pending_path_overlay_translate_path(
 		return { kind: "redirected", committedPath };
 	}
 
-	// Vacated sources (and their descendants) and replaced/copy-archived nodes read as gone.
+	// Vacated sources (and their descendants) and replaced/copy-archived/deleted nodes read as gone.
 	if (overlay.hiddenCommittedPaths.has(visiblePath)) {
 		return { kind: "hidden" };
+	}
+	for (const folderPath of overlay.hiddenCommittedFolderPaths) {
+		if (visiblePath.startsWith(`${folderPath}/`)) {
+			return { kind: "hidden" };
+		}
 	}
 	for (const move of overlay.moves) {
 		if (move.committedPath === visiblePath) {
@@ -542,7 +571,7 @@ export function files_pending_path_overlay_project_committed_path(
 	overlay: files_PendingPathOverlay,
 	committedPath: string,
 ): string | null {
-	// Replaced targets and copy-archived sources leave the visible tree entirely.
+	// Replaced targets, copy-archived sources, and deleted nodes leave the visible tree entirely.
 	if (overlay.hiddenCommittedPaths.has(committedPath)) {
 		return null;
 	}
@@ -561,6 +590,23 @@ export function files_pending_path_overlay_project_committed_path(
 		if (!deepestAncestor || move.committedPath.length > deepestAncestor.committedPath.length) {
 			deepestAncestor = move;
 		}
+	}
+	// The deepest structural claim wins: a deleted ancestor folder hides the path unless a
+	// deeper moved ancestor lifts it out of the deleted area (redirect wins over hiding).
+	let deepestDeletedFolderPath: string | null = null;
+	for (const folderPath of overlay.hiddenCommittedFolderPaths) {
+		if (!committedPath.startsWith(`${folderPath}/`)) {
+			continue;
+		}
+		if (deepestDeletedFolderPath == null || folderPath.length > deepestDeletedFolderPath.length) {
+			deepestDeletedFolderPath = folderPath;
+		}
+	}
+	if (
+		deepestDeletedFolderPath != null &&
+		(!deepestAncestor || deepestDeletedFolderPath.length > deepestAncestor.committedPath.length)
+	) {
+		return null;
 	}
 	if (deepestAncestor) {
 		const rewrittenPath = `${deepestAncestor.visiblePath}${committedPath.slice(deepestAncestor.committedPath.length)}`;

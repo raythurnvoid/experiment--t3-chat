@@ -1,6 +1,6 @@
 ---
 name: files-agent-pending-updates
-description: Current `/files` pending-changes system: per-user Yjs content branches plus structural move, copy, replace, and eager-create proposals; diff review; accept, discard, save, and sync; AI and Bash file-tool overlays; indexed pending content; and TTL cleanup. Use when changing pending banners or tabs, bash shell write/write_file/edit_file/cp/mv proposals, pending path or content reads, search overlays, review actions, rebase/save behavior, or expiry.
+description: Current `/files` pending-changes system: per-user Yjs content branches plus structural move, copy, replace, delete, and eager-create proposals; diff review; accept, discard, save, and sync; AI and Bash file-tool overlays; indexed pending content; and TTL cleanup. Use when changing pending banners or tabs, bash shell write/write_file/edit_file/cp/mv/rm proposals, pending path or content reads, search overlays, review actions, rebase/save behavior, or expiry.
 ---
 
 # Content And Structural Proposal States
@@ -19,7 +19,8 @@ Structural state uses:
 
 - `pendingMove` for move or rename intent.
 - `copiedFrom` for copy or replace provenance.
-- `eagerCreated` when `write_file`, a bash shell write, or `cp` eagerly created a destination node so discard or expiry can remove it safely.
+- `pendingArchive` for delete intent (bash `rm`): accepting archives the node; a folder archives its whole subtree, computed at accept time. Setting it clears `pendingMove` — a delete supersedes a move. Content branches survive on the doc (accept ignores them; discard restores them as a Modified row).
+- `eagerCreated` when `write_file`, a bash shell write, or `cp` eagerly created a destination node so discard or expiry can remove it safely. `rm` on such a doc cancels it immediately when the hard-delete gate passes, like Discard — no proposal remains; when the gate fails, `rm` falls back to a normal pending delete proposal.
 
 Move-only docs have no Yjs fields and use `size: 0`. Docs do not always disappear when the three content states match: eager-created docs, replace-move docs, and content-plus-move docs (`content_and_move` in code) may still need structural review.
 
@@ -39,6 +40,7 @@ Main table in `packages/app/convex/schema.ts`:
     - `unstagedBranchYjsUpdate`
   - optional `pendingMove`
   - optional `copiedFrom`
+  - optional `pendingArchive` (`fromPath` display metadata only; the node id is authoritative)
   - optional `eagerCreated`
   - optional `threadIds` (contributor set: the chat threads that touched this doc, deduped; agent writes append their thread id, client-driven writes leave the field out of their patches so it survives, and it dies with the doc; unset for client-only docs and rows older than the field)
   - `size` (UTF-8 byte size of current `unstaged` Markdown, or `0` for a structural-only doc)
@@ -130,7 +132,7 @@ Pending updates attach to Markdown-backed `files_nodes` docs.
 - Plugin-generated Markdown outputs are ordinary files, so they can participate in pending review/edit flows after the plugin creates them.
 - Raw uploaded source file nodes without Markdown Yjs ids do not directly participate in pending Markdown edits today.
 - Uploaded source paths do not alias to generated outputs; pending edits attach to the exact Markdown file node being edited.
-- Move-only docs can represent folders and non-content file nodes. Those docs do not carry Yjs branches.
+- Move-only and delete-only docs can represent folders and non-content file nodes. Those docs do not carry Yjs branches.
 
 # End-To-End Flow
 
@@ -158,8 +160,9 @@ Structural review follows a parallel path:
 
 1. Agent-mode Bash `mv` stores `pendingMove` instead of moving the committed node immediately.
 2. Agent-mode app-to-app `cp` and replace-moves may create or update a doc with `copiedFrom`, `eagerCreated`, or both.
-3. Bash and legacy file reads/listings/searches apply the proposing user's pending path overlay. Other users continue to see the committed tree.
-4. The Pending changes tab renders content-only, move-only, copy, and content-plus-move rows. It applies moves through `apply_file_pending_move`, saves content through the normal save path, and discards structural state through `discard_file_pending_structural`.
+3. Agent-mode Bash `rm` stores `pendingArchive` (per operand, builtin flag semantics: `-r` for folders, `-f` silences missing paths, folder without `-r` fails with `Is a directory`). Accepting archives; nothing is ever hard-deleted except the own-Added-file cancel path.
+4. Bash and legacy file reads/listings/searches apply the proposing user's pending path overlay. A pending-deleted node reads as gone (a deleted folder hides its whole subtree). Other users continue to see the committed tree, and the sidebar file tree shows no delete indicator until accept.
+5. The Pending changes tab renders content-only, move-only, copy, content-plus-move, and delete rows. It applies moves through `apply_file_pending_move`, deletes through `apply_file_pending_archive`, saves content through the normal save path, and discards structural state through `discard_file_pending_structural`.
 
 # Backend Responsibilities
 
@@ -171,6 +174,7 @@ Public and internal functions:
 
 - `upsert_file_pending_update`
 - `apply_file_pending_move`
+- `apply_file_pending_archive`
 - `discard_file_pending_structural`
 - `persist_file_pending_update_rebased_state`
 - `get_file_pending_update`
@@ -182,6 +186,7 @@ Public and internal functions:
 - `upsert_file_pending_update_in_db`
 - `upsert_file_pending_update_internal_action`
 - `upsert_file_pending_move_in_db`
+- `upsert_file_pending_archive_in_db`
 - `persist_file_pending_update_rebased_state_in_db`
 - `get_file_pending_update_internal`
 - `get_pending_path_overlay_data`
@@ -206,6 +211,8 @@ Important behavior:
 - Save guards the target node before any write: a missing, out-of-scope, non-file, or archived target returns `Not found` and the doc survives.
 - A save whose action-read base sequence no longer matches the file's CURRENT committed last sequence returns `Stale save` before any write or billing. This one check covers two races: a second tab replaying an old save (no double billing), and another user committing between the action's read and the mutation (the doc's new base can never silently hide that commit).
 - A replace-move save (`copiedFrom.archivesSourceOnAccept`) archives the replace source and deletes the acting user's leftover doc on it. When that doc is itself a replace-move (chained `mv -f`), the walk continues down the replace chain to the deeper replace sources, so accepting the head of a chain consumes every hop in either accept order.
+- `apply_file_pending_archive` re-validates at accept time: a missing doc or one without `pendingArchive` no-ops; a missing/out-of-scope/already-archived node just drops the doc. A folder computes its subtree by path prefix at accept time (nodes added after the proposal are archived too) and everything gets ONE `archiveOperationId`, so Unarchive restores the delete as one unit. The acting user's docs on all archived nodes are removed; other users' docs stay and go inert through the existing archived-node filters. Accepting a delete never runs the mv‑f replace-source chain.
+- Save on a doc with `pendingArchive` is rejected with `File has a pending delete` (discard the delete first). Discarding a delete only clears `pendingArchive`: a doc that still has content or copy provenance survives as a content row; a delete-only doc is removed.
 - Keep each public endpoint's current auth, membership, and rate-limit order. Do not infer one shared order: content upsert validates membership before its rate limit, while structural accept/discard and save perform the rate-limit check earlier.
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.
 - Content-bearing doc lifecycle paths maintain pending `files_markdown_chunks`, pending `files_plain_text_chunks`, and pending `files_metadata_docs` in the same mutation. Insert chunks the `unstaged` Markdown and extracts YAML frontmatter. Replacing the `unstaged` Markdown rebuilds those docs; a staged-only change reuses them. Doc deletion removes them. Structural-only docs own no pending indexed docs. If content collapses while `pendingMove` remains, remove the pending indexed docs and retain the structural doc.
@@ -237,9 +244,10 @@ Important behavior:
 `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending.tsx` owns:
 
 - the Pending changes tab content
-- content-only, move-only, copy, and content-plus-move row rendering
+- content-only, move-only, copy, content-plus-move, and delete row rendering ("Deleted" caption wins over every other caption; a file delete row expands to an inline diff that lazily loads the committed markdown and shows it fully removed; folder delete rows are plain rows; the row link opens the file, never the diff editor)
 - per-row and bulk Accept/Discard actions
 - move-before-content ordering for content-plus-move row acceptance
+- delete rows run as their own trailing bulk phase (accepting a folder delete first would archive descendants and fail sibling accepts)
 - safe eager-created destination deletion during discard
 
 `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx` owns:
@@ -257,7 +265,7 @@ Important behavior:
 - Every scheduled cleanup carries `expectedUpdatedAt`; stale scheduled work cannot delete a newer doc.
 - Expiry hard-deletes the file node only when every check passes: the doc has an `eagerCreated` stamp, the node's committed sequence still matches that stamp, the node's `updatedBy` is still the proposer, and no other pending update doc uses the node. The `updatedBy` check exists because a committed rename or move by another user never advances the Yjs sequence, so the stamp alone cannot catch it; `rename_node` and `move_nodes` both stamp `updatedBy`.
 - An ancestor-folder move does not restamp descendants and does not block the hard delete — removing the eager-created node does not undo the ancestor's move.
-- When the node is not eligible, expiry deletes only the pending update doc and its pending indexes/task, and the node stays active. Expiry never hard-deletes a pre-existing node targeted by a replace proposal.
+- When the node is not eligible, expiry deletes only the pending update doc and its pending indexes/task, and the node stays active. Expiry never hard-deletes a pre-existing node targeted by a replace proposal. A delete-only doc expires the same way: the doc goes, the node is untouched.
 - Eager creates commit missing parent folders, and the doc's `eagerCreated.createdAncestorIds` remembers them (deepest first).
 - Every path that safely hard-deletes the eager-created leaf — discard, expiry, and the failed-upsert compensation — then removes those folders too, but only while each folder is provably untouched: created AND last updated by the proposer, zero children in any archive state, no pending update doc ON the folder (`by_fileNode`), and no pending move TARGETING it as a destination (`by_pendingMove_destParentId` — another user's proposed move into the folder keeps it alive).
 - The first kept folder stops the walk (everything shallower contains it).
@@ -290,7 +298,8 @@ Important behavior:
 - `Save` should persist only the staged branch and keep the pending update doc if unresolved unstaged content remains.
 - `Accept all + save` should clear the pending update doc when no unresolved changes remain.
 - `Sync` should preserve local intent while rebasing on newer live file state.
-- Verify the Pending changes tab renders and sorts content-only, move-only, copy, and content-plus-move rows.
+- Verify the Pending changes tab renders and sorts content-only, move-only, copy, content-plus-move, and delete rows.
+- Verify bash `rm` hides the path from the proposer's reads, accept archives (folder cascade, one operation id), and discard restores visibility without touching the node.
 - Verify pure moves do not enter the diff pager.
 - Verify accept/discard applies pending paths, archive behavior, content, and move-before-save ordering for content-plus-move rows.
 - Verify discard and expiry hard-delete only eligible eager-created destinations.

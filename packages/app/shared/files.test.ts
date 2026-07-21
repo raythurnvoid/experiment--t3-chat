@@ -914,6 +914,13 @@ describe("files_pending_path_overlay", () => {
 		};
 	}
 
+	function make_archive_row(args: { nodeId: string; fromPath?: string }): files_PendingPathOverlayRow {
+		return {
+			fileNodeId: make_overlay_node_id(args.nodeId),
+			pendingArchive: { fromPath: args.fromPath ?? "" },
+		};
+	}
+
 	function build_overlay(rows: files_PendingPathOverlayRow[], nodes: files_PendingPathOverlayNode[]) {
 		return files_pending_path_overlay_build({
 			pendingUpdates: rows,
@@ -1438,6 +1445,93 @@ describe("files_pending_path_overlay", () => {
 		});
 	});
 
+	describe("pending delete", () => {
+		test("a deleted file reads as gone and its siblings stay visible", () => {
+			const overlay = build_overlay(
+				[make_archive_row({ nodeId: "a", fromPath: "/a.md" })],
+				[make_overlay_node("a", "/a.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe(null);
+			expect(
+				files_pending_path_overlay_pick_visible_entry(overlay, { requestedPath: "/a.md", occupantNodeId: "a" }),
+			).toBe("none");
+			expect(files_pending_path_overlay_translate_path(overlay, "/ab.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/ab.md")).toBe("/ab.md");
+		});
+
+		test("a deleted folder hides its whole subtree, respecting segment boundaries", () => {
+			const overlay = build_overlay([make_archive_row({ nodeId: "a" })], [make_overlay_node("a", "/a", "folder")]);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/a")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_translate_path(overlay, "/a/sub/file.md")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a")).toBe(null);
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a/sub/file.md")).toBe(null);
+			expect(files_pending_path_overlay_translate_path(overlay, "/ab")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/ab/file.md")).toBe("/ab/file.md");
+		});
+
+		test("a delete on a row supersedes its own pending move", () => {
+			// The upsert clears pendingMove when setting pendingArchive; the build skips
+			// the move defensively if both are ever present.
+			const overlay = build_overlay(
+				[
+					{
+						...make_move_row({ nodeId: "a", destParentId: files_ROOT_ID, destName: "b.md" }),
+						...make_archive_row({ nodeId: "a", fromPath: "/a.md" }),
+					},
+				],
+				[make_overlay_node("a", "/a.md", "file")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/b.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe(null);
+		});
+
+		test("a subtree moved out of a deleted folder stays visible at its destination", () => {
+			// Deletes-last accept order: the move applies first, so /a/x escapes the delete.
+			const overlay = build_overlay(
+				[
+					make_archive_row({ nodeId: "a" }),
+					make_move_row({ nodeId: "x", destParentId: files_ROOT_ID, destName: "x2" }),
+				],
+				[make_overlay_node("a", "/a", "folder"), make_overlay_node("x", "/a/x", "folder")],
+			);
+
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a/x")).toBe("/x2");
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a/x/f.md")).toBe("/x2/f.md");
+			expect(files_pending_path_overlay_translate_path(overlay, "/x2/f.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/a/x/f.md",
+			});
+			// The vacated source area and the rest of the deleted folder still read as gone.
+			expect(files_pending_path_overlay_translate_path(overlay, "/a/x/f.md")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_translate_path(overlay, "/a/other.md")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a/other.md")).toBe(null);
+		});
+
+		test("a delete deeper inside a moved folder hides that area at the destination", () => {
+			const overlay = build_overlay(
+				[
+					make_move_row({ nodeId: "m", destParentId: files_ROOT_ID, destName: "n" }),
+					make_archive_row({ nodeId: "d" }),
+				],
+				[make_overlay_node("m", "/m", "folder"), make_overlay_node("d", "/m/d", "folder")],
+			);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/n/d")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_translate_path(overlay, "/n/d/f.md")).toEqual({ kind: "hidden" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/m/d/f.md")).toBe(null);
+			// The rest of the moved folder still redirects normally.
+			expect(files_pending_path_overlay_translate_path(overlay, "/n/other.md")).toEqual({
+				kind: "redirected",
+				committedPath: "/m/other.md",
+			});
+		});
+	});
+
 	describe("files_pending_path_overlay_pick_visible_entry", () => {
 		const nodes = [make_overlay_node("a", "/a.md", "file"), make_overlay_node("docs", "/docs", "folder")];
 		const rows = [make_move_row({ nodeId: "a", destParentId: "docs", destName: "b.md" })];
@@ -1530,6 +1624,14 @@ describe("files_pending_path_overlay", () => {
 			);
 
 			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "unchanged" });
+		});
+
+		test("a delete row whose node is not in nodesById hides nothing", () => {
+			// The data loader filters archived/out-of-scope nodes, so the row goes inert.
+			const overlay = build_overlay([make_archive_row({ nodeId: "ghost", fromPath: "/a.md" })], []);
+
+			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "unchanged" });
+			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/a.md");
 		});
 	});
 });

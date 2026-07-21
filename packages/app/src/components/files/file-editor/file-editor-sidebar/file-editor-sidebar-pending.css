@@ -198,6 +198,13 @@
 		color: var(--color-green-10);
 	}
 
+	/* Pending deletes: red strikethrough = the file goes away, matching the red source
+	   of move labels. */
+	.FileEditorSidebarPending-item-path-text-deleted {
+		color: var(--color-red-10);
+		text-decoration: line-through;
+	}
+
 	/* Green accept (per-row + global), mirrors .FileEditorDiffToolbarActions-button-accept-all */
 	.FileEditorSidebarPending-accept {
 		&:not(:disabled) {

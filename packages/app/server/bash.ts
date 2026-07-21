@@ -1018,7 +1018,7 @@ async function bash_fs_create(args: {
 			bash_sed_command_create(args.ctx, dbFilesRoots),
 			// Guarded mutators.
 			bash_touch_command_create(dbFilesRoots),
-			bash_rm_command_create(currentWorkspacePath),
+			bash_rm_command_create(args.ctx, dbFilesRoots),
 			bash_cp_command_create(args.ctx, dbFilesRoots),
 			bash_mv_command_create(args.ctx, dbFilesRoots),
 			bash_tee_command_create(dbFilesRoots),
@@ -4988,9 +4988,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			const touchReferenceResult = await run(`touch -r ${test_db_files_mount}/docs/readme.md /tmp/from-ref`);
-			const rmResult = await run(`rm -f ${test_db_files_mount}/docs/readme.md`);
-			const rmFolderResult = await run(`rm -rf ${test_db_files_mount}/docs`);
-			const rmDashResult = await run("rm -- -delete.md");
 			const cpAppDestResult = await run("printf copy > /tmp/copy-src.txt; cp /tmp/copy-src.txt -- -copy-dest.md");
 			const cpAppFolderDestResult = await run(
 				`printf copy > /tmp/native-output.md; cp /tmp/native-output.md ${test_db_files_mount}/docs`,
@@ -5004,15 +5001,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(touchReferenceResult.metadata.exitCode).not.toBe(0);
 			expect(touchReferenceResult.stderr).toContain("reference file");
-			expect(rmResult.metadata.exitCode).not.toBe(0);
-			expect(rmResult.stderr).toContain("cannot delete app file");
-			expect(rmResult.stderr).toContain("path '/docs/readme.md'");
-			expect(rmFolderResult.metadata.exitCode).not.toBe(0);
-			expect(rmFolderResult.stderr).toContain("cannot delete app file");
-			expect(rmFolderResult.stderr).toContain("path '/docs'");
-			expect(rmDashResult.metadata.exitCode).not.toBe(0);
-			expect(rmDashResult.stderr).toContain("cannot delete app file");
-			expect(rmDashResult.stderr).toContain("path '/-delete.md'");
 			expect(cpAppDestResult.metadata.exitCode).not.toBe(0);
 			expect(cpAppDestResult.stderr).toContain("cannot write to app file");
 			expect(cpAppDestResult.stderr).toContain("redirect instead");
@@ -5038,6 +5026,183 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(mvGlobResult.stderr).toContain("find");
 			expect(mvDashResult.metadata.exitCode).not.toBe(0);
 			expect(mvDashResult.stderr).toContain("cannot move or rename app file");
+		});
+
+		test("creates a pending delete proposal for an app file and hides it from later reads", async () => {
+			const runner = await create_bash_runner();
+
+			const removed = await runner.run(`rm ${test_db_files_mount}/docs/readme.md`);
+			expect(removed.metadata.exitCode).toBe(0);
+			expect(removed.stderr).toBe("");
+			expect(removed.stdout).toBe(
+				"pending delete created: /docs/readme.md — archives the file when accepted; review in Files\n",
+			);
+
+			const readmeId = await get_seeded_node_id(runner, "/docs/readme.md");
+			const rows = await list_pending_updates(runner);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toMatchObject({
+				fileNodeId: readmeId,
+				pendingArchive: { fromPath: "/docs/readme.md" },
+				size: 0,
+			});
+			expect(rows[0]!.threadIds).toEqual([runner.threadId]);
+
+			// The proposer's later reads see the file as gone; listings drop it too.
+			const readBack = await runner.run(`cat ${test_db_files_mount}/docs/readme.md`);
+			expect(readBack.metadata.exitCode).not.toBe(0);
+			expect(readBack.stderr).toContain("No such file or directory");
+			const listing = await runner.run(`ls ${test_db_files_mount}/docs`);
+			expect(listing.stdout).not.toContain("readme.md");
+
+			// A second rm behaves like a real fs: the path is already gone.
+			const removedAgain = await runner.run(`rm ${test_db_files_mount}/docs/readme.md`);
+			expect(removedAgain.metadata.exitCode).not.toBe(0);
+			expect(removedAgain.stderr).toBe(
+				`rm: cannot remove '${test_db_files_mount}/docs/readme.md': No such file or directory\n`,
+			);
+			const removedForced = await runner.run(`rm -f ${test_db_files_mount}/docs/readme.md`);
+			expect(removedForced.metadata.exitCode).toBe(0);
+			expect(removedForced.stdout).toBe("");
+			expect(removedForced.stderr).toBe("");
+		});
+
+		test("creates a folder delete proposal with -r and mirrors builtin folder errors", async () => {
+			const runner = await create_bash_runner();
+
+			const withoutRecursive = await runner.run(`rm ${test_db_files_mount}/docs`);
+			expect(withoutRecursive.metadata.exitCode).not.toBe(0);
+			expect(withoutRecursive.stderr).toBe(`rm: cannot remove '${test_db_files_mount}/docs': Is a directory\n`);
+
+			const removed = await runner.run(`rm -r ${test_db_files_mount}/docs`);
+			expect(removed.metadata.exitCode).toBe(0);
+			expect(removed.stderr).toBe("");
+			expect(removed.stdout).toBe(
+				"pending delete created: /docs — archives the folder and its contents when accepted; review in Files\n",
+			);
+
+			const docsId = await get_seeded_node_id(runner, "/docs");
+			const rows = await list_pending_updates(runner);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toMatchObject({ fileNodeId: docsId, pendingArchive: { fromPath: "/docs" } });
+
+			// The whole subtree reads as gone for the proposer.
+			const childRead = await runner.run(`cat ${test_db_files_mount}/docs/tutorial.md`);
+			expect(childRead.metadata.exitCode).not.toBe(0);
+			expect(childRead.stderr).toContain("No such file or directory");
+			const rootListing = await runner.run(`ls ${test_db_files_mount}`);
+			expect(rootListing.stdout).not.toContain("docs");
+		});
+
+		test("rm on the user's own unaccepted Added file removes it immediately", async () => {
+			const runner = await create_bash_runner();
+
+			const created = await runner.run(`printf 'draft\\n' > ${test_db_files_mount}/draft-note.md`);
+			expect(created.metadata.exitCode).toBe(0);
+
+			const removed = await runner.run(`rm ${test_db_files_mount}/draft-note.md`);
+			expect(removed.metadata.exitCode).toBe(0);
+			expect(removed.stderr).toBe("");
+			expect(removed.stdout).toBe(`removed '${test_db_files_mount}/draft-note.md'\n`);
+
+			// Nothing pends and the eager-created node is really gone, committed tree included.
+			const rows = await list_pending_updates(runner);
+			expect(rows).toHaveLength(0);
+			const committedNodes = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", runner.ctxData.organizationId)
+							.eq("workspaceId", runner.ctxData.workspaceId)
+							.eq("path", "/draft-note.md"),
+					)
+					.collect(),
+			);
+			expect(committedNodes).toHaveLength(0);
+		});
+
+		test("handles mixed /tmp and app rm operands in order with builtin flag semantics", async () => {
+			const runner = await create_bash_runner();
+
+			const prepared = await runner.run("printf scratch > /tmp/scratch.txt");
+			expect(prepared.metadata.exitCode).toBe(0);
+			const removed = await runner.run(`rm -v /tmp/scratch.txt ${test_db_files_mount}/docs/tutorial.md`);
+			expect(removed.metadata.exitCode).toBe(0);
+			expect(removed.stdout).toBe(
+				"removed '/tmp/scratch.txt'\n" +
+					"pending delete created: /docs/tutorial.md — archives the file when accepted; review in Files\n",
+			);
+			const scratchRead = await runner.run("cat /tmp/scratch.txt");
+			expect(scratchRead.metadata.exitCode).not.toBe(0);
+
+			// A failing operand does not stop later operands (builtin continue-on-error).
+			const partial = await runner.run(`rm ${test_db_files_mount}/missing.md ${test_db_files_mount}/docs/nested/deep.md`);
+			expect(partial.metadata.exitCode).not.toBe(0);
+			expect(partial.stderr).toBe(`rm: cannot remove '${test_db_files_mount}/missing.md': No such file or directory\n`);
+			expect(partial.stdout).toBe(
+				"pending delete created: /docs/nested/deep.md — archives the file when accepted; review in Files\n",
+			);
+		});
+
+		test("keeps Ask-mode, glob, and unknown-option rm safety", async () => {
+			const askRunner = await create_bash_runner({ allowDbFilesMkdir: false });
+			const askResult = await askRunner.run(`rm ${test_db_files_mount}/docs/readme.md`);
+			expect(askResult.metadata.exitCode).not.toBe(0);
+			expect(askResult.stderr).toContain("cannot delete app file");
+			expect(askResult.stderr).toContain("App file deletes are available in Agent mode");
+			expect(askResult.stderr).toContain("path '/docs/readme.md'");
+			expect(await list_pending_updates(askRunner)).toHaveLength(0);
+
+			const runner = await create_bash_runner();
+			const globResult = await runner.run(`rm '${test_db_files_mount}/docs/*.md'`);
+			expect(globResult.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
+			expect(globResult.stderr).toContain("app file glob patterns are not supported");
+
+			// Unknown options delegate to the builtin, whose parser errors before touching the fs.
+			const unknownOption = await runner.run(`rm -i ${test_db_files_mount}/docs/readme.md`);
+			expect(unknownOption.metadata.exitCode).not.toBe(0);
+			expect(await list_pending_updates(runner)).toHaveLength(0);
+		});
+
+		test("covers builtin rm flag forms, root rejection, and same-call visibility", async () => {
+			const runner = await create_bash_runner();
+
+			// -f never suppresses the folder error, and the workspace root is never removable.
+			const forcedFolder = await runner.run(`rm -f ${test_db_files_mount}/reports`);
+			expect(forcedFolder.metadata.exitCode).not.toBe(0);
+			expect(forcedFolder.stderr).toBe(`rm: cannot remove '${test_db_files_mount}/reports': Is a directory\n`);
+			const root = await runner.run(`rm -r ${test_db_files_mount}`);
+			expect(root.metadata.exitCode).not.toBe(0);
+			expect(root.stderr).toBe(`rm: cannot remove '${test_db_files_mount}': Operation not permitted\n`);
+
+			// -R, clustered flags, and `--` all keep builtin semantics for app operands.
+			const upperRecursive = await runner.run(`rm -R ${test_db_files_mount}/reports`);
+			expect(upperRecursive.metadata.exitCode).toBe(0);
+			expect(upperRecursive.stdout).toBe(
+				"pending delete created: /reports — archives the folder and its contents when accepted; review in Files\n",
+			);
+			const clustered = await runner.run(`rm -rfv -- ${test_db_files_mount}/docs/nested`);
+			expect(clustered.metadata.exitCode).toBe(0);
+			expect(clustered.stdout).toBe(
+				"pending delete created: /docs/nested — archives the folder and its contents when accepted; review in Files\n",
+			);
+
+			// The builtin's parser ignores a boolean long option's value, so --force=false still
+			// means force and must be intercepted, not delegated into a silent builtin no-op.
+			const booleanForm = await runner.run(`rm --force=false --recursive=x ${test_db_files_mount}/docs/tutorial.md`);
+			expect(booleanForm.metadata.exitCode).toBe(0);
+			expect(booleanForm.stdout).toBe(
+				"pending delete created: /docs/tutorial.md — archives the file when accepted; review in Files\n",
+			);
+
+			// Later commands chained in the SAME bash call already see the removed path as gone.
+			const sameCall = await runner.run(
+				`rm ${test_db_files_mount}/docs/readme.md && cat ${test_db_files_mount}/docs/readme.md`,
+			);
+			expect(sameCall.metadata.exitCode).not.toBe(0);
+			expect(sameCall.stdout).toContain("pending delete created: /docs/readme.md");
+			expect(sameCall.stderr).toContain("No such file or directory");
 		});
 
 		test("copies one exact readable app file to scratch and rejects unreadable app copies", async () => {

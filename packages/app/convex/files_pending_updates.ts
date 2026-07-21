@@ -347,6 +347,41 @@ async function files_pending_update_db_settle_move_row(
 	}
 }
 
+/**
+ * Drop a doc's pending delete and settle the doc: docs that still carry a content proposal
+ * or copy provenance keep it (the row degrades back to a content/copy row), delete-only
+ * docs are deleted with their chunks and cleanup tasks.
+ */
+async function files_pending_update_db_settle_archive_row(
+	ctx: MutationCtx,
+	args: { pendingUpdate: app_convex_Doc<"files_pending_updates"> },
+) {
+	const { pendingUpdate } = args;
+	if (files_pending_update_content_of(pendingUpdate) || pendingUpdate.copiedFrom) {
+		const now = Date.now();
+		await Promise.all([
+			ctx.db.patch("files_pending_updates", pendingUpdate._id, {
+				pendingArchive: undefined,
+				updatedAt: now,
+			}),
+			files_db_schedule_pending_update_cleanup(ctx, {
+				pendingUpdateId: pendingUpdate._id,
+				expectedUpdatedAt: now,
+			}),
+		]);
+	} else {
+		await Promise.all([
+			files_db_cancel_pending_update_cleanup_tasks(ctx, {
+				pendingUpdateId: pendingUpdate._id,
+			}),
+			files_pending_update_db_delete_chunks(ctx, {
+				pendingUpdateId: pendingUpdate._id,
+			}),
+			ctx.db.delete("files_pending_updates", pendingUpdate._id),
+		]);
+	}
+}
+
 function files_pending_update_workspace_markdown_to_branch(args: { mut_yjsDoc: YDoc; markdown: string }) {
 	const currentMarkdown = files_yjs_doc_get_markdown({
 		yjsDoc: args.mut_yjsDoc,
@@ -1262,6 +1297,115 @@ export type upsert_file_pending_move_in_db_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+export const upsert_file_pending_archive_in_db = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+		/** Chat thread making this write; appended (deduped) to the doc's contributor set. */
+		threadId: v.optional(v.id("ai_chat_threads")),
+	},
+	returns: v_result({
+		_yay: v.object({
+			fromPath: v.string(),
+			nodeKind: v.union(v.literal("file"), v.literal("folder")),
+			/** "cancelled_added_file": the node was the user's own unaccepted eager create; it was hard-deleted, nothing pends. */
+			outcome: v.union(v.literal("proposed"), v.literal("cancelled_added_file")),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const node = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!node ||
+			node.organizationId !== args.organizationId ||
+			node.workspaceId !== args.workspaceId ||
+			node.archiveOperationId !== undefined
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const existingPendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: args.nodeId,
+		});
+
+		// rm on the user's own unaccepted Added file cancels it like Discard: the eager-created
+		// node is hard-deleted when the safety gate passes. A gate failure (content committed,
+		// another user's draft, ...) falls through to a normal delete proposal.
+		if (existingPendingUpdate?.eagerCreated) {
+			const safeToHardDelete = await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: args.nodeId,
+				pendingUpdate: existingPendingUpdate,
+			});
+			if (safeToHardDelete) {
+				await files_nodes_db_hard_delete_node(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					nodeId: args.nodeId,
+				});
+				// The leaf is gone: also remove the still-empty folders its eager create committed.
+				await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: existingPendingUpdate.userId,
+					createdAncestorIds: existingPendingUpdate.eagerCreated.createdAncestorIds ?? [],
+				});
+				return Result({ _yay: { fromPath: node.path, nodeKind: node.kind, outcome: "cancelled_added_file" } });
+			}
+		}
+
+		const now = Date.now();
+		// Contributor set: an agent rm records its thread once per doc; client deletes pass no threadId.
+		const nextThreadIds =
+			args.threadId && !existingPendingUpdate?.threadIds?.includes(args.threadId)
+				? [...(existingPendingUpdate?.threadIds ?? []), args.threadId]
+				: undefined;
+		if (!existingPendingUpdate) {
+			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNodeId: args.nodeId,
+				pendingArchive: { fromPath: node.path },
+				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
+				size: 0,
+				updatedAt: now,
+			});
+			await files_db_schedule_pending_update_cleanup(ctx, {
+				pendingUpdateId,
+				expectedUpdatedAt: now,
+			});
+		} else {
+			// rm after mv replaces the move (a delete supersedes it); rm after write keeps the
+			// content branches on the doc (ignored on accept, restored as a Modified row on discard).
+			await Promise.all([
+				ctx.db.patch("files_pending_updates", existingPendingUpdate._id, {
+					pendingArchive: { fromPath: node.path },
+					pendingMove: undefined,
+					...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
+					updatedAt: now,
+				}),
+				files_db_schedule_pending_update_cleanup(ctx, {
+					pendingUpdateId: existingPendingUpdate._id,
+					expectedUpdatedAt: now,
+				}),
+			]);
+		}
+
+		return Result({ _yay: { fromPath: node.path, nodeKind: node.kind, outcome: "proposed" } });
+	},
+});
+
+export type upsert_file_pending_archive_in_db_Result =
+	typeof upsert_file_pending_archive_in_db extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const apply_file_pending_move = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -1331,6 +1475,126 @@ export const apply_file_pending_move = mutation({
 	},
 });
 
+export const apply_file_pending_archive = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v_result({
+		_yay: v.null(),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const pendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			nodeId: args.nodeId,
+		});
+		if (!pendingUpdate?.pendingArchive) {
+			// Already settled (another tab accepted or discarded it): a no-op success.
+			return Result({ _yay: null });
+		}
+
+		const node = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!node ||
+			node.organizationId !== membership.organizationId ||
+			node.workspaceId !== membership.workspaceId ||
+			node.archiveOperationId !== undefined
+		) {
+			// The node is gone or already archived (e.g. the sidebar Archive action ran first):
+			// nothing left to archive, so the whole proposal doc is dead — drop it.
+			await Promise.all([
+				files_db_cancel_pending_update_cleanup_tasks(ctx, {
+					pendingUpdateId: pendingUpdate._id,
+				}),
+				files_pending_update_db_delete_chunks(ctx, {
+					pendingUpdateId: pendingUpdate._id,
+				}),
+				ctx.db.delete("files_pending_updates", pendingUpdate._id),
+			]);
+			return Result({ _yay: null });
+		}
+
+		// Compute the subtree at accept time: nodes added to a deleted folder after the
+		// proposal are archived too, like archiving from the sidebar.
+		const nodeIdsToArchive = [node._id];
+		if (node.kind === "folder") {
+			const descendantsPathPrefix = `${node.path}/`;
+			const descendantFileNodes = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.gte("path", descendantsPathPrefix)
+						.lt("path", `${descendantsPathPrefix}\uffff`),
+				)
+				.collect();
+			for (const descendantFileNode of descendantFileNodes) {
+				if (descendantFileNode.archiveOperationId !== undefined) {
+					continue;
+				}
+				nodeIdsToArchive.push(descendantFileNode._id);
+			}
+		}
+
+		// One operation id for the whole delete, so Unarchive restores it as one unit.
+		await files_nodes_db_archive_nodes(ctx, {
+			nodeIds: nodeIdsToArchive,
+			updatedBy: userAuth.id,
+			now: Date.now(),
+		});
+
+		// Remove the acting user's docs on the archived nodes (this delete row plus their own
+		// now-dead rows on descendants). Other users' docs stay untouched; they go inert
+		// through the archived-node filters, like any sidebar archive.
+		for (const archivedNodeId of nodeIdsToArchive) {
+			const archivedNodePendingUpdate =
+				archivedNodeId === pendingUpdate.fileNodeId
+					? pendingUpdate
+					: await files_db_get_pending_update(ctx, {
+							organizationId: membership.organizationId,
+							workspaceId: membership.workspaceId,
+							userId: userAuth.id,
+							nodeId: archivedNodeId,
+						});
+			if (!archivedNodePendingUpdate) {
+				continue;
+			}
+			await Promise.all([
+				files_db_cancel_pending_update_cleanup_tasks(ctx, {
+					pendingUpdateId: archivedNodePendingUpdate._id,
+				}),
+				files_pending_update_db_delete_chunks(ctx, {
+					pendingUpdateId: archivedNodePendingUpdate._id,
+				}),
+				ctx.db.delete("files_pending_updates", archivedNodePendingUpdate._id),
+			]);
+		}
+
+		return Result({ _yay: null });
+	},
+});
+
 export const discard_file_pending_structural = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -1366,6 +1630,13 @@ export const discard_file_pending_structural = mutation({
 		});
 		if (!pendingUpdate) {
 			// Already gone (another tab discarded or accepted it): a no-op success.
+			return Result({ _yay: null });
+		}
+
+		if (pendingUpdate.pendingArchive) {
+			// Discarding a delete never touches the node: clear the proposal; a doc that
+			// still carries content degrades back to a Modified row.
+			await files_pending_update_db_settle_archive_row(ctx, { pendingUpdate });
 			return Result({ _yay: null });
 		}
 
@@ -2029,6 +2300,16 @@ export const save_file_pending_update_in_db = internalMutation({
 			return Result({
 				_nay: {
 					message: "Not found",
+				},
+			});
+		}
+
+		// A pending delete supersedes the content proposal: publishing under it would commit
+		// content onto a file the user is about to archive. Discard the delete first.
+		if (pendingUpdate.pendingArchive) {
+			return Result({
+				_nay: {
+					message: "File has a pending delete",
 				},
 			});
 		}

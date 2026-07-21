@@ -227,6 +227,9 @@ export async function files_db_get_pending_path_overlay_data(
 		if (pendingUpdate.copiedFrom?.archivesSourceOnAccept) {
 			referencedNodeIds.add(pendingUpdate.copiedFrom.nodeId);
 		}
+		if (pendingUpdate.pendingArchive) {
+			referencedNodeIds.add(pendingUpdate.fileNodeId);
+		}
 	}
 
 	// Archived or out-of-scope nodes stay out of the map, so the overlay treats their

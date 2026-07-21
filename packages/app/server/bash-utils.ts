@@ -1033,7 +1033,12 @@ export class bash_DbFilesFs implements IFileSystem {
 			});
 		})();
 		const overlay = await this.overlayPromise;
-		return overlay.moves.length === 0 && overlay.hiddenCommittedPaths.size === 0 ? null : overlay;
+		// Every hiding producer also fills hiddenCommittedPaths; the folder-set check is for safety.
+		return overlay.moves.length === 0 &&
+			overlay.hiddenCommittedPaths.size === 0 &&
+			overlay.hiddenCommittedFolderPaths.size === 0
+			? null
+			: overlay;
 	}
 
 	/**

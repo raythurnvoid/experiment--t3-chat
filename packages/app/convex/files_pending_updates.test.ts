@@ -689,6 +689,23 @@ async function upsert_file_pending_move_for_test(args: {
 	});
 }
 
+async function upsert_file_pending_archive_for_test(args: {
+	t: ReturnType<typeof test_convex>;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+	userId: Id<"users">;
+	nodeId: Id<"files_nodes">;
+	threadId?: Id<"ai_chat_threads">;
+}) {
+	return await args.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		nodeId: args.nodeId,
+		...(args.threadId ? { threadId: args.threadId } : {}),
+	});
+}
+
 describe("upsert_file_pending_update", () => {
 	test("upsert_file_pending_update replaces updates deterministically", async () => {
 		const t = test_convex();
@@ -8990,6 +9007,841 @@ describe("apply_file_pending_move", () => {
 			});
 			expect(row).toBeNull();
 		});
+	});
+});
+
+describe("upsert_file_pending_archive_in_db", () => {
+	test("creates a delete row, schedules cleanup, and is idempotent", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/archive-upsert.md",
+				name: "archive-upsert.md",
+				markdown: "# Archive upsert base",
+			}),
+		);
+
+		const created = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		expect(created._yay).toEqual({
+			fromPath: "/archive-upsert.md",
+			nodeKind: "file",
+			outcome: "proposed",
+		});
+
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!pendingRow) {
+			throw new Error("Missing pending row after archive upsert");
+		}
+		expect(pendingRow.pendingArchive).toEqual({ fromPath: "/archive-upsert.md" });
+		expect(files_pending_update_has_yjs_content(pendingRow)).toBe(false);
+		expect(pendingRow.size).toBe(0);
+
+		const cleanupTasks = await t.run((ctx) => list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id }));
+		expect(cleanupTasks).toHaveLength(1);
+		expect(cleanupTasks[0]?.expectedUpdatedAt).toBe(pendingRow.updatedAt);
+
+		const repeated = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		expect(repeated._yay?.outcome).toBe("proposed");
+		const repeatedRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		expect(repeatedRow?._id).toBe(pendingRow._id);
+		expect(repeatedRow?.pendingArchive).toEqual({ fromPath: "/archive-upsert.md" });
+	});
+
+	test("supersedes a pending move, keeps content branches, and dedupes threadIds", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/archive-supersede.md",
+				name: "archive-supersede.md",
+				markdown: "# Archive supersede base",
+			}),
+		);
+		const threadId = await t.run((ctx) =>
+			seed_chat_thread({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+			}),
+		);
+
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: seeded.baseMarkdown,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nDelete me later`,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const moved = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "archive-supersede-renamed.md",
+		});
+		if (moved._nay) {
+			throw new Error(moved._nay.message);
+		}
+
+		for (let i = 0; i < 2; i++) {
+			const archived = await upsert_file_pending_archive_for_test({
+				t,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+				threadId,
+			});
+			if (archived._nay) {
+				throw new Error(archived._nay.message);
+			}
+		}
+
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!pendingRow) {
+			throw new Error("Missing pending row after archive supersede");
+		}
+		expect(pendingRow.pendingArchive).toEqual({ fromPath: "/archive-supersede.md" });
+		expect(pendingRow.pendingMove).toBeUndefined();
+		expect(files_pending_update_has_yjs_content(pendingRow)).toBe(true);
+		expect(pendingRow.threadIds).toEqual([threadId]);
+	});
+
+	test("cancels the user's own unaccepted Added file instead of proposing", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/archive-added.md",
+				name: "archive-added.md",
+				markdown: "",
+			}),
+		);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "# Added draft",
+			eagerCreatedCommittedSequence: 0,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+
+		const cancelled = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (cancelled._nay) {
+			throw new Error(cancelled._nay.message);
+		}
+		expect(cancelled._yay.outcome).toBe("cancelled_added_file");
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", seeded.nodeId)).toBeNull();
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			expect(row).toBeNull();
+		});
+	});
+
+	test("proposes normally when the eager hard-delete gate fails", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/archive-added-gated.md",
+				name: "archive-added-gated.md",
+				markdown: "",
+			}),
+		);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "# Gated draft",
+			eagerCreatedCommittedSequence: 0,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		// Content committed since the eager stamp: the node became a real file.
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			if (!node?.yjsLastSequenceId) {
+				throw new Error("Missing last sequence doc");
+			}
+			await ctx.db.patch("files_yjs_docs_last_sequences", node.yjsLastSequenceId, { lastSequence: 1 });
+		});
+
+		const proposed = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (proposed._nay) {
+			throw new Error(proposed._nay.message);
+		}
+		expect(proposed._yay.outcome).toBe("proposed");
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", seeded.nodeId)).not.toBeNull();
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			expect(row?.pendingArchive).toEqual({ fromPath: "/archive-added-gated.md" });
+			expect(row?.eagerCreated).toBeDefined();
+		});
+	});
+
+	test("rejects missing or archived nodes", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/archive-rejected.md",
+				name: "archive-rejected.md",
+				markdown: "# Archive rejected base",
+			}),
+		);
+		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { archiveOperationId: crypto.randomUUID() }));
+
+		const rejected = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		expect(rejected._nay?.message).toBe("Not found");
+	});
+});
+
+describe("apply_file_pending_archive", () => {
+	test("archives the file, patches chunk scope, and removes the doc", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/apply-archive.md",
+				name: "apply-archive.md",
+				markdown: "# Apply archive base",
+			}),
+		);
+		const { plainTextChunkId } = await t.run((ctx) =>
+			seed_committed_chunks_for_file({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				nodeId: seeded.nodeId,
+				path: "/apply-archive.md",
+				markdown: seeded.baseMarkdown,
+			}),
+		);
+		const created = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!pendingRow) {
+			throw new Error("Missing pending delete row before apply");
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_archive, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.archiveOperationId).toBeDefined();
+			const plainTextChunk = await ctx.db.get("files_plain_text_chunks", plainTextChunkId);
+			expect(plainTextChunk?.archiveOperationId).toBe(node?.archiveOperationId);
+			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
+			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
+			expect(cleanupTasks).toHaveLength(0);
+		});
+
+		// Re-accept after settle is a quiet no-op (bulk retries).
+		const reApplied = await asUser.mutation(api.files_pending_updates.apply_file_pending_archive, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(reApplied._yay).toBe(null);
+	});
+
+	test("archives a folder subtree with one operation id and settles only the acting user's docs", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/apply-archive-folder/child.md",
+				name: "child.md",
+				markdown: "# Folder child base",
+			}),
+		);
+		const folderId = await t.run((ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/apply-archive-folder",
+				name: "apply-archive-folder",
+			}),
+		);
+		const outsiderSeeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/apply-archive-outsider.md",
+				name: "apply-archive-outsider.md",
+				markdown: "# Outsider base",
+				membership: {
+					userId: seeded.userId,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					membershipId: seeded.membershipId,
+				},
+			}),
+		);
+
+		const created = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: folderId,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		// The acting user also has their own doc on the child: accept removes it too.
+		const childDelete = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (childDelete._nay) {
+			throw new Error(childDelete._nay.message);
+		}
+		// Another user's doc on the child must survive the accept untouched.
+		const otherUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "clerk_apply_archive_other" }));
+		const otherDoc = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: otherUserId,
+			nodeId: seeded.nodeId,
+		});
+		if (otherDoc._nay) {
+			throw new Error(otherDoc._nay.message);
+		}
+		// A file committed into the folder AFTER the proposal is archived too.
+		const lateFile = await t.action(internal.files_nodes.create_file_by_path, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			path: "/apply-archive-folder/late.md",
+		});
+		if (lateFile._nay) {
+			throw new Error(lateFile._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_archive, {
+			membershipId: seeded.membershipId,
+			nodeId: folderId,
+		});
+		if (applied._nay) {
+			throw new Error(applied._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const folder = await ctx.db.get("files_nodes", folderId);
+			const child = await ctx.db.get("files_nodes", seeded.nodeId);
+			const late = await ctx.db.get("files_nodes", lateFile._yay.nodeId);
+			expect(folder?.archiveOperationId).toBeDefined();
+			expect(child?.archiveOperationId).toBe(folder?.archiveOperationId);
+			expect(late?.archiveOperationId).toBe(folder?.archiveOperationId);
+			const outsider = await ctx.db.get("files_nodes", outsiderSeeded.nodeId);
+			expect(outsider?.archiveOperationId).toBeUndefined();
+
+			const actingFolderRow = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: folderId,
+			});
+			expect(actingFolderRow).toBeNull();
+			const actingChildRow = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			expect(actingChildRow).toBeNull();
+			const otherChildRow = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: otherUserId,
+				nodeId: seeded.nodeId,
+			});
+			expect(otherChildRow?.pendingArchive).toBeDefined();
+		});
+	});
+
+	test("drops the doc quietly when the node was already archived", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/apply-archive-raced.md",
+				name: "apply-archive-raced.md",
+				markdown: "# Raced base",
+			}),
+		);
+		const created = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		// The sidebar Archive action (or another accept) archived the node first.
+		const sidebarOperationId = crypto.randomUUID();
+		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { archiveOperationId: sidebarOperationId }));
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_archive, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(applied._yay).toBe(null);
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.archiveOperationId).toBe(sidebarOperationId);
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			expect(row).toBeNull();
+		});
+	});
+});
+
+describe("pending delete discard, save, expiry, and overlay reads", () => {
+	test("discard clears the delete and keeps the content proposal", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/discard-delete-content.md",
+				name: "discard-delete-content.md",
+				markdown: "# Discard delete base",
+			}),
+		);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: seeded.baseMarkdown,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nStill wanted`,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const created = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", seeded.nodeId)).not.toBeNull();
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			expect(row?.pendingArchive).toBeUndefined();
+			expect(row && files_pending_update_has_yjs_content(row)).toBe(true);
+		});
+	});
+
+	test("discard removes a delete-only doc and never touches the node", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/discard-delete-only.md",
+				name: "discard-delete-only.md",
+				markdown: "# Discard delete-only base",
+			}),
+		);
+		const created = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!pendingRow) {
+			throw new Error("Missing delete-only row before discard");
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.archiveOperationId).toBeUndefined();
+			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
+			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
+			expect(cleanupTasks).toHaveLength(0);
+		});
+	});
+
+	test("save is rejected while a delete pends", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/save-behind-delete.md",
+				name: "save-behind-delete.md",
+				markdown: "# Save behind delete base",
+			}),
+		);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: `${seeded.baseMarkdown}\n\nStaged change`,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nStaged change`,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const created = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const saved = await asUser.mutation(internal.files_pending_updates.save_file_pending_update_in_db, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			baseYjsSequence: 0,
+			baseYjsUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(new YDoc())),
+		});
+		expect(saved._nay?.message).toBe("File has a pending delete");
+	});
+
+	test("an expired delete-only doc is removed and the node stays", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/expire-delete.md",
+				name: "expire-delete.md",
+				markdown: "# Expire delete base",
+			}),
+		);
+		const created = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!pendingRow) {
+			throw new Error("Missing delete-only row before expiry");
+		}
+
+		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
+			pendingUpdateId: pendingRow._id,
+			expectedUpdatedAt: pendingRow.updatedAt,
+		});
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node).not.toBeNull();
+			expect(node?.archiveOperationId).toBeUndefined();
+			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
+		});
+	});
+
+	test("get_by_path hides a pending-deleted file for the proposer only", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/overlay-delete.md",
+				name: "overlay-delete.md",
+				markdown: "# Overlay delete base",
+			}),
+		);
+		const created = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const forProposer = await t.query(internal.files_nodes.get_by_path, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			path: "/overlay-delete.md",
+			overlayUserId: seeded.userId,
+		});
+		expect(forProposer).toBeNull();
+
+		const committed = await t.query(internal.files_nodes.get_by_path, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			path: "/overlay-delete.md",
+		});
+		expect(committed?._id).toBe(seeded.nodeId);
+	});
+
+	test("get_by_path hides a deleted folder's descendants", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/overlay-delete-folder/child.md",
+				name: "child.md",
+				markdown: "# Overlay folder child base",
+			}),
+		);
+		const folderId = await t.run((ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/overlay-delete-folder",
+				name: "overlay-delete-folder",
+			}),
+		);
+		const created = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: folderId,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const childForProposer = await t.query(internal.files_nodes.get_by_path, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			path: "/overlay-delete-folder/child.md",
+			overlayUserId: seeded.userId,
+		});
+		expect(childForProposer).toBeNull();
+
+		const childCommitted = await t.query(internal.files_nodes.get_by_path, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			path: "/overlay-delete-folder/child.md",
+		});
+		expect(childCommitted?._id).toBe(seeded.nodeId);
 	});
 });
 

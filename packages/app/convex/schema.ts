@@ -238,6 +238,16 @@ const app_convex_schema = defineSchema({
 				replacesNodeId: v.optional(v.id("files_nodes")),
 			}),
 		),
+		/**
+		 * Pending delete proposal (`rm`): accepting archives the node (a folder archives its
+		 * whole subtree, computed at accept time). The node id is authoritative; `fromPath` is
+		 * display metadata only. Setting this clears `pendingMove` — a delete supersedes a move.
+		 */
+		pendingArchive: v.optional(
+			v.object({
+				fromPath: v.string(),
+			}),
+		),
 		/** Copy provenance for the destination node of a pending copy (including `mv -f` replace-moves, which are stored as copies). */
 		copiedFrom: v.optional(
 			v.object({
