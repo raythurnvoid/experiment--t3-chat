@@ -86,7 +86,8 @@
 		tall the composer block grows (pending strip, multi line drafts).
 		*/
 		position: absolute;
-		bottom: 100%;
+		/* 8px gap between the button and the composer below it. */
+		bottom: calc(100% + 8px);
 		left: 0;
 		right: 0;
 
