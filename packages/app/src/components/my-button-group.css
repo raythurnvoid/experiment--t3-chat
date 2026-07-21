@@ -27,8 +27,7 @@
 		outline-color: var(--color-fg-12);
 	}
 
-	.MyButtonGroupItem:has(.MyButtonGroupItem-input:disabled) .MyButtonGroupItem-button {
-		cursor: not-allowed;
-		opacity: 0.5;
+	.MyButtonGroupItem:has(.MyButtonGroupItem-input:checked) .MyButtonGroupItem-button {
+		pointer-events: none;
 	}
 }
