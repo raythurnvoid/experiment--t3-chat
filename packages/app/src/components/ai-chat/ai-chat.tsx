@@ -803,17 +803,17 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 						onClickSuggestion={handleClickSuggestion}
 					/>
 				</div>
-				<div className={"AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames}>
-					<MyFloatingSurface
-						className={"AiChatThread-scroll-to-bottom-card" satisfies AiChatThread_ClassNames}
-						hidden={isAtBottom}
-					>
-						<MyIconButton variant="floating" tooltip="Scroll to bottom" onClick={handleScrollToBottom}>
-							<ArrowDown className={"AiChatThread-scroll-to-bottom-icon" satisfies AiChatThread_ClassNames} />
-						</MyIconButton>
-					</MyFloatingSurface>
-				</div>
 				<div className={"AiChatThread-composer" satisfies AiChatThread_ClassNames}>
+					<div className={"AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames}>
+						<MyFloatingSurface
+							className={"AiChatThread-scroll-to-bottom-card" satisfies AiChatThread_ClassNames}
+							hidden={isAtBottom}
+						>
+							<MyIconButton variant="floating" tooltip="Scroll to bottom" onClick={handleScrollToBottom}>
+								<ArrowDown className={"AiChatThread-scroll-to-bottom-icon" satisfies AiChatThread_ClassNames} />
+							</MyIconButton>
+						</MyFloatingSurface>
+					</div>
 					<div className={"AiChatThread-composer-stack" satisfies AiChatThread_ClassNames}>
 						{composerTopSlot}
 						<AiChatComposer

@@ -81,19 +81,25 @@
 	}
 
 	.AiChatThread-scroll-to-bottom {
-		contain: layout;
-
-		position: sticky;
-		bottom: 160px;
+		/*
+		Anchored to the composer top so the button stays visible no matter how
+		tall the composer block grows (pending strip, multi line drafts).
+		*/
+		position: absolute;
+		bottom: 100%;
+		left: 0;
+		right: 0;
 
 		display: flex;
 		justify-content: center;
 
-		height: 0px;
+		/* Let clicks pass through the full-width row; the card re-enables them. */
+		pointer-events: none;
 	}
 
 	.AiChatThread-scroll-to-bottom-card {
 		display: flex;
+		pointer-events: auto;
 
 		.MyButton-variant-floating {
 			/* Overlap the button border with the floating card border so they blend. */
