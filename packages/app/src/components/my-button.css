@@ -21,7 +21,6 @@
 
 		transition:
 			background-color 0.1s linear,
-			border-color 0.1s linear,
 			box-shadow 0.1s linear;
 
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
@@ -88,11 +87,12 @@
 	}
 
 	.MyButton-variant-default-embedded {
-		border: 1px solid var(--color-base-1-07);
+		--MyButton-border-color: var(--color-base-1-07);
 
 		color: var(--color-fg-10);
 		background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
 		box-shadow:
+			inset 0 0 0 1px var(--MyButton-border-color),
 			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
 			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent);
 
@@ -102,6 +102,7 @@
 				color: var(--color-fg-11);
 				background: linear-gradient(var(--color-base-1-08), var(--color-base-1-07));
 				box-shadow:
+					inset 0 0 0 1px var(--MyButton-border-color),
 					inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
 					inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent);
 			}
@@ -110,6 +111,7 @@
 				color: var(--color-fg-12);
 				background: linear-gradient(var(--color-base-1-09), var(--color-base-1-08));
 				box-shadow:
+					inset 0 0 0 1px var(--MyButton-border-color),
 					inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
 					inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
 			}
@@ -118,11 +120,11 @@
 		&:is(:disabled, .MyButton-state-disabled) {
 			color: var(--color-fg-03);
 			background: var(--color-base-1-04);
-			box-shadow: none;
+			box-shadow: inset 0 0 0 1px var(--MyButton-border-color);
 		}
 
 		.MyInput-variant-floating & {
-			border-color: var(--color-base-alt-1-09);
+			--MyButton-border-color: var(--color-base-alt-1-09);
 		}
 	}
 
@@ -212,8 +214,9 @@
 	.MyButton-variant-outline {
 		color: var(--color-fg-08);
 		background: linear-gradient(var(--color-base-1-04), var(--color-base-1-03));
-		border: 2px solid var(--color-base-1-09);
+		/* Border drawn as an inset ring so the box size matches borderless variants */
 		box-shadow:
+			inset 0 0 0 2px var(--color-base-1-09),
 			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
 			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
 			0 2px 4px black;
@@ -223,8 +226,8 @@
 			&[aria-expanded="true"] {
 				color: var(--color-fg-10);
 				background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
-				border-color: var(--color-base-1-10);
 				box-shadow:
+					inset 0 0 0 2px var(--color-base-1-10),
 					inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
 					inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
 					0 2px 4px black;
@@ -233,17 +236,17 @@
 			&:active {
 				background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
 				color: var(--color-fg-11);
-				border-color: var(--color-base-1-11);
 				box-shadow:
+					inset 0 0 0 2px var(--color-base-1-11),
 					inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
-					inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
+					inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent),
+					0 2px 4px black;
 			}
 		}
 
 		&:is(:disabled, .MyButton-state-disabled) {
 			color: var(--color-fg-04);
 			background: var(--color-base-1-03);
-			border-color: var(--color-base-1-03);
 			box-shadow: none;
 		}
 	}
@@ -337,24 +340,29 @@
 	}
 
 	.MyButton-variant-floating {
-		border: 1px solid var(--color-base-alt-1-08);
+		--MyButton-border-color: var(--color-base-alt-1-08);
 
 		background: linear-gradient(var(--color-base-alt-1-06), var(--color-base-alt-1-05));
 		color: var(--color-fg-07);
-		box-shadow: inset 0 1px 2px oklch(1 0 0 / 0.32);
+		box-shadow:
+			inset 0 0 0 1px var(--MyButton-border-color),
+			inset 0 1px 2px oklch(1 0 0 / 0.32);
 
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:is(:hover, :focus-visible):not(:active),
 			&[aria-expanded="true"] {
 				background: linear-gradient(var(--color-base-alt-1-07), var(--color-base-alt-1-06));
 				color: var(--color-fg-11);
-				box-shadow: inset 0 1px 2px oklch(1 0 0 / 0.36);
+				box-shadow:
+					inset 0 0 0 1px var(--MyButton-border-color),
+					inset 0 1px 2px oklch(1 0 0 / 0.36);
 			}
 
 			&:active {
 				background: linear-gradient(var(--color-base-alt-1-08), var(--color-base-alt-1-07));
 				color: var(--color-fg-12);
 				box-shadow:
+					inset 0 0 0 1px var(--MyButton-border-color),
 					inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
 					inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
 			}
@@ -363,7 +371,7 @@
 		&:is(:disabled, .MyButton-state-disabled) {
 			color: var(--color-fg-04);
 			background: var(--color-base-alt-1-04);
-			box-shadow: none;
+			box-shadow: inset 0 0 0 1px var(--MyButton-border-color);
 		}
 	}
 
