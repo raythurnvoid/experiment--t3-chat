@@ -244,7 +244,10 @@ Important behavior:
 `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending.tsx` owns:
 
 - the Pending changes tab content
-- content-only, move-only, copy, content-plus-move, and delete row rendering ("Deleted" caption wins over every other caption; a file delete row expands to an inline diff that lazily loads the committed markdown and shows it fully removed; folder delete rows are plain rows; the row link opens the file, never the diff editor)
+- content-only, move-only, copy, content-plus-move, and delete row rendering; the "Deleted" caption wins over every other caption
+- editable Markdown delete rows prefetch committed Markdown and expand to an inline fully-removed diff; binary and folder delete rows are plain rows without a disclosure control
+- binary structural replacements query both asset sizes while the row is mounted, then expand to removed and added size lines or `Size unchanged`
+- delete and binary-replacement links open the file, never the diff editor
 - per-row and bulk Accept/Discard actions
 - move-before-content ordering for content-plus-move row acceptance
 - delete rows run as their own trailing bulk phase (accepting a folder delete first would archive descendants and fail sibling accepts)
@@ -299,6 +302,9 @@ Important behavior:
 - `Accept all + save` should clear the pending update doc when no unresolved changes remain.
 - `Sync` should preserve local intent while rebasing on newer live file state.
 - Verify the Pending changes tab renders and sorts content-only, move-only, copy, content-plus-move, and delete rows.
+- Verify editable Markdown delete rows start fetching committed content before expansion and render it as fully removed.
+- Verify binary and folder delete rows have no disclosure control and do not fetch committed Markdown.
+- Verify binary replacements prefetch both asset sizes and show removed and added size lines, or `Size unchanged` when the sizes match.
 - Verify bash `rm` hides the path from the proposer's reads, accept archives (folder cascade, one operation id), and discard restores visibility without touching the node.
 - Verify pure moves do not enter the diff pager.
 - Verify accept/discard applies pending paths, archive behavior, content, and move-before-save ordering for content-plus-move rows.

@@ -16,6 +16,8 @@ import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
 import {
 	files_ROOT_ID,
 	files_fetch_file_yjs_state_and_markdown,
+	files_format_size,
+	files_node_has_editable_yjs_state,
 	files_pending_update_has_yjs_content,
 	files_yjs_doc_create_from_array_buffer_update,
 	files_yjs_doc_get_markdown,
@@ -41,7 +43,6 @@ type FileEditorSidebarPendingRow = {
 	pendingUpdate: app_convex_Doc<"files_pending_updates">;
 	path: string;
 	kind: "content" | "move" | "copy" | "content_and_move" | "delete";
-	nodeKind: app_convex_Doc<"files_nodes">["kind"] | undefined;
 	moveDestinationPath: string | undefined;
 	/**
 	 * Name of the active node that accepting this move will replace (soft-archive, like `mv -f`):
@@ -52,6 +53,10 @@ type FileEditorSidebarPendingRow = {
 	 * Editable-file replaces use `replaceSourcePath` instead.
 	 */
 	replacesName: string | undefined;
+	/** Destination file for a size-only replacement involving a file without editable Yjs state. */
+	sizeOnlyReplacedNodeId: app_convex_Id<"files_nodes"> | undefined;
+	/** True when a deleted file has editable Yjs state that can render as removed lines. */
+	canPreviewDeleteDiff: boolean;
 	/** True when the proposal created the file (write_file/cp onto a new path): shown as Added. */
 	isAddedFile: boolean;
 	/**
@@ -117,6 +122,7 @@ function build_pending_rows(
 
 			let moveDestinationPath: string | undefined;
 			let replacesName: string | undefined;
+			let sizeOnlyReplacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 			if (pendingMove) {
 				if (pendingMove.destParentId === files_ROOT_ID) {
 					moveDestinationPath = `/${pendingMove.destName}`;
@@ -146,6 +152,13 @@ function build_pending_rows(
 					!movingNodeIds.has(replacedNode._id)
 				) {
 					replacesName = replacedNode.name;
+					if (
+						node?.kind === "file" &&
+						replacedNode.kind === "file" &&
+						(!files_node_has_editable_yjs_state(node) || !files_node_has_editable_yjs_state(replacedNode))
+					) {
+						sizeOnlyReplacedNodeId = replacedNode._id;
+					}
 				}
 			}
 
@@ -153,9 +166,10 @@ function build_pending_rows(
 				pendingUpdate,
 				path: node?.path ?? pendingArchive?.fromPath ?? pendingMove?.fromPath ?? PENDING_MISSING_PATH_LABEL,
 				kind,
-				nodeKind: node?.kind,
 				moveDestinationPath,
 				replacesName,
+				sizeOnlyReplacedNodeId,
+				canPreviewDeleteDiff: kind === "delete" && files_node_has_editable_yjs_state(node),
 				isAddedFile: pendingUpdate.eagerCreated != null,
 				replaceSourcePath: copiedFrom?.archivesSourceOnAccept
 					? (nodesById.get(copiedFrom.nodeId)?.path ?? copiedFrom.path)
@@ -503,14 +517,72 @@ async function files_pending_rows_run_bulk(
 	return failures;
 }
 
+// #region size diff
+function format_size_diff_value(size: number) {
+	const formattedSize = files_format_size(size);
+	return formattedSize === `${size} bytes` ? formattedSize : `${formattedSize} (${size} bytes)`;
+}
+
+// Keep both asset queries mounted while the details are closed.
+// This lets the first expand render immediately.
+const FileEditorSidebarPendingSizeDiff = memo(function FileEditorSidebarPendingSizeDiff(props: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	sourceNodeId: app_convex_Id<"files_nodes">;
+	replacedNodeId: app_convex_Id<"files_nodes">;
+	path: string;
+}) {
+	const sourceAsset = useQuery(app_convex_api.r2.get_asset, {
+		membershipId: props.membershipId,
+		fileNodeId: props.sourceNodeId,
+	});
+	const replacedAsset = useQuery(app_convex_api.r2.get_asset, {
+		membershipId: props.membershipId,
+		fileNodeId: props.replacedNodeId,
+	});
+
+	if (sourceAsset === undefined || replacedAsset === undefined) {
+		return (
+			<div
+				role="status"
+				className={cn("FileEditorSidebarPending-item-diff" satisfies FileEditorSidebarPending_ClassNames)}
+			>
+				Loading size difference…
+			</div>
+		);
+	}
+	if (!sourceAsset || !replacedAsset) {
+		return null;
+	}
+
+	const diffText =
+		sourceAsset.size === replacedAsset.size
+			? `Size unchanged: ${format_size_diff_value(sourceAsset.size)}`
+			: createPatch(
+					props.path,
+					`Size: ${format_size_diff_value(replacedAsset.size)}\n`,
+					`Size: ${format_size_diff_value(sourceAsset.size)}\n`,
+				);
+
+	return (
+		<DiffMonospaceBlock
+			aria-label={`Size difference for ${props.path}`}
+			className={cn("FileEditorSidebarPending-item-diff" satisfies FileEditorSidebarPending_ClassNames)}
+			diffText={diffText}
+			maxHeight="16lh"
+		/>
+	);
+});
+// #endregion size diff
+
 // #region item
 type FileEditorSidebarPendingItem_Props = {
 	pendingUpdate: app_convex_Doc<"files_pending_updates">;
 	path: string;
 	kind: FileEditorSidebarPendingRow["kind"];
-	nodeKind: FileEditorSidebarPendingRow["nodeKind"];
 	moveDestinationPath: string | undefined;
 	replacesName: string | undefined;
+	sizeOnlyReplacedNodeId: app_convex_Id<"files_nodes"> | undefined;
+	canPreviewDeleteDiff: boolean;
 	isAddedFile: boolean;
 	replaceSourcePath: string | undefined;
 	disabled?: boolean;
@@ -524,9 +596,10 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		pendingUpdate,
 		path,
 		kind,
-		nodeKind,
 		moveDestinationPath,
 		replacesName,
+		sizeOnlyReplacedNodeId,
+		canPreviewDeleteDiff,
 		isAddedFile,
 		replaceSourcePath,
 		disabled,
@@ -538,31 +611,30 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	const [isOpen, setIsOpen] = useState(false);
 	const [isBusy, setIsBusy] = useState(false);
 
-	// Deletion diff data: a delete doc has no content branches, so the committed markdown
-	// loads lazily on first expand (same helper the diff editor uses).
-	const [deletedCommittedMarkdown, setDeletedCommittedMarkdown] = useState<string | null>(null);
+	// A delete doc has no content branches. Start loading its committed Markdown when the row
+	// mounts so the first expand does not wait for the Convex and R2 reads.
+	const [deletedCommittedMarkdown, setDeletedCommittedMarkdown] = useState<string | null | undefined>();
 	useEffect(() => {
-		if (kind !== "delete") {
-			// Discarding a delete can flip this row back to a content kind while the doc (and
-			// this item) survives; drop the cache so a later delete reloads fresh committed content.
-			setDeletedCommittedMarkdown(null);
+		if (kind !== "delete" || !canPreviewDeleteDiff) {
 			return;
 		}
-		if (!isOpen || deletedCommittedMarkdown != null) {
-			return;
-		}
+
 		let cancelled = false;
+		setDeletedCommittedMarkdown(undefined);
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const fileContentData = await files_fetch_file_yjs_state_and_markdown({
 				membershipId,
 				nodeId: pendingUpdate.fileNodeId,
 			});
-			if (cancelled || !fileContentData || fileContentData.markdown._nay) {
-				return;
-			}
-			setDeletedCommittedMarkdown(fileContentData.markdown._yay);
+			if (cancelled) return;
+			setDeletedCommittedMarkdown(
+				fileContentData && !fileContentData.markdown._nay ? fileContentData.markdown._yay : null,
+			);
 		})().catch((error) => {
+			if (!cancelled) {
+				setDeletedCommittedMarkdown(null);
+			}
 			console.error("[FileEditorSidebarPending] Failed to load the deleted file content", {
 				error,
 				nodeId: pendingUpdate.fileNodeId,
@@ -571,7 +643,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		return () => {
 			cancelled = true;
 		};
-	}, [isOpen, kind, deletedCommittedMarkdown, membershipId, pendingUpdate.fileNodeId]);
+	}, [kind, canPreviewDeleteDiff, membershipId, pendingUpdate.fileNodeId]);
 
 	// Decode lazily: `files_yjs_doc_get_markdown` spins up a headless Tiptap editor, so only build the
 	// diff once the accordion is open. The pending-update prop ref changes only when the doc data changes.
@@ -579,14 +651,15 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		if (!isOpen) return null;
 		if (kind === "delete") {
 			// The whole committed content shows as removed lines.
-			return deletedCommittedMarkdown != null ? createPatch(path, deletedCommittedMarkdown, "") : null;
+			return typeof deletedCommittedMarkdown === "string" ? createPatch(path, deletedCommittedMarkdown, "") : null;
 		}
+		if (sizeOnlyReplacedNodeId) return null;
 		const decoded = decode_staged_unstaged(pendingUpdate);
 		if (decoded._nay) {
 			return null;
 		}
 		return createPatch(path, decoded._yay.stagedMarkdown, decoded._yay.unstagedMarkdown);
-	}, [isOpen, kind, deletedCommittedMarkdown, pendingUpdate, path]);
+	}, [isOpen, kind, sizeOnlyReplacedNodeId, deletedCommittedMarkdown, pendingUpdate, path]);
 
 	const handleToggle = useFn((event: { currentTarget: HTMLDetailsElement }) => {
 		setIsOpen(event.currentTarget.open);
@@ -667,9 +740,10 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 			});
 	});
 
-	// Move-only rows have no content to diff, and neither do folder (or unknown-node) delete
-	// rows: render a plain row (no accordion, no diff link) with a single truncatable label.
-	if (kind === "move" || (kind === "delete" && nodeKind !== "file")) {
+	// Plain moves have no content to diff. A delete without editable Yjs state also has nothing
+	// useful to preview. Size-only replacements are the exception: their accordion compares
+	// stored sizes.
+	if ((kind === "move" && !sizeOnlyReplacedNodeId) || (kind === "delete" && !canPreviewDeleteDiff)) {
 		const moveLabel = kind === "move" && moveDestinationPath != null ? `${path} → ${moveDestinationPath}` : path;
 		return (
 			<li>
@@ -753,7 +827,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// disappears (red) and its content lands on the target (green). Delete rows always show
 	// only their own path.
 	const rowLabel =
-		kind === "content_and_move" && moveDestinationPath != null
+		(kind === "move" || kind === "content_and_move") && moveDestinationPath != null
 			? `${path} → ${moveDestinationPath}`
 			: kind !== "delete" && replaceSourcePath != null
 				? `${replaceSourcePath} → ${path}`
@@ -767,7 +841,13 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 				onToggle={handleToggle}
 			>
 				<summary className={cn("FileEditorSidebarPending-item-summary" satisfies FileEditorSidebarPending_ClassNames)}>
-					<MyIconButton aria-hidden tabIndex={-1} variant="ghost-highlightable" onClick={handleChevronToggle}>
+					<MyIconButton
+						aria-hidden
+						tabIndex={-1}
+						variant="ghost-highlightable"
+						onMouseDown={(event) => event.preventDefault()}
+						onClick={handleChevronToggle}
+					>
 						<MyIconButtonIcon>{isOpen ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
 					</MyIconButton>
 					<MyLink
@@ -775,16 +855,16 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						to="/w/$organizationName/$workspaceName/files"
 						params={{ organizationName, workspaceName }}
 						search={
-							// The diff editor cannot represent a deleted file; the inline preview below
-							// is the deletion diff, and the link opens the file itself.
-							kind === "delete"
+							// The diff editor cannot represent a deleted file or size-only replacement.
+							// The inline preview below handles those, and the link opens the file itself.
+							kind === "delete" || sizeOnlyReplacedNodeId
 								? { nodeId: pendingUpdate.fileNodeId }
 								: { nodeId: pendingUpdate.fileNodeId, view: "diff_editor" }
 						}
 						aria-label={rowLabel}
 						title={rowLabel}
 					>
-						{kind === "content_and_move" && moveDestinationPath != null ? (
+						{(kind === "move" || kind === "content_and_move") && moveDestinationPath != null ? (
 							<PendingMoveLabel path={path} moveDestinationPath={moveDestinationPath} />
 						) : kind !== "delete" && replaceSourcePath != null ? (
 							<PendingMoveLabel path={replaceSourcePath} moveDestinationPath={path} />
@@ -825,12 +905,26 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						</MyButton>
 					</span>
 				</summary>
-				{isOpen && diffText != null ? (
+				{sizeOnlyReplacedNodeId ? (
+					<FileEditorSidebarPendingSizeDiff
+						membershipId={membershipId}
+						sourceNodeId={pendingUpdate.fileNodeId}
+						replacedNodeId={sizeOnlyReplacedNodeId}
+						path={path}
+					/>
+				) : isOpen && diffText != null ? (
 					<DiffMonospaceBlock
 						className={cn("FileEditorSidebarPending-item-diff" satisfies FileEditorSidebarPending_ClassNames)}
 						diffText={diffText}
 						maxHeight="16lh"
 					/>
+				) : isOpen && kind === "delete" && deletedCommittedMarkdown === undefined ? (
+					<div
+						role="status"
+						className={cn("FileEditorSidebarPending-item-diff" satisfies FileEditorSidebarPending_ClassNames)}
+					>
+						Loading diff…
+					</div>
 				) : null}
 			</details>
 		</li>
@@ -1007,9 +1101,10 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							pendingUpdate={row.pendingUpdate}
 							path={row.path}
 							kind={row.kind}
-							nodeKind={row.nodeKind}
 							moveDestinationPath={row.moveDestinationPath}
 							replacesName={row.replacesName}
+							sizeOnlyReplacedNodeId={row.sizeOnlyReplacedNodeId}
+							canPreviewDeleteDiff={row.canPreviewDeleteDiff}
 							isAddedFile={row.isAddedFile}
 							replaceSourcePath={row.replaceSourcePath}
 							disabled={isBulkBusy}
@@ -1150,7 +1245,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(rows.map((row) => row.moveDestinationPath)).toEqual(["/a.md", "/docs/b.md", "…/c.md"]);
 		});
 
-		test("keeps the node kind and falls back to fromPath when the source node is missing", () => {
+		test("falls back to the move fromPath when the source node is missing", () => {
 			const updates = [
 				makePendingUpdate({
 					id: "pu_folder",
@@ -1168,9 +1263,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const rows = build_pending_rows(updates, nodesById);
 
 			expect(rows[0]?.path).toBe("/from/gone.md");
-			expect(rows[0]?.nodeKind).toBeUndefined();
 			expect(rows[1]?.path).toBe("/old-archive");
-			expect(rows[1]?.nodeKind).toBe("folder");
 		});
 
 		test("derives the replaced occupant name for move rows from live path occupancy only", () => {
@@ -1302,7 +1395,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					unstaged: "u",
 					pendingArchive: { fromPath: "/b.md" },
 				}),
-				// Folder delete keeps the node kind for the plain-row rendering.
+				// Folder deletes always render as plain rows.
 				makePendingUpdate({ id: "pu_del_folder", fileNodeId: "node_f", pendingArchive: { fromPath: "/f" } }),
 				// Missing node falls back to the delete's fromPath.
 				makePendingUpdate({ id: "pu_del_gone", fileNodeId: "node_gone", pendingArchive: { fromPath: "/gone.md" } }),
@@ -1315,11 +1408,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const rows = build_pending_rows(updates, nodesById);
 
-			expect(rows.map((row) => [row.path, row.kind, row.nodeKind])).toEqual([
-				["/a.md", "delete", "file"],
-				["/b.md", "delete", "file"],
-				["/f", "delete", "folder"],
-				["/gone.md", "delete", undefined],
+			expect(rows.map((row) => [row.path, row.kind])).toEqual([
+				["/a.md", "delete"],
+				["/b.md", "delete"],
+				["/f", "delete"],
+				["/gone.md", "delete"],
 			]);
 		});
 

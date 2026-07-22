@@ -5,15 +5,23 @@ import { toast } from "sonner";
 
 import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
 
-const { tenantContextMock, useQueryMock, useStableQueryMock, actionMock, mutationMock, truncatePathForWidthMock } =
-	vi.hoisted(() => ({
-		tenantContextMock: vi.fn(),
-		useQueryMock: vi.fn(),
-		useStableQueryMock: vi.fn(),
-		actionMock: vi.fn(),
-		mutationMock: vi.fn(),
-		truncatePathForWidthMock: vi.fn((args: { path: string }) => args.path),
-	}));
+const {
+	tenantContextMock,
+	useQueryMock,
+	useStableQueryMock,
+	actionMock,
+	mutationMock,
+	fetchFileYjsStateAndMarkdownMock,
+	truncatePathForWidthMock,
+} = vi.hoisted(() => ({
+	tenantContextMock: vi.fn(),
+	useQueryMock: vi.fn(),
+	useStableQueryMock: vi.fn(),
+	actionMock: vi.fn(),
+	mutationMock: vi.fn(),
+	fetchFileYjsStateAndMarkdownMock: vi.fn(),
+	truncatePathForWidthMock: vi.fn((args: { path: string }) => args.path),
+}));
 
 // Network boundary: the real hooks talk to a live Convex client; tests feed query data directly.
 vi.mock("convex/react", () => ({
@@ -48,21 +56,25 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			upsert_file_pending_update: "upsert_file_pending_update",
 			save_file_pending_update: "save_file_pending_update",
 			apply_file_pending_move: "apply_file_pending_move",
+			apply_file_pending_archive: "apply_file_pending_archive",
 			discard_file_pending_structural: "discard_file_pending_structural",
 		},
 		files_nodes: {
 			list_tree: "list_tree",
 		},
+		r2: {
+			get_asset: "get_asset",
+		},
 	},
 }));
 
-// Keep the real module and fake only the expensive headless-tiptap decoders: map each branch's
-// stored fake string straight to canned Markdown so the action handlers see deterministic
-// staged/unstaged content.
+// Keep the real module. Fake the expensive headless Tiptap decoders and committed-content fetch
+// so action handlers and delete previews receive deterministic Markdown.
 vi.mock("@/lib/files.ts", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/files.ts")>()),
 	files_yjs_doc_create_from_array_buffer_update: (update: unknown) => update,
 	files_yjs_doc_get_markdown: ({ yjsDoc }: { yjsDoc: unknown }) => ({ _yay: yjsDoc as string }),
+	files_fetch_file_yjs_state_and_markdown: (...args: unknown[]) => fetchFileYjsStateAndMarkdownMock(...args),
 }));
 
 // The real implementation measures text with Pretext font metrics that happy-dom cannot provide;
@@ -107,6 +119,7 @@ function makePendingUpdate(args: {
 	pendingMove?: { destParentId: string; destName: string; fromPath: string; replacesNodeId?: string };
 	copiedFrom?: { nodeId: string; path: string; archivesSourceOnAccept?: boolean };
 	eagerCreated?: { committedSequence: number };
+	pendingArchive?: { fromPath: string };
 }): app_convex_Doc<"files_pending_updates"> {
 	return {
 		_id: args.id,
@@ -127,6 +140,7 @@ function makePendingUpdate(args: {
 		...(args.pendingMove ? { pendingMove: args.pendingMove } : {}),
 		...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
 		...(args.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
+		...(args.pendingArchive ? { pendingArchive: args.pendingArchive } : {}),
 		size: 0,
 		updatedAt: 1,
 	} as unknown as app_convex_Doc<"files_pending_updates">;
@@ -137,14 +151,27 @@ function makeNode(args: {
 	path: string;
 	kind?: "file" | "folder";
 	parentId?: string;
+	editable?: boolean;
 }): app_convex_Doc<"files_nodes"> {
+	const kind = args.kind ?? "file";
 	return {
 		_id: args.id,
 		_creationTime: 0,
 		path: args.path,
 		name: args.path.split("/").pop() ?? args.path,
-		kind: args.kind ?? "file",
+		kind,
 		parentId: args.parentId ?? "root",
+		...(kind === "file"
+			? {
+					assetId: `asset_${args.id}`,
+					...(args.editable === false
+						? {}
+						: {
+								yjsSnapshotId: `snapshot_${args.id}`,
+								yjsLastSequenceId: `sequence_${args.id}`,
+							}),
+				}
+			: {}),
 	} as unknown as app_convex_Doc<"files_nodes">;
 }
 
@@ -162,6 +189,8 @@ beforeEach(() => {
 	actionMock.mockResolvedValue({ _yay: null });
 	mutationMock.mockReset();
 	mutationMock.mockResolvedValue({ _yay: null });
+	fetchFileYjsStateAndMarkdownMock.mockReset();
+	fetchFileYjsStateAndMarkdownMock.mockResolvedValue({ markdown: { _yay: "Committed content\n" } });
 	truncatePathForWidthMock.mockReset();
 	truncatePathForWidthMock.mockImplementation((args: { path: string }) => args.path);
 	useQueryMock.mockReset();
@@ -540,6 +569,86 @@ describe("FileEditorSidebarPending", () => {
 		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Moved");
 		expect(container.querySelector("details")).toBeNull();
 		expect(screen.getByText("Accept")).toBeTruthy();
+	});
+
+	test("binary replacement shows only the old and new file sizes", () => {
+		const pendingUpdates = [
+			makePendingUpdate({
+				id: "pu_binary_replace",
+				fileNodeId: "node_source",
+				pendingMove: { destParentId: "root", destName: "target.mp4", fromPath: "/source.mp4" },
+			}),
+		];
+		useQueryMock.mockImplementation((query: unknown, args: { fileNodeId?: string }) => {
+			if (query === "list_files_pending_updates") return pendingUpdates;
+			if (query === "get_asset") {
+				return { size: args.fileNodeId === "node_source" ? 1_024 : 1_030 };
+			}
+			return undefined;
+		});
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_source", path: "/source.mp4", editable: false }),
+			makeNode({ id: "node_target", path: "/target.mp4", editable: false }),
+		]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		const details = container.querySelector("details");
+		expect(details).toBeTruthy();
+		const link = screen.getByRole("link", { name: "/source.mp4 → /target.mp4" });
+		expect(link.getAttribute("href")).not.toContain("view=diff_editor");
+		fireEvent.click(details?.querySelector("summary button") as HTMLButtonElement);
+
+		const sizeDiff = screen.getByRole("textbox", { name: "Size difference for /source.mp4" });
+		expect(sizeDiff.textContent).toContain("-Size: 1.0 KB (1030 bytes)");
+		expect(sizeDiff.textContent).toContain("+Size: 1.0 KB (1024 bytes)");
+		expect(fetchFileYjsStateAndMarkdownMock).not.toHaveBeenCalled();
+	});
+
+	test("binary delete has no dropdown or content fetch", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_binary_delete",
+				fileNodeId: "node_video",
+				pendingArchive: { fromPath: "/video.mp4" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_video", path: "/video.mp4", editable: false })]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		expect(container.querySelector("details")).toBeNull();
+		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-deleted")?.textContent).toBe("/video.mp4");
+		expect(screen.getByRole("link", { name: "/video.mp4" }).getAttribute("href")).not.toContain("view=diff_editor");
+		expect(fetchFileYjsStateAndMarkdownMock).not.toHaveBeenCalled();
+	});
+
+	test("editable delete starts loading its committed content before the first expand", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_text_delete",
+				fileNodeId: "node_text",
+				pendingArchive: { fromPath: "/notes.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_text", path: "/notes.md" })]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		await waitFor(() =>
+			expect(fetchFileYjsStateAndMarkdownMock).toHaveBeenCalledWith({
+				membershipId: MEMBERSHIP_ID,
+				nodeId: "node_text",
+			}),
+		);
+		const details = container.querySelector("details");
+		expect(details).toBeTruthy();
+		fireEvent.click(details?.querySelector("summary button") as HTMLButtonElement);
+
+		await waitFor(() =>
+			expect(screen.getByRole("textbox", { name: "Diff preview" }).textContent).toContain("Committed content"),
+		);
+		expect(screen.getByRole("link", { name: "/notes.md" }).getAttribute("href")).not.toContain("view=diff_editor");
 	});
 
 	test("added row shows the green Added caption and path and keeps the diff link", () => {

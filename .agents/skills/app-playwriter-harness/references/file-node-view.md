@@ -91,8 +91,10 @@ await state.page.getByRole("form", { name: "Reply to comment" }).waitFor({ state
 - Switch with `#app_file_editor_sidebar_tabs_pending`.
 - Panel region: `getByRole("region", { name: "Pending changes" })` (class `.FileEditorSidebarPending`); empty state is `.FileEditorSidebarPending-empty` ("No pending changes").
 - Items are sorted by path. Captions are `Modified`, `Added`, `Moved`, `Replaced`, or `Replaces <name>`.
-- Pure moves are plain `.FileEditorSidebarPending-item-move` rows. Their path links open the moved node without `view=diff_editor`.
+- Move-only rows without a binary replacement are plain `.FileEditorSidebarPending-item-move` rows. Their path links open the moved node without `view=diff_editor`.
+- A move-only replacement involving a binary file is expandable. Its preview shows removed and added size lines when the sizes differ, or `Size unchanged` when they match. Its path link also opens the moved node without `view=diff_editor`.
 - Content edits, copies, and mixed moves use `<details class="FileEditorSidebarPending-item">`. Click `.FileEditorSidebarPending-item-summary` to expand the `DiffMonospaceBlock` preview. Their path links use `view=diff_editor`.
+- Editable Markdown delete rows use the same expandable preview and prefetch their committed content. Binary and folder delete rows are plain rows with no chevron because there is no text diff to show.
 - Per-item actions, scoped to the row, are `Accept` and `Discard`. `Accept` applies a pure move directly; content and copy rows save the accepted content; mixed rows apply the move before saving content.
 - `Discard` removes the proposal or restores the committed path/content as required by its kind. Assert the reactive `list_files_pending_updates` result through list membership rather than a fixed index.
 - Bulk actions are `Accept all` and `Discard all`.
