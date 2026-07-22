@@ -1,5 +1,6 @@
 import "./plugin.css";
 
+import { Editor, type EditorProps } from "@monaco-editor/react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import {
@@ -12,11 +13,13 @@ import {
 	KeyRound,
 	Puzzle,
 	Save,
+	Settings2,
 	ShieldCheck,
 	Trash2,
 	UploadCloud,
 } from "lucide-react";
-import { memo, useState, type ClipboardEvent, type FormEvent } from "react";
+import { editor as monaco_editor } from "monaco-editor";
+import { memo, useEffect, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
 import { toast } from "sonner";
 
 import { MyBadge } from "@/components/my-badge.tsx";
@@ -51,7 +54,7 @@ import {
 } from "@/components/my-modal.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
-import { useFn } from "@/hooks/utils-hooks.ts";
+import { useFn, useLiveRef } from "@/hooks/utils-hooks.ts";
 import {
 	app_convex,
 	app_convex_api,
@@ -59,10 +62,14 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import { format_datetime } from "@/lib/date.ts";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import {
 	plugins_consent_diff,
+	plugins_get_event_filter_values,
+	plugins_parse_installation_configuration_yaml,
 	plugins_parse_env_text,
 	plugins_validate_secret_name,
 } from "../../../../../../shared/plugins.ts";
@@ -588,6 +595,266 @@ const RoutePluginsPluginSecrets = memo(function RoutePluginsPluginSecrets(props:
 });
 // #endregion secrets
 
+// #region configuration
+type RoutePluginsPluginConfiguration_ClassNames =
+	| "RoutePluginsPluginConfiguration"
+	| "RoutePluginsPluginConfiguration-header"
+	| "RoutePluginsPluginConfiguration-title"
+	| "RoutePluginsPluginConfiguration-description"
+	| "RoutePluginsPluginConfiguration-example"
+	| "RoutePluginsPluginConfiguration-editor"
+	| "RoutePluginsPluginConfiguration-actions"
+	| "RoutePluginsPluginConfiguration-status"
+	| "RoutePluginsPluginConfiguration-status-error";
+
+type RoutePluginsPluginConfiguration_Props = {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	installationId: app_convex_Id<"plugins_workspace_installations">;
+	configurationYaml: string;
+	description: string;
+	events: RoutePlugins_Installation["version"]["events"];
+};
+
+type RoutePluginsPluginConfiguration_State = {
+	draftYaml: string;
+	serverYaml: string;
+	feedback: { kind: "conflict" | "error" | "success"; message: string } | null;
+};
+
+const RoutePluginsPluginConfiguration = memo(function RoutePluginsPluginConfiguration(
+	props: RoutePluginsPluginConfiguration_Props,
+) {
+	const { membershipId, installationId, configurationYaml, description, events } = props;
+	const [configuration, setConfiguration] = useState<RoutePluginsPluginConfiguration_State>(() => ({
+		draftYaml: configurationYaml,
+		serverYaml: configurationYaml,
+		feedback: null,
+	}));
+	const [saving, setSaving] = useState(false);
+	const configurationRef = useLiveRef(configuration);
+	const editorRef = useRef<monaco_editor.IStandaloneCodeEditor | null>(null);
+	const hasPathFilter = events.some((event) =>
+		event.filters.some((filter) => filter.field === "source.path" && filter.operator === "pathIsUnderAny"),
+	);
+	const hoistingContainer = document.getElementById("app_monaco_hoisting_container" satisfies AppElementId);
+	// Keep construction-only Monaco options stable because @monaco-editor/react deep-clones
+	// option updates and DOM references in these options are cyclic.
+	const [editorOptions] = useState(() => {
+		return {
+			overflowWidgetsDomNode: hoistingContainer ?? undefined,
+			fixedOverflowWidgets: true,
+			ariaLabel: "Plugin configuration YAML",
+			automaticLayout: true,
+			fontSize: 14,
+			lineHeight: 20,
+			minimap: { enabled: false },
+			padding: { top: 12, bottom: 12 },
+			scrollBeyondLastLine: false,
+			wordWrap: "on",
+		} satisfies NonNullable<EditorProps["options"]>;
+	});
+
+	const handleOnMount = useFn<EditorProps["onMount"]>((editor) => {
+		editorRef.current = editor;
+		editor.updateOptions({ readOnly: saving });
+	});
+
+	useEffect(() => {
+		editorRef.current?.updateOptions({ readOnly: saving });
+	}, [saving]);
+
+	useEffect(() => {
+		setConfiguration((current) => {
+			const serverYaml = configurationYaml;
+			if (serverYaml === current.serverYaml) {
+				return current;
+			}
+
+			if (current.draftYaml === current.serverYaml) {
+				return { draftYaml: serverYaml, serverYaml, feedback: null };
+			}
+
+			if (current.draftYaml === serverYaml) {
+				return { ...current, serverYaml, feedback: null };
+			}
+
+			return {
+				...current,
+				serverYaml,
+				feedback: {
+					kind: "conflict",
+					message: "Configuration changed elsewhere. Review this draft before saving it over the newer version.",
+				},
+			};
+		});
+	}, [configurationYaml]);
+
+	const handleSave = useFn(() => {
+		if (saving || configuration.draftYaml === configuration.serverYaml) {
+			return;
+		}
+
+		// Use the shared parser first so invalid drafts do not spend a plugins_manage rate-limit token.
+		const parsed = plugins_parse_installation_configuration_yaml({
+			configurationYaml: configuration.draftYaml,
+			events,
+		});
+		if (parsed._nay) {
+			setConfiguration((current) => ({
+				...current,
+				feedback: { kind: "error", message: parsed._nay.message },
+			}));
+			toast.error(parsed._nay.message);
+			return;
+		}
+
+		const yamlToSave = parsed._yay.configurationYaml;
+		const serverYamlBeforeSave = configuration.serverYaml;
+		setSaving(true);
+		setConfiguration((current) => ({ ...current, feedback: null }));
+		app_convex
+			.mutation(app_convex_api.plugins.update_installation_configuration, {
+				membershipId,
+				installationId,
+				configurationYaml: yamlToSave,
+			})
+			.then((result) => {
+				if (result._nay) {
+					setConfiguration((current) => ({
+						...current,
+						feedback:
+							current.serverYaml !== serverYamlBeforeSave
+								? {
+										kind: "conflict",
+										message: `${result._nay.message}. Configuration also changed elsewhere. Review this draft before saving again.`,
+									}
+								: { kind: "error", message: result._nay.message },
+					}));
+					toast.error(result._nay.message);
+					return;
+				}
+
+				const current = configurationRef.current;
+				let nextConfiguration: RoutePluginsPluginConfiguration_State;
+				if (current.serverYaml !== serverYamlBeforeSave && current.serverYaml !== yamlToSave) {
+					nextConfiguration = {
+						...current,
+						feedback: {
+							kind: "conflict",
+							message: "Configuration changed again while saving. Review this draft before saving again.",
+						},
+					};
+				} else {
+					nextConfiguration = {
+						...current,
+						serverYaml: yamlToSave,
+						feedback:
+							current.draftYaml === yamlToSave
+								? { kind: "success", message: "Configuration saved" }
+								: {
+										kind: "conflict",
+										message: "An earlier draft was saved. Review the current draft before saving again.",
+									},
+					};
+				}
+
+				setConfiguration(nextConfiguration);
+				if (nextConfiguration.feedback?.kind === "success") {
+					toast.success("Plugin configuration saved");
+				}
+			})
+			.catch((error) => {
+				console.error("[RoutePluginsPluginConfiguration.handleSave] Failed to save plugin configuration:", {
+					error,
+					installationId,
+				});
+				setConfiguration((current) => ({
+					...current,
+					feedback:
+						current.serverYaml !== serverYamlBeforeSave
+							? {
+									kind: "conflict",
+									message:
+										"Failed to save plugin configuration. Configuration also changed elsewhere. Review this draft before saving again.",
+								}
+							: { kind: "error", message: "Failed to save plugin configuration" },
+				}));
+				toast.error("Failed to save plugin configuration");
+			})
+			.finally(() => {
+				setSaving(false);
+			});
+	});
+
+	return (
+		<section className={"RoutePluginsPluginConfiguration" satisfies RoutePluginsPluginConfiguration_ClassNames}>
+			<header className={"RoutePluginsPluginConfiguration-header" satisfies RoutePluginsPluginConfiguration_ClassNames}>
+				<h2 className={"RoutePluginsPluginConfiguration-title" satisfies RoutePluginsPluginConfiguration_ClassNames}>
+					<Settings2 aria-hidden />
+					Configuration
+				</h2>
+				<p
+					className={"RoutePluginsPluginConfiguration-description" satisfies RoutePluginsPluginConfiguration_ClassNames}
+				>
+					{description}
+				</p>
+				{hasPathFilter ? (
+					<p className={"RoutePluginsPluginConfiguration-example" satisfies RoutePluginsPluginConfiguration_ClassNames}>
+						Path filters are case-sensitive. Use <code>/</code> for every folder and an empty list to stop automatic
+						runs. Manual runs ignore automatic trigger filters.
+					</p>
+				) : null}
+			</header>
+
+			<div className={"RoutePluginsPluginConfiguration-editor" satisfies RoutePluginsPluginConfiguration_ClassNames}>
+				{hoistingContainer ? (
+					<Editor
+						height="240px"
+						language="yaml"
+						theme={app_monaco_THEME_NAME_DARK}
+						value={configuration.draftYaml}
+						options={editorOptions}
+						onMount={handleOnMount}
+						onChange={(value) => {
+							const draftYaml = value ?? "";
+							setConfiguration((current) => ({
+								...current,
+								draftYaml,
+								feedback:
+									draftYaml !== current.serverYaml && current.feedback?.kind === "conflict" ? current.feedback : null,
+							}));
+						}}
+					/>
+				) : null}
+			</div>
+
+			<div className={"RoutePluginsPluginConfiguration-actions" satisfies RoutePluginsPluginConfiguration_ClassNames}>
+				{configuration.feedback ? (
+					<p
+						className={cn(
+							"RoutePluginsPluginConfiguration-status" satisfies RoutePluginsPluginConfiguration_ClassNames,
+							configuration.feedback.kind !== "success" &&
+								("RoutePluginsPluginConfiguration-status-error" satisfies RoutePluginsPluginConfiguration_ClassNames),
+						)}
+						role={configuration.feedback.kind === "success" ? "status" : "alert"}
+					>
+						{configuration.feedback.message}
+					</p>
+				) : null}
+				<MyButton
+					disabled={saving || configuration.draftYaml === configuration.serverYaml}
+					aria-busy={saving}
+					onClick={handleSave}
+				>
+					<Save aria-hidden />
+					{saving ? "Saving..." : "Save configuration"}
+				</MyButton>
+			</div>
+		</section>
+	);
+});
+// #endregion configuration
+
 // #region installed runs
 type RoutePluginsInstalledRuns_ClassNames =
 	| "RoutePluginsInstalledRuns"
@@ -692,11 +959,14 @@ type RoutePluginsPluginAccess_ClassNames =
 	| "RoutePluginsPluginAccess-empty"
 	| "RoutePluginsPluginAccess-trigger"
 	| "RoutePluginsPluginAccess-trigger-name"
-	| "RoutePluginsPluginAccess-trigger-types";
+	| "RoutePluginsPluginAccess-trigger-types"
+	| "RoutePluginsPluginAccess-trigger-policy";
 
 type RoutePluginsPluginAccess_Props = {
 	plugin: RoutePlugins_PublishedPlugin;
 	handlers: RoutePlugins_Installation["handlers"] | null;
+	configurationYaml: string | null;
+	events: RoutePlugins_Installation["version"]["events"] | null;
 };
 
 function format_access_label(value: string) {
@@ -707,13 +977,36 @@ function format_access_label(value: string) {
 }
 
 const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: RoutePluginsPluginAccess_Props) {
-	const { plugin, handlers } = props;
-	const handlersByEvent = handlers?.reduce<Record<string, string[]>>((groups, handler) => {
-		const contentTypes = groups[handler.event] ?? [];
-		contentTypes.push(handler.contentType);
-		groups[handler.event] = contentTypes;
-		return groups;
-	}, {});
+	const { plugin, handlers, configurationYaml, events } = props;
+	const parsedConfiguration =
+		configurationYaml !== null && events !== null
+			? plugins_parse_installation_configuration_yaml({ configurationYaml, events })
+			: null;
+	const activeEvents =
+		handlers && events
+			? events.flatMap((event, eventIndex) => {
+					const contentTypes = event.contentTypes.filter((contentType) =>
+						handlers.some((handler) => handler.event === event.type && handler.contentType === contentType),
+					);
+					if (contentTypes.length === 0) {
+						return [];
+					}
+					return [
+						{
+							key: `${event.type}:${eventIndex}`,
+							type: event.type,
+							contentTypes,
+							filters:
+								parsedConfiguration && !parsedConfiguration._nay
+									? plugins_get_event_filter_values({
+											configuration: parsedConfiguration._yay.configuration,
+											event,
+										})
+									: [],
+						},
+					];
+				})
+			: null;
 
 	return (
 		<section className={"RoutePluginsPluginAccess" satisfies RoutePluginsPluginAccess_ClassNames}>
@@ -799,32 +1092,46 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 				)}
 			</section>
 
-			{handlersByEvent ? (
+			{activeEvents ? (
 				<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
 					<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
 						Triggers
 					</h3>
-					{Object.keys(handlersByEvent).length === 0 ? (
+					{activeEvents.length === 0 ? (
 						<div className={"RoutePluginsPluginAccess-empty" satisfies RoutePluginsPluginAccess_ClassNames}>
 							No active triggers.
 						</div>
 					) : (
 						<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
-							{Object.entries(handlersByEvent).map(([event, contentTypes]) => (
+							{activeEvents.map((event) => (
 								<li
-									key={event}
+									key={event.key}
 									className={"RoutePluginsPluginAccess-trigger" satisfies RoutePluginsPluginAccess_ClassNames}
 								>
 									<span
 										className={"RoutePluginsPluginAccess-trigger-name" satisfies RoutePluginsPluginAccess_ClassNames}
 									>
-										{format_access_label(event)}
+										{format_access_label(event.type)}
 									</span>
 									<span
 										className={"RoutePluginsPluginAccess-trigger-types" satisfies RoutePluginsPluginAccess_ClassNames}
 									>
-										{contentTypes.join(", ")}
+										{event.contentTypes.join(", ")}
 									</span>
+									{event.filters.map((filter, filterIndex) => (
+										<span
+											key={`${filter.filter.configurationPath.join(".")}:${filterIndex}`}
+											className={
+												"RoutePluginsPluginAccess-trigger-policy" satisfies RoutePluginsPluginAccess_ClassNames
+											}
+										>
+											{filter.values.length === 0
+												? "Automatic runs are disabled."
+												: filter.values.includes("/")
+													? "Runs for matching files in every folder."
+													: `Paths: ${filter.values.join(", ")}`}
+										</span>
+									))}
 								</li>
 							))}
 						</ul>
@@ -1191,6 +1498,7 @@ function RoutePluginsPlugin() {
 	// do not — leftover secrets must stay reachable after an upgrade drops the capability.
 	const secretsInstallationId = installedItem ? installedItem.installation._id : null;
 	const secretsCanAdd = installedVersion?.capabilities.includes("plugin.secrets.read") ?? false;
+	const pluginConfiguration = installedVersion?.configuration ?? null;
 
 	return (
 		<main className={"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames}>
@@ -1311,7 +1619,22 @@ function RoutePluginsPlugin() {
 						publisherRepositoryId={publisherPlugin?.repository._id ?? null}
 					/>
 				) : null}
-				<RoutePluginsPluginAccess plugin={plugin} handlers={installedItem?.handlers ?? null} />
+				{installedItem && pluginConfiguration && installedItem.installation.configurationYaml !== null ? (
+					<RoutePluginsPluginConfiguration
+						key={installedItem.installation._id}
+						membershipId={membershipId}
+						installationId={installedItem.installation._id}
+						configurationYaml={installedItem.installation.configurationYaml}
+						description={pluginConfiguration.description}
+						events={installedItem.version.events}
+					/>
+				) : null}
+				<RoutePluginsPluginAccess
+					plugin={plugin}
+					handlers={installedItem?.handlers ?? null}
+					configurationYaml={installedItem?.installation.configurationYaml ?? null}
+					events={installedItem?.version.events ?? null}
+				/>
 
 				{publisherPlugin ? (
 					<RoutePluginsPluginPublisherReleases versions={publisherPlugin.versions} reviews={publisherPlugin.reviews} />

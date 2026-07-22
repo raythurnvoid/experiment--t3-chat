@@ -94,6 +94,7 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 - Read `references/agent-panel.md` for AI chat / agent panel selectors, the ProseMirror composer recipe, doneness polling, and backgrounded-tab recovery (`scripts/agent-chat-helpers.js` installs `state.qa`).
 - Read `references/files.md` for `/files` route and file/sidebar basics.
 - Read `references/plugin-gallery.md` for driving the Gallery plugin page inside its sandboxed iframe.
+- Read `references/plugin-configuration.md` for saving upload-folder YAML and proving matched and unmatched automatic runs.
 - Read `references/file-node-view.md` for selected-file editor surfaces, comments, diff, and right-sidebar workflows.
 - Read `references/known-hazards.md` before debugging browser interaction failures.
 - Read `references/snippets.md` for short Playwriter commands.

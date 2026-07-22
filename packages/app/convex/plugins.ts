@@ -27,6 +27,7 @@ import {
 	plugins_MAX_ARTIFACT_BYTES,
 	plugins_dist_review_mechanical_findings,
 	plugins_parse_github_repository_url,
+	plugins_parse_installation_configuration_yaml,
 	plugins_validate_manifest,
 	plugins_validate_secret_name,
 } from "../shared/plugins.ts";
@@ -243,6 +244,7 @@ export const register_plugin_version = internalAction({
 		sourceCommitSha: doc(app_convex_schema, "plugins_versions").fields.sourceCommitSha,
 		manifestR2Key: doc(app_convex_schema, "plugins_versions").fields.manifestR2Key,
 		backendEntrypointFile: doc(app_convex_schema, "plugins_versions").fields.backendEntrypointFile,
+		configuration: doc(app_convex_schema, "plugins_versions").fields.configuration,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
@@ -319,6 +321,7 @@ export const upsert_plugin = internalMutation({
 		sourceCommitSha: doc(app_convex_schema, "plugins_versions").fields.sourceCommitSha,
 		manifestR2Key: doc(app_convex_schema, "plugins_versions").fields.manifestR2Key,
 		backendEntrypointFile: doc(app_convex_schema, "plugins_versions").fields.backendEntrypointFile,
+		configuration: doc(app_convex_schema, "plugins_versions").fields.configuration,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
@@ -771,6 +774,8 @@ function review_prompt(args: {
 		"Secrets that hold a host-configured URL or base URL count as declared outbound origins: " +
 		"the host enforces a runtime egress allowlist, so requests built from such secrets " +
 		"are not exfiltration by themselves.\n" +
+		"The workspace.files.read capability allows frontend pages to call the host file-read bridge, " +
+		"including /api/v1/files/list and /api/v1/files/download-urls. These calls stay inside the host contract.\n" +
 		"The secret-names list below may be empty or incomplete: publishers can configure secrets " +
 		"after publishing, and reading a name that is not configured simply yields nothing at runtime, " +
 		"so secret reads beyond the list are not violations by themselves.\n" +
@@ -1675,6 +1680,7 @@ async function publish_version_from_github(
 		sourceCommitSha,
 		manifestR2Key,
 		backendEntrypointFile,
+		configuration: manifest._yay.configuration,
 		events: manifest._yay.events,
 		pages: (manifest._yay.pages ?? []).map((page) => ({
 			id: page.id,
@@ -2317,6 +2323,19 @@ export const install_version = mutation({
 					.eq("pluginName", pluginVersion.name),
 			)
 			.first();
+		const configurationYaml =
+			pluginVersion.configuration === null
+				? null
+				: (existingInstallation?.configurationYaml ?? pluginVersion.configuration.defaultYaml);
+		if (configurationYaml !== null) {
+			const configuration = plugins_parse_installation_configuration_yaml({
+				configurationYaml,
+				events: pluginVersion.events,
+			});
+			if (configuration._nay) {
+				return configuration;
+			}
+		}
 
 		let installationId: Id<"plugins_workspace_installations">;
 		let installationCreatedAt: number;
@@ -2337,6 +2356,7 @@ export const install_version = mutation({
 				ctx.db.patch("plugins_workspace_installations", existingInstallation._id, {
 					pluginVersionId: pluginVersion._id,
 					status: "enabled",
+					configurationYaml,
 					acceptedCapabilities: pluginVersion.capabilities,
 					capabilitiesAcceptedAt: now,
 					acceptedOutboundOrigins: pluginVersion.outboundOrigins,
@@ -2353,6 +2373,7 @@ export const install_version = mutation({
 				pluginVersionId: pluginVersion._id,
 				pluginName: pluginVersion.name,
 				status: "enabled",
+				configurationYaml,
 				acceptedCapabilities: pluginVersion.capabilities,
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: pluginVersion.outboundOrigins,
@@ -2390,6 +2411,71 @@ export const install_version = mutation({
 		);
 
 		return Result({ _yay: { installationId } });
+	},
+});
+
+export const update_installation_configuration = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		installationId: v.id("plugins_workspace_installations"),
+		configurationYaml: v.string(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorization = await db_authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (authorization._nay) {
+			return authorization;
+		}
+		const membership = authorization._yay.membership;
+
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		if (
+			!installation ||
+			installation.organizationId !== membership.organizationId ||
+			installation.workspaceId !== membership.workspaceId
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const pluginVersion = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+		if (!pluginVersion) {
+			const errorMessage = "plugins_workspace_installations.pluginVersionId points to a missing plugin version";
+			const errorData = { installationId: installation._id, pluginVersionId: installation.pluginVersionId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		if (pluginVersion.configuration === null) {
+			return Result({ _nay: { message: "Plugin does not declare configuration" } });
+		}
+
+		const configuration = plugins_parse_installation_configuration_yaml({
+			configurationYaml: args.configurationYaml,
+			events: pluginVersion.events,
+		});
+		if (configuration._nay) {
+			return configuration;
+		}
+
+		await ctx.db.patch("plugins_workspace_installations", installation._id, {
+			configurationYaml: configuration._yay.configurationYaml,
+			updatedBy: userAuth.id,
+			updatedAt: Date.now(),
+		});
+
+		return Result({ _yay: null });
 	},
 });
 
@@ -3170,6 +3256,7 @@ export const list_recent_runs = query({
 // #endregion runs
 
 // #region admin
+
 /**
  * Programmatic manual runs: enqueues an installed plugin on already-uploaded files without new
  * uploads. There is no UI for this; invoke it from the CLI against the dev deployment:

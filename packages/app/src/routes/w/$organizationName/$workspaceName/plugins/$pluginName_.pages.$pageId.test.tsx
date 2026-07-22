@@ -93,15 +93,20 @@ function bridge_for(container: HTMLElement) {
 		throw new Error("iframe src not assigned");
 	}
 	const iframeUrl = new URL(src);
-	return { iframe, iframeUrl };
+	const fragment = new URLSearchParams(iframeUrl.hash.slice(1));
+	const bridgeNonce = fragment.get("bridgeNonce");
+	if (!bridgeNonce) {
+		throw new Error("iframe bridge nonce not assigned");
+	}
+	return { iframe, iframeUrl, fragment, bridgeNonce };
 }
 
 function post_from_frame(data: unknown, origin = "null") {
 	window.dispatchEvent(new MessageEvent("message", { data, origin, source: frameWindow }));
 }
 
-function post_ready() {
-	post_from_frame({ type: "bonobo:ready" });
+function post_ready(bridgeNonce: string) {
+	post_from_frame({ type: "bonobo:ready", bridgeNonce });
 }
 
 function latest_init_message() {
@@ -134,7 +139,7 @@ describe("RoutePluginsPluginPage", () => {
 		vi.clearAllMocks();
 	});
 
-	test("assigns the same query-free immutable URL on every mount", () => {
+	test("keeps the asset query empty and assigns a fresh fragment bootstrap on every mount", () => {
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const first = render(<PageComponent />);
 		const firstBridge = bridge_for(first.container);
@@ -142,9 +147,15 @@ describe("RoutePluginsPluginPage", () => {
 		const second = render(<PageComponent />);
 		const secondBridge = bridge_for(second.container);
 
-		expect(firstBridge.iframeUrl.href).toBe(secondBridge.iframeUrl.href);
+		expect(firstBridge.iframeUrl.origin).toBe(secondBridge.iframeUrl.origin);
+		expect(firstBridge.iframeUrl.pathname).toBe(secondBridge.iframeUrl.pathname);
 		expect(secondBridge.iframeUrl.pathname).toBe("/plugins-ui/version_1/dist/frontend/index.html");
 		expect([...secondBridge.iframeUrl.searchParams]).toEqual([]);
+		expect([...secondBridge.fragment]).toEqual([
+			["parentOrigin", window.location.origin],
+			["bridgeNonce", secondBridge.bridgeNonce],
+		]);
+		expect(secondBridge.bridgeNonce).not.toBe(firstBridge.bridgeNonce);
 		expect(secondBridge.iframe.getAttribute("referrerpolicy")).toBe("no-referrer");
 	});
 
@@ -155,9 +166,9 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		bridge_for(container);
+		const { bridgeNonce } = bridge_for(container);
 
-		await act(async () => post_ready());
+		await act(async () => post_ready(bridgeNonce));
 
 		const alert = await screen.findByRole("alert");
 		expect(alert.textContent).toContain("Unauthorized");
@@ -190,8 +201,8 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		bridge_for(container);
-		post_ready();
+		const { bridgeNonce } = bridge_for(container);
+		post_ready(bridgeNonce);
 		act(() => vi.advanceTimersByTime(14_999));
 		await act(async () => {
 			resolveMint?.({
@@ -222,8 +233,8 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		bridge_for(container);
-		post_ready();
+		const { bridgeNonce } = bridge_for(container);
+		post_ready(bridgeNonce);
 		act(() => vi.advanceTimersByTime(15_000));
 
 		await act(async () => {
@@ -256,8 +267,8 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const mounted = render(<PageComponent />);
-		bridge_for(mounted.container);
-		post_ready();
+		const { bridgeNonce } = bridge_for(mounted.container);
+		post_ready(bridgeNonce);
 		mounted.unmount();
 
 		await act(async () => {
@@ -282,25 +293,27 @@ describe("RoutePluginsPluginPage", () => {
 	test("drops messages with a foreign source, origin, nonce, or malformed request id", async () => {
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		bridge_for(container);
+		const { bridgeNonce } = bridge_for(container);
 
 		await act(async () => {
 			window.dispatchEvent(
 				new MessageEvent("message", {
-					data: { type: "bonobo:ready" },
+					data: { type: "bonobo:ready", bridgeNonce },
 					origin: "null",
 					source: window,
 				}),
 			);
-			post_from_frame({ type: "bonobo:ready" }, "https://host.test");
+			post_from_frame({ type: "bonobo:ready", bridgeNonce }, "https://host.test");
+			post_from_frame({ type: "bonobo:ready" });
+			post_from_frame({ type: "bonobo:ready", bridgeNonce: crypto.randomUUID() });
 			post_from_frame({
 				type: "bonobo:token-refresh-request",
-				bridgeNonce: "uninitialized",
+				bridgeNonce,
 				requestId: "",
 			});
 			post_from_frame({
 				type: "bonobo:token-refresh-request",
-				bridgeNonce: "uninitialized",
+				bridgeNonce,
 				requestId: "x".repeat(65),
 			});
 		});
@@ -325,11 +338,11 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		bridge_for(container);
+		const { bridgeNonce } = bridge_for(container);
 
 		await act(async () => {
-			post_ready();
-			post_ready();
+			post_ready(bridgeNonce);
+			post_ready(bridgeNonce);
 		});
 
 		expect(mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.mint_page_session")).toHaveLength(
@@ -363,9 +376,10 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		bridge_for(container);
-		await act(async () => post_ready());
+		const bridge = bridge_for(container);
+		await act(async () => post_ready(bridge.bridgeNonce));
 		const { bridgeNonce } = latest_init_message();
+		expect(bridgeNonce).toBe(bridge.bridgeNonce);
 		postMessageMock.mockClear();
 
 		await act(async () => {
@@ -430,9 +444,10 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const mounted = render(<PageComponent />);
-		bridge_for(mounted.container);
-		await act(async () => post_ready());
+		const bridge = bridge_for(mounted.container);
+		await act(async () => post_ready(bridge.bridgeNonce));
 		const { bridgeNonce } = latest_init_message();
+		expect(bridgeNonce).toBe(bridge.bridgeNonce);
 		postMessageMock.mockClear();
 		post_from_frame({
 			type: "bonobo:token-refresh-request",
@@ -462,8 +477,8 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { iframe } = bridge_for(container);
-		post_ready();
+		const { iframe, bridgeNonce } = bridge_for(container);
+		post_ready(bridgeNonce);
 		fireEvent.load(iframe);
 		fireEvent.load(iframe);
 		expect(screen.getByRole("alert").textContent).toContain("navigated away");
@@ -505,18 +520,25 @@ describe("RoutePluginsPluginPage", () => {
 		});
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const firstIframe = bridge_for(container).iframe;
-		await act(async () => post_ready());
+		const firstBridge = bridge_for(container);
+		await act(async () => post_ready(firstBridge.bridgeNonce));
 		const firstNonce = latest_init_message().bridgeNonce;
+		expect(firstNonce).toBe(firstBridge.bridgeNonce);
 
-		fireEvent.load(firstIframe);
-		fireEvent.load(firstIframe);
+		fireEvent.load(firstBridge.iframe);
+		fireEvent.load(firstBridge.iframe);
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-		bridge_for(container);
+		const secondBridge = bridge_for(container);
+		expect(secondBridge.bridgeNonce).not.toBe(firstNonce);
 		postMessageMock.mockClear();
-		await act(async () => post_ready());
+
+		await act(async () => post_ready(firstNonce));
+		expect(mintCount).toBe(1);
+		expect(postMessageMock).not.toHaveBeenCalled();
+
+		await act(async () => post_ready(secondBridge.bridgeNonce));
 		const secondNonce = latest_init_message().bridgeNonce;
-		expect(secondNonce).not.toBe(firstNonce);
+		expect(secondNonce).toBe(secondBridge.bridgeNonce);
 		expect(mintCount).toBe(2);
 	});
 });

@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { isAlias, isMap, isScalar, isSeq, parseAllDocuments, type Node as YamlNode } from "yaml";
 
 import { Result } from "common/errors-as-values-utils.ts";
+import { files_get_normalized_node_path_segments, files_get_utf8_byte_size } from "./files.ts";
 import { organizations_name_autofix_and_validate } from "./organizations.ts";
 
 export const plugins_RUNTIME_VERSION = "1";
@@ -13,6 +15,209 @@ export type plugins_Capability = (typeof CAPABILITIES)[number];
 
 // Shared by env text parsing and the dist review scan.
 const NEWLINE_REGEX = /\r?\n/u;
+
+// #region installation configuration
+
+const MAX_CONFIGURATION_BYTES = 16 * 1024;
+const MAX_CONFIGURATION_PATH_VALUES = 32;
+const MAX_CONFIGURATION_PATH_VALUE_LENGTH = 512;
+
+export type plugins_ConfigurationValue =
+	| null
+	| boolean
+	| number
+	| string
+	| plugins_ConfigurationValue[]
+	| { [key: string]: plugins_ConfigurationValue };
+
+const configuration_value_schema: z.ZodType<plugins_ConfigurationValue> = z.json();
+const configuration_root_schema = z.record(z.string(), configuration_value_schema);
+
+function configuration_node_or_null(value: unknown): YamlNode | null {
+	if (value === null || isAlias(value) || isScalar(value) || isMap(value) || isSeq(value)) {
+		return value;
+	}
+	return null;
+}
+
+function configuration_node_has_alias_or_tag(node: YamlNode | null): "alias" | "tag" | null {
+	if (node === null) {
+		return null;
+	}
+	if (isAlias(node)) {
+		return "alias";
+	}
+	if (node.tag != null) {
+		return "tag";
+	}
+	if (isMap(node)) {
+		for (const pair of node.items) {
+			const unsupported =
+				configuration_node_has_alias_or_tag(configuration_node_or_null(pair.key)) ??
+				configuration_node_has_alias_or_tag(configuration_node_or_null(pair.value));
+			if (unsupported) {
+				return unsupported;
+			}
+		}
+	}
+	if (isSeq(node)) {
+		for (const item of node.items) {
+			const unsupported = configuration_node_has_alias_or_tag(configuration_node_or_null(item));
+			if (unsupported) {
+				return unsupported;
+			}
+		}
+	}
+	return null;
+}
+
+function configuration_value_at_path(value: plugins_ConfigurationValue, path: string[]) {
+	let current: plugins_ConfigurationValue = value;
+	for (const segment of path) {
+		if (current === null || Array.isArray(current) || typeof current !== "object" || !(segment in current)) {
+			return null;
+		}
+		current = current[segment]!;
+	}
+	return current;
+}
+
+function validate_event_filter_values(args: {
+	configuration: plugins_ConfigurationValue;
+	filter: plugins_EventFilter;
+}) {
+	const value = configuration_value_at_path(args.configuration, args.filter.configurationPath);
+	const configurationPath = args.filter.configurationPath.join(".");
+	if (!Array.isArray(value)) {
+		return Result({ _nay: { message: `Plugin configuration "${configurationPath}" must be an array` } });
+	}
+	if (value.length > MAX_CONFIGURATION_PATH_VALUES) {
+		return Result({
+			_nay: {
+				message: `Plugin configuration "${configurationPath}" can include at most ${MAX_CONFIGURATION_PATH_VALUES} paths`,
+			},
+		});
+	}
+
+	const paths = new Set<string>();
+	for (const path of value) {
+		if (typeof path !== "string") {
+			return Result({ _nay: { message: `Plugin configuration "${configurationPath}" must contain only paths` } });
+		}
+		if (path.length > MAX_CONFIGURATION_PATH_VALUE_LENGTH) {
+			return Result({
+				_nay: {
+					message: `Plugin configuration paths must be at most ${MAX_CONFIGURATION_PATH_VALUE_LENGTH} characters`,
+				},
+			});
+		}
+		if (paths.has(path)) {
+			return Result({ _nay: { message: `Plugin configuration has duplicate path "${path}"` } });
+		}
+
+		if (path !== "/") {
+			const normalized = files_get_normalized_node_path_segments({ kind: "folder", nameOrPath: path });
+			if (
+				!normalized ||
+				"validationMessage" in normalized ||
+				`/${normalized.normalizedPathSegments.join("/")}` !== path
+			) {
+				return Result({ _nay: { message: `Plugin configuration path "${path}" must be a canonical absolute path` } });
+			}
+		}
+
+		paths.add(path);
+	}
+
+	return Result({ _yay: [...paths] });
+}
+
+export function plugins_parse_installation_configuration_yaml(args: {
+	configurationYaml: string;
+	events: plugins_Event[];
+}) {
+	if (!args.configurationYaml.trim()) {
+		return Result({ _nay: { message: "Plugin configuration cannot be blank" } });
+	}
+	if (files_get_utf8_byte_size(args.configurationYaml) > MAX_CONFIGURATION_BYTES) {
+		return Result({ _nay: { message: "Plugin configuration must be at most 16 KiB" } });
+	}
+
+	const documents = parseAllDocuments(args.configurationYaml, {
+		version: "1.2",
+		schema: "core",
+		// Keep tags visible in the syntax tree so this strict app-owned format can reject them.
+		resolveKnownTags: false,
+	});
+	if (documents.length !== 1) {
+		return Result({ _nay: { message: "Plugin configuration must contain exactly one YAML document" } });
+	}
+
+	const document = documents[0]!;
+	if (document.errors.length > 0) {
+		return Result({ _nay: { message: "Plugin configuration must be valid YAML" } });
+	}
+
+	const unsupportedYaml = configuration_node_has_alias_or_tag(configuration_node_or_null(document.contents));
+	if (unsupportedYaml === "alias") {
+		return Result({ _nay: { message: "Plugin configuration must not use YAML aliases" } });
+	}
+	if (unsupportedYaml === "tag" || document.warnings.length > 0) {
+		return Result({ _nay: { message: "Plugin configuration must not use YAML tags" } });
+	}
+
+	const parsed = configuration_root_schema.safeParse(document.toJS({ maxAliasCount: 0 }));
+	if (!parsed.success) {
+		return Result({ _nay: { message: "Plugin configuration must be a YAML object" } });
+	}
+
+	for (const event of args.events) {
+		for (const filter of event.filters) {
+			const values = validate_event_filter_values({ configuration: parsed.data, filter });
+			if (values._nay) {
+				return values;
+			}
+		}
+	}
+
+	return Result({
+		_yay: {
+			configurationYaml: args.configurationYaml,
+			configuration: parsed.data,
+		},
+	});
+}
+
+export function plugins_event_matches_configuration(args: {
+	configuration: plugins_ConfigurationValue;
+	event: plugins_Event;
+	source: { path: string };
+}) {
+	return args.event.filters.every((filter) => {
+		const values = validate_event_filter_values({ configuration: args.configuration, filter });
+		if (values._nay) {
+			return false;
+		}
+		return values._yay.some(
+			(path) => path === "/" || args.source.path === path || args.source.path.startsWith(`${path}/`),
+		);
+	});
+}
+
+export function plugins_get_event_filter_values(args: {
+	configuration: plugins_ConfigurationValue;
+	event: plugins_Event;
+}) {
+	return args.event.filters.map((filter) => {
+		const values = validate_event_filter_values({ configuration: args.configuration, filter });
+		return {
+			filter,
+			values: values._nay ? [] : values._yay,
+		};
+	});
+}
+
+// #endregion installation configuration
 
 // Plugin names share the organization/workspace slug rules.
 function autofix_and_validate_name(raw: string) {
@@ -340,6 +545,10 @@ const MAX_FILES = 64;
 const MAX_PAGES = 16;
 const MAX_NAV_ITEMS = 8;
 const MAX_EVENTS = 8;
+const MAX_EVENT_FILTERS = 8;
+const MAX_CONFIGURATION_PATH_SEGMENTS = 16;
+const MAX_CONFIGURATION_PATH_SEGMENT_LENGTH = 128;
+const MAX_CONFIGURATION_DESCRIPTION_LENGTH = 500;
 const MAX_CONTENT_TYPES_PER_EVENT = 32;
 const MAX_EXPANDED_EVENT_CONTENT_TYPES = 64;
 const MAX_OUTBOUND_ORIGINS = 16;
@@ -364,6 +573,17 @@ const module_path_schema = z
 		"Path must be a normalized relative path",
 	);
 
+const event_filter_schema = z
+	.object({
+		field: z.literal("source.path"),
+		operator: z.literal("pathIsUnderAny"),
+		configurationPath: z
+			.array(z.string().min(1).max(MAX_CONFIGURATION_PATH_SEGMENT_LENGTH))
+			.min(1)
+			.max(MAX_CONFIGURATION_PATH_SEGMENTS),
+	})
+	.strict();
+
 const event_schema = z
 	.object({
 		type: z.enum(EVENT_TYPES),
@@ -379,8 +599,19 @@ const event_schema = z
 				MAX_CONTENT_TYPES_PER_EVENT,
 				`Plugin events can declare at most ${MAX_CONTENT_TYPES_PER_EVENT} content types`,
 			),
+		filters: z.array(event_filter_schema).max(MAX_EVENT_FILTERS).default([]),
 	})
 	.strict();
+
+const plugin_configuration_schema = z
+	.object({
+		description: z.string().min(1).max(MAX_CONFIGURATION_DESCRIPTION_LENGTH),
+		defaultYaml: z.string(),
+	})
+	.strict();
+
+type plugins_EventFilter = z.infer<typeof event_filter_schema>;
+type plugins_Event = z.infer<typeof event_schema>;
 
 const manifest_file_schema = z
 	.object({
@@ -443,6 +674,7 @@ const manifest_schema = z
 			})
 			.strict()
 			.optional(),
+		configuration: plugin_configuration_schema.nullable().default(null),
 		events: z.array(event_schema).max(MAX_EVENTS, `Plugin manifests can declare at most ${MAX_EVENTS} events`),
 		pages: z.array(page_schema).max(MAX_PAGES).optional(),
 		capabilities: z.array(z.enum(CAPABILITIES)),
@@ -464,6 +696,20 @@ export function plugins_validate_manifest(input: unknown) {
 	}
 	if (name._yay !== parsed.data.name) {
 		return Result({ _nay: { message: "Plugin name must already be normalized" } });
+	}
+	if (parsed.data.configuration === null && parsed.data.events.some((event) => event.filters.length > 0)) {
+		return Result({ _nay: { message: "Plugin event filters require a configuration declaration" } });
+	}
+	if (parsed.data.configuration !== null) {
+		const defaultConfiguration = plugins_parse_installation_configuration_yaml({
+			configurationYaml: parsed.data.configuration.defaultYaml,
+			events: parsed.data.events,
+		});
+		if (defaultConfiguration._nay) {
+			return Result({
+				_nay: { message: `Plugin default configuration is invalid: ${defaultConfiguration._nay.message}` },
+			});
+		}
 	}
 	const eventSubscriptions = new Set<string>();
 	let expandedEventSubscriptionCount = 0;

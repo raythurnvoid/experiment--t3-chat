@@ -307,7 +307,23 @@ async function install_upload_plugin(
 			compatibilityDate: "2026-07-01",
 			compatibilityFlags: ["nodejs_compat"],
 		},
-		events: [{ type: "files.upload.completed", contentTypes: args.contentTypes }],
+		configuration: {
+			description: "Choose which upload folders start this plugin.",
+			defaultYaml: "triggers:\n  files.upload.completed:\n    folders:\n      - /\n",
+		},
+		events: [
+			{
+				type: "files.upload.completed",
+				contentTypes: args.contentTypes,
+				filters: [
+					{
+						field: "source.path",
+						operator: "pathIsUnderAny",
+						configurationPath: ["triggers", "files.upload.completed", "folders"],
+					},
+				],
+			},
+		],
 		pages: [],
 		capabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: [],

@@ -884,10 +884,27 @@ const app_convex_schema = defineSchema({
 			}),
 			v.null(),
 		),
+		/**
+		 * The plugin-owned YAML editor shown for each installation. Null means the plugin has no settings.
+		 */
+		configuration: v.union(
+			v.object({
+				description: v.string(),
+				defaultYaml: v.string(),
+			}),
+			v.null(),
+		),
 		events: v.array(
 			v.object({
 				type: v.literal("files.upload.completed"),
 				contentTypes: v.array(v.string()),
+				filters: v.array(
+					v.object({
+						field: v.literal("source.path"),
+						operator: v.literal("pathIsUnderAny"),
+						configurationPath: v.array(v.string()),
+					}),
+				),
 			}),
 		),
 		/** UI pages declared in the manifest; an empty array means this version has no frontend page. */
@@ -957,6 +974,11 @@ const app_convex_schema = defineSchema({
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
 		status: v.union(v.literal("enabled"), v.literal("disabled")),
+		/**
+		 * User-edited installation settings shown in the plugin configuration editor.
+		 * Null means the installed version does not declare configuration.
+		 */
+		configurationYaml: v.union(v.string(), v.null()),
 		acceptedCapabilities: v.array(plugins_capability_validator),
 		capabilitiesAcceptedAt: v.number(),
 		acceptedOutboundOrigins: v.array(v.string()),

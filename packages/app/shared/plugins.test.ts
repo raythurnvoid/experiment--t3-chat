@@ -5,11 +5,230 @@ import { describe, expect, test } from "vitest";
 import {
 	plugins_consent_diff,
 	plugins_dist_review_mechanical_findings,
-	plugins_validate_origin,
+	plugins_event_matches_configuration,
+	plugins_get_event_filter_values,
 	plugins_parse_env_text,
 	plugins_parse_github_repository_url,
+	plugins_parse_installation_configuration_yaml,
 	plugins_validate_manifest,
+	plugins_validate_origin,
 } from "./plugins.ts";
+
+const uploadEvents = [
+	{
+		type: "files.upload.completed" as const,
+		contentTypes: ["image/png"],
+		filters: [
+			{
+				field: "source.path" as const,
+				operator: "pathIsUnderAny" as const,
+				configurationPath: ["triggers", "files.upload.completed", "folders"],
+			},
+		],
+	},
+];
+
+describe("plugins_parse_installation_configuration_yaml", () => {
+	test("parses plugin-owned settings and the values selected by event filters", () => {
+		const selectedFolders = [
+			"triggers:",
+			"  files.upload.completed:",
+			"    folders:",
+			"      - /meetings",
+			"      - /meetings/customer-calls",
+			"summary:",
+			"  language: en",
+		].join("\n");
+		expect(
+			plugins_parse_installation_configuration_yaml({
+				configurationYaml: selectedFolders,
+				events: uploadEvents,
+			}),
+		).toEqual({
+			_yay: {
+				configurationYaml: selectedFolders,
+				configuration: {
+					triggers: { "files.upload.completed": { folders: ["/meetings", "/meetings/customer-calls"] } },
+					summary: { language: "en" },
+				},
+			},
+		});
+
+		expect(
+			plugins_parse_installation_configuration_yaml({
+				configurationYaml: ["triggers:", "  files.upload.completed:", "    folders: []"].join("\n"),
+				events: uploadEvents,
+			}),
+		).toMatchObject({ _yay: { configuration: { triggers: { "files.upload.completed": { folders: [] } } } } });
+	});
+
+	test("supports a plugin-defined filter location without a core configuration shape", () => {
+		const configurationYaml = ["routing:", "  allowedFolders:", "    - /documents", "format: markdown"].join("\n");
+		const parsed = plugins_parse_installation_configuration_yaml({
+			configurationYaml,
+			events: [
+				{
+					...uploadEvents[0]!,
+					filters: [{ ...uploadEvents[0]!.filters[0]!, configurationPath: ["routing", "allowedFolders"] }],
+				},
+			],
+		});
+		expect(parsed).toMatchObject({
+			_yay: { configuration: { routing: { allowedFolders: ["/documents"] }, format: "markdown" } },
+		});
+	});
+
+	test("rejects unsupported YAML syntax and values used by a filter", () => {
+		for (const yaml of [
+			"",
+			["---", "triggers: {}", "---", "triggers: {}"].join("\n"),
+			["folders: &folders", "  - /meetings", "triggers:", "  files.upload.completed:", "    folders: *folders"].join(
+				"\n",
+			),
+			["triggers:", "  files.upload.completed:", "    folders: !folders []"].join("\n"),
+			["triggers:", "  files.upload.completed:", "    folders: []", "    folders: []"].join("\n"),
+			["triggers:", "  files.upload.completed:", "    folders:", "      - 42"].join("\n"),
+		]) {
+			expect(
+				plugins_parse_installation_configuration_yaml({ configurationYaml: yaml, events: uploadEvents }),
+			).toMatchObject({
+				_nay: { message: expect.any(String) },
+			});
+		}
+	});
+
+	test("bounds the YAML bytes, selected path count, and path length", () => {
+		expect(
+			plugins_parse_installation_configuration_yaml({
+				configurationYaml: `# ${"é".repeat(8_192)}`,
+				events: uploadEvents,
+			}),
+		).toEqual({
+			_nay: { message: "Plugin configuration must be at most 16 KiB" },
+		});
+
+		const tooManyFolders = [
+			"triggers:",
+			"  files.upload.completed:",
+			"    folders:",
+			...Array.from({ length: 33 }, (_, index) => `      - /folder-${index}`),
+		].join("\n");
+		expect(
+			plugins_parse_installation_configuration_yaml({ configurationYaml: tooManyFolders, events: uploadEvents }),
+		).toEqual({
+			_nay: { message: 'Plugin configuration "triggers.files.upload.completed.folders" can include at most 32 paths' },
+		});
+
+		const overlongFolder = `/${"a".repeat(512)}`;
+		expect(
+			plugins_parse_installation_configuration_yaml({
+				configurationYaml: ["triggers:", "  files.upload.completed:", "    folders:", `      - ${overlongFolder}`].join(
+					"\n",
+				),
+				events: uploadEvents,
+			}),
+		).toEqual({ _nay: { message: "Plugin configuration paths must be at most 512 characters" } });
+	});
+
+	test("rejects duplicate and non-canonical folder paths", () => {
+		for (const folders of [
+			["/meetings", "/meetings"],
+			["meetings"],
+			["/meetings/../documents"],
+			["/Meetings"],
+			["/meetings/"],
+			["/meetings//customer-calls"],
+		]) {
+			const yaml = [
+				"triggers:",
+				"  files.upload.completed:",
+				"    folders:",
+				...folders.map((folder) => `      - ${folder}`),
+			].join("\n");
+			expect(
+				plugins_parse_installation_configuration_yaml({ configurationYaml: yaml, events: uploadEvents }),
+			).toMatchObject({
+				_nay: { message: expect.any(String) },
+			});
+		}
+	});
+});
+
+describe("plugins_event_matches_configuration", () => {
+	test("matches root, exact paths, and descendants without matching sibling prefixes or case changes", () => {
+		const matches = (path: string, folders: string[]) =>
+			plugins_event_matches_configuration({
+				configuration: { triggers: { "files.upload.completed": { folders } } },
+				event: uploadEvents[0]!,
+				source: { path },
+			});
+
+		expect(matches("/photo.png", ["/"])).toBe(true);
+		expect(matches("/meetings", ["/meetings"])).toBe(true);
+		expect(matches("/meetings/customer-calls/photo.png", ["/meetings"])).toBe(true);
+		expect(matches("/meetings-old/photo.png", ["/meetings"])).toBe(false);
+		expect(matches("/Meetings/photo.png", ["/meetings"])).toBe(false);
+		expect(matches("/meetings/photo.png", [])).toBe(false);
+	});
+
+	test("requires every filter declared on an event to match", () => {
+		const event = {
+			...uploadEvents[0]!,
+			filters: [
+				uploadEvents[0]!.filters[0]!,
+				{
+					...uploadEvents[0]!.filters[0]!,
+					configurationPath: ["routing", "reviewFolders"],
+				},
+			],
+		};
+		const configuration = {
+			triggers: { "files.upload.completed": { folders: ["/meetings"] } },
+			routing: { reviewFolders: ["/meetings/reviewed"] },
+		};
+		expect(
+			plugins_event_matches_configuration({
+				configuration,
+				event,
+				source: { path: "/meetings/draft/photo.png" },
+			}),
+		).toBe(false);
+		expect(
+			plugins_event_matches_configuration({
+				configuration,
+				event,
+				source: { path: "/meetings/reviewed/photo.png" },
+			}),
+		).toBe(true);
+	});
+});
+
+describe("plugins_get_event_filter_values", () => {
+	test("keeps empty and populated values separate for multiple filters", () => {
+		const event = {
+			...uploadEvents[0]!,
+			filters: [
+				uploadEvents[0]!.filters[0]!,
+				{
+					...uploadEvents[0]!.filters[0]!,
+					configurationPath: ["routing", "reviewFolders"],
+				},
+			],
+		};
+		expect(
+			plugins_get_event_filter_values({
+				configuration: {
+					triggers: { "files.upload.completed": { folders: ["/meetings"] } },
+					routing: { reviewFolders: [] },
+				},
+				event,
+			}),
+		).toEqual([
+			{ filter: event.filters[0], values: ["/meetings"] },
+			{ filter: event.filters[1], values: [] },
+		]);
+	});
+});
 
 describe("plugins_parse_env_text", () => {
 	test("parses env text with comments, export prefixes, and quotes", () => {
@@ -98,7 +317,16 @@ describe("plugins_validate_origin", () => {
 describe("plugins_validate_manifest", () => {
 	function manifest_json(
 		args: {
-			events?: Array<{ type: "files.upload.completed"; contentTypes: string[] }>;
+			configuration?: { description: string; defaultYaml: string } | null;
+			events?: Array<{
+				type: "files.upload.completed";
+				contentTypes: string[];
+				filters?: Array<{
+					field: "source.path";
+					operator: "pathIsUnderAny";
+					configurationPath: string[];
+				}>;
+			}>;
 			outboundOrigins?: string[];
 			duplicateFilePath?: boolean;
 			nonDistFilePath?: boolean;
@@ -111,6 +339,7 @@ describe("plugins_validate_manifest", () => {
 			version: "0.1.0",
 			description: "Image and video markdown generation",
 			compatibility: { bonoboPluginRuntime: "1" },
+			...(args.configuration === undefined ? {} : { configuration: args.configuration }),
 			events: args.events ?? [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 			pages: [],
 			capabilities: ["plugin.secrets.read", "outbound.fetch"],
@@ -131,6 +360,87 @@ describe("plugins_validate_manifest", () => {
 			],
 		};
 	}
+
+	test("normalizes optional configuration and event filters", () => {
+		const withoutConfiguration = plugins_validate_manifest(manifest_json());
+		if (withoutConfiguration._nay) {
+			throw new Error(withoutConfiguration._nay.message);
+		}
+		expect(withoutConfiguration._yay.configuration).toBeNull();
+		expect(withoutConfiguration._yay.events[0]!.filters).toEqual([]);
+
+		const withConfiguration = plugins_validate_manifest(
+			manifest_json({
+				configuration: {
+					description: "Choose which upload folders start this plugin.",
+					defaultYaml: ["routing:", "  allowedFolders:", "    - /"].join("\n"),
+				},
+				events: [
+					{
+						type: "files.upload.completed",
+						contentTypes: ["image/png"],
+						filters: [
+							{
+								field: "source.path",
+								operator: "pathIsUnderAny",
+								configurationPath: ["routing", "allowedFolders"],
+							},
+						],
+					},
+				],
+			}),
+		);
+		expect(withConfiguration).toMatchObject({
+			_yay: {
+				configuration: { description: expect.any(String), defaultYaml: expect.any(String) },
+				events: [{ filters: [{ configurationPath: ["routing", "allowedFolders"] }] }],
+			},
+		});
+	});
+
+	test("accepts the configuration declared by each first-party media plugin", () => {
+		for (const plugin of ["image", "video", "pdf"]) {
+			const manifest = JSON.parse(
+				readFileSync(`${process.cwd()}/../../plugins/bonobo-plugin-${plugin}/dist/bonobo.plugin.json`, "utf8"),
+			) as unknown;
+			expect(plugins_validate_manifest(manifest)).toMatchObject({
+				_yay: {
+					configuration: { defaultYaml: expect.any(String) },
+					events: [{ filters: [{ field: "source.path", operator: "pathIsUnderAny" }] }],
+				},
+			});
+		}
+	});
+
+	test("rejects event filters without configuration and invalid default YAML", () => {
+		const filteredEvent = {
+			type: "files.upload.completed" as const,
+			contentTypes: ["image/png"],
+			filters: [
+				{
+					field: "source.path" as const,
+					operator: "pathIsUnderAny" as const,
+					configurationPath: ["routing", "allowedFolders"],
+				},
+			],
+		};
+		expect(plugins_validate_manifest(manifest_json({ events: [filteredEvent] }))).toEqual({
+			_nay: { message: "Plugin event filters require a configuration declaration" },
+		});
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					configuration: { description: "Choose folders.", defaultYaml: "routing: {}" },
+					events: [filteredEvent],
+				}),
+			),
+		).toEqual({
+			_nay: {
+				message:
+					'Plugin default configuration is invalid: Plugin configuration "routing.allowedFolders" must be an array',
+			},
+		});
+	});
 
 	test("rejects duplicate manifest file paths", () => {
 		expect(plugins_validate_manifest(manifest_json({ duplicateFilePath: true }))).toEqual({

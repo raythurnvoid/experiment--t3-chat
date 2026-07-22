@@ -12,6 +12,32 @@ A plugin manifest declares at most three capabilities (`BonoboCapability`), whic
 
 The host APIs below need no capability: requests to `env.BONOBO.host.apiOrigin` are always allowed.
 
+## Installation configuration
+
+A plugin may declare a YAML editor and attach generic filters to its events. The YAML shape belongs to the plugin. The host only parses it as a JSON-like object and validates values referenced by declared filters.
+
+```jsonc
+"configuration": {
+	"description": "Choose which upload folders start this plugin.",
+	"defaultYaml": "routing:\n  allowedFolders:\n    - /\n"
+},
+"events": [
+	{
+		"type": "files.upload.completed",
+		"contentTypes": ["image/png"],
+		"filters": [
+			{
+				"field": "source.path",
+				"operator": "pathIsUnderAny",
+				"configurationPath": ["routing", "allowedFolders"]
+			}
+		]
+	}
+]
+```
+
+`source.path` + `pathIsUnderAny` expects up to 32 unique canonical absolute folder paths at `configurationPath`. `/` matches every folder, a folder matches its descendants, and an empty list disables that automatic event. Manual runs do not apply automatic event filters. The parsed YAML object is available to every backend run as `event.configuration`; it is `null` when the plugin has no configuration declaration.
+
 ## Public host APIs
 
 Both are plain `fetch` calls against `env.BONOBO.host.apiOrigin` with `Authorization: Bearer <env.BONOBO.host.token>` — the same `/api/v1/*` machine API used by developer API keys:
@@ -100,19 +126,19 @@ A manifest may declare UI pages the host app embeds:
 
 ### Sandbox and token model
 
-The host loads `entry` at its immutable asset URL in an iframe with `sandbox="allow-scripts"` and no `allow-same-origin`, so the page runs with an opaque origin. The URL has no bridge, context, request, or token query parameters. Page and host use one strict postMessage contract: the page first sends a non-sensitive ready message, then receives the host origin, a per-frame nonce, page context, and a short-lived scoped bearer token (`plu_...`) in `bonobo:init`. The token never appears in a URL. Secret values never reach plugin frontends — `plugin.secrets.read` is backend-only.
+The host loads `entry` at its immutable asset URL in an iframe with `sandbox="allow-scripts"` and no `allow-same-origin`, so the page runs with an opaque origin. The asset URL keeps an empty query. Its fragment carries only the host's canonical HTTP(S) origin and a fresh per-frame nonce; fragments are not sent in the asset request, cache key, or referrer. Page and host use one strict postMessage contract: the page first sends the nonce-bound ready message, then receives page context and a short-lived scoped bearer token (`plu_...`) in `bonobo:init`. Tokens and context never appear in a URL. Secret values never reach plugin frontends — `plugin.secrets.read` is backend-only.
 
 A plugin frontend is trusted with the token and every datum its accepted permissions expose. The sandbox isolates the host DOM, cookies, and origin, but it is not a confidentiality boundary against the page code itself: page navigation can send data away before the host observes the next load and revokes the session.
 
 | Direction   | Message                        | Fields                                                                                                                                      |
 | ----------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| page → host | `bonobo:ready`                 | none                                                                                                                                        |
+| page → host | `bonobo:ready`                 | `bridgeNonce`                                                                                                                               |
 | page → host | `bonobo:token-refresh-request` | `bridgeNonce`, `requestId`                                                                                                                  |
 | host → page | `bonobo:init`                  | `bridgeNonce`, `apiOrigin`, `token`, `tokenExpiresAt` (epoch ms), `context: { pluginName, pageId, pageTitle, organizationId, workspaceId }` |
 | host → page | `bonobo:token`                 | `bridgeNonce`, `requestId`, `token`, `tokenExpiresAt`                                                                                       |
 | host → page | `bonobo:token-error`           | `bridgeNonce`, `requestId`, `message`                                                                                                       |
 
-`bonobo_ui_connect` (from `bonobo-plugin-sdk/frontend`) implements the page side. Ready contains no secret, so it is posted with `targetOrigin: "*"` until init arrives. The first init must come from `window.parent`; the SDK records that message's exact origin and nonce, pins both for refresh traffic, and retries ready until init or document unload. The host owns the startup deadline.
+`bonobo_ui_connect` (from `bonobo-plugin-sdk/frontend`) implements the page side. Before connecting, it requires exactly one canonical HTTP(S) `parentOrigin` and one UUIDv4 `bridgeNonce` in the URL fragment. It sends ready with that nonce to the exact parent origin and retries until init or document unload. Every host message must come from `window.parent`, that exact origin, and the matching nonce. The host still posts to the opaque iframe with `targetOrigin: "*"`, because an opaque receiver has no concrete target origin. The host owns the startup deadline.
 
 ### UI token API surface
 

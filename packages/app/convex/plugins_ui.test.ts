@@ -129,6 +129,7 @@ async function register_gallery_plugin(
 		sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
 		manifestR2Key: `plugins/gallery/${version}/manifest.json`,
 		backendEntrypointFile: null,
+		configuration: null,
 		events: [],
 		pages: args.pages ?? [
 			{
@@ -641,6 +642,7 @@ describe("plugin ui sessions", () => {
 				pluginVersionId: fixture.pluginVersionId,
 				pluginName: "gallery-copy",
 				status: "enabled",
+				configurationYaml: null,
 				acceptedCapabilities: ["workspace.files.read"],
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],

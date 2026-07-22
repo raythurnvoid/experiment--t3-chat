@@ -17,6 +17,10 @@ Validation lives in `plugins_validate_manifest` (`packages/app/shared/plugins.ts
 | Pages                                                    | 16       | `manifest_schema.pages`                                 |
 | Navigation items (pages with `navItem`)                  | 8        | `plugins_validate_manifest` loop                        |
 | Events                                                   | 8        | `manifest_schema.events`                                |
+| Filters per event                                        | 8        | `event_schema.filters`                                  |
+| Configuration path segments                              | 16       | `event_filter_schema.configurationPath`                 |
+| Configuration path segment length                        | 128      | `event_filter_schema.configurationPath`                 |
+| Configuration description length                         | 500      | `plugin_configuration_schema.description`               |
 | Content types per event                                  | 32       | `event_schema.contentTypes`                             |
 | Expanded event/content-type subscriptions                | 64       | `plugins_validate_manifest` loop                        |
 | Outbound origins                                         | 16       | `manifest_schema.outboundOrigins`                       |
@@ -75,15 +79,15 @@ Publisher secrets remain bound to the immutable version creator. Runtime resolut
 
 # Plugin UI pages
 
-- The current message contract is strict and has no compatibility version field. The query-free ready message contains only its type. The host's first init supplies the frame's `bridgeNonce`; later refresh messages carry that nonce and a bounded request id. The nonce correlates one iframe generation; it is visible to the page and is not an authentication secret.
-- The host keys the child frame by membership, plugin version, page, and Retry attempt. Its layout effect attaches listeners before assigning the canonical `src`, captures the exact iframe node/generation in async work, accepts ready only from the direct opaque-origin WindowProxy, requires the current nonce for refresh, serializes refreshes, and revokes the host-only session id when the frame stops or navigates.
-- The SDK installs its listener before sending ready, repeats ready every 500ms until init or page unload, and rejects an unanswered refresh after 10 seconds. The host alone owns the 15-second startup deadline and Retry UI. `fetchJson` retains exactly one 401 retry; a late 401 reuses a token that another request already rotated instead of rotating it again.
+- The current message contract is strict and has no compatibility version field. Before loading the frame, the host puts its canonical HTTP(S) origin and fresh `bridgeNonce` in the asset URL fragment. The nonce correlates one iframe generation; it is visible to the page and is not an authentication secret. Tokens and page context remain postMessage-only.
+- The host keys the child frame by membership, plugin version, page, and Retry attempt. Its layout effect attaches listeners before assigning the canonical `src`, captures the exact iframe node/generation in async work, accepts ready only from the direct opaque-origin WindowProxy with the current nonce, requires that nonce for refresh, serializes refreshes, and revokes the host-only session id when the frame stops or navigates.
+- The SDK validates one canonical HTTP(S) `parentOrigin` and one UUIDv4 nonce from the fragment before connecting. It installs its listener before sending nonce-bound ready to that exact origin, accepts host messages only from that origin, `window.parent`, and the matching nonce, repeats ready every 500ms until init or page unload, and rejects an unanswered refresh after 10 seconds. The host still posts to the opaque iframe with `targetOrigin: "*"`. The host alone owns the 15-second startup deadline and Retry UI. `fetchJson` retains exactly one 401 retry; a late 401 reuses a token that another request already rotated instead of rotating it again.
 - Sessions (`plugins_ui_sessions`) are minted per (user, installation), hashed, and have a 30-minute TTL. Refresh updates one session doc in place; the old token hash stops resolving. Public API rate accounting uses a stable organization/workspace/user/installation principal key, while the route remains a separate bucket dimension.
 - `/api/v1/files/download-urls` is the only download URL route. Every caller sends `fileNodeIds`, including one-item requests. Backend runs may send only their triggering upload id and still sign the original source asset. The route resolves the exact presented bearer again after file materialization and immediately before signing. The signer TTL keeps a one-second margin inside the remaining plugin authority, and the route repeats the same scope, `asset.read`, tenant, credential/session/run, and installation/version checks after signing before returning any URL. Reported `expiresAt` is the same conservative boundary. Requests are limited to 100 ids and 32 KB before authentication, reject duplicates before authorization or file work, then process at most the first 20 ids in request order and report truncation and per-id errors.
 - Expired sessions drain through `cleanup_expired_ui_sessions`. Uninstall/workspace/user/admin deletion remains bounded — see `../data-deletion/SKILL.md`.
 - Canonical assets use the single direct route `/plugins-ui/<versionId>/<path>`. Published plugin versions are immutable, so asset or response-policy changes require a new plugin version and republish; there is no compatibility redirect or asset-policy path generation.
 - Canonical asset responses retain CSP, `nosniff`, immutable cache, CORP, and wildcard CORS required by module/style fetches from the opaque-origin frame. R2 failures return 502 with `Cache-Control: no-store` + `Retry-After: 3`. Never log raw R2 errors or keys.
-- The host startup deadline is 15 seconds and clears once `bonobo:init` posts. Failure replaces the iframe with a `role="alert"` and focused Retry button; Retry creates a fresh frame, nonce, and session. The immutable iframe URL has no host origin, page id, token, or nonce query parameters.
+- The host startup deadline is 15 seconds and clears once `bonobo:init` posts. Failure replaces the iframe with a `role="alert"` and focused Retry button; Retry creates a fresh frame, nonce, and session. The immutable asset path stays canonical, and the query stays empty. Only the fragment carries `parentOrigin` and `bridgeNonce`, so neither value is sent in the asset request, cache key, or referrer.
 - A page that already received its read-only token can self-navigate before the host observes the next load. The host disables the bridge and revokes on that load, while per-call liveness and TTL remain the backstop; do not claim already-authorized in-flight work can be recalled.
 
 # Clean-slate changes and recovery
@@ -91,6 +95,33 @@ Publisher secrets remain bound to the immutable version creator. Runtime resolut
 This plugin system is pre-production. Change the manifest, SDK, host, schema, and current plugins together; do not add legacy protocol handling, dual database shapes, redirect routes, or review-policy migrations. Stored plugin pages are always a required array; an omitted manifest `pages` field is normalized once to `[]` during registration. The stored `runtimeVersion` field and the UI message protocol version are gone. Manifests still require `compatibility.bonoboPluginRuntime: "1"` as the single current runtime stamp; there is no fallback or multi-version runtime path. If persisted plugin data conflicts with the current contract, use `../dev-data-reset/SKILL.md` to remove the registry and republish the current source commits. Preserve Clerk-backed user docs and their Polar state during that reset.
 
 Recovery uses trusted sources only: current Git submodules/remotes for plugin artifacts, Convex deployment environment variables for known publisher values, and provider-supported credential creation or explicit user input for a missing value. Never use Playwriter or other browser automation to extract tokens from provider pages, and never print secret values in logs or reports.
+
+# Installation configuration
+
+Configuration is manifest-driven. `plugins_versions.configuration` stores the plugin's editor description and default YAML, while `plugins_workspace_installations.configurationYaml` stores only the user's YAML string or `null`. Never store parsed filter values on the installation doc.
+
+```jsonc
+"configuration": {
+	"description": "Choose which upload folders start this plugin.",
+	"defaultYaml": "routing:\n  allowedFolders:\n    - /\n"
+},
+"events": [{
+	"type": "files.upload.completed",
+	"contentTypes": ["image/png"],
+	"filters": [{
+		"field": "source.path",
+		"operator": "pathIsUnderAny",
+		"configurationPath": ["routing", "allowedFolders"]
+	}]
+}]
+```
+
+- A manifest may omit `configuration`; validation normalizes it to `null`. Event `filters` may be omitted and normalize to `[]`. A filter requires a configuration declaration, and the declared default YAML must validate before publish.
+- The YAML root is a plugin-owned object. It is at most 16 KiB and rejects blank or multi-document YAML, aliases, tags, duplicate keys, and non-JSON values. Unreferenced plugin settings are allowed.
+- The current generic filter is `source.path` + `pathIsUnderAny`. Its `configurationPath` points to an array of at most 32 unique canonical absolute folder paths, each at most 512 characters. `/` matches every folder; other entries match the exact path and descendants, case-sensitively; an empty array disables that automatic event.
+- New installations use the version's `defaultYaml`; upgrades preserve valid existing YAML. A version without configuration stores `null` and rejects configuration edits.
+- The public save mutation resolves auth, applies the plugin-management rate limit, checks plugin-management permission and tenancy, loads the installed version, validates against its manifest events, then patches only `configurationYaml`.
+- Automatic dispatch loads the matching manifest event and applies its generic filters before dedupe and run creation. Invalid stored YAML is an unreachable invariant, but dispatch logs and isolates that installation so it cannot block upload finalization or other plugins. Manual runs bypass automatic event filters. Every run receives the parsed value as `event.configuration`, or `null` for a plugin without configuration.
 
 # Gallery plugin (`plugins/bonobo-plugin-gallery`)
 
@@ -112,6 +143,7 @@ Git submodule with its own repo (`raythurnvoid/bonobo-plugin-gallery`). `dist/` 
 
 # Tests
 
+- Installation configuration parsing and folder matching: `packages/app/shared/plugins.test.ts`; authenticated saves, automatic dispatch filtering, and manual-run bypass: `packages/app/convex/plugins.test.ts`.
 - Manifest caps, duplicates, zero-fetch-on-declared-over-limit, streaming bounds, 4-wide concurrency, and the cleanup-attempt lifecycle: `packages/app/convex/plugins.test.ts`.
 - Bounded session deletion on all three paths: `packages/app/convex/data_deletion.test.ts`.
 - Full-artifact review, artifact-hash cache, bounded stored reads, and backend/page classification: `packages/app/convex/plugins.test.ts` plus `packages/app/shared/plugins.test.ts`.

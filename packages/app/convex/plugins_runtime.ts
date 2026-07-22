@@ -34,7 +34,12 @@ import type { plugins_decrypt_secret_for_runtime_Result } from "./plugins.ts";
 // Type-only import: public_api.ts value-imports this module, so a value import here would be a
 // runtime cycle.
 import type { public_api_resolve_principal_Result } from "./public_api.ts";
-import { plugins_validate_secret_name } from "../shared/plugins.ts";
+import {
+	type plugins_ConfigurationValue,
+	plugins_event_matches_configuration,
+	plugins_parse_installation_configuration_yaml,
+	plugins_validate_secret_name,
+} from "../shared/plugins.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_is_reserved_workspace_id,
@@ -191,15 +196,15 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 		)
 		.collect();
 
-	// Load each handler's installation and version and drop the ones that can no longer run
-	// (disabled installation, version without a backend).
+	// Load each handler's installation and version. The version owns the generic filters that the
+	// host applies to plugin-owned YAML before it creates a run.
 	const candidateReads = await Promise.all(
 		handlers.map(async (handler) => {
 			const [installation, version] = await Promise.all([
 				ctx.db.get("plugins_workspace_installations", handler.installationId),
 				ctx.db.get("plugins_versions", handler.pluginVersionId),
 			]);
-			return { installation, version };
+			return { handler, installation, version };
 		}),
 	);
 
@@ -207,8 +212,43 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 		installation: Doc<"plugins_workspace_installations">;
 		version: Doc<"plugins_versions">;
 	}> = [];
-	for (const { installation, version } of candidateReads) {
+	for (const { handler, installation, version } of candidateReads) {
 		if (!installation || !version || installation.status !== "enabled" || !version.backendEntrypointFile) {
+			continue;
+		}
+
+		const event = version.events.find(
+			(versionEvent) => versionEvent.type === handler.event && versionEvent.contentTypes.includes(handler.contentType),
+		);
+		if (!event) {
+			continue;
+		}
+
+		let configuration: plugins_ConfigurationValue = null;
+		if (installation.configurationYaml !== null) {
+			const parsed = plugins_parse_installation_configuration_yaml({
+				configurationYaml: installation.configurationYaml,
+				events: version.events,
+			});
+			// Supported writes validate this YAML against the immutable version. Keep an unreachable
+			// bad installation isolated so it cannot block upload finalization or other plugins.
+			if (parsed._nay) {
+				console.error("Installed plugin configuration is invalid", {
+					installationId: installation._id,
+					pluginVersionId: version._id,
+					message: parsed._nay.message,
+				});
+				continue;
+			}
+			configuration = parsed._yay.configuration;
+		}
+		if (
+			!plugins_event_matches_configuration({
+				configuration,
+				event,
+				source: { path: args.fileNode.path },
+			})
+		) {
 			continue;
 		}
 		candidates.push({ installation, version });
@@ -745,6 +785,21 @@ export const execute_upload_completed_event_run = internalAction({
 			});
 			return null;
 		}
+		let configuration: plugins_ConfigurationValue = null;
+		if (startResult._yay.installation.configurationYaml !== null) {
+			const parsed = plugins_parse_installation_configuration_yaml({
+				configurationYaml: startResult._yay.installation.configurationYaml,
+				events: startResult._yay.version.events,
+			});
+			if (parsed._nay) {
+				await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
+					runId: args.runId,
+					outcome: { kind: "failed", errorMessage: parsed._nay.message },
+				});
+				return null;
+			}
+			configuration = parsed._yay.configuration;
+		}
 
 		try {
 			// The runner downloads the plugin bundle, executes it, and only then responds: this one
@@ -787,6 +842,7 @@ export const execute_upload_completed_event_run = internalAction({
 						organizationId: String(startResult._yay.pluginRun.organizationId),
 						workspaceId: String(startResult._yay.pluginRun.workspaceId),
 						actorUserId: String(startResult._yay.pluginRun.actorUserId),
+						configuration,
 						source: {
 							fileNodeId: String(startResult._yay.fileNode._id),
 							assetId: String(startResult._yay.asset._id),

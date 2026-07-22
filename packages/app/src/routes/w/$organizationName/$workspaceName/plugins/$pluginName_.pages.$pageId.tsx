@@ -67,7 +67,11 @@ function RoutePluginsPluginPageFrame(props: {
 			return;
 		}
 
-		const iframeSrc = `${CONVEX_HTTP_URL}/plugins-ui/${props.pluginVersionId}/${props.entry}`;
+		const iframeSrc = new URL(`${CONVEX_HTTP_URL}/plugins-ui/${props.pluginVersionId}/${props.entry}`);
+		iframeSrc.hash = new URLSearchParams({
+			parentOrigin: window.location.origin,
+			bridgeNonce,
+		}).toString();
 		let cancelled = false;
 		let loadCount = 0;
 		let sessionId: Id<"plugins_ui_sessions"> | null = null;
@@ -241,7 +245,7 @@ function RoutePluginsPluginPageFrame(props: {
 		};
 
 		const handle_message = (event: MessageEvent) => {
-			// Trust only this iframe's opaque-origin WindowProxy; refresh messages also need its nonce.
+			// Trust only this iframe's opaque-origin WindowProxy and the nonce placed in its fragment.
 			if (cancelled || event.source !== iframeWindow || event.origin !== "null") {
 				return;
 			}
@@ -254,11 +258,13 @@ function RoutePluginsPluginPageFrame(props: {
 				bridgeNonce?: unknown;
 				requestId?: unknown;
 			};
+			if (message.bridgeNonce !== bridgeNonce) {
+				return;
+			}
 			if (message.type === "bonobo:ready") {
 				handle_ready();
 			} else if (
 				message.type === "bonobo:token-refresh-request" &&
-				message.bridgeNonce === bridgeNonce &&
 				is_refresh_request_id(message.requestId)
 			) {
 				handle_refresh(message.requestId);
@@ -279,8 +285,8 @@ function RoutePluginsPluginPageFrame(props: {
 		window.addEventListener("message", handle_message);
 		iframeNode.addEventListener("load", handle_load);
 		// src is assigned last, after every guard above is active.
-		if (iframeNode.getAttribute("src") !== iframeSrc) {
-			iframeNode.setAttribute("src", iframeSrc);
+		if (iframeNode.getAttribute("src") !== iframeSrc.href) {
+			iframeNode.setAttribute("src", iframeSrc.href);
 		}
 
 		return () => {
