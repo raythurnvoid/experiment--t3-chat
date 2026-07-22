@@ -1,5 +1,5 @@
 (() => {
-	const VERSION = "0.5.0";
+	const VERSION = "0.5.1";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	const MEMORY_FILES = new Set([
 		"agent-panel.md",
@@ -493,6 +493,9 @@
 				}
 
 				function isVisible(element) {
+					// Check ancestors too. A control inside a closed <details> element can still have
+					// a non-zero rectangle, which would create false hit-target findings below.
+					if (typeof element.checkVisibility === "function" && !element.checkVisibility()) return false;
 					const style = getComputedStyle(element);
 					if (style.display === "none" || style.visibility === "hidden") return false;
 					const rect = element.getBoundingClientRect();

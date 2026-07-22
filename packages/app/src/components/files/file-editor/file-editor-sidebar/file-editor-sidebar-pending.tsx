@@ -1,8 +1,8 @@
 import "./file-editor-sidebar-pending.css";
-import { CheckCheck, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
+import { CheckCheck, ChevronDown, ChevronRight, ListFilter, Trash2 } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPatch } from "diff";
-import { useConvex, useQuery } from "convex/react";
+import { useConvex, useQueries, useQuery } from "convex/react";
 import { toast } from "sonner";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -11,7 +11,21 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyLink } from "@/components/my-link.tsx";
+import {
+	MySelect,
+	MySelectItem,
+	MySelectItemContent,
+	MySelectItemContentPrimary,
+	MySelectItemContentSecondary,
+	MySelectItemIndicator,
+	MySelectOpenIndicator,
+	MySelectPopover,
+	MySelectPopoverContent,
+	MySelectPopoverScrollableArea,
+	MySelectTrigger,
+} from "@/components/my-select.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
+import { format_datetime } from "@/lib/date.ts";
 import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
 import {
 	files_ROOT_ID,
@@ -45,18 +59,24 @@ type FileEditorSidebarPendingRow = {
 	kind: "content" | "move" | "copy" | "content_and_move" | "delete";
 	moveDestinationPath: string | undefined;
 	/**
-	 * Name of the active node that accepting this move will replace (soft-archive, like `mv -f`):
+	 * Id of the active node that accepting this move will replace (soft-archive, like `mv -f`):
 	 * the node that occupies the destination path right now, ignoring the declared replace target.
 	 * File moves replace a file occupant; folder moves replace an EMPTY folder occupant (rename()
 	 * semantics). Unset when nothing occupies the destination (accept is then a plain move), when
 	 * the occupant has this user's own pending move (it vacates first), and for other kind mixes.
 	 * Editable-file replaces use `replaceSourcePath` instead.
 	 */
-	replacesName: string | undefined;
-	/** Destination file for a size-only replacement involving a file without editable Yjs state. */
+	replacedNodeId: app_convex_Id<"files_nodes"> | undefined;
+	/**
+	 * Destination node id for a size-only replacement involving a file without editable Yjs state.
+	 */
 	sizeOnlyReplacedNodeId: app_convex_Id<"files_nodes"> | undefined;
-	/** True when a deleted file has editable Yjs state that can render as removed lines. */
+	/**
+	 * True when a deleted file has editable Yjs state that can render as removed lines.
+	 */
 	canPreviewDeleteDiff: boolean;
+	/** True when this pending row belongs to a folder node. */
+	isFolder: boolean;
 	/** True when the proposal created the file (write_file/cp onto a new path): shown as Added. */
 	isAddedFile: boolean;
 	/**
@@ -89,7 +109,7 @@ function build_pending_rows(
 		pendingUpdates.filter((update) => update.pendingMove != null).map((update) => update.fileNodeId),
 	);
 	// Folders that count as non-empty: a folder occupant is only replaced when it is empty
-	// (rename() semantics), so a non-empty one gets no "Replaces" caption. Accept-time
+	// (rename() semantics), so a non-empty one gets no "Replaced" caption. Accept-time
 	// validation also counts this user's pending moves INTO the folder as occupancy, so a
 	// pending destination parent is non-empty too.
 	const parentIdsWithActiveChildren = new Set(
@@ -121,7 +141,7 @@ function build_pending_rows(
 						: ("content" as const);
 
 			let moveDestinationPath: string | undefined;
-			let replacesName: string | undefined;
+			let replacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 			let sizeOnlyReplacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 			if (pendingMove) {
 				if (pendingMove.destParentId === files_ROOT_ID) {
@@ -151,7 +171,7 @@ function build_pending_rows(
 					replacedNode._id !== pendingUpdate.fileNodeId &&
 					!movingNodeIds.has(replacedNode._id)
 				) {
-					replacesName = replacedNode.name;
+					replacedNodeId = replacedNode._id;
 					if (
 						node?.kind === "file" &&
 						replacedNode.kind === "file" &&
@@ -167,9 +187,10 @@ function build_pending_rows(
 				path: node?.path ?? pendingArchive?.fromPath ?? pendingMove?.fromPath ?? PENDING_MISSING_PATH_LABEL,
 				kind,
 				moveDestinationPath,
-				replacesName,
+				replacedNodeId,
 				sizeOnlyReplacedNodeId,
 				canPreviewDeleteDiff: kind === "delete" && files_node_has_editable_yjs_state(node),
+				isFolder: node?.kind === "folder",
 				isAddedFile: pendingUpdate.eagerCreated != null,
 				replaceSourcePath: copiedFrom?.archivesSourceOnAccept
 					? (nodesById.get(copiedFrom.nodeId)?.path ?? copiedFrom.path)
@@ -388,42 +409,13 @@ async function files_pending_row_discard(
 }
 
 /**
- * Run a bulk action over the rows, at most 5 units at a time in FIFO order. Chained moves (a row
- * moving onto the committed path of another pending move) join one unit that runs sequentially,
- * predecessor first, because the server rejects accepting a move whose destination occupant still
- * has its own pending move. The write mutations share per-user rate limits, so a row that gets
- * "Rate limit exceeded" (the literal from `rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE`, not
- * importable here because the module is server-only) waits 5s and retries, up to 6 times, instead
- * of silently staying behind. A thrown mutation (for example a Convex write conflict on the shared
- * rate-limiter table) retries the same way and counts as a failure when retries run out. Returns
- * the number of rows that still failed.
+ * Group move chains and cycles into the acceptance units that must run in order. Other rows each
+ * form their own unit.
  */
-async function files_pending_rows_run_bulk(
-	rows: FileEditorSidebarPendingRow[],
-	run: (row: FileEditorSidebarPendingRow) => Promise<{ _nay?: { message?: string } | null }>,
-): Promise<number> {
-	// Delete rows run as their own trailing phase, one at a time with parent folders first:
-	// accepting a folder delete archives its whole subtree, which would fail content/move
-	// accepts inside it that are still running, and a descendant delete accepted concurrently
-	// (or before its folder) would archive under its own operation id, so unarchiving the
-	// folder would leave that descendant archived.
-	const deleteRows = rows.filter((row) => row.pendingUpdate.pendingArchive != null);
-	if (deleteRows.length > 0 && rows.length > 1) {
-		const otherRows = rows.filter((row) => row.pendingUpdate.pendingArchive == null);
-		let failedCount = otherRows.length > 0 ? await files_pending_rows_run_bulk(otherRows, run) : 0;
-		// Plain string order puts a folder before its descendants because the folder path is
-		// a strict prefix of theirs.
-		const orderedDeleteRows = [...deleteRows].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-		for (const deleteRow of orderedDeleteRows) {
-			failedCount += await files_pending_rows_run_bulk([deleteRow], run);
-		}
-		return failedCount;
-	}
-
-	// Group rows into dependency units. `moveDestinationPath` is the committed destination path,
-	// so it matches the committed `path` of the row it depends on. Move cycles (swaps) can exist;
-	// the chain-membership check stops the walk there, and the cycle lands in one unit — the
-	// server accepts a whole swap cycle atomically from its first accepted member.
+function files_pending_rows_build_accept_units(rows: FileEditorSidebarPendingRow[]) {
+	// `moveDestinationPath` is the committed destination path, so it matches the committed `path`
+	// of the row it depends on. A cycle lands in one unit because the chain-membership check stops
+	// the walk when it reaches a row that is already in the chain.
 	const moveRowByPath = new Map(
 		rows.filter((row) => row.pendingUpdate.pendingMove != null).map((row) => [row.path, row]),
 	);
@@ -460,6 +452,97 @@ async function files_pending_rows_run_bulk(
 			unitByRow.set(chainRow, unit);
 		}
 	}
+
+	return units;
+}
+
+const PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE =
+	"Use All changes to accept changes that also affect pending changes from another source";
+
+/**
+ * Mark shown rows whose accept can settle or invalidate a hidden row. Keep those accepts in the
+ * All view so a source-scoped action never removes another source's pending work.
+ */
+function files_pending_rows_get_accept_requires_all_changes_ids(
+	rows: FileEditorSidebarPendingRow[],
+	visibleRows: FileEditorSidebarPendingRow[],
+) {
+	const blockedPendingUpdateIds = new Set<app_convex_Id<"files_pending_updates">>();
+	if (rows.length === visibleRows.length) {
+		return blockedPendingUpdateIds;
+	}
+
+	const visiblePendingUpdateIds = new Set(visibleRows.map((row) => row.pendingUpdate._id));
+	const hiddenRows = rows.filter((row) => !visiblePendingUpdateIds.has(row.pendingUpdate._id));
+	const hiddenNodeIds = new Set(hiddenRows.map((row) => row.pendingUpdate.fileNodeId));
+
+	for (const unit of files_pending_rows_build_accept_units(rows)) {
+		if (
+			unit.some((row) => visiblePendingUpdateIds.has(row.pendingUpdate._id)) &&
+			unit.some((row) => !visiblePendingUpdateIds.has(row.pendingUpdate._id))
+		) {
+			for (const row of unit) {
+				if (visiblePendingUpdateIds.has(row.pendingUpdate._id)) {
+					blockedPendingUpdateIds.add(row.pendingUpdate._id);
+				}
+			}
+		}
+	}
+
+	for (const row of visibleRows) {
+		const archivesHiddenSource =
+			row.pendingUpdate.copiedFrom?.archivesSourceOnAccept === true &&
+			hiddenNodeIds.has(row.pendingUpdate.copiedFrom.nodeId);
+		const deletesHiddenDescendant =
+			row.pendingUpdate.pendingArchive != null &&
+			row.isFolder &&
+			hiddenRows.some((hiddenRow) => hiddenRow.path.startsWith(`${row.path}/`));
+		if (
+			archivesHiddenSource ||
+			deletesHiddenDescendant ||
+			(row.replacedNodeId != null && hiddenNodeIds.has(row.replacedNodeId))
+		) {
+			blockedPendingUpdateIds.add(row.pendingUpdate._id);
+		}
+	}
+
+	return blockedPendingUpdateIds;
+}
+
+/**
+ * Run a bulk action over the rows, at most 5 units at a time in FIFO order. Chained moves (a row
+ * moving onto the committed path of another pending move) join one unit that runs sequentially,
+ * predecessor first, because the server rejects accepting a move whose destination occupant still
+ * has its own pending move. The write mutations share per-user rate limits, so a row that gets
+ * "Rate limit exceeded" (the literal from `rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE`, not
+ * importable here because the module is server-only) waits 5s and retries, up to 6 times, instead
+ * of silently staying behind. A thrown mutation (for example a Convex write conflict on the shared
+ * rate-limiter table) retries the same way and counts as a failure when retries run out. Returns
+ * the number of rows that still failed.
+ */
+async function files_pending_rows_run_bulk(
+	rows: FileEditorSidebarPendingRow[],
+	run: (row: FileEditorSidebarPendingRow) => Promise<{ _nay?: { message?: string } | null }>,
+): Promise<number> {
+	// Delete rows run as their own trailing phase, one at a time with parent folders first:
+	// accepting a folder delete archives its whole subtree, which would fail content/move
+	// accepts inside it that are still running, and a descendant delete accepted concurrently
+	// (or before its folder) would archive under its own operation id, so unarchiving the
+	// folder would leave that descendant archived.
+	const deleteRows = rows.filter((row) => row.pendingUpdate.pendingArchive != null);
+	if (deleteRows.length > 0 && rows.length > 1) {
+		const otherRows = rows.filter((row) => row.pendingUpdate.pendingArchive == null);
+		let failedCount = otherRows.length > 0 ? await files_pending_rows_run_bulk(otherRows, run) : 0;
+		// Plain string order puts a folder before its descendants because the folder path is
+		// a strict prefix of theirs.
+		const orderedDeleteRows = [...deleteRows].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+		for (const deleteRow of orderedDeleteRows) {
+			failedCount += await files_pending_rows_run_bulk([deleteRow], run);
+		}
+		return failedCount;
+	}
+
+	const units = files_pending_rows_build_accept_units(rows);
 
 	const results = await async_all_settled_with_limit(units, 5, async (unit) => {
 		const unitResults: Array<{ _nay?: { message?: string } | null }> = [];
@@ -516,6 +599,119 @@ async function files_pending_rows_run_bulk(
 	}
 	return failures;
 }
+
+// #region source select
+const PENDING_SOURCE_ALL = "all";
+const PENDING_SOURCE_USER = "user";
+
+type FileEditorSidebarPendingSource =
+	| typeof PENDING_SOURCE_ALL
+	| typeof PENDING_SOURCE_USER
+	| app_convex_Id<"ai_chat_threads">;
+
+type FileEditorSidebarPendingSourceOption = {
+	value: FileEditorSidebarPendingSource;
+	label: string;
+	description: string;
+	count: number;
+};
+
+type FileEditorSidebarPendingSourceSelect_ClassNames =
+	| "FileEditorSidebarPendingSourceSelect"
+	| "FileEditorSidebarPendingSourceSelect-trigger"
+	| "FileEditorSidebarPendingSourceSelect-trigger-label"
+	| "FileEditorSidebarPendingSourceSelect-count"
+	| "FileEditorSidebarPendingSourceSelect-popover";
+
+function pending_row_matches_source(row: FileEditorSidebarPendingRow, source: FileEditorSidebarPendingSource) {
+	if (source === PENDING_SOURCE_ALL) {
+		return true;
+	}
+	if (source === PENDING_SOURCE_USER) {
+		return !row.pendingUpdate.threadIds?.length;
+	}
+	return row.pendingUpdate.threadIds?.includes(source) ?? false;
+}
+
+const FileEditorSidebarPendingSourceSelect = memo(function FileEditorSidebarPendingSourceSelect(props: {
+	value: FileEditorSidebarPendingSource;
+	options: FileEditorSidebarPendingSourceOption[];
+	onValueChange: (value: FileEditorSidebarPendingSource) => void;
+}) {
+	const selectedOption = props.options.find((option) => option.value === props.value) ?? props.options[0];
+	if (!selectedOption) {
+		return null;
+	}
+
+	return (
+		<div
+			className={cn("FileEditorSidebarPendingSourceSelect" satisfies FileEditorSidebarPendingSourceSelect_ClassNames)}
+		>
+			<MySelect
+				value={props.value}
+				setValue={(value) => {
+					props.onValueChange(value as FileEditorSidebarPendingSource);
+				}}
+			>
+				<MySelectTrigger
+					aria-label={`Pending changes source: ${selectedOption.label}, ${selectedOption.count} ${selectedOption.count === 1 ? "change" : "changes"}`}
+				>
+					<MyButton
+						variant="outline"
+						className={cn(
+							"FileEditorSidebarPendingSourceSelect-trigger" satisfies FileEditorSidebarPendingSourceSelect_ClassNames,
+						)}
+					>
+						<ListFilter />
+						<span
+							className={cn(
+								"FileEditorSidebarPendingSourceSelect-trigger-label" satisfies FileEditorSidebarPendingSourceSelect_ClassNames,
+							)}
+						>
+							{selectedOption.label}
+						</span>
+						<span
+							className={cn(
+								"FileEditorSidebarPendingSourceSelect-count" satisfies FileEditorSidebarPendingSourceSelect_ClassNames,
+							)}
+						>
+							{selectedOption.count}
+						</span>
+						<MySelectOpenIndicator />
+					</MyButton>
+				</MySelectTrigger>
+				<MySelectPopover
+					sameWidth
+					className={cn(
+						"FileEditorSidebarPendingSourceSelect-popover" satisfies FileEditorSidebarPendingSourceSelect_ClassNames,
+					)}
+				>
+					<MySelectPopoverScrollableArea>
+						<MySelectPopoverContent>
+							{props.options.map((option) => (
+								<MySelectItem key={option.value} value={option.value}>
+									<MySelectItemContent>
+										<MySelectItemContentPrimary>{option.label}</MySelectItemContentPrimary>
+										<MySelectItemContentSecondary>{option.description}</MySelectItemContentSecondary>
+									</MySelectItemContent>
+									<span
+										className={cn(
+											"FileEditorSidebarPendingSourceSelect-count" satisfies FileEditorSidebarPendingSourceSelect_ClassNames,
+										)}
+									>
+										{option.count}
+									</span>
+									{props.value === option.value && <MySelectItemIndicator />}
+								</MySelectItem>
+							))}
+						</MySelectPopoverContent>
+					</MySelectPopoverScrollableArea>
+				</MySelectPopover>
+			</MySelect>
+		</div>
+	);
+});
+// #endregion source select
 
 // #region size diff
 function format_size_diff_value(size: number) {
@@ -580,11 +776,12 @@ type FileEditorSidebarPendingItem_Props = {
 	path: string;
 	kind: FileEditorSidebarPendingRow["kind"];
 	moveDestinationPath: string | undefined;
-	replacesName: string | undefined;
+	replacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 	sizeOnlyReplacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 	canPreviewDeleteDiff: boolean;
 	isAddedFile: boolean;
 	replaceSourcePath: string | undefined;
+	acceptRequiresAllChanges: boolean;
 	disabled?: boolean;
 	onActionSuccess: (message: string) => void;
 };
@@ -597,11 +794,12 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		path,
 		kind,
 		moveDestinationPath,
-		replacesName,
+		replacedNodeId,
 		sizeOnlyReplacedNodeId,
 		canPreviewDeleteDiff,
 		isAddedFile,
 		replaceSourcePath,
+		acceptRequiresAllChanges,
 		disabled,
 		onActionSuccess,
 	} = props;
@@ -611,8 +809,8 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	const [isOpen, setIsOpen] = useState(false);
 	const [isBusy, setIsBusy] = useState(false);
 
-	// A delete doc has no content branches. Start loading its committed Markdown when the row
-	// mounts so the first expand does not wait for the Convex and R2 reads.
+	// A delete preview always shows the committed Markdown, even when content branches remain on
+	// the pending doc. Start loading it on mount so the first expand does not wait for the reads.
 	const [deletedCommittedMarkdown, setDeletedCommittedMarkdown] = useState<string | null | undefined>();
 	useEffect(() => {
 		if (kind !== "delete" || !canPreviewDeleteDiff) {
@@ -685,6 +883,10 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	const handleAccept = useFn((event: MouseEvent<HTMLButtonElement>) => {
 		event.preventDefault();
 		if (isBusy) return;
+		if (acceptRequiresAllChanges) {
+			toast.error(PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE);
+			return;
+		}
 		setIsBusy(true);
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
@@ -775,7 +977,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							</span>
 						)}
 						<span className={cn("FileEditorSidebarPending-item-caption" satisfies FileEditorSidebarPending_ClassNames)}>
-							{kind === "delete" ? "Deleted" : replacesName != null ? `Replaces ${replacesName}` : "Moved"}
+							{kind === "delete" ? "Deleted" : replacedNodeId != null ? "Replaced" : "Moved"}
 						</span>
 					</MyLink>
 					<span className={cn("FileEditorSidebarPending-item-actions" satisfies FileEditorSidebarPending_ClassNames)}>
@@ -783,6 +985,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							variant="ghost"
 							className={cn("FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames)}
 							aria-label={`Accept ${actionLabel}`}
+							title={acceptRequiresAllChanges ? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE : undefined}
 							aria-busy={isBusy}
 							disabled={isBusy || disabled}
 							onClick={handleAccept}
@@ -806,14 +1009,14 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 
 	// Short neutral helper describing what accepting does, always visible. Deleted wins over
 	// everything (a delete supersedes the doc's other aspects). The replace indicator wins the
-	// next slot: a move onto an occupied destination archives that file, so name it live.
+	// next slot: a move onto an occupied destination archives that file, so mark it as Replaced.
 	// Replace-moves and non-eager-created copies replace the target's content (a replace-move also
 	// archives the source). Plain edits show Modified.
 	const caption =
 		kind === "delete"
 			? "Deleted"
-			: replacesName != null
-				? `Replaces ${replacesName}`
+			: replacedNodeId != null
+				? "Replaced"
 				: isAddedFile
 					? "Added"
 					: kind === "content_and_move"
@@ -888,6 +1091,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							variant="ghost"
 							className={cn("FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames)}
 							aria-label={`Accept ${actionLabel}`}
+							title={acceptRequiresAllChanges ? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE : undefined}
 							aria-busy={isBusy}
 							disabled={isBusy || disabled}
 							onClick={handleAccept}
@@ -936,8 +1140,10 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 export type FileEditorSidebarPending_ClassNames =
 	| "FileEditorSidebarPending"
 	| "FileEditorSidebarPending-empty"
+	| "FileEditorSidebarPending-source-empty"
 	| "FileEditorSidebarPending-status"
 	| "FileEditorSidebarPending-header"
+	| "FileEditorSidebarPending-header-actions"
 	| "FileEditorSidebarPending-header-button"
 	| "FileEditorSidebarPending-header-icon"
 	| "FileEditorSidebarPending-accept"
@@ -961,6 +1167,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	const convex = useConvex();
 
 	const [isBulkBusy, setIsBulkBusy] = useState(false);
+	const [selectedSource, setSelectedSource] = useState<FileEditorSidebarPendingSource>(PENDING_SOURCE_ALL);
 
 	// Settled signal for screen readers and automation: successful actions write into this
 	// `role="status"` live region imperatively, so no React re-render is needed to announce.
@@ -976,25 +1183,112 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 
 	const pendingUpdates = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, { membershipId });
 	const fileNodesList = useStableQuery(app_convex_api.files_nodes.list_tree, { membershipId });
+	// Keep both the id list and queries object stable. `useQueries` treats a new object as a new set
+	// of subscriptions and schedules render-phase state updates while it reconnects them.
+	const threadIds = useMemo(
+		() => [...new Set((pendingUpdates ?? []).flatMap((pendingUpdate) => pendingUpdate.threadIds ?? []))],
+		[pendingUpdates],
+	);
+	const threadQueryResults = useQueries(
+		useMemo(
+			() =>
+				Object.fromEntries(
+					threadIds.map((threadId) => [
+						threadId,
+						{
+							query: app_convex_api.ai_chat.thread_get,
+							args: { membershipId, threadId },
+						},
+					]),
+				),
+			[membershipId, threadIds],
+		),
+	);
 
 	const rows = ((/* iife */) => {
 		const nodesById = new Map((fileNodesList ?? []).map((node) => [node._id, node] as const));
 		return build_pending_rows(pendingUpdates ?? [], nodesById);
 	})();
+	// Build every row before filtering so move-aware occupancy and replacement captions use the
+	// complete pending set. One complete row can still appear under several contributing chats.
+	const activeSource =
+		selectedSource === PENDING_SOURCE_ALL ||
+		selectedSource === PENDING_SOURCE_USER ||
+		threadIds.includes(selectedSource)
+			? selectedSource
+			: PENDING_SOURCE_ALL;
+	const visibleRows = rows.filter((row) => pending_row_matches_source(row, activeSource));
+	const acceptRequiresAllChangesIds = files_pending_rows_get_accept_requires_all_changes_ids(rows, visibleRows);
+	const sortedThreadIds = [...threadIds].sort((leftThreadId, rightThreadId) => {
+		const leftThread = threadQueryResults[leftThreadId];
+		const rightThread = threadQueryResults[rightThreadId];
+		const leftUpdatedAt =
+			leftThread && !(leftThread instanceof Error) ? (leftThread.lastMessageAt ?? leftThread.updatedAt) : -Infinity;
+		const rightUpdatedAt =
+			rightThread && !(rightThread instanceof Error) ? (rightThread.lastMessageAt ?? rightThread.updatedAt) : -Infinity;
+		return rightUpdatedAt - leftUpdatedAt || leftThreadId.localeCompare(rightThreadId);
+	});
+	const sourceOptions: FileEditorSidebarPendingSourceOption[] = [
+		{
+			value: PENDING_SOURCE_ALL,
+			label: "All changes",
+			description: "Every pending change",
+			count: rows.length,
+		},
+		{
+			value: PENDING_SOURCE_USER,
+			label: "You",
+			description: "Pending changes not linked to a chat",
+			count: rows.filter((row) => pending_row_matches_source(row, PENDING_SOURCE_USER)).length,
+		},
+		...sortedThreadIds.map((threadId) => {
+			const thread = threadQueryResults[threadId];
+			const count = rows.filter((row) => pending_row_matches_source(row, threadId)).length;
+
+			if (thread === undefined) {
+				return { value: threadId, label: "Loading chat…", description: "Agent chat", count };
+			}
+			if (thread instanceof Error || thread === null) {
+				return { value: threadId, label: "Unavailable chat", description: "This chat is no longer available", count };
+			}
+
+			const lastMessageAt = thread.lastMessageAt ?? thread.updatedAt;
+			return {
+				value: threadId,
+				label: thread.title || "New Chat",
+				description: `${thread.archived ? "Archived · " : ""}Last message ${format_datetime(lastMessageAt)}`,
+				count,
+			};
+		}),
+	];
+
+	useEffect(() => {
+		if (
+			selectedSource !== PENDING_SOURCE_ALL &&
+			selectedSource !== PENDING_SOURCE_USER &&
+			!threadIds.includes(selectedSource)
+		) {
+			setSelectedSource(PENDING_SOURCE_ALL);
+		}
+	}, [selectedSource, threadIds]);
 
 	const handleAcceptAll = useFn(() => {
 		if (isBulkBusy) return;
+		if (acceptRequiresAllChangesIds.size > 0) {
+			toast.error(PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE);
+			return;
+		}
 		setIsBulkBusy(true);
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const failures = await files_pending_rows_run_bulk(rows, (row) =>
+			const failures = await files_pending_rows_run_bulk(visibleRows, (row) =>
 				files_pending_row_accept(convex, membershipId, row.pendingUpdate),
 			);
 			if (failures > 0) {
-				toast.error(`Failed to accept ${failures} of ${rows.length} pending changes`);
+				toast.error(`Failed to accept ${failures} of ${visibleRows.length} pending changes`);
 			} else {
-				announceActionSuccess(`Accepted ${rows.length} pending changes`);
+				announceActionSuccess(`Accepted ${visibleRows.length} pending changes`);
 			}
 		})()
 			.catch((error) => {
@@ -1012,13 +1306,13 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const failures = await files_pending_rows_run_bulk(rows, (row) =>
+			const failures = await files_pending_rows_run_bulk(visibleRows, (row) =>
 				files_pending_row_discard(convex, membershipId, row.pendingUpdate),
 			);
 			if (failures > 0) {
-				toast.error(`Failed to discard ${failures} of ${rows.length} pending changes`);
+				toast.error(`Failed to discard ${failures} of ${visibleRows.length} pending changes`);
 			} else {
-				announceActionSuccess(`Discarded ${rows.length} pending changes`);
+				announceActionSuccess(`Discarded ${visibleRows.length} pending changes`);
 			}
 		})()
 			.catch((error) => {
@@ -1060,58 +1354,73 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 				aria-label="Pending changes"
 			>
 				<div className={cn("FileEditorSidebarPending-header" satisfies FileEditorSidebarPending_ClassNames)}>
-					<MyButton
-						variant="ghost"
-						className={cn(
-							"FileEditorSidebarPending-header-button" satisfies FileEditorSidebarPending_ClassNames,
-							"FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames,
-						)}
-						aria-label="Accept all pending changes"
-						aria-busy={isBulkBusy}
-						disabled={isBulkBusy}
-						onClick={handleAcceptAll}
-					>
-						<MyButtonIcon
-							className={cn("FileEditorSidebarPending-header-icon" satisfies FileEditorSidebarPending_ClassNames)}
+					<FileEditorSidebarPendingSourceSelect
+						value={activeSource}
+						options={sourceOptions}
+						onValueChange={setSelectedSource}
+					/>
+					<div className={cn("FileEditorSidebarPending-header-actions" satisfies FileEditorSidebarPending_ClassNames)}>
+						<MyButton
+							variant="ghost"
+							className={cn(
+								"FileEditorSidebarPending-header-button" satisfies FileEditorSidebarPending_ClassNames,
+								"FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames,
+							)}
+							aria-label="Accept all shown pending changes"
+							title={acceptRequiresAllChangesIds.size > 0 ? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE : undefined}
+							aria-busy={isBulkBusy}
+							disabled={isBulkBusy || visibleRows.length === 0}
+							onClick={handleAcceptAll}
 						>
-							<CheckCheck />
-						</MyButtonIcon>
-						Accept all
-					</MyButton>
-					<MyButton
-						variant="ghost_destructive"
-						className={cn("FileEditorSidebarPending-header-button" satisfies FileEditorSidebarPending_ClassNames)}
-						aria-label="Discard all pending changes"
-						aria-busy={isBulkBusy}
-						disabled={isBulkBusy}
-						onClick={handleDiscardAll}
-					>
-						<MyButtonIcon
-							className={cn("FileEditorSidebarPending-header-icon" satisfies FileEditorSidebarPending_ClassNames)}
+							<MyButtonIcon
+								className={cn("FileEditorSidebarPending-header-icon" satisfies FileEditorSidebarPending_ClassNames)}
+							>
+								<CheckCheck />
+							</MyButtonIcon>
+							Accept all
+						</MyButton>
+						<MyButton
+							variant="ghost_destructive"
+							className={cn("FileEditorSidebarPending-header-button" satisfies FileEditorSidebarPending_ClassNames)}
+							aria-label="Discard all shown pending changes"
+							aria-busy={isBulkBusy}
+							disabled={isBulkBusy || visibleRows.length === 0}
+							onClick={handleDiscardAll}
 						>
-							<Trash2 />
-						</MyButtonIcon>
-						Discard all
-					</MyButton>
+							<MyButtonIcon
+								className={cn("FileEditorSidebarPending-header-icon" satisfies FileEditorSidebarPending_ClassNames)}
+							>
+								<Trash2 />
+							</MyButtonIcon>
+							Discard all
+						</MyButton>
+					</div>
 				</div>
-				<ul className={cn("FileEditorSidebarPending-list" satisfies FileEditorSidebarPending_ClassNames)}>
-					{rows.map((row) => (
-						<FileEditorSidebarPendingItem
-							key={row.pendingUpdate._id}
-							pendingUpdate={row.pendingUpdate}
-							path={row.path}
-							kind={row.kind}
-							moveDestinationPath={row.moveDestinationPath}
-							replacesName={row.replacesName}
-							sizeOnlyReplacedNodeId={row.sizeOnlyReplacedNodeId}
-							canPreviewDeleteDiff={row.canPreviewDeleteDiff}
-							isAddedFile={row.isAddedFile}
-							replaceSourcePath={row.replaceSourcePath}
-							disabled={isBulkBusy}
-							onActionSuccess={announceActionSuccess}
-						/>
-					))}
-				</ul>
+				{visibleRows.length === 0 ? (
+					<div className={cn("FileEditorSidebarPending-source-empty" satisfies FileEditorSidebarPending_ClassNames)}>
+						No pending changes from this source
+					</div>
+				) : (
+					<ul className={cn("FileEditorSidebarPending-list" satisfies FileEditorSidebarPending_ClassNames)}>
+						{visibleRows.map((row) => (
+							<FileEditorSidebarPendingItem
+								key={row.pendingUpdate._id}
+								pendingUpdate={row.pendingUpdate}
+								path={row.path}
+								kind={row.kind}
+								moveDestinationPath={row.moveDestinationPath}
+								replacedNodeId={row.replacedNodeId}
+								sizeOnlyReplacedNodeId={row.sizeOnlyReplacedNodeId}
+								canPreviewDeleteDiff={row.canPreviewDeleteDiff}
+								isAddedFile={row.isAddedFile}
+								replaceSourcePath={row.replaceSourcePath}
+								acceptRequiresAllChanges={acceptRequiresAllChangesIds.has(row.pendingUpdate._id)}
+								disabled={isBulkBusy}
+								onActionSuccess={announceActionSuccess}
+							/>
+						))}
+					</ul>
+				)}
 			</div>
 		</>
 	);
@@ -1266,9 +1575,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(rows[1]?.path).toBe("/old-archive");
 		});
 
-		test("derives the replaced occupant name for move rows from live path occupancy only", () => {
+		test("derives the replaced occupant id for move rows from live path occupancy only", () => {
 			const updates = [
-				// Destination occupied by another file → its name.
+				// Destination occupied by another file → its id.
 				makePendingUpdate({
 					id: "pu_occupied",
 					fileNodeId: "node_m1",
@@ -1309,7 +1618,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						replacesNodeId: "node_gone",
 					},
 				}),
-				// Empty folder occupant: folder-onto-EMPTY-folder follows rename() semantics → its name.
+				// Empty folder occupant: folder-onto-EMPTY-folder follows rename() semantics → its id.
 				makePendingUpdate({
 					id: "pu_folder_move",
 					fileNodeId: "node_m6",
@@ -1368,14 +1677,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const rows = build_pending_rows(updates, nodesById);
 
-			expect(rows.map((row) => [row.path, row.replacesName])).toEqual([
+			expect(rows.map((row) => [row.path, row.replacedNodeId])).toEqual([
 				["/incoming.md", undefined],
-				["/m1.md", "taken.md"],
+				["/m1.md", "node_taken"],
 				["/m2.md", undefined],
 				["/m3.md", undefined],
 				["/m4.md", undefined],
 				["/m5.md", undefined],
-				["/m6", "taken-folder"],
+				["/m6", "node_taken_folder"],
 				["/m7.md", undefined],
 				["/m8", undefined],
 				["/m9", undefined],
@@ -1435,6 +1744,35 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const rows = build_pending_rows(updates, nodesById);
 
 			expect(rows.map((row) => row.isAddedFile)).toEqual([true, false]);
+		});
+	});
+
+	describe("files_pending_rows_get_accept_requires_all_changes_ids", () => {
+		test("blocks a shown member of a move cycle when another member is hidden", () => {
+			const updates = [
+				makePendingUpdate({
+					id: "pu_a",
+					fileNodeId: "node_a",
+					pendingMove: { destParentId: files_ROOT_ID, destName: "b.md", fromPath: "/a.md" },
+				}),
+				makePendingUpdate({
+					id: "pu_b",
+					fileNodeId: "node_b",
+					pendingMove: { destParentId: files_ROOT_ID, destName: "a.md", fromPath: "/b.md" },
+				}),
+			];
+			const rows = build_pending_rows(
+				updates,
+				makeNodesById([
+					makeNode({ id: "node_a", path: "/a.md" }),
+					makeNode({ id: "node_b", path: "/b.md" }),
+				]),
+			);
+			const shownRow = rows.find((row) => row.pendingUpdate.fileNodeId === "node_a");
+			if (!shownRow) throw new Error("Expected the shown move row");
+
+			expect([...files_pending_rows_get_accept_requires_all_changes_ids(rows, [shownRow])]).toEqual(["pu_a"]);
+			expect(files_pending_rows_get_accept_requires_all_changes_ids(rows, rows).size).toBe(0);
 		});
 	});
 

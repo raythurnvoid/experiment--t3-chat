@@ -244,11 +244,14 @@ Important behavior:
 `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending.tsx` owns:
 
 - the Pending changes tab content
+- the source selector: `All changes`, `You`, and every persisted agent chat referenced by a pending doc. `You` means docs with no `threadIds`; it stays visible with a zero count. Thread options use the membership-scoped `ai_chat.thread_get` query, so archived contributing chats remain selectable
+- source filtering after the full pending-row model is built. A doc with multiple `threadIds` appears with its same combined pending content under every linked chat, and source counts can overlap. The UI never tries to split one doc's changes by chat
+- bulk Accept/Discard over only the rows shown by the selected source. A source-scoped accept that would also settle or invalidate a hidden row asks the user to switch to `All changes`; this covers cross-source move chains/cycles, folder deletes with hidden descendants, replacements, and archive-source copies. If a selected chat stops contributing, the selector returns to `All changes`; a zero-row source disables both bulk actions
 - content-only, move-only, copy, content-plus-move, and delete row rendering; the "Deleted" caption wins over every other caption
 - editable Markdown delete rows prefetch committed Markdown and expand to an inline fully-removed diff; binary and folder delete rows are plain rows without a disclosure control
 - binary structural replacements query both asset sizes while the row is mounted, then expand to removed and added size lines or `Size unchanged`
 - delete and binary-replacement links open the file, never the diff editor
-- per-row and bulk Accept/Discard actions
+- per-row Accept/Discard actions, with the same `All changes` guard when accept would affect a hidden source
 - move-before-content ordering for content-plus-move row acceptance
 - delete rows run as their own trailing bulk phase (accepting a folder delete first would archive descendants and fail sibling accepts)
 - safe eager-created destination deletion during discard
@@ -283,7 +286,7 @@ Important behavior:
 - Bash `meta search` uses one Convex indexed query against `files_metadata_docs` per command. It filters pending metadata to the acting user, filters out other users' pending metadata, and hides committed metadata for files that user has pending edits on. Multi-predicate AND/OR is intentionally outside the command and should be composed by shell tools over path output.
 - Metadata search hides committed metadata only for docs that carry a content proposal (`files_pending_update_content_of` returns non-null), the same rule full-text search uses. A move-only doc does not mask the file's committed metadata.
 - `Review changes` must switch into diff mode.
-- In the diff editor, `Accept all` only copies unstaged content into staged content; it does not save by itself. In the Pending changes tab, bulk Accept applies or saves every listed row.
+- In the diff editor, `Accept all` only copies unstaged content into staged content; it does not save by itself. In the Pending changes tab, bulk Accept applies or saves every row shown by the selected source.
 - In the diff editor, `Discard all` copies staged content into unstaged content without a special clear mutation. The Pending changes tab uses backend discard mutations for its rows.
 - `Save` can partially resolve a pending update and keep the unresolved branch alive.
 - `Sync` must rebase on top of the latest live file state before persisting.
@@ -302,6 +305,9 @@ Important behavior:
 - `Accept all + save` should clear the pending update doc when no unresolved changes remain.
 - `Sync` should preserve local intent while rebasing on newer live file state.
 - Verify the Pending changes tab renders and sorts content-only, move-only, copy, content-plus-move, and delete rows.
+- Verify the source selector shows All, threadless You, archived chats, and contributing chats newest first. A shared pending doc should appear as the same complete row under every linked chat.
+- Verify source-scoped bulk actions touch only shown rows, a selected chat falls back to All after its last row settles, and You stays available at zero with disabled bulk actions.
+- Verify source-scoped accept asks for All instead of settling hidden move-chain/cycle members, hidden folder descendants, hidden replacement occupants, or hidden archive-source rows.
 - Verify editable Markdown delete rows start fetching committed content before expansion and render it as fully removed.
 - Verify binary and folder delete rows have no disclosure control and do not fetch committed Markdown.
 - Verify binary replacements prefetch both asset sizes and show removed and added size lines, or `Size unchanged` when the sizes match.

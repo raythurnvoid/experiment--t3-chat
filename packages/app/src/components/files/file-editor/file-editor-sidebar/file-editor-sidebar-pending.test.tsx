@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
 
@@ -8,6 +8,7 @@ import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
 const {
 	tenantContextMock,
 	useQueryMock,
+	useQueriesMock,
 	useStableQueryMock,
 	actionMock,
 	mutationMock,
@@ -16,6 +17,7 @@ const {
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	useQueryMock: vi.fn(),
+	useQueriesMock: vi.fn(),
 	useStableQueryMock: vi.fn(),
 	actionMock: vi.fn(),
 	mutationMock: vi.fn(),
@@ -26,6 +28,7 @@ const {
 // Network boundary: the real hooks talk to a live Convex client; tests feed query data directly.
 vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => useQueryMock(...args),
+	useQueries: (...args: unknown[]) => useQueriesMock(...args),
 	useConvex: () => ({ action: actionMock, mutation: mutationMock }),
 }));
 
@@ -51,6 +54,9 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 // codegen'd api object is a Proxy; plain-string function refs keep call assertions readable.
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex_api: {
+		ai_chat: {
+			thread_get: "thread_get",
+		},
 		files_pending_updates: {
 			list_files_pending_updates: "list_files_pending_updates",
 			upsert_file_pending_update: "upsert_file_pending_update",
@@ -120,6 +126,7 @@ function makePendingUpdate(args: {
 	copiedFrom?: { nodeId: string; path: string; archivesSourceOnAccept?: boolean };
 	eagerCreated?: { committedSequence: number };
 	pendingArchive?: { fromPath: string };
+	threadIds?: string[];
 }): app_convex_Doc<"files_pending_updates"> {
 	return {
 		_id: args.id,
@@ -141,9 +148,28 @@ function makePendingUpdate(args: {
 		...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
 		...(args.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
 		...(args.pendingArchive ? { pendingArchive: args.pendingArchive } : {}),
+		...(args.threadIds ? { threadIds: args.threadIds } : {}),
 		size: 0,
 		updatedAt: 1,
 	} as unknown as app_convex_Doc<"files_pending_updates">;
+}
+
+function makeThread(args: { id: string; title: string | null; archived?: boolean; lastMessageAt?: number }) {
+	return {
+		_id: args.id,
+		_creationTime: 0,
+		organizationId: "organization_1",
+		workspaceId: "workspace_1",
+		clientGeneratedId: `client_${args.id}`,
+		title: args.title,
+		archived: args.archived ?? false,
+		runtime: "aisdk_5",
+		stateId: null,
+		createdBy: "user_1",
+		updatedBy: "user_1",
+		updatedAt: 1,
+		lastMessageAt: args.lastMessageAt ?? 1,
+	} as unknown as app_convex_Doc<"ai_chat_threads">;
 }
 
 function makeNode(args: {
@@ -151,7 +177,7 @@ function makeNode(args: {
 	path: string;
 	kind?: "file" | "folder";
 	parentId?: string;
-	editable?: boolean;
+	hasEditableYjsState?: boolean;
 }): app_convex_Doc<"files_nodes"> {
 	const kind = args.kind ?? "file";
 	return {
@@ -164,7 +190,7 @@ function makeNode(args: {
 		...(kind === "file"
 			? {
 					assetId: `asset_${args.id}`,
-					...(args.editable === false
+					...(args.hasEditableYjsState === false
 						? {}
 						: {
 								yjsSnapshotId: `snapshot_${args.id}`,
@@ -194,6 +220,8 @@ beforeEach(() => {
 	truncatePathForWidthMock.mockReset();
 	truncatePathForWidthMock.mockImplementation((args: { path: string }) => args.path);
 	useQueryMock.mockReset();
+	useQueriesMock.mockReset();
+	useQueriesMock.mockReturnValue({});
 	useStableQueryMock.mockReset();
 	vi.mocked(toast.error).mockClear();
 });
@@ -230,10 +258,336 @@ describe("FileEditorSidebarPending", () => {
 		expect(paths).toEqual(["alpha/intro.md", "zebra/notes.md"]);
 	});
 
-	test("path link opens the file in the diff editor and preserves the full path metadata", () => {
+	test("filters user and shared agent changes by source", () => {
 		useQueryMock.mockReturnValue([
-			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
+			makePendingUpdate({ id: "pu_user", fileNodeId: "node_user", staged: "s", unstaged: "u" }),
+			makePendingUpdate({
+				id: "pu_shared",
+				fileNodeId: "node_shared",
+				staged: "s",
+				unstaged: "u",
+				threadIds: ["thread_a", "thread_b"],
+			}),
+			makePendingUpdate({
+				id: "pu_a",
+				fileNodeId: "node_a",
+				staged: "s",
+				unstaged: "u",
+				threadIds: ["thread_a"],
+			}),
+			makePendingUpdate({
+				id: "pu_b",
+				fileNodeId: "node_b",
+				staged: "s",
+				unstaged: "u",
+				threadIds: ["thread_b"],
+			}),
 		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_user", path: "/user.md" }),
+			makeNode({ id: "node_shared", path: "/shared.md" }),
+			makeNode({ id: "node_a", path: "/a.md" }),
+			makeNode({ id: "node_b", path: "/b.md" }),
+		]);
+		useQueriesMock.mockReturnValue({
+			thread_a: makeThread({ id: "thread_a", title: "First chat", lastMessageAt: 10 }),
+			thread_b: makeThread({ id: "thread_b", title: "Second chat", archived: true, lastMessageAt: 20 }),
+		});
+
+		const { container } = render(<FileEditorSidebarPending />);
+		const selectSource = (name: RegExp) => {
+			fireEvent.click(screen.getByRole("combobox"));
+			fireEvent.click(screen.getByRole("option", { name }));
+		};
+		const visiblePaths = () =>
+			Array.from(container.querySelectorAll(".FileEditorSidebarPending-item-path-text")).map(
+				(element) => element.textContent,
+			);
+
+		expect(screen.getByRole("combobox", { name: "Pending changes source: All changes, 4 changes" })).toBeTruthy();
+		expect(visiblePaths()).toEqual(["/a.md", "/b.md", "/shared.md", "/user.md"]);
+		expect(useQueriesMock).toHaveBeenCalledWith({
+			thread_a: { query: "thread_get", args: { membershipId: MEMBERSHIP_ID, threadId: "thread_a" } },
+			thread_b: { query: "thread_get", args: { membershipId: MEMBERSHIP_ID, threadId: "thread_b" } },
+		});
+
+		fireEvent.click(screen.getByRole("combobox"));
+		expect(
+			screen
+				.getAllByRole("option")
+				.map((option) => option.querySelector(".MySelectItemContentPrimary")?.textContent),
+		).toEqual(["All changes", "You", "Second chat", "First chat"]);
+		expect(screen.getByRole("option", { name: /^Second chat Archived/ })).toBeTruthy();
+		fireEvent.click(screen.getByRole("option", { name: /^You/ }));
+		expect(screen.getByRole("combobox", { name: "Pending changes source: You, 1 change" })).toBeTruthy();
+		expect(visiblePaths()).toEqual(["/user.md"]);
+
+		selectSource(/^First chat/);
+		expect(visiblePaths()).toEqual(["/a.md", "/shared.md"]);
+
+		selectSource(/^Second chat/);
+		expect(visiblePaths()).toEqual(["/b.md", "/shared.md"]);
+	});
+
+	test("shows loading, unavailable, and untitled chat source labels", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_loading",
+				fileNodeId: "node_loading",
+				staged: "s",
+				unstaged: "u",
+				threadIds: ["thread_loading"],
+			}),
+			makePendingUpdate({
+				id: "pu_missing",
+				fileNodeId: "node_missing",
+				staged: "s",
+				unstaged: "u",
+				threadIds: ["thread_missing"],
+			}),
+			makePendingUpdate({
+				id: "pu_error",
+				fileNodeId: "node_error",
+				staged: "s",
+				unstaged: "u",
+				threadIds: ["thread_error"],
+			}),
+			makePendingUpdate({
+				id: "pu_untitled",
+				fileNodeId: "node_untitled",
+				staged: "s",
+				unstaged: "u",
+				threadIds: ["thread_untitled"],
+			}),
+			makePendingUpdate({
+				id: "pu_user",
+				fileNodeId: "node_user",
+				staged: "s",
+				unstaged: "u",
+				threadIds: [],
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_loading", path: "/loading.md" }),
+			makeNode({ id: "node_missing", path: "/missing.md" }),
+			makeNode({ id: "node_error", path: "/error.md" }),
+			makeNode({ id: "node_untitled", path: "/untitled.md" }),
+			makeNode({ id: "node_user", path: "/user.md" }),
+		]);
+		useQueriesMock.mockReturnValue({
+			thread_loading: undefined,
+			thread_missing: null,
+			thread_error: new Error("Query failed"),
+			thread_untitled: makeThread({ id: "thread_untitled", title: null, lastMessageAt: 50 }),
+		});
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByRole("combobox"));
+
+		expect(screen.getByRole("option", { name: /^Loading chat… Agent chat 1$/ })).toBeTruthy();
+		expect(screen.getAllByRole("option", { name: /^Unavailable chat This chat is no longer available 1$/ })).toHaveLength(
+			2,
+		);
+		expect(screen.getByRole("option", { name: /^New Chat Last message/ })).toBeTruthy();
+		expect(screen.getByRole("option", { name: /^You Pending changes not linked to a chat 1$/ })).toBeTruthy();
+	});
+
+	test("keeps the zero-count You source selectable and disables bulk actions", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_agent",
+				fileNodeId: "node_agent",
+				staged: "s",
+				unstaged: "u",
+				threadIds: ["thread_a"],
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_agent", path: "/agent.md" })]);
+		useQueriesMock.mockReturnValue({ thread_a: makeThread({ id: "thread_a", title: "Agent chat" }) });
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByRole("combobox"));
+		fireEvent.click(screen.getByRole("option", { name: /^You Pending changes not linked to a chat 0$/ }));
+
+		expect(screen.getByText("No pending changes from this source")).toBeTruthy();
+		expect((screen.getByRole("button", { name: "Accept all shown pending changes" }) as HTMLButtonElement).disabled).toBe(
+			true,
+		);
+		expect((screen.getByRole("button", { name: "Discard all shown pending changes" }) as HTMLButtonElement).disabled).toBe(
+			true,
+		);
+	});
+
+	test("returns to All changes when the selected chat stops contributing", async () => {
+		const userUpdate = makePendingUpdate({ id: "pu_user", fileNodeId: "node_user", staged: "s", unstaged: "u" });
+		const agentUpdate = makePendingUpdate({
+			id: "pu_agent",
+			fileNodeId: "node_agent",
+			staged: "s",
+			unstaged: "u",
+			threadIds: ["thread_a"],
+		});
+		const userNode = makeNode({ id: "node_user", path: "/user.md" });
+		const agentNode = makeNode({ id: "node_agent", path: "/agent.md" });
+		let pendingUpdates = [userUpdate, agentUpdate];
+		const pendingUpdateListeners = new Set<() => void>();
+		useQueryMock.mockImplementation(function useReactivePendingUpdatesQuery() {
+			return useSyncExternalStore(
+				(listener) => {
+					pendingUpdateListeners.add(listener);
+					return () => pendingUpdateListeners.delete(listener);
+				},
+				() => pendingUpdates,
+				() => pendingUpdates,
+			);
+		});
+		useStableQueryMock.mockReturnValue([userNode, agentNode]);
+		useQueriesMock.mockReturnValue({ thread_a: makeThread({ id: "thread_a", title: "Agent chat" }) });
+
+		const { container } = render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByRole("combobox"));
+		fireEvent.click(screen.getByRole("option", { name: /^Agent chat/ }));
+		expect(container.querySelector(".FileEditorSidebarPending-item-path-text")?.textContent).toBe("/agent.md");
+
+		act(() => {
+			pendingUpdates = [userUpdate];
+			for (const listener of pendingUpdateListeners) listener();
+		});
+
+		await waitFor(() => {
+			expect(screen.getByRole("combobox", { name: "Pending changes source: All changes, 1 change" })).toBeTruthy();
+		});
+		expect(container.querySelector(".FileEditorSidebarPending-item-path-text")?.textContent).toBe("/user.md");
+
+		act(() => {
+			pendingUpdates = [userUpdate, agentUpdate];
+			for (const listener of pendingUpdateListeners) listener();
+		});
+
+		await waitFor(() => {
+			expect(screen.getByRole("combobox", { name: "Pending changes source: All changes, 2 changes" })).toBeTruthy();
+		});
+	});
+
+	test("bulk actions affect only the selected source", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_user", fileNodeId: "node_user", staged: "S_USER", unstaged: "U_USER" }),
+			makePendingUpdate({
+				id: "pu_agent",
+				fileNodeId: "node_agent",
+				staged: "S_AGENT",
+				unstaged: "U_AGENT",
+				threadIds: ["thread_a"],
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_user", path: "/user.md" }),
+			makeNode({ id: "node_agent", path: "/agent.md" }),
+		]);
+		useQueriesMock.mockReturnValue({ thread_a: makeThread({ id: "thread_a", title: "Agent chat" }) });
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByRole("combobox"));
+		fireEvent.click(screen.getByRole("option", { name: /^Agent chat/ }));
+		fireEvent.click(screen.getByText("Accept all"));
+
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
+		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_agent",
+			pendingUpdateId: "pu_agent",
+			stagedMarkdown: "U_AGENT",
+			unstagedMarkdown: "U_AGENT",
+		});
+		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_agent",
+			pendingUpdateId: "pu_agent",
+		});
+		expect(actionMock).not.toHaveBeenCalledWith(
+			"upsert_file_pending_update",
+			expect.objectContaining({ nodeId: "node_user" }),
+		);
+	});
+
+	test("bulk discard affects only the selected source", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_user", fileNodeId: "node_user", staged: "S_USER", unstaged: "U_USER" }),
+			makePendingUpdate({
+				id: "pu_agent",
+				fileNodeId: "node_agent",
+				staged: "S_AGENT",
+				unstaged: "U_AGENT",
+				threadIds: ["thread_a"],
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_user", path: "/user.md" }),
+			makeNode({ id: "node_agent", path: "/agent.md" }),
+		]);
+		useQueriesMock.mockReturnValue({ thread_a: makeThread({ id: "thread_a", title: "Agent chat" }) });
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByRole("combobox"));
+		fireEvent.click(screen.getByRole("option", { name: /^Agent chat/ }));
+		fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" }));
+
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
+		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_agent",
+			pendingUpdateId: "pu_agent",
+			stagedMarkdown: "S_AGENT",
+			unstagedMarkdown: "S_AGENT",
+		});
+		expect(actionMock).not.toHaveBeenCalledWith(
+			"upsert_file_pending_update",
+			expect.objectContaining({ nodeId: "node_user" }),
+		);
+		expect(screen.getByRole("status").textContent).toBe("Discarded 1 pending changes");
+	});
+
+	test("source-scoped accepts require All changes when a folder delete would settle a hidden row", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_folder",
+				fileNodeId: "node_folder",
+				pendingArchive: { fromPath: "/docs" },
+				threadIds: ["thread_a"],
+			}),
+			makePendingUpdate({
+				id: "pu_child",
+				fileNodeId: "node_child",
+				staged: "s",
+				unstaged: "u",
+				threadIds: ["thread_b"],
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_folder", path: "/docs", kind: "folder" }),
+			makeNode({ id: "node_child", path: "/docs/report.md", parentId: "node_folder" }),
+		]);
+		useQueriesMock.mockReturnValue({
+			thread_a: makeThread({ id: "thread_a", title: "Folder chat" }),
+			thread_b: makeThread({ id: "thread_b", title: "Child chat" }),
+		});
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByRole("combobox"));
+		fireEvent.click(screen.getByRole("option", { name: /^Folder chat/ }));
+		fireEvent.click(screen.getByRole("button", { name: "Accept delete of /docs" }));
+		fireEvent.click(screen.getByRole("button", { name: "Accept all shown pending changes" }));
+
+		expect(toast.error).toHaveBeenCalledTimes(2);
+		expect(toast.error).toHaveBeenCalledWith(
+			"Use All changes to accept changes that also affect pending changes from another source",
+		);
+		expect(actionMock).not.toHaveBeenCalled();
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("path link opens the file in the diff editor and preserves the full path metadata", () => {
+		useQueryMock.mockReturnValue([makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" })]);
 		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/deeply/nested/intro.md" })]);
 
 		const { container } = render(<FileEditorSidebarPending />);
@@ -587,8 +941,8 @@ describe("FileEditorSidebarPending", () => {
 			return undefined;
 		});
 		useStableQueryMock.mockReturnValue([
-			makeNode({ id: "node_source", path: "/source.mp4", editable: false }),
-			makeNode({ id: "node_target", path: "/target.mp4", editable: false }),
+			makeNode({ id: "node_source", path: "/source.mp4", hasEditableYjsState: false }),
+			makeNode({ id: "node_target", path: "/target.mp4", hasEditableYjsState: false }),
 		]);
 
 		const { container } = render(<FileEditorSidebarPending />);
@@ -597,6 +951,14 @@ describe("FileEditorSidebarPending", () => {
 		expect(details).toBeTruthy();
 		const link = screen.getByRole("link", { name: "/source.mp4 → /target.mp4" });
 		expect(link.getAttribute("href")).not.toContain("view=diff_editor");
+		expect(useQueryMock).toHaveBeenCalledWith("get_asset", {
+			membershipId: MEMBERSHIP_ID,
+			fileNodeId: "node_source",
+		});
+		expect(useQueryMock).toHaveBeenCalledWith("get_asset", {
+			membershipId: MEMBERSHIP_ID,
+			fileNodeId: "node_target",
+		});
 		fireEvent.click(details?.querySelector("summary button") as HTMLButtonElement);
 
 		const sizeDiff = screen.getByRole("textbox", { name: "Size difference for /source.mp4" });
@@ -605,7 +967,33 @@ describe("FileEditorSidebarPending", () => {
 		expect(fetchFileYjsStateAndMarkdownMock).not.toHaveBeenCalled();
 	});
 
-	test("binary delete has no dropdown or content fetch", () => {
+	test("binary replacement shows when the file sizes are unchanged", () => {
+		const pendingUpdates = [
+			makePendingUpdate({
+				id: "pu_binary_replace",
+				fileNodeId: "node_source",
+				pendingMove: { destParentId: "root", destName: "target.mp4", fromPath: "/source.mp4" },
+			}),
+		];
+		useQueryMock.mockImplementation((query: unknown) => {
+			if (query === "list_files_pending_updates") return pendingUpdates;
+			if (query === "get_asset") return { size: 1_024 };
+			return undefined;
+		});
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_source", path: "/source.mp4", hasEditableYjsState: false }),
+			makeNode({ id: "node_target", path: "/target.mp4", hasEditableYjsState: false }),
+		]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+		fireEvent.click(container.querySelector("details summary button") as HTMLButtonElement);
+
+		expect(screen.getByRole("textbox", { name: "Size difference for /source.mp4" }).textContent).toBe(
+			"Size unchanged: 1.0 KB (1024 bytes)",
+		);
+	});
+
+	test("binary delete has no disclosure control or content fetch", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_binary_delete",
@@ -613,7 +1001,9 @@ describe("FileEditorSidebarPending", () => {
 				pendingArchive: { fromPath: "/video.mp4" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_video", path: "/video.mp4", editable: false })]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_video", path: "/video.mp4", hasEditableYjsState: false }),
+		]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
@@ -623,7 +1013,7 @@ describe("FileEditorSidebarPending", () => {
 		expect(fetchFileYjsStateAndMarkdownMock).not.toHaveBeenCalled();
 	});
 
-	test("editable delete starts loading its committed content before the first expand", async () => {
+	test("delete with editable Yjs state starts loading committed content before the first expand", async () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_text_delete",
@@ -795,7 +1185,7 @@ describe("FileEditorSidebarPending", () => {
 		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Moved");
 	});
 
-	test("move row names the live occupant of the destination over a stale declared target", () => {
+	test("move row uses the live destination occupant over a stale declared target", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_move",
@@ -807,17 +1197,17 @@ describe("FileEditorSidebarPending", () => {
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
 			// The declared target moved to /elsewhere.md after the proposal while a different
-			// active file took /docs/dest.md; accepting archives that occupant, so name it.
+			// active file took /docs/dest.md; accepting archives that occupant, so show Replaced.
 			makeNode({ id: "node_t", path: "/elsewhere.md" }),
 			makeNode({ id: "node_o", path: "/docs/dest.md" }),
 		]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaces dest.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
 	});
 
-	test("move row onto an occupied destination shows Replaces, a free one shows Moved", () => {
+	test("move row onto an occupied destination shows Replaced, a free one shows Moved", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_occupied",
@@ -842,10 +1232,10 @@ describe("FileEditorSidebarPending", () => {
 		const captions = Array.from(container.querySelectorAll(".FileEditorSidebarPending-item-caption")).map(
 			(element) => element.textContent,
 		);
-		expect(captions).toEqual(["Replaces b.md", "Moved"]);
+		expect(captions).toEqual(["Replaced", "Moved"]);
 	});
 
-	test("folder move row shows Replaces only for an empty folder occupant", () => {
+	test("folder move row shows Replaced only for an empty folder occupant", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_folder_empty",
@@ -872,10 +1262,10 @@ describe("FileEditorSidebarPending", () => {
 		const captions = Array.from(container.querySelectorAll(".FileEditorSidebarPending-item-caption")).map(
 			(element) => element.textContent,
 		);
-		expect(captions).toEqual(["Replaces empty-dst", "Moved"]);
+		expect(captions).toEqual(["Replaced", "Moved"]);
 	});
 
-	test("move row onto an occupant with its own pending move shows Moved, not Replaces", () => {
+	test("move row onto an occupant with its own pending move shows Moved, not Replaced", () => {
 		useQueryMock.mockReturnValue([
 			// /a.md → /b.md while /b.md has its own pending move away: accept forces B's move
 			// first, so nothing is left at /b.md to replace.
@@ -909,10 +1299,10 @@ describe("FileEditorSidebarPending", () => {
 			(element) => element.textContent,
 		);
 		// Rows sort by path: /a.md, /b.md, /d.md.
-		expect(captions).toEqual(["Moved", "Moved", "Replaces e.md"]);
+		expect(captions).toEqual(["Moved", "Moved", "Replaced"]);
 	});
 
-	test("mixed replace row shows the Replaces caption instead of Added", () => {
+	test("mixed replace row shows the Replaced caption instead of Added", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_mixed",
@@ -930,7 +1320,7 @@ describe("FileEditorSidebarPending", () => {
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaces b.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
 		expect(screen.queryByText("Added")).toBeNull();
 	});
 

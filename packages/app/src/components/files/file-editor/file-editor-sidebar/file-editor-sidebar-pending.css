@@ -20,13 +20,26 @@
 		color: var(--color-fg-06);
 	}
 
+	.FileEditorSidebarPending-source-empty {
+		flex: 1;
+
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		padding: 24px;
+		color: var(--color-fg-06);
+		text-align: center;
+	}
+
 	.FileEditorSidebarPending-header {
 		flex: none;
 
 		display: flex;
 		flex-direction: row;
 		align-items: center;
-		justify-content: flex-end;
+		justify-content: space-between;
+		flex-wrap: wrap;
 		gap: 4px;
 
 		padding: 6px 16px;
@@ -36,6 +49,17 @@
 		position: sticky;
 		top: 0;
 		z-index: 1;
+	}
+
+	.FileEditorSidebarPending-header-actions {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		flex-wrap: wrap;
+		gap: 4px;
+
+		max-width: 100%;
+		margin-left: auto;
 	}
 
 	.FileEditorSidebarPending-header-button {
@@ -56,6 +80,56 @@
 		list-style: none;
 	}
 	/* #endregion root */
+
+	/* #region source select */
+	.FileEditorSidebarPendingSourceSelect {
+		flex: 1 1 160px;
+		min-width: 0;
+		max-width: 240px;
+	}
+
+	.FileEditorSidebarPendingSourceSelect-trigger.MyButton {
+		width: 100%;
+		min-width: 0;
+	}
+
+	.FileEditorSidebarPendingSourceSelect-trigger-label {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.FileEditorSidebarPendingSourceSelect-count {
+		flex: none;
+
+		min-width: 20px;
+		padding: 1px 5px;
+		border-radius: 999px;
+
+		background: var(--color-base-alt-1-09);
+		color: var(--color-fg-09);
+		font-size: 0.75rem;
+		line-height: 18px;
+		text-align: center;
+	}
+
+	.FileEditorSidebarPendingSourceSelect-popover {
+		max-width: min(360px, calc(100vw - 24px));
+
+		.MySelectItemContent {
+			min-width: 0;
+		}
+
+		.MySelectItemContentPrimary {
+			height: auto;
+			overflow-wrap: anywhere;
+		}
+
+		.MySelectItemContentSecondary {
+			overflow-wrap: anywhere;
+		}
+	}
+	/* #endregion source select */
 
 	/* #region item */
 	.FileEditorSidebarPending-item {
