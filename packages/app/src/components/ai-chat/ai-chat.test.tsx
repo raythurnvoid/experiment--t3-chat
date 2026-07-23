@@ -1,8 +1,9 @@
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { AiChatThreadRuntime } from "@/hooks/ai-chat-controller.tsx";
+import type { ai_chat_AiSdk5UiMessage } from "@/lib/ai-chat.ts";
 
 // Network boundary: the real hooks talk to a live Convex client.
 vi.mock("convex/react", () => ({
@@ -37,8 +38,11 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 }));
 
 vi.mock("@/components/ai-chat/ai-chat-message.tsx", () => ({
-	AiChatMessage: function AiChatMessage() {
-		return <div />;
+	AiChatMessage: function AiChatMessage(props: { message: ai_chat_AiSdk5UiMessage; isRunning: boolean }) {
+		return <div data-testid={`message-${props.message.role}`} data-running={props.isRunning} />;
+	},
+	AiChatMessagePendingAssistant: function AiChatMessagePendingAssistant() {
+		return <div>Thinking</div>;
 	},
 }));
 
@@ -70,7 +74,7 @@ vi.mock("@/lib/ui.tsx", async (importOriginal) => ({
 import { AiChatThread } from "./ai-chat.tsx";
 
 /** Minimal idle-thread runtime: empty branch, nothing streaming, welcome screen state. */
-function makeController(): AiChatThreadRuntime {
+function makeController(overrides?: Partial<AiChatThreadRuntime>): AiChatThreadRuntime {
 	return {
 		selectedThreadId: null,
 		selectedModelId: "model_1",
@@ -89,6 +93,7 @@ function makeController(): AiChatThreadRuntime {
 		sendUserText: vi.fn(),
 		regenerate: vi.fn(),
 		setComposerValue: vi.fn(),
+		...overrides,
 	} as unknown as AiChatThreadRuntime;
 }
 
@@ -97,6 +102,69 @@ afterEach(() => {
 });
 
 describe("AiChatThread", () => {
+	test("keeps Thinking visible until the running assistant has content", async () => {
+		const userMessage = {
+			id: "message_user_pending",
+			role: "user",
+			parts: [{ type: "text", text: "Tell me a joke" }],
+			metadata: {
+				convexParentId: null,
+				parentClientGeneratedId: null,
+				selectedModelId: "gpt-5.4-nano",
+				selectedModeId: "ask",
+			},
+		} satisfies ai_chat_AiSdk5UiMessage;
+		const assistantMessage = {
+			id: "message_assistant_pending",
+			role: "assistant",
+			parts: [],
+			metadata: {
+				convexParentId: "message_user_pending",
+				parentClientGeneratedId: null,
+			},
+		} satisfies ai_chat_AiSdk5UiMessage;
+
+		const rendered = render(
+			<AiChatThread
+				controller={makeController({
+					selectedThreadId: "thread_pending",
+					isRunning: true,
+					activeBranchMessages: {
+						list: [userMessage],
+						mapById: new Map<string, ai_chat_AiSdk5UiMessage>([[userMessage.id, userMessage]]),
+						anchorId: null,
+					},
+				})}
+				scrollableContainer={null}
+			/>,
+		);
+
+		expect(screen.getByText("Thinking")).not.toBeNull();
+
+		rendered.rerender(
+			<AiChatThread
+				controller={makeController({
+					selectedThreadId: "thread_pending",
+					isRunning: true,
+					activeBranchMessages: {
+						list: [userMessage, assistantMessage],
+						mapById: new Map<string, ai_chat_AiSdk5UiMessage>([
+							[userMessage.id, userMessage],
+							[assistantMessage.id, assistantMessage],
+						]),
+						anchorId: null,
+					},
+				})}
+				scrollableContainer={null}
+			/>,
+		);
+
+		await waitFor(() => {
+			expect(screen.queryByText("Thinking")).toBeNull();
+			expect(screen.getByTestId("message-assistant").dataset.running).toBe("true");
+		});
+	});
+
 	test("renders composerTopSlot inside the composer stack, above the composer", () => {
 		const { container } = render(
 			<AiChatThread

@@ -71,7 +71,6 @@ type StoreState = {
 	messageById: Map<string, ai_chat_AiSdk5UiMessage>;
 	activeMessageIdsByThreadId: Map<string, readonly string[]>;
 	branchSiblingIdsByMessageId: Map<string, readonly string[]>;
-	runningMessageIdByThreadId: Map<string, string | null>;
 	failedSendUserMessageIdByThreadId: Map<string, string | null>;
 	editingMessageIdByThreadId: Map<string, string | null>;
 };
@@ -440,7 +439,6 @@ const useStore = ((/* iife */) => {
 		messageById: new Map(),
 		activeMessageIdsByThreadId: new Map(),
 		branchSiblingIdsByMessageId: new Map(),
-		runningMessageIdByThreadId: new Map(),
 		failedSendUserMessageIdByThreadId: new Map(),
 		editingMessageIdByThreadId: new Map(),
 	}));
@@ -491,7 +489,6 @@ const useStore = ((/* iife */) => {
 					messageById: new Map(),
 					activeMessageIdsByThreadId: new Map(),
 					branchSiblingIdsByMessageId: new Map(),
-					runningMessageIdByThreadId: new Map(),
 					failedSendUserMessageIdByThreadId: new Map(),
 					editingMessageIdByThreadId: new Map(),
 				});
@@ -557,14 +554,6 @@ const useStore = ((/* iife */) => {
 						}
 					}
 
-					const runningMessageId = args.isRunning ? (nextActiveMessageIds.at(-1) ?? null) : null;
-					let runningMessageIdByThreadId = state.runningMessageIdByThreadId;
-					if ((runningMessageIdByThreadId.get(threadId) ?? null) !== runningMessageId) {
-						runningMessageIdByThreadId = new Map(runningMessageIdByThreadId);
-						runningMessageIdByThreadId.set(threadId, runningMessageId);
-						changed = true;
-					}
-
 					const latestMessage = args.messages.at(-1);
 					const failedSendUserMessageId =
 						args.hasError && !args.isRunning && latestMessage?.role === "user" ? latestMessage.id : null;
@@ -583,7 +572,6 @@ const useStore = ((/* iife */) => {
 						messageById,
 						activeMessageIdsByThreadId,
 						branchSiblingIdsByMessageId,
-						runningMessageIdByThreadId,
 						failedSendUserMessageIdByThreadId,
 					};
 				});

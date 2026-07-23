@@ -77,6 +77,7 @@ Non-obvious runtime details:
 
 - Ask mode keeps the full tool registry for UI-message validation, but removes `write_file` and `edit_file` from `activeTools`. `write_file` is additionally in `BASH_REPLACED_TOOL_NAMES`, so it is registered-but-inactive in every mode: Agent-mode file writes go through `bash` shell writes instead.
 - User messages are persisted before generation so they survive aborts/stopped generations.
+- As soon as a running user message is visible, the shared message list shows a temporary `Thinking` assistant row without message actions. This covers the time before AI SDK creates the assistant message. While the running assistant message has no visible text, reasoning, tool, file, or source part, its renderer keeps showing `Thinking`. Active runs use their live parts so the placeholder disappears with the first visible part and does not remain beside later streaming text or tool calls. Empty text and reasoning parts do not count as visible content. Do not show the placeholder for a non-running empty assistant message.
 - Pre-stream send failures, such as rate-limit or credit-gate HTTP failures, remain transient client state in AI SDK `chat.error`; the UI shows inline feedback on the failed user message and retries by replacing that same client-only message from its original parent without appending a duplicate.
 - Thread/file access is scoped by a `membershipId` doc that determines the effective organization/workspace scope.
 - Auth falls back to an anonymous user identity when a signed-in identity is unavailable.

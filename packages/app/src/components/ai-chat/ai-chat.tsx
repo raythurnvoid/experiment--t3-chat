@@ -32,6 +32,7 @@ import {
 } from "@/components/ai-chat/ai-chat-composer.tsx";
 import {
 	AiChatMessage,
+	AiChatMessagePendingAssistant,
 	type AiChatMessage_ClassNames,
 	type AiChatMessage_CustomAttributes,
 	type AiChatMessageUser_ClassNames,
@@ -245,6 +246,9 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 	const throttledMessages = useThrottle(deferredMessages, 100);
 
 	const messageCount = messages.length;
+	// Show Thinking with the user row. Do not wait for the first server chunk
+	// to create the real assistant message.
+	const shouldShowPendingAssistant = isRunning && throttledMessages.at(-1)?.role === "user";
 
 	// Make sure to always show the skeleton when switching between threads,
 	// we cannot rely on `messageCount === 0` because we might have optimistic message,
@@ -282,11 +286,13 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 							selectedThreadId={selectedThreadId}
 							selectedModelId={selectedModelId}
 							selectedModeId={selectedModeId}
+							isRunning={isRunning && index === throttledMessages.length - 1}
 							actions={actions}
 						/>
 					);
 				})
 			)}
+			{shouldShowPendingAssistant && <AiChatMessagePendingAssistant />}
 			{streamErrorText && (
 				<div className={"AiChatMessageList-error" satisfies AiChatMessagesList_ClassNames}>{streamErrorText}</div>
 			)}

@@ -1328,6 +1328,10 @@ function ai_chat_message_content_get_display_items(
 
 	for (let index = 0; index < parts.length; index++) {
 		const part = parts[index];
+		if ((isTextUIPart(part) || isReasoningUIPart(part)) && part.text.trim().length === 0) {
+			continue;
+		}
+
 		if (!isReasoningUIPart(part)) {
 			displayItems.push({ type: "part", part } satisfies AiChatMessageContent_DisplayItem);
 			continue;
@@ -1374,7 +1378,9 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 
 	const deferredAssistantParts = useDeferredValue(message.parts);
 
-	const parts = message.role === "assistant" ? deferredAssistantParts : message.parts;
+	// Use live parts while the response runs so the empty placeholder gives way
+	// to the first text, reasoning, or tool part without waiting for deferred work.
+	const parts = message.role === "assistant" && !isChatRunning ? deferredAssistantParts : message.parts;
 	const displayItems = children
 		? []
 		: ai_chat_message_content_get_display_items(
@@ -1382,6 +1388,9 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 				parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start"),
 				isChatRunning,
 			);
+	if (message.role === "assistant" && isChatRunning && displayItems.length === 0) {
+		displayItems.push({ type: "thinking", text: "", isStreaming: true });
+	}
 
 	return (
 		<div
@@ -1962,6 +1971,26 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 });
 // #endregion agent message
 
+// #region pending assistant message
+export const AiChatMessagePendingAssistant = memo(function AiChatMessagePendingAssistant() {
+	return (
+		<AiChatMessageContainer
+			className={cn(
+				"AiChatMessage" satisfies AiChatMessage_ClassNames,
+				"AiChatMessageAgent" satisfies AiChatMessageAgent_ClassNames,
+			)}
+			data-ai-chat-message-role="assistant"
+		>
+			<AiChatMessageBubble className={"AiChatMessageAgent-bubble" satisfies AiChatMessageAgent_ClassNames}>
+				<div className={"AiChatMessageContent" satisfies AiChatMessageContent_ClassNames}>
+					<AiChatMessagePartThinking text="" isStreaming={true} />
+				</div>
+			</AiChatMessageBubble>
+		</AiChatMessageContainer>
+	);
+});
+// #endregion pending assistant message
+
 // #region system message
 type AiChatMessageSystem_ClassNames = "AiChatMessageSystem" | "AiChatMessageSystem-bubble";
 
@@ -2017,6 +2046,7 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	selectedThreadId: string | null;
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
+	isRunning: boolean;
 	actions: AiChatRuntimeActions;
 };
 
@@ -2039,19 +2069,13 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		selectedThreadId,
 		selectedModelId,
 		selectedModeId,
+		isRunning,
 		actions,
 		...rest
 	} = props;
 
 	const storedMessage = AiChatController.useStore((state) => state.messageById.get(messageId) ?? null);
 	const message = providedMessage ?? storedMessage;
-	const isRunning = AiChatController.useStore((state) => {
-		if (!selectedThreadId) {
-			return false;
-		}
-
-		return state.runningMessageIdByThreadId.get(selectedThreadId) === messageId;
-	});
 	const isEditing = AiChatController.useStore((state) => {
 		if (!selectedThreadId) {
 			return false;

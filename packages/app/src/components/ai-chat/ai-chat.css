@@ -170,15 +170,17 @@
 	}
 
 	.AiChatSkeleton-bubble-user {
-		width: 320px;
+		width: min(320px, 100%);
 		height: 90px;
 
 		background: var(--color-base-1-05);
 
-		animation: AiChatSkeleton-pulse 1s ease-in-out infinite alternate;
+		@media (prefers-reduced-motion: no-preference) {
+			animation: AiChatSkeleton-pulse 1s ease-in-out infinite alternate;
 
-		> .AiChatSkeleton-line {
-			animation: AiChatSkeleton-user-line-pulse 1s ease-in-out infinite alternate;
+			> .AiChatSkeleton-line {
+				animation: AiChatSkeleton-user-line-pulse 1s ease-in-out infinite alternate;
+			}
 		}
 	}
 
@@ -192,7 +194,9 @@
 
 		background: var(--color-base-1-05);
 
-		animation: AiChatSkeleton-pulse 1s ease-in-out infinite alternate-reverse;
+		@media (prefers-reduced-motion: no-preference) {
+			animation: AiChatSkeleton-pulse 1s ease-in-out infinite alternate-reverse;
+		}
 	}
 
 	.AiChatSkeleton-line-short {
