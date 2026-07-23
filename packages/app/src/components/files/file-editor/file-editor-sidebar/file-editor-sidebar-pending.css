@@ -20,18 +20,6 @@
 		color: var(--color-fg-06);
 	}
 
-	.FileEditorSidebarPending-source-empty {
-		flex: 1;
-
-		display: flex;
-		align-items: center;
-		justify-content: center;
-
-		padding: 24px;
-		color: var(--color-fg-06);
-		text-align: center;
-	}
-
 	.FileEditorSidebarPending-header {
 		flex: none;
 
@@ -91,12 +79,18 @@
 	.FileEditorSidebarPendingSourceSelect-trigger.MyButton {
 		width: 100%;
 		min-width: 0;
+		justify-content: flex-start;
+
+		.MySelectOpenIndicator {
+			margin-left: auto;
+		}
 	}
 
 	.FileEditorSidebarPendingSourceSelect-trigger-label {
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.FileEditorSidebarPendingSourceSelect-count {
@@ -114,20 +108,31 @@
 	}
 
 	.FileEditorSidebarPendingSourceSelect-popover {
-		max-width: min(360px, calc(100vw - 24px));
+		width: 400px;
+		max-width: calc(100vw - 24px);
 
 		.MySelectItemContent {
 			min-width: 0;
 		}
 
-		.MySelectItemContentPrimary {
-			height: auto;
-			overflow-wrap: anywhere;
-		}
-
+		.MySelectItemContentPrimary,
 		.MySelectItemContentSecondary {
-			overflow-wrap: anywhere;
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
 		}
+	}
+
+	.FileEditorSidebarPendingSourceSelect-option-label {
+		display: block;
+		min-width: 0;
+
+		/* Keep the typography in sync with `PENDING_SOURCE_LABEL_FONT`; Pretext uses those
+		   duplicated values without calling `getComputedStyle`. */
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	/* #endregion source select */
 

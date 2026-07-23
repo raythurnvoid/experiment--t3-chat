@@ -1,7 +1,8 @@
 import "./file-editor-sidebar-pending.css";
-import { CheckCheck, ChevronDown, ChevronRight, ListFilter, Trash2 } from "lucide-react";
+import { CheckCheck, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPatch } from "diff";
+import { measureLineStats, prepareWithSegments } from "@chenglou/pretext";
 import { useConvex, useQueries, useQuery } from "convex/react";
 import { toast } from "sonner";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -621,7 +622,79 @@ type FileEditorSidebarPendingSourceSelect_ClassNames =
 	| "FileEditorSidebarPendingSourceSelect-trigger"
 	| "FileEditorSidebarPendingSourceSelect-trigger-label"
 	| "FileEditorSidebarPendingSourceSelect-count"
-	| "FileEditorSidebarPendingSourceSelect-popover";
+	| "FileEditorSidebarPendingSourceSelect-popover"
+	| "FileEditorSidebarPendingSourceSelect-option-label";
+
+// Keep these Pretext metrics in sync with the `.MySelectItem` typography (14px, default weight);
+// duplicating them here avoids `getComputedStyle` during overflow checks.
+const PENDING_SOURCE_LABEL_FONT = `400 14px ${APP_FONT_FAMILY}`;
+const PENDING_SOURCE_LABEL_LETTER_SPACING = 0;
+
+/** Single-line option label that shows a tooltip with the full text only when it overflows. */
+const PendingSourceOptionLabel = memo(function PendingSourceOptionLabel(props: { text: string }) {
+	const { text } = props;
+	const labelRef = useRef<HTMLSpanElement>(null);
+	const [isOverflowing, setIsOverflowing] = useState(false);
+
+	useLayoutEffect(() => {
+		const labelElement = labelRef.current;
+		if (!labelElement) {
+			return;
+		}
+
+		let cancelled = false;
+
+		const updateOverflow = (width?: number) => {
+			const availableWidth = width ?? labelElement.clientWidth;
+			if (availableWidth <= 0) {
+				if (!cancelled) {
+					setIsOverflowing(false);
+				}
+				return;
+			}
+
+			const stats = measureLineStats(
+				prepareWithSegments(text, PENDING_SOURCE_LABEL_FONT, {
+					letterSpacing: PENDING_SOURCE_LABEL_LETTER_SPACING,
+					whiteSpace: "normal",
+				}),
+				availableWidth,
+			);
+
+			if (!cancelled) {
+				setIsOverflowing(stats.lineCount > 1 || stats.maxLineWidth > availableWidth);
+			}
+		};
+
+		updateOverflow();
+
+		const resizeObserver =
+			typeof ResizeObserver === "undefined"
+				? null
+				: new ResizeObserver((entries) => {
+						updateOverflow(entries[0]?.contentRect.width);
+					});
+		resizeObserver?.observe(labelElement);
+		void document.fonts?.ready.then(() => updateOverflow());
+
+		return () => {
+			cancelled = true;
+			resizeObserver?.disconnect();
+		};
+	}, [text]);
+
+	return (
+		<span
+			ref={labelRef}
+			title={isOverflowing ? text : undefined}
+			className={cn(
+				"FileEditorSidebarPendingSourceSelect-option-label" satisfies FileEditorSidebarPendingSourceSelect_ClassNames,
+			)}
+		>
+			{text}
+		</span>
+	);
+});
 
 function pending_row_matches_source(row: FileEditorSidebarPendingRow, source: FileEditorSidebarPendingSource) {
 	if (source === PENDING_SOURCE_ALL) {
@@ -662,7 +735,6 @@ const FileEditorSidebarPendingSourceSelect = memo(function FileEditorSidebarPend
 							"FileEditorSidebarPendingSourceSelect-trigger" satisfies FileEditorSidebarPendingSourceSelect_ClassNames,
 						)}
 					>
-						<ListFilter />
 						<span
 							className={cn(
 								"FileEditorSidebarPendingSourceSelect-trigger-label" satisfies FileEditorSidebarPendingSourceSelect_ClassNames,
@@ -681,7 +753,6 @@ const FileEditorSidebarPendingSourceSelect = memo(function FileEditorSidebarPend
 					</MyButton>
 				</MySelectTrigger>
 				<MySelectPopover
-					sameWidth
 					className={cn(
 						"FileEditorSidebarPendingSourceSelect-popover" satisfies FileEditorSidebarPendingSourceSelect_ClassNames,
 					)}
@@ -691,7 +762,9 @@ const FileEditorSidebarPendingSourceSelect = memo(function FileEditorSidebarPend
 							{props.options.map((option) => (
 								<MySelectItem key={option.value} value={option.value}>
 									<MySelectItemContent>
-										<MySelectItemContentPrimary>{option.label}</MySelectItemContentPrimary>
+										<MySelectItemContentPrimary>
+											<PendingSourceOptionLabel text={option.label} />
+										</MySelectItemContentPrimary>
 										<MySelectItemContentSecondary>{option.description}</MySelectItemContentSecondary>
 									</MySelectItemContent>
 									<span
@@ -1140,7 +1213,6 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 export type FileEditorSidebarPending_ClassNames =
 	| "FileEditorSidebarPending"
 	| "FileEditorSidebarPending-empty"
-	| "FileEditorSidebarPending-source-empty"
 	| "FileEditorSidebarPending-status"
 	| "FileEditorSidebarPending-header"
 	| "FileEditorSidebarPending-header-actions"
@@ -1209,16 +1281,6 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		const nodesById = new Map((fileNodesList ?? []).map((node) => [node._id, node] as const));
 		return build_pending_rows(pendingUpdates ?? [], nodesById);
 	})();
-	// Build every row before filtering so move-aware occupancy and replacement captions use the
-	// complete pending set. One complete row can still appear under several contributing chats.
-	const activeSource =
-		selectedSource === PENDING_SOURCE_ALL ||
-		selectedSource === PENDING_SOURCE_USER ||
-		threadIds.includes(selectedSource)
-			? selectedSource
-			: PENDING_SOURCE_ALL;
-	const visibleRows = rows.filter((row) => pending_row_matches_source(row, activeSource));
-	const acceptRequiresAllChangesIds = files_pending_rows_get_accept_requires_all_changes_ids(rows, visibleRows);
 	const sortedThreadIds = [...threadIds].sort((leftThreadId, rightThreadId) => {
 		const leftThread = threadQueryResults[leftThreadId];
 		const rightThread = threadQueryResults[rightThreadId];
@@ -1228,7 +1290,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			rightThread && !(rightThread instanceof Error) ? (rightThread.lastMessageAt ?? rightThread.updatedAt) : -Infinity;
 		return rightUpdatedAt - leftUpdatedAt || leftThreadId.localeCompare(rightThreadId);
 	});
-	const sourceOptions: FileEditorSidebarPendingSourceOption[] = [
+	const allSourceOptions: FileEditorSidebarPendingSourceOption[] = [
 		{
 			value: PENDING_SOURCE_ALL,
 			label: "All changes",
@@ -1237,8 +1299,8 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		},
 		{
 			value: PENDING_SOURCE_USER,
-			label: "You",
-			description: "Pending changes not linked to a chat",
+			label: "Your edits",
+			description: "Changes you made in the editor, not from a chat",
 			count: rows.filter((row) => pending_row_matches_source(row, PENDING_SOURCE_USER)).length,
 		},
 		...sortedThreadIds.map((threadId) => {
@@ -1261,16 +1323,24 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			};
 		}),
 	];
+	// Sources with no pending changes are hidden (only All changes always stays), so a selected
+	// source that empties falls back to All changes.
+	const sourceOptions = allSourceOptions.filter(
+		(option) => option.value === PENDING_SOURCE_ALL || option.count > 0,
+	);
+	// Build every row before filtering so move-aware occupancy and replacement captions use the
+	// complete pending set. One complete row can still appear under several contributing chats.
+	const activeSource = sourceOptions.some((option) => option.value === selectedSource)
+		? selectedSource
+		: PENDING_SOURCE_ALL;
+	const visibleRows = rows.filter((row) => pending_row_matches_source(row, activeSource));
+	const acceptRequiresAllChangesIds = files_pending_rows_get_accept_requires_all_changes_ids(rows, visibleRows);
 
 	useEffect(() => {
-		if (
-			selectedSource !== PENDING_SOURCE_ALL &&
-			selectedSource !== PENDING_SOURCE_USER &&
-			!threadIds.includes(selectedSource)
-		) {
+		if (selectedSource !== activeSource) {
 			setSelectedSource(PENDING_SOURCE_ALL);
 		}
-	}, [selectedSource, threadIds]);
+	}, [selectedSource, activeSource]);
 
 	const handleAcceptAll = useFn(() => {
 		if (isBulkBusy) return;
@@ -1369,7 +1439,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							aria-label="Accept all shown pending changes"
 							title={acceptRequiresAllChangesIds.size > 0 ? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE : undefined}
 							aria-busy={isBulkBusy}
-							disabled={isBulkBusy || visibleRows.length === 0}
+							disabled={isBulkBusy}
 							onClick={handleAcceptAll}
 						>
 							<MyButtonIcon
@@ -1384,7 +1454,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							className={cn("FileEditorSidebarPending-header-button" satisfies FileEditorSidebarPending_ClassNames)}
 							aria-label="Discard all shown pending changes"
 							aria-busy={isBulkBusy}
-							disabled={isBulkBusy || visibleRows.length === 0}
+							disabled={isBulkBusy}
 							onClick={handleDiscardAll}
 						>
 							<MyButtonIcon
@@ -1396,31 +1466,25 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 						</MyButton>
 					</div>
 				</div>
-				{visibleRows.length === 0 ? (
-					<div className={cn("FileEditorSidebarPending-source-empty" satisfies FileEditorSidebarPending_ClassNames)}>
-						No pending changes from this source
-					</div>
-				) : (
-					<ul className={cn("FileEditorSidebarPending-list" satisfies FileEditorSidebarPending_ClassNames)}>
-						{visibleRows.map((row) => (
-							<FileEditorSidebarPendingItem
-								key={row.pendingUpdate._id}
-								pendingUpdate={row.pendingUpdate}
-								path={row.path}
-								kind={row.kind}
-								moveDestinationPath={row.moveDestinationPath}
-								replacedNodeId={row.replacedNodeId}
-								sizeOnlyReplacedNodeId={row.sizeOnlyReplacedNodeId}
-								canPreviewDeleteDiff={row.canPreviewDeleteDiff}
-								isAddedFile={row.isAddedFile}
-								replaceSourcePath={row.replaceSourcePath}
-								acceptRequiresAllChanges={acceptRequiresAllChangesIds.has(row.pendingUpdate._id)}
-								disabled={isBulkBusy}
-								onActionSuccess={announceActionSuccess}
-							/>
-						))}
-					</ul>
-				)}
+				<ul className={cn("FileEditorSidebarPending-list" satisfies FileEditorSidebarPending_ClassNames)}>
+					{visibleRows.map((row) => (
+						<FileEditorSidebarPendingItem
+							key={row.pendingUpdate._id}
+							pendingUpdate={row.pendingUpdate}
+							path={row.path}
+							kind={row.kind}
+							moveDestinationPath={row.moveDestinationPath}
+							replacedNodeId={row.replacedNodeId}
+							sizeOnlyReplacedNodeId={row.sizeOnlyReplacedNodeId}
+							canPreviewDeleteDiff={row.canPreviewDeleteDiff}
+							isAddedFile={row.isAddedFile}
+							replaceSourcePath={row.replaceSourcePath}
+							acceptRequiresAllChanges={acceptRequiresAllChangesIds.has(row.pendingUpdate._id)}
+							disabled={isBulkBusy}
+							onActionSuccess={announceActionSuccess}
+						/>
+					))}
+				</ul>
 			</div>
 		</>
 	);

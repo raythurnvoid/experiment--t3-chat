@@ -90,6 +90,12 @@ vi.mock("@/lib/file-paths.ts", () => ({
 		truncatePathForWidthMock(args),
 }));
 
+// Same Pretext limitation for the source select's overflow check: report every label as fitting.
+vi.mock("@chenglou/pretext", () => ({
+	measureLineStats: () => ({ lineCount: 1, maxLineWidth: 0 }),
+	prepareWithSegments: (candidate: string) => ({ candidate }),
+}));
+
 // The real MyLink is a TanStack Router Link and needs a RouterProvider; the stub renders a plain
 // anchor with the resolved href.
 vi.mock("@/components/my-link.tsx", () => ({
@@ -316,10 +322,10 @@ describe("FileEditorSidebarPending", () => {
 			screen
 				.getAllByRole("option")
 				.map((option) => option.querySelector(".MySelectItemContentPrimary")?.textContent),
-		).toEqual(["All changes", "You", "Second chat", "First chat"]);
+		).toEqual(["All changes", "Your edits", "Second chat", "First chat"]);
 		expect(screen.getByRole("option", { name: /^Second chat Archived/ })).toBeTruthy();
-		fireEvent.click(screen.getByRole("option", { name: /^You/ }));
-		expect(screen.getByRole("combobox", { name: "Pending changes source: You, 1 change" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("option", { name: /^Your edits/ }));
+		expect(screen.getByRole("combobox", { name: "Pending changes source: Your edits, 1 change" })).toBeTruthy();
 		expect(visiblePaths()).toEqual(["/user.md"]);
 
 		selectSource(/^First chat/);
@@ -389,10 +395,12 @@ describe("FileEditorSidebarPending", () => {
 			2,
 		);
 		expect(screen.getByRole("option", { name: /^New Chat Last message/ })).toBeTruthy();
-		expect(screen.getByRole("option", { name: /^You Pending changes not linked to a chat 1$/ })).toBeTruthy();
+		expect(
+			screen.getByRole("option", { name: /^Your edits Changes you made in the editor, not from a chat 1$/ }),
+		).toBeTruthy();
 	});
 
-	test("keeps the zero-count You source selectable and disables bulk actions", () => {
+	test("hides the zero-count Your edits source", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_agent",
@@ -407,15 +415,10 @@ describe("FileEditorSidebarPending", () => {
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByRole("combobox"));
-		fireEvent.click(screen.getByRole("option", { name: /^You Pending changes not linked to a chat 0$/ }));
 
-		expect(screen.getByText("No pending changes from this source")).toBeTruthy();
-		expect((screen.getByRole("button", { name: "Accept all shown pending changes" }) as HTMLButtonElement).disabled).toBe(
-			true,
-		);
-		expect((screen.getByRole("button", { name: "Discard all shown pending changes" }) as HTMLButtonElement).disabled).toBe(
-			true,
-		);
+		expect(
+			screen.getAllByRole("option").map((option) => option.querySelector(".MySelectItemContentPrimary")?.textContent),
+		).toEqual(["All changes", "Agent chat"]);
 	});
 
 	test("returns to All changes when the selected chat stops contributing", async () => {
