@@ -129,7 +129,7 @@ These queries return the assigned role for exactly the requested workspace scope
   - `access_control_db_ensure_public_permission_grant`
 - Permission-grant helpers return the grant id directly, not a `Result`. They are idempotent: they return the existing grant id without patching timestamps for the same principal/resource/permission tuple.
 
-Seeded member grants stay broad for collaboration, but regular members do not receive `organization.members.manage`, `workspace.members.manage`, `workspace.plugins.manage`, `organization.roles.manage`, `asset.permissions.manage`, or `api.credentials.manage`. Future product tightening should remove or change grants and then add backend checks where needed.
+Seeded member grants stay broad for collaboration, but regular members do not receive `organization.members.manage`, `workspace.members.manage`, `workspace.plugins.manage`, `organization.roles.manage`, `asset.permissions.manage`, or `api.credentials.manage`. Personal API key management is membership-based: every active signed-in member may create, list, rotate, and revoke only their own keys for that workspace. `api.credentials.manage` stays reserved for a future workspace-wide key administration surface. Each API request still checks the key owner's current `asset.read` or `asset.write` permission. Future product tightening should remove or change grants and then add backend checks where needed.
 
 # Ownership transfer
 

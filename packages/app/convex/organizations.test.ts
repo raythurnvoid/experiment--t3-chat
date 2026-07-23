@@ -142,6 +142,32 @@ async function organizations_test_collect_notifications_for_user(ctx: MutationCt
 		.collect();
 }
 
+async function organizations_test_seed_api_credential(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		tag: string;
+		revokedAt?: number | null;
+	},
+) {
+	const keyId = `pk_${args.tag.padStart(32, "0")}`;
+	return await ctx.db.insert("api_credentials", {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		name: `API key ${args.tag}`,
+		keyId,
+		obfuscatedValue: `${keyId}.****0000`,
+		secretHash: `hash-${args.tag}`,
+		scopes: ["files:list", "files:read"],
+		createdAt: Date.now(),
+		revokedAt: args.revokedAt ?? null,
+		lastUsedAt: null,
+	});
+}
+
 async function organizations_test_seed_workspace_scoped_rows(
 	ctx: MutationCtx,
 	args: {
@@ -1753,6 +1779,157 @@ describe("remove_user_from_organization", () => {
 		expect(otherMemberMemberships).toHaveLength(1);
 	});
 
+	test("permanently revokes the removed member's organization keys without changing other keys", async () => {
+		const t = test_convex();
+		const [ownerId, memberId, otherMemberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-revoke-keys-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-revoke-keys-member" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-revoke-keys-other-member" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, memberId, otherMemberId] });
+
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "revoke-keys-owner@test.local",
+		});
+		const organization = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "revoke-keys-team",
+				now: Date.now(),
+			}),
+		);
+		expect(organization._yay).toBeTruthy();
+		const workspace = await t.run((ctx) =>
+			organizations_db_create_workspace(ctx, {
+				userId: ownerId,
+				description: "",
+				organizationId: organization._yay!.organizationId,
+				name: "revoke-keys-project",
+				now: Date.now(),
+			}),
+		);
+		expect(workspace._yay).toBeTruthy();
+		const otherOrganization = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "kept-keys-team",
+				now: Date.now(),
+			}),
+		);
+		expect(otherOrganization._yay).toBeTruthy();
+
+		const alreadyRevokedAt = 123;
+		const credentialIds = await t.run(async (ctx) => {
+			await Promise.all([
+				ctx.db.insert("organizations_workspaces_users", {
+					organizationId: organization._yay!.organizationId,
+					workspaceId: organization._yay!.defaultWorkspaceId,
+					userId: memberId,
+					active: true,
+				}),
+				ctx.db.insert("organizations_workspaces_users", {
+					organizationId: organization._yay!.organizationId,
+					workspaceId: workspace._yay!.workspaceId,
+					userId: memberId,
+					active: true,
+				}),
+				ctx.db.insert("organizations_workspaces_users", {
+					organizationId: organization._yay!.organizationId,
+					workspaceId: organization._yay!.defaultWorkspaceId,
+					userId: otherMemberId,
+					active: true,
+				}),
+				ctx.db.insert("organizations_workspaces_users", {
+					organizationId: otherOrganization._yay!.organizationId,
+					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+					userId: memberId,
+					active: true,
+				}),
+			]);
+
+			const [memberHome, memberProject, memberAlreadyRevoked, otherMember, otherOrganizationCredential] =
+				await Promise.all([
+					organizations_test_seed_api_credential(ctx, {
+						organizationId: organization._yay!.organizationId,
+						workspaceId: organization._yay!.defaultWorkspaceId,
+						userId: memberId,
+						tag: "1",
+					}),
+					organizations_test_seed_api_credential(ctx, {
+						organizationId: organization._yay!.organizationId,
+						workspaceId: workspace._yay!.workspaceId,
+						userId: memberId,
+						tag: "2",
+					}),
+					organizations_test_seed_api_credential(ctx, {
+						organizationId: organization._yay!.organizationId,
+						workspaceId: organization._yay!.defaultWorkspaceId,
+						userId: memberId,
+						tag: "3",
+						revokedAt: alreadyRevokedAt,
+					}),
+					organizations_test_seed_api_credential(ctx, {
+						organizationId: organization._yay!.organizationId,
+						workspaceId: organization._yay!.defaultWorkspaceId,
+						userId: otherMemberId,
+						tag: "4",
+					}),
+					organizations_test_seed_api_credential(ctx, {
+						organizationId: otherOrganization._yay!.organizationId,
+						workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+						userId: memberId,
+						tag: "5",
+					}),
+				]);
+
+			return { memberHome, memberProject, memberAlreadyRevoked, otherMember, otherOrganizationCredential };
+		});
+
+		const removeResult = await owner.mutation(api.organizations.remove_user_from_organization, {
+			organizationId: organization._yay!.organizationId,
+			userIdToRemove: memberId,
+		});
+		expect(removeResult._yay).toBeNull();
+
+		const afterRemove = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.get("api_credentials", credentialIds.memberHome),
+				ctx.db.get("api_credentials", credentialIds.memberProject),
+				ctx.db.get("api_credentials", credentialIds.memberAlreadyRevoked),
+				ctx.db.get("api_credentials", credentialIds.otherMember),
+				ctx.db.get("api_credentials", credentialIds.otherOrganizationCredential),
+			]),
+		);
+		expect(afterRemove[0]?.revokedAt).toEqual(expect.any(Number));
+		expect(afterRemove[1]?.revokedAt).toBe(afterRemove[0]?.revokedAt);
+		expect(afterRemove[2]?.revokedAt).toBe(alreadyRevokedAt);
+		expect(afterRemove[3]?.revokedAt).toBeNull();
+		expect(afterRemove[4]?.revokedAt).toBeNull();
+
+		const reinviteResult = await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: organization._yay!.organizationId,
+			workspaceId: organization._yay!.defaultWorkspaceId,
+			userIdToAdd: memberId,
+		});
+		expect(reinviteResult._yay).toBeNull();
+
+		const afterReinvite = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.get("api_credentials", credentialIds.memberHome),
+				ctx.db.get("api_credentials", credentialIds.memberProject),
+			]),
+		);
+		expect(afterReinvite[0]?.revokedAt).toBe(afterRemove[0]?.revokedAt);
+		expect(afterReinvite[1]?.revokedAt).toBe(afterRemove[1]?.revokedAt);
+	});
+
 	test("allows a member to leave the organization", async () => {
 		const t = test_convex();
 		const [ownerId, memberId] = await t.run(async (ctx) =>
@@ -1779,7 +1956,7 @@ describe("remove_user_from_organization", () => {
 		);
 		expect(created._yay).toBeTruthy();
 
-		await t.run(async (ctx) => {
+		const apiCredentialId = await t.run(async (ctx) => {
 			const now = Date.now();
 			await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: created._yay!.organizationId,
@@ -1794,6 +1971,13 @@ describe("remove_user_from_organization", () => {
 				role: "member",
 				now,
 			});
+
+			return await organizations_test_seed_api_credential(ctx, {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				userId: memberId,
+				tag: "6",
+			});
 		});
 
 		const leaveResult = await member.mutation(api.organizations.remove_user_from_organization, {
@@ -1803,7 +1987,7 @@ describe("remove_user_from_organization", () => {
 		expect(leaveResult._yay).toBeNull();
 
 		const afterLeave = await t.run(async (ctx) => {
-			const [memberships, roleAssignments] = await Promise.all([
+			const [memberships, roleAssignments, apiCredential] = await Promise.all([
 				ctx.db
 					.query("organizations_workspaces_users")
 					.withIndex("by_active_user_organization_workspace", (q) =>
@@ -1816,11 +2000,13 @@ describe("remove_user_from_organization", () => {
 						q.eq("organizationId", created._yay!.organizationId).eq("userId", memberId),
 					)
 					.collect(),
+				ctx.db.get("api_credentials", apiCredentialId),
 			]);
-			return { memberships, roleAssignments };
+			return { memberships, roleAssignments, apiCredential };
 		});
 		expect(afterLeave.memberships).toHaveLength(0);
 		expect(afterLeave.roleAssignments).toHaveLength(0);
+		expect(afterLeave.apiCredential?.revokedAt).toEqual(expect.any(Number));
 	});
 });
 

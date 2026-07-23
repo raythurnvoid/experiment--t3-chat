@@ -275,13 +275,26 @@ describe("MainAppSidebar", () => {
 
 		expect(screen.getByText("Chat")).not.toBeNull();
 		expect(screen.getByText("Files")).not.toBeNull();
+		expect(screen.getByText("API keys")).not.toBeNull();
 		expect(screen.queryByText("Users")).toBeNull();
 	});
 
 	test("shows Users navigation in non-default organizations", () => {
 		render(<MainAppSidebar />);
 
+		expect(screen.getByText("API keys")).not.toBeNull();
 		expect(screen.getByText("Users")).not.toBeNull();
+	});
+
+	test("links to and selects API keys for the current workspace", () => {
+		pathnameMock.mockReturnValue("/w/team/home/api-keys");
+
+		render(<MainAppSidebar />);
+
+		const apiKeysLink = screen.getByText("API keys").closest("a");
+		expect(apiKeysLink?.getAttribute("href")).toBe("/w/team/home/api-keys");
+		expect(apiKeysLink?.getAttribute("data-selected")).toBe("true");
+		expect(screen.getByText("Files").closest("a")?.getAttribute("data-selected")).toBeNull();
 	});
 
 	test("renders a nav item for plugin pages that declare one", () => {

@@ -346,7 +346,9 @@ export async function organizations_db_ensure_default_organization_and_workspace
 		return;
 	}
 
-	const defaultOrganization = user.defaultOrganizationId ? await ctx.db.get("organizations", user.defaultOrganizationId) : null;
+	const defaultOrganization = user.defaultOrganizationId
+		? await ctx.db.get("organizations", user.defaultOrganizationId)
+		: null;
 
 	if (!defaultOrganization) {
 		await organizations_db_create(ctx, {
@@ -363,7 +365,10 @@ export const list = query({
 	args: {},
 	returns: v.object({
 		organizations: v.array(doc(app_convex_schema, "organizations")),
-		organizationIdsWorkspacesDict: v.record(v.id("organizations"), v.array(doc(app_convex_schema, "organizations_workspaces"))),
+		organizationIdsWorkspacesDict: v.record(
+			v.id("organizations"),
+			v.array(doc(app_convex_schema, "organizations_workspaces")),
+		),
 	}),
 	handler: async (ctx) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -467,7 +472,11 @@ export const get_membership_for_scope = query({
 		const membership = await ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_active_user_organization_workspace", (q) =>
-				q.eq("active", true).eq("userId", userAuth.id).eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+				q
+					.eq("active", true)
+					.eq("userId", userAuth.id)
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId),
 			)
 			.first();
 
@@ -863,7 +872,11 @@ export const invite_user_to_organization_workspace = mutation({
 			ctx.db
 				.query("organizations_workspaces_users")
 				.withIndex("by_active_user_organization_workspace", (q) =>
-					q.eq("active", true).eq("userId", userIdToAdd).eq("organizationId", organization._id).eq("workspaceId", workspace._id),
+					q
+						.eq("active", true)
+						.eq("userId", userIdToAdd)
+						.eq("organizationId", organization._id)
+						.eq("workspaceId", workspace._id),
 				)
 				.first(),
 		]);
@@ -998,7 +1011,38 @@ export const remove_user_from_organization = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
+		const now = Date.now();
+
+		const memberships = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q.eq("active", true).eq("userId", args.userIdToRemove).eq("organizationId", organization._id),
+			)
+			.collect();
+		const apiCredentialsPromise = Promise.all(
+			memberships.map((membership) =>
+				ctx.db
+					.query("api_credentials")
+					.withIndex("by_organization_workspace_user_revokedAt", (q) =>
+						q
+							.eq("organizationId", organization._id)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("userId", args.userIdToRemove)
+							.eq("revokedAt", null),
+					)
+					// The creation cap bounds this exact workspace/user set. Collect every match so removal cannot leave a key active.
+					.collect(),
+			),
+		);
+
 		await Promise.all([
+			...memberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)),
+			// Re-inviting this user must never restore credentials from the membership being removed.
+			apiCredentialsPromise.then((apiCredentials) =>
+				apiCredentials
+					.flat()
+					.map((apiCredential) => ctx.db.patch("api_credentials", apiCredential._id, { revokedAt: now })),
+			),
 			// Remove invite notifications for the organization access the user is losing.
 			ctx.db
 				.query("notifications")
@@ -1008,15 +1052,6 @@ export const remove_user_from_organization = mutation({
 				.collect()
 				.then((notifications) =>
 					Promise.all(notifications.map((notification) => ctx.db.delete("notifications", notification._id))),
-				),
-			ctx.db
-				.query("organizations_workspaces_users")
-				.withIndex("by_active_user_organization_workspace", (q) =>
-					q.eq("active", true).eq("userId", args.userIdToRemove).eq("organizationId", organization._id),
-				)
-				.collect()
-				.then((memberships) =>
-					Promise.all(memberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id))),
 				),
 			ctx.db
 				.query("access_control_role_assignments")
@@ -1228,31 +1263,32 @@ export const edit_workspace = mutation({
 
 		const now = Date.now();
 
-		const [organization, workspace, defaultWorkspace, defaultWorkspaceMembership, workspaceMembership] = await Promise.all([
-			ctx.db.get("organizations", args.organizationId),
-			ctx.db.get("organizations_workspaces", args.workspaceId),
-			ctx.db.get("organizations_workspaces", args.defaultWorkspaceId),
-			ctx.db
-				.query("organizations_workspaces_users")
-				.withIndex("by_active_user_organization_workspace", (q) =>
-					q
-						.eq("active", true)
-						.eq("userId", userAuth.id)
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.defaultWorkspaceId),
-				)
-				.first(),
-			ctx.db
-				.query("organizations_workspaces_users")
-				.withIndex("by_active_user_organization_workspace", (q) =>
-					q
-						.eq("active", true)
-						.eq("userId", userAuth.id)
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId),
-				)
-				.first(),
-		]);
+		const [organization, workspace, defaultWorkspace, defaultWorkspaceMembership, workspaceMembership] =
+			await Promise.all([
+				ctx.db.get("organizations", args.organizationId),
+				ctx.db.get("organizations_workspaces", args.workspaceId),
+				ctx.db.get("organizations_workspaces", args.defaultWorkspaceId),
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_active_user_organization_workspace", (q) =>
+						q
+							.eq("active", true)
+							.eq("userId", userAuth.id)
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.defaultWorkspaceId),
+					)
+					.first(),
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_active_user_organization_workspace", (q) =>
+						q
+							.eq("active", true)
+							.eq("userId", userAuth.id)
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId),
+					)
+					.first(),
+			]);
 
 		if (
 			!organization ||
@@ -1300,7 +1336,10 @@ export const edit_workspace = mutation({
 			});
 		}
 
-		if ((organization.defaultWorkspaceId !== undefined && workspace._id === organization.defaultWorkspaceId) || workspace.default) {
+		if (
+			(organization.defaultWorkspaceId !== undefined && workspace._id === organization.defaultWorkspaceId) ||
+			workspace.default
+		) {
 			return Result({
 				_nay: {
 					message: "Cannot edit the default workspace",
@@ -1331,11 +1370,15 @@ export const edit_workspace = mutation({
 		const [defaultWorkspaces, nonDefaultWorkspaces] = await Promise.all([
 			ctx.db
 				.query("organizations_workspaces")
-				.withIndex("by_organization_default", (q) => q.eq("organizationId", workspace.organizationId).eq("default", true))
+				.withIndex("by_organization_default", (q) =>
+					q.eq("organizationId", workspace.organizationId).eq("default", true),
+				)
 				.collect(),
 			ctx.db
 				.query("organizations_workspaces")
-				.withIndex("by_organization_default", (q) => q.eq("organizationId", workspace.organizationId).eq("default", false))
+				.withIndex("by_organization_default", (q) =>
+					q.eq("organizationId", workspace.organizationId).eq("default", false),
+				)
 				.collect(),
 		]);
 
@@ -1464,7 +1507,9 @@ export const delete_organization = mutation({
 				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
 			ctx.db
 				.query("access_control_permission_grants")
-				.withIndex("by_organization_workspace_resource_user_permission", (q) => q.eq("organizationId", organization._id))
+				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+					q.eq("organizationId", organization._id),
+				)
 				.collect()
 				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
 			ctx.db
@@ -1480,7 +1525,9 @@ export const delete_organization = mutation({
 								.collect();
 
 							await Promise.all(
-								workspaceUsers.map((workspaceUser) => ctx.db.delete("organizations_workspaces_users", workspaceUser._id)),
+								workspaceUsers.map((workspaceUser) =>
+									ctx.db.delete("organizations_workspaces_users", workspaceUser._id),
+								),
 							);
 
 							return workspaceUsers.map((workspaceUser) => workspaceUser.userId);
@@ -1638,12 +1685,16 @@ export const delete_workspace = mutation({
 			// Remove invite notifications that pointed at the workspace being deleted.
 			ctx.db
 				.query("notifications")
-				.withIndex("by_organization_workspace_user", (q) => q.eq("organizationId", organization._id).eq("workspaceId", workspace._id))
+				.withIndex("by_organization_workspace_user", (q) =>
+					q.eq("organizationId", organization._id).eq("workspaceId", workspace._id),
+				)
 				.collect()
 				.then((notifications) =>
 					Promise.all(notifications.map((notification) => ctx.db.delete("notifications", notification._id))),
 				),
-			Promise.all(workspaceUserLookup.map((workspaceUser) => ctx.db.delete("organizations_workspaces_users", workspaceUser._id))),
+			Promise.all(
+				workspaceUserLookup.map((workspaceUser) => ctx.db.delete("organizations_workspaces_users", workspaceUser._id)),
+			),
 			ctx.db
 				.query("access_control_role_assignments")
 				.withIndex("by_organization_workspace_user_role", (q) =>

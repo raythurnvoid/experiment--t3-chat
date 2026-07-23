@@ -1,0 +1,696 @@
+@layer components {
+	/* #region root */
+	.RouteApiKeys {
+		width: 100%;
+		height: 100%;
+		overflow-y: auto;
+	}
+
+	.RouteApiKeys-content {
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+
+		width: min(100%, 960px);
+		margin-inline: auto;
+		padding: 24px;
+	}
+
+	.RouteApiKeys-loading {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		min-height: 180px;
+
+		color: var(--color-fg-08);
+	}
+
+	.RouteApiKeys-error {
+		display: flex;
+		align-items: start;
+		gap: 10px;
+
+		padding: 16px;
+		border: 1px solid var(--color-red-06);
+		border-radius: 8px;
+
+		background: var(--color-red-02);
+		color: var(--color-red-11);
+
+		& > svg {
+			width: 18px;
+			height: 18px;
+			flex: none;
+		}
+
+		& > div {
+			display: flex;
+			flex-direction: column;
+			gap: 3px;
+		}
+
+		& span {
+			font-size: 13px;
+			line-height: 1.45;
+		}
+	}
+	/* #endregion root */
+
+	/* #region header */
+	.RouteApiKeysHeader {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 16px;
+	}
+
+	.RouteApiKeysHeader-title {
+		margin: 0;
+
+		font-size: 24px;
+		font-weight: 650;
+		line-height: 1.2;
+		color: var(--color-fg-12);
+	}
+
+	.RouteApiKeysHeader-description {
+		margin: 6px 0 0;
+
+		font-size: 14px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RouteApiKeysHeader-toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: end;
+		gap: 8px;
+	}
+	/* #endregion header */
+
+	/* #region security */
+	.RouteApiKeysSecurity {
+		display: flex;
+		align-items: start;
+		gap: 12px;
+
+		padding: 15px 16px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+
+		background: var(--color-base-1-03);
+		color: var(--color-fg-09);
+
+		& > svg {
+			width: 20px;
+			height: 20px;
+			flex: none;
+			margin-block-start: 1px;
+			color: var(--color-fg-08);
+		}
+	}
+
+	.RouteApiKeysSecurity-content {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+
+		font-size: 13px;
+		line-height: 1.45;
+
+		& > strong {
+			color: var(--color-fg-11);
+		}
+	}
+	/* #endregion security */
+
+	/* #region list */
+	.RouteApiKeysList {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.RouteApiKeysList-header {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.RouteApiKeysList-title,
+	.RouteApiKeysQuickStart-title {
+		margin: 0;
+
+		font-size: 18px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RouteApiKeysList-description,
+	.RouteApiKeysQuickStart-description {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RouteApiKeysList-items {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+		container-type: inline-size;
+
+		margin: 0;
+		padding: 0;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+		overflow: hidden;
+
+		list-style: none;
+	}
+
+	.RouteApiKeysList-empty {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 10px;
+
+		padding: 28px 18px;
+		border: 1px dashed var(--color-base-1-07);
+		border-radius: 8px;
+
+		text-align: center;
+		color: var(--color-fg-08);
+
+		& > svg {
+			width: 24px;
+			height: 24px;
+			color: var(--color-fg-07);
+		}
+	}
+
+	.RouteApiKeysList-emptyTitle {
+		margin: 0;
+
+		font-size: 15px;
+		font-weight: 600;
+		color: var(--color-fg-11);
+	}
+
+	.RouteApiKeysList-emptyDescription {
+		max-width: 52ch;
+		margin: -4px 0 2px;
+
+		font-size: 13px;
+		line-height: 1.45;
+	}
+
+	.RouteApiKeysList-revoked {
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+		overflow: hidden;
+
+		&[open] > .RouteApiKeysList-revokedSummary {
+			border-block-end: 1px solid var(--color-base-1-07);
+		}
+
+		& > .RouteApiKeysList-items {
+			border: 0;
+			border-radius: 0;
+		}
+	}
+
+	.RouteApiKeysList-revokedSummary {
+		padding: 12px 14px;
+
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--color-fg-09);
+
+		cursor: pointer;
+		outline-offset: -2px;
+
+		&:hover {
+			background: var(--color-base-1-04);
+			color: var(--color-fg-11);
+		}
+
+		&:focus-visible {
+			outline-color: var(--color-fg-12);
+		}
+	}
+	/* #endregion list */
+
+	/* #region list item */
+	.RouteApiKeysListItem {
+		display: grid;
+		grid-template-columns: minmax(180px, 1.2fr) minmax(190px, 1fr) minmax(140px, 0.8fr) auto;
+		align-items: center;
+		gap: 14px;
+
+		min-width: 0;
+		padding: 14px;
+
+		background: var(--color-base-1-03);
+
+		& + & {
+			border-block-start: 1px solid var(--color-base-1-07);
+		}
+	}
+
+	.RouteApiKeysListItem-main {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.RouteApiKeysListItem-titleRow {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.RouteApiKeysListItem-name {
+		min-width: 0;
+		margin: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RouteApiKeysListItem-key {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-family: monospace;
+		font-size: 12px;
+		color: var(--color-fg-08);
+	}
+
+	.RouteApiKeysListItem-meta {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 8px 12px;
+
+		min-width: 0;
+		margin: 0;
+	}
+
+	.RouteApiKeysListItem-metaItem {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.RouteApiKeysListItem-metaLabel {
+		font-size: 11px;
+		line-height: 1.2;
+		color: var(--color-fg-06);
+	}
+
+	.RouteApiKeysListItem-metaValue {
+		margin: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 12px;
+		line-height: 1.3;
+		color: var(--color-fg-09);
+	}
+
+	.RouteApiKeysListItem-scopes {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.RouteApiKeysListItem-actions {
+		display: flex;
+		align-items: center;
+		justify-content: end;
+		gap: 6px;
+	}
+	/* #endregion list item */
+
+	/* #region quick start */
+	.RouteApiKeysQuickStart {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+
+		padding-block-start: 20px;
+		border-block-start: 1px solid var(--color-base-1-06);
+		min-width: 0;
+	}
+
+	.RouteApiKeysQuickStart-header {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.RouteApiKeysQuickStart-tabs {
+		min-width: 0;
+
+		& .MyTabsPanels,
+		& .MyTabsPanel {
+			min-width: 0;
+		}
+	}
+
+	.RouteApiKeysQuickStart-notes {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.RouteApiKeysQuickStart-note {
+		display: flex;
+		align-items: start;
+		gap: 8px;
+
+		margin: 0;
+
+		font-size: 12px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+
+		& > svg {
+			width: 15px;
+			height: 15px;
+			flex: none;
+			margin-block-start: 1px;
+		}
+	}
+	/* #endregion quick start */
+
+	/* #region code block */
+	.RouteApiKeysCodeBlock {
+		min-width: 0;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 6px;
+		overflow: hidden;
+
+		background: var(--color-base-1-02);
+	}
+
+	.RouteApiKeysCodeBlock-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+
+		min-height: 34px;
+		padding: 3px 5px 3px 10px;
+	}
+
+	.RouteApiKeysCodeBlock-language {
+		font-family: monospace;
+		font-size: 12px;
+		color: var(--color-fg-06);
+	}
+
+	.RouteApiKeysCodeBlock > .TextMonospaceBlock {
+		border: 0;
+		border-block-start: 1px solid var(--color-base-1-06);
+		border-radius: 0;
+		white-space: pre;
+	}
+	/* #endregion code block */
+
+	/* #region verification status */
+	.RouteApiKeysVerificationStatus {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		padding: 10px 12px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 6px;
+
+		font-size: 13px;
+		line-height: 1.4;
+
+		& > svg {
+			width: 16px;
+			height: 16px;
+			flex: none;
+		}
+	}
+
+	.RouteApiKeysVerificationStatus-state-pending {
+		color: var(--color-fg-08);
+	}
+
+	.RouteApiKeysVerificationStatus-state-success {
+		border-color: var(--color-green-06);
+		background: var(--color-green-02);
+		color: var(--color-green-11);
+	}
+
+	.RouteApiKeysVerificationStatus-state-error {
+		border-color: var(--color-red-06);
+		background: var(--color-red-02);
+		color: var(--color-red-11);
+	}
+	/* #endregion verification status */
+
+	/* #region create modal */
+	.RouteApiKeysCreateModal {
+		width: min(92vw, 520px);
+	}
+
+	.RouteApiKeysCreateModal-form {
+		display: contents;
+	}
+
+	.RouteApiKeysCreateModal-fields {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+	}
+
+	.RouteApiKeysCreateModal-permissions {
+		margin: 0;
+		padding: 14px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+	}
+
+	.RouteApiKeysCreateModal-permissionsTitle {
+		padding-inline: 4px;
+
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--color-fg-10);
+	}
+
+	.RouteApiKeysCreateModal-permissionList {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+	}
+
+	.RouteApiKeysCreateModal-permission {
+		display: flex;
+		align-items: start;
+		gap: 10px;
+
+		& > svg {
+			width: 17px;
+			height: 17px;
+			flex: none;
+			margin-block-start: 1px;
+			color: var(--color-fg-08);
+		}
+	}
+
+	.RouteApiKeysCreateModal-permissionText {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.RouteApiKeysCreateModal-permissionTitle {
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--color-fg-11);
+	}
+
+	.RouteApiKeysCreateModal-permissionDescription {
+		font-size: 12px;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+	}
+
+	.RouteApiKeysCreateModal [role="alert"],
+	.RouteApiKeysConfirmationModal [role="alert"] {
+		font-size: 13px;
+		line-height: 1.4;
+		color: var(--color-red-11);
+	}
+	/* #endregion create modal */
+
+	/* #region reveal modal */
+	.RouteApiKeysRevealModal {
+		width: min(92vw, 560px);
+	}
+
+	.RouteApiKeysRevealModal-content {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.RouteApiKeysRevealModal-warning {
+		display: flex;
+		align-items: start;
+		gap: 9px;
+
+		padding: 11px 12px;
+		border: 1px solid var(--color-accent-06);
+		border-radius: 6px;
+
+		background: var(--color-accent-02);
+		font-size: 13px;
+		line-height: 1.4;
+		color: var(--color-accent-10);
+
+		& > svg {
+			width: 17px;
+			height: 17px;
+			flex: none;
+			margin-block-start: 1px;
+		}
+	}
+
+	.RouteApiKeysRevealModal-secret {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.RouteApiKeysRevealModal-secret > .TextMonospaceBlock {
+		white-space: pre;
+	}
+
+	.RouteApiKeysRevealModal-copy.MyIconButton {
+		align-self: stretch;
+		height: auto;
+	}
+	/* #endregion reveal modal */
+
+	/* #region confirmation modal */
+	.RouteApiKeysConfirmationModal {
+		width: min(92vw, 480px);
+	}
+
+	.RouteApiKeysConfirmationModal-content {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.RouteApiKeysConfirmationModal-key {
+		display: block;
+		padding: 10px 12px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 6px;
+		overflow-wrap: anywhere;
+
+		background: var(--color-base-1-03);
+		font-family: monospace;
+		font-size: 12px;
+		color: var(--color-fg-09);
+	}
+	/* #endregion confirmation modal */
+
+	@container (max-width: 820px) {
+		.RouteApiKeysListItem {
+			grid-template-columns: minmax(0, 1fr) auto;
+		}
+
+		.RouteApiKeysListItem-meta,
+		.RouteApiKeysListItem-scopes {
+			grid-column: 1 / -1;
+		}
+
+		.RouteApiKeysListItem-actions {
+			grid-row: 1;
+			grid-column: 2;
+		}
+	}
+
+	@container (max-width: 520px) {
+		.RouteApiKeysListItem {
+			grid-template-columns: minmax(0, 1fr);
+			gap: 12px;
+		}
+
+		.RouteApiKeysListItem-meta,
+		.RouteApiKeysListItem-scopes,
+		.RouteApiKeysListItem-actions {
+			grid-row: auto;
+			grid-column: 1;
+		}
+
+		.RouteApiKeysListItem-actions {
+			justify-content: start;
+			flex-wrap: wrap;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.RouteApiKeys-content {
+			padding: 16px;
+		}
+
+		.RouteApiKeysHeader {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.RouteApiKeysHeader-toolbar {
+			justify-content: start;
+		}
+
+		.RouteApiKeysRevealModal-secret {
+			grid-template-columns: minmax(0, 1fr);
+		}
+
+		.RouteApiKeysRevealModal-copy.MyIconButton {
+			align-self: auto;
+			height: 36px;
+		}
+
+		.RouteApiKeysRevealModal .MyModalFooter,
+		.RouteApiKeysConfirmationModal .MyModalFooter,
+		.RouteApiKeysCreateModal .MyModalFooter {
+			flex-wrap: wrap;
+		}
+	}
+}

@@ -22,6 +22,9 @@
 		> .RootLayout-content {
 			grid-row: 2;
 			grid-column: 2;
+
+			/* Let route pages shrink below their min-content width so narrow viewports do not widen the grid. */
+			min-width: 0;
 		}
 	}
 

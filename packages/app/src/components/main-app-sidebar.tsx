@@ -9,6 +9,7 @@ import {
 	GalleryVerticalEnd,
 	Image,
 	Images,
+	KeyRound,
 	MessageSquare,
 	Monitor,
 	Moon,
@@ -23,7 +24,14 @@ import { Link, useRouterState, type RegisteredRouter } from "@tanstack/react-rou
 import { useQuery } from "convex/react";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { url_path_chat, url_path_files, url_path_plugin_page, url_path_plugins, url_path_users } from "@/lib/urls.ts";
+import {
+	url_path_api_keys,
+	url_path_chat,
+	url_path_files,
+	url_path_plugin_page,
+	url_path_plugins,
+	url_path_users,
+} from "@/lib/urls.ts";
 
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -419,6 +427,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 
 	const chatPath = url_path_chat({ organizationName, workspaceName });
 	const filesPath = url_path_files({ organizationName, workspaceName });
+	const apiKeysPath = url_path_api_keys({ organizationName, workspaceName });
 	const usersPath = url_path_users({ organizationName, workspaceName });
 	const pluginsPath = url_path_plugins({ organizationName, workspaceName });
 
@@ -488,6 +497,12 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						label="Files"
 						icon={FileText}
 						tooltip={mainAppSidebarCollapsed ? "Files" : undefined}
+					/>
+					<MainAppSidebarItem
+						to={apiKeysPath}
+						label="API keys"
+						icon={KeyRound}
+						tooltip={mainAppSidebarCollapsed ? "API keys" : undefined}
 					/>
 					<MainAppSidebarItem
 						to={pluginsPath}

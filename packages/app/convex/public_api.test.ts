@@ -818,11 +818,10 @@ describe("public files API", () => {
 		expect(rotateRevoked._nay?.message).toBe("Not found");
 	});
 
-	test("requires dedicated API credential management permission", async () => {
+	test("lets an active workspace member manage their own API credentials", async () => {
 		const t = test_convex();
 		const owner = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-permission-owner" });
 		const member = await t.run(async (ctx) => {
-			const now = Date.now();
 			const userId = await ctx.db.insert("users", {
 				clerkUserId: "clerk-public-api-permission-member",
 			});
@@ -831,17 +830,6 @@ describe("public files API", () => {
 				workspaceId: owner.workspaceId,
 				userId,
 				active: true,
-			});
-			await ctx.db.insert("access_control_permission_grants", {
-				organizationId: owner.organizationId,
-				workspaceId: owner.workspaceId,
-				resourceKind: "workspace",
-				resourceId: String(owner.workspaceId),
-				principalKind: "user",
-				userId,
-				permission: "asset.permissions.manage",
-				createdAt: now,
-				updatedAt: now,
 			});
 			return { userId, membershipId };
 		});
@@ -853,11 +841,162 @@ describe("public files API", () => {
 
 		const created = await asMember.mutation(api.public_api.api_credential_create, {
 			membershipId: member.membershipId,
-			name: "Should not create",
+			name: "  Member key  ",
 			scopes: ["files:list"],
 		});
+		expect(created._nay).toBeUndefined();
 
-		expect(created._nay?.message).toBe("Permission denied");
+		const listed = await asMember.query(api.public_api.api_credentials_list, {
+			membershipId: member.membershipId,
+		});
+		expect(listed._yay).toEqual([expect.objectContaining({ name: "Member key" })]);
+
+		const revoked = await asMember.mutation(api.public_api.api_credential_revoke, {
+			membershipId: member.membershipId,
+			credentialId: created._yay!.credentialId,
+		});
+		expect(revoked._nay).toBeUndefined();
+	});
+
+	test("keeps personal API credentials private from other active members", async () => {
+		const t = test_convex();
+		const owner = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-private-owner" });
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", {
+				clerkUserId: "clerk-public-api-private-member",
+			});
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userId,
+				active: true,
+			});
+			return { userId, membershipId };
+		});
+		const asMember = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-private-member",
+			external_id: member.userId,
+		});
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-private-owner",
+			external_id: owner.userId,
+		});
+
+		const created = await asMember.mutation(api.public_api.api_credential_create, {
+			membershipId: member.membershipId,
+			name: "Member key",
+			scopes: ["files:list"],
+		});
+		expect(created._nay).toBeUndefined();
+
+		const listed = await asOwner.query(api.public_api.api_credentials_list, {
+			membershipId: owner.membershipId,
+		});
+		expect(listed._yay).toEqual([]);
+
+		const rotated = await asOwner.mutation(api.public_api.api_credential_rotate, {
+			membershipId: owner.membershipId,
+			credentialId: created._yay!.credentialId,
+		});
+		expect(rotated._nay?.message).toBe("Not found");
+
+		const revoked = await asOwner.mutation(api.public_api.api_credential_revoke, {
+			membershipId: owner.membershipId,
+			credentialId: created._yay!.credentialId,
+		});
+		expect(revoked._nay?.message).toBe("Not found");
+
+		const memberList = await asMember.query(api.public_api.api_credentials_list, {
+			membershipId: member.membershipId,
+		});
+		expect(memberList._yay).toEqual([expect.objectContaining({ credentialId: created._yay!.credentialId })]);
+	});
+
+	test("validates API credential name boundaries", async () => {
+		const blankTest = test_convex();
+		const blankDb = await seed_signed_in_membership({
+			t: blankTest,
+			clerkUserId: "clerk-public-api-name-blank",
+		});
+		const asBlankUser = blankTest.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-name-blank",
+			external_id: blankDb.userId,
+		});
+		const blank = await asBlankUser.mutation(api.public_api.api_credential_create, {
+			membershipId: blankDb.membershipId,
+			name: "   ",
+			scopes: ["files:list"],
+		});
+		expect(blank._nay?.message).toBe("API key name is required");
+
+		const lengthTest = test_convex();
+		const lengthDb = await seed_signed_in_membership({
+			t: lengthTest,
+			clerkUserId: "clerk-public-api-name-length",
+		});
+		const asLengthUser = lengthTest.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-name-length",
+			external_id: lengthDb.userId,
+		});
+		const maximumLength = await asLengthUser.mutation(api.public_api.api_credential_create, {
+			membershipId: lengthDb.membershipId,
+			name: "a".repeat(80),
+			scopes: ["files:list"],
+		});
+		expect(maximumLength._nay).toBeUndefined();
+
+		const tooLong = await asLengthUser.mutation(api.public_api.api_credential_create, {
+			membershipId: lengthDb.membershipId,
+			name: "a".repeat(81),
+			scopes: ["files:list"],
+		});
+		expect(tooLong._nay?.message).toBe("API key name must be 80 characters or fewer");
+	});
+
+	test("allows 20 active API credentials and rejects the next create", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-active-cap" });
+		await t.run(async (ctx) => {
+			for (let index = 0; index < 19; index += 1) {
+				const keyId = `pk_${index.toString(16).padStart(32, "0")}`;
+				await ctx.db.insert("api_credentials", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					name: `Active ${index}`,
+					keyId,
+					obfuscatedValue: `${keyId}.****0000`,
+					secretHash: `hash-${index}`,
+					scopes: ["files:list"],
+					createdAt: index,
+					revokedAt: null,
+					lastUsedAt: null,
+				});
+			}
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-active-cap",
+			external_id: db.userId,
+		});
+
+		const twentieth = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Active 20",
+			scopes: ["files:list"],
+		});
+		expect(twentieth._nay).toBeUndefined();
+
+		const overLimit = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Active 21",
+			scopes: ["files:list"],
+		});
+		expect(overLimit._nay?.message).toBe("You can have up to 20 active API keys in this workspace");
 	});
 
 	test("allows seeded workspace admins to create API credentials", async () => {
@@ -1030,7 +1169,7 @@ describe("public files API", () => {
 		expect(response.status).toBe(403);
 	});
 
-	test("lists active API credentials before old revoked keys", async () => {
+	test("lists active and revoked API credentials newest first", async () => {
 		const t = test_convex();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-list-active" });
 		await t.run(async (ctx) => {
@@ -1054,12 +1193,25 @@ describe("public files API", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
-				name: "Active key",
+				name: "Active older",
 				keyId: `pk_${"a".repeat(32)}`,
 				obfuscatedValue: `pk_${"a".repeat(32)}.****0000`,
 				secretHash: "active-hash",
 				scopes: ["files:list"],
 				createdAt: 102,
+				revokedAt: null,
+				lastUsedAt: null,
+			});
+			await ctx.db.insert("api_credentials", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				name: "Active newest",
+				keyId: `pk_${"b".repeat(32)}`,
+				obfuscatedValue: `pk_${"b".repeat(32)}.****0000`,
+				secretHash: "active-newest-hash",
+				scopes: ["files:list"],
+				createdAt: 103,
 				revokedAt: null,
 				lastUsedAt: null,
 			});
@@ -1074,7 +1226,12 @@ describe("public files API", () => {
 			membershipId: db.membershipId,
 		});
 		expect(listed._nay).toBeUndefined();
-		expect(listed._yay?.[0]).toEqual(expect.objectContaining({ name: "Active key", revokedAt: null }));
+		expect(listed._yay?.slice(0, 4)).toEqual([
+			expect.objectContaining({ name: "Active newest", revokedAt: null }),
+			expect.objectContaining({ name: "Active older", revokedAt: null }),
+			expect.objectContaining({ name: "Revoked 100", revokedAt: 101 }),
+			expect.objectContaining({ name: "Revoked 99", revokedAt: 100 }),
+		]);
 		expect(listed._yay).toHaveLength(100);
 	});
 

@@ -7,6 +7,10 @@ export function url_path_files(args: { organizationName: string; workspaceName: 
 	return `/w/${args.organizationName}/${args.workspaceName}/files`;
 }
 
+export function url_path_api_keys(args: { organizationName: string; workspaceName: string }) {
+	return `/w/${args.organizationName}/${args.workspaceName}/api-keys`;
+}
+
 export function url_path_chat(args: { organizationName: string; workspaceName: string }) {
 	return `/w/${args.organizationName}/${args.workspaceName}/chat`;
 }

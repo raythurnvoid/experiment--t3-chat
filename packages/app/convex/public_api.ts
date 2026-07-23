@@ -97,6 +97,8 @@ const TEXT_ENCODER = new TextEncoder();
 const CREDENTIAL_KEY_PREFIX = "pk_";
 const CREDENTIAL_KEY_ID_BYTES = 16;
 const CREDENTIAL_SECRET_BYTES = 32;
+const API_CREDENTIAL_NAME_MAX_CHARS = 80;
+const API_CREDENTIAL_ACTIVE_MAX = 20;
 const API_CREDENTIAL_TOKEN_REGEX = /^pk_[0-9a-f]{32}\.[0-9a-f]{64}$/u;
 const PUBLIC_API_GRANT_TOKEN_REGEX = /^[0-9a-f]{64}$/u;
 const PLUGIN_RUN_TOKEN_REGEX = /^plr_[0-9a-f]{64}$/u;
@@ -258,20 +260,7 @@ async function authorize_credential_management(
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
 
-	const hasPermission = await access_control_db_has_permission(ctx, {
-		organizationId: organization._id,
-		workspaceId: workspace._id,
-		defaultWorkspaceId: organization.defaultWorkspaceId,
-		organizationOwnerUserId: organization.ownerUserId,
-		resourceKind: "workspace",
-		resourceId: String(workspace._id),
-		permission: "api.credentials.manage",
-		userId: user._id,
-	});
-	if (!hasPermission) {
-		return Result({ _nay: { message: "Permission denied" } });
-	}
-
+	// Keep personal key management based on self-membership. Reserve api.credentials.manage for future workspace-wide administration.
 	return Result({ _yay: { user, membership, organization, workspace } });
 }
 
@@ -468,9 +457,31 @@ export const api_credential_create = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
+		const name = args.name.trim();
+		if (name.length === 0) {
+			return Result({ _nay: { message: "API key name is required" } });
+		}
+		if (name.length > API_CREDENTIAL_NAME_MAX_CHARS) {
+			return Result({ _nay: { message: "API key name must be 80 characters or fewer" } });
+		}
+
 		const scopes = Array.from(new Set(args.scopes));
 		if (scopes.length === 0) {
 			return Result({ _nay: { message: "At least one scope is required" } });
+		}
+
+		const activeCredentials = await ctx.db
+			.query("api_credentials")
+			.withIndex("by_organization_workspace_user_revokedAt", (q) =>
+				q
+					.eq("organizationId", credentialManagement._yay.organization._id)
+					.eq("workspaceId", credentialManagement._yay.workspace._id)
+					.eq("userId", credentialManagement._yay.user._id)
+					.eq("revokedAt", null),
+			)
+			.take(API_CREDENTIAL_ACTIVE_MAX);
+		if (activeCredentials.length >= API_CREDENTIAL_ACTIVE_MAX) {
+			return Result({ _nay: { message: "You can have up to 20 active API keys in this workspace" } });
 		}
 
 		const now = Date.now();
@@ -479,7 +490,7 @@ export const api_credential_create = mutation({
 			organizationId: credentialManagement._yay.organization._id,
 			workspaceId: credentialManagement._yay.workspace._id,
 			userId: credentialManagement._yay.user._id,
-			name: args.name.trim() || "API key",
+			name,
 			keyId: secret.keyId,
 			obfuscatedValue: secret.obfuscatedValue,
 			secretHash: secret.secretHash,
@@ -530,17 +541,19 @@ export const api_credentials_list = query({
 					.eq("userId", credentialManagement._yay.user._id)
 					.eq("revokedAt", null),
 			)
+			.order("desc")
 			.take(100);
 		const revokedCredentials =
 			activeCredentials.length < 100
 				? await ctx.db
 						.query("api_credentials")
-						.withIndex("by_organization_workspace_user", (q) =>
+						.withIndex("by_organization_workspace_user_revokedAt", (q) =>
 							q
 								.eq("organizationId", credentialManagement._yay.organization._id)
 								.eq("workspaceId", credentialManagement._yay.workspace._id)
 								.eq("userId", credentialManagement._yay.user._id),
 						)
+						.order("desc")
 						.filter((q) => q.neq(q.field("revokedAt"), null))
 						.take(100 - activeCredentials.length)
 				: [];
