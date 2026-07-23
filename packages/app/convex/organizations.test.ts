@@ -17,7 +17,7 @@ import {
 	access_control_db_has_permission,
 } from "./access_control.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { quotas_db_ensure } from "./quotas.ts";
+import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { organizations_DESCRIPTION_MAX_LENGTH, organizations_NAME_MAX_LENGTH } from "../shared/organizations.ts";
 import { files_get_utf8_byte_size } from "../server/files.ts";
 
@@ -153,7 +153,9 @@ async function organizations_test_seed_api_credential(
 	},
 ) {
 	const keyId = `pk_${args.tag.padStart(32, "0")}`;
-	return await ctx.db.insert("api_credentials", {
+	const now = Date.now();
+	const revokedAt = args.revokedAt ?? null;
+	const credentialId = await ctx.db.insert("api_credentials", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
@@ -162,10 +164,23 @@ async function organizations_test_seed_api_credential(
 		obfuscatedValue: `${keyId}.****0000`,
 		secretHash: `hash-${args.tag}`,
 		scopes: ["files:list", "files:read"],
-		createdAt: Date.now(),
-		revokedAt: args.revokedAt ?? null,
+		createdAt: now,
+		revokedAt,
 		lastUsedAt: null,
 	});
+	if (revokedAt === null) {
+		const quota = await quotas_db_get(ctx, {
+			quotaName: "active_api_credentials",
+			userId: args.userId,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+		});
+		await ctx.db.patch("quotas", quota._id, {
+			usedCount: quota.usedCount + 1,
+			updatedAt: now,
+		});
+	}
+	return credentialId;
 }
 
 async function organizations_test_seed_workspace_scoped_rows(
@@ -1479,7 +1494,7 @@ describe("invite_user_to_organization_workspace", () => {
 		expect(inviteResult._yay).toBeNull();
 
 		const afterInvite = await t.run(async (ctx) => {
-			const [memberships, notifications, roleAssignments] = await Promise.all([
+			const [memberships, notifications, roleAssignments, homeQuota, selectedQuota] = await Promise.all([
 				ctx.db
 					.query("organizations_workspaces_users")
 					.withIndex("by_active_user_organization_workspace", (q) =>
@@ -1496,9 +1511,21 @@ describe("invite_user_to_organization_workspace", () => {
 						q.eq("organizationId", created._yay!.organizationId).eq("userId", invitedUserId),
 					)
 					.collect(),
+				quotas_db_get(ctx, {
+					quotaName: "active_api_credentials",
+					userId: invitedUserId,
+					organizationId: created._yay!.organizationId,
+					workspaceId: created._yay!.defaultWorkspaceId,
+				}),
+				quotas_db_get(ctx, {
+					quotaName: "active_api_credentials",
+					userId: invitedUserId,
+					organizationId: created._yay!.organizationId,
+					workspaceId: selectedWorkspace._yay!.workspaceId,
+				}),
 			]);
 
-			return { memberships, notifications, roleAssignments };
+			return { memberships, notifications, roleAssignments, homeQuota, selectedQuota };
 		});
 
 		expect(afterInvite.memberships.map((membership) => membership.workspaceId).sort()).toEqual(
@@ -1507,6 +1534,10 @@ describe("invite_user_to_organization_workspace", () => {
 		expect(afterInvite.roleAssignments.map((assignment) => assignment.workspaceId).sort()).toEqual(
 			[created._yay!.defaultWorkspaceId, selectedWorkspace._yay!.workspaceId].sort(),
 		);
+		expect([afterInvite.homeQuota, afterInvite.selectedQuota]).toMatchObject([
+			{ quotaName: "active_api_credentials", usedCount: 0 },
+			{ quotaName: "active_api_credentials", usedCount: 0 },
+		]);
 		expect(afterInvite.notifications).toHaveLength(1);
 		expect(afterInvite.notifications[0]?.archivedAt).toBe(0);
 		expect(afterInvite.notifications[0]?.organizationId).toBe(created._yay!.organizationId);
@@ -1827,6 +1858,7 @@ describe("remove_user_from_organization", () => {
 
 		const alreadyRevokedAt = 123;
 		const credentialIds = await t.run(async (ctx) => {
+			const now = Date.now();
 			await Promise.all([
 				ctx.db.insert("organizations_workspaces_users", {
 					organizationId: organization._yay!.organizationId,
@@ -1851,6 +1883,34 @@ describe("remove_user_from_organization", () => {
 					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
 					userId: memberId,
 					active: true,
+				}),
+				quotas_db_ensure(ctx, {
+					quotaName: "active_api_credentials",
+					userId: memberId,
+					organizationId: organization._yay!.organizationId,
+					workspaceId: organization._yay!.defaultWorkspaceId,
+					now,
+				}),
+				quotas_db_ensure(ctx, {
+					quotaName: "active_api_credentials",
+					userId: memberId,
+					organizationId: organization._yay!.organizationId,
+					workspaceId: workspace._yay!.workspaceId,
+					now,
+				}),
+				quotas_db_ensure(ctx, {
+					quotaName: "active_api_credentials",
+					userId: otherMemberId,
+					organizationId: organization._yay!.organizationId,
+					workspaceId: organization._yay!.defaultWorkspaceId,
+					now,
+				}),
+				quotas_db_ensure(ctx, {
+					quotaName: "active_api_credentials",
+					userId: memberId,
+					organizationId: otherOrganization._yay!.organizationId,
+					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+					now,
 				}),
 			]);
 
@@ -1912,6 +1972,22 @@ describe("remove_user_from_organization", () => {
 		expect(afterRemove[2]?.revokedAt).toBe(alreadyRevokedAt);
 		expect(afterRemove[3]?.revokedAt).toBeNull();
 		expect(afterRemove[4]?.revokedAt).toBeNull();
+		const quotaDocsAfterRemove = await t.run((ctx) =>
+			ctx.db
+				.query("quotas")
+				.withIndex("by_user_quotaName", (q) =>
+					q.eq("userId", memberId).eq("quotaName", "active_api_credentials"),
+				)
+				.collect(),
+		);
+		expect(
+			quotaDocsAfterRemove.filter((quotaDoc) => quotaDoc.organizationId === organization._yay!.organizationId),
+		).toHaveLength(0);
+		expect(
+			quotaDocsAfterRemove.some(
+				(quotaDoc) => quotaDoc.organizationId === otherOrganization._yay!.organizationId,
+			),
+		).toBe(true);
 
 		const reinviteResult = await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
 			organizationId: organization._yay!.organizationId,
@@ -1928,6 +2004,27 @@ describe("remove_user_from_organization", () => {
 		);
 		expect(afterReinvite[0]?.revokedAt).toBe(afterRemove[0]?.revokedAt);
 		expect(afterReinvite[1]?.revokedAt).toBe(afterRemove[1]?.revokedAt);
+		const quotaDocsAfterReinvite = await t.run((ctx) =>
+			ctx.db
+				.query("quotas")
+				.withIndex("by_user_quotaName", (q) =>
+					q.eq("userId", memberId).eq("quotaName", "active_api_credentials"),
+				)
+				.collect(),
+		);
+		expect(quotaDocsAfterReinvite).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					organizationId: organization._yay!.organizationId,
+					workspaceId: organization._yay!.defaultWorkspaceId,
+					usedCount: 0,
+				}),
+				expect.objectContaining({
+					organizationId: otherOrganization._yay!.organizationId,
+					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+				}),
+			]),
+		);
 	});
 
 	test("allows a member to leave the organization", async () => {
@@ -1963,6 +2060,13 @@ describe("remove_user_from_organization", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: memberId,
 				active: true,
+			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId: memberId,
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: created._yay!.organizationId,
@@ -3372,6 +3476,7 @@ describe("delete_workspace", () => {
 				requests,
 				user,
 				organizationQuota,
+				apiCredentialQuotaDocs,
 				roleAssignments,
 				permissionGrants,
 				files,
@@ -3385,6 +3490,12 @@ describe("delete_workspace", () => {
 				ctx.db.query("data_deletion_requests").collect(),
 				ctx.db.get("users", userId),
 				organizations_test_read_organization_extra_workspace_quota_doc(ctx, { organizationId: created._yay!.organizationId }),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) =>
+						q.eq("workspaceId", extraWorkspace._yay!.workspaceId).eq("quotaName", "active_api_credentials"),
+					)
+					.collect(),
 				ctx.db
 					.query("access_control_role_assignments")
 					.withIndex("by_organization_workspace_user_role", (q) =>
@@ -3417,6 +3528,7 @@ describe("delete_workspace", () => {
 				),
 				user,
 				organizationQuota,
+				apiCredentialQuotaDocs,
 				roleAssignments,
 				permissionGrants,
 				files: files.filter(
@@ -3458,6 +3570,7 @@ describe("delete_workspace", () => {
 		expect(after_delete.aiMessages).toHaveLength(1);
 		expect(after_delete.chatMessages).toHaveLength(1);
 		expect(after_delete.organizationQuota?.usedCount).toBe(0);
+		expect(after_delete.apiCredentialQuotaDocs).toHaveLength(0);
 		expect(after_delete.roleAssignments).toHaveLength(0);
 		expect(after_delete.permissionGrants).toHaveLength(0);
 		expect(after_delete.user?.defaultOrganizationId).toBe(personalDefaultIds.organizationId);

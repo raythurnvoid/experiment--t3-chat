@@ -17,6 +17,7 @@ import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 } from "../shared/organizations.ts";
 import type { api_schemas_Main } from "../shared/api-schemas.ts";
+import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 const r2Objects = new Map<string, string | ArrayBuffer>();
@@ -417,6 +418,11 @@ describe("public files API", () => {
 			credentialId: created._yay!.credentialId,
 		});
 		expect(revoked._nay).toBeUndefined();
+		const quotaAfterRevoke = await asUser.query(api.quotas.get, {
+			quotaName: "active_api_credentials",
+			membershipId: db.membershipId,
+		});
+		expect(quotaAfterRevoke?.usedCount).toBe(0);
 
 		const afterRevoke = await t.fetch("/api/v1/files/list", {
 			method: "POST",
@@ -796,6 +802,11 @@ describe("public files API", () => {
 		expect(rotated._nay).toBeUndefined();
 		expect(rotated._yay!.credentialId).not.toBe(created._yay!.credentialId);
 		expect(rotated._yay!.credential).not.toBe(created._yay!.credential);
+		const quotaAfterRotate = await asUser.query(api.quotas.get, {
+			quotaName: "active_api_credentials",
+			membershipId: db.membershipId,
+		});
+		expect(quotaAfterRotate?.usedCount).toBe(1);
 
 		const oldKeyResponse = await t.fetch("/api/v1/files/list", {
 			method: "POST",
@@ -830,6 +841,13 @@ describe("public files API", () => {
 				workspaceId: owner.workspaceId,
 				userId,
 				active: true,
+			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId,
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				now: Date.now(),
 			});
 			return { userId, membershipId };
 		});
@@ -870,6 +888,13 @@ describe("public files API", () => {
 				workspaceId: owner.workspaceId,
 				userId,
 				active: true,
+			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId,
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				now: Date.now(),
 			});
 			return { userId, membershipId };
 		});
@@ -957,7 +982,7 @@ describe("public files API", () => {
 		expect(tooLong._nay?.message).toBe("API key name must be 80 characters or fewer");
 	});
 
-	test("allows 20 active API credentials and rejects the next create", async () => {
+	test("uses the active API credential quota counter when creating keys", async () => {
 		const t = test_convex();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-active-cap" });
 		await t.run(async (ctx) => {
@@ -977,6 +1002,17 @@ describe("public files API", () => {
 					lastUsedAt: null,
 				});
 			}
+
+			const quota = await quotas_db_get(ctx, {
+				quotaName: "active_api_credentials",
+				userId: db.userId,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+			});
+			await ctx.db.patch("quotas", quota._id, {
+				usedCount: 19,
+				updatedAt: Date.now(),
+			});
 		});
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -997,6 +1033,23 @@ describe("public files API", () => {
 			scopes: ["files:list"],
 		});
 		expect(overLimit._nay?.message).toBe("You can have up to 20 active API keys in this workspace");
+
+		const credentials = await asUser.query(api.public_api.api_credentials_list, {
+			membershipId: db.membershipId,
+		});
+		expect(credentials._nay).toBeUndefined();
+		expect(credentials._yay?.filter((credential) => credential.revokedAt === null)).toHaveLength(20);
+		expect(credentials._yay?.some((credential) => credential.name === "Active 21")).toBe(false);
+
+		const quota = await asUser.query(api.quotas.get, {
+			quotaName: "active_api_credentials",
+			membershipId: db.membershipId,
+		});
+		expect(quota).toMatchObject({
+			quotaName: "active_api_credentials",
+			usedCount: 20,
+			maxCount: 20,
+		});
 	});
 
 	test("allows seeded workspace admins to create API credentials", async () => {
@@ -1012,6 +1065,13 @@ describe("public files API", () => {
 				workspaceId: owner.workspaceId,
 				userId,
 				active: true,
+			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId,
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				now,
 			});
 			await ctx.db.insert("access_control_role_assignments", {
 				organizationId: owner.organizationId,

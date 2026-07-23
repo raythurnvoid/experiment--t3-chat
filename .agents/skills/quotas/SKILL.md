@@ -1,6 +1,6 @@
 ---
 name: quotas
-description: Persisted per-user and per-organization creation quotas for extra organizations and workspaces. Use when changing `packages/app/convex/quotas.ts`, quota helpers, quota schema docs, organization/workspace quota behavior, or tests for quotas.
+description: Persisted per-user, per-organization, and per-workspace quota counters. Use when changing `packages/app/convex/quotas.ts`, quota helpers, quota schema docs, organization/workspace/API credential quota behavior, or tests for quotas.
 ---
 
 # Mental model
@@ -10,12 +10,15 @@ description: Persisted per-user and per-organization creation quotas for extra o
 - Quotas are looked up by their typed scope fields:
 	- `userId` plus `quotaName: "extra_organizations"` for user-level organization creation quota
 	- `organizationId` plus `quotaName: "extra_workspaces"` for organization-level workspace creation quota
+	- `userId`, `organizationId`, and `workspaceId` plus `quotaName: "active_api_credentials"` for a user's active API keys in one workspace
 - The product rule is still:
 	- each user gets `personal` plus at most **2** extra organizations (**3** total organizations)
 	- each organization gets `home` plus at most **5** extra workspaces (**6** total workspaces)
+	- each user can have at most **20** active API keys in one workspace
 - Default entities do **not** consume quota usage:
 	- default organization `personal`
 	- default workspace `home`
+- Revoked API keys do not consume active API credential quota. The separate 100-entry API key list bound only limits recent history returned to the UI.
 
 # Source of truth
 
@@ -36,6 +39,7 @@ description: Persisted per-user and per-organization creation quotas for extra o
 	- `quotaName`
 	- `userId` for user-scoped quotas
 	- `organizationId` for organization-scoped quotas
+	- `workspaceId` for workspace-scoped quotas
 	- `usedCount`
 	- `maxCount`
 	- `createdAt`
@@ -43,10 +47,13 @@ description: Persisted per-user and per-organization creation quotas for extra o
 - Scope indexes:
 	- `quotas.by_user_quotaName`
 	- `quotas.by_organization_quotaName`
+	- `quotas.by_workspace_quotaName`
+	- `quotas.by_user_organization_workspace_quotaName`
 - Organization quota read authorization checks active membership against the requested `organizationId` with `organizations_workspaces_users.by_active_user_organization_workspace`, then reads the quota doc by `organizationId` and `quotaName`.
 - Stable definitions live in `packages/app/shared/quotas.ts`:
 	- `quotas.extra_organizations`
 	- `quotas.extra_workspaces`
+	- `quotas.active_api_credentials`
 
 # Runtime write paths
 
@@ -67,9 +74,18 @@ description: Persisted per-user and per-organization creation quotas for extra o
 - `organizations_db_create_workspace` reads the organization `"extra_workspaces"` quota with `quotas_db_get` and increments `usedCount` directly when capacity remains.
 - Missing organization quota docs should fail through `quotas_db_get`. Exhausted quota callers return `_nay.message === "Workspace quota reached"` and frontend callers map that message to the shared quota-specific UI copy.
 
+## API credential create, revoke, and rotate
+
+- Membership creation ensures one `active_api_credentials` quota doc for the user, organization, and workspace tuple.
+- `public_api.api_credential_create` reads the persisted quota with `quotas_db_get`, blocks when `usedCount >= maxCount`, and increments the counter in the same mutation as the credential insert.
+- `public_api.api_credential_revoke` decrements the counter only when it changes an active credential to revoked.
+- `public_api.api_credential_rotate` revokes one credential and creates one credential in the same mutation, so the active counter does not change.
+- Do not count active credential docs at create time. The persisted quota is the runtime source of truth.
+
 ## Delete flows
 
 - `delete_workspace` reads the organization extra-workspace quota and decrements `usedCount` directly when deleting a non-default workspace.
+- Workspace structural deletion deletes `active_api_credentials` quota docs by `workspaceId`. Admin data-only reset keeps the current user's default-workspace quota doc and sets `usedCount` to `0` after deleting that user's API credential docs.
 - `delete_organization` reads the owner from `organizations.ownerUserId`, decrements that owner's extra-organization quota directly, and defers deleting the organization quota doc until `data_deletion.process_organization_deletion_request`.
 - Account deletion uses the same direct owner quota decrement when the backend queues a still-owned organization for deletion instead of the frontend transferring it first.
 - `data_deletion.process_organization_deletion_request` deletes all quota docs for the organization id.
@@ -88,16 +104,19 @@ description: Persisted per-user and per-organization creation quotas for extra o
 - Quota queries live in `packages/app/convex/quotas.ts`.
 - Use `api.quotas.get({ quotaName: "extra_organizations", userId })` for user quotas.
 - Use `api.quotas.get({ quotaName: "extra_workspaces", organizationId })` for organization quotas.
+- Use `api.quotas.get({ quotaName: "active_api_credentials", membershipId })` for the current user's active API credential quota in that membership's workspace.
 - Returned objects are the persisted quota docs. Frontend callers derive remaining capacity from `usedCount` and `maxCount`, and use `packages/app/shared/quotas.ts` for quota-specific display copy.
 
 # Tests
 
 - Main coverage lives in `packages/app/convex/organizations.test.ts`.
+- API credential counter coverage lives in `packages/app/convex/public_api.test.ts`.
 - Account-deletion quota behavior is also covered in `packages/app/convex/data_deletion.test.ts` and `packages/app/convex/users.test.ts`.
-- Tests and setup must seed quota docs through `quotas_db_ensure({ quotaName: "extra_organizations", userId })` or the real user bootstrap path before exercising organization/workspace create flows.
+- Tests and setup must seed quota docs through `quotas_db_ensure(...)` or the real user/membership bootstrap path before exercising the related quota write flow.
 - Focused verification for this feature is:
 	- `vp env exec pnpm --dir packages/app exec vitest run convex/organizations.test.ts`
 	- `vp env exec pnpm --dir packages/app exec vitest run convex/data_deletion.test.ts convex/users.test.ts`
+	- `vp env exec pnpm --dir packages/app exec vitest run convex/public_api.test.ts`
 
 # Guardrails
 

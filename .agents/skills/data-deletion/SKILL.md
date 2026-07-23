@@ -39,7 +39,7 @@ Load each companion skill that owns the affected boundary:
 - `prepare_user_for_hard_deletion`: tombstones the user and drains one bounded plugin UI session batch before the admin action performs external provider writes. The action reads the current Polar subscription before calling this mutation.
 - `db_finalize_deleted_user`: phase 2 for a tombstoned user. It deletes user-scoped docs and returns organizations that became empty.
 - `db_purge_organization_workspace_content_batch`: deletes tenant content for one `(organizationId, workspaceId)` in bounded batches.
-- `db_delete_workspace_structure_batch`: deletes workspace notifications, memberships, access-control docs, and then the workspace doc after content is gone.
+- `db_delete_workspace_structure_batch`: deletes workspace notifications, memberships, active API credential quota docs, access-control docs, and then the workspace doc after content is gone.
 - `db_delete_workspace_batch`: full workspace deletion used by organization deletion and admin reset flows where the workspace doc may still exist.
 - `db_delete_organization_batch`: drains queued workspace content, deletes remaining workspaces, deletes organization structure, then deletes the organization doc.
 - `process_user_deletion_request`, `process_organization_deletion_request`, and `process_workspace_deletion_request`: own one queued request at a time and leave the queue doc in place while covered work remains.
@@ -109,16 +109,16 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - Rejects default workspaces.
 - Queues a workspace-scope request.
 - Releases one `extra_workspaces` quota unit.
-- Removes workspace invite notifications, memberships, role assignments, permission grants, then deletes the workspace doc.
+- Removes workspace invite notifications, memberships, active API credential quota docs, role assignments, permission grants, then deletes the workspace doc.
 - The queued workspace request later purges heavy content for the deleted workspace id, even though the workspace doc is already gone.
 
 `process_workspace_deletion_request`:
 
 - Only owns workspace-scope request docs.
 - Requires both `organizationId` and `workspaceId`; invalid docs are removed.
-- Calls `db_purge_organization_workspace_content_batch`.
+- Calls `db_purge_organization_workspace_content_batch`. Active API credential quota docs are workspace structure, so the UI-facing delete removes them in phase 1 and internal full-delete flows remove them through `db_delete_workspace_structure_batch`.
 - Keeps the queue doc while content remains.
-- Does not delete workspace structure. The UI-facing `organizations.delete_workspace` path already removed workspace memberships, access docs, quota usage, and the workspace doc during phase 1. Use `db_delete_workspace_batch` only from flows that still need full content-plus-structure workspace deletion.
+- Does not delete workspace structure. The UI-facing `organizations.delete_workspace` path already removed workspace memberships, access docs, active API credential quota docs, released one `extra_workspaces` usage unit, and deleted the workspace doc during phase 1. Use `db_delete_workspace_batch` only from flows that still need full content-plus-structure workspace deletion.
 
 ## Organization Delete
 
@@ -149,7 +149,8 @@ Current purge coverage includes:
 - `files_pending_updates_last_sequence_saved`
 - `ai_chat_files_content`, `ai_chat_files`
 - `ai_chat_threads_messages_aisdk_5`, `ai_chat_threads_state`, `ai_chat_threads`
-- `api_credentials`, `public_api_grants`
+- `api_credentials`
+- `public_api_grants`
 - `public_api_file_write_stages` via `public_api_db_cleanup_file_write_stage`, before the calls/runs/assets passes: staged asset docs have no `r2Key` yet, so the stage cleanup derives the R2 object keys itself and deletes the objects before their asset docs
 - `plugins_event_run_calls`, `plugins_event_runs` with `plugins_runtime_workpool` run cancellation (plugin event runs execute on that dedicated component; R2 asset `processingWorkId` jobs stay on `files_upload_conversion_workpool`), `plugins_workspace_event_handlers`, `plugins_workspace_installation_secrets`, then `plugins_workspace_installations` one installation per pass: its `plugins_ui_sessions` (via `by_installation`) drain one bounded batch per transaction, and the installation doc is deleted only once no sessions remain
 - `chat_messages`
@@ -183,7 +184,7 @@ When adding a new purge target:
 
 `users.hard_delete_user_now` has three modes:
 
-- `"data"`: data-only reset. Preserve `users`, auth ids, anonymous auth, anagraphic/profile, billing state, default `personal` organization, and default `home` workspace. Clear the user-scope deletion request. Purge content from the preserved home workspace. Delete extra personal workspaces, and delete non-default organizations/workspaces only when the reset user is the only active participant in that tenant scope.
+- `"data"`: data-only reset. Preserve `users`, auth ids, anonymous auth, anagraphic/profile, billing state, default `personal` organization, and default `home` workspace. Clear the user-scope deletion request. Purge content from the preserved home workspace and reset its active API credential quota counter. Delete extra personal workspaces, and delete non-default organizations/workspaces only when the reset user is the only active participant in that tenant scope.
 - `"data_and_auth"`: tombstone locally, drain user sessions, schedule period-end subscription cancellation, delete Clerk auth, finalize local user data/auth, keep the tombstone and `billing_usage_snapshots`, then hand queued tenant purge requests to the Workpool.
 - `"data_auth_and_user_record"`: tombstone locally, drain user sessions, revoke the paid subscription, delete the Polar customer, delete Clerk auth, finalize local data/auth/billing state, hand queued tenant purge requests to the Workpool, then purge the local tombstone.
 

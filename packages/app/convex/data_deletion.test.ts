@@ -15,7 +15,7 @@ import {
 	organizations_db_ensure_default_organization_and_workspace_for_user,
 } from "./organizations.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
-import { quotas_db_ensure } from "./quotas.ts";
+import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { files_create_room_id, files_get_utf8_byte_size } from "../shared/files.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
 
@@ -547,6 +547,17 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			}),
 		]);
 	}
+
+	const quota = await quotas_db_get(ctx, {
+		quotaName: "active_api_credentials",
+		userId: args.userId,
+		organizationId: apiOrganizationId,
+		workspaceId: apiWorkspaceId,
+	});
+	await ctx.db.patch("quotas", quota._id, {
+		usedCount: quota.usedCount + args.count,
+		updatedAt: Date.now(),
+	});
 
 	return { r2Keys };
 }
@@ -2978,6 +2989,7 @@ describe("hard_delete_user_data", () => {
 				ownedDefaultWorkspace,
 				personalWorkspaceQuota,
 				userOrganizationQuota,
+				activeApiCredentialQuota,
 				userRequest,
 				defaultOrganizationRequest,
 				defaultWorkspaceRequest,
@@ -3039,6 +3051,16 @@ describe("hard_delete_user_data", () => {
 					.query("quotas")
 					.withIndex("by_user_quotaName", (q) => q.eq("userId", user.userId).eq("quotaName", "extra_organizations"))
 					.first(),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_user_organization_workspace_quotaName", (q) =>
+						q
+							.eq("userId", user.userId)
+							.eq("organizationId", user.defaultOrganizationId)
+							.eq("workspaceId", user.defaultWorkspaceId)
+							.eq("quotaName", "active_api_credentials"),
+					)
+					.first(),
 				ctx.db.get("data_deletion_requests", seeded.userRequestId),
 				ctx.db.get("data_deletion_requests", seeded.defaultOrganizationRequestId),
 				ctx.db.get("data_deletion_requests", seeded.defaultWorkspaceRequestId),
@@ -3062,6 +3084,7 @@ describe("hard_delete_user_data", () => {
 				ownedDefaultWorkspace,
 				personalWorkspaceQuota,
 				userOrganizationQuota,
+				activeApiCredentialQuota,
 				userRequest,
 				defaultOrganizationRequest,
 				defaultWorkspaceRequest,
@@ -3085,6 +3108,7 @@ describe("hard_delete_user_data", () => {
 		expect(after.ownedDefaultWorkspace).toBeNull();
 		expect(after.personalWorkspaceQuota?.usedCount).toBe(0);
 		expect(after.userOrganizationQuota?.usedCount).toBe(0);
+		expect(after.activeApiCredentialQuota?.usedCount).toBe(0);
 		expect(after.userRequest).toBeNull();
 		expect(after.defaultOrganizationRequest).toBeNull();
 		expect(after.defaultWorkspaceRequest).toBeNull();
@@ -3191,6 +3215,7 @@ describe("hard_delete_user_data", () => {
 				extraWorkspace,
 				defaultMembership,
 				ownerRole,
+				defaultApiCredentialQuota,
 				defaultContent,
 				extraContent,
 			] = await Promise.all([
@@ -3221,6 +3246,12 @@ describe("hard_delete_user_data", () => {
 							.eq("role", "owner"),
 					)
 					.first(),
+				quotas_db_get(ctx, {
+					quotaName: "active_api_credentials",
+					userId: user.userId,
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+				}),
 				data_deletion_test_count_workspace_content(ctx, {
 					organizationId: user.defaultOrganizationId,
 					workspaceId: user.defaultWorkspaceId,
@@ -3241,6 +3272,7 @@ describe("hard_delete_user_data", () => {
 				extraWorkspace,
 				defaultMembership,
 				ownerRole,
+				defaultApiCredentialQuota,
 				defaultContent,
 				extraContent,
 			};
@@ -3257,6 +3289,7 @@ describe("hard_delete_user_data", () => {
 		expect(after.defaultWorkspace?._id).toBe(user.defaultWorkspaceId);
 		expect(after.defaultMembership?._id).toBeDefined();
 		expect(after.ownerRole?._id).toBeDefined();
+		expect(after.defaultApiCredentialQuota.usedCount).toBe(0);
 		expect(after.extraWorkspace).toBeNull();
 		expect(after.defaultContent).toBe(0);
 		expect(after.extraContent).toBe(0);

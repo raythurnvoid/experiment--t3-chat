@@ -12,35 +12,70 @@ import app_convex_schema from "./schema.ts";
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
-export async function quotas_db_get(
-	ctx: QueryCtx | MutationCtx,
-	args:
-		| {
-				quotaName: "extra_organizations";
-				userId: Id<"users">;
-		  }
-		| {
-				quotaName: "extra_workspaces";
-				organizationId: Id<"organizations">;
-		  },
-) {
-	const quota =
-		args.quotaName === "extra_organizations"
-			? await ctx.db
-					.query("quotas")
-					.withIndex("by_user_quotaName", (q) => q.eq("userId", args.userId).eq("quotaName", args.quotaName))
-					.first()
-			: await ctx.db
-					.query("quotas")
-					.withIndex("by_organization_quotaName", (q) =>
-						q.eq("organizationId", args.organizationId).eq("quotaName", args.quotaName),
-					)
-					.first();
+type QuotaScope =
+	| {
+			quotaName: "extra_organizations";
+			userId: Id<"users">;
+	  }
+	| {
+			quotaName: "extra_workspaces";
+			organizationId: Id<"organizations">;
+	  }
+	| {
+			quotaName: "active_api_credentials";
+			userId: Id<"users">;
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+	  };
+
+function quota_scope_fields(args: QuotaScope) {
+	if (args.quotaName === "extra_organizations") {
+		return { userId: args.userId };
+	}
+	if (args.quotaName === "extra_workspaces") {
+		return { organizationId: args.organizationId };
+	}
+	return {
+		userId: args.userId,
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+	};
+}
+
+async function db_find_quota(ctx: QueryCtx | MutationCtx, args: QuotaScope) {
+	if (args.quotaName === "extra_organizations") {
+		return await ctx.db
+			.query("quotas")
+			.withIndex("by_user_quotaName", (q) => q.eq("userId", args.userId).eq("quotaName", args.quotaName))
+			.first();
+	}
+	if (args.quotaName === "extra_workspaces") {
+		return await ctx.db
+			.query("quotas")
+			.withIndex("by_organization_quotaName", (q) =>
+				q.eq("organizationId", args.organizationId).eq("quotaName", args.quotaName),
+			)
+			.first();
+	}
+	return await ctx.db
+		.query("quotas")
+		.withIndex("by_user_organization_workspace_quotaName", (q) =>
+			q
+				.eq("userId", args.userId)
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("quotaName", args.quotaName),
+		)
+		.first();
+}
+
+export async function quotas_db_get(ctx: QueryCtx | MutationCtx, args: QuotaScope) {
+	const quota = await db_find_quota(ctx, args);
 
 	if (!quota) {
 		throw should_never_happen("Missing quota doc", {
 			quotaName: args.quotaName,
-			...(args.quotaName === "extra_organizations" ? { userId: args.userId } : { organizationId: args.organizationId }),
+			...quota_scope_fields(args),
 		});
 	}
 
@@ -49,38 +84,19 @@ export async function quotas_db_get(
 
 export async function quotas_db_ensure(
 	ctx: MutationCtx,
-	args:
-		| {
-				quotaName: "extra_organizations";
-				userId: Id<"users">;
-				now: number;
-		  }
-		| {
-				quotaName: "extra_workspaces";
-				organizationId: Id<"organizations">;
-				now: number;
-		  },
+	args: QuotaScope & {
+		now: number;
+	},
 ) {
 	const quotaDefinition = quotas[args.quotaName];
-	const existing =
-		args.quotaName === "extra_organizations"
-			? await ctx.db
-					.query("quotas")
-					.withIndex("by_user_quotaName", (q) => q.eq("userId", args.userId).eq("quotaName", args.quotaName))
-					.first()
-			: await ctx.db
-					.query("quotas")
-					.withIndex("by_organization_quotaName", (q) =>
-						q.eq("organizationId", args.organizationId).eq("quotaName", args.quotaName),
-					)
-					.first();
+	const existing = await db_find_quota(ctx, args);
 	if (existing) {
 		return existing._id;
 	}
 
 	return await ctx.db.insert("quotas", {
 		quotaName: args.quotaName,
-		...(args.quotaName === "extra_organizations" ? { userId: args.userId } : { organizationId: args.organizationId }),
+		...quota_scope_fields(args),
 		usedCount: 0,
 		maxCount: quotaDefinition.maxCount,
 		createdAt: args.now,
@@ -96,6 +112,7 @@ export const get = query({
 		quotaName: app_convex_schema.tables.quotas.validator.fields.quotaName,
 		userId: v.optional(v.id("users")),
 		organizationId: v.optional(v.id("organizations")),
+		membershipId: v.optional(v.id("organizations_workspaces_users")),
 	},
 	returns: v.union(doc(app_convex_schema, "quotas"), v.null()),
 	handler: async (ctx, args) => {
@@ -150,8 +167,21 @@ export const get = query({
 			});
 		}
 
-		throw should_never_happen("Unhandled quota name", {
+		const membershipId = args.membershipId;
+		if (!membershipId) {
+			return null;
+		}
+
+		const membership = await ctx.db.get("organizations_workspaces_users", membershipId);
+		if (!membership || !membership.active || membership.userId !== userAuth.id) {
+			return null;
+		}
+
+		return await quotas_db_get(ctx, {
 			quotaName: args.quotaName,
+			userId: userAuth.id,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
 		});
 	},
 });

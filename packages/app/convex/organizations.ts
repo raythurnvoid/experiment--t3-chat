@@ -137,6 +137,14 @@ export async function organizations_db_create(
 			now: args.now,
 		}),
 
+		quotas_db_ensure(ctx, {
+			quotaName: "active_api_credentials",
+			userId: args.userId,
+			organizationId,
+			workspaceId: defaultWorkspaceId,
+			now: args.now,
+		}),
+
 		ctx.db.insert("organizations_workspaces_users", {
 			organizationId: organizationId,
 			workspaceId: defaultWorkspaceId,
@@ -299,6 +307,13 @@ export async function organizations_db_create_workspace(
 		userId: args.userId,
 		active: true,
 		updatedAt: args.now,
+	});
+	await quotas_db_ensure(ctx, {
+		quotaName: "active_api_credentials",
+		userId: args.userId,
+		organizationId: args.organizationId,
+		workspaceId,
+		now: args.now,
 	});
 
 	await access_control_db_ensure_role_assignment(ctx, {
@@ -897,6 +912,15 @@ export const invite_user_to_organization_workspace = mutation({
 						active: true,
 						updatedAt: now,
 					}),
+			existingHomeMembership
+				? null
+				: quotas_db_ensure(ctx, {
+						quotaName: "active_api_credentials",
+						userId: userIdToAdd,
+						organizationId: organization._id,
+						workspaceId: defaultWorkspaceId,
+						now,
+					}),
 			access_control_db_ensure_role_assignment(ctx, {
 				organizationId: organization._id,
 				workspaceId: defaultWorkspaceId,
@@ -912,6 +936,15 @@ export const invite_user_to_organization_workspace = mutation({
 						userId: userIdToAdd,
 						active: true,
 						updatedAt: now,
+					}),
+			isDefaultWorkspace
+				? null
+				: quotas_db_ensure(ctx, {
+						quotaName: "active_api_credentials",
+						userId: userIdToAdd,
+						organizationId: organization._id,
+						workspaceId: workspace._id,
+						now,
 					}),
 			isDefaultWorkspace
 				? null
@@ -1030,8 +1063,18 @@ export const remove_user_from_organization = mutation({
 							.eq("userId", args.userIdToRemove)
 							.eq("revokedAt", null),
 					)
-					// The creation cap bounds this exact workspace/user set. Collect every match so removal cannot leave a key active.
+					// The active API credential quota bounds this workspace/user set. Collect every match so removal cannot leave a key active.
 					.collect(),
+			),
+		);
+		const apiCredentialQuotasPromise = Promise.all(
+			memberships.map((membership) =>
+				quotas_db_get(ctx, {
+					quotaName: "active_api_credentials",
+					userId: args.userIdToRemove,
+					organizationId: organization._id,
+					workspaceId: membership.workspaceId,
+				}),
 			),
 		);
 
@@ -1039,9 +1082,15 @@ export const remove_user_from_organization = mutation({
 			...memberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)),
 			// Re-inviting this user must never restore credentials from the membership being removed.
 			apiCredentialsPromise.then((apiCredentials) =>
-				apiCredentials
-					.flat()
-					.map((apiCredential) => ctx.db.patch("api_credentials", apiCredential._id, { revokedAt: now })),
+				Promise.all(
+					apiCredentials
+						.flat()
+						.map((apiCredential) => ctx.db.patch("api_credentials", apiCredential._id, { revokedAt: now })),
+				),
+			),
+			// Delete these quota docs so a later invite creates counters with `usedCount: 0`.
+			apiCredentialQuotasPromise.then((quotaDocs) =>
+				Promise.all(quotaDocs.map((quotaDoc) => ctx.db.delete("quotas", quotaDoc._id))),
 			),
 			// Remove invite notifications for the organization access the user is losing.
 			ctx.db
@@ -1695,6 +1744,13 @@ export const delete_workspace = mutation({
 			Promise.all(
 				workspaceUserLookup.map((workspaceUser) => ctx.db.delete("organizations_workspaces_users", workspaceUser._id)),
 			),
+			ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) =>
+					q.eq("workspaceId", workspace._id).eq("quotaName", "active_api_credentials"),
+				)
+				.collect()
+				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("quotas", doc._id)))),
 			ctx.db
 				.query("access_control_role_assignments")
 				.withIndex("by_organization_workspace_user_role", (q) =>

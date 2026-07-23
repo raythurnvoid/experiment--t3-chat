@@ -1380,16 +1380,28 @@ const app_convex_schema = defineSchema({
 		.index("by_active_user_organization_workspace", ["active", "userId", "organizationId", "workspaceId"]),
 
 	quotas: defineTable({
-		quotaName: v.union(v.literal("extra_organizations"), v.literal("extra_workspaces")),
+		quotaName: v.union(
+			v.literal("extra_organizations"),
+			v.literal("extra_workspaces"),
+			v.literal("active_api_credentials"),
+		),
 		userId: v.optional(v.id("users")),
 		organizationId: v.optional(v.id("organizations")),
+		workspaceId: v.optional(v.id("organizations_workspaces")),
 		usedCount: v.number(),
 		maxCount: v.number(),
 		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
 		.index("by_user_quotaName", ["userId", "quotaName"])
-		.index("by_organization_quotaName", ["organizationId", "quotaName"]),
+		.index("by_organization_quotaName", ["organizationId", "quotaName"])
+		.index("by_workspace_quotaName", ["workspaceId", "quotaName"])
+		.index("by_user_organization_workspace_quotaName", [
+			"userId",
+			"organizationId",
+			"workspaceId",
+			"quotaName",
+		]),
 	// #endregion organizations
 
 	// #region billing

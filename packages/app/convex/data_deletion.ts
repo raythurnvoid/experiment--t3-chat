@@ -265,7 +265,7 @@ async function db_create_default_organization_and_workspace_for_user(
 		updatedAt: args.now,
 	});
 
-	// Wire the new tenant together: default-workspace pointer, workspace quota,
+	// Wire the new tenant together: default-workspace pointer, quota docs,
 	// active membership, owner role, and user default pointers.
 	await Promise.all([
 		ctx.db.patch("organizations", organizationId, {
@@ -274,6 +274,13 @@ async function db_create_default_organization_and_workspace_for_user(
 		quotas_db_ensure(ctx, {
 			quotaName: "extra_workspaces",
 			organizationId,
+			now: args.now,
+		}),
+		quotas_db_ensure(ctx, {
+			quotaName: "active_api_credentials",
+			userId: args.userId,
+			organizationId,
+			workspaceId: defaultWorkspaceId,
 			now: args.now,
 		}),
 		ctx.db.insert("organizations_workspaces_users", {
@@ -832,7 +839,6 @@ async function db_delete_workspace_structure_batch(
 		return { done: false, deletedCount: notifications.length };
 	}
 
-	// Workspace memberships and direct access-control docs are structural state.
 	// Heavy workspace content has already been purged before this helper runs.
 	const memberships = await ctx.db
 		.query("organizations_workspaces_users")
@@ -841,6 +847,17 @@ async function db_delete_workspace_structure_batch(
 	if (memberships.length > 0) {
 		await Promise.all(memberships.map((doc) => ctx.db.delete("organizations_workspaces_users", doc._id)));
 		return { done: false, deletedCount: memberships.length };
+	}
+
+	const apiCredentialQuotaDocs = await ctx.db
+		.query("quotas")
+		.withIndex("by_workspace_quotaName", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("quotaName", "active_api_credentials"),
+		)
+		.take(args.batchSize);
+	if (apiCredentialQuotaDocs.length > 0) {
+		await Promise.all(apiCredentialQuotaDocs.map((doc) => ctx.db.delete("quotas", doc._id)));
+		return { done: false, deletedCount: apiCredentialQuotaDocs.length };
 	}
 
 	const roleAssignments = await ctx.db
@@ -1387,8 +1404,7 @@ async function db_finalize_deleted_user(
 		// Keep auth identifiers for auth-preserving deletion finalization; auth purges
 		// remove both the external Clerk pointer and the anonymous token that can mint sessions.
 		...(args.deleteUserAuth ? anonymousAuthTokens.map((doc) => ctx.db.delete("users_anon_tokens", doc._id)) : []),
-		// User-level quotas belong to the deleted account, not to a tenant. Remove
-		// them once the user is finalized.
+		// Delete this user's `extra_organizations` and active API credential quota docs during finalization.
 		...userQuotaDocs.map((doc) => ctx.db.delete("quotas", doc._id)),
 		// Only full user-record purge paths pass `deleteBillingState`. Account
 		// reset and auth-preserving deletion keep snapshots because billing
@@ -2069,7 +2085,19 @@ export const hard_delete_user_data = internalMutation({
 			// The home workspace still has more content than fits in this batch.
 			return defaultWorkspacePurge;
 		}
+
+		const apiCredentialQuota = await quotas_db_get(ctx, {
+			quotaName: "active_api_credentials",
+			userId: user._id,
+			organizationId: defaultTenant.organizationId,
+			workspaceId: defaultTenant.defaultWorkspaceId,
+		});
 		await Promise.all([
+			// The home membership and quota doc survive data-only reset, so clear the counter after its keys are gone.
+			ctx.db.patch("quotas", apiCredentialQuota._id, {
+				usedCount: 0,
+				updatedAt: now,
+			}),
 			// The default tenant must not be deleted later by an old queued request.
 			db_delete_data_deletion_requests(ctx, {
 				scope: "organization",

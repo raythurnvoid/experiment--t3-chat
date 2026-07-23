@@ -21,6 +21,7 @@ import {
 	activities_db_get_by_source_id,
 	activities_db_start,
 } from "./activities.ts";
+import { quotas_db_get } from "./quotas.ts";
 import { rate_limiter_limit_by_key, rate_limiter_http_client_key } from "./rate_limiter.ts";
 import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
@@ -98,7 +99,8 @@ const CREDENTIAL_KEY_PREFIX = "pk_";
 const CREDENTIAL_KEY_ID_BYTES = 16;
 const CREDENTIAL_SECRET_BYTES = 32;
 const API_CREDENTIAL_NAME_MAX_CHARS = 80;
-const API_CREDENTIAL_ACTIVE_MAX = 20;
+// Keep the API key list bounded. The active API credential quota is stored in `quotas`.
+const API_CREDENTIAL_LIST_MAX = 100;
 const API_CREDENTIAL_TOKEN_REGEX = /^pk_[0-9a-f]{32}\.[0-9a-f]{64}$/u;
 const PUBLIC_API_GRANT_TOKEN_REGEX = /^[0-9a-f]{64}$/u;
 const PLUGIN_RUN_TOKEN_REGEX = /^plr_[0-9a-f]{64}$/u;
@@ -470,18 +472,16 @@ export const api_credential_create = mutation({
 			return Result({ _nay: { message: "At least one scope is required" } });
 		}
 
-		const activeCredentials = await ctx.db
-			.query("api_credentials")
-			.withIndex("by_organization_workspace_user_revokedAt", (q) =>
-				q
-					.eq("organizationId", credentialManagement._yay.organization._id)
-					.eq("workspaceId", credentialManagement._yay.workspace._id)
-					.eq("userId", credentialManagement._yay.user._id)
-					.eq("revokedAt", null),
-			)
-			.take(API_CREDENTIAL_ACTIVE_MAX);
-		if (activeCredentials.length >= API_CREDENTIAL_ACTIVE_MAX) {
-			return Result({ _nay: { message: "You can have up to 20 active API keys in this workspace" } });
+		const quota = await quotas_db_get(ctx, {
+			quotaName: "active_api_credentials",
+			userId: credentialManagement._yay.user._id,
+			organizationId: credentialManagement._yay.organization._id,
+			workspaceId: credentialManagement._yay.workspace._id,
+		});
+		if (quota.usedCount >= quota.maxCount) {
+			return Result({
+				_nay: { message: `You can have up to ${quota.maxCount} active API keys in this workspace` },
+			});
 		}
 
 		const now = Date.now();
@@ -498,6 +498,10 @@ export const api_credential_create = mutation({
 			createdAt: now,
 			revokedAt: null,
 			lastUsedAt: null,
+		});
+		await ctx.db.patch("quotas", quota._id, {
+			usedCount: quota.usedCount + 1,
+			updatedAt: now,
 		});
 
 		return Result({
@@ -542,9 +546,9 @@ export const api_credentials_list = query({
 					.eq("revokedAt", null),
 			)
 			.order("desc")
-			.take(100);
+			.take(API_CREDENTIAL_LIST_MAX);
 		const revokedCredentials =
-			activeCredentials.length < 100
+			activeCredentials.length < API_CREDENTIAL_LIST_MAX
 				? await ctx.db
 						.query("api_credentials")
 						.withIndex("by_organization_workspace_user_revokedAt", (q) =>
@@ -555,7 +559,7 @@ export const api_credentials_list = query({
 						)
 						.order("desc")
 						.filter((q) => q.neq(q.field("revokedAt"), null))
-						.take(100 - activeCredentials.length)
+						.take(API_CREDENTIAL_LIST_MAX - activeCredentials.length)
 				: [];
 		const credentials = [...activeCredentials, ...revokedCredentials];
 
@@ -603,7 +607,20 @@ export const api_credential_revoke = mutation({
 				return Result({ _nay: { message: rateLimit.message } });
 			}
 
-			await ctx.db.patch("api_credentials", credential._id, { revokedAt: Date.now() });
+			const quota = await quotas_db_get(ctx, {
+				quotaName: "active_api_credentials",
+				userId: credentialManagement._yay.user._id,
+				organizationId: credentialManagement._yay.organization._id,
+				workspaceId: credentialManagement._yay.workspace._id,
+			});
+			const now = Date.now();
+			await Promise.all([
+				ctx.db.patch("api_credentials", credential._id, { revokedAt: now }),
+				ctx.db.patch("quotas", quota._id, {
+					usedCount: quota.usedCount - 1,
+					updatedAt: now,
+				}),
+			]);
 		}
 
 		return Result({ _yay: null });
