@@ -3,7 +3,9 @@
 		--RootLayout-header-height: 48px;
 
 		display: grid;
-		grid-template: var(--RootLayout-header-height) calc(100dvh - var(--RootLayout-header-height)) / max-content 1fr;
+		grid-template:
+			var(--RootLayout-header-height) calc(100dvh - var(--RootLayout-header-height)) /
+			max-content minmax(0, 1fr);
 
 		min-height: inherit;
 

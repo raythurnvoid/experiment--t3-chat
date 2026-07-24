@@ -1,6 +1,6 @@
 # Agent Panel And AI Chat
 
-Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). Everything here was proven during the 2026-06-12 QA + eval pass against a backgrounded tab.
+Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). These rules include the 2026-06-12 agent eval and the 2026-07-24 queued-message QA passes.
 
 ## Stable selectors
 
@@ -8,10 +8,17 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). E
 | --- | --- |
 | Agent tab in files sidebar | `#app_file_editor_sidebar_tabs_agent` |
 | Composer (ProseMirror) | `.AiChatComposer-editor-content` |
-| Send button | `[data-testid="ai-chat-send-button"]` |
+| Send, queue, or save button | `[data-testid="ai-chat-send-button"]` (`aria-label` is `Send message`, `Queue message`, or `Save queued message`) |
 | Stop button (while running) | `[aria-label="Stop generating"]` |
+| Queued messages tray | `[data-testid="ai-chat-queued-messages"]` |
+| Queued message | `[data-testid^="ai-chat-queued-message-ai_message-"]` (DOM order is execution order; read `data-queued-message-id`) |
+| Edit or reorder queued message | `[data-testid="ai-chat-queued-message-edit"]` |
+| Remove queued message | `[data-testid="ai-chat-queued-message-remove"]` |
+| Resume paused queue | `[data-testid="ai-chat-queue-resume"]` |
+| Cancel queued edit | Press Escape in the textbox named `Edit queued message` |
 | Open chat tabs list | `[aria-label="Open chats"]` |
-| New chat | `getByRole('button', { name: 'New chat', exact: true })` |
+| New full-page chat | `getByRole('button', { name: 'New Chat', exact: true })` |
+| New files-sidebar chat | `getByRole('button', { name: 'New chat', exact: true })` |
 | Past chats picker items | `role=option` inside the picker popover |
 | Message | `.AiChatMessage` |
 | Bash tool disclosure | `summary[aria-label^="Bash"]` (`aria-label="Bash: <cmd>"`, `aria-busy` while running) |
@@ -43,11 +50,21 @@ The Stop button blinks out between agent steps (tool-exec gaps), so a single "no
 
 ## Rate limit + retry
 
-`ai_chat_http` uses a token bucket (rate 4/min, capacity 1): a second send within ~15 s shows the designed `Message failed to send.` alert. Wait ~16 s and click the last `Retry` button; the same draft resends.
+`ai_chat_http` uses a token bucket (rate 4/min, capacity 1). The chat transport keeps an HTTP 429 inside the same AI SDK request: it reads the server's validated `retryAfterMs`, waits, then retries the same message id. Stop aborts this wait. Do not expect a queued message to disappear or show the failed-send UI for this normal rate-limit case.
+
+When later messages are queued, any other failed active turn pauses the queue. The failed user stays in the transcript with `Message failed to send.` and its normal Retry action. Every later queued row must keep its stable id, text, and order. This also applies when the thread is still optimistic, an empty assistant placeholder exists, or Convex persisted the failed user before the assistant stream failed. Resume retries the visible failed turn before the queue continues. The message Retry action follows the same path. If that retry fails, the queue pauses again without claiming a follower.
+
+Stop aborts the active turn and keeps later messages in a paused queue, but it does not show failed-send feedback. Verify that the tray, order, and text stay unchanged through sustained idle. Wait for the rate-limit bucket to refill, then click Resume and verify that draining follows the current queue order. The aborted active turn is not added back to the queue.
+
+Do not validate post-Stop draining with a route that intercepts `/api/chat` before Convex. That stub cannot persist the stopped turn's user or assistant anchor, so the queue must wait and the test reports a false idle state. Use the real route. Before Stop, require a 200 response, visible assistant text, and a visible Stop button. This proves that the active turn reached the normal persistence flow.
+
+Click queued message text to edit it in the main composer. The composer changes to `data-composer-mode="queue-edit"`, its textbox is named `Edit queued message`, and its only message action is `Save queued message`. Saving updates the same queued item and does not send by itself, but it can unblock the normal drain and let `/api/chat` start right away. Escape restores the normal draft without changing the queued item. Earlier messages keep draining while a later item is being edited; draining waits only when the edited item is next. An edit does not set or clear the separate Stop-owned paused state.
+
+Drag from the queued message's primary action. A click edits the message, while a pointer or keyboard drag reorders it. Pointer and keyboard moves change the DOM order and the later request order. Queue draining waits for the drag to finish. Use stable row ids and text when checking the result; visible handles, position chips, and counters do not exist.
 
 ## Ready-made helpers
 
-`scripts/agent-chat-helpers.js` installs `state.qa` (session-persistent) with `newChat()`, `send(text)`, `waitIdle(ms)`, `waitDone(ms)` (idle + automatic rate-limit retry), `dump()`, and `readTerminal(index)`. `newChat()` uses the accessible button and verifies that the app selected a new `ai_thread-*` tab. `waitDone()` throws when retries still fail or the message DOM never settles:
+`scripts/agent-chat-helpers.js` installs `state.qa` (session-persistent) with `newChat()`, `send(text)`, `queue(text)`, `queueSnapshot()`, `editQueued(index, text)`, `cancelQueuedEdit(index)`, `reorderQueued(fromIndex, toIndex)`, `keyboardReorderQueued(fromIndex, direction, count)`, `stopQueue(ms)`, `resumeQueue()`, `waitIdle(ms)`, `waitDone(ms)` (idle + automatic rate-limit retry), `dump()`, and `readTerminal(index)`. `queue(text)` requires the accessible `Queue message` state and verifies the new stable row id and exact text. `queueSnapshot()` returns stable ids, exact text, edit state, composer text/labels, paused/full/running state, and the live status. Reorder helpers use the real pointer or keyboard drag sensors. Pointer reorder scrolls the source row into the tray before measuring it. Keep the destination close enough to stay visible, and use keyboard reorder for long offscreen moves. `stopQueue()` waits for both the Resume control and sustained idle. `newChat()` is for the files-sidebar Agent tab; it uses the accessible button and verifies that the app selected a new `ai_thread-*` tab. `waitDone()` throws when retries still fail or the message DOM never settles:
 
 ```powershell
 vp env exec pnpx playwriter -s $session -f .agents/skills/app-playwriter-harness/scripts/agent-chat-helpers.js

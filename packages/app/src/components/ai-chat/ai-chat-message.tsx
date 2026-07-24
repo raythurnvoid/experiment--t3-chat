@@ -1728,7 +1728,9 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 								className={"AiChatMessageUser-content-composer" satisfies AiChatMessageUser_ClassNames}
 								autoFocus
 								canCancel={false}
+								canQueue={false}
 								canSend={true}
+								isQueueing={false}
 								isRunning={false}
 								initialValue={text ?? ""}
 								selectedModelId={selectedModelId}

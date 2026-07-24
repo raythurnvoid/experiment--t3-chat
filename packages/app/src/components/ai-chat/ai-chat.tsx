@@ -21,6 +21,7 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import {
 	AiChatController,
+	type AiChatQueuedUserMessage,
 	type AiChatControllerStorageKey,
 	type AiChatThreadRuntime,
 	type AiChatRuntimeActions,
@@ -30,6 +31,7 @@ import {
 	type AiChatComposer_ClassNames,
 	type AiChatComposer_Props,
 } from "@/components/ai-chat/ai-chat-composer.tsx";
+import { AiChatQueuedMessages } from "@/components/ai-chat/ai-chat-queued-messages.tsx";
 import {
 	AiChatMessage,
 	AiChatMessagePendingAssistant,
@@ -397,7 +399,7 @@ export type AiChatThread_Props = {
 	scrollableContainer: HTMLElement | null;
 	/**
 	 * Rendered inside the composer column, above the composer. The stack is a vertical flex
-	 * column: future rows (e.g. the message queue) append below existing slot content.
+	 * column: the queued-messages tray appears below existing slot content.
 	 */
 	composerTopSlot?: ReactNode;
 };
@@ -416,8 +418,16 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 	const editingMessageId = AiChatController.useStore((state) =>
 		selectedThreadId ? (state.editingMessageIdByThreadId.get(selectedThreadId) ?? null) : null,
 	);
-	const initialComposerValue = controller.session?.draftComposerText ?? "";
+	const queuedUserMessageEdit = controller.queuedUserMessageEdit;
+	const initialComposerValue = queuedUserMessageEdit?.text ?? controller.session?.draftComposerText ?? "";
+	const composerSelectedModelId = queuedUserMessageEdit?.selectedModelId ?? selectedModelId;
+	const composerSelectedModeId = queuedUserMessageEdit?.selectedModeId ?? selectedModeId;
+	const composerChat = controller.session?.chat ?? null;
 	const controllerRef = useLiveRef(controller);
+	const queuedUserMessages = controller.queuedUserMessages;
+	const isMessageQueueFull = controller.isMessageQueueFull;
+	const isMessageQueuePaused = controller.isMessageQueuePaused;
+	const composerRef = useRef<HTMLFormElement | null>(null);
 
 	const [runtimeActions] = useState<AiChatRuntimeActions>(() => {
 		const isThreadRunning = (threadId: string) => {
@@ -441,9 +451,9 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 			},
 			sendUserText: (threadId, value, options) => {
 				if (isThreadRunning(threadId)) {
-					return;
+					return false;
 				}
-				controllerRef.current.sendUserText(threadId, value, options);
+				return controllerRef.current.sendUserText(threadId, value, options);
 			},
 			regenerate: (threadId, messageId) => {
 				if (isThreadRunning(threadId)) {
@@ -495,18 +505,39 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		scrollToBottom("smooth");
 	});
 
-	const handleComposerValueChange = useFn<AiChatComposer_Props["onValueChange"]>((value) => {
-		if (!selectedThreadId) {
-			return;
-		}
-		controller.setComposerValue(selectedThreadId, value);
+	const focusComposer = useFn(() => {
+		requestAnimationFrame(() => {
+			composerRef.current?.querySelector<HTMLElement>('[role="textbox"]')?.focus();
+		});
 	});
 
+	const handleDraftComposerValueChange: AiChatComposer_Props["onValueChange"] = (value) => {
+		if (!composerChat) {
+			return;
+		}
+		controller.setComposerValue(composerChat, value);
+	};
+
+	const handleQueuedUserMessageEditValueChange: AiChatComposer_Props["onValueChange"] = (value) => {
+		if (!composerChat || !queuedUserMessageEdit) {
+			return;
+		}
+		controller.setQueuedUserMessageEditText(composerChat, queuedUserMessageEdit.id, value);
+	};
+
 	const handleSelectedModelIdChange = useFn<AiChatComposer_Props["onSelectedModelIdChange"]>((value) => {
+		if (composerChat && queuedUserMessageEdit) {
+			controller.setQueuedUserMessageEditModelId(composerChat, queuedUserMessageEdit.id, value);
+			return;
+		}
 		controller.setSelectedModelId(value);
 	});
 
 	const handleSelectedModeIdChange = useFn<AiChatComposer_Props["onSelectedModeIdChange"]>((value) => {
+		if (composerChat && queuedUserMessageEdit) {
+			controller.setQueuedUserMessageEditModeId(composerChat, queuedUserMessageEdit.id, value);
+			return;
+		}
 		controller.setSelectedModeId(value);
 	});
 
@@ -515,16 +546,69 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 			return;
 		}
 
-		if (selectedThreadId) {
-			controller.sendUserText(selectedThreadId, value);
-		} else {
-			controller.startNewChat(value);
+		if (queuedUserMessageEdit) {
+			const didSave = controller.saveQueuedUserMessageEdit(queuedUserMessageEdit.id, value);
+			if (didSave) {
+				focusComposer();
+			}
+			return didSave;
 		}
+
+		if (selectedThreadId) {
+			return controller.sendUserText(selectedThreadId, value);
+		}
+		controller.startNewChat(value);
+		return true;
 	});
 
 	const handleComposerCancel = useFn<AiChatComposer_Props["onCancel"]>(() => {
 		controller.stop();
 	});
+
+	const handleQueuedUserMessageEditCancel = useFn(() => {
+		if (!queuedUserMessageEdit) {
+			return;
+		}
+		controller.cancelQueuedUserMessageEdit(queuedUserMessageEdit.id);
+		focusComposer();
+	});
+
+	const handleComposerClose = useFn<NonNullable<AiChatComposer_Props["onClose"]>>(() => {
+		if (!queuedUserMessageEdit) {
+			return;
+		}
+		handleQueuedUserMessageEditCancel();
+	});
+
+	const handleQueuedUserMessageEdit = useFn((messageId: (typeof queuedUserMessages)[number]["id"]) => {
+		if (queuedUserMessageEdit?.id !== messageId) {
+			controller.startQueuedUserMessageEdit(messageId);
+		}
+		focusComposer();
+	});
+
+	const handleQueuedUserMessageRemove = useFn((messageId: (typeof queuedUserMessages)[number]["id"]) => {
+		const shouldFocusComposer = queuedUserMessageEdit?.id === messageId || queuedUserMessages.length === 1;
+		controller.removeQueuedUserMessage(messageId);
+		if (shouldFocusComposer) {
+			focusComposer();
+		}
+	});
+
+	const setQueuedUserMessagesReordering = controller.setQueuedUserMessagesReordering;
+	const handleQueuedUserMessagesReordering = useMemo(() => {
+		return (isReordering: boolean) => {
+			if (composerChat) {
+				setQueuedUserMessagesReordering(composerChat, isReordering);
+			}
+		};
+	}, [composerChat, setQueuedUserMessagesReordering]);
+
+	const handleQueuedUserMessagesReorder = useFn(
+		(orderedMessageIds: readonly AiChatQueuedUserMessage["id"][]) => {
+			controller.reorderQueuedUserMessages(orderedMessageIds);
+		},
+	);
 
 	const handleClickSuggestion = useFn<AiChatMessagesList_Props["onClickSuggestion"]>((action) => {
 		if (!action.trim()) {
@@ -775,6 +859,22 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 				isToolOrDynamicToolUIPart(part) && (part.state === "input-streaming" || part.state === "input-available"),
 		);
 	const aiChatState = isToolRunning ? "tool-running" : controller.isRunning ? "streaming" : "idle";
+	const queuedUserMessageStatus = (() => {
+		const count = queuedUserMessages.length;
+		if (count === 0) {
+			return "";
+		}
+
+		const countText = count === 1 ? "1 queued message." : `${count} queued messages.`;
+		const editText = queuedUserMessageEdit ? " Editing a queued message." : "";
+		if (isMessageQueuePaused) {
+			return `${countText} Queue paused.${editText}`;
+		}
+		if (isMessageQueueFull) {
+			return `${countText} Queue is full.${editText}`;
+		}
+		return `${countText}${editText}`;
+	})();
 
 	return (
 		<div
@@ -810,6 +910,9 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 					/>
 				</div>
 				<div className={"AiChatThread-composer" satisfies AiChatThread_ClassNames}>
+					<span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+						{queuedUserMessageStatus}
+					</span>
 					<div className={"AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames}>
 						<MyFloatingSurface
 							className={"AiChatThread-scroll-to-bottom-card" satisfies AiChatThread_ClassNames}
@@ -822,19 +925,42 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 					</div>
 					<div className={"AiChatThread-composer-stack" satisfies AiChatThread_ClassNames}>
 						{composerTopSlot}
+						<AiChatQueuedMessages
+							messages={queuedUserMessages}
+							editingMessageId={queuedUserMessageEdit?.id ?? null}
+							isFull={isMessageQueueFull}
+							isPaused={isMessageQueuePaused}
+							onEdit={handleQueuedUserMessageEdit}
+							onRemove={handleQueuedUserMessageRemove}
+							onReorderStateChange={handleQueuedUserMessagesReordering}
+							onReorder={handleQueuedUserMessagesReorder}
+							onResume={controller.resumeQueuedUserMessages}
+						/>
 						<AiChatComposer
-							key={selectedThreadId ?? "new"}
+							key={`${selectedThreadId ?? "new"}:${queuedUserMessageEdit?.id ?? "draft"}`}
+							ref={composerRef}
+							autoFocus={Boolean(queuedUserMessageEdit)}
 							canCancel={controller.isRunning}
+							canQueue={queuedUserMessageEdit ? true : controller.canQueueUserText}
 							canSend={!selectedThreadId || controller.canSendUserText}
+							isQueueing={queuedUserMessageEdit ? true : controller.isQueueingUserText}
+							isQueueEditing={Boolean(queuedUserMessageEdit)}
 							isRunning={controller.isRunning}
 							initialValue={initialComposerValue}
-							selectedModelId={selectedModelId}
-							selectedModeId={selectedModeId}
-							onValueChange={handleComposerValueChange}
+							inputLabel={queuedUserMessageEdit ? "Edit queued message" : undefined}
+							submitLabel={queuedUserMessageEdit ? "Save queued message" : undefined}
+							selectedModelId={composerSelectedModelId}
+							selectedModeId={composerSelectedModeId}
+							onValueChange={
+								queuedUserMessageEdit
+									? handleQueuedUserMessageEditValueChange
+									: handleDraftComposerValueChange
+							}
 							onSelectedModelIdChange={handleSelectedModelIdChange}
 							onSelectedModeIdChange={handleSelectedModeIdChange}
 							onSubmit={handleComposerSubmit}
 							onCancel={handleComposerCancel}
+							onClose={queuedUserMessageEdit ? handleComposerClose : undefined}
 						/>
 					</div>
 				</div>

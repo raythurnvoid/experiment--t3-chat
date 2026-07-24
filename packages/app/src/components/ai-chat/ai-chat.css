@@ -119,7 +119,7 @@
 		position: sticky;
 		bottom: 0;
 
-		/* The stack owns the centered column so slot rows (pending strip, future message queue)
+		/* The stack owns the centered column so the pending strip and queued-messages tray
 		   share the exact same width as the composer. */
 		> .AiChatThread-composer-stack {
 			display: flex;
