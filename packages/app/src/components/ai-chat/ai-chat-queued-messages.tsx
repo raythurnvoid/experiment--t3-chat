@@ -15,7 +15,6 @@ type AiChatQueuedMessages_ClassNames =
 	| "AiChatQueuedMessages"
 	| "AiChatQueuedMessages-header"
 	| "AiChatQueuedMessages-heading"
-	| "AiChatQueuedMessages-resume"
 	| "AiChatQueuedMessages-list"
 	| "AiChatQueuedMessages-item"
 	| "AiChatQueuedMessages-item-state-editing"
@@ -186,8 +185,6 @@ export const AiChatQueuedMessages = memo(function AiChatQueuedMessages(props: Ai
 				<h3 className={"AiChatQueuedMessages-heading" satisfies AiChatQueuedMessages_ClassNames}>Queue Messages</h3>
 				{isPaused ? (
 					<MyButton
-						className={"AiChatQueuedMessages-resume" satisfies AiChatQueuedMessages_ClassNames}
-						variant="ghost"
 						data-testid="ai-chat-queue-resume"
 						onFocus={() => {
 							focusedMessageIdRef.current = null;

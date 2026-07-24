@@ -514,6 +514,7 @@ function RuntimeQueueProbe() {
 			</div>
 			<div data-testid="queue-full">{controller.isMessageQueueFull ? "yes" : "no"}</div>
 			<div data-testid="queue-paused">{controller.isMessageQueuePaused ? "yes" : "no"}</div>
+			<div data-testid="queue-composer-action">{controller.isQueueingUserText ? "queue" : "send"}</div>
 			<div data-testid="queue-failed-message">{failedSendUserMessageId ?? "null"}</div>
 			<div data-testid="queue-failed-text">
 				{failedMessage ? ai_chat_get_message_text(failedMessage) : "null"}
@@ -2531,6 +2532,7 @@ describe("AiChatController", () => {
 		expect(chat.sendMessage).toHaveBeenCalledOnce();
 		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
 		expect(screen.getByTestId("queue-paused").textContent).toBe("yes");
+		expect(screen.getByTestId("queue-composer-action").textContent).toBe("queue");
 		expect(screen.getByTestId("queue-failed-message").textContent).toBe("ai_message_mock_0");
 		expect(screen.getByTestId("queue-failed-text").textContent).toBe("First");
 		expect(chat.error?.message).toBe("send failed");
@@ -2823,6 +2825,76 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("");
 		});
+		expect(screen.getByTestId("queue-paused").textContent).toBe("no");
+	});
+
+	test("sends a new composer message directly after Stop while older queued messages stay paused", async () => {
+		hookMocks.holdChatRequests = true;
+		render(
+			<FullPageSurface initialSelectedThreadId="thread_queue_send_after_stop">
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("queue-session").textContent).toBe("session");
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
+
+		const chat = hookMocks.chatInstances.find((item) => item.id === "thread_queue_send_after_stop");
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected send-after-Stop queue chat instance");
+		}
+
+		fireEvent.click(screen.getByRole("button", { name: "stop queue probe" }));
+		fireEvent.click(
+			screen.getByRole("button", { name: "settle stopped request with empty assistant queue probe" }),
+		);
+
+		await waitFor(() => {
+			expect(
+				AiChatController.useStore.getState().threadById.get("thread_queue_send_after_stop")
+					?.activeRequestToken,
+			).toBeNull();
+		});
+		expect(screen.getByTestId("queue-paused").textContent).toBe("yes");
+		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
+		expect(screen.getByTestId("queue-composer-action").textContent).toBe("send");
+
+		fireEvent.click(screen.getByRole("button", { name: "send third queue probe" }));
+
+		expect(chat.sendMessage).toHaveBeenCalledTimes(2);
+		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
+		expect(screen.getByTestId("queue-paused").textContent).toBe("yes");
+		expect(chat.activeRequestCount).toBe(1);
+		expect(chat.maxActiveRequestCount).toBe(1);
+		const directMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		expect(directMessage?.parts).toContainEqual({ type: "text", text: "Third" });
+
+		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "persist assistant queue probe" }));
+
+		await waitFor(() => {
+			expect(chat.activeRequestCount).toBe(0);
+		});
+		expect(chat.sendMessage).toHaveBeenCalledTimes(2);
+		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
+		expect(screen.getByTestId("queue-paused").textContent).toBe("yes");
+
+		fireEvent.click(screen.getByRole("button", { name: "resume queue probe" }));
+
+		await waitFor(() => {
+			expect(chat.sendMessage).toHaveBeenCalledTimes(3);
+			expect(screen.getByTestId("queue-texts").textContent).toBe("");
+		});
+		const sentTexts = chat.sendMessage.mock.calls.map((call) => {
+			const message = call[0] as ai_chat_AiSdk5UiMessage;
+			return message.parts.find((part) => part.type === "text")?.text;
+		});
+		expect(sentTexts).toEqual(["First", "Third", "Second"]);
 		expect(screen.getByTestId("queue-paused").textContent).toBe("no");
 	});
 

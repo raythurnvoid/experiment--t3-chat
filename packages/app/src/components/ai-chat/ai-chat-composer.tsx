@@ -16,7 +16,7 @@ import { HardBreak } from "@tiptap/extension-hard-break";
 import Placeholder from "@tiptap/extension-placeholder";
 import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
-import { ArrowUp, Check, ListPlus, Square } from "lucide-react";
+import { ArrowUp, Check, Square } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
 import {
@@ -72,7 +72,6 @@ export type AiChatComposer_ClassNames =
 	| "AiChatComposer-actions"
 	| "AiChatComposer-configurations"
 	| "AiChatComposer-send-icon"
-	| "AiChatComposer-queue-icon"
 	| "AiChatComposer-save-icon"
 	| "AiChatComposer-cancel-icon";
 
@@ -175,7 +174,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 
 	const placeholder = "Send a message...";
 	const textboxLabel = inputLabel ?? placeholder;
-	const actionLabel = submitLabel ?? (isQueueing ? "Queue message" : "Send message");
+	const submitActionLabel = submitLabel ?? (isQueueing ? "Queue message" : "Send message");
 	const onCloseRef = useLiveRef(onClose);
 
 	const rootRef = useRef<HTMLFormElement | null>(null);
@@ -202,6 +201,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		: ai_chat_MODEL_IDS;
 
 	const canSubmit = (isQueueing ? canQueue : canSendProp) && !isEmpty;
+	const isStopAction = isRunning && !isQueueEditing && isEmpty;
 
 	/** Store the current text and notify the parent (used for drafts). */
 	const syncComposerText = (value: string) => {
@@ -579,29 +579,18 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			</div>
 
 			<div className={"AiChatComposer-actions" satisfies AiChatComposer_ClassNames}>
-				{isRunning && !isQueueEditing ? (
-					<MyIconButton
-						type="button"
-						variant="outline"
-						tooltip="Stop generating"
-						onClick={handleCancel}
-						disabled={!canCancel}
-					>
-						<Square className={"AiChatComposer-cancel-icon" satisfies AiChatComposer_ClassNames} />
-					</MyIconButton>
-				) : null}
 				<MyIconButton
 					type="button"
-					variant="default"
-					tooltip={actionLabel}
-					data-testid="ai-chat-send-button"
-					onClick={handleSend}
-					disabled={!canSubmit}
+					variant={isStopAction ? "outline" : "default"}
+					tooltip={isStopAction ? "Stop generating" : submitActionLabel}
+					data-testid={isStopAction ? undefined : "ai-chat-send-button"}
+					onClick={isStopAction ? handleCancel : handleSend}
+					disabled={isStopAction ? !canCancel : !canSubmit}
 				>
-					{isQueueEditing ? (
+					{isStopAction ? (
+						<Square className={"AiChatComposer-cancel-icon" satisfies AiChatComposer_ClassNames} />
+					) : isQueueEditing ? (
 						<Check className={"AiChatComposer-save-icon" satisfies AiChatComposer_ClassNames} />
-					) : isQueueing ? (
-						<ListPlus className={"AiChatComposer-queue-icon" satisfies AiChatComposer_ClassNames} />
 					) : (
 						<ArrowUp className={"AiChatComposer-send-icon" satisfies AiChatComposer_ClassNames} />
 					)}

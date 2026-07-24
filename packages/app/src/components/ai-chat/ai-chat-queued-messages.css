@@ -17,6 +17,7 @@
 	.AiChatQueuedMessages-header {
 		display: flex;
 		align-items: center;
+		justify-content: space-between;
 		gap: 8px;
 
 		flex: none;
@@ -37,16 +38,6 @@
 		line-height: 1.2;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-
-	.AiChatQueuedMessages-resume {
-		flex: none;
-		margin-left: auto;
-		height: 28px;
-		padding: 0 8px;
-
-		color: var(--color-fg-08);
-		font-size: 0.75rem;
 	}
 
 	.AiChatQueuedMessages-list {
@@ -196,10 +187,6 @@
 			padding-left: 8px;
 		}
 
-		.AiChatQueuedMessages-resume {
-			padding-right: 4px;
-			padding-left: 4px;
-		}
 	}
 }
 
