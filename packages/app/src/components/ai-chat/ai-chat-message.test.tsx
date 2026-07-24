@@ -3,13 +3,12 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { ai_chat_AiSdk5UiMessage } from "@/lib/ai-chat.ts";
-import { AiChatMessage } from "./ai-chat-message.tsx";
+import { AiChatMessage, AiChatMessagePendingAssistant } from "./ai-chat-message.tsx";
 
 const hookMocks = vi.hoisted(() => {
 	return {
 		messageById: new Map<string, ai_chat_AiSdk5UiMessage>(),
 		branchSiblingIdsByMessageId: new Map<string, readonly string[]>(),
-		runningMessageId: null as string | null,
 		editingMessageId: null as string | null,
 		sendErrorMessageId: null as string | null,
 		actions: {
@@ -30,7 +29,6 @@ const hookMocks = vi.hoisted(() => {
 type AiChatControllerStoreMockState = {
 	messageById: Map<string, ai_chat_AiSdk5UiMessage>;
 	branchSiblingIdsByMessageId: Map<string, readonly string[]>;
-	runningMessageIdByThreadId: Map<string, string | null>;
 	failedSendUserMessageIdByThreadId: Map<string, string | null>;
 	editingMessageIdByThreadId: Map<string, string | null>;
 };
@@ -38,13 +36,9 @@ type AiChatControllerStoreMockState = {
 vi.mock("@/hooks/ai-chat-controller.tsx", () => ({
 	AiChatController: {
 		useStore: <Result,>(selector: (state: AiChatControllerStoreMockState) => Result) => {
-			const runningMessageIdByThreadId = new Map<string, string | null>();
 			const failedSendUserMessageIdByThreadId = new Map<string, string | null>();
 			const editingMessageIdByThreadId = new Map<string, string | null>();
 
-			if (hookMocks.runningMessageId) {
-				runningMessageIdByThreadId.set("thread_1", hookMocks.runningMessageId);
-			}
 			if (hookMocks.sendErrorMessageId) {
 				failedSendUserMessageIdByThreadId.set("thread_1", hookMocks.sendErrorMessageId);
 			}
@@ -55,7 +49,6 @@ vi.mock("@/hooks/ai-chat-controller.tsx", () => ({
 			return selector({
 				messageById: hookMocks.messageById,
 				branchSiblingIdsByMessageId: hookMocks.branchSiblingIdsByMessageId,
-				runningMessageIdByThreadId,
 				failedSendUserMessageIdByThreadId,
 				editingMessageIdByThreadId,
 			});
@@ -112,7 +105,7 @@ function createAssistantMessage(args?: { id?: string; text?: string; parentId?: 
 	return {
 		id: args?.id ?? "msg_assistant",
 		role: "assistant",
-		parts: args?.text ? [{ type: "text", text: args.text }] : [],
+		parts: args?.text === undefined ? [] : [{ type: "text", text: args.text }],
 		metadata: {
 			convexParentId: args?.parentId ?? "msg_user_failed",
 			parentClientGeneratedId: null,
@@ -130,15 +123,16 @@ function renderMessage(args: {
 	hookMocks.messageById.set(args.message.id, args.message);
 	hookMocks.branchSiblingIdsByMessageId.set(args.message.id, args.branchSiblingIds ?? [args.message.id]);
 	hookMocks.editingMessageId = args.isEditing ? args.message.id : null;
-	hookMocks.runningMessageId = args.isRunning ? args.message.id : null;
 	hookMocks.sendErrorMessageId = args.sendError ? args.message.id : null;
 
-	render(
+	return render(
 		<AiChatMessage
 			messageId={args.message.id}
+			message={args.message}
 			selectedThreadId="thread_1"
 			selectedModelId="gpt-5.4-nano"
 			selectedModeId="ask"
+			isRunning={Boolean(args.isRunning)}
 			actions={hookMocks.actions}
 		/>,
 	);
@@ -152,9 +146,15 @@ describe("AiChatMessage", () => {
 		vi.clearAllMocks();
 		hookMocks.messageById.clear();
 		hookMocks.branchSiblingIdsByMessageId.clear();
-		hookMocks.runningMessageId = null;
 		hookMocks.editingMessageId = null;
 		hookMocks.sendErrorMessageId = null;
+	});
+
+	test("shows Thinking without actions before the assistant message exists", () => {
+		render(<AiChatMessagePendingAssistant />);
+
+		expect(screen.getByText("Thinking").closest("[aria-busy='true']")).not.toBeNull();
+		expect(screen.queryByRole("button", { name: "Copy message" })).toBeNull();
 	});
 
 	test("renders failed-send feedback on a user message and retries the same message", () => {
@@ -201,6 +201,67 @@ describe("AiChatMessage", () => {
 		expect(screen.getByText("An error occurred during the generation")).not.toBeNull();
 		expect(screen.queryByText("Message failed to send.")).toBeNull();
 		expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+	});
+
+	test("shows Thinking while an empty assistant response is starting", () => {
+		renderMessage({
+			message: createAssistantMessage({ id: "msg_assistant_starting", text: " " }),
+			isRunning: true,
+		});
+
+		expect(screen.getByText("Thinking").closest("[aria-busy='true']")).not.toBeNull();
+	});
+
+	test("removes the empty-response placeholder when assistant content arrives", () => {
+		const messageId = "msg_assistant_streaming";
+		const rendered = renderMessage({
+			message: createAssistantMessage({ id: messageId, text: " " }),
+			isRunning: true,
+		});
+
+		expect(screen.getByText("Thinking")).not.toBeNull();
+
+		const streamingMessage = createAssistantMessage({ id: messageId, text: "Streaming response" });
+		rendered.rerender(
+			<AiChatMessage
+				messageId={messageId}
+				message={streamingMessage}
+				selectedThreadId="thread_1"
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="ask"
+				isRunning={true}
+				actions={hookMocks.actions}
+			/>,
+		);
+
+		expect(screen.getByText("Streaming response")).not.toBeNull();
+		expect(screen.queryByText("Thinking")).toBeNull();
+	});
+
+	test("shows a tool instead of keeping an empty reasoning placeholder", () => {
+		const message = {
+			id: "msg_assistant_tool_starting",
+			role: "assistant",
+			parts: [
+				{ type: "reasoning", text: "" },
+				{
+					type: "tool-bash",
+					toolCallId: "call_bash_starting",
+					state: "input-streaming",
+					input: { command: "pwd" },
+				},
+			],
+			metadata: {
+				convexParentId: "msg_user_failed",
+				parentClientGeneratedId: null,
+			},
+		} satisfies ai_chat_AiSdk5UiMessage;
+
+		renderMessage({ message, isRunning: true });
+
+		expect(screen.getByRole("button", { name: "Bash: pwd" })).not.toBeNull();
+		expect(screen.queryByText("Thinking")).toBeNull();
+		expect(screen.queryByText("Thought")).toBeNull();
 	});
 
 	test("switches to the next branch from branch controls", () => {
@@ -251,6 +312,7 @@ describe("AiChatMessage", () => {
 		});
 
 		expect(screen.getByRole<HTMLButtonElement>("button", { name: "Copy message" }).disabled).toBe(true);
+		expect(screen.queryByText("Thinking")).toBeNull();
 	});
 
 	test("renders bash tool output as a terminal block", () => {

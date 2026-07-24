@@ -32,6 +32,213 @@ state.qa = {
 		console.log("send: dispatched:", text.slice(0, 80));
 	},
 
+	async queue(text) {
+		const previousIds = await state.page.locator("[data-queued-message-id]").evaluateAll((elements) => {
+			return elements.map((element) => element.getAttribute("data-queued-message-id"));
+		});
+		await state.page.waitForSelector(".AiChatComposer-editor-content", { timeout: 15000 });
+		await state.page.locator(".AiChatComposer-editor-content").fill(text);
+		await state.page.waitForFunction(() => {
+			const button = document.querySelector('[data-testid="ai-chat-send-button"]');
+			return (
+				button instanceof HTMLButtonElement &&
+				button.getAttribute("aria-label") === "Queue message" &&
+				!button.disabled
+			);
+		});
+		await state.page.locator('[data-testid="ai-chat-send-button"]').click();
+		await state.page.waitForFunction(
+			(args) => {
+				return Array.from(document.querySelectorAll("[data-queued-message-id]")).some((item) => {
+					const messageId = item.getAttribute("data-queued-message-id");
+					const messageText = item.querySelector(".AiChatQueuedMessages-text")?.textContent || "";
+					return Boolean(messageId && !args.previousIds.includes(messageId) && messageText === args.text);
+				});
+			},
+			{ previousIds, text },
+			{ timeout: 10000 },
+		);
+		return state.qa.queueSnapshot();
+	},
+
+	async queueSnapshot() {
+		const snapshot = await state.page.evaluate(() => {
+			const tray = document.querySelector('[data-testid="ai-chat-queued-messages"]');
+			const sendButton = document.querySelector('[data-testid="ai-chat-send-button"]');
+			const composer = document.querySelector(".AiChatComposer");
+			const textbox = composer?.querySelector('[role="textbox"]');
+			const status = Array.from(document.querySelectorAll('[role="status"]')).find((element) =>
+				(element.textContent || "").includes("queued message"),
+			);
+			return {
+				messages: Array.from(
+					tray?.querySelectorAll('[data-queued-message-id]') ?? [],
+				).map((element) => ({
+					id: element.getAttribute("data-queued-message-id"),
+					text: element.querySelector(".AiChatQueuedMessages-text")?.textContent || "",
+					index: Number(element.getAttribute("data-queue-index")),
+					isEditing: element.getAttribute("data-editing") === "true",
+				})),
+				isPaused: Boolean(tray?.querySelector('[data-testid="ai-chat-queue-resume"]')),
+				isFull: (tray?.textContent || "").includes("Queue is full."),
+				status: status?.textContent || "",
+				sendLabel: sendButton?.getAttribute("aria-label") || null,
+				sendDisabled: sendButton instanceof HTMLButtonElement ? sendButton.disabled : null,
+				isRunning: Boolean(document.querySelector('[aria-label="Stop generating"]')),
+				composerMode: composer?.getAttribute("data-composer-mode") || null,
+				composerText: textbox?.textContent || "",
+				textboxLabel: textbox?.getAttribute("aria-label") || null,
+			};
+		});
+		console.log("queue:", JSON.stringify(snapshot, null, 2));
+		return snapshot;
+	},
+
+	async editQueued(index, text) {
+		const row = state.page.locator('[data-queued-message-id]').nth(index);
+		const messageId = await row.getAttribute("data-queued-message-id");
+		if (!messageId) {
+			throw new Error("editQueued: queued message is missing");
+		}
+		const targetRow = state.page.getByTestId(`ai-chat-queued-message-${messageId}`);
+		await targetRow.locator('[data-testid="ai-chat-queued-message-edit"]').click();
+		await state.page.waitForSelector('.AiChatComposer[data-composer-mode="queue-edit"]', {
+			timeout: 10000,
+		});
+		await state.page.getByRole("textbox", { name: "Edit queued message" }).fill(text);
+		await state.page.getByRole("button", { name: "Save queued message" }).click();
+		// Saving can unblock normal draining, so the edited row may start and disappear.
+		await state.page.waitForFunction(
+			(args) => {
+				const row = document.querySelector(`[data-queued-message-id="${CSS.escape(args.messageId)}"]`);
+				return (
+					document.querySelector(".AiChatComposer")?.getAttribute("data-composer-mode") === "message" &&
+					(!row ||
+						(row.getAttribute("data-editing") !== "true" &&
+							(row.querySelector(".AiChatQueuedMessages-text")?.textContent || "") === args.text))
+				);
+			},
+			{ messageId, text },
+			{ timeout: 10000 },
+		);
+		return state.qa.queueSnapshot();
+	},
+
+	async cancelQueuedEdit(index) {
+		const row = state.page.locator('[data-queued-message-id]').nth(index);
+		const messageId = await row.getAttribute("data-queued-message-id");
+		if (!messageId) {
+			throw new Error("cancelQueuedEdit: queued message is missing");
+		}
+		const targetRow = state.page.getByTestId(`ai-chat-queued-message-${messageId}`);
+		const originalText = await targetRow.locator(".AiChatQueuedMessages-text").textContent();
+		await targetRow.locator('[data-testid="ai-chat-queued-message-edit"]').click();
+		await state.page.waitForSelector('.AiChatComposer[data-composer-mode="queue-edit"]', {
+			timeout: 10000,
+		});
+		await state.page.getByRole("textbox", { name: "Edit queued message" }).press("Escape");
+		await state.page.waitForFunction(
+			(args) => {
+				const row = document.querySelector(`[data-queued-message-id="${CSS.escape(args.messageId)}"]`);
+				const composer = document.querySelector(".AiChatComposer");
+				return (
+					composer?.getAttribute("data-composer-mode") === "message" &&
+					(!row ||
+						(row.getAttribute("data-editing") !== "true" &&
+							(row.querySelector(".AiChatQueuedMessages-text")?.textContent || "") ===
+								args.originalText))
+				);
+			},
+			{ messageId, originalText },
+			{ timeout: 10000 },
+		);
+		return state.qa.queueSnapshot();
+	},
+
+	async reorderQueued(fromIndex, toIndex) {
+		const rows = state.page.locator('[data-queued-message-id]');
+		const fromRow = rows.nth(fromIndex);
+		const targetRow = rows.nth(toIndex);
+		const movedId = await fromRow.getAttribute("data-queued-message-id");
+		await fromRow.scrollIntoViewIfNeeded();
+		const messageActionBox = await fromRow.locator('[data-testid="ai-chat-queued-message-edit"]').boundingBox();
+		const targetBox = await targetRow.boundingBox();
+		if (!movedId || !messageActionBox || !targetBox) {
+			throw new Error("reorderQueued: queue row or message action is not visible");
+		}
+
+		await state.page.mouse.move(
+			messageActionBox.x + messageActionBox.width / 2,
+			messageActionBox.y + messageActionBox.height / 2,
+		);
+		await state.page.mouse.down();
+		await state.page.mouse.move(
+			targetBox.x + targetBox.width / 2,
+			toIndex > fromIndex ? targetBox.y + targetBox.height - 2 : targetBox.y + 2,
+			{ steps: 12 },
+		);
+		await state.page.mouse.up();
+		await state.page.waitForFunction(
+			(args) =>
+				document.querySelectorAll('[data-queued-message-id]')[args.toIndex]?.getAttribute(
+					"data-queued-message-id",
+				) === args.movedId,
+			{ movedId, toIndex },
+			{ timeout: 10000 },
+		);
+		return state.qa.queueSnapshot();
+	},
+
+	async keyboardReorderQueued(fromIndex, direction, count = 1) {
+		if (direction !== "up" && direction !== "down") {
+			throw new Error('keyboardReorderQueued: direction must be "up" or "down"');
+		}
+		const rows = state.page.locator('[data-queued-message-id]');
+		const rowCount = await rows.count();
+		const row = rows.nth(fromIndex);
+		const messageAction = row.locator('[data-testid="ai-chat-queued-message-edit"]');
+		const movedId = await row.getAttribute("data-queued-message-id");
+		if (!movedId) {
+			throw new Error("keyboardReorderQueued: queued message is missing");
+		}
+		await messageAction.focus();
+		await state.page.keyboard.press("Space");
+		for (let step = 0; step < count; step += 1) {
+			await state.page.keyboard.press(direction === "up" ? "ArrowUp" : "ArrowDown");
+		}
+		await state.page.keyboard.press("Space");
+		const destinationIndex = Math.min(
+			rowCount - 1,
+			Math.max(0, fromIndex + (direction === "up" ? -count : count)),
+		);
+		await state.page.waitForFunction(
+			(args) =>
+				document.querySelectorAll('[data-queued-message-id]')[args.destinationIndex]?.getAttribute(
+					"data-queued-message-id",
+				) === args.movedId,
+			{ movedId, destinationIndex },
+			{ timeout: 10000 },
+		);
+		return state.qa.queueSnapshot();
+	},
+
+	async stopQueue(timeoutMs = 60000) {
+		await state.page.getByRole("button", { name: "Stop generating" }).click();
+		await state.page.waitForSelector('[data-testid="ai-chat-queue-resume"]', { timeout: 10000 });
+		await state.qa.waitIdle(timeoutMs);
+		return state.qa.queueSnapshot();
+	},
+
+	async resumeQueue() {
+		await state.page.locator('[data-testid="ai-chat-queue-resume"]').click();
+		await state.page.waitForFunction(
+			() => !document.querySelector('[data-testid="ai-chat-queue-resume"]'),
+			undefined,
+			{ timeout: 10000 },
+		);
+		return state.qa.queueSnapshot();
+	},
+
 	// The Stop button blinks out between agent steps (tool exec gaps), so doneness needs
 	// sustained idle: no Stop button AND no aria-busy elements for 3 consecutive 2s samples.
 	async waitIdle(timeoutMs) {

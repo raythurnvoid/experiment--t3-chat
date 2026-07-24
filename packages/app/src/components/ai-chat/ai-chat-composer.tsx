@@ -16,7 +16,7 @@ import { HardBreak } from "@tiptap/extension-hard-break";
 import Placeholder from "@tiptap/extension-placeholder";
 import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
-import { ArrowUp, Square } from "lucide-react";
+import { ArrowUp, Check, ListPlus, Square } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
 import {
@@ -53,6 +53,7 @@ import { files_tiptap_empty_doc_json } from "@/lib/files.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
+import { useLiveRef } from "@/hooks/utils-hooks.ts";
 import {
 	ai_chat_MODEL_IDS,
 	ai_chat_MODELS,
@@ -71,6 +72,8 @@ export type AiChatComposer_ClassNames =
 	| "AiChatComposer-actions"
 	| "AiChatComposer-configurations"
 	| "AiChatComposer-send-icon"
+	| "AiChatComposer-queue-icon"
+	| "AiChatComposer-save-icon"
 	| "AiChatComposer-cancel-icon";
 
 /** Matches Windows (`\r\n`) and old Mac (`\r`) line endings. */
@@ -118,19 +121,28 @@ export type AiChatComposer_Props = Omit<
 
 	autoFocus?: boolean;
 	canCancel: boolean;
+	canQueue: boolean;
 	canSend: boolean;
+	isQueueing: boolean;
+	isQueueEditing?: boolean;
 	isRunning: boolean;
 	initialValue: string;
+	inputLabel?: string;
+	submitLabel?: string;
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
 
 	onValueChange?: (value: string) => void;
 	onSelectedModelIdChange: (value: ai_chat_ModelId) => void;
 	onSelectedModeIdChange: (value: ai_chat_ModeId) => void;
-	onSubmit: (value: string) => void;
+	/**
+	 * Return `false` to keep the composer text when the message was rejected,
+	 * for example when another surface filled the queue first.
+	 */
+	onSubmit: (value: string) => boolean | void;
 	onCancel?: () => void;
 	onInteractedOutside?: (event: FocusEvent | PointerEvent) => void;
-	onClose?: (event: React.KeyboardEvent<HTMLFormElement>) => void;
+	onClose?: () => void;
 };
 
 export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer_Props) {
@@ -140,9 +152,14 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		className,
 		autoFocus,
 		canCancel,
+		canQueue,
 		canSend: canSendProp,
+		isQueueing,
+		isQueueEditing = false,
 		isRunning,
 		initialValue,
+		inputLabel,
+		submitLabel,
 		selectedModelId,
 		selectedModeId,
 		onValueChange,
@@ -152,10 +169,14 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		onCancel,
 		onInteractedOutside,
 		onClose,
+		onKeyDown,
 		...rest
 	} = props;
 
 	const placeholder = "Send a message...";
+	const textboxLabel = inputLabel ?? placeholder;
+	const actionLabel = submitLabel ?? (isQueueing ? "Queue message" : "Send message");
+	const onCloseRef = useLiveRef(onClose);
 
 	const rootRef = useRef<HTMLFormElement | null>(null);
 	const editorRef = useRef<Editor | null>(null);
@@ -180,7 +201,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			})
 		: ai_chat_MODEL_IDS;
 
-	const canSend = canSendProp && !isRunning && !isEmpty;
+	const canSubmit = (isQueueing ? canQueue : canSendProp) && !isEmpty;
 
 	/** Store the current text and notify the parent (used for drafts). */
 	const syncComposerText = (value: string) => {
@@ -218,7 +239,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 					),
 					role: "textbox",
 					"aria-multiline": "true",
-					"aria-label": placeholder,
+					"aria-label": textboxLabel,
 				},
 				// The default ProseMirror plain-text paste collapses consecutive
 				// newlines, dropping empty lines. Paste every newline as a hard
@@ -235,13 +256,18 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 						}
 					}
 					return Slice.maxOpen(Fragment.fromArray([schema.nodes.paragraph.createChecked(null, inline)]));
-				},
-				handleKeyDown: (view, event) => {
-					if (event.isComposing) {
-						return false;
-					}
+			},
+			handleKeyDown: (view, event) => {
+				if (event.isComposing) {
+					return false;
+				}
+				if (event.key === "Escape") {
+					event.preventDefault();
+					onCloseRef.current?.();
+					return true;
+				}
 
-					// Mark a state to indicate the selection is either at the start or end of the document.
+				// Mark a state to indicate the selection is either at the start or end of the document.
 					// when pressing arrow up or down.
 					if (event.key === "ArrowUp") {
 						const selection = view.state.selection;
@@ -329,7 +355,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	const editor = useEditor(editorProps);
 
 	const handleSend = () => {
-		if (!canSend) {
+		if (!canSubmit) {
 			return;
 		}
 
@@ -347,7 +373,10 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			}
 		}
 
-		onSubmit(nextComposerText);
+		const wasAccepted = onSubmit(nextComposerText);
+		if (wasAccepted === false) {
+			return;
+		}
 
 		// Clear the composer for the next message.
 		composerTextRef.current = "";
@@ -369,6 +398,14 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	const handleSubmit: ComponentPropsWithRef<"form">["onSubmit"] = (event) => {
 		event.preventDefault();
 		handleSend();
+	};
+
+	const handleKeyDown: ComponentPropsWithRef<"form">["onKeyDown"] = (event) => {
+		onKeyDown?.(event);
+		if (!event.defaultPrevented && !event.nativeEvent.isComposing && event.key === "Escape") {
+			event.preventDefault();
+			onClose?.();
+		}
 	};
 
 	const handleModelSearchChange: ComponentPropsWithRef<typeof MySearchSelectSearch>["onChange"] = (event) => {
@@ -403,6 +440,23 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		enable: Boolean(onInteractedOutside) && enableInteractedOutside,
 	});
 
+	useEffect(() => {
+		editorRef.current = editor;
+	}, [editor]);
+
+	useEffect(() => {
+		return () => {
+			if (composerSyncTimeoutRef.current) {
+				clearTimeout(composerSyncTimeoutRef.current);
+				const currentEditor = editorRef.current;
+				if (currentEditor) {
+					// Flush the latest text before queue editing remounts the composer.
+					onValueChange?.(get_composer_plain_text(currentEditor));
+				}
+			}
+		};
+	}, []);
+
 	// Load `initialValue` into the editor: a saved draft or a message being edited.
 	useEffect(() => {
 		if (!editor) {
@@ -433,7 +487,9 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			}}
 			id={id}
 			className={cn("AiChatComposer" satisfies AiChatComposer_ClassNames, className)}
+			data-composer-mode={isQueueEditing ? "queue-edit" : "message"}
 			onSubmit={handleSubmit}
+			onKeyDown={handleKeyDown}
 			{...rest}
 		>
 			<MyInput className={"AiChatComposer-editor" satisfies AiChatComposer_ClassNames}>
@@ -523,7 +579,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			</div>
 
 			<div className={"AiChatComposer-actions" satisfies AiChatComposer_ClassNames}>
-				{isRunning ? (
+				{isRunning && !isQueueEditing ? (
 					<MyIconButton
 						type="button"
 						variant="outline"
@@ -533,18 +589,23 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 					>
 						<Square className={"AiChatComposer-cancel-icon" satisfies AiChatComposer_ClassNames} />
 					</MyIconButton>
-				) : (
-					<MyIconButton
-						type="button"
-						variant="default"
-						tooltip="Send message"
-						data-testid="ai-chat-send-button"
-						onClick={handleSend}
-						disabled={!canSend}
-					>
+				) : null}
+				<MyIconButton
+					type="button"
+					variant="default"
+					tooltip={actionLabel}
+					data-testid="ai-chat-send-button"
+					onClick={handleSend}
+					disabled={!canSubmit}
+				>
+					{isQueueEditing ? (
+						<Check className={"AiChatComposer-save-icon" satisfies AiChatComposer_ClassNames} />
+					) : isQueueing ? (
+						<ListPlus className={"AiChatComposer-queue-icon" satisfies AiChatComposer_ClassNames} />
+					) : (
 						<ArrowUp className={"AiChatComposer-send-icon" satisfies AiChatComposer_ClassNames} />
-					</MyIconButton>
-				)}
+					)}
+				</MyIconButton>
 			</div>
 		</form>
 	);
