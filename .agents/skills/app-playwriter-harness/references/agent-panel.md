@@ -8,8 +8,8 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | --- | --- |
 | Agent tab in files sidebar | `#app_file_editor_sidebar_tabs_agent` |
 | Composer (ProseMirror) | `.AiChatComposer-editor-content` |
-| Send, queue, or save button | `[data-testid="ai-chat-send-button"]` (`aria-label` is `Send message`, `Queue message`, or `Save queued message`) |
-| Stop button (while running) | `[aria-label="Stop generating"]` |
+| Send, queue, or save button | `[data-testid="ai-chat-send-button"]` (`aria-label` is `Send message`, `Queue message`, or `Save queued message`; Queue uses the normal send icon) |
+| Stop button (while running with empty input) | `[aria-label="Stop generating"]` (the same action slot becomes Queue when the input has text) |
 | Queued messages tray | `[data-testid="ai-chat-queued-messages"]` |
 | Queued message | `[data-testid^="ai-chat-queued-message-ai_message-"]` (DOM order is execution order; read `data-queued-message-id`) |
 | Edit or reorder queued message | `[data-testid="ai-chat-queued-message-edit"]` |

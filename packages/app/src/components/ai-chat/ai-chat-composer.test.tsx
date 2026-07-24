@@ -70,13 +70,59 @@ describe("AiChatComposer", () => {
 
 		const queueButton = screen.getByRole<HTMLButtonElement>("button", { name: "Queue message" });
 		expect(queueButton.disabled).toBe(false);
-		expect(screen.getByRole("button", { name: "Stop generating" })).not.toBeNull();
+		expect(screen.queryByRole("button", { name: "Stop generating" })).toBeNull();
+		expect(queueButton.querySelector(".AiChatComposer-send-icon")).not.toBeNull();
 		expect(screen.getByRole("textbox", { name: "Send a message..." }).textContent).toBe("keep this draft");
 
 		fireEvent.click(queueButton);
 
 		expect(onSubmit).toHaveBeenCalledWith("keep this draft");
 		expect(screen.getByRole("textbox", { name: "Send a message..." }).textContent).toBe("keep this draft");
+	});
+
+	test("uses one action for Stop while empty and Queue while text is present", () => {
+		const onCancel = vi.fn();
+		const onSubmit = vi.fn();
+		render(
+			<AiChatComposer
+				canCancel
+				canQueue
+				canSend={false}
+				isQueueing
+				isRunning
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+				onCancel={onCancel}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		const actionButtons = textbox.closest("form")?.querySelectorAll(".AiChatComposer-actions button");
+		expect(actionButtons).toHaveLength(1);
+		fireEvent.click(screen.getByRole("button", { name: "Stop generating" }));
+		expect(onCancel).toHaveBeenCalledOnce();
+		expect(screen.queryByRole("button", { name: "Queue message" })).toBeNull();
+
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [],
+				getData: () => "Queue this next",
+				types: ["text/plain"],
+			},
+		});
+
+		const queueButton = screen.getByRole("button", { name: "Queue message" });
+		expect(actionButtons).toHaveLength(1);
+		expect(screen.queryByRole("button", { name: "Stop generating" })).toBeNull();
+		expect(queueButton.querySelector(".AiChatComposer-send-icon")).not.toBeNull();
+
+		fireEvent.click(queueButton);
+		expect(onSubmit).toHaveBeenCalledWith("Queue this next");
+		expect(onCancel).toHaveBeenCalledOnce();
 	});
 
 	test("flushes a pending draft change before the composer unmounts", () => {

@@ -56,7 +56,7 @@ type ThreadSession = {
 	queuedUserMessages: readonly AiChatQueuedUserMessage[];
 	queuedUserMessageEdit: AiChatQueuedUserMessage | null;
 	isQueueReordering: boolean;
-	isQueuePaused: boolean;
+	queuePauseReason: "error" | "stop" | null;
 	claimedQueuedUserMessageId: AiChatQueuedUserMessage["id"] | null;
 	activeRequestToken: symbol | null;
 	isArchivePending: boolean;
@@ -429,7 +429,7 @@ const thread_session_create = (args?: {
 		queuedUserMessages: [],
 		queuedUserMessageEdit: null,
 		isQueueReordering: false,
-		isQueuePaused: false,
+		queuePauseReason: null,
 		claimedQueuedUserMessageId: null,
 		activeRequestToken: null,
 		isArchivePending: false,
@@ -734,7 +734,7 @@ const useStore = ((/* iife */) => {
 						queuedUserMessageEdit:
 							session.queuedUserMessageEdit?.id === messageId ? null : session.queuedUserMessageEdit,
 						isQueueReordering: queuedUserMessages.length > 1 && session.isQueueReordering,
-						isQueuePaused: queuedUserMessages.length > 0 && session.isQueuePaused,
+						queuePauseReason: queuedUserMessages.length > 0 ? session.queuePauseReason : null,
 					});
 					return { threadById };
 				});
@@ -742,7 +742,7 @@ const useStore = ((/* iife */) => {
 			clearQueuedUserMessages(threadId: string) {
 				store.setState((state) => {
 					const session = state.threadById.get(threadId);
-					if (!session || (session.queuedUserMessages.length === 0 && !session.isQueuePaused)) {
+					if (!session || (session.queuedUserMessages.length === 0 && !session.queuePauseReason)) {
 						return state;
 					}
 
@@ -752,7 +752,7 @@ const useStore = ((/* iife */) => {
 						queuedUserMessages: [],
 						queuedUserMessageEdit: null,
 						isQueueReordering: false,
-						isQueuePaused: false,
+						queuePauseReason: null,
 					});
 					return { threadById };
 				});
@@ -760,14 +760,14 @@ const useStore = ((/* iife */) => {
 			pauseQueuedUserMessages(threadId: string) {
 				store.setState((state) => {
 					const session = state.threadById.get(threadId);
-					if (!session || session.isQueuePaused) {
+					if (!session || session.queuePauseReason === "stop") {
 						return state;
 					}
 
 					const threadById = new Map(state.threadById);
 					threadById.set(threadId, {
 						...session,
-						isQueuePaused: true,
+						queuePauseReason: "stop",
 					});
 					return { threadById };
 				});
@@ -775,14 +775,14 @@ const useStore = ((/* iife */) => {
 			resumeQueuedUserMessages(threadId: string) {
 				store.setState((state) => {
 					const session = state.threadById.get(threadId);
-					if (!session?.isQueuePaused) {
+					if (!session?.queuePauseReason) {
 						return state;
 					}
 
 					const threadById = new Map(state.threadById);
 					threadById.set(threadId, {
 						...session,
-						isQueuePaused: false,
+						queuePauseReason: null,
 					});
 					return { threadById };
 				});
@@ -795,7 +795,7 @@ const useStore = ((/* iife */) => {
 					// Let earlier messages keep draining, but never start the item being edited.
 					if (
 						!session ||
-						session.isQueuePaused ||
+						session.queuePauseReason ||
 						session.activeRequestToken ||
 						session.claimedQueuedUserMessageId ||
 						!nextMessage ||
@@ -988,12 +988,20 @@ function track_chat_request(
 				return;
 			}
 
+			let queuePauseReason = prev.queuePauseReason;
+			if (prev.queuedUserMessages.length === 0) {
+				queuePauseReason = null;
+			} else if (didFail && (prev.queuePauseReason !== "stop" || chat.error)) {
+				// Stop can reject the request without showing an error. Keep that Stop-owned pause.
+				// A visible request error takes ownership of the pause.
+				queuePauseReason = "error";
+			}
+
 			return {
 				...prev,
 				activeRequestToken: null,
 				claimedQueuedUserMessageId: null,
-				// Keep later messages queued when the visible active turn fails.
-				isQueuePaused: prev.queuedUserMessages.length > 0 && (prev.isQueuePaused || didFail),
+				queuePauseReason,
 			};
 		});
 	};
@@ -1492,7 +1500,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 						queuedUserMessageEdit:
 							session.queuedUserMessageEdit ?? persistedSession.queuedUserMessageEdit,
 						isQueueReordering: session.isQueueReordering || persistedSession.isQueueReordering,
-						isQueuePaused: session.isQueuePaused || persistedSession.isQueuePaused,
+						queuePauseReason: session.queuePauseReason ?? persistedSession.queuePauseReason,
 						claimedQueuedUserMessageId:
 							session.claimedQueuedUserMessageId ?? persistedSession.claimedQueuedUserMessageId,
 						activeRequestToken: session.activeRequestToken ?? persistedSession.activeRequestToken,
@@ -2382,7 +2390,7 @@ const useThreadRuntimeController = () => {
 					...prev,
 					anchorId: null,
 					// Retrying the failed turn resumes its followers. Another failure pauses them again.
-					isQueuePaused: targetMessageIsFailedUserMessage ? false : prev.isQueuePaused,
+					queuePauseReason: targetMessageIsFailedUserMessage ? null : prev.queuePauseReason,
 				};
 			});
 
@@ -2408,11 +2416,13 @@ const useThreadRuntimeController = () => {
 			return false;
 		}
 
+		// A normal send after Stop starts a new turn without consuming the paused queue.
+		// Resume remains the only action that continues those older queued messages.
 		const shouldQueue =
 			!options?.messageId &&
 			(Boolean(session.activeRequestToken) ||
 				Boolean(session.claimedQueuedUserMessageId) ||
-				session.queuedUserMessages.length > 0 ||
+				(session.queuedUserMessages.length > 0 && session.queuePauseReason !== "stop") ||
 				chat.status === "submitted" ||
 				chat.status === "streaming");
 
@@ -2652,11 +2662,11 @@ const useThreadRuntimeController = () => {
 		Boolean(session?.activeRequestToken) ||
 		Boolean(session?.claimedQueuedUserMessageId) ||
 		Boolean(session?.isArchivePending) ||
-		queuedUserMessages.length > 0;
+		(queuedUserMessages.length > 0 && session?.queuePauseReason !== "stop");
 	const canQueueUserText =
 		Boolean(selectedThreadId) && !session?.isArchivePending && queuedUserMessages.length < QUEUED_USER_MESSAGE_LIMIT;
 	const isMessageQueueFull = queuedUserMessages.length >= QUEUED_USER_MESSAGE_LIMIT;
-	const isMessageQueuePaused = Boolean(session?.isQueuePaused);
+	const isMessageQueuePaused = Boolean(session?.queuePauseReason);
 
 	const status = ((/* iife */) => {
 		if (!selectedThreadId) {
@@ -2737,7 +2747,7 @@ const useThreadRuntimeController = () => {
 			(selectedThreadIsOptimistic && !failedSendUserMessage) ||
 			!session?.chat ||
 			session.chat !== activeChatInstance ||
-			session.isQueuePaused ||
+			session.queuePauseReason ||
 			session.activeRequestToken ||
 			session.claimedQueuedUserMessageId ||
 			session.isQueueReordering ||
@@ -2763,7 +2773,7 @@ const useThreadRuntimeController = () => {
 			if (
 				!currentSession ||
 				currentSession.chat !== activeChatInstance ||
-				currentSession.isQueuePaused ||
+				currentSession.queuePauseReason ||
 				currentSession.activeRequestToken ||
 				currentSession.claimedQueuedUserMessageId ||
 				currentSession.isQueueReordering
