@@ -321,10 +321,12 @@ describe("ai_chat_tool_create_bash", () => {
 				description: expect.stringContaining("ls -l uses app metadata, not POSIX permissions"),
 			}),
 		);
+		// The bash→app path conversion rule lives in the edit_file description (asserted
+		// separately); bash only points at it so the guidance is stated once.
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
-					"Preserve the full remaining suffix: /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.",
+					"the edit_file description states how to convert a bash path to an app path",
 				),
 			}),
 		);
