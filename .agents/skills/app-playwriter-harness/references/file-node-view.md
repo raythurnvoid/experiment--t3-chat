@@ -69,6 +69,31 @@ await state.page.getByRole("form", { name: "Reply to comment" }).waitFor({ state
 - Switch to the **Markdown** editor mode from the header mode radios.
 - Prefer snapshots after switching modes; the plain editor may expose Monaco-style editor DOM instead of a normal textarea.
 - If a locator times out, first inspect the editor mode radio state and snapshot the content panel before trying editor-specific selectors.
+- Toolbar: `[aria-label="Markdown editor actions"]`, holding `Save`, `Sync`, the size badge, and `Open file snapshots`.
+- The plain text editor does not live-collaborate. Edits stay local until `Save`, and `Sync` is disabled while `workingYjsDocSequence === serverSequence` — that is, until somebody else moves the server forward.
+
+### Sync And Undo QA
+
+Use this after changing how the Markdown editor writes content into its Monaco model. It proves that a sync keeps the user's undo history instead of resetting it.
+
+1. Create a disposable file and open it with `view=plain_text_editor`.
+2. Make several local edits, each its own undo step. A pure cursor move ends the current Monaco undo group, so type a chunk and then press a navigation key:
+
+```js
+await page.locator(".FileEditorPlainText .view-lines").click();
+await page.keyboard.press("Control+End");
+for (const chunk of ["\nlocal-one", "\nlocal-two", "\nlocal-three"]) {
+	await page.keyboard.type(chunk);
+	await page.keyboard.press("ArrowLeft");
+	await page.keyboard.press("End");
+}
+```
+
+3. Assert `Save` is enabled and `Sync` is still disabled.
+4. Move the server forward from a second tab on the same `nodeId` with `view=rich_text_editor`, which does sync live. Type anything there. `Control+End` does not reach the document end in TipTap, so expect the text wherever the caret happened to be — the point is only that the sequence advances.
+5. Back in the Markdown tab, `Sync` is now enabled. Click it and confirm the content merges: the remote change and every local edit are present together.
+6. Click `.view-lines`, then press `Control+Z` several times **in the same execute call**, capturing the text after each press. The first undo must revert the sync alone and leave all local edits in place; each later undo must remove one local edit. If the first undo jumps straight to the server content and the second does nothing, the editor is replacing its model instead of editing it.
+7. Check `getLatestLogs` is clean, then close both QA tabs.
 
 ## Diff Editor
 

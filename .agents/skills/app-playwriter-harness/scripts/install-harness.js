@@ -1,6 +1,8 @@
 (() => {
-	const VERSION = "0.5.1";
+	const VERSION = "0.6.0";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
+	/** Somewhere harmless to move the pointer from, so the next move has a non-zero screen delta. */
+	const HOVERCARD_PARK_POINT = { x: 900, y: 500 };
 	const MEMORY_FILES = new Set([
 		"agent-panel.md",
 		"app-map.md",
@@ -176,6 +178,47 @@
 			2,
 		));
 		console.log(content);
+		return result;
+	}
+
+	/**
+	 * Opens an Ariakit hovercard (`MyHovercardAction`) and reports whether its card became visible.
+	 *
+	 * Parks the pointer before hovering. Ariakit only opens the card while its global `mouseMoving`
+	 * flag is set, and that flag comes from `event.movementX || event.screenX - previousScreenX`.
+	 * CDP mouse events always report `movementX: 0`, so a move to the coordinates the pointer already
+	 * occupies reads as no movement and the card stays shut. Moving from elsewhere guarantees a
+	 * non-zero delta. `mousedown`, `mouseup`, `keydown` and `scroll` reset the flag, so hovering
+	 * straight after typing needs the same treatment.
+	 *
+	 * Pass `card` to wait for the portalled content. Scope follow-up clicks to that selector: the same
+	 * action is often rendered a second time outside the portal inside a `hidden` container, and a
+	 * bare `.first()` picks the hidden copy.
+	 */
+	async function hoverCard({ anchor, card, timeout = 5000 } = {}) {
+		if (!anchor) {
+			throw new Error("hoverCard requires anchor");
+		}
+
+		const targetPage = getHarnessPage();
+		const anchorLocator = targetPage.locator(anchor).first();
+		await anchorLocator.waitFor({ state: "visible", timeout });
+
+		await targetPage.mouse.move(HOVERCARD_PARK_POINT.x, HOVERCARD_PARK_POINT.y);
+		await anchorLocator.hover({ timeout });
+
+		let cardVisible = null;
+		if (card) {
+			cardVisible = await targetPage
+				.locator(card)
+				.first()
+				.waitFor({ state: "visible", timeout })
+				.then(() => true)
+				.catch(() => false);
+		}
+
+		const result = { anchor, card: card || null, cardVisible };
+		console.log(JSON.stringify(result, null, 2));
 		return result;
 	}
 
@@ -591,6 +634,7 @@
 		authSummary,
 		waitForUrlIncludes,
 		observeRoute,
+		hoverCard,
 		hitTest,
 		inspectElement,
 		auditAccessibility,

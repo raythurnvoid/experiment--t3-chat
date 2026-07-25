@@ -48,6 +48,11 @@ keeps executing in the relay and the next run double-applies its actions.
 The single most important check. It proves the Yjs provider connects, sends, and rehydrates from Convex.
 
 1. Create a disposable file with the sidebar `New file` button (creates `new-file*.md` at root).
+   When the root folder view is open there are **two** `New file` buttons and `getByRole` fails with a
+   strict-mode violation. Scope to the sidebar one:
+   `page.locator('button[aria-label="New file"].FilesSidebarTopSection-actions-icon-button')`.
+   Assert the URL gained a real `nodeId`; if it still says `nodeId=root`, the file was not created and
+   the rest of this playbook will test the wrong document.
 2. Wait for `.FileEditorRichText-editor-content` to be visible, click it, `Control+A`, type a unique marker.
 3. Reload the page.
 4. Poll `.FileEditorRichText-editor-content` innerText for up to ~15s and assert the marker is still there.
@@ -60,11 +65,16 @@ Fail here means the provider is not writing to Convex or not rehydrating — che
 Exercises `CommentsExtension` and the comment popover.
 
 1. Click the editor, `Control+Home`, then `Shift+End` to select the first line.
-   The **Comment** button only exists while a non-empty selection is live.
-2. Click `Comment`, wait for `getByRole("form", { name: "New document comment" })`.
-3. Fill `[contenteditable="true"][aria-label="Add comment to selection"]` and submit
-   `getByRole("button", { name: "Submit comment" })`.
-4. Assert `.FileEditorRichTextAnchoredComments-thread-container` count is 1.
+2. Click `button[aria-label="Add comment"]` — a floating popover trigger that only exists while a
+   non-empty selection is live. It is **not** named `Comment`: `getByRole("button", { name: "Comment",
+   exact: true })` matches nothing and the click then hangs until the CLI timeout.
+3. Wait for the composer `[contenteditable="true"][aria-label="Add comment to selection"]` to be
+   visible, not for `getByRole("form", { name: "New document comment" })`. That form is in the DOM from
+   page load and stays hidden until the popover opens, so waiting on it passes before the composer exists.
+4. Fill the composer and submit `getByRole("button", { name: "Submit comment" })`.
+5. Assert `.FileEditorRichTextAnchoredComments-thread-container` count is 1 and `[data-lb-thread-id]`
+   is present. Read this in a **separate** runner: submit plus the settle wait regularly overruns the
+   CLI timeout even though the submit itself landed.
 
 Pass: one thread container appears.
 
@@ -107,10 +117,15 @@ If the span or `data-lb-thread-id` is gone, comments will silently detach from t
 
 ## 7. Awareness / presence
 
-1. Presence lives in the collapsed main sidebar under `region "Presence"`.
+1. Presence lives in the collapsed main sidebar as `.MainAppSidebarPresenceControl`. It is **not** a
+   `role="region"` — the only region on the page is `File editor`, so `getByRole("region", { name:
+   "Presence" })` finds nothing. Query the class, or the aria-labels `Presence` and
+   `Show details about N online users`.
 2. If disabled, the control is `getByRole("button", { name: "Enable presence" })`.
-3. Enable it, type in the editor, wait ~8s.
-4. Assert the presence region reports at least 1 online user and the logs stay clean.
+3. Enable it, type in the editor, wait ~2s.
+4. Assert `.MainAppSidebarPresenceControl-online-label` reads `1 Online` and the logs stay clean. The
+   label sits inside the closed hovercard, so it is in the DOM but `visible: false` — read `textContent`,
+   do not wait for visibility.
 
 ## Log expectations
 
@@ -134,11 +149,45 @@ Treat these as real failures: `should_never_happen`, `Maximum update depth`, `Ty
   wait ~600ms, then use the sidebar row menu scoped to the tree:
   `getByRole("tree").first().getByRole("button", { name: "More actions for <name>", exact: true })`
   and choose menu item `Archive`.
-- If you enabled presence, note that turning it back off is unreliable from Playwriter (see
-  `known-hazards.md`). Tell the user instead of leaving it silently changed.
+- If you enabled presence, turn it back off. The `Disable` button lives in an Ariakit hover card, which
+  synthetic hover opens fine as long as the pointer changes position first:
+
+  ```js
+  await page.mouse.move(900, 500); // park, so the next move has a non-zero screen delta
+  await page.locator(".MainAppSidebarPresenceControl-primary-action").first().hover();
+  await page.locator(".MainAppSidebarPresenceControl-hovercard .MainAppSidebarPresenceControl-disable").click();
+  ```
+
+  Scope the click to the hovercard — an identical `Disable` button is rendered outside the portal and is
+  `hidden` while the sidebar is collapsed. See `known-hazards.md` for why the parking move matters.
 
 ## Result baseline (2026-07-25)
 
 First full run after the Liveblocks fork was integrated into app source. All checks passed:
 provider sync, reload persistence, comment create, comment persistence, Markdown thread-id round-trip,
 diff editor mount, presence 1 online user. Only the benign logs above appeared.
+
+## Run 2026-07-25b — Liveblocks dead-code removal from `file-editor-rich-text-extension.ts`
+
+Passed: editor mounts and accepts typing, comment create (composer, thread container, comment mark),
+comment in the sidebar, Markdown thread-id round-trip, plain text view, diff editor mount with the
+comment span.
+
+Not run: reload persistence and presence. The working tree had a broken returns validator in
+`convex/files_nodes.ts`, so `files_nodes:list_tree` failed and every reload fell back to `nodeId=root`;
+anonymous auth was also minting a new user per load. Re-run those two checks once the tree query is
+healthy.
+
+## Run 2026-07-25c — full playbook, after the `list_tree` validator fix
+
+All seven checks passed on a signed-in Edge profile (42 tree items, no `ReturnsValidationError`):
+provider sync and reload persistence, comment create, comment in the sidebar, comment persistence,
+Markdown thread-id round-trip, diff editor mount with the comment span, presence `1 Online`. Console
+carried only the benign logs listed above — zero `should_never_happen` / `TypeError` / `Uncaught` /
+`ReturnsValidation`.
+
+Two selectors in this playbook were stale and are corrected above: the comment trigger is
+`Add comment`, not `Comment`, and presence is not a `role="region"`.
+
+Presence was left enabled at the end of this run because the `Disable` click was reported as impossible.
+That was wrong — the hover worked and the locator did not. Cleanup above now has a verified recipe.
