@@ -1,15 +1,20 @@
 @layer components {
 	/* #region root */
 	.MainAppHeader {
+		/* Paint the bar shadow over the panes that start right below it. */
+		position: relative;
+		z-index: 1;
+
 		display: flex;
 		align-items: center;
 
 		height: 48px;
 		min-height: 48px;
 
-		background: var(--color-base-1-06);
+		background: linear-gradient(var(--color-base-1-04), var(--color-base-1-02));
 
-		border-bottom: 1px solid var(--color-fg-03);
+		border-bottom: 1px solid var(--color-fg-02);
+		box-shadow: 0 6px 16px color-mix(in oklch, black 45%, transparent);
 	}
 
 	.MainAppHeader-content {
@@ -37,13 +42,14 @@
 		row-gap: 0px;
 		column-gap: 8px;
 
-		padding: 0 16px;
+		/* Inset the switcher so it reads as a raised control sitting on the bar. */
+		margin: 0 8px;
+		padding: 0 12px;
 
-		width: 280px;
-		height: 100%;
+		width: 264px;
+		height: 36px;
 
-		border-top-left-radius: 0;
-		border-bottom-left-radius: 0;
+		border-radius: 8px;
 	}
 
 	.MainAppHeaderOrganizationControls-primary-text,

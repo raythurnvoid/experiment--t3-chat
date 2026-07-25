@@ -1,7 +1,7 @@
 @layer components {
 	/* #region root */
 	.FileNodeView {
-		background-color: var(--color-base-1-03);
+		background-color: var(--color-base-1-02);
 
 		display: flex;
 
@@ -112,7 +112,7 @@
 		isolation: isolate;
 
 		> .MyPanelInfiniteBackground::before {
-			background-color: var(--color-base-1-03);
+			background-color: var(--color-base-1-02);
 		}
 	}
 
@@ -161,13 +161,24 @@
 
 		font-size: 0.875rem;
 		color: var(--gray-800);
+
+		/*
+		`MyLink` puts its class on the inner surface, so the anchor itself stays `display: inline`
+		and its box collapses under the 36px surface. Make the anchor match the surface so the
+		focus ring and the reported hit target are the real 36px control.
+		*/
+		a {
+			display: inline-flex;
+		}
 	}
 
 	.FileNodeViewHeader-breadcrumb-segment,
 	.FileNodeViewHeader-breadcrumb-segment-current {
 		white-space: nowrap;
 
-		padding: 6px;
+		/* Keep breadcrumb links at the shared 36px minimum click target. */
+		min-height: 36px;
+		padding: 6px 8px;
 
 		display: inline-flex;
 		gap: 4px;
@@ -189,6 +200,10 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
+
+		/* Keep the icon-only home link a square 36px target. */
+		width: 36px;
+		height: 36px;
 	}
 
 	.FileNodeViewHeader-breadcrumb-segment-current {
@@ -366,6 +381,8 @@
 		/* Use the assembled toolbar as the scroll container because folder/file actions and editor actions portal in separately. */
 		overflow: auto hidden;
 		scrollbar-width: initial;
+		/* Keep this structural scrollbar quieter than the controls sitting above it. */
+		scrollbar-color: var(--color-base-1-07) transparent;
 	}
 
 	.FileNodeViewToolbar-surface {
@@ -376,7 +393,9 @@
 		min-width: 100%;
 		height: 44px;
 
-		background: var(--color-base-1-05);
+		/* Shared secondary-bar surface: the Files header row, this toolbar, and the
+		   sidebar tabs row must read as one continuous row under the global top bar. */
+		background: var(--color-base-1-03);
 		border-bottom: 1px solid var(--color-fg-02);
 	}
 

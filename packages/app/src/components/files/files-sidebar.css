@@ -46,7 +46,8 @@
 		flex-direction: column;
 		gap: 8px;
 
-		padding: 8px 16px;
+		/* The header row owns the shared secondary bar, so it must reach the pane edges. */
+		padding: 0 0 8px;
 
 		border-bottom: 1px solid var(--color-fg-02);
 
@@ -59,6 +60,8 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 8px;
+
+		padding: 0 16px;
 
 		contain: strict;
 		height: 36px;
@@ -155,21 +158,25 @@
 
 	/* #region header */
 	.FilesSidebarHeader {
-		padding: 0;
+		/* Align this row with the editor toolbar and the sidebar tabs row so the three
+		   panes share one secondary bar directly below the global top bar. */
+		flex: 0 0 auto;
+		height: 44px;
+
+		padding: 0 12px;
+
+		background: var(--color-base-1-03);
+		border-bottom: 1px solid var(--color-fg-02);
 
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 	}
 
-	.FilesSidebarHeader-close-button {
-		height: 32px;
-		width: 32px;
-	}
-
+	.FilesSidebarHeader-close-button,
 	.FilesSidebarHeader-hamburger-button {
-		height: 32px;
-		width: 32px;
+		height: 36px;
+		width: 36px;
 	}
 
 	.FilesSidebarHeader-top-section-left {
@@ -181,7 +188,8 @@
 
 	/* #region search */
 	.FilesSidebarSearch {
-		width: 100%;
+		width: auto;
+		margin: 0 16px;
 	}
 	/* #endregion search */
 
@@ -429,6 +437,30 @@
 		/* Keep row state surfaces from covering the active drop-zone enclosure. */
 		background: transparent;
 		box-shadow: none;
+	}
+
+	/*
+	Warm fill for the file that is currently open. Opening a file also marks its row
+	`[data-selected]`, so this must win over the selected and hover backgrounds above. It survives
+	hover and keyboard focus so the current-file signal never disappears; only the pressed state
+	replaces it, which keeps normal press feedback. The drop-zone guard keeps an active drop
+	enclosure visible, and the tree scope makes this selector tie with the hover rule, so source
+	order decides and the tint wins.
+	*/
+	.FilesSidebarTree
+		.FilesSidebarTreeItem-content-navigated
+		> .FilesSidebarTreeItemPrimaryAction:not(:disabled):not(:active):not(
+			.FilesSidebarTreeItemPrimaryAction-drop-zone-included
+		)
+		> .FilesSidebarTreeItemPrimaryAction-surface {
+		/*
+		Mix in oklab, not oklch. The base surfaces are almost neutral, so an oklch mix
+		interpolates their undefined-ish hue and pulls the tint away from orange.
+		*/
+		background: linear-gradient(
+			color-mix(in oklab, var(--color-accent-05) 18%, var(--color-base-1-05)),
+			color-mix(in oklab, var(--color-accent-05) 15%, var(--color-base-1-04))
+		);
 	}
 
 	.FilesSidebarTreeItem-content-renaming {

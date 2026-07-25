@@ -9,7 +9,8 @@
 		min-height: 44px;
 		max-height: calc(44px + var(--app-scrollbar-w));
 
-		background: var(--color-base-1-05);
+		/* Same secondary-bar surface as the Files header row and the editor toolbar. */
+		background: var(--color-base-1-03);
 		border-bottom: 1px solid var(--color-fg-02);
 
 		contain: content;
@@ -24,7 +25,8 @@
 		align-items: center;
 		gap: 4px;
 
-		padding: 4px 16px;
+		/* 3px keeps the 36px tabs inside the shared 44px secondary-bar row height. */
+		padding: 3px 16px;
 	}
 
 	.FileEditorSidebar-tabs-panels {

@@ -1897,7 +1897,12 @@ const FilesSidebarSearch = memo(function FilesSidebarSearch(props: FilesSidebarS
 				<MyInputIcon>
 					<Search />
 				</MyInputIcon>
-				<MyInputControl placeholder="Search files" value={searchQuery} onChange={handleInputChange} />
+				<MyInputControl
+					aria-label="Search files"
+					placeholder="Search files"
+					value={searchQuery}
+					onChange={handleInputChange}
+				/>
 			</MyInputArea>
 			<MyInputBox />
 		</MyInput>
