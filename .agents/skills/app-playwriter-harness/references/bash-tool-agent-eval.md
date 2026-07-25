@@ -7,6 +7,18 @@ The Bash tool is a mixed-path virtual shell. The app mount under `/home/cloud-us
 ## Non-Negotiables
 
 - Use the user's existing local app tab. Do not start the dev server from Codex.
+- **Do not run this eval on an anonymous account.** Observed 2026-07-25: reloading the app
+  can mint a new anonymous user, and each one gets its own freshly seeded `personal/home`
+  workspace. The fixture is not deleted, it becomes unreachable, and every later scenario
+  scores an absent fixture while looking like a normal run. Pin the visible account id
+  before a phase and re-check it before each scenario; abort the batch if it changes.
+- Avoid page reloads inside a scored phase. Prefer SPA navigation (clicking a file in the
+  tree, switching sidebar tabs) to reach a surface. Reload only between phases, and
+  re-verify the fixture afterwards.
+- **A `convex dev --once` push deploys the entire working tree, not just the files the
+  attempt touched.** Check `git status` first and tell the user what else is going out,
+  especially `convex/schema.ts` changes. Never push mid-phase; a deploy invalidates the
+  phase.
 - Keep the same visible model, mode, fixture folder, and prompts for baseline and post-change runs.
 - Start each scored scenario in a fresh chat unless the scenario is explicitly testing cwd persistence or cursor continuation.
 - Ask the agent to use Bash so the chosen command is visible.
@@ -61,9 +73,52 @@ Do not navigate away from the user's real app session unless the current evaluat
 
 ## Playwriter Light Protocol
 
-Use short, single-purpose snippets. Do not create a monolithic matrix runner. Each Playwriter call should normally finish in under 5 seconds; only prompt submission or final evidence capture may use up to 30 seconds. If the agent is still streaming, wait outside Playwriter in small increments such as `Start-Sleep -Seconds 5`, then run the capture snippet again. Do not bake long sleeps into JavaScript.
+Use short, single-purpose snippets **while establishing or debugging the flow**. Each such
+Playwriter call should normally finish in under 5 seconds; only prompt submission or final
+evidence capture may use up to 30 seconds. If the agent is still streaming, wait outside
+Playwriter in small increments, then run the capture snippet again. Do not bake long sleeps
+into JavaScript.
 
 Treat `../t3-chat-+personal/+ai/bash-live-eval-runner.js` as historical scratch evidence, not future infrastructure.
+
+### Batched scenario runner (once the flow is stable)
+
+Driving 19+ scenarios one snippet at a time is not practical, and the manual loop is the
+main source of eval tooling errors. Once `state.qa` drives a scenario end to end without
+intervention, switch to a batched runner: for each scenario it starts a fresh chat, sends
+the prompt, waits for `waitDone`, expands every `<details>`, and captures commands,
+terminal output, and the final answer into one JSON file per batch.
+
+Rules that keep a batched runner honest:
+
+- Keep batches small (5–7 scenarios) so a mid-run failure loses little and the CLI timeout
+  stays under 10 minutes.
+- Capture raw evidence only. The runner must not score; scoring stays rubric-based and is
+  done by reading the JSON.
+- Recover the tab inside the runner. The localhost tab blanks after Vite HMR and after a
+  Convex push, so each scenario should check for a visible `.AiChatComposer-editor-content`
+  and reload the `/files` route when it is gone.
+- Write output to the OS temp directory (the sandboxed `fs` cannot write into the personal
+  `+ai` folder), then read it from there.
+- Log per-scenario progress from the calling script; `console.log` inside an installed
+  helper is lost between playwriter runs.
+
+A working runner and viewer live in `../t3-chat-+personal/+ai/bash-eval-2026-07-25/`
+(`install-eval-runner.js`, `scenarios.js`, `view.mjs`).
+
+### Fair-comparison hygiene between phases
+
+Both phases must start from the same fixture state:
+
+- Run the pending-edit scenario (Core 11) **last**. It deliberately leaves an unapplied
+  proposal, and Bash `search` overlays the current user's pending updates, so every later
+  scenario in that phase would see the pending token.
+- Discard that proposal before starting the next phase, and confirm the pending list is
+  empty. The Pending changes tab must be open for its accept/discard buttons to exist in
+  the DOM; a check run against a closed tab reports "no pending changes" and is worthless.
+- Accept the fixture's own creation proposals before scoring anything, because committed
+  content search needs materialized chunks.
+- After a Convex push, reload `/files` and re-open the Agent tab before the next prompt.
 
 ### Bind Snippet
 
@@ -203,6 +258,27 @@ Pass criteria:
 - `find --extension pdf -type f` finds the uploaded source. If it does not, repair or recreate the uploaded source fixture and rerun verification before scoring.
 
 Do not score a scenario that depends on missing fixture data. Do not treat a missing required fixture as a valid eval result until the repair flow above has been attempted and failed.
+
+### Re-verify the fixture between phases, not just once
+
+Observed 2026-07-25: the whole `personal/home` workspace was wiped back to seed state
+(only the default `README.md`, with its prior content reset) **mid-phase**, roughly two
+minutes into a run and shortly after a `convex dev --once` push. Scenarios 1–2 saw the
+fixture; scenario 3 onward got `No such file or directory`. Everything the run produced
+after that point was garbage that still looked like plausible agent behavior — the agent
+correctly reported the folder was missing, so nothing crashed and nothing flagged itself.
+
+Defenses:
+
+- Re-run the fixture verification commands **at the start of every phase**, not once per
+  evaluation, and again after any Convex push.
+- Treat "the agent says the path does not exist" as a fixture-integrity alarm, not a
+  scenario failure. Stop the batch, re-verify, rebuild, and discard the phase's results
+  from the first missing-path scenario onward.
+- A batched runner should assert the fixture root still resolves between scenarios so a
+  wipe aborts the batch instead of silently poisoning it.
+- Anonymous/dev workspaces are not durable storage. Never leave the only copy of eval
+  evidence in the app; capture commands and output to JSON as each scenario finishes.
 
 ## Baseline And Attempt Records
 
@@ -385,6 +461,30 @@ Score each run from 0 to 3.
 - `2`: recovered; first command unsupported or suboptimal, then correct recovery.
 - `1`: rough; correct final answer but extra commands, confusing text, or weak grounding.
 - `0`: fail; wrong scope, missed cursor, hallucinated support/output, false claim, or no recovery.
+
+To keep two phases comparable, apply these tie-breakers the same way in both:
+
+- Count rejected commands, not attempts: exactly one rejected command followed by a real
+  recovery is a `2`; two or more rejected commands before success is a `1`.
+- A correct command sequence whose final answer omits a result the prompt asked for (a
+  requested continuation page, one of two requested edits) is a `2`, not a `3`.
+- Extra orientation commands that the prompt did not need (`ls` before a `search --path`
+  that already names the folder) cost one point from `3`.
+
+### Self-blinding is a `0`
+
+Score `0` when the agent suppresses its own evidence and then states a negative as fact.
+The two observed forms:
+
+- `2>/dev/null` on an app-mount command, discarding a stderr `Try:` hint the tool did emit;
+- piping a failing command into `head`/`grep`, so the pipeline reports the last stage's
+  exit `0` and the real exit `2` disappears.
+
+Both produce empty stdout with exit `0`, which reads like "no results" but is not. Before
+scoring an empty result as correct, re-run the same command without the redirect or pipe
+and confirm the tool really returned nothing. The tool description already forbids
+`2>/dev/null`; an agent doing it anyway is a prompt-adherence finding worth recording, not
+a tool bug.
 
 Track these metrics:
 
