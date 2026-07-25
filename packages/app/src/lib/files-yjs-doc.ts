@@ -3,11 +3,17 @@
 
 import { Signal as Signal, type YjsSyncStatus } from "@liveblocks/core";
 import { Base64 } from "js-base64";
-import { Observable } from "lib0/observable";
+import { ObservableV2 } from "lib0/observable";
 import * as Y from "yjs";
 import { files_u8_equals } from "../../shared/files.ts";
 
-export class files_yjs_DocHandler extends Observable<unknown> {
+type files_yjs_DocHandler_Events = {
+	synced: (state: boolean) => void;
+	/** Kept next to `synced` because some Yjs integrations listen for `sync` instead. */
+	sync: (state: boolean) => void;
+};
+
+export class files_yjs_DocHandler extends ObservableV2<files_yjs_DocHandler_Events> {
 	private unsubscribers: Array<() => void> = [];
 
 	private _synced = false;
@@ -182,7 +188,7 @@ export class files_yjs_DocHandler extends Observable<unknown> {
 	destroy(): void {
 		this.doc.off("update", this.updateHandler);
 		this.unsubscribers.forEach((unsub) => unsub());
-		this._observers = new Map();
+		super.destroy();
 		this.doc.destroy();
 	}
 }

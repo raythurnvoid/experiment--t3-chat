@@ -3,7 +3,7 @@
 
 // TODO: apparently Yjs is full of anys or something, see if we can fix this
 
-import { Observable } from "lib0/observable";
+import { ObservableV2 } from "lib0/observable";
 import type * as Y from "yjs";
 import type { files_PresenceStore, files_PresenceStore_Event } from "@/lib/files.ts";
 
@@ -46,7 +46,20 @@ class BatchedEventsHandler<Events extends Event> {
  * This allows one user to have multiple devices/sessions, each with their own cursor.
  * Awareness only tracks OTHER sessions, not the local session.
  */
-export class files_yjs_Awareness extends Observable<unknown> {
+type files_yjs_Awareness_Changes = {
+	added: number[];
+	updated: number[];
+	removed: number[];
+};
+
+/** Same event names and payloads as the Yjs awareness protocol, so Yjs integrations keep working. */
+type files_yjs_Awareness_Events = {
+	change: (changes: files_yjs_Awareness_Changes, origin: string) => void;
+	update: (changes: files_yjs_Awareness_Changes, origin: string) => void;
+	destroy: (awareness: files_yjs_Awareness) => void;
+};
+
+export class files_yjs_Awareness extends ObservableV2<files_yjs_Awareness_Events> {
 	private presenceStore: files_PresenceStore;
 	public doc: Y.Doc;
 	public states: Map<number, unknown> = new Map();
@@ -94,7 +107,11 @@ export class files_yjs_Awareness extends Observable<unknown> {
 		// Hydrate initial states so a newly opened tab immediately sees existing cursors.
 		this.states = this.getStates();
 		if (this.presenceStore.sessionsData.size > 0) {
-			const added = Array.from(this.presenceStore.sessionsData.values()).map((presence) => presence.yjs_clientId);
+			// Sessions without a Yjs clientId are not part of awareness yet, so skip them.
+			// Every other code path here already guards the same way.
+			const added = Array.from(this.presenceStore.sessionsData.values())
+				.map((presence) => presence.yjs_clientId)
+				.filter((yjsClientId) => yjsClientId !== undefined);
 			this.emit("change", [{ added, updated: [], removed: [] }, "presence"]);
 			this.emit("update", [{ added, updated: [], removed: [] }, "presence"]);
 		}

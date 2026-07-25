@@ -2,7 +2,7 @@
 // replaced with Convex, so this is app code now. Keep it comparable to upstream when porting fixes.
 
 import { DerivedSignal, type IYjsProvider, type YjsSyncStatus } from "@liveblocks/core";
-import { Observable } from "lib0/observable";
+import { ObservableV2 } from "lib0/observable";
 import { Doc } from "yjs";
 import { PermanentUserData, mergeUpdates } from "yjs";
 
@@ -354,7 +354,14 @@ export type files_yjs_Provider_Args = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 };
 
-export class files_yjs_Provider extends Observable<unknown> implements IYjsProvider {
+/** `sync` and `status` are required by `IYjsProvider`; `synced` is the Yjs-style alias. */
+type files_yjs_Provider_Events = {
+	sync: (synced: boolean) => void;
+	synced: (synced: boolean) => void;
+	status: (status: YjsSyncStatus) => void;
+};
+
+export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> implements IYjsProvider {
 	args: files_yjs_Provider_Args;
 
 	private readonly rootDoc: Doc;
@@ -531,7 +538,6 @@ export class files_yjs_Provider extends Observable<unknown> implements IYjsProvi
 		this.unsubscribers.forEach((unsub) => unsub());
 		this.awareness.destroy();
 		this.rootDocHandler.destroy();
-		this._observers = new Map();
 		super.destroy();
 	}
 
