@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { page, userEvent } from "@vitest/browser/context";
+import { page, userEvent } from "vitest/browser";
 
 import {
 	MyFocus,

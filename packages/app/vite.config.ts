@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import react, { reactCompilerPreset } from "@vitejs/plugin-react";
+import babel from "@rolldown/plugin-babel";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import path from "node:path";
@@ -18,39 +19,35 @@ export default defineConfig({
 			routeFileIgnorePattern: "\\.test\\.",
 			verboseFileRoutes: false,
 		}),
-		react({
+		react(),
+		babel({
 			// https://react.dev/learn/react-compiler
-			babel: {
-				plugins: [
-					[
-						"babel-plugin-react-compiler",
-						{
-							target: "19",
-							// logger: {
-							// 	logEvent(filename, event) {
-							// 		if (!filename) return;
+			presets: [
+				reactCompilerPreset({
+					target: "19",
+					// logger: {
+					// 	logEvent(filename, event) {
+					// 		if (!filename) return;
 
-							// 		if (filename.includes(`ariakit`)) {
-							// 			console.log("ariakit", filename);
-							// 		}
-							// 	},
-							// } satisfies Logger,
-							environment: {
-								// Adds extra annotations useful when inspecting compiler output.
-								enableMemoizationComments: true,
-							},
-							sources: (filename: string) => {
-								return (
-									filename.startsWith(path.resolve(__dirname, "src")) ||
-									filename.startsWith(path.resolve(__dirname, "vendor/novel")) ||
-									filename.startsWith(path.resolve(__dirname, "vendor/polar")) ||
-									filename.startsWith(path.resolve(__dirname, "vendor/tiptap"))
-								);
-							},
-						},
-					],
-				],
-			},
+					// 		if (filename.includes(`ariakit`)) {
+					// 			console.log("ariakit", filename);
+					// 		}
+					// 	},
+					// } satisfies Logger,
+					environment: {
+						// Adds extra annotations useful when inspecting compiler output.
+						enableMemoizationComments: true,
+					},
+					sources: (filename: string) => {
+						return (
+							filename.startsWith(path.resolve(__dirname, "src")) ||
+							filename.startsWith(path.resolve(__dirname, "vendor/novel")) ||
+							filename.startsWith(path.resolve(__dirname, "vendor/polar")) ||
+							filename.startsWith(path.resolve(__dirname, "vendor/tiptap"))
+						);
+					},
+				}),
+			],
 		}),
 		tailwindcss({
 			optimize: false,
