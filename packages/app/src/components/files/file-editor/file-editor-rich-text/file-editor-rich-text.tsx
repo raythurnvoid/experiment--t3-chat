@@ -12,6 +12,9 @@ import {
 	EditorBubble,
 } from "novel";
 import { Editor, useEditorState } from "@tiptap/react";
+import { Extension } from "@tiptap/core";
+import { isChangeOrigin } from "@tiptap/extension-collaboration";
+import { toast } from "sonner";
 import { useFileEditorRichTextExtension } from "@/lib/file-editor-rich-text-extension.ts";
 import type { YjsSyncStatus } from "@liveblocks/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
@@ -35,7 +38,18 @@ import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
-import { files_PresenceStore, files_YJS_DOC_KEYS } from "@/lib/files.ts";
+import {
+	files_MAX_TEXT_CONTENT_BYTES,
+	files_PresenceStore,
+	files_YJS_DOC_KEYS,
+	files_get_utf8_byte_size,
+} from "@/lib/files.ts";
+import {
+	file_editor_SIZE_MEASURE_CHARS,
+	file_editor_get_size_badge_text,
+	file_editor_get_size_error_message,
+	file_editor_should_block_growth,
+} from "@/lib/file-editor.ts";
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-inline-ai.tsx";
@@ -44,7 +58,7 @@ import { Sparkles } from "lucide-react";
 import { FileEditorRichTextDragHandle } from "./file-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
 import { bubbleMenuReevaluateVisibility } from "../../../../../vendor/tiptap/packages/extension-bubble-menu/src/index.ts";
-import { useFn, useRenderPromise } from "../../../../hooks/utils-hooks.ts";
+import { useDebounce, useFn, useRenderPromise } from "../../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFilesYjs } from "@/hooks/files-hooks.ts";
 import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
@@ -58,12 +72,21 @@ type FileEditorRichTextToolbarActions_ClassNames =
 	| "FileEditorRichTextToolbarActions"
 	| "FileEditorRichTextToolbarActions-status-badge"
 	| "FileEditorRichTextToolbarActions-word-count-badge"
-	| "FileEditorRichTextToolbarActions-word-count-badge-hidden";
+	| "FileEditorRichTextToolbarActions-word-count-badge-hidden"
+	| "FileEditorRichTextToolbarActions-size-badge";
+
+/**
+ * Shared between the toolbar, which measures the content size, and the editor plugin that
+ * rejects growth once the content is over the cap. A ref keeps the measurement out of the
+ * editor's render path.
+ */
+type FileEditorRichTextSizeRef = { current: { isOverCap: boolean } };
 
 type FileEditorRichTextToolbarActions_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
+	sizeRef: FileEditorRichTextSizeRef;
 	syncChanged: boolean;
 	syncStatus: SyncStatus;
 	toolbarPortalHost: HTMLElement;
@@ -101,6 +124,7 @@ type FileEditorRichTextToolbarStatus_Props = {
 	getCurrentMarkdown: () => string;
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
+	sizeRef: FileEditorRichTextSizeRef;
 	syncChanged: boolean;
 	syncStatus: SyncStatus;
 };
@@ -108,12 +132,40 @@ type FileEditorRichTextToolbarStatus_Props = {
 const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarStatus(
 	props: FileEditorRichTextToolbarStatus_Props,
 ) {
-	const { editor, getCurrentMarkdown, nodeId, sessionId, syncChanged, syncStatus } = props;
+	const { editor, getCurrentMarkdown, nodeId, sessionId, sizeRef, syncChanged, syncStatus } = props;
 
 	const wordsCount = useEditorState({
 		editor,
 		selector: ({ editor: currentEditor }) => currentEditor.storage.characterCount.words(),
 	});
+
+	// The character count is a cheap lower bound on the Markdown byte size, so serializing the
+	// whole document only starts once it is big enough to get near the cap. Serializing a document
+	// that big is expensive, so it is debounced and runs when typing pauses, not on every keystroke.
+	const charactersCount = useEditorState({
+		editor,
+		selector: ({ editor: currentEditor }) => currentEditor.storage.characterCount.characters() as number,
+	});
+	const isWorthMeasuring = charactersCount >= file_editor_SIZE_MEASURE_CHARS;
+	const debouncedCharactersCount = useDebounce(charactersCount, 500);
+
+	const [byteSize, setByteSize] = useState<number | null>(null);
+
+	useEffect(() => {
+		if (!isWorthMeasuring) {
+			setByteSize(null);
+			sizeRef.current.isOverCap = false;
+			return;
+		}
+
+		const nextByteSize = files_get_utf8_byte_size(getCurrentMarkdown());
+		setByteSize(nextByteSize);
+		sizeRef.current.isOverCap = nextByteSize > files_MAX_TEXT_CONTENT_BYTES;
+		// `getCurrentMarkdown` is a `useFn` wrapper, so it is a new function on every render. Keeping
+		// it out of the deps is what makes the debounce above actually skip keystrokes.
+	}, [debouncedCharactersCount, isWorthMeasuring, sizeRef]);
+
+	const sizeBadge = file_editor_get_size_badge_text(byteSize);
 
 	return (
 		<>
@@ -139,6 +191,16 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 			>
 				{wordsCount} Words
 			</MyBadge>
+			{sizeBadge && (
+				<MyBadge
+					variant={sizeBadge.isOverCap ? "destructive" : "secondary"}
+					className={cn(
+						"FileEditorRichTextToolbarActions-size-badge" satisfies FileEditorRichTextToolbarActions_ClassNames,
+					)}
+				>
+					{sizeBadge.label}
+				</MyBadge>
+			)}
 			<FileEditorSnapshotsModal nodeId={nodeId} sessionId={sessionId} getCurrentMarkdown={getCurrentMarkdown} />
 		</>
 	);
@@ -147,7 +209,7 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 const FileEditorRichTextToolbarActions = memo(function FileEditorRichTextToolbarActions(
 	props: FileEditorRichTextToolbarActions_Props,
 ) {
-	const { editor, nodeId, sessionId, syncChanged, syncStatus, toolbarPortalHost } = props;
+	const { editor, nodeId, sessionId, sizeRef, syncChanged, syncStatus, toolbarPortalHost } = props;
 
 	const getCurrentMarkdown = useFn(() => {
 		const markdown = editor.getMarkdown();
@@ -168,6 +230,7 @@ const FileEditorRichTextToolbarActions = memo(function FileEditorRichTextToolbar
 				getCurrentMarkdown={getCurrentMarkdown}
 				nodeId={nodeId}
 				sessionId={sessionId}
+				sizeRef={sizeRef}
 				syncChanged={syncChanged}
 				syncStatus={syncStatus}
 			/>
@@ -709,11 +772,52 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 		},
 	});
 
-	const extensions = [...defaultExtensions, FileEditorRichTextToolsSlashCommand.slashCommand, liveblocks];
+	const sizeRef = useRef({ isOverCap: false });
+
+	// Catches everything that is not a paste or a drop: typing, AI insertions, slash
+	// commands, image inserts. Inert while the document is under the cap.
+	const sizeLimit = Extension.create({
+		name: "fileEditorRichTextSizeLimit",
+		addProseMirrorPlugins() {
+			return [
+				new Plugin({
+					filterTransaction: (transaction, state) =>
+						!file_editor_should_block_growth({
+							isOverCap: sizeRef.current.isOverCap,
+							isRemoteChange: isChangeOrigin(transaction),
+							docSizeBefore: state.doc.content.size,
+							docSizeAfter: transaction.doc.content.size,
+						}),
+				}),
+			];
+		},
+	});
+
+	const extensions = [...defaultExtensions, FileEditorRichTextToolsSlashCommand.slashCommand, liveblocks, sizeLimit];
 
 	const handleCreate: EditorContentProps["onCreate"] = ({ editor }) => {
 		setEditor(editor);
 	};
+
+	/**
+	 * Reject content that would push the document over the size cap. Every keystroke in this
+	 * editor persists, so pasted and dropped content has to be checked before it lands.
+	 * The size is measured exactly here rather than read from `sizeRef`, which is debounced:
+	 * a paste is a one-off user action, so one serialization is affordable and never stale.
+	 */
+	const checkIncomingContentFitsSizeCap = useFn((incomingText: string) => {
+		if (!editor || !incomingText) {
+			return true;
+		}
+
+		const nextByteSize = files_get_utf8_byte_size(editor.getMarkdown()) + files_get_utf8_byte_size(incomingText);
+		if (nextByteSize <= files_MAX_TEXT_CONTENT_BYTES) {
+			return true;
+		}
+
+		toast.error(file_editor_get_size_error_message(nextByteSize));
+		return false;
+	});
 
 	return (
 		<>
@@ -732,6 +836,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 						editor={editor}
 						nodeId={nodeId}
 						sessionId={presenceStore.localSessionId}
+						sizeRef={sizeRef}
 						syncChanged={filesYjs.syncChanged}
 						syncStatus={filesYjs.syncStatus}
 						toolbarPortalHost={toolbarPortalHost}
@@ -754,8 +859,22 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 						handleDOMEvents: {
 							keydown: (_view, event) => handleCommandNavigation(event),
 						},
-						handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
-						handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
+						handlePaste: (view, event) => {
+							if (checkIncomingContentFitsSizeCap(event.clipboardData?.getData("text/plain") ?? "") === false) {
+								return true;
+							}
+							return handleImagePaste(view, event, uploadFn);
+						},
+						handleDrop: (view, event, _slice, moved) => {
+							// `moved` is an internal drag, so the content is only relocated, not added.
+							if (
+								!moved &&
+								checkIncomingContentFitsSizeCap(event.dataTransfer?.getData("text/plain") ?? "") === false
+							) {
+								return true;
+							}
+							return handleImageDrop(view, event, moved, uploadFn);
+						},
 					}}
 					extensions={extensions}
 					immediatelyRender={false}

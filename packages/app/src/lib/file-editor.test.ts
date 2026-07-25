@@ -1,0 +1,69 @@
+import { describe, expect, test } from "vitest";
+import {
+	file_editor_SIZE_MEASURE_CHARS,
+	file_editor_SIZE_WARN_BYTES,
+	file_editor_get_size_badge_text,
+	file_editor_should_block_growth,
+} from "./file-editor.ts";
+import { files_MAX_TEXT_CONTENT_BYTES } from "../../shared/files.ts";
+
+describe("editor size cap thresholds", () => {
+	test("warns before reaching the cap", () => {
+		expect(file_editor_SIZE_WARN_BYTES).toBeLessThan(files_MAX_TEXT_CONTENT_BYTES);
+	});
+
+	test("starts measuring before the warning point", () => {
+		// The character count is a lower bound on the Markdown byte size, so the measure gate
+		// must sit below the warn point or the badge could never appear in time.
+		expect(file_editor_SIZE_MEASURE_CHARS).toBeLessThan(file_editor_SIZE_WARN_BYTES);
+	});
+});
+
+describe("file_editor_get_size_badge", () => {
+	test("stays hidden while the content is well under the cap", () => {
+		expect(file_editor_get_size_badge_text(null)).toBeNull();
+		expect(file_editor_get_size_badge_text(0)).toBeNull();
+		expect(file_editor_get_size_badge_text(file_editor_SIZE_WARN_BYTES - 1)).toBeNull();
+	});
+
+	test("warns from the threshold up to the cap", () => {
+		const badge = file_editor_get_size_badge_text(file_editor_SIZE_WARN_BYTES);
+
+		expect(badge?.isOverCap).toBe(false);
+		expect(badge?.label).toContain("/");
+	});
+
+	test("reports over the cap", () => {
+		expect(file_editor_get_size_badge_text(files_MAX_TEXT_CONTENT_BYTES)?.isOverCap).toBe(false);
+		expect(file_editor_get_size_badge_text(files_MAX_TEXT_CONTENT_BYTES + 1)?.isOverCap).toBe(true);
+	});
+});
+
+describe("file_editor_should_block_growth", () => {
+	const base = {
+		isOverCap: true,
+		isRemoteChange: false,
+		docSizeBefore: 100,
+		docSizeAfter: 101,
+	};
+
+	test("blocks local growth while over the cap", () => {
+		expect(file_editor_should_block_growth(base)).toBe(true);
+	});
+
+	test("allows everything while under the cap", () => {
+		expect(file_editor_should_block_growth({ ...base, isOverCap: false })).toBe(false);
+	});
+
+	test("allows remote changes so collaboration never desyncs", () => {
+		expect(file_editor_should_block_growth({ ...base, isRemoteChange: true })).toBe(false);
+	});
+
+	test("allows deletions so the user can get back under the cap", () => {
+		expect(file_editor_should_block_growth({ ...base, docSizeAfter: 99 })).toBe(false);
+	});
+
+	test("allows changes that keep the same size", () => {
+		expect(file_editor_should_block_growth({ ...base, docSizeAfter: 100 })).toBe(false);
+	});
+});

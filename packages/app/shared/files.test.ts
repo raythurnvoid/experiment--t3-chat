@@ -180,21 +180,19 @@ describe("files_find_file_stem_end_index", () => {
 });
 
 describe("files_get_upload_pipeline_state", () => {
-	test.each(
-		[
-			[null, "not_applicable"],
-			[{ kind: "content", r2Key: "content-key" }, "not_applicable"],
-			[{ kind: "content", processingWorkId: "work_1" as WorkId }, "processing"],
-			[{ kind: "content", processingWorkId: null }, "terminal"],
-			[{ kind: "upload" }, "waiting_for_upload"],
-			[{ kind: "upload", processingWorkId: null }, "terminal"],
-			[{ kind: "upload", r2Key: "upload-key" }, "pending_processing"],
-			[{ kind: "upload", r2Key: "upload-key", processingWorkId: "work_1" as WorkId }, "processing"],
-			[{ kind: "upload", r2Key: "upload-key", processingWorkId: null }, "terminal"],
-		] satisfies Array<
-			[Parameters<typeof files_get_upload_pipeline_state>[0], ReturnType<typeof files_get_upload_pipeline_state>]
-		>,
-	)("returns expected state for case %#", (asset, expected) => {
+	test.each([
+		[null, "not_applicable"],
+		[{ kind: "content", r2Key: "content-key" }, "not_applicable"],
+		[{ kind: "content", processingWorkId: "work_1" as WorkId }, "processing"],
+		[{ kind: "content", processingWorkId: null }, "terminal"],
+		[{ kind: "upload" }, "waiting_for_upload"],
+		[{ kind: "upload", processingWorkId: null }, "terminal"],
+		[{ kind: "upload", r2Key: "upload-key" }, "pending_processing"],
+		[{ kind: "upload", r2Key: "upload-key", processingWorkId: "work_1" as WorkId }, "processing"],
+		[{ kind: "upload", r2Key: "upload-key", processingWorkId: null }, "terminal"],
+	] satisfies Array<
+		[Parameters<typeof files_get_upload_pipeline_state>[0], ReturnType<typeof files_get_upload_pipeline_state>]
+	>)("returns expected state for case %#", (asset, expected) => {
 		expect(files_get_upload_pipeline_state(asset)).toBe(expected);
 	});
 });
@@ -234,50 +232,52 @@ describe("files_node_has_editable_yjs_state", () => {
 });
 
 describe("files_get_normalized_node_path_segments", () => {
-	test.each(
-		[
-			[null, "docs/readme", null],
-			["file", "", null],
-			["file", "/", null],
-			["folder", "Docs / Feature Plan", { normalizedPathSegments: ["docs", "feature-plan"] }],
-			["folder", "Docs / release.v1", { normalizedPathSegments: ["docs", "release.v1"] }],
-			["file", "Docs / readme", { normalizedPathSegments: ["docs", "README.md"] }],
-			["file", "docs/archive.tar.md", { normalizedPathSegments: ["docs", "archive.tar.md"] }],
-			["file", "docs/archive.tar.gz", { validationMessage: "Invalid file name" }],
-			["folder", "docs/Bad Name", { normalizedPathSegments: ["docs", "bad-name"] }],
-			["file", "docs/bad.m d", { validationMessage: "Invalid file name" }],
-		] satisfies Array<[Parameters<typeof files_get_normalized_node_path_segments>[0]["kind"], string, unknown]>,
-	)("normalizes %#", (kind, nameOrPath, expected) => {
-		expect(files_get_normalized_node_path_segments({ kind, nameOrPath })).toEqual(expected);
-	});
+	test.each([
+		[null, "docs/readme", null],
+		["file", "", null],
+		["file", "/", null],
+		["folder", "Docs / Feature Plan", { normalizedPathSegments: ["docs", "feature-plan"] }],
+		["folder", "Docs / release.v1", { normalizedPathSegments: ["docs", "release.v1"] }],
+		["file", "Docs / readme", { normalizedPathSegments: ["docs", "README.md"] }],
+		["file", "docs/archive.tar.md", { normalizedPathSegments: ["docs", "archive.tar.md"] }],
+		["file", "docs/archive.tar.gz", { validationMessage: "Invalid file name" }],
+		["folder", "docs/Bad Name", { normalizedPathSegments: ["docs", "bad-name"] }],
+		["file", "docs/bad.m d", { validationMessage: "Invalid file name" }],
+	] satisfies Array<[Parameters<typeof files_get_normalized_node_path_segments>[0]["kind"], string, unknown]>)(
+		"normalizes %#",
+		(kind, nameOrPath, expected) => {
+			expect(files_get_normalized_node_path_segments({ kind, nameOrPath })).toEqual(expected);
+		},
+	);
 });
 
 describe("files_normalize_name_input", () => {
-	test.each(
-		[
-			[{ kind: "file", previousText: "", insertedText: "A", nextText: "" }, "a"],
-			[{ kind: "file", previousText: "", insertedText: "é", nextText: "" }, "e"],
-			[{ kind: "folder", previousText: "", insertedText: "é", nextText: "" }, "e"],
-			[{ kind: "file", previousText: "file", insertedText: " ", nextText: "name" }, "-"],
-			[{ kind: "file", previousText: "file-", insertedText: " ", nextText: "name" }, ""],
-			[{ kind: "file", previousText: "notes", insertedText: ".", nextText: "md" }, "."],
-			[{ kind: "folder", previousText: "notes", insertedText: ".", nextText: "md" }, "."],
-			[{ kind: "file", previousText: "a-", insertedText: "_", nextText: "b" }, ""],
-			[{ kind: "file", previousText: "a", insertedText: "_", nextText: "-b" }, ""],
-			[{ kind: "file", previousText: "a", insertedText: ".", nextText: "-b" }, ""],
-			[{ kind: "file", previousText: "a_", insertedText: ".", nextText: "b" }, ""],
-			[{ kind: "folder", previousText: "a", insertedText: "_", nextText: "-b" }, ""],
-			[{ kind: "file", previousText: "file", insertedText: "2026", nextText: "" }, "2026"],
-			[{ kind: "folder", previousText: "", insertedText: "2026", nextText: "" }, "2026"],
-			[{ kind: "file", previousText: "foo", insertedText: "-", nextText: "" }, "-"],
-			[{ kind: "file", previousText: "foo", insertedText: "_", nextText: "" }, "_"],
-			[{ kind: "file", previousText: "foo", insertedText: "/bar", nextText: "" }, "/bar"],
-			[{ kind: "folder", previousText: "foo", insertedText: "\\bar", nextText: "" }, "/bar"],
-			[{ kind: "file", previousText: "", insertedText: "-file", nextText: "" }, "file"],
-		] satisfies Array<[Parameters<typeof files_normalize_name_input>[0], string]>,
-	)("normalizes live input %#", (input, expected) => {
-		expect(files_normalize_name_input(input)).toBe(expected);
-	});
+	test.each([
+		[{ kind: "file", previousText: "", insertedText: "A", nextText: "" }, "a"],
+		[{ kind: "file", previousText: "", insertedText: "é", nextText: "" }, "e"],
+		[{ kind: "folder", previousText: "", insertedText: "é", nextText: "" }, "e"],
+		[{ kind: "file", previousText: "file", insertedText: " ", nextText: "name" }, "-"],
+		[{ kind: "file", previousText: "file-", insertedText: " ", nextText: "name" }, ""],
+		[{ kind: "file", previousText: "notes", insertedText: ".", nextText: "md" }, "."],
+		[{ kind: "folder", previousText: "notes", insertedText: ".", nextText: "md" }, "."],
+		[{ kind: "file", previousText: "a-", insertedText: "_", nextText: "b" }, ""],
+		[{ kind: "file", previousText: "a", insertedText: "_", nextText: "-b" }, ""],
+		[{ kind: "file", previousText: "a", insertedText: ".", nextText: "-b" }, ""],
+		[{ kind: "file", previousText: "a_", insertedText: ".", nextText: "b" }, ""],
+		[{ kind: "folder", previousText: "a", insertedText: "_", nextText: "-b" }, ""],
+		[{ kind: "file", previousText: "file", insertedText: "2026", nextText: "" }, "2026"],
+		[{ kind: "folder", previousText: "", insertedText: "2026", nextText: "" }, "2026"],
+		[{ kind: "file", previousText: "foo", insertedText: "-", nextText: "" }, "-"],
+		[{ kind: "file", previousText: "foo", insertedText: "_", nextText: "" }, "_"],
+		[{ kind: "file", previousText: "foo", insertedText: "/bar", nextText: "" }, "/bar"],
+		[{ kind: "folder", previousText: "foo", insertedText: "\\bar", nextText: "" }, "/bar"],
+		[{ kind: "file", previousText: "", insertedText: "-file", nextText: "" }, "file"],
+	] satisfies Array<[Parameters<typeof files_normalize_name_input>[0], string]>)(
+		"normalizes live input %#",
+		(input, expected) => {
+			expect(files_normalize_name_input(input)).toBe(expected);
+		},
+	);
 });
 
 describe("files_normalize_name", () => {
@@ -364,17 +364,14 @@ describe("files_normalize_name", () => {
 		"2026 plan.final",
 		"multi___under.txt",
 		"test.m d",
-	])(
-		"rejects file %s",
-		(input) => {
-			const result = files_normalize_name("file", input);
-			if (!result._nay) {
-				throw new Error("Expected file name normalization to fail");
-			}
+	])("rejects file %s", (input) => {
+		const result = files_normalize_name("file", input);
+		if (!result._nay) {
+			throw new Error("Expected file name normalization to fail");
+		}
 
-			expect(result._nay.message).toBe("Invalid file name");
-		},
-	);
+		expect(result._nay.message).toBe("Invalid file name");
+	});
 });
 
 describe("files_normalize_markdown_name", () => {
@@ -542,9 +539,7 @@ describe("files_tiptap_markdown_to_json", () => {
 		// One final `\n` is a plain line terminator, not an empty line; only newlines
 		// beyond it become empty paragraphs.
 		expect(trailingNewline._yay).toEqual(noTrailingWhitespace._yay);
-		expect((trailingBlankLine._yay.content ?? []).length).toBeGreaterThan(
-			(trailingNewline._yay.content ?? []).length,
-		);
+		expect((trailingBlankLine._yay.content ?? []).length).toBeGreaterThan((trailingNewline._yay.content ?? []).length);
 	});
 
 	test("preserves trailing whitespace at EOF for heading markdown through JSON conversion", () => {
@@ -756,9 +751,7 @@ describe("frontmatter parsing via marked", () => {
 	test("escapes HTML special chars inside the frontmatter body", () => {
 		const html = files_parse_markdown_to_html('---\nfrom: "Marcus Dane <marcus@example.com>"\n---\n');
 		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
-		expect(html._yay).toContain(
-			'<pre data-frontmatter>from: "Marcus Dane &lt;marcus@example.com&gt;"</pre>',
-		);
+		expect(html._yay).toContain('<pre data-frontmatter>from: "Marcus Dane &lt;marcus@example.com&gt;"</pre>');
 	});
 
 	test("does not match a non-leading ---...--- block", () => {
@@ -1514,10 +1507,7 @@ describe("files_pending_path_overlay", () => {
 
 		test("a delete deeper inside a moved folder hides that area at the destination", () => {
 			const overlay = build_overlay(
-				[
-					make_move_row({ nodeId: "m", destParentId: files_ROOT_ID, destName: "n" }),
-					make_archive_row({ nodeId: "d" }),
-				],
+				[make_move_row({ nodeId: "m", destParentId: files_ROOT_ID, destName: "n" }), make_archive_row({ nodeId: "d" })],
 				[make_overlay_node("m", "/m", "folder"), make_overlay_node("d", "/m/d", "folder")],
 			);
 

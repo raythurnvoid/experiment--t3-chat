@@ -215,9 +215,14 @@
 	}
 
 	.FileEditorRichTextToolbarActions-status-badge,
-	.FileEditorRichTextToolbarActions-word-count-badge {
+	.FileEditorRichTextToolbarActions-word-count-badge,
+	.FileEditorRichTextToolbarActions-size-badge {
 		padding: 4px 8px;
 		font-size: 0.9rem;
+	}
+
+	.FileEditorRichTextToolbarActions-size-badge {
+		white-space: nowrap;
 	}
 	/* #endregion toolbar */
 

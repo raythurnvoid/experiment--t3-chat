@@ -33,7 +33,12 @@ export function useLiveRef<T>(value: T) {
  */
 export function useFn<T extends null | undefined | ((...args: any[]) => any)>(handler: T) {
 	const handlerRef = useLiveRef(handler);
-	return (...args: Parameters<NonNullable<T>>) => handlerRef.current?.(...args);
+	const [stableFn] = useState(
+		() =>
+			(...args: Parameters<NonNullable<T>>) =>
+				handlerRef.current?.(...args),
+	);
+	return stableFn;
 }
 
 /**

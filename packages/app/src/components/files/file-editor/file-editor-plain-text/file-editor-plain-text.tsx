@@ -9,7 +9,10 @@ import {
 	files_headless_tiptap_editor_create,
 	files_monaco_create_editor_model,
 	files_fetch_file_yjs_state_and_markdown,
+	files_MAX_TEXT_CONTENT_BYTES,
+	files_get_utf8_byte_size,
 } from "@/lib/files.ts";
+import { file_editor_get_size_badge_text, file_editor_get_size_error_message } from "@/lib/file-editor.ts";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Editor, type EditorProps } from "@monaco-editor/react";
@@ -20,6 +23,7 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { usePromiseValue } from "@/lib/async.ts";
+import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import type { files_PresenceStore } from "@/lib/files.ts";
@@ -38,9 +42,11 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 type FileEditorPlainTextToolbarActions_ClassNames =
 	| "FileEditorPlainTextToolbarActions"
 	| "FileEditorPlainTextToolbarActions-button"
-	| "FileEditorPlainTextToolbarActions-icon";
+	| "FileEditorPlainTextToolbarActions-icon"
+	| "FileEditorPlainTextToolbarActions-size-badge";
 
 type FileEditorPlainTextToolbarActions_Props = {
+	byteSize: number;
 	isSaveDisabled: boolean;
 	isSyncDisabled: boolean;
 	isSaveDebouncing: boolean;
@@ -57,6 +63,7 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 	props: FileEditorPlainTextToolbarActions_Props,
 ) {
 	const {
+		byteSize,
 		isSaveDisabled,
 		isSyncDisabled,
 		isSaveDebouncing,
@@ -68,6 +75,8 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 		onClickSave,
 		onClickSync,
 	} = props;
+
+	const sizeBadge = file_editor_get_size_badge_text(byteSize);
 
 	return createPortal(
 		<div
@@ -110,6 +119,16 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 				</MyButtonIcon>
 				Sync
 			</MyButton>
+			{sizeBadge && (
+				<MyBadge
+					variant={sizeBadge.isOverCap ? "destructive" : "secondary"}
+					className={cn(
+						"FileEditorPlainTextToolbarActions-size-badge" satisfies FileEditorPlainTextToolbarActions_ClassNames,
+					)}
+				>
+					{sizeBadge.label}
+				</MyBadge>
+			)}
 			<FileEditorSnapshotsModal
 				nodeId={nodeId}
 				sessionId={sessionId}
@@ -201,6 +220,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const [isSyncing, setIsSyncing] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
 
+	const [byteSize, setByteSize] = useState(() => files_get_utf8_byte_size(initialData.markdown));
+
 	const isSaveDebouncing = dirtyCheckState === "checking";
 	const isSaveDisabled = isSaving || isSyncing || dirtyCheckState !== "dirty";
 	const activeServerSequence = serverSequence ?? initialData.yjsSequence;
@@ -250,6 +271,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 	const updateDirtyBaseline = (newBaselineMarkdown: string) => {
 		baselineMarkdownRef.current = newBaselineMarkdown;
+		setByteSize(files_get_utf8_byte_size(newBaselineMarkdown));
 
 		if (dirtyCheckTimeoutRef.current) {
 			clearTimeout(dirtyCheckTimeoutRef.current);
@@ -280,7 +302,12 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				return;
 			}
 
-			const isDirty = model.getValue() !== baselineMarkdownRef.current;
+			// This debounce already reads the full value for the dirty check, so measuring the
+			// content size here is only the byte count on top.
+			const localMarkdown = model.getValue();
+			setByteSize(files_get_utf8_byte_size(localMarkdown));
+
+			const isDirty = localMarkdown !== baselineMarkdownRef.current;
 			setDirtyCheckState(isDirty ? "dirty" : "clean");
 		}, 250);
 	};
@@ -394,6 +421,15 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			const baselineYjsDoc = baselineYjsDocRef.current;
 
 			const localMarkdown = editorModel.getValue();
+
+			// Nothing is persisted until this point, so the cap is enforced here instead of on
+			// paste. The content stays in the editor, so the user can trim it and save again.
+			const localByteSize = files_get_utf8_byte_size(localMarkdown);
+			if (localByteSize > files_MAX_TEXT_CONTENT_BYTES) {
+				toast.error(file_editor_get_size_error_message(localByteSize));
+				return;
+			}
+
 			const workingYjsDoc = files_yjs_doc_clone({ yjsDoc: baselineYjsDoc });
 
 			const workingYjsDocFromMarkdown = files_yjs_doc_update_from_markdown({
@@ -578,6 +614,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		<>
 			<div className={"FileEditorPlainText" satisfies FileEditorPlainText_ClassNames}>
 				<FileEditorPlainTextToolbarActions
+					byteSize={byteSize}
 					isSaveDisabled={isSaveDisabled}
 					isSyncDisabled={isSyncDisabled}
 					isSaveDebouncing={isSaveDebouncing}

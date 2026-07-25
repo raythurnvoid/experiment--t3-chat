@@ -27,6 +27,12 @@
 		width: 20px;
 		height: 20px;
 	}
+
+	.FileEditorPlainTextToolbarActions-size-badge {
+		padding: 4px 8px;
+		font-size: 0.9rem;
+		white-space: nowrap;
+	}
 	/* #endregion toolbar */
 
 	/* #region top sticky floating container */
