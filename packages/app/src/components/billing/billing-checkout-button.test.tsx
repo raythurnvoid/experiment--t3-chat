@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { MockInstance } from "vitest";
 
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 
@@ -39,10 +40,12 @@ vi.mock("@/components/my-button.tsx", () => ({
 import { BillingCheckoutButton } from "./billing-checkout-button.tsx";
 
 describe("BillingCheckoutButton", () => {
+	let windowOpenSpy: MockInstance<typeof window.open>;
+
 	beforeEach(() => {
 		actionMock.mockReset();
 		toastErrorMock.mockReset();
-		vi.spyOn(window, "open").mockImplementation(() => null);
+		windowOpenSpy = vi.spyOn(window, "open").mockImplementation(() => null);
 	});
 
 	afterEach(() => {
@@ -62,7 +65,7 @@ describe("BillingCheckoutButton", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Select plan" }));
 
 		await waitFor(() => {
-			expect(window.open).toHaveBeenCalledWith("https://checkout.test/session", "_blank", "noopener,noreferrer");
+			expect(windowOpenSpy).toHaveBeenCalledWith("https://checkout.test/session", "_blank", "noopener,noreferrer");
 		});
 	});
 
@@ -101,6 +104,6 @@ describe("BillingCheckoutButton", () => {
 		await waitFor(() => {
 			expect(toastErrorMock).toHaveBeenCalledWith("Origin is not allowed for checkout");
 		});
-		expect(window.open).not.toHaveBeenCalled();
+		expect(windowOpenSpy).not.toHaveBeenCalled();
 	});
 });
