@@ -12,7 +12,11 @@ import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
 } from "@/lib/files.ts";
-import { file_editor_get_size_badge_text, file_editor_get_size_error_message } from "@/lib/file-editor.ts";
+import {
+	file_editor_get_size_badge_text,
+	file_editor_get_size_error_message,
+	file_editor_get_size_status_message,
+} from "@/lib/file-editor.ts";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Editor, type EditorProps } from "@monaco-editor/react";
@@ -129,6 +133,13 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 					{sizeBadge.label}
 				</MyBadge>
 			)}
+			{/*
+				The badge is silent, so without this a screen reader user only finds out the file
+				is too big when Save is rejected.
+				*/}
+			<span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+				{file_editor_get_size_status_message({ byteSize, blocks: "saving" })}
+			</span>
 			<FileEditorSnapshotsModal
 				nodeId={nodeId}
 				sessionId={sessionId}

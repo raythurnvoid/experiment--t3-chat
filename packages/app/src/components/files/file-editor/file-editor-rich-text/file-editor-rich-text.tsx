@@ -12,8 +12,6 @@ import {
 	EditorBubble,
 } from "novel";
 import { Editor, useEditorState } from "@tiptap/react";
-import { Extension } from "@tiptap/core";
-import { isChangeOrigin } from "@tiptap/extension-collaboration";
 import { toast } from "sonner";
 import { useFileEditorRichTextExtension } from "@/lib/file-editor-rich-text-extension.ts";
 import type { YjsSyncStatus } from "@liveblocks/core";
@@ -48,8 +46,9 @@ import {
 	file_editor_SIZE_MEASURE_CHARS,
 	file_editor_get_size_badge_text,
 	file_editor_get_size_error_message,
-	file_editor_should_block_growth,
+	file_editor_get_size_status_message,
 } from "@/lib/file-editor.ts";
+import { file_editor_rich_text_SizeLimitExtension } from "@/lib/file-editor-rich-text-size-limit-extension.ts";
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-inline-ai.tsx";
@@ -201,6 +200,13 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 					{sizeBadge.label}
 				</MyBadge>
 			)}
+			{/*
+				The badge is silent, and over the cap the editor stops accepting input, so without
+				this a screen reader user just sees the keyboard stop working.
+				*/}
+			<span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+				{file_editor_get_size_status_message({ byteSize, blocks: "editing" })}
+			</span>
 			<FileEditorSnapshotsModal nodeId={nodeId} sessionId={sessionId} getCurrentMarkdown={getCurrentMarkdown} />
 		</>
 	);
@@ -774,24 +780,9 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 
 	const sizeRef = useRef({ isOverCap: false });
 
-	// Catches everything that is not a paste or a drop: typing, AI insertions, slash
-	// commands, image inserts. Inert while the document is under the cap.
-	const sizeLimit = Extension.create({
-		name: "fileEditorRichTextSizeLimit",
-		addProseMirrorPlugins() {
-			return [
-				new Plugin({
-					filterTransaction: (transaction, state) =>
-						!file_editor_should_block_growth({
-							isOverCap: sizeRef.current.isOverCap,
-							isRemoteChange: isChangeOrigin(transaction),
-							docSizeBefore: state.doc.content.size,
-							docSizeAfter: transaction.doc.content.size,
-						}),
-				}),
-			];
-		},
-	});
+	const getIsOverCap = useFn(() => sizeRef.current.isOverCap);
+
+	const sizeLimit = file_editor_rich_text_SizeLimitExtension.configure({ getIsOverCap });
 
 	const extensions = [...defaultExtensions, FileEditorRichTextToolsSlashCommand.slashCommand, liveblocks, sizeLimit];
 

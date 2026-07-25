@@ -3,6 +3,7 @@ import {
 	file_editor_SIZE_MEASURE_CHARS,
 	file_editor_SIZE_WARN_BYTES,
 	file_editor_get_size_badge_text,
+	file_editor_get_size_status_message,
 	file_editor_should_block_growth,
 } from "./file-editor.ts";
 import { files_MAX_TEXT_CONTENT_BYTES } from "../../shared/files.ts";
@@ -36,6 +37,31 @@ describe("file_editor_get_size_badge", () => {
 	test("reports over the cap", () => {
 		expect(file_editor_get_size_badge_text(files_MAX_TEXT_CONTENT_BYTES)?.isOverCap).toBe(false);
 		expect(file_editor_get_size_badge_text(files_MAX_TEXT_CONTENT_BYTES + 1)?.isOverCap).toBe(true);
+	});
+});
+
+describe("file_editor_get_size_status_message", () => {
+	test("stays quiet while the content is well under the cap", () => {
+		expect(file_editor_get_size_status_message({ byteSize: null, blocks: "editing" })).toBe("");
+		expect(file_editor_get_size_status_message({ byteSize: 0, blocks: "editing" })).toBe("");
+	});
+
+	test("says the same thing for every size inside a state so it does not repeat on each byte", () => {
+		const first = file_editor_get_size_status_message({ byteSize: file_editor_SIZE_WARN_BYTES, blocks: "editing" });
+		const later = file_editor_get_size_status_message({
+			byteSize: files_MAX_TEXT_CONTENT_BYTES,
+			blocks: "editing",
+		});
+
+		expect(first).not.toBe("");
+		expect(later).toBe(first);
+	});
+
+	test("names what is blocked once over the cap", () => {
+		const overCap = files_MAX_TEXT_CONTENT_BYTES + 1;
+
+		expect(file_editor_get_size_status_message({ byteSize: overCap, blocks: "editing" })).toContain("editing");
+		expect(file_editor_get_size_status_message({ byteSize: overCap, blocks: "saving" })).toContain("save");
 	});
 });
 

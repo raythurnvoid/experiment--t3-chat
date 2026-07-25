@@ -39,6 +39,30 @@ export function file_editor_get_size_badge_text(byteSize: number | null) {
 	};
 }
 
+/**
+ * Announcement for the toolbar live region, so the size state reaches screen readers.
+ * The badge alone is silent, and over the cap the editor stops accepting input, which
+ * without this reads as a broken keyboard.
+ *
+ * Returns the same string for every size within a state, so the live region only speaks
+ * when the state actually changes instead of on every measured byte.
+ */
+export function file_editor_get_size_status_message(args: { byteSize: number | null; blocks: "editing" | "saving" }) {
+	const badge = file_editor_get_size_badge_text(args.byteSize);
+
+	if (!badge) {
+		return "";
+	}
+
+	if (!badge.isOverCap) {
+		return "File size is close to the limit.";
+	}
+
+	return args.blocks === "editing"
+		? "File is over the size limit. Remove content to keep editing."
+		: "File is over the size limit. Remove content to save.";
+}
+
 /** Message shown when an edit or a save is rejected for going over the size cap. */
 export function file_editor_get_size_error_message(byteSize: number) {
 	return `This file would be ${files_format_size(byteSize)}, over the ${files_format_size(files_MAX_TEXT_CONTENT_BYTES)} limit. Remove about ${files_format_size(byteSize - files_MAX_TEXT_CONTENT_BYTES)}.`;
