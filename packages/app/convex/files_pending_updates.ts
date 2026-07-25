@@ -51,7 +51,7 @@ import {
 	files_u8_equals,
 } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
-import { files_get_utf8_byte_size } from "../shared/files.ts";
+import { files_MAX_TEXT_CONTENT_BYTES, files_get_utf8_byte_size } from "../shared/files.ts";
 import { r2_fetch_object_from_bucket } from "./r2.ts";
 import { files_metadata_db_delete_pending, files_metadata_db_replace_pending } from "./files_metadata.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
@@ -806,6 +806,16 @@ async function files_pending_update_upsert_updates(
 		return Result({ _nay: { message: "Not found" } });
 	}
 
+	// Every writer of a pending update funnels through here, so this is the one place the content
+	// cap can cover the editors, the AI tools and the bash tools at once. It has to run before any
+	// write below, and it has to cover the staged branch too: that is the one published on save.
+	if (
+		files_get_utf8_byte_size(args.unstagedMarkdown) > files_MAX_TEXT_CONTENT_BYTES ||
+		(args.stagedMarkdown !== undefined && files_get_utf8_byte_size(args.stagedMarkdown) > files_MAX_TEXT_CONTENT_BYTES)
+	) {
+		return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
+	}
+
 	// Stamp the eager create with the sequence the creator captured in the mutation that created
 	// the node — never a read taken here. This upsert can land after a user saved the brand-new
 	// file, and a fresh read would stamp the post-save sequence, letting discard/expiry
@@ -816,9 +826,7 @@ async function files_pending_update_upsert_updates(
 		args.eagerCreatedCommittedSequence !== undefined
 			? {
 					committedSequence: args.eagerCreatedCommittedSequence,
-					...(args.eagerCreatedAncestorIds !== undefined
-						? { createdAncestorIds: args.eagerCreatedAncestorIds }
-						: {}),
+					...(args.eagerCreatedAncestorIds !== undefined ? { createdAncestorIds: args.eagerCreatedAncestorIds } : {}),
 				}
 			: undefined;
 

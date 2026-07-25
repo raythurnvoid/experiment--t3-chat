@@ -12,7 +12,13 @@ import { api } from "@/../convex/_generated/api.js";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, should_never_happen, sx } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
+import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import {
+	file_editor_get_size_badge_text,
+	file_editor_get_size_error_message,
+	file_editor_get_size_status_message,
+} from "@/lib/file-editor.ts";
 import type { files_PresenceStore } from "@/lib/files.ts";
 import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
 import { CheckCheck, RefreshCcw, Save, SaveAll, Trash2 } from "lucide-react";
@@ -21,6 +27,8 @@ import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import { useFn, useStateRef } from "@/hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import {
+	files_MAX_TEXT_CONTENT_BYTES,
+	files_get_utf8_byte_size,
 	files_monaco_create_editor_model,
 	files_headless_tiptap_editor_create,
 	files_pending_update_has_yjs_content,
@@ -46,9 +54,11 @@ type FileEditorDiffToolbarActions_ClassNames =
 	| "FileEditorDiffToolbarActions-button-accept-all"
 	| "FileEditorDiffToolbarActions-button-accept-all-and-save"
 	| "FileEditorDiffToolbarActions-button-discard-all"
-	| "FileEditorDiffToolbarActions-icon";
+	| "FileEditorDiffToolbarActions-icon"
+	| "FileEditorDiffToolbarActions-size-badge";
 
 type FileEditorDiffToolbarActions_Props = {
+	byteSize: number;
 	isSaveDisabled: boolean;
 	isSyncDisabled: boolean;
 	isAcceptAllDisabled: boolean;
@@ -70,6 +80,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 	props: FileEditorDiffToolbarActions_Props,
 ) {
 	const {
+		byteSize,
 		isSaveDisabled,
 		isSyncDisabled,
 		isAcceptAllDisabled,
@@ -86,6 +97,8 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 		onClickAcceptAllAndSave,
 		onClickDiscardAll,
 	} = props;
+
+	const sizeBadge = file_editor_get_size_badge_text(byteSize);
 
 	return createPortal(
 		<div
@@ -172,6 +185,21 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				</MyButtonIcon>
 				Discard all
 			</MyButton>
+			{sizeBadge && (
+				<MyBadge
+					variant={sizeBadge.isOverCap ? "destructive" : "secondary"}
+					className={cn("FileEditorDiffToolbarActions-size-badge" satisfies FileEditorDiffToolbarActions_ClassNames)}
+				>
+					{sizeBadge.label}
+				</MyBadge>
+			)}
+			{/*
+				The badge is silent, so without this a screen reader user only finds out the file is
+				too big when Save is rejected, and the draft sync stops with no feedback at all.
+				*/}
+			<span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+				{file_editor_get_size_status_message({ byteSize, blocks: "saving" })}
+			</span>
 			<FileEditorSnapshotsModal
 				nodeId={nodeId}
 				sessionId={sessionId}
@@ -622,6 +650,15 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		return editorContentState.stagedMarkdown !== editorContentState.unstagedMarkdown;
 	});
 
+	// Both branches are sent on every draft sync and the server rejects the whole upsert if either
+	// is over the cap, so the badge tracks the larger of the two: it answers "will my draft save?".
+	const [byteSize, setByteSize] = useState(() => {
+		return Math.max(
+			files_get_utf8_byte_size(editorContentState.stagedMarkdown),
+			files_get_utf8_byte_size(editorContentState.unstagedMarkdown),
+		);
+	});
+
 	/**
 	 * We can allow updated to the remote `pendingUpdate` to write in the editor
 	 * only if there's no other local edit being sent to the server, otherwise
@@ -870,6 +907,14 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 		setIsDirty(editorValues.stagedMarkdown !== editorContentState.baselineMarkdown);
 		setHasUnstagedChanges(editorValues.stagedMarkdown !== editorValues.unstagedMarkdown);
+		// Programmatic writes above bump `ignoredProgrammaticModelChangesRef`, so the model change
+		// listeners early-return and the draft-sync measure never runs for them. Measure here too.
+		setByteSize(
+			Math.max(
+				files_get_utf8_byte_size(editorValues.stagedMarkdown),
+				files_get_utf8_byte_size(editorValues.unstagedMarkdown),
+			),
+		);
 		updateThreadIds(editorValues.stagedMarkdown);
 	};
 
@@ -880,6 +925,17 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 		const stagedMarkdown = editorModelsRef.current.original.getValue();
 		const unstagedMarkdown = editorModelsRef.current.modified.getValue();
+
+		// This debounce already reads both branches, so measuring here is only the byte count on top.
+		const nextByteSize = Math.max(files_get_utf8_byte_size(stagedMarkdown), files_get_utf8_byte_size(unstagedMarkdown));
+		setByteSize(nextByteSize);
+
+		// The server rejects an over-cap upsert anyway, so sending it would only burn a request on
+		// every keystroke pause. Stay silent here and let the toolbar badge and its live region
+		// report the state: a toast on a 250ms debounce would fire continuously while typing.
+		if (nextByteSize > files_MAX_TEXT_CONTENT_BYTES) {
+			return false;
+		}
 
 		pendingUpdateSyncStatusRef.current = "mutation_in_flight";
 
@@ -1009,6 +1065,15 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		const isDirtyNow = currentStagedMarkdown !== editorContentState.baselineMarkdown;
 
 		if (isSaving || isSyncing || !isDirtyNow) return;
+
+		// Read raw for the same reason as above: "Accept all and save" applies the edits
+		// synchronously, so the `byteSize` state has not flushed yet when this runs. Guarding here
+		// keeps the over-cap content out of `flushPendingUpdateUpsertIfNeeded` further down.
+		const stagedByteSize = files_get_utf8_byte_size(currentStagedMarkdown);
+		if (stagedByteSize > files_MAX_TEXT_CONTENT_BYTES) {
+			toast.error(file_editor_get_size_error_message(stagedByteSize));
+			return;
+		}
 
 		onSave({ flushPendingUpdateUpsertIfNeeded });
 	};
@@ -1451,6 +1516,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 				} satisfies Partial<FileEditorDiff_CssVars>)}
 			>
 				<FileEditorDiffToolbarActions
+					byteSize={byteSize}
 					isSaveDisabled={isSaveDisabled}
 					isSyncDisabled={isSyncDisabled || isSaving}
 					isAcceptAllDisabled={isAcceptAllDisabled}

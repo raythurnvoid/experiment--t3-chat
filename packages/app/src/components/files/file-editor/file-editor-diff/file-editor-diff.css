@@ -24,6 +24,12 @@
 		gap: 4px;
 	}
 
+	.FileEditorDiffToolbarActions-size-badge {
+		padding: 4px 8px;
+		font-size: 0.9rem;
+		white-space: nowrap;
+	}
+
 	.FileEditorDiffToolbarActions-button-accept-all {
 		&:not(:disabled) {
 			color: var(--color-green-11);

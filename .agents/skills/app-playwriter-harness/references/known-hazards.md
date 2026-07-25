@@ -54,6 +54,14 @@ Use this file for reusable problems that affect app browser QA.
 - Line shape matters as much as total size: 950 lines x 1,000 chars pastes fine, 91 lines x 10,000 chars does not. Prefer many short lines when generating oversize fixtures.
 - `context.grantPermissions([...], { origin })` fails in extension mode with `No tab found for method Browser.grantPermissions`, but `navigator.clipboard.writeText` still succeeds. Do not treat that error as blocking the clipboard approach.
 
+## Diff editor
+
+- **The two panes are inverted from the usual diff mental model.** `.FileEditorDiff .editor.original` is the **staged** side and is read-only in the UI (`originalEditable: false`); `.FileEditorDiff .editor.modified` is the **unstaged** side and is where typing lands. Save publishes the **staged** side, so a test that types into `.modified` and clicks Save changes nothing until it also accepts. Click `.view-lines` inside the pane you want, same as any Monaco editor.
+- **Toolbar `aria-label`s do not match the visible text.** `getByRole("button", { name: "Accept all + save" })` finds nothing. The real names are `Save staged changes`, `Sync with live file`, `Accept all pending changes in this file`, `Accept all pending changes and save`, `Discard all pending changes in this file`, `Open file snapshots`. Read the labels with `.FileEditorDiffToolbarActions button` + `getAttribute("aria-label")` before guessing.
+- Switch views without a page load (which costs an auth-token refresh) by clicking the view switcher label: `.MyButtonGroupItem-button` filtered by text `Rich` / `Markdown` / `Diff`.
+- The content-size cap surfaces as `.FileEditorDiffToolbarActions-size-badge` (`MyBadge-variant-secondary` near the cap, `-destructive` over it) plus an `sr-only` `role="status"` live region. The badge tracks `max(staged, unstaged)`, so after an accept it can stay red even though the pane you were typing in looks small — the staged side is the one still over the cap. The same badge/live-region pair exists in the rich text and plain text editors.
+- Draft edits sync through a 250ms debounce and failures there are `console.error` only, never a toast. To assert a draft sync did or did not happen, use `getLatestLogs({ search: /Failed to sync pending updates/i })` rather than looking for UI.
+
 ## Backgrounded Tabs
 
 - On a backgrounded localhost tab, `snapshot()`, `screenshot()`, and `innerText` are unreliable. Read state via `evaluate()` with `textContent`, `getComputedStyle`, and `getBoundingClientRect`.
@@ -86,7 +94,6 @@ Use this file for reusable problems that affect app browser QA.
 - Browser R2 uploads can record both a `200` response and a `requestfailed` entry with `net::ERR_ABORTED` for the same signed `PUT`. Treat durable Convex state and generated file visibility as the source of truth when the `200` completed and conversion finalized.
 - For generated PDF output QA, capture Cloudflare request metadata by filtering network entries whose origin contains `cloudflarestorage`; record method, origin, pathname, response status, and failure text without logging signed query strings.
 - Conversion can finish quickly. To verify the pending generated output screen, poll for `<source>.pdf.md` every ~100ms immediately after upload and click it as soon as it appears. If content finalizes before the click, record that the pending state was too fast to observe and rely on backend tests for that state.
-
 
 ## Closed main sidebar must actually leave layout
 

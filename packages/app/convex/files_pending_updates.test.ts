@@ -23,7 +23,7 @@ import {
 	files_yjs_doc_get_markdown,
 	files_yjs_doc_update_from_markdown,
 } from "../server/files.ts";
-import { files_get_utf8_byte_size } from "../shared/files.ts";
+import { files_MAX_TEXT_CONTENT_BYTES, files_get_utf8_byte_size } from "../shared/files.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 let enqueueActionSpy: MockInstance;
@@ -482,7 +482,11 @@ async function read_file_yjs_state(args: {
 	};
 }
 
-async function build_file_diff_update_from_snapshot(args: { ctx: MutationCtx; nodeId: Id<"files_nodes">; markdown: string }) {
+async function build_file_diff_update_from_snapshot(args: {
+	ctx: MutationCtx;
+	nodeId: Id<"files_nodes">;
+	markdown: string;
+}) {
 	const { ctx, nodeId, markdown } = args;
 	const fileNode = await ctx.db.get("files_nodes", nodeId);
 	if (!fileNode) {
@@ -550,7 +554,10 @@ function read_pending_row_markdown_state(args: {
 	};
 }
 
-async function list_pending_update_cleanup_tasks(args: { ctx: MutationCtx; pendingUpdateId: Id<"files_pending_updates"> }) {
+async function list_pending_update_cleanup_tasks(args: {
+	ctx: MutationCtx;
+	pendingUpdateId: Id<"files_pending_updates">;
+}) {
 	return await args.ctx.db
 		.query("files_pending_updates_cleanup_tasks")
 		.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
@@ -707,6 +714,55 @@ async function upsert_file_pending_archive_for_test(args: {
 }
 
 describe("upsert_file_pending_update", () => {
+	test("upsert_file_pending_update rejects content over the size cap", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/pending-edits-size-cap",
+				name: "pending-edits-size-cap",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		const overCapMarkdown = "a".repeat(files_MAX_TEXT_CONTENT_BYTES + 1);
+
+		const unstagedOverCap = await asUser.action(api.ai_chat.upsert_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: overCapMarkdown,
+		});
+		expect(unstagedOverCap._nay?.message).toContain("exceeds");
+
+		// The staged branch is the one published on save, so capping only the unstaged side would
+		// leave the hole exactly where it matters.
+		const stagedOverCap = await asUser.action(api.ai_chat.upsert_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: overCapMarkdown,
+			unstagedMarkdown: seeded.baseMarkdown,
+		});
+		expect(stagedOverCap._nay?.message).toContain("exceeds");
+
+		// A rejected upsert must not leave a pending update behind.
+		const row = await t.run(async (ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		expect(row).toBeNull();
+	});
+
 	test("upsert_file_pending_update replaces updates deterministically", async () => {
 		const t = test_convex();
 
@@ -2232,10 +2288,7 @@ describe("pending update provenance", () => {
 			}),
 		);
 		const [threadA, threadB] = await t.run(async (ctx) =>
-			Promise.all([
-				seed_chat_thread({ ctx, ...seeded }),
-				seed_chat_thread({ ctx, ...seeded }),
-			]),
+			Promise.all([seed_chat_thread({ ctx, ...seeded }), seed_chat_thread({ ctx, ...seeded })]),
 		);
 
 		const firstWrite = await upsert_file_pending_update_internal_for_test({
@@ -2296,10 +2349,7 @@ describe("pending update provenance", () => {
 			}),
 		);
 		const [threadA, threadB] = await t.run(async (ctx) =>
-			Promise.all([
-				seed_chat_thread({ ctx, ...seeded }),
-				seed_chat_thread({ ctx, ...seeded }),
-			]),
+			Promise.all([seed_chat_thread({ ctx, ...seeded }), seed_chat_thread({ ctx, ...seeded })]),
 		);
 
 		const changedMarkdown = `${seeded.baseMarkdown}\n\nSame bytes from both threads`;
@@ -2392,10 +2442,7 @@ describe("pending update provenance", () => {
 			}),
 		);
 		const [threadA, threadB] = await t.run(async (ctx) =>
-			Promise.all([
-				seed_chat_thread({ ctx, ...moveOnly }),
-				seed_chat_thread({ ctx, ...moveOnly }),
-			]),
+			Promise.all([seed_chat_thread({ ctx, ...moveOnly }), seed_chat_thread({ ctx, ...moveOnly })]),
 		);
 
 		const freshMove = await upsert_file_pending_move_for_test({
@@ -2457,10 +2504,7 @@ describe("pending update provenance", () => {
 			}),
 		);
 		const [threadA, threadB] = await t.run(async (ctx) =>
-			Promise.all([
-				seed_chat_thread({ ctx, ...seeded }),
-				seed_chat_thread({ ctx, ...seeded }),
-			]),
+			Promise.all([seed_chat_thread({ ctx, ...seeded }), seed_chat_thread({ ctx, ...seeded })]),
 		);
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -3268,7 +3312,11 @@ describe("save_file_pending_update", () => {
 				message: "Insufficient funds",
 			},
 		});
-		expect(enqueueActionSpy).not.toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, expect.anything());
+		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
+			expect.anything(),
+			internal.billing.ingest_events,
+			expect.anything(),
+		);
 
 		const savedMarkdownAfterDeniedSave = await t.run(async (ctx) =>
 			read_file_markdown_from_yjs({
@@ -3344,7 +3392,11 @@ describe("save_file_pending_update", () => {
 				message: "Insufficient funds",
 			},
 		});
-		expect(enqueueActionSpy).not.toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, expect.anything());
+		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
+			expect.anything(),
+			internal.billing.ingest_events,
+			expect.anything(),
+		);
 
 		const savedMarkdownAfterDeniedSave = await t.run(async (ctx) =>
 			read_file_markdown_from_yjs({
@@ -3402,7 +3454,11 @@ describe("save_file_pending_update", () => {
 		}
 
 		expect(saveResult._yay.newSequence).not.toBeNull();
-		expect(enqueueActionSpy).not.toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, expect.anything());
+		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
+			expect.anything(),
+			internal.billing.ingest_events,
+			expect.anything(),
+		);
 
 		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
@@ -3484,7 +3540,10 @@ describe("save_file_pending_update", () => {
 			ctx.db
 				.query("files_yjs_updates")
 				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-					q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId),
+					q
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("fileNodeId", seeded.nodeId),
 				)
 				.order("asc")
 				.collect(),
@@ -4055,10 +4114,13 @@ describe("save_file_pending_update", () => {
 		);
 		expect(pendingBeforeBlockedSave).not.toBeNull();
 
-		const lastSequenceSavedBeforeBlockedSave = await asUser.query(api.ai_chat.get_file_pending_update_last_sequence_saved, {
-			membershipId: seeded.membershipId,
-			nodeId: seeded.nodeId,
-		});
+		const lastSequenceSavedBeforeBlockedSave = await asUser.query(
+			api.ai_chat.get_file_pending_update_last_sequence_saved,
+			{
+				membershipId: seeded.membershipId,
+				nodeId: seeded.nodeId,
+			},
+		);
 		expect(lastSequenceSavedBeforeBlockedSave?.lastSequenceSaved).toBe(2);
 
 		// The bucket allows a burst of 50, so force the next limiter check to reject instead of
@@ -4100,13 +4162,19 @@ describe("save_file_pending_update", () => {
 				ctx.db
 					.query("files_yjs_updates")
 					.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-						q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId),
+						q
+							.eq("organizationId", seeded.organizationId)
+							.eq("workspaceId", seeded.workspaceId)
+							.eq("fileNodeId", seeded.nodeId),
 					)
 					.collect(),
 				ctx.db
 					.query("files_yjs_docs_last_sequences")
 					.withIndex("by_organization_workspace_fileNode", (q) =>
-						q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId),
+						q
+							.eq("organizationId", seeded.organizationId)
+							.eq("workspaceId", seeded.workspaceId)
+							.eq("fileNodeId", seeded.nodeId),
 					)
 					.first(),
 			]).then(([updates, lastSequence]) => ({
@@ -4176,21 +4244,31 @@ describe("save_file_pending_update", () => {
 			baseYjsUpdate: originalFileState.yjsUpdate,
 		});
 		expect(replayedSave._nay?.message).toBe("Stale save");
-		expect(enqueueActionSpy).not.toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, expect.anything());
+		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
+			expect.anything(),
+			internal.billing.ingest_events,
+			expect.anything(),
+		);
 
 		await t.run(async (ctx) => {
 			// No second publish: the sequence and update count stay at the first save's values.
 			const yjsUpdates = await ctx.db
 				.query("files_yjs_updates")
 				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-					q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId),
+					q
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("fileNodeId", seeded.nodeId),
 				)
 				.collect();
 			expect(yjsUpdates).toHaveLength(1);
 			const lastSequenceDoc = await ctx.db
 				.query("files_yjs_docs_last_sequences")
 				.withIndex("by_organization_workspace_fileNode", (q) =>
-					q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId),
+					q
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("fileNodeId", seeded.nodeId),
 				)
 				.first();
 			expect(lastSequenceDoc?.lastSequence).toBe(1);
@@ -4266,14 +4344,21 @@ describe("save_file_pending_update", () => {
 			baseYjsUpdate: actionReadFileState.yjsUpdate,
 		});
 		expect(saved._nay?.message).toBe("Stale save");
-		expect(enqueueActionSpy).not.toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, expect.anything());
+		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
+			expect.anything(),
+			internal.billing.ingest_events,
+			expect.anything(),
+		);
 
 		await t.run(async (ctx) => {
 			// Only the other user's commit exists; nothing was published on top of it.
 			const yjsUpdates = await ctx.db
 				.query("files_yjs_updates")
 				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-					q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId),
+					q
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("fileNodeId", seeded.nodeId),
 				)
 				.collect();
 			expect(yjsUpdates).toHaveLength(1);
@@ -4838,7 +4923,10 @@ describe("persist_file_pending_update_rebased_state", () => {
 			const markdownChunks = await ctx.db
 				.query("files_markdown_chunks")
 				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId),
+					q
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("fileNodeId", seeded.nodeId),
 				)
 				.collect();
 			expect(markdownChunks.filter((chunk) => chunk.sourceKind === "pending")).toHaveLength(0);
@@ -4966,9 +5054,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 				throw new Error("Missing second pending row after the stale sync");
 			}
 			expect(secondRowAfter._id).toBe(secondRowBefore._id);
-			expect(new Uint8Array(secondRowAfter.unstagedBranchYjsUpdate)).toEqual(
-				new Uint8Array(secondRowUnstagedBytes),
-			);
+			expect(new Uint8Array(secondRowAfter.unstagedBranchYjsUpdate)).toEqual(new Uint8Array(secondRowUnstagedBytes));
 		});
 	});
 
@@ -9055,7 +9141,9 @@ describe("upsert_file_pending_archive_in_db", () => {
 		expect(files_pending_update_has_yjs_content(pendingRow)).toBe(false);
 		expect(pendingRow.size).toBe(0);
 
-		const cleanupTasks = await t.run((ctx) => list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id }));
+		const cleanupTasks = await t.run((ctx) =>
+			list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id }),
+		);
 		expect(cleanupTasks).toHaveLength(1);
 		expect(cleanupTasks[0]?.expectedUpdatedAt).toBe(pendingRow.updatedAt);
 
@@ -12313,7 +12401,9 @@ describe("save with structural rows", () => {
 				},
 			}),
 		);
-		const replacementMarkdown = normalize_pending_update_markdown(`${source.baseMarkdown}\n\nArchived target replacement`);
+		const replacementMarkdown = normalize_pending_update_markdown(
+			`${source.baseMarkdown}\n\nArchived target replacement`,
+		);
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
 			organizationId: dest.organizationId,
@@ -13272,4 +13362,3 @@ describe("pending path overlay reads", () => {
 		expect(vacatedRead).toBeNull();
 	});
 });
-
