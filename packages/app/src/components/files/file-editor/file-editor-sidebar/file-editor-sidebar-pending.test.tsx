@@ -102,7 +102,7 @@ vi.mock("@/components/my-link.tsx", () => ({
 	MyLink: function MyLink(props: {
 		to: string;
 		params?: Record<string, string>;
-		search?: Record<string, string>;
+		search?: Record<string, string> | ((prev: Record<string, string>) => Record<string, string>);
 		className?: string;
 		"aria-label"?: string;
 		title?: string;
@@ -112,7 +112,9 @@ vi.mock("@/components/my-link.tsx", () => ({
 		for (const [key, value] of Object.entries(props.params ?? {})) {
 			href = href.replace(`$${key}`, value);
 		}
-		const query = props.search ? `?${new URLSearchParams(props.search).toString()}` : "";
+		// The real Link also accepts an updater function; there is no previous search in the stub.
+		const search = typeof props.search === "function" ? props.search({}) : props.search;
+		const query = search ? `?${new URLSearchParams(search).toString()}` : "";
 		return (
 			<a href={`${href}${query}`} aria-label={props["aria-label"]} title={props.title}>
 				<span className={props.className}>{props.children}</span>
