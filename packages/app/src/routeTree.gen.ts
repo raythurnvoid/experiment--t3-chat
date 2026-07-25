@@ -11,13 +11,13 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WOrganizationNameWorkspaceNameRouteRouteImport } from './routes/w/$organizationName/$workspaceName/route'
-import { Route as WOrganizationNameWorkspaceNameUsersIndexRouteImport } from './routes/w/$organizationName/$workspaceName/users/index'
-import { Route as WOrganizationNameWorkspaceNamePluginsIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/index'
-import { Route as WOrganizationNameWorkspaceNameFilesIndexRouteImport } from './routes/w/$organizationName/$workspaceName/files/index'
-import { Route as WOrganizationNameWorkspaceNameChatIndexRouteImport } from './routes/w/$organizationName/$workspaceName/chat/index'
 import { Route as WOrganizationNameWorkspaceNameApiKeysIndexRouteImport } from './routes/w/$organizationName/$workspaceName/api-keys/index'
-import { Route as WOrganizationNameWorkspaceNamePluginsPluginNameRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/$pluginName'
+import { Route as WOrganizationNameWorkspaceNameChatIndexRouteImport } from './routes/w/$organizationName/$workspaceName/chat/index'
+import { Route as WOrganizationNameWorkspaceNameFilesIndexRouteImport } from './routes/w/$organizationName/$workspaceName/files/index'
 import { Route as WOrganizationNameWorkspaceNameFilesSplatRouteImport } from './routes/w/$organizationName/$workspaceName/files/$'
+import { Route as WOrganizationNameWorkspaceNamePluginsIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/index'
+import { Route as WOrganizationNameWorkspaceNamePluginsPluginNameRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/$pluginName'
+import { Route as WOrganizationNameWorkspaceNameUsersIndexRouteImport } from './routes/w/$organizationName/$workspaceName/users/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsPublisherIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/publisher/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/$pluginName_.pages.$pageId'
 
@@ -32,22 +32,10 @@ const WOrganizationNameWorkspaceNameRouteRoute =
     path: '/w/$organizationName/$workspaceName',
     getParentRoute: () => rootRouteImport,
   } as any)
-const WOrganizationNameWorkspaceNameUsersIndexRoute =
-  WOrganizationNameWorkspaceNameUsersIndexRouteImport.update({
-    id: '/users/',
-    path: '/users/',
-    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
-  } as any)
-const WOrganizationNameWorkspaceNamePluginsIndexRoute =
-  WOrganizationNameWorkspaceNamePluginsIndexRouteImport.update({
-    id: '/plugins/',
-    path: '/plugins/',
-    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
-  } as any)
-const WOrganizationNameWorkspaceNameFilesIndexRoute =
-  WOrganizationNameWorkspaceNameFilesIndexRouteImport.update({
-    id: '/files/',
-    path: '/files/',
+const WOrganizationNameWorkspaceNameApiKeysIndexRoute =
+  WOrganizationNameWorkspaceNameApiKeysIndexRouteImport.update({
+    id: '/api-keys/',
+    path: '/api-keys/',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
 const WOrganizationNameWorkspaceNameChatIndexRoute =
@@ -56,10 +44,22 @@ const WOrganizationNameWorkspaceNameChatIndexRoute =
     path: '/chat/',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
-const WOrganizationNameWorkspaceNameApiKeysIndexRoute =
-  WOrganizationNameWorkspaceNameApiKeysIndexRouteImport.update({
-    id: '/api-keys/',
-    path: '/api-keys/',
+const WOrganizationNameWorkspaceNameFilesIndexRoute =
+  WOrganizationNameWorkspaceNameFilesIndexRouteImport.update({
+    id: '/files/',
+    path: '/files/',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
+const WOrganizationNameWorkspaceNameFilesSplatRoute =
+  WOrganizationNameWorkspaceNameFilesSplatRouteImport.update({
+    id: '/files/$',
+    path: '/files/$',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
+const WOrganizationNameWorkspaceNamePluginsIndexRoute =
+  WOrganizationNameWorkspaceNamePluginsIndexRouteImport.update({
+    id: '/plugins/',
+    path: '/plugins/',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
 const WOrganizationNameWorkspaceNamePluginsPluginNameRoute =
@@ -68,10 +68,10 @@ const WOrganizationNameWorkspaceNamePluginsPluginNameRoute =
     path: '/plugins/$pluginName',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
-const WOrganizationNameWorkspaceNameFilesSplatRoute =
-  WOrganizationNameWorkspaceNameFilesSplatRouteImport.update({
-    id: '/files/$',
-    path: '/files/$',
+const WOrganizationNameWorkspaceNameUsersIndexRoute =
+  WOrganizationNameWorkspaceNameUsersIndexRouteImport.update({
+    id: '/users/',
+    path: '/users/',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
 const WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute =
@@ -190,25 +190,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WOrganizationNameWorkspaceNameRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/w/$organizationName/$workspaceName/users/': {
-      id: '/w/$organizationName/$workspaceName/users/'
-      path: '/users'
-      fullPath: '/w/$organizationName/$workspaceName/users/'
-      preLoaderRoute: typeof WOrganizationNameWorkspaceNameUsersIndexRouteImport
-      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
-    }
-    '/w/$organizationName/$workspaceName/plugins/': {
-      id: '/w/$organizationName/$workspaceName/plugins/'
-      path: '/plugins'
-      fullPath: '/w/$organizationName/$workspaceName/plugins/'
-      preLoaderRoute: typeof WOrganizationNameWorkspaceNamePluginsIndexRouteImport
-      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
-    }
-    '/w/$organizationName/$workspaceName/files/': {
-      id: '/w/$organizationName/$workspaceName/files/'
-      path: '/files'
-      fullPath: '/w/$organizationName/$workspaceName/files/'
-      preLoaderRoute: typeof WOrganizationNameWorkspaceNameFilesIndexRouteImport
+    '/w/$organizationName/$workspaceName/api-keys/': {
+      id: '/w/$organizationName/$workspaceName/api-keys/'
+      path: '/api-keys'
+      fullPath: '/w/$organizationName/$workspaceName/api-keys/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameApiKeysIndexRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
     '/w/$organizationName/$workspaceName/chat/': {
@@ -218,11 +204,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WOrganizationNameWorkspaceNameChatIndexRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
-    '/w/$organizationName/$workspaceName/api-keys/': {
-      id: '/w/$organizationName/$workspaceName/api-keys/'
-      path: '/api-keys'
-      fullPath: '/w/$organizationName/$workspaceName/api-keys/'
-      preLoaderRoute: typeof WOrganizationNameWorkspaceNameApiKeysIndexRouteImport
+    '/w/$organizationName/$workspaceName/files/': {
+      id: '/w/$organizationName/$workspaceName/files/'
+      path: '/files'
+      fullPath: '/w/$organizationName/$workspaceName/files/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameFilesIndexRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
+    '/w/$organizationName/$workspaceName/files/$': {
+      id: '/w/$organizationName/$workspaceName/files/$'
+      path: '/files/$'
+      fullPath: '/w/$organizationName/$workspaceName/files/$'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameFilesSplatRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
+    '/w/$organizationName/$workspaceName/plugins/': {
+      id: '/w/$organizationName/$workspaceName/plugins/'
+      path: '/plugins'
+      fullPath: '/w/$organizationName/$workspaceName/plugins/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNamePluginsIndexRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
     '/w/$organizationName/$workspaceName/plugins/$pluginName': {
@@ -232,11 +232,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WOrganizationNameWorkspaceNamePluginsPluginNameRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
-    '/w/$organizationName/$workspaceName/files/$': {
-      id: '/w/$organizationName/$workspaceName/files/$'
-      path: '/files/$'
-      fullPath: '/w/$organizationName/$workspaceName/files/$'
-      preLoaderRoute: typeof WOrganizationNameWorkspaceNameFilesSplatRouteImport
+    '/w/$organizationName/$workspaceName/users/': {
+      id: '/w/$organizationName/$workspaceName/users/'
+      path: '/users'
+      fullPath: '/w/$organizationName/$workspaceName/users/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameUsersIndexRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
     '/w/$organizationName/$workspaceName/plugins/publisher/': {
