@@ -4,7 +4,7 @@ import type { ExtractStrict } from "type-fest";
 
 import { MyInputControl, type MyInputControl_Props } from "@/components/my-input.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { files_find_file_stem_end_index, files_normalize_name_input, type files_TreeItem } from "@/lib/files.ts";
+import { files_normalize_name_input, type files_TreeItem } from "@/lib/files.ts";
 
 function get_protected_extension_start(args: {
 	kind: files_TreeItem["kind"];
@@ -55,23 +55,6 @@ function normalize_name_input_value(args: { kind: files_TreeItem["kind"]; value:
 		insertedText: args.value,
 		nextText: "",
 	});
-}
-
-/**
- * Select the basename of the current input value, keeping the extension outside the
- * selection so typing replaces only the basename and preserves the file type.
- */
-export function files_name_input_select_stem(args: { element: HTMLInputElement; kind: files_TreeItem["kind"] }) {
-	const selectionEnd =
-		args.kind === "file"
-			? files_find_file_stem_end_index({ fileName: args.element.value })
-			: args.element.value.length;
-	if (selectionEnd > 0 && selectionEnd < args.element.value.length) {
-		args.element.setSelectionRange(0, selectionEnd);
-		return;
-	}
-
-	args.element.select();
 }
 
 export type FilesNameInputControl_Props = Omit<

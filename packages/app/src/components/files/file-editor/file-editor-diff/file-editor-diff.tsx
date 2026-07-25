@@ -497,6 +497,22 @@ function file_editor_diff_should_apply_live_file_content_state(args: {
 	return true;
 }
 
+/**
+ * Rejects content that the save would not be able to persist.
+ *
+ * Always measured from a raw model value, never from the `byteSize` state: "Accept all and
+ * save" mutates the models and saves synchronously, so the state has not flushed yet.
+ */
+function check_markdown_fits_size_cap(markdown: string) {
+	const markdownByteSize = files_get_utf8_byte_size(markdown);
+	if (markdownByteSize <= files_MAX_TEXT_CONTENT_BYTES) {
+		return true;
+	}
+
+	toast.error(file_editor_get_size_error_message(markdownByteSize));
+	return false;
+}
+
 function editor_content_states_match(left: RemoteEditorContentState, right: RemoteEditorContentState) {
 	return (
 		left.baselineMarkdown === right.baselineMarkdown &&
@@ -1049,6 +1065,14 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		editorRef.current.focus();
 	};
 
+	/** "Accept all" promotes the unstaged content into staged, so that is the content to measure. */
+	const checkAcceptAllFitsSizeCap = useFn(() => {
+		const unstagedMarkdown = editorModelsRef.current?.modified.getValue();
+		// Let `acceptAllDiffs` report the missing models instead of failing quietly here.
+		if (unstagedMarkdown === undefined) return true;
+		return check_markdown_fits_size_cap(unstagedMarkdown);
+	});
+
 	const doSave = () => {
 		if (!editorModelsRef.current) {
 			const error = should_never_happen("[FileEditorDiff.handleClickSave] Missing editor models", {
@@ -1066,14 +1090,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 		if (isSaving || isSyncing || !isDirtyNow) return;
 
-		// Read raw for the same reason as above: "Accept all and save" applies the edits
-		// synchronously, so the `byteSize` state has not flushed yet when this runs. Guarding here
-		// keeps the over-cap content out of `flushPendingUpdateUpsertIfNeeded` further down.
-		const stagedByteSize = files_get_utf8_byte_size(currentStagedMarkdown);
-		if (stagedByteSize > files_MAX_TEXT_CONTENT_BYTES) {
-			toast.error(file_editor_get_size_error_message(stagedByteSize));
-			return;
-		}
+		// Keeps the over-cap content out of `flushPendingUpdateUpsertIfNeeded` further down.
+		if (!check_markdown_fits_size_cap(currentStagedMarkdown)) return;
 
 		onSave({ flushPendingUpdateUpsertIfNeeded });
 	};
@@ -1125,12 +1143,17 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 	const handleClickAcceptAllAndSave = useFn(() => {
 		if (isSaving || isSyncing || !hasUnstagedChanges) return;
+		// Check before accepting, not after: accepting copies the unstaged content into the staged
+		// model, and an over-cap upsert is rejected, so an accept applied here would look applied
+		// but silently disappear on reload.
+		if (!checkAcceptAllFitsSizeCap()) return;
 		acceptAllDiffs();
 		doSave();
 	});
 
 	const handleClickAcceptAll = useFn(() => {
 		if (isSaving || isSyncing || !hasUnstagedChanges) return;
+		if (!checkAcceptAllFitsSizeCap()) return;
 		acceptAllDiffs();
 	});
 

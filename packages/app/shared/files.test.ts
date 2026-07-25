@@ -876,7 +876,7 @@ describe("files_pending_path_overlay", () => {
 
 	function make_move_row(args: {
 		nodeId: string;
-		destParentId: string | typeof files_ROOT_ID;
+		destParentId: string;
 		destName: string;
 		replacesNodeId?: string;
 	}): files_PendingPathOverlayRow {

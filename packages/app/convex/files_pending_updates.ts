@@ -1923,6 +1923,27 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 				},
 			});
 		}
+
+		// This entry point takes raw branch bytes instead of Markdown, so the cap in
+		// `files_pending_update_upsert_updates` cannot see it. Measure here instead, before the only
+		// write on this path. The staged branch costs an extra serialization but has to be covered
+		// too: it is the branch a save publishes.
+		const stagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: stagedBranchYjsDoc });
+		if (stagedMarkdown._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to serialize rebased staged branch for pending update",
+					cause: stagedMarkdown._nay,
+				},
+			});
+		}
+		if (
+			files_get_utf8_byte_size(unstagedMarkdown._yay) > files_MAX_TEXT_CONTENT_BYTES ||
+			files_get_utf8_byte_size(stagedMarkdown._yay) > files_MAX_TEXT_CONTENT_BYTES
+		) {
+			return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
+		}
+
 		const now = Date.now();
 		const pendingUpdateId = existingPendingUpdate._id;
 

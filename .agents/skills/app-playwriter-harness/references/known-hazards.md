@@ -61,6 +61,9 @@ Use this file for reusable problems that affect app browser QA.
 - Switch views without a page load (which costs an auth-token refresh) by clicking the view switcher label: `.MyButtonGroupItem-button` filtered by text `Rich` / `Markdown` / `Diff`.
 - The content-size cap surfaces as `.FileEditorDiffToolbarActions-size-badge` (`MyBadge-variant-secondary` near the cap, `-destructive` over it) plus an `sr-only` `role="status"` live region. The badge tracks `max(staged, unstaged)`, so after an accept it can stay red even though the pane you were typing in looks small — the staged side is the one still over the cap. The same badge/live-region pair exists in the rich text and plain text editors.
 - Draft edits sync through a 250ms debounce and failures there are `console.error` only, never a toast. To assert a draft sync did or did not happen, use `getLatestLogs({ search: /Failed to sync pending updates/i })` rather than looking for UI.
+- Over-cap content blocks `Save`, `Accept all pending changes in this file`, and `Accept all pending changes and save`. All three show the same `toast.error` and change nothing: the staged pane keeps its old text and the accept buttons stay enabled. Read the toast in the **same** execute call as the click — sonner auto-dismisses in ~4s and a second CLI round trip is already too slow, so a separate observe step reports `toasts: []` and looks like no toast fired.
+- Nothing over-cap ever persists, so a reload is the cheapest way to reset a wedged over-cap draft back to committed content. `Control+A` inside a ~950K-char Monaco pane reliably exceeds a 25s execute timeout, so do not try to trim by select-all + paste.
+- Monaco applies `keyboard.insertText` asynchronously enough that an `innerText` read in the same execute call still shows the old text. Assert the new text in the next observe step instead of treating the first read as a failure.
 
 ## Backgrounded Tabs
 

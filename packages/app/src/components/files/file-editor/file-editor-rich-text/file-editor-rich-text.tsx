@@ -160,8 +160,9 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 		const nextByteSize = files_get_utf8_byte_size(getCurrentMarkdown());
 		setByteSize(nextByteSize);
 		sizeRef.current.isOverCap = nextByteSize > files_MAX_TEXT_CONTENT_BYTES;
-		// `getCurrentMarkdown` is a `useFn` wrapper, so it is a new function on every render. Keeping
-		// it out of the deps is what makes the debounce above actually skip keystrokes.
+		// `getCurrentMarkdown` is a `useFn` wrapper: stable identity, always calling the latest
+		// closure. It stays out of the deps because it says nothing about when to re-measure —
+		// the debounced character count is what decides that.
 	}, [debouncedCharactersCount, isWorthMeasuring, sizeRef]);
 
 	const sizeBadge = file_editor_get_size_badge_text(byteSize);

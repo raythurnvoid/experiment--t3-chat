@@ -88,6 +88,32 @@ await state.page.keyboard.press("Control+A");
 await state.page.keyboard.insertText("Replacement text");
 ```
 
+### Content Size Cap QA
+
+Checks that over-cap content cannot be saved and cannot be accepted. Use a disposable file created with the sidebar `New file` button, opened with `view=diff_editor`. One step per execute call.
+
+1. Put over-cap text on the clipboard inside the page. Build it there so it never crosses the relay, and keep lines wide rather than many (`950 × 1000` chars is fine, `91 × 10000` wedges the renderer):
+
+```js
+await state.page.evaluate(async () => {
+	const line = "qa-size-cap-".padEnd(999, "x");
+	await navigator.clipboard.writeText(Array.from({ length: 950 }, () => line).join("\n"));
+});
+```
+
+2. Paste it into the unstaged pane. Never `keyboard.insertText` this much text:
+
+```js
+await state.page.locator('[aria-label="File diff editor"] .editor.modified .view-lines').first().click();
+await state.page.keyboard.press("Control+A");
+await state.page.keyboard.press("Control+V");
+```
+
+3. Assert the ambient state: `.FileEditorDiffToolbarActions-size-badge` reads `Over limit`, the `role="status"` live region reads `File is over the size limit. Remove content to save.`, and `getLatestLogs` is empty — the blocked draft sync is silent by design.
+4. Click each of `Save staged changes`, `Accept all pending changes in this file`, and `Accept all pending changes and save`, reading `[data-sonner-toast]` in the **same** call as the click. Each must show `This file would be … over the … limit. Remove about ….`, leave `.editor.original` unchanged, and leave the accept buttons enabled.
+5. Reload. Both panes must return to the committed content and the badge must disappear — proof that nothing over-cap was persisted and that no accept was applied locally. Do not try to trim by select-all + paste; `Control+A` over ~950K chars does not finish.
+6. Regression guard for the normal path: make a small edit in the unstaged pane, click `Accept all pending changes and save`, and confirm no toast, the staged pane takes the new text, and it survives a reload.
+
 ## Agent Sidebar
 
 - Switch with `#app_file_editor_sidebar_tabs_agent`.

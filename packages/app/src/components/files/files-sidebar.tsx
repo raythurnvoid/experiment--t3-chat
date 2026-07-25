@@ -50,7 +50,7 @@ import { AssistiveTreeDescription } from "@headless-tree/react";
 import { useTree } from "@headless-tree/react/react-compiler";
 import { useNavigate } from "@tanstack/react-router";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
-import { FilesNameInputControl, files_name_input_select_stem } from "./files-name-input.tsx";
+import { FilesNameInputControl } from "./files-name-input.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -122,6 +122,7 @@ import {
 	files_get_default_node_name,
 	files_get_node_path_validation,
 	files_is_node,
+	files_name_input_select_stem,
 	files_normalize_name,
 	files_normalize_markdown_name,
 	files_normalize_upload_file_name,

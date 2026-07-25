@@ -3,11 +3,8 @@ import { useState } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { MyInput } from "@/components/my-input.tsx";
-import {
-	FilesNameInputControl,
-	files_name_input_select_stem,
-	type FilesNameInputControl_Props,
-} from "./files-name-input.tsx";
+import { files_name_input_select_stem } from "@/lib/files.ts";
+import { FilesNameInputControl, type FilesNameInputControl_Props } from "./files-name-input.tsx";
 
 vi.hoisted(() => {
 	// React only routes `textInput` events into onBeforeInput when the environment declares

@@ -1193,6 +1193,22 @@ const useThreadList = (props?: useThreadList_Props) => {
 		);
 	});
 
+	const markThreadRead = useFn((threadId: string) => {
+		if (is_ai_chat_optimistic_thread_id(threadId)) {
+			return;
+		}
+
+		// No `.catch()`: a throw here should surface as an unhandled rejection instead of being swallowed.
+		markThreadReadMutation({ membershipId, threadId }).then((result) => {
+			if (result._nay) {
+				console.error("[AiChatController.useThreadList.markThreadRead] Failed to move the read cursor", {
+					result,
+					threadId,
+				});
+			}
+		});
+	});
+
 	const handleChatFinish = useLiveRef<(options: ThreadChatOnFinish) => void>((options) => {
 		// The stream runs in exactly one tab, so this cannot double-write across tabs.
 		// `visibilityState` is read once here, not observed, so a hidden tab simply stays unread.
@@ -1250,22 +1266,6 @@ const useThreadList = (props?: useThreadList_Props) => {
 					messageId: options.message.id,
 				});
 			});
-	});
-
-	const markThreadRead = useFn((threadId: string) => {
-		if (is_ai_chat_optimistic_thread_id(threadId)) {
-			return;
-		}
-
-		// No `.catch()`: a throw here should surface as an unhandled rejection instead of being swallowed.
-		markThreadReadMutation({ membershipId, threadId }).then((result) => {
-			if (result._nay) {
-				console.error("[AiChatController.useThreadList.markThreadRead] Failed to move the read cursor", {
-					result,
-					threadId,
-				});
-			}
-		});
 	});
 
 	/** Skips the write when there is nothing to clear, so entering/leaving read chats is free. */
@@ -1449,6 +1449,23 @@ const useThreadList = (props?: useThreadList_Props) => {
 		stop_and_delete_thread_session(threadId);
 	});
 
+	// Must stay above the optimistic restore effect below: passive effects run in declaration
+	// order, so on first mount this wipe would otherwise delete the session that effect just
+	// restored, and it never re-runs because its deps are stable.
+	useEffect(() => {
+		if (storeMembershipId === membershipId) {
+			return;
+		}
+
+		for (const threadId of useStore.getState().threadById.keys()) {
+			stop_and_delete_thread_session(threadId);
+		}
+		storeMembershipId = membershipId;
+		useStore.setState({ threadById: new Map() });
+		persistedUiMessageById.clear();
+		optimisticThreadListItemByKey.clear();
+	}, [membershipId]);
+
 	useEffect(() => {
 		if (!is_ai_chat_optimistic_thread_id(selectedThreadId)) {
 			return;
@@ -1477,20 +1494,6 @@ const useThreadList = (props?: useThreadList_Props) => {
 			{ persist: true },
 		);
 	}, [persistedSelectedThreadId, selectedThreadId, setSelectedThreadId]);
-
-	useEffect(() => {
-		if (storeMembershipId === membershipId) {
-			return;
-		}
-
-		for (const threadId of useStore.getState().threadById.keys()) {
-			stop_and_delete_thread_session(threadId);
-		}
-		storeMembershipId = membershipId;
-		useStore.setState({ threadById: new Map() });
-		persistedUiMessageById.clear();
-		optimisticThreadListItemByKey.clear();
-	}, [membershipId]);
 
 	useEffect(() => {
 		cacheClearIntervalConsumerCount += 1;

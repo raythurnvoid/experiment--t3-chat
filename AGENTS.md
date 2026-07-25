@@ -683,6 +683,14 @@ When local style does not already decide placement, keep `useEffect` hooks below
 - Prefer ordering as: state/derived values -> local functions/handlers -> `useEffect` hooks -> `return (...)`.
 - Avoid scattering `useEffect` between unrelated declarations unless the user explicitly requests that layout.
 
+### Pure helpers outside components
+
+Declare a helper at module level when it reads nothing from the component: no props, state, refs, context, or other hook values. Keep a function inside the component only when it needs that scope.
+
+- A module-level helper needs no `useFn`, `useCallback`, or `useMemo`, and the React Compiler has no work to do for it. A function declared inside the component is re-created and re-checked on every render even when nothing about it can change.
+- Place it with its owner: inside the owner's region when the file uses regions, otherwise at module level above the component that uses it.
+- Do not move a function out when the only way to do it is to pass the component scope back in as several arguments. That trades one cheap closure for a wider signature at every call site.
+
 ## React Compiler: avoid try/catch/finally blocks
 
 In code compiled as a React component or hook, the React Compiler can have issues lowering `try { ... } catch { ... } finally { ... }`, especially with `finally`. Prefer the existing pattern:

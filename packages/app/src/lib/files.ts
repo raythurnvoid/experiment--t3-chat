@@ -5,6 +5,7 @@ import {
 	files_yjs_doc_get_markdown,
 	files_yjs_doc_update_from_markdown,
 	files_is_node,
+	files_find_file_stem_end_index,
 	files_get_normalized_node_path_segments,
 	type files_TreeItem,
 	type files_VisibleTreeNode,
@@ -67,6 +68,23 @@ export function files_get_default_node_name(args: {
 
 		counter += 1;
 	}
+}
+
+/**
+ * Select the basename of the current input value, keeping the extension outside the
+ * selection so typing replaces only the basename and preserves the file type.
+ */
+export function files_name_input_select_stem(args: { element: HTMLInputElement; kind: files_TreeItem["kind"] }) {
+	const selectionEnd =
+		args.kind === "file"
+			? files_find_file_stem_end_index({ fileName: args.element.value })
+			: args.element.value.length;
+	if (selectionEnd > 0 && selectionEnd < args.element.value.length) {
+		args.element.setSelectionRange(0, selectionEnd);
+		return;
+	}
+
+	args.element.select();
 }
 
 // #region node path validation
