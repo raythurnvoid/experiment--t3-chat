@@ -1,28 +1,15 @@
 // Adapted from `references-submodules/liveblocks/packages/liveblocks-react-tiptap/src/LiveblocksExtension.ts`. Collaboration is
 // backed by Convex, so the presence store and the Yjs provider are passed in by the app instead of coming
-// from a Liveblocks Room.
-//
-// Tiptap extension callbacks use `this`, which the React Compiler cannot read. It skips the hook and leaves
-// it as written, which is what we want, but the lint rule still reports every `this`. So we turn it off here.
-/* eslint-disable react-hooks/todo */
-//
-// NOTE: Mentions integration (text-mentions endpoints + room private hooks) was
-// used when this package was wired to the Liveblocks Room system. We migrated
-// away from that integration, but we keep the code commented out for reference.
-//
-// import {
-//   useCreateTextMention,
-//   useDeleteTextMention,
-// } from "@liveblocks/react/_private";
+// from a Liveblocks Room. The mentions integration, the thread-error recovery listener, and the
+// thread filtering that the Liveblocks Room provided were dropped. Threads come from Convex, and
+// mentions are not wired to Convex at all.
 
-import type { AnyExtension, Editor } from "@tiptap/core";
+import type { AnyExtension } from "@tiptap/core";
 import { Extension, Mark } from "@tiptap/core";
 import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret, { type CollaborationCaretOptions } from "@tiptap/extension-collaboration-caret";
-import { useEffect, useRef } from "react";
 
 import { file_editor_rich_text_AiExtension } from "@/lib/file-editor-rich-text-ai-extension.ts";
-import { files_FILTERED_THREADS_PLUGIN_KEY, files_thread_id_sets_equal } from "../../shared/files-tiptap-comments.ts";
 import type {
 	file_editor_rich_text_ResolveContextualPrompt_Args,
 	file_editor_rich_text_ResolveContextualPrompt_Response,
@@ -30,43 +17,12 @@ import type {
 	file_editor_rich_text_TiptapExtension_Storage,
 } from "@/lib/file-editor-rich-text-utils.ts";
 
-type WithRequired<T, K extends keyof T> = T & { [P in K]-?: T[P] };
+const DEFAULT_OPTIONS = { field: "default" } satisfies file_editor_rich_text_TiptapExtension_Options;
 
-const DEFAULT_OPTIONS: WithRequired<file_editor_rich_text_TiptapExtension_Options, "field"> = {
-	field: "default",
-	// TODO: to be refactored for Convex BE
-	// mentions: true,
-	offlineSupport_experimental: false,
-	enablePermanentUserData: false,
-};
-
-const LiveblocksCollab = Collaboration.extend({
-	// Override the onCreate method to warn users about potential misconfigurations
-	onCreate() {
-		if (!this.editor.extensionManager.extensions.find((e) => e.name === "doc")) {
-			console.warn(
-				"[Liveblocks] The tiptap document extension is required for Liveblocks collaboration. Please add it or use Tiptap StarterKit extension.",
-			);
-		}
-		if (!this.editor.extensionManager.extensions.find((e) => e.name === "paragraph")) {
-			console.warn(
-				"[Liveblocks] The tiptap paragraph extension is required for Liveblocks collaboration. Please add it or use Tiptap StarterKit extension.",
-			);
-		}
-
-		if (!this.editor.extensionManager.extensions.find((e) => e.name === "text")) {
-			console.warn(
-				"[Liveblocks] The tiptap text extension is required for Liveblocks collaboration. Please add it or use Tiptap StarterKit extension.",
-			);
-		}
-		if (this.editor.extensionManager.extensions.find((e) => e.name === "undoRedo")) {
-			console.warn(
-				"[Liveblocks] The undoRedo extension is enabled, Liveblocks extension provides its own. Please remove or disable the undoRedo extension to prevent conflicts.",
-			);
-		}
-	},
-});
-
+// Keep this mark. `renderSnapshot` in the AI extension writes `ychange` marks when it shows a Yjs
+// snapshot diff. No UI reaches that command today, but the command graph still does. Yjs rebuilds
+// marks by name when it loads a document, and an undeclared mark name throws instead of being
+// dropped, so removing this can make an already stored document impossible to open.
 const YChangeMark = Mark.create({
 	name: "ychange",
 	inclusive: false,
@@ -124,69 +80,19 @@ export const useFileEditorRichTextExtension = (opts?: file_editor_rich_text_Tipt
 		...DEFAULT_OPTIONS,
 		...opts,
 	};
-	const editor = useRef<Editor | null>(null);
-
-	// TODO: to be refactored for Convex BE
-	// TODO: we don't need these things if comments isn't turned on...
-	// TODO: we don't have a reference to the editor here, need to figure this out
-	// useErrorListener((error) => {
-	//   // If thread creation fails, we remove the thread id from the associated nodes and unwrap the nodes if they are no longer associated with any threads
-	//   if (
-	//     error.context.type === "CREATE_THREAD_ERROR" &&
-	//     error.context.roomId === room.id
-	//   ) {
-	//     handleThreadDelete(error.context.threadId);
-	//   }
-	// });
-
-	// Keep historical Liveblocks initial-content bootstrapping commented out
-	// because Convex now owns initial document content on the server.
-
-	const prevThreadsRef = useRef<Set<string> | undefined>(undefined);
-
-	useEffect(() => {
-		if (!editor.current) return;
-
-		const newThreads = options.threads_experimental
-			? new Set(options.threads_experimental.map((t) => t.id))
-			: undefined;
-
-		const hasFilteredThreadsChanged = !files_thread_id_sets_equal(prevThreadsRef.current, newThreads);
-
-		if (hasFilteredThreadsChanged) {
-			prevThreadsRef.current = newThreads;
-		}
-
-		if (hasFilteredThreadsChanged) {
-			editor.current.view.dispatch(
-				editor.current.state.tr.setMeta(files_FILTERED_THREADS_PLUGIN_KEY, {
-					filteredThreads: options.threads_experimental
-						? new Set(options.threads_experimental.map((t) => t.id))
-						: undefined,
-				}),
-			);
-		}
-	}, [options.threads_experimental]);
-
-	// TODO: to be refactored for Convex BE
-	// const createTextMention = useCreateTextMention();
-	// const deleteTextMention = useDeleteTextMention();
 
 	// Tiptap has options default as any, in tiptap2, we could use never, but now we must use any
-
 	return Extension.create<any, file_editor_rich_text_TiptapExtension_Storage>({
 		name: "liveblocksExtension",
 
 		onCreate() {
-			editor.current = this.editor;
+			// Keep initial content server-owned. Convex seeds new documents before the provider
+			// hydrates, so the editor must not write bootstrap content.
 			if (this.editor.options.content) {
 				console.warn(
-					"[Liveblocks] Initial content must be set in the useFileEditorRichTextExtension hook option. Remove content from your editor options.",
+					"[useFileEditorRichTextExtension.onCreate] Editor content is ignored, remove content from your editor options",
 				);
 			}
-
-			// Keep initial Yjs content server-owned. Convex seeds new documents before
-			// the provider hydrates, so the editor must not write bootstrap content.
 
 			if (!options.presenceStore) {
 				throw new Error("presenceStore is required for useFileEditorRichTextExtension");
@@ -306,7 +212,7 @@ export const useFileEditorRichTextExtension = (opts?: file_editor_rich_text_Tipt
 			const extensions: AnyExtension[] = [
 				YChangeMark,
 
-				LiveblocksCollab.configure({
+				Collaboration.configure({
 					ySyncOptions: {
 						permanentUserData: this.storage.permanentUserData,
 					},
@@ -320,17 +226,6 @@ export const useFileEditorRichTextExtension = (opts?: file_editor_rich_text_Tipt
 				}) as Extension<CollaborationCaretOptions>,
 			];
 
-			// TODO: to be refactored for Convex BE
-			// if (options.mentions) {
-			//   extensions.push(
-			//     MentionExtension.configure({
-			//       onCreateMention: (mention) => {
-			//         createTextMention(mention.notificationId, mention);
-			//       },
-			//       onDeleteMention: deleteTextMention,
-			//     })
-			//   );
-			// }
 			if (options.ai) {
 				const aiConfig = options.ai;
 				const resolveContextualPrompt = async ({

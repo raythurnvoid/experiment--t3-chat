@@ -16,7 +16,7 @@ export const files_COMMENT_MARK_TYPE = "liveblocksCommentMark";
 
 export const files_THREADS_PLUGIN_KEY = new PluginKey<files_ThreadPluginState>("lb-threads-plugin");
 
-export const files_FILTERED_THREADS_PLUGIN_KEY = new PluginKey<{
+const files_FILTERED_THREADS_PLUGIN_KEY = new PluginKey<{
 	filteredThreads?: Set<string>;
 }>();
 
@@ -429,7 +429,7 @@ export const files_CommentsExtension = Extension.create<{
 	},
 });
 
-export function files_thread_id_sets_equal(a?: Set<string>, b?: Set<string>): boolean {
+function files_thread_id_sets_equal(a?: Set<string>, b?: Set<string>): boolean {
 	if (a === b) return true;
 	if (!a || !b) return false;
 	if (a.size !== b.size) return false;

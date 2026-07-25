@@ -4,7 +4,7 @@
 // behind; the thread plugin types moved to `shared/files-tiptap-comments.ts` because Convex needs them.
 
 import type { ClientRectObject } from "@floating-ui/dom";
-import type { ContextualPromptContext, ContextualPromptResponse, Relax, ThreadData } from "@liveblocks/core";
+import type { ContextualPromptContext, ContextualPromptResponse, Relax } from "@liveblocks/core";
 import type { Editor, Range } from "@tiptap/core";
 import { PluginKey } from "@tiptap/pm/state";
 import type { ChainedCommands } from "@tiptap/react";
@@ -156,12 +156,7 @@ export interface file_editor_rich_text_AiConfiguration {
 
 export type file_editor_rich_text_TiptapExtension_Options = {
 	field?: string;
-	comments?: boolean; // | CommentsConfiguration
-	mentions?: boolean; // | MentionsConfiguration
 	ai?: boolean | file_editor_rich_text_AiConfiguration;
-	offlineSupport_experimental?: boolean;
-	threads_experimental?: ThreadData[];
-	enablePermanentUserData?: boolean;
 
 	/**
 	 * Provide a pre-instantiated Yjs provider from the app layer.
