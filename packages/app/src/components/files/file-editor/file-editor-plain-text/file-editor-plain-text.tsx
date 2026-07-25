@@ -20,7 +20,7 @@ import {
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Editor, type EditorProps } from "@monaco-editor/react";
-import { editor as monaco_editor } from "monaco-editor";
+import { editor as monaco_editor, Range as monaco_Range } from "monaco-editor";
 import { useMutation } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -177,6 +177,59 @@ const FileEditorPlainTextTopStickyFloatingContainer = memo(function FileEditorPl
 // #endregion top sticky floating container
 
 // #region root
+function is_high_surrogate(codeUnit: number) {
+	return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function is_low_surrogate(codeUnit: number) {
+	return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
+
+/**
+ * Find the one stretch of text that differs between two versions.
+ *
+ * Monaco can then rewrite only that stretch instead of the whole document, so the cursor and the
+ * undo history survive a write that the user did not type.
+ */
+function compute_minimal_text_edit(previousText: string, nextText: string) {
+	if (previousText === nextText) {
+		return null;
+	}
+
+	const shortestLength = Math.min(previousText.length, nextText.length);
+
+	let prefixLength = 0;
+	while (prefixLength < shortestLength && previousText[prefixLength] === nextText[prefixLength]) {
+		prefixLength += 1;
+	}
+
+	// Stop the shared ending before it reaches the shared beginning, otherwise the two would
+	// overlap and the replacement range would be inverted.
+	let suffixLength = 0;
+	while (
+		suffixLength < shortestLength - prefixLength &&
+		previousText[previousText.length - 1 - suffixLength] === nextText[nextText.length - 1 - suffixLength]
+	) {
+		suffixLength += 1;
+	}
+
+	// A character outside the basic plane, such as an emoji, is stored as two code units. Never
+	// cut between them: Monaco silently grows a range that starts or ends inside such a pair, so
+	// the replacement text would no longer rebuild `nextText` and the user would lose characters.
+	if (prefixLength > 0 && is_high_surrogate(previousText.charCodeAt(prefixLength - 1))) {
+		prefixLength -= 1;
+	}
+	if (suffixLength > 0 && is_low_surrogate(previousText.charCodeAt(previousText.length - suffixLength))) {
+		suffixLength -= 1;
+	}
+
+	return {
+		startOffset: prefixLength,
+		endOffset: previousText.length - suffixLength,
+		text: nextText.slice(prefixLength, nextText.length - suffixLength),
+	};
+}
+
 type FileEditorPlainText_ClassNames = "FileEditorPlainText" | "FileEditorPlainText-editor";
 
 type FileEditorPlainTextInner_Props = {
@@ -323,25 +376,6 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		}, 250);
 	};
 
-	const resetToNewBaseline = (markdown: string) => {
-		if (!editorRef.current) {
-			const error = should_never_happen("[FileEditorPlainText.resetToNewBaseline] Missing editor ref", {
-				editor: editorRef.current,
-			});
-			console.error(error);
-			throw error;
-		}
-
-		const prevModel = modelRef.current;
-		const model = files_monaco_create_editor_model(markdown);
-		editorRef.current.setModel(model);
-		modelRef.current = model;
-		prevModel?.dispose();
-		updateDirtyBaseline(markdown);
-		updateThreadIds(markdown);
-		return model;
-	};
-
 	const pushChangeToEditor = (newMarkdown: string) => {
 		if (!editorRef.current) {
 			const error = should_never_happen("[FileEditorPlainText.pushChangeToEditor] Missing `editorRef.current`", {
@@ -362,15 +396,22 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			throw error;
 		}
 
+		const edit = compute_minimal_text_edit(model.getValue(), newMarkdown);
+		if (!edit) {
+			return;
+		}
+
 		editorRef.current.pushUndoStop();
 		editorRef.current.executeEdits("app_files_sync", [
 			{
-				range: model.getFullModelRange(),
-				text: newMarkdown,
+				range: monaco_Range.fromPositions(
+					model.getPositionAt(edit.startOffset),
+					model.getPositionAt(edit.endOffset),
+				),
+				text: edit.text,
 			},
 		]);
 		editorRef.current.pushUndoStop();
-		setDirtyCheckState("dirty");
 	};
 
 	const getCurrentMarkdown = useFn(() => {
@@ -401,7 +442,12 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				return;
 			}
 
-			resetToNewBaseline(remoteData.markdown._yay);
+			// Write into the current model instead of building a new one. A new model starts with an
+			// empty undo stack, and `setModel` also rebuilds the editor view, which drops the top view
+			// zone without re-adding it.
+			pushChangeToEditor(remoteData.markdown._yay);
+			updateDirtyBaseline(remoteData.markdown._yay);
+			updateThreadIds(remoteData.markdown._yay);
 			baselineYjsDocRef.current = remoteData.yjsDoc;
 			setWorkingYjsSequence(remoteData.yjsSequence);
 		})()
@@ -576,19 +622,24 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				return;
 			}
 
-			// Reset the Monaco model to a clean server baseline.
-			resetToNewBaseline(remoteData.markdown._yay);
+			// Write the merged content into the model the user has been typing in. Only the part that
+			// actually changed is rewritten, so everything the user did before the sync stays in the
+			// undo stack and one Ctrl+Z undoes the sync alone.
+			pushChangeToEditor(mergedMarkdown._yay);
+
+			// The server content is the new baseline, even though the editor keeps the merged content.
 			baselineYjsDocRef.current = remoteData.yjsDoc;
 			setWorkingYjsSequence(remoteData.yjsSequence);
-
-			// Apply the merged content as a single undoable edit so the user can at least undo back to the
-			// new server baseline (v0) after a sync.
-			// TODO: if we save the local edits as incremental updates we can let the user undo granularly.
-			if (mergedMarkdown._yay !== remoteData.markdown._yay) {
-				pushChangeToEditor(mergedMarkdown._yay);
-			}
-
+			updateDirtyBaseline(remoteData.markdown._yay);
 			updateThreadIds(remoteData.markdown._yay);
+
+			// `updateDirtyBaseline` measured the server content and marked the file clean. The editor
+			// shows the merged content instead, so correct both when the merge kept local edits that
+			// Save still has to push.
+			if (mergedMarkdown._yay !== remoteData.markdown._yay) {
+				setByteSize(files_get_utf8_byte_size(mergedMarkdown._yay));
+				setDirtyCheckState("dirty");
+			}
 		})()
 			.catch((err) => {
 				console.error("[FileEditorPlainText.handleClickSync] Sync failed", err);
@@ -724,3 +775,105 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 	);
 });
 // #endregion root
+
+// #region tests
+// The NODE_ENV check comes first so client builds erase this block; `import.meta.vitest` is
+// only defined when vitest runs this file.
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, expect, test } = import.meta.vitest;
+
+	describe("compute_minimal_text_edit", () => {
+		test("returns null when nothing changed", () => {
+			expect(compute_minimal_text_edit("same text", "same text")).toBe(null);
+		});
+
+		test("replaces only the part between the shared start and the shared end", () => {
+			expect(compute_minimal_text_edit("hello brave world", "hello cruel world")).toEqual({
+				startOffset: 6,
+				endOffset: 11,
+				text: "cruel",
+			});
+		});
+
+		test("reports an inserted line as an empty range", () => {
+			// The shared start runs past the line break into `line t`, so the range is tighter than
+			// the whole inserted line. Monaco only needs the replacement to rebuild the same text.
+			expect(compute_minimal_text_edit("line one\nline three", "line one\nline two\nline three")).toEqual({
+				startOffset: 15,
+				endOffset: 15,
+				text: "wo\nline t",
+			});
+		});
+
+		test("reports a deleted line as empty replacement text", () => {
+			expect(compute_minimal_text_edit("line one\nline two\nline three", "line one\nline three")).toEqual({
+				startOffset: 15,
+				endOffset: 24,
+				text: "",
+			});
+		});
+
+		test("keeps the range valid when the shared start and the shared end overlap", () => {
+			// Both texts repeat `a`, so a naive shared-end scan would run past the shared start and
+			// produce an inverted range.
+			expect(compute_minimal_text_edit("aaa", "aaaaa")).toEqual({
+				startOffset: 3,
+				endOffset: 3,
+				text: "aa",
+			});
+		});
+
+		test("replaces everything when the two versions share nothing", () => {
+			expect(compute_minimal_text_edit("old", "new")).toEqual({
+				startOffset: 0,
+				endOffset: 3,
+				text: "new",
+			});
+		});
+
+		test("handles an empty starting document", () => {
+			expect(compute_minimal_text_edit("", "first line")).toEqual({
+				startOffset: 0,
+				endOffset: 0,
+				text: "first line",
+			});
+		});
+
+		test("never cuts an emoji in half", () => {
+			// Both emoji start with the same code unit, so an unguarded scan would put the range
+			// boundary between the two halves of one character.
+			expect(compute_minimal_text_edit("😀😁\n", "😁\n")).toEqual({
+				startOffset: 0,
+				endOffset: 4,
+				text: "😁",
+			});
+			expect(compute_minimal_text_edit("😀", "😁")).toEqual({
+				startOffset: 0,
+				endOffset: 2,
+				text: "😁",
+			});
+		});
+
+		test("applying the edit rebuilds the next version", () => {
+			const cases: [string, string][] = [
+				["# Welcome\nold body", "# Welcome\nnew body"],
+				["one\ntwo\nthree", "one\nthree"],
+				["one\nthree", "one\ntwo\nthree"],
+				["aaa", "aaaaa"],
+				["😀😁\n", "😁\n"],
+				["😀", "😁"],
+				["", "anything"],
+				["anything", ""],
+			];
+
+			for (const [previousText, nextText] of cases) {
+				const edit = compute_minimal_text_edit(previousText, nextText);
+				const applied = edit
+					? previousText.slice(0, edit.startOffset) + edit.text + previousText.slice(edit.endOffset)
+					: previousText;
+				expect(applied).toBe(nextText);
+			}
+		});
+	});
+}
+// #endregion tests
