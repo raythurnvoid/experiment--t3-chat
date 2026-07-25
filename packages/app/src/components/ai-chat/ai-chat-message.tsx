@@ -50,7 +50,8 @@ import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
 import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
-import { cn, json_strigify_ensured, path_name_of, sx } from "@/lib/utils.ts";
+import { cn, json_strigify_ensured, sx } from "@/lib/utils.ts";
+import { path_name_of } from "@/lib/paths.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { MyButton, MyButtonIcon, type MyButton_ClassNames } from "../my-button.tsx";

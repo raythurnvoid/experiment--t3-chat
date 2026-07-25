@@ -15,7 +15,8 @@ import {
 	files_pending_path_overlay_translate_path,
 } from "../shared/files.ts";
 import { organizations_is_global_organization_id, organizations_is_reserved_workspace_id } from "../shared/organizations.ts";
-import { path_name_of, should_never_happen } from "../shared/shared-utils.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
+import { path_name_of } from "../shared/paths.ts";
 import { path_join } from "./server-utils.ts";
 import { bash_DbFilesContentUnavailableError, bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_normalize_path, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_TMP_MOUNT, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";

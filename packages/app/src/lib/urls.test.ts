@@ -4,7 +4,46 @@ import {
 	app_tenant_default_workspace_for_organization,
 	app_tenant_defaults_from_organization_list,
 	app_tenant_primary_workspace_for_organization,
+	url_parse_file_link,
+	url_path_file_by_node_id,
 } from "./urls.ts";
+
+describe("url_parse_file_link", () => {
+	test("reads back the node id from a link built by url_path_file_by_node_id", () => {
+		const link = url_path_file_by_node_id({ organizationName: "acme", workspaceName: "main", nodeId: "k57abc" });
+
+		expect(url_parse_file_link(`http://localhost:5173${link}`)).toEqual({ nodeId: "k57abc" });
+	});
+
+	test("keeps other search params out of the way", () => {
+		expect(url_parse_file_link("https://app.test/w/acme/main/files?view=plain_text_editor&nodeId=k57abc&q=api")).toEqual({
+			nodeId: "k57abc",
+		});
+	});
+
+	test("reads the readable splat form as an absolute path", () => {
+		expect(url_parse_file_link("https://app.test/w/acme/main/files/docs/api.md")).toEqual({ path: "/docs/api.md" });
+	});
+
+	test("decodes percent-encoded segments", () => {
+		expect(url_parse_file_link("https://app.test/w/acme/main/files/my%20docs/api.md")).toEqual({
+			path: "/my docs/api.md",
+		});
+	});
+
+	test("prefers the node id when a link carries both shapes", () => {
+		expect(url_parse_file_link("https://app.test/w/acme/main/files/docs/api.md?nodeId=k57abc")).toEqual({
+			nodeId: "k57abc",
+		});
+	});
+
+	test("returns null for plain text, bare paths and non-files app links", () => {
+		expect(url_parse_file_link("/docs/api.md")).toBeNull();
+		expect(url_parse_file_link("api.md")).toBeNull();
+		expect(url_parse_file_link("https://app.test/w/acme/main/chat")).toBeNull();
+		expect(url_parse_file_link("not a url at all")).toBeNull();
+	});
+});
 
 describe("app_tenant_primary_workspace_for_organization", () => {
 	test("returns the visible organization defaultWorkspaceId match", () => {

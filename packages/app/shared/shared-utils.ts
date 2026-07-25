@@ -184,19 +184,6 @@ export function generate_id<T extends GeneratedIdPrefixKey>(snakeCasePrefix: T):
 }
 // #endregion generated id
 
-// #region path
-export function path_extract_segments_from(path: string): string[] {
-	if (path === "" || path === "/") return [];
-	return path
-		.split(/(?<!\\)\//) // split on / not preceeded by \
-		.filter(Boolean);
-}
-
-export function path_name_of(path: string): string {
-	return path_extract_segments_from(path).at(-1) ?? "";
-}
-// #endregion path
-
 // #region composite ids
 /**
  * Registry of supported composite-id tuple shapes grouped by owning context.

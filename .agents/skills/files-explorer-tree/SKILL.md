@@ -117,9 +117,27 @@ Tree-item components:
 ## Search
 
 - Search input is debounced and consumed through a deferred query value.
-- Visible IDs are computed from title matches plus ancestor chain inclusion.
+- Visible IDs are computed from matches plus ancestor chain inclusion.
 - Ancestors of matched files/folders remain visible.
 - Search-open snapshots expansion state and auto-expands relevant parents; search-close restores prior expansion.
+- The query shape picks the matched field, so users paste what they copied without learning a prefix syntax. `files_sidebar_parse_search_query` decides: a pasted app link is unwrapped into the `nodeId` search param or the `/files/<path>` splat it carries; a long lowercase alphanumeric string is a node id; anything containing `/` matches `path`; everything else matches `name`. There is no `>`/`#` prefix syntax.
+- Path queries swap the row's secondary line from "edited by" to the node path, so two files with the same name in different folders can be told apart.
+- Enter opens the query's top match: the node whose `path` matched exactly, or the only node that matched at all. The tree's scoped rename `Enter` hotkey is separate and must keep working.
+- `Mod+K` (registered in `FileNodeView`, `ignoreInputs: false`) opens the files sidebar if closed and focuses the search input through the global `app_files_sidebar_search` id on the `MyInput` wrapper. `MyInputControl` owns its own generated id for label wiring, so the global id cannot live on the control.
+- The files route's `q` search param mirrors the search box both ways. It seeds the box on mount (the path route's not-found panel uses that so a failed link lands on a filled, case-insensitive search), and the box writes back to it through `FilesSidebar_Props.onSearchQueryChange` → `FileNodeView.handleSearchQueryChange` → `onNavigateSearch(..., { replace: true })`. The write is already debounced by `FilesSidebarSearch`; do not add a second timer. `replace` keeps a whole typing session on one history entry, and an empty query drops the param instead of leaving `?q=`.
+- `initialSearchQuery` stays a `useState` seed, so writing `q` back cannot loop or reset the box mid-typing. Do not turn it into a controlled prop.
+- Every link into the files route must preserve `q` with the functional form `search={(prev) => ({ ...prev, nodeId, view })}`. The sidebar stays mounted with its box filled across those navigations, so an object literal would silently desync the URL from what the user sees. This covers the sidebar header title, both breadcrumb link kinds, folder-explorer rows, and the pending-changes panel.
+
+## Path URLs And Copy Actions
+
+- Canonical live URL stays `/w/:organizationName/:workspaceName/files?nodeId=<id>&view=<view>`. Node ids keep an open tab valid across rename and move, and avoid repeating a lookup on every load.
+- `/w/:organizationName/:workspaceName/files/<path>` is an entry format only. The splat route `routes/w/$organizationName/$workspaceName/files/$.tsx` resolves the path through the public `files_nodes.get_authorized_by_path` query, then replaces the URL with the `?nodeId=` form. `view` rides along.
+- Only a resolved `null` renders the not-found panel. `undefined` still means loading, so a cold pasted link must not flash not-found.
+- Path lookup is exact and case-sensitive because it rides `by_organization_workspace_path_archiveOperation`. Copy path emits the stored path, so a path built from it matches. A hand-typed `/readme.md` for a stored `README.md` misses on purpose and recovers through the not-found panel's search link. Do not add a case-insensitive server fallback.
+- Canonicalize a splat with `path_extract_segments_from`. Do not use `files_get_normalized_node_path_segments` for lookups: it is the create/rename normalizer and rewrites characters, which would resolve to a different file.
+- `get_authorized_by_path` checks `asset.read` like `get_file_node_for_membership`, so a path link cannot hand out a node id the id route would refuse.
+- Three copy actions, all multi-select aware in the sidebar and joined with newlines: Copy path (sidebar row menu and breadcrumb) copies the plain path for pasting into search or an AI chat message; Copy link (same two places) copies the absolute `?nodeId=` URL built from `url_path_file_by_node_id`, so a shared link survives rename and move; Copy node id (sidebar row menu only) copies the bare id.
+- Copy link deliberately does not emit the readable `/files/<path>` shape. That shape has no in-app producer: it exists so a hand-written or externally generated path can be opened, and the sidebar search still unwraps it when pasted.
 
 ## Selection And Primary Action
 
@@ -215,6 +233,13 @@ Tree-item components:
 - Tree updates come from `files_nodes.list_tree`.
 - Search keeps ancestor chain for matching files/folders.
 - Search-open expands relevant branches and search-close restores prior expansion.
+- Search matches a name fragment, a path, a node id, and a pasted app link, and Enter opens the top match for each.
+- Path queries show the node path as the row's secondary line, and a sibling-prefix folder such as `/docs-archive` never matches a `/docs` query.
+- `Mod+K` opens the files sidebar when closed and focuses the search input.
+- Renaming a row still commits on Enter.
+- A pasted path URL opens the file, settles on `?nodeId=`, adds one history entry, and never flashes the not-found panel on a cold load.
+- An unknown, archived, or wrong-case path URL shows the not-found panel with a working "Search for this path" link.
+- Copy path yields the plain path; Copy link yields an absolute `?nodeId=` URL that reopens the same node; Copy node id yields the bare id. All three still work after the node is renamed or moved.
 - Selection modes and anchor behavior are correct.
 - Root create can create a file and a folder.
 - Folder create can create child files/folders.

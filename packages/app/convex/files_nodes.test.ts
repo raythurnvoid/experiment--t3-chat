@@ -2627,6 +2627,99 @@ describe("files_nodes.get_authorized_by_path", () => {
 		});
 		expect(missing).toBeNull();
 	});
+
+	test("returns null for a member without asset.read", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const created = await asUser.action(api.files_nodes.create_markdown_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "gated.md",
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const allowed = await asUser.query(api.files_nodes.get_authorized_by_path, {
+			membershipId: db.membershipId,
+			path: "/gated.md",
+		});
+		expect(allowed?.nodeId).toBe(created._yay.nodeId);
+
+		// Organization owners short-circuit every permission check, so move ownership away and
+		// drop the user's role assignments to leave a member with no `asset.read`.
+		await t.run(async (ctx) => {
+			const otherOwnerId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.patch("organizations", db.organizationId, { ownerUserId: otherOwnerId });
+
+			const roleAssignments = await ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_workspace_user_role", (q) => q.eq("organizationId", db.organizationId))
+				.collect();
+			await Promise.all(
+				roleAssignments
+					.filter((assignment) => assignment.userId === db.userId)
+					.map((assignment) => ctx.db.delete("access_control_role_assignments", assignment._id)),
+			);
+		});
+
+		const denied = await asUser.query(api.files_nodes.get_authorized_by_path, {
+			membershipId: db.membershipId,
+			path: "/gated.md",
+		});
+		expect(denied).toBeNull();
+	});
+
+	test("resolves the path inside the membership tenant only", async () => {
+		const t = test_convex();
+		const first = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const second = await t.run(async (ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" }),
+		);
+
+		const asFirstUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: first.userId,
+			name: "First User",
+		});
+		const asSecondUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: second.userId,
+			name: "Second User",
+		});
+
+		const firstCreated = await asFirstUser.action(api.files_nodes.create_markdown_node, {
+			membershipId: first.membershipId,
+			parentId: files_ROOT_ID,
+			path: "shared-name.md",
+		});
+		const secondCreated = await asSecondUser.action(api.files_nodes.create_markdown_node, {
+			membershipId: second.membershipId,
+			parentId: files_ROOT_ID,
+			path: "shared-name.md",
+		});
+		if (firstCreated._nay || secondCreated._nay) {
+			throw new Error(firstCreated._nay?.message ?? secondCreated._nay?.message);
+		}
+
+		const resolvedForFirst = await asFirstUser.query(api.files_nodes.get_authorized_by_path, {
+			membershipId: first.membershipId,
+			path: "/shared-name.md",
+		});
+		const resolvedForSecond = await asSecondUser.query(api.files_nodes.get_authorized_by_path, {
+			membershipId: second.membershipId,
+			path: "/shared-name.md",
+		});
+
+		expect(resolvedForFirst?.nodeId).toBe(firstCreated._yay.nodeId);
+		expect(resolvedForSecond?.nodeId).toBe(secondCreated._yay.nodeId);
+	});
 });
 
 describe("files_nodes.create_upload_node", () => {

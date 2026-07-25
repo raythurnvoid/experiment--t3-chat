@@ -3,9 +3,11 @@ import { Result, Result_try_promise } from "common/errors-as-values-utils.ts";
 import type z from "zod";
 import type { Id } from "../convex/_generated/dataModel";
 import { users_create_anonymouse_user_display_name, users_create_fallback_display_name } from "../shared/users.ts";
-import { path_extract_segments_from, should_never_happen } from "../shared/shared-utils.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
+import { path_extract_segments_from } from "../shared/paths.ts";
 
 export * from "../shared/shared-utils.ts";
+export * from "../shared/paths.ts";
 
 if (!process.env.ALLOWED_ORIGINS) {
 	throw new Error("`ALLOWED_ORIGINS` env var is not set");

@@ -1,6 +1,7 @@
 import "./file-node-view.css";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
+import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import { FileEditorSidebar } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar.tsx";
 import { FileEditorPresence } from "@/components/files/file-editor/file-editor-presence.tsx";
 import {
@@ -79,6 +80,7 @@ import {
 	type files_VisibleTreeNode,
 } from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
+import { url_path_file_by_node_id } from "@/lib/urls.ts";
 import { cn, sx } from "@/lib/utils.ts";
 import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
@@ -96,6 +98,7 @@ import {
 	Folder,
 	FolderPlus,
 	Home,
+	Link2,
 } from "lucide-react";
 import React, { memo, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -229,6 +232,11 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 
 	const breadcrumbPath = get_breadcrumb_path(fileNodesList, selectedNodeId);
 
+	const currentNodePath = breadcrumbPath.at(-1)?.path;
+	const currentNodeLink = selectedNodeId
+		? `${window.location.origin}${url_path_file_by_node_id({ organizationName, workspaceName, nodeId: selectedNodeId })}`
+		: undefined;
+
 	const handleEditorModeChange = useFn((mode: string) => {
 		onEditorModeChange(mode as FileEditor_Mode);
 	});
@@ -252,7 +260,8 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									className={cn("FileNodeViewHeader-breadcrumb-home" satisfies FileNodeViewHeader_ClassNames)}
 									to="/w/$organizationName/$workspaceName/files"
 									params={{ organizationName, workspaceName }}
-									search={{ nodeId: files_ROOT_ID, view: editorMode }}
+									// Keep `q` so the URL stays in step with the still-filled sidebar search box.
+									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, view: editorMode })}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
 								>
@@ -282,7 +291,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 													)}
 													to="/w/$organizationName/$workspaceName/files"
 													params={{ organizationName, workspaceName }}
-													search={{ nodeId: item._id, view: editorMode }}
+													search={(prev) => ({ ...prev, nodeId: item._id, view: editorMode })}
 													variant="button-tertiary"
 												>
 													{item.name}
@@ -302,10 +311,14 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 								);
 							})}
 							<li>
+								<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy path" text={currentNodePath} />
+							</li>
+							<li>
 								<CopyIconButton
 									variant="ghost-highlightable"
-									tooltipCopy="Copy path"
-									text={breadcrumbPath.at(-1)?.path}
+									tooltipCopy="Copy link"
+									icon={<Link2 />}
+									text={currentNodeLink}
 								/>
 							</li>
 						</>
@@ -391,7 +404,9 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 	}
 
 	// "" means the producer set no per-target text; fall back to the activity title.
-	const targetMessage = activity ? activity.targets.find((target) => target.id === nodeId)?.message || undefined : undefined;
+	const targetMessage = activity
+		? activity.targets.find((target) => target.id === nodeId)?.message || undefined
+		: undefined;
 	const message = activity
 		? activity.status === "running"
 			? (targetMessage ?? activity.title)
@@ -1763,7 +1778,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 				className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
 				to="/w/$organizationName/$workspaceName/files"
 				params={{ organizationName, workspaceName }}
-				search={{ nodeId: child._id, view: editorMode }}
+				search={(prev) => ({ ...prev, nodeId: child._id, view: editorMode })}
 				draggable={false}
 			/>
 			<MyGridTableCell
@@ -2217,11 +2232,15 @@ const DEFAULT_EDITOR_PANEL_LAYOUT = [75, 25] satisfies [number, number];
 export type FileNodeView_SearchParams = {
 	nodeId?: string;
 	view?: files_EditorView;
+	q?: string;
 };
 
 export type FileNodeView_Props = {
 	searchParams: FileNodeView_SearchParams;
-	onNavigateSearch: (search: FileNodeView_SearchParams) => void;
+	/** `
+	 * replace` keeps the debounced search-query updates out of the history stack.
+	 **/
+	onNavigateSearch: (search: FileNodeView_SearchParams, options?: { replace?: boolean }) => void;
 };
 
 export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props) {
@@ -2291,17 +2310,40 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			: "skip",
 	);
 
+	/**
+	 * Carry `q` through navigation.
+	 * The sidebar keeps its filter when a result is opened, so the URL
+	 * has to keep matching the search box instead of silently dropping the query.
+	 */
 	const navigateToNode = useFn((nodeId?: string, nextEditorMode: files_EditorView = effectiveView) => {
 		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
 
-		onNavigateSearch({ nodeId, view });
+		onNavigateSearch({ nodeId, view, q: searchParams.q });
 	});
 
 	const navigateToView = useFn<FileNodeViewContent_Props["onEditorModeChange"]>((nextView) => {
 		const nodeId = searchNodeId ?? files_ROOT_ID;
 		const view = nextView === "rich_text_editor" ? undefined : nextView;
-		onNavigateSearch({ nodeId, view });
+		onNavigateSearch({ nodeId, view, q: searchParams.q });
 	});
+
+	/**
+	 * Mirror the sidebar search box into the URL so a filtered view can be reloaded or shared.
+	 *
+	 * `FilesSidebarSearch` already debounces this callback, so no extra timer is needed here.
+	 * `replace` keeps a whole typing session on one history entry, and an empty query drops the
+	 * param instead of leaving `?q=` behind.
+	 */
+	const handleSearchQueryChange = useFn<React.ComponentProps<typeof FilesSidebar>["onSearchQueryChange"]>(
+		(searchQuery) => {
+			const q = searchQuery.trim().length > 0 ? searchQuery : undefined;
+			if (q === searchParams.q) {
+				return;
+			}
+
+			onNavigateSearch({ nodeId: searchNodeId, view: searchParams.view, q }, { replace: true });
+		},
+	);
 
 	const handleToolbarPortalHostChange = useFn((element: HTMLDivElement | null) => {
 		setToolbarPortalHost(element);
@@ -2453,6 +2495,27 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		},
 	);
 
+	// Jump straight to the files search so a copied path, id, or link can be pasted and opened
+	// without reaching for the sidebar. `ignoreInputs: false` keeps it working while the editor
+	// or another input has focus, which is where users are when they paste a reference.
+	AppHotkeysProvider.useHotkey(
+		"Mod+K",
+		useFn(() => {
+			setFilesSidebarOpen(true);
+
+			// The sidebar panel unmounts while closed, so wait for the commit that mounts the input.
+			requestAnimationFrame(() => {
+				const searchInput = document
+					.getElementById("app_files_sidebar_search" satisfies AppElementId)
+					?.querySelector("input");
+
+				searchInput?.focus();
+				searchInput?.select();
+			});
+		}),
+		{ ignoreInputs: false },
+	);
+
 	// If URL has no node id, restore last-open; otherwise default to the root folder.
 	useEffect(() => {
 		if (searchNodeId) {
@@ -2537,9 +2600,11 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				<FilesSidebar
 					selectedNodeId={searchNodeId ?? null}
 					view={effectiveView}
+					initialSearchQuery={searchParams.q ?? ""}
 					onClose={handleCloseSidebar}
 					onArchive={handleArchive}
 					onPrimaryAction={handlePrimaryAction}
+					onSearchQueryChange={handleSearchQueryChange}
 				/>
 			</MyPanel>
 			<MyPanelResizeHandle

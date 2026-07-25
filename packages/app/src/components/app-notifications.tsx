@@ -18,7 +18,8 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { format_relative_time } from "@/lib/date.ts";
-import { cn, path_name_of } from "@/lib/utils.ts";
+import { cn } from "@/lib/utils.ts";
+import { path_name_of } from "@/lib/paths.ts";
 
 // #region list item
 type AppNotificationsListItem_ClassNames =

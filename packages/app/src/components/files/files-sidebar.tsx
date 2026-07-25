@@ -23,6 +23,8 @@ import {
 	FileText,
 	Folder,
 	FolderPlus,
+	Hash,
+	Link2,
 	Search,
 	Upload,
 	X,
@@ -98,16 +100,16 @@ import {
 } from "@/components/my-modal.tsx";
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
+import { path_extract_segments_from, path_is_path_like } from "@/lib/paths.ts";
 import {
-	cn,
-	copy_to_clipboard,
-	forward_ref,
-	path_extract_segments_from,
-	should_never_happen,
-	sx,
-} from "@/lib/utils.ts";
-import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { dom_clear_text_selection } from "@/lib/dom-utils.ts";
+	app_convex_api,
+	app_convex_is_id_like,
+	type app_convex_Doc,
+	type app_convex_Id,
+} from "@/lib/app-convex-client.ts";
+import { url_parse_file_link, url_path_file_by_node_id } from "@/lib/urls.ts";
+import { dom_clear_text_selection, type AppElementId } from "@/lib/dom-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { useGlobalEventList } from "@/lib/global-event.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
@@ -387,6 +389,8 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	onCreateFile: () => void;
 	onCreateFolder: () => void;
 	onCopy: () => void;
+	onCopyLink: () => void;
+	onCopyNodeId: () => void;
 	onRename: () => void;
 	onExpandSubtree: () => void;
 	onCollapseSubtree: () => void;
@@ -408,6 +412,8 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		onCreateFile,
 		onCreateFolder,
 		onCopy,
+		onCopyLink,
+		onCopyNodeId,
 		onRename,
 		onExpandSubtree,
 		onCollapseSubtree,
@@ -483,6 +489,22 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 								<Copy />
 							</MyMenuItemContentIcon>
 							<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+					<MyMenuItem hideOnClick onClick={onCopyLink}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Link2 />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy link</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+					<MyMenuItem hideOnClick onClick={onCopyNodeId}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Hash />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy node id</MyMenuItemContentPrimary>
 						</MyMenuItemContent>
 					</MyMenuItem>
 					<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
@@ -1064,6 +1086,8 @@ type FilesSidebarTreeItem_Props = {
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
 	onCopy: (nodeId: string) => void;
+	onCopyLink: (nodeId: string) => void;
+	onCopyNodeId: (nodeId: string) => void;
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -1087,6 +1111,8 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		onStartRename,
 		onRenameErrorClear,
 		onCopy,
+		onCopyLink,
+		onCopyNodeId,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -1168,6 +1194,14 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 	const handleCopyClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopy"]>(() => {
 		onCopy(itemId);
+	});
+
+	const handleCopyLinkClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopyLink"]>(() => {
+		onCopyLink(itemId);
+	});
+
+	const handleCopyNodeIdClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopyNodeId"]>(() => {
+		onCopyNodeId(itemId);
 	});
 
 	const handleRenameClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onRename"]>(() => {
@@ -1350,6 +1384,8 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					onCreateFile={handleCreateFileClick}
 					onCreateFolder={handleCreateFolderClick}
 					onCopy={handleCopyClick}
+					onCopyLink={handleCopyLinkClick}
+					onCopyNodeId={handleCopyNodeIdClick}
 					onRename={handleRenameClick}
 					onExpandSubtree={handleExpandSubtreeClick}
 					onCollapseSubtree={handleCollapseSubtreeClick}
@@ -1618,6 +1654,8 @@ type FilesSidebarTree_Props = {
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
 	onCopy: (nodeId: string) => void;
+	onCopyLink: (nodeId: string) => void;
+	onCopyNodeId: (nodeId: string) => void;
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -1642,6 +1680,8 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		onStartRename,
 		onRenameErrorClear,
 		onCopy,
+		onCopyLink,
+		onCopyNodeId,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -1851,6 +1891,8 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 								onStartRename={onStartRename}
 								onRenameErrorClear={onRenameErrorClear}
 								onCopy={onCopy}
+								onCopyLink={onCopyLink}
+								onCopyNodeId={onCopyNodeId}
 								onArchive={onArchive}
 								onUnarchive={onUnarchive}
 							/>
@@ -1873,35 +1915,55 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 type FilesSidebarSearch_ClassNames = "FilesSidebarSearch";
 
 type FilesSidebarSearch_Props = {
+	initialQuery: string;
 	onSearchQueryChange: (searchQuery: string) => void;
+	onSubmit: (searchQuery: string) => void;
 };
 
 const FilesSidebarSearch = memo(function FilesSidebarSearch(props: FilesSidebarSearch_Props) {
-	const { onSearchQueryChange } = props;
+	const { initialQuery, onSearchQueryChange, onSubmit } = props;
 
-	const [searchQuery, setSearchQuery] = useState("");
+	const [searchQuery, setSearchQuery] = useState(initialQuery);
 	const searchQueryDebounced = useDebounce(searchQuery, 300);
 
 	const handleInputChange = useFn<ComponentProps<typeof MyInputControl>["onChange"]>((event) => {
 		setSearchQuery(event.target.value);
 	});
 
+	// Enter opens the one node the query identifies. This is what makes "paste a copied
+	// path or link, then press Enter" work as a single motion.
+	const handleInputKeyDown = useFn<ComponentProps<typeof MyInputControl>["onKeyDown"]>((event) => {
+		if (event.key !== "Enter") {
+			return;
+		}
+
+		// Pass the live input value, not the debounced one, so a paste followed straight away by
+		// Enter acts on what was just pasted.
+		onSubmit(searchQuery);
+	});
+
 	useEffect(() => {
 		onSearchQueryChange(searchQueryDebounced);
 	}, [searchQueryDebounced]);
 
+	// `MyInputControl` owns its own generated id for label wiring, so the global id that the
+	// Mod+K shortcut looks up lives on the wrapper.
 	return (
-		<MyInput className={cn("FilesSidebarSearch" satisfies FilesSidebarSearch_ClassNames)}>
+		<MyInput
+			id={"app_files_sidebar_search" satisfies AppElementId}
+			className={cn("FilesSidebarSearch" satisfies FilesSidebarSearch_ClassNames)}
+		>
 			<MyInputBackground />
 			<MyInputArea>
 				<MyInputIcon>
 					<Search />
 				</MyInputIcon>
 				<MyInputControl
-					aria-label="Search files"
+					aria-label="Search files by name, path, id, or link"
 					placeholder="Search files"
 					value={searchQuery}
 					onChange={handleInputChange}
+					onKeyDown={handleInputKeyDown}
 				/>
 			</MyInputArea>
 			<MyInputBox />
@@ -1944,7 +2006,9 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 							variant="button-tertiary"
 							to="/w/$organizationName/$workspaceName/files"
 							params={{ organizationName, workspaceName }}
-							search={{ nodeId: files_ROOT_ID, view }}
+							// Keep `q`: the sidebar stays mounted with its search box filled, so dropping the
+							// param here would leave the URL disagreeing with what the user still sees.
+							search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, view })}
 						>
 							<MySidebarTitle>Files</MySidebarTitle>
 						</MyLink>
@@ -2096,8 +2160,10 @@ type FilesSidebarTopSection_Props = {
 	canCollapseAll: boolean;
 	treeItemsList: files_TreeItem[] | undefined;
 	showArchived: boolean;
+	initialSearchQuery: string;
 	onClose: () => void;
 	onSearchQueryChange: (searchQuery: string) => void;
+	onSearchSubmit: (searchQuery: string) => void;
 	onExpandTopFilesClick: () => void;
 	onCollapseAllClick: () => void;
 	onClearSelectionClick: () => void;
@@ -2118,8 +2184,10 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		canCollapseAll,
 		treeItemsList,
 		showArchived,
+		initialSearchQuery,
 		onClose,
 		onSearchQueryChange,
+		onSearchSubmit,
 		onExpandTopFilesClick,
 		onCollapseAllClick,
 		onClearSelectionClick,
@@ -2137,7 +2205,11 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		<div className={cn("FilesSidebarTopSection" satisfies FilesSidebarTopSection_ClassNames)}>
 			<FilesSidebarHeader view={view} onClose={onClose} />
 
-			<FilesSidebarSearch onSearchQueryChange={onSearchQueryChange} />
+			<FilesSidebarSearch
+				initialQuery={initialSearchQuery}
+				onSearchQueryChange={onSearchQueryChange}
+				onSubmit={onSearchSubmit}
+			/>
 
 			<div
 				className={cn("FilesSidebarTopSection-actions" satisfies FilesSidebarTopSection_ClassNames)}
@@ -2711,24 +2783,133 @@ function get_tree_items_list_after_optimistic_rename(args: {
 	});
 }
 
+type SearchMode = "name" | "path" | "node";
+
+/**
+ * Decide what a search query means from its shape.
+ *
+ * A user pastes whatever they copied: a file name, a copied path, a node id, or a full app
+ * link. Reading the shape means they never have to learn a prefix syntax for each case.
+ * A pasted link is unwrapped first into the node id or the path it carries.
+ */
+function parse_search_query(rawQuery: string): { mode: SearchMode; value: string } {
+	const query = rawQuery.trim();
+
+	const link = url_parse_file_link(query);
+	if (link) {
+		return "nodeId" in link ? { mode: "node", value: link.nodeId } : { mode: "path", value: link.path.toLowerCase() };
+	}
+
+	// The tree lookup in `files_sidebar_get_search_matches` confirms an id guess.
+	if (app_convex_is_id_like(query)) {
+		return { mode: "node", value: query };
+	}
+
+	if (path_is_path_like(query)) {
+		return { mode: "path", value: query.toLowerCase() };
+	}
+
+	return { mode: "name", value: query.toLowerCase() };
+}
+
+/**
+ * Match a search query against the tree.
+ *
+ * `visibleFileIds` keeps every match plus its ancestor chain so results render as a pruned tree.
+ * `topMatchId` is the node Enter opens: the one whose path matched exactly, or the only node
+ * that matched at all.
+ *
+ * This runs on the deferred query for rendering and again on the live input value when the user
+ * presses Enter, so a paste followed straight away by Enter cannot act on the previous query.
+ */
+function get_search_matches(args: { treeItems: TreeItems; searchQuery: string }) {
+	const parsedQuery = parse_search_query(args.searchQuery);
+
+	const visibleFileIds = new Set<string>();
+	const directMatchIds: string[] = [];
+	let exactMatchId: string | null = null;
+
+	for (const item of args.treeItems.list ?? []) {
+		if (!args.treeItems.itemById.has(item._id)) {
+			continue;
+		}
+
+		// Match the field the query shape asked for. Only path and id queries can name one
+		// exact node, so only they can set the exact match.
+		if (parsedQuery.mode === "node") {
+			if (item._id !== parsedQuery.value) {
+				continue;
+			}
+
+			exactMatchId = item._id;
+		} else if (parsedQuery.mode === "path") {
+			const itemPath = item.path.toLowerCase();
+			if (!itemPath.includes(parsedQuery.value)) {
+				continue;
+			}
+
+			if (itemPath === parsedQuery.value) {
+				exactMatchId = item._id;
+			}
+		} else if (!item.name.toLowerCase().includes(parsedQuery.value)) {
+			continue;
+		}
+
+		visibleFileIds.add(item._id);
+		directMatchIds.push(item._id);
+
+		// If we are at the root, skip the ancestors step
+		if (item._id === files_ROOT_ID) {
+			continue;
+		}
+
+		// Add all ancestors of a matching item to the visible items set
+		let currentParentId = item.parentId;
+		while (currentParentId) {
+			const parentItem = args.treeItems.itemById.get(currentParentId);
+			if (!parentItem || visibleFileIds.has(currentParentId)) {
+				break;
+			}
+
+			visibleFileIds.add(currentParentId);
+			if (parentItem._id === files_ROOT_ID) {
+				break;
+			}
+
+			currentParentId = parentItem.parentId;
+		}
+	}
+
+	return {
+		visibleFileIds,
+		topMatchId: exactMatchId ?? (directMatchIds.length === 1 ? (directMatchIds[0] ?? null) : null),
+	};
+}
+
 type FilesSidebar_ClassNames = "FilesSidebar" | "FilesSidebar-content";
 
 export type FilesSidebar_Props = {
 	selectedNodeId: string | null;
 	view: files_EditorView;
+	/**
+	 * Seeded from the route's `q` param so
+	 * the path route's not-found recovery link lands on a filled search.
+	 **/
+	initialSearchQuery: string;
 	onClose: () => void;
 	onArchive: (itemId: string) => void;
 	onPrimaryAction: (itemId: string, itemType: string) => void;
+	onSearchQueryChange: (searchQuery: string) => void;
 };
 
 export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props) {
-	const { selectedNodeId, view, onClose, onArchive, onPrimaryAction } = props;
+	const { selectedNodeId, view, initialSearchQuery, onClose, onArchive, onPrimaryAction, onSearchQueryChange } = props;
 
 	const navigate = useNavigate();
 	const convex = useConvex();
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 
-	const [searchQuery, setSearchQuery] = useState("");
+	const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
 	const searchQueryDeferred = useDeferredValue(searchQuery);
 	const isSearchActive = searchQueryDeferred.trim().length > 0;
 
@@ -2876,56 +3057,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	})();
 
 	/**
-	 * Filtered items ids from search query
+	 * Filtered item ids from the search query.
 	 */
-	const visibleFileIds = useMemo(() => {
-		if (!treeItems) {
-			return new Set<string>();
+	const visibleFileIds = ((/* iife */) => {
+		if (!treeItems || searchQueryDeferred.trim().length === 0) {
+			return treeItems?.itemsIds ?? new Set<string>();
 		}
 
-		if (searchQueryDeferred.trim().length === 0) {
-			return treeItems.itemsIds;
-		}
-
-		const searchQueryNormalized = searchQueryDeferred.trim().toLowerCase();
-
-		const result = new Set<string>();
-		for (const item of treeItems.list ?? []) {
-			if (!treeItems.itemById.has(item._id)) {
-				continue;
-			}
-
-			// If item does not match search query, skip
-			if (!item.name.toLowerCase().includes(searchQueryNormalized)) {
-				continue;
-			}
-
-			result.add(item._id);
-
-			// If we are at the root, skip the ancestors step
-			if (item._id === files_ROOT_ID) {
-				continue;
-			}
-
-			// Add all ancestors of a matching item to the visible items set
-			let currentParentId = item.parentId;
-			while (currentParentId) {
-				const parentItem = treeItems.itemById.get(currentParentId);
-				if (!parentItem || result.has(currentParentId)) {
-					break;
-				}
-
-				result.add(currentParentId);
-				if (parentItem._id === files_ROOT_ID) {
-					break;
-				}
-
-				currentParentId = parentItem.parentId;
-			}
-		}
-
-		return result;
-	}, [searchQueryDeferred, treeItems]);
+		return get_search_matches({ treeItems, searchQuery: searchQueryDeferred }).visibleFileIds;
+	})();
 
 	const hasSelectedFileInTree = Boolean(selectedNodeId && visibleFileIds.has(selectedNodeId));
 
@@ -3922,6 +4062,49 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		});
 	});
 
+	const handleCopyLink = useFn<FilesSidebarTree_Props["onCopyLink"]>((nodeId) => {
+		const shouldCopySelectedFiles = selectedNodeIds.has(nodeId);
+		const nodeIdsToCopy = shouldCopySelectedFiles ? selectedNodeIds : new Set([nodeId]);
+		const links = Array.from(
+			nodeIdsToCopy,
+			(id) => `${window.location.origin}${url_path_file_by_node_id({ organizationName, workspaceName, nodeId: id })}`,
+		);
+
+		copy_to_clipboard({ text: links.join("\n") }).catch((error) => {
+			console.error("[FilesSidebar.handleCopyLink] Failed to copy links", { error, nodeId });
+		});
+	});
+
+	const handleCopyNodeId = useFn<FilesSidebarTree_Props["onCopyNodeId"]>((nodeId) => {
+		const shouldCopySelectedFiles = selectedNodeIds.has(nodeId);
+		const nodeIdsToCopy = shouldCopySelectedFiles ? selectedNodeIds : new Set([nodeId]);
+
+		copy_to_clipboard({ text: Array.from(nodeIdsToCopy).join("\n") }).catch((error) => {
+			console.error("[FilesSidebar.handleCopyNodeId] Failed to copy node ids", { error, nodeId });
+		});
+	});
+
+	const handleSearchQueryChange = useFn<FilesSidebarTopSection_Props["onSearchQueryChange"]>((nextSearchQuery) => {
+		setSearchQuery(nextSearchQuery);
+		onSearchQueryChange(nextSearchQuery);
+	});
+
+	const handleSearchSubmit = useFn<FilesSidebarSearch_Props["onSubmit"]>((searchQuery) => {
+		// Match on the value the input holds right now. `searchResult` lags behind it by the
+		// debounce plus the deferred render, so Enter right after a paste would use the old query.
+		if (!treeItems || searchQuery.trim().length === 0) {
+			return;
+		}
+
+		const topMatchId = get_search_matches({ treeItems, searchQuery }).topMatchId;
+		const topMatchItem = topMatchId ? treeItems.itemById.get(topMatchId) : undefined;
+		if (!topMatchId || !topMatchItem) {
+			return;
+		}
+
+		onPrimaryAction(topMatchId, topMatchItem.kind);
+	});
+
 	const handleArchive = useFn<FilesSidebarTree_Props["onArchive"]>((nodeId) => {
 		const shouldArchiveSelectedFiles = selectedNodeIds.has(nodeId);
 		const nodeIdsToArchive = shouldArchiveSelectedFiles ? selectedNodeIds : new Set([nodeId]);
@@ -4224,8 +4407,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				canCollapseAll={canCollapseAll}
 				treeItemsList={treeItemsList}
 				showArchived={showArchived}
+				initialSearchQuery={initialSearchQuery}
 				onClose={onClose}
-				onSearchQueryChange={setSearchQuery}
+				onSearchQueryChange={handleSearchQueryChange}
+				onSearchSubmit={handleSearchSubmit}
 				onExpandTopFilesClick={handleExpandTopFilesClick}
 				onCollapseAllClick={handleCollapseAllClick}
 				onClearSelectionClick={handleClearSelectionClick}
@@ -4254,6 +4439,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					onStartRename={handleStartRename}
 					onRenameErrorClear={clearRenameError}
 					onCopy={handleCopy}
+					onCopyLink={handleCopyLink}
+					onCopyNodeId={handleCopyNodeId}
 					onArchive={handleArchive}
 					onUnarchive={handleUnarchive}
 				/>
@@ -5124,6 +5311,45 @@ if (import.meta.vitest) {
 					itemById,
 				}),
 			);
+		});
+	});
+
+	describe("files_sidebar_parse_search_query", () => {
+		test("treats a plain word as a name query", () => {
+			expect(parse_search_query("  API.md ")).toEqual({ mode: "name", value: "api.md" });
+		});
+
+		test("treats anything with a slash as a path query", () => {
+			expect(parse_search_query("/Docs/api.md")).toEqual({ mode: "path", value: "/docs/api.md" });
+			expect(parse_search_query("docs/api")).toEqual({ mode: "path", value: "docs/api" });
+		});
+
+		test("treats a long lowercase alphanumeric string as a node id query", () => {
+			expect(parse_search_query("k5701abcdefghijklmnop")).toEqual({
+				mode: "node",
+				value: "k5701abcdefghijklmnop",
+			});
+		});
+
+		test("unwraps a pasted node-id link", () => {
+			expect(parse_search_query("http://localhost:5173/w/acme/main/files?nodeId=k5701abc&view=diff_editor")).toEqual({
+				mode: "node",
+				value: "k5701abc",
+			});
+		});
+
+		test("unwraps a pasted path link and decodes its segments", () => {
+			expect(parse_search_query("https://app.test/w/acme/main/files/Docs/api%20notes.md")).toEqual({
+				mode: "path",
+				value: "/docs/api notes.md",
+			});
+		});
+
+		test("leaves a link that carries no file reference as a path query that matches nothing", () => {
+			expect(parse_search_query("https://app.test/w/acme/main/chat")).toEqual({
+				mode: "path",
+				value: "https://app.test/w/acme/main/chat",
+			});
 		});
 	});
 

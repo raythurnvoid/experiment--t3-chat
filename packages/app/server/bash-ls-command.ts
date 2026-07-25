@@ -8,7 +8,7 @@ import type {
 	files_nodes_list_subtree_Result,
 } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { path_name_of } from "../shared/shared-utils.ts";
+import { path_name_of } from "../shared/paths.ts";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, files_pending_path_overlay_list_injections, files_pending_path_overlay_project_committed_path } from "../shared/files.ts";
 import { bash_APP_MOUNT_PATH, bash_db_files_path_to_current_workspace_path, bash_clamp_listing_page_limit, bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_cursor_id_resolve, bash_GLOB_METACHARACTER_REGEX, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT, bash_overlay_committed_scope_path, bash_overlay_project_scoped_path, bash_overlay_subtree_injections, bash_parse_limit, bash_read_option_value, bash_resolve_path, bash_shell_arg_quote, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, bash_resolve_db_files_shell_path, type bash_DbFilesFs, type bash_DbFilesFsOptions, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";

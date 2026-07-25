@@ -48,7 +48,8 @@ import {
 	files_pending_update_has_yjs_content,
 	type files_PendingPathOverlay,
 } from "../shared/files.ts";
-import { LruCache, math_clamp, path_name_of, should_never_happen } from "../shared/shared-utils.ts";
+import { LruCache, math_clamp, should_never_happen } from "../shared/shared-utils.ts";
+import { path_name_of } from "../shared/paths.ts";
 import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { pagination_fan_out_paginate } from "../shared/pagination.ts";
 

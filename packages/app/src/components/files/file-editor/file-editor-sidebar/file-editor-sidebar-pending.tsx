@@ -1032,7 +1032,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						className={cn("FileEditorSidebarPending-item-path" satisfies FileEditorSidebarPending_ClassNames)}
 						to="/w/$organizationName/$workspaceName/files"
 						params={{ organizationName, workspaceName }}
-						search={{ nodeId: pendingUpdate.fileNodeId }}
+						search={(prev) => ({ ...prev, nodeId: pendingUpdate.fileNodeId })}
 						aria-label={moveLabel}
 						title={moveLabel}
 					>

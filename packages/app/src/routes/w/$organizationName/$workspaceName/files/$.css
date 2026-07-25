@@ -1,0 +1,76 @@
+@layer components {
+	/* #region route */
+	.RouteFilesPath {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		height: 100%;
+		width: 100%;
+		min-width: 0;
+	}
+
+	.RouteFilesPath-loading-text {
+		padding: 1rem;
+
+		font-size: 0.875rem;
+		line-height: 1.25rem;
+		color: var(--color-fg-07);
+	}
+	/* #endregion route */
+
+	/* #region not found */
+	.RouteFilesPathNotFound {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 12px;
+
+		padding: 48px 24px;
+
+		text-align: center;
+	}
+
+	.RouteFilesPathNotFound-title {
+		margin: 0;
+
+		font-size: 1.125rem;
+		font-weight: 600;
+		color: var(--color-fg-11);
+	}
+
+	.RouteFilesPathNotFound-description {
+		max-width: 420px;
+		margin: 0;
+
+		font-size: 1rem;
+		line-height: 1.4;
+		color: var(--color-fg-07);
+	}
+
+	.RouteFilesPathNotFound-path {
+		max-width: 100%;
+		padding: 6px 10px;
+
+		overflow-wrap: anywhere;
+
+		font-family: monospace;
+		font-size: 0.875rem;
+		color: var(--color-fg-09);
+
+		background-color: var(--color-base-1-04);
+		border-radius: 6px;
+	}
+
+	.RouteFilesPathNotFound-actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		margin-top: 4px;
+	}
+	/* #endregion not found */
+}

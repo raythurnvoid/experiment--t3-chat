@@ -1,3 +1,5 @@
+import { path_extract_segments_from } from "../../shared/paths.ts";
+
 /**
  * URL helpers for organization/workspace scoped routes.
  *
@@ -5,6 +7,54 @@
  */
 export function url_path_files(args: { organizationName: string; workspaceName: string }) {
 	return `/w/${args.organizationName}/${args.workspaceName}/files`;
+}
+
+/**
+ * Build the shareable URL for one file or folder node.
+ *
+ * The node id form is the canonical one because it survives renames and moves. The files splat
+ * route accepts the readable `/files/{path}` shape too, but only as an entry point: it resolves
+ * the path to a node id and then replaces the URL with this shape.
+ */
+export function url_path_file_by_node_id(args: {
+	organizationName: string;
+	workspaceName: string;
+	nodeId: string;
+}) {
+	return `/w/${args.organizationName}/${args.workspaceName}/files?nodeId=${encodeURIComponent(args.nodeId)}`;
+}
+
+const URL_FILE_LINK_PATH_MARKER = "/files/";
+
+/**
+ * Read a pasted app link back into whatever it points at.
+ *
+ * This reverses both shapes the files route produces: the canonical `?nodeId=` URL that Copy link
+ * emits, and the readable `/files/{path}` entry point. Anything else returns `null`, including
+ * plain text that merely contains a slash, so callers can fall through to their own handling.
+ */
+export function url_parse_file_link(value: string): { nodeId: string } | { path: string } | null {
+	if (!value.startsWith("http://") && !value.startsWith("https://")) {
+		return null;
+	}
+
+	const url = URL.parse(value);
+	if (!url) {
+		return null;
+	}
+
+	const nodeId = url.searchParams.get("nodeId");
+	if (nodeId) {
+		return { nodeId };
+	}
+
+	const filesPathIndex = url.pathname.indexOf(URL_FILE_LINK_PATH_MARKER);
+	if (filesPathIndex < 0) {
+		return null;
+	}
+
+	const linkPath = decodeURIComponent(url.pathname.slice(filesPathIndex + URL_FILE_LINK_PATH_MARKER.length));
+	return { path: `/${path_extract_segments_from(linkPath).join("/")}` };
 }
 
 export function url_path_api_keys(args: { organizationName: string; workspaceName: string }) {

@@ -12,11 +12,12 @@ const RouteFiles = memo(function RouteFiles() {
 	const searchParams = Route.useSearch();
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 
-	const handleNavigateSearch = useFn<FileNodeView_Props["onNavigateSearch"]>((search) => {
+	const handleNavigateSearch = useFn<FileNodeView_Props["onNavigateSearch"]>((search, options) => {
 		navigate({
 			to: "/w/$organizationName/$workspaceName/files",
 			params: { organizationName, workspaceName },
 			search,
+			replace: options?.replace,
 		}).catch((error) => {
 			console.error("[RouteFiles.handleNavigateSearch] Error navigating to files search", { error, search });
 		});
@@ -31,6 +32,12 @@ const Route = createFileRoute("/w/$organizationName/$workspaceName/files/")({
 		z.object({
 			nodeId: z.string().optional().catch(undefined),
 			view: z.enum(files_editor_view_values).optional().catch(undefined),
+			/**
+			 * Seeds the files sidebar search box.
+			 *
+			 * The path splat route uses it for its not-found recovery link.
+			 **/
+			q: z.string().optional().catch(undefined),
 		}),
 	),
 });

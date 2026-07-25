@@ -1,4 +1,4 @@
-import type { Ref } from "react";
+import type { ReactNode, Ref } from "react";
 import { Check, Copy } from "lucide-react";
 import type { ExtractStrict } from "type-fest";
 
@@ -18,6 +18,11 @@ export type CopyIconButton_Props = Omit<
 	tooltipCopied?: string;
 	tooltipFailed?: string;
 	disabled?: boolean;
+	/**
+	 * Idle icon. Override it when two copy buttons
+	 * sit side by side and need to be told apart.
+	 **/
+	icon?: ReactNode;
 	iconClassName?: string | undefined;
 };
 
@@ -31,6 +36,7 @@ export function CopyIconButton(props: CopyIconButton_Props) {
 		tooltipCopied = "Copied",
 		tooltipFailed = "Copy failed",
 		disabled,
+		icon,
 		iconClassName,
 		...rest
 	} = props;
@@ -68,7 +74,7 @@ export function CopyIconButton(props: CopyIconButton_Props) {
 				</MyIconButtonIcon>
 			) : (
 				<MyIconButtonIcon className={cn("CopyIconButton-icon" satisfies CopyIconButton_ClassNames, iconClassName)}>
-					<Copy />
+					{icon ?? <Copy />}
 				</MyIconButtonIcon>
 			)}
 		</MyIconButton>

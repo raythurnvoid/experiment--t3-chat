@@ -34,7 +34,8 @@ import {
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { path_extract_segments_from, path_name_of, should_never_happen } from "../shared/shared-utils.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
+import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { files_normalize_name } from "../shared/files.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,

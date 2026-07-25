@@ -9,7 +9,7 @@ import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_ensure_role_permission_grant,
 } from "./access_control.ts";
-import { path_extract_segments_from } from "../shared/shared-utils.ts";
+import { path_extract_segments_from } from "../shared/paths.ts";
 
 const app_migrations = new Migrations<DataModel>(components.migrations, {
 	internalMutation,

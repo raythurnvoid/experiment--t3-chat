@@ -63,6 +63,8 @@ Deterministic assets in `.agents/skills/app-playwriter-harness/assets/files/`:
 - Uploaded source files and generated `.md` siblings can share filename prefixes. Use exact role-name locators for per-node actions, such as `getByRole("button", { name: "More actions for qa.pdf", exact: true })`.
 - The folder explorer and sidebar tree can expose duplicate action names. Scope to the owning tree row, folder row, or panel before clicking.
 - Inline create/rename inputs may stop matching by old value after `fill(...)`; re-locate by the new value or use `state.page.keyboard.press("Enter")` after confirming focus.
+- The sidebar toolbar `New file` / `New folder` buttons always create at root with a generated `new-file*.md` / `new-folder*` name and do not open rename mode, so there is no create dialog to type a name into. Build deep fixtures in two steps: create, then row menu `Rename` and type a slash path such as `qa-root/docs/api.md`. Path-shaped renames move the node and create the missing folders. The rename input is `input[aria-label="Rename <current name>"]`.
+- Archived rows expose the restore action as menu item `Restore`, not `Unarchive`, and their row button label gains a suffix: `More actions for <name> archived`. Reveal them first with the sidebar `More options` menu item `Show N item(s) archived`.
 - Use real drag gestures for drag/drop checks. Do not use `dispatchEvent`, DOM `element.click()`, or forced clicks.
 
 ## High-Value Recipes

@@ -3748,6 +3748,28 @@ export const get_authorized_by_path = query({
 			return null;
 		}
 
+		// Path links reach the same nodes as `?nodeId=` links, so gate them on the same
+		// `asset.read` permission. Otherwise a shared path URL would hand out a node id
+		// that `get_file_node_for_membership` would then refuse to open.
+		const organization = await ctx.db.get("organizations", membership.organizationId);
+		if (!organization?.defaultWorkspaceId) {
+			return null;
+		}
+
+		const hasAssetRead = await access_control_db_has_permission(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			defaultWorkspaceId: organization.defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resourceKind: "workspace",
+			resourceId: String(membership.workspaceId),
+			permission: "asset.read",
+			userId: userAuth.id,
+		});
+		if (!hasAssetRead) {
+			return null;
+		}
+
 		const fileNode =
 			args.path === "/"
 				? null
