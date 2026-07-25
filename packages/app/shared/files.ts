@@ -17,7 +17,7 @@ import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { updateYFragment } from "y-prosemirror";
 import { composite_id, is_browser, should_never_happen } from "../shared/shared-utils.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
-import { CommentsExtension } from "@liveblocks/react-tiptap";
+import { files_CommentsExtension } from "./files-tiptap-comments.ts";
 import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
 import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -1665,7 +1665,7 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 				},
 			}),
 			frontmatter: files_frontmatter_node,
-			liveblocksComments: CommentsExtension,
+			liveblocksComments: files_CommentsExtension,
 		};
 	}
 

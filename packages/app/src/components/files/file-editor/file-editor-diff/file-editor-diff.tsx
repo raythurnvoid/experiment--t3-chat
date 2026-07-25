@@ -32,7 +32,7 @@ import {
 	files_yjs_reconcile_branch_with_local_markdown,
 	files_yjs_rebase_branch_with_local_markdown,
 } from "@/lib/files.ts";
-import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
+import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
 import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -672,7 +672,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			return;
 		}
 
-		const nextThreadIds = getThreadIdsFromEditorState(headlessEditor._yay.state).toSorted();
+		const nextThreadIds = files_get_thread_ids_from_editor_state(headlessEditor._yay.state).toSorted();
 		headlessEditor._yay.destroy();
 
 		const nextKey = nextThreadIds.join("\n");

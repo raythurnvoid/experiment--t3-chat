@@ -1,6 +1,9 @@
 // The `file-editor-rich-text-tools-comment.tsx` component should be implemented in a very similar way
 import "./file-editor-rich-text-comments.css";
-import { AnchoredThreads, AnchoredThreadsItem } from "@liveblocks/react-tiptap";
+import {
+	FileEditorRichTextAnchoredThreads,
+	FileEditorRichTextAnchoredThreadsItem,
+} from "@/lib/file-editor-rich-text-anchored-threads.tsx";
 import type { Editor } from "@tiptap/react";
 import type { chat_messages_Thread } from "../../../../lib/chat-messages.ts";
 import {
@@ -19,7 +22,7 @@ type FileEditorRichTextAnchoredCommentsThread_Props = {
 function FileEditorRichTextAnchoredCommentsThread(props: FileEditorRichTextAnchoredCommentsThread_Props) {
 	const { thread, onClick } = props;
 
-	const context = AnchoredThreadsItem.useContext();
+	const context = FileEditorRichTextAnchoredThreadsItem.useContext();
 
 	return <FileEditorCommentsThread thread={thread} open={context.isActive} hidden={false} onClick={onClick} />;
 }
@@ -34,7 +37,7 @@ type FileEditorRichTextAnchoredCommentsThreadsList_Props = {
 function FileEditorRichTextAnchoredCommentsThreadsList(props: FileEditorRichTextAnchoredCommentsThreadsList_Props) {
 	const { threads, onClick } = props;
 
-	const context = AnchoredThreads.useContext();
+	const context = FileEditorRichTextAnchoredThreads.useContext();
 
 	const threadsById = new Map(threads.map((thread) => [thread.id as string, thread]));
 	const orderedThreads = Array.from(context.threadPositions.keys())
@@ -44,7 +47,7 @@ function FileEditorRichTextAnchoredCommentsThreadsList(props: FileEditorRichText
 	return (
 		<>
 			{orderedThreads.map((thread) => (
-				<AnchoredThreadsItem
+				<FileEditorRichTextAnchoredThreadsItem
 					key={thread.id}
 					className={
 						"FileEditorRichTextAnchoredComments-thread-container" satisfies FileEditorRichTextAnchoredComments_ClassNames
@@ -52,7 +55,7 @@ function FileEditorRichTextAnchoredCommentsThreadsList(props: FileEditorRichText
 					thread={thread}
 				>
 					<FileEditorRichTextAnchoredCommentsThread thread={thread} onClick={() => onClick(thread.id)} />
-				</AnchoredThreadsItem>
+				</FileEditorRichTextAnchoredThreadsItem>
 			))}
 		</>
 	);
@@ -104,7 +107,7 @@ export function FileEditorRichTextAnchoredComments(props: FileEditorRichTextAnch
 						ariaLabel="Search document comments"
 						onValueChange={setQuery}
 					/>
-					<AnchoredThreads
+					<FileEditorRichTextAnchoredThreads
 						className={
 							"FileEditorRichTextAnchoredComments-anchored-elements-container" satisfies FileEditorRichTextAnchoredComments_ClassNames
 						}
@@ -112,7 +115,7 @@ export function FileEditorRichTextAnchoredComments(props: FileEditorRichTextAnch
 						threads={filteredThreads}
 					>
 						<FileEditorRichTextAnchoredCommentsThreadsList threads={filteredThreads} onClick={handleThreadClick} />
-					</AnchoredThreads>
+					</FileEditorRichTextAnchoredThreads>
 				</>
 			)}
 		</aside>

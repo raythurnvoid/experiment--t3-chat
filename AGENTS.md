@@ -92,7 +92,7 @@ For recoverable auth and permission failures, follow the Convex skill's handler-
 
 - Convex - Real-time backend, HTTP actions, persistence
 - Clerk - Authentication
-- Yjs + vendored Liveblocks editor packages - Convex-backed collaborative editing
+- Yjs - Convex-backed collaborative editing. The provider and editor extensions are app code adapted from Liveblocks. `@liveblocks/core` and `@liveblocks/react-ui` are still used as published npm packages.
 - Novel + Tiptap - Rich text/Markdown editor
 - Monaco Editor - Code and Diff editor
 - TanStack Router - File-based routing
@@ -113,7 +113,7 @@ The app runs at http://localhost:5173/ during development.
 - Chat: The workspace chat route at `packages/app/src/routes/w/$organizationName/$workspaceName/chat/index.tsx` renders the UI from `packages/app/src/components/ai-chat/`. It sends messages to Convex HTTP actions (`packages/app/convex/http.ts`, `packages/app/convex/ai_chat.ts`). Responses stream token-by-token and may call tools. Tool calls and their outputs render inside the message UI.
 - Agent file access: Server-side tools in `packages/app/server/server-ai-tools.ts` let the agent read files and propose file changes as pending updates. Users review those changes before saving them. The tools run in Node and are called from the chat flow.
 - Files: The workspace files route at `packages/app/src/routes/w/$organizationName/$workspaceName/files/index.tsx` combines the file tree with editors under `packages/app/src/components/files/`. Novel/Tiptap handles rich text. Monaco handles plain text and diffs.
-- Collaboration: Yjs collaboration and presence are backed by Convex. Vendored Liveblocks Yjs/Tiptap packages provide editor integration. Convex stores Yjs snapshots and incremental updates.
+- Collaboration: Yjs collaboration and presence are backed by Convex. Convex stores Yjs snapshots and incremental updates. The editor integration is app code adapted from Liveblocks: the Yjs provider in `packages/app/src/lib/files-yjs-provider.ts` (with `files-yjs-doc.ts` and `files-yjs-awareness.ts`), the rich text Tiptap extensions in `packages/app/src/lib/file-editor-rich-text-extension.ts` and `file-editor-rich-text-ai-extension.ts`, and the comments extension in `packages/app/shared/files-tiptap-comments.ts` (isomorphic, so Convex can reuse it, and the plain text and diff editors read thread ids from it too). Each of those files names its Liveblocks source file at the top. The source lives in the read-only reference submodule `references-submodules/liveblocks`, which tracks upstream latest; our code was adapted from Liveblocks 3.11.0 (fork base `18ed1ccd`), so expect drift when comparing.
 
 ## Tiptap / Novel / Rich Text Editors
 
@@ -316,21 +316,18 @@ type finalize_file_content_materialization_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-const finalizationResult = (await ctx.runMutation(
-	internal.files_nodes.finalize_file_content_materialization,
-	{
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		nodeId: args.nodeId,
-		userId: args.userId,
-		sequence,
-		targetSequence: args.targetSequence,
-		markdown: reconstructed._yay.markdown,
-		versionSnapshotAssetId,
-		markdownSize: files_get_utf8_byte_size(reconstructed._yay.markdown),
-		yjsSnapshotSize: reconstructed._yay.snapshotUpdate.byteLength,
-	},
-)) as finalize_file_content_materialization_Result;
+const finalizationResult = (await ctx.runMutation(internal.files_nodes.finalize_file_content_materialization, {
+	organizationId: args.organizationId,
+	workspaceId: args.workspaceId,
+	nodeId: args.nodeId,
+	userId: args.userId,
+	sequence,
+	targetSequence: args.targetSequence,
+	markdown: reconstructed._yay.markdown,
+	versionSnapshotAssetId,
+	markdownSize: files_get_utf8_byte_size(reconstructed._yay.markdown),
+	yjsSnapshotSize: reconstructed._yay.snapshotUpdate.byteLength,
+})) as finalize_file_content_materialization_Result;
 ```
 
 ## Test organization
@@ -572,10 +569,7 @@ Example when the file already uses regions:
 
 ```tsx
 // #region item selected
-type FooItemSelected_ClassNames =
-	| "FooItemSelected"
-	| "FooItemSelected-label"
-	| "FooItemSelected-description";
+type FooItemSelected_ClassNames = "FooItemSelected" | "FooItemSelected-label" | "FooItemSelected-description";
 
 type FooItemSelected_Props = {
 	label: string;
@@ -588,19 +582,14 @@ const FooItemSelected = memo(function FooItemSelected(props: FooItemSelected_Pro
 	return (
 		<div className={cn("FooItemSelected" satisfies FooItemSelected_ClassNames)}>
 			<span className={cn("FooItemSelected-label" satisfies FooItemSelected_ClassNames)}>{label}</span>
-			<span className={cn("FooItemSelected-description" satisfies FooItemSelected_ClassNames)}>
-				{description}
-			</span>
+			<span className={cn("FooItemSelected-description" satisfies FooItemSelected_ClassNames)}>{description}</span>
 		</div>
 	);
 });
 // #endregion item selected
 
 // #region item selectable
-type FooItemSelectable_ClassNames =
-	| "FooItemSelectable"
-	| "FooItemSelectable-label"
-	| "FooItemSelectable-description";
+type FooItemSelectable_ClassNames = "FooItemSelectable" | "FooItemSelectable-label" | "FooItemSelectable-description";
 
 type FooItemSelectable_Props = {
 	label: string;
@@ -612,15 +601,9 @@ const FooItemSelectable = memo(function FooItemSelectable(props: FooItemSelectab
 	const { label, description, onSelect } = props;
 
 	return (
-		<button
-			type="button"
-			className={cn("FooItemSelectable" satisfies FooItemSelectable_ClassNames)}
-			onClick={onSelect}
-		>
+		<button type="button" className={cn("FooItemSelectable" satisfies FooItemSelectable_ClassNames)} onClick={onSelect}>
 			<span className={cn("FooItemSelectable-label" satisfies FooItemSelectable_ClassNames)}>{label}</span>
-			<span className={cn("FooItemSelectable-description" satisfies FooItemSelectable_ClassNames)}>
-				{description}
-			</span>
+			<span className={cn("FooItemSelectable-description" satisfies FooItemSelectable_ClassNames)}>{description}</span>
 		</button>
 	);
 });
@@ -1198,13 +1181,7 @@ type MyButton_Props = ComponentPropsWithRef<"button">;
 const MyButton = memo(function MyButton(props: MyButton_Props) {
 	const { ref, className, ...rest } = props;
 
-	return (
-		<button
-			ref={ref}
-			className={cn("MyButton" satisfies MyButton_ClassNames, className)}
-			{...rest}
-		/>
-	);
+	return <button ref={ref} className={cn("MyButton" satisfies MyButton_ClassNames, className)} {...rest} />;
 });
 ```
 
@@ -1229,17 +1206,15 @@ const SearchInput = memo(function SearchInput(props: SearchInput_Props) {
 	const { ref, value, onValueChange } = props;
 	const inputRef = useRef<HTMLInputElement>(null);
 
-	useImperativeHandle(ref, () => ({
-		focus: () => inputRef.current?.focus(),
-	}), []);
-
-	return (
-		<input
-			ref={inputRef}
-			value={value}
-			onChange={(event) => onValueChange(event.currentTarget.value)}
-		/>
+	useImperativeHandle(
+		ref,
+		() => ({
+			focus: () => inputRef.current?.focus(),
+		}),
+		[],
 	);
+
+	return <input ref={inputRef} value={value} onChange={(event) => onValueChange(event.currentTarget.value)} />;
 });
 ```
 

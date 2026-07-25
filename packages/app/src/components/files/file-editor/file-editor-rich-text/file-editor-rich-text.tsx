@@ -12,7 +12,7 @@ import {
 	EditorBubble,
 } from "novel";
 import { Editor, useEditorState } from "@tiptap/react";
-import { useLiveblocksExtension } from "@liveblocks/react-tiptap";
+import { useFileEditorRichTextExtension } from "@/lib/file-editor-rich-text-extension.ts";
 import type { YjsSyncStatus } from "@liveblocks/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { defaultExtensions } from "./extensions.ts";
@@ -46,8 +46,8 @@ import type { EditorBubbleProps } from "../../../../../vendor/novel/packages/hea
 import { bubbleMenuReevaluateVisibility } from "../../../../../vendor/tiptap/packages/extension-bubble-menu/src/index.ts";
 import { useFn, useRenderPromise } from "../../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
-import { useFilesYjs, type files_Yjs } from "@/hooks/files-hooks.ts";
-import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
+import { useFilesYjs } from "@/hooks/files-hooks.ts";
+import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
 import { global_event_listen_all } from "../../../../lib/global-event.tsx";
 import { FileEditorRichTextSkeleton } from "./file-editor-rich-text-skeleton.tsx";
 
@@ -608,7 +608,8 @@ const FileEditorRichTextAnchoredCommentsLayer = memo(function FileEditorRichText
 
 	const threadIdsKey = useEditorState({
 		editor,
-		selector: ({ editor: currentEditor }) => getThreadIdsFromEditorState(currentEditor.state).toSorted().join("\n"),
+		selector: ({ editor: currentEditor }) =>
+			files_get_thread_ids_from_editor_state(currentEditor.state).toSorted().join("\n"),
 	});
 
 	const threadIds = threadIdsKey ? threadIdsKey.split("\n") : [];
@@ -668,7 +669,7 @@ export type FileEditorRichText_ClassNames =
 	| "FileEditorRichText-word-count-badge-hidden";
 
 type FileEditorRichTextInner_Props = {
-	filesYjs: files_Yjs;
+	filesYjs: NonNullable<ReturnType<typeof useFilesYjs>>;
 	nodeId: app_convex_Id<"files_nodes">;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
@@ -685,7 +686,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 
 	const isEditorReady = filesYjs.syncStatus === "synchronizing" || filesYjs.syncStatus === "synchronized";
 
-	const liveblocks = useLiveblocksExtension({
+	const liveblocks = useFileEditorRichTextExtension({
 		field: files_YJS_DOC_KEYS.richText,
 		presenceStore,
 		yjsProvider: filesYjs.yjsProvider,

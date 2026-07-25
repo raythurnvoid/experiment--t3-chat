@@ -28,7 +28,7 @@ import { RefreshCcw, Save } from "lucide-react";
 import { Doc as YDoc, applyUpdate } from "yjs";
 import { toast } from "sonner";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
-import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
+import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
 import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorPlainTextSkeleton } from "./file-editor-plain-text-skeleton.tsx";
 import { FileEditorMonacoTopViewZone } from "../file-editor-monaco-top-view-zone.tsx";
@@ -237,7 +237,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			});
 			return;
 		}
-		const nextThreadIds = getThreadIdsFromEditorState(headlessEditor._yay.state).toSorted();
+		const nextThreadIds = files_get_thread_ids_from_editor_state(headlessEditor._yay.state).toSorted();
 		headlessEditor._yay.destroy();
 
 		const nextKey = nextThreadIds.join("\n");

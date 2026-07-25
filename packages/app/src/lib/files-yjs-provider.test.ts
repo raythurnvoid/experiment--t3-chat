@@ -1,10 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import * as Y from "yjs";
 import { files_PresenceStore } from "./files.ts";
-import {
-	LiveblocksYjsProvider,
-	type LiveblocksYjsProvider_Args,
-} from "../../vendor/liveblocks/packages/liveblocks-yjs/src/provider.ts";
+import { files_yjs_Provider, type files_yjs_Provider_Args } from "./files-yjs-provider.ts";
 
 type PromiseConstructorWithTry = Omit<PromiseConstructor, "try"> & {
 	try?: <T>(callback: () => T | PromiseLike<T>) => Promise<Awaited<T>>;
@@ -103,14 +100,6 @@ const appConvexMock = vi.hoisted(() => {
 	};
 });
 
-vi.mock("../../vendor/liveblocks/packages/liveblocks-yjs/app_lb_bridge.ts", () => ({
-	app_convex: appConvexMock.app_convex,
-	app_convex_api: appConvexMock.app_convex_api,
-	files_u8_equals: appConvexMock.files_u8_equals,
-	files_u8_to_array_buffer: appConvexMock.files_u8_to_array_buffer,
-	files_yjs_doc_is_diff_update_empty: appConvexMock.files_yjs_doc_is_diff_update_empty,
-}));
-
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: appConvexMock.app_convex,
 	app_convex_api: appConvexMock.app_convex_api,
@@ -147,7 +136,7 @@ function createPresenceStore() {
 	});
 }
 
-function getRootDoc(provider: LiveblocksYjsProvider) {
+function getRootDoc(provider: files_yjs_Provider) {
 	return provider.getYDoc();
 }
 
@@ -177,9 +166,9 @@ async function createReadyProvider() {
 		vi.fn(async () => new Response(emptySnapshotUpdate)),
 	);
 
-	const provider = new LiveblocksYjsProvider({
-		membershipId: "membership_id" as LiveblocksYjsProvider_Args["membershipId"],
-		nodeId: "file_id" as LiveblocksYjsProvider_Args["nodeId"],
+	const provider = new files_yjs_Provider({
+		membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+		nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
 		presenceStore,
 	});
 
@@ -249,7 +238,7 @@ afterAll(() => {
 	}
 });
 
-describe("LiveblocksYjsProvider snapshot sync", () => {
+describe("files_yjs_Provider snapshot sync", () => {
 	test("retries failed R2 snapshot fetches before marking the provider synchronized", async () => {
 		const presenceStore = createPresenceStore();
 		const emptySnapshotUpdate = createEmptySnapshotUpdate();
@@ -265,9 +254,9 @@ describe("LiveblocksYjsProvider snapshot sync", () => {
 			.mockResolvedValueOnce(new Response(emptySnapshotUpdate));
 		vi.stubGlobal("fetch", fetchMock);
 
-		const provider = new LiveblocksYjsProvider({
-			membershipId: "membership_id" as LiveblocksYjsProvider_Args["membershipId"],
-			nodeId: "file_id" as LiveblocksYjsProvider_Args["nodeId"],
+		const provider = new files_yjs_Provider({
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
 			presenceStore,
 		});
 
@@ -287,7 +276,7 @@ describe("LiveblocksYjsProvider snapshot sync", () => {
 	});
 });
 
-describe("LiveblocksYjsProvider outgoing update queue", () => {
+describe("files_yjs_Provider outgoing update queue", () => {
 	test("debounces multiple local edits into one yjs push", async () => {
 		appConvexMock.app_convex.mutation.mockResolvedValue({ _yay: { newSequence: 1 } });
 		const { provider, rootDoc } = await createReadyProvider();

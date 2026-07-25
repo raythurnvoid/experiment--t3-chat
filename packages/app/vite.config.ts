@@ -95,14 +95,6 @@ export default defineConfig({
 
 			"novel",
 
-			"@liveblocks/react-tiptap",
-			"@liveblocks/react",
-			"@liveblocks/react-ui",
-			"@liveblocks/yjs",
-			"@liveblocks/client",
-			"@liveblocks/core",
-			"@liveblocks/node",
-
 			"@remix-run/interaction",
 
 			"@tiptap/core",

@@ -1,9 +1,9 @@
 [submodule "assistant-ui"]
 	path = references-submodules/assistant-ui
 	url = ../assistant-ui.git
-[submodule "liveblocks"]
-	path = packages/app/vendor/liveblocks
-	url = https://github.com/raythurnvoid/liveblocks.git
+[submodule "references-submodules/liveblocks"]
+	path = references-submodules/liveblocks
+	url = https://github.com/liveblocks/liveblocks
 [submodule "references-submodules/opencode"]
 	path = references-submodules/opencode
 	url = https://github.com/sst/opencode

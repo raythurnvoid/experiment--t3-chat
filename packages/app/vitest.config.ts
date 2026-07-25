@@ -32,7 +32,7 @@ export default defineConfig({
 							// Vendored workspace packages must be inlined for tests,
 							// otherwise the runtime tries to execute raw `.ts` sources and fails with unknown extension errors.
 							// Keep this list as small as possible and scoped to the src test dependency graph.
-							inline: ["@liveblocks/core", "@tiptap/extension-collaboration"],
+							inline: ["@tiptap/extension-collaboration"],
 						},
 					},
 				},

@@ -15,7 +15,6 @@ Use these existing vendors as the local pattern:
 
 - `../../../packages/app/vendor/polar` — closest reference for the fork-based remote layout (`origin` = `raythurnvoid/polar` fork, `upstream` = `get-convex/polar`, branch `rt0-updates`)
 - `../../../packages/app/vendor/novel`
-- `../../../packages/app/vendor/liveblocks`
 - `../../../packages/app/vendor/headless-tree`
 - `../../../.gitmodules`
 - `../../../pnpm-workspace.yaml`

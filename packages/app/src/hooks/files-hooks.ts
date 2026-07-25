@@ -1,29 +1,22 @@
 import { useEffect, useRef, useState } from "react";
-import { LiveblocksYjsProvider } from "@liveblocks/yjs";
+import { files_yjs_Provider } from "@/lib/files-yjs-provider.ts";
 import type { files_PresenceStore } from "@/lib/files.ts";
 import type { app_convex_Id } from "../lib/app-convex-client.ts";
 
-export type files_Yjs = {
-	yjsProvider: LiveblocksYjsProvider;
-	providerNodeId: app_convex_Id<"files_nodes">;
-	syncStatus: ReturnType<LiveblocksYjsProvider["getStatus"]>;
-	syncChanged: boolean;
-};
-
-export type files_Yjs_Props = {
+export type useFilesYjs_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	presenceStore: files_PresenceStore;
 };
 
-export function useFilesYjs(props: files_Yjs_Props) {
+export function useFilesYjs(props: useFilesYjs_Props) {
 	const { nodeId, membershipId, presenceStore } = props;
 
-	const [yjsProvider, setYjsProvider] = useState<LiveblocksYjsProvider | undefined>(undefined);
+	const [yjsProvider, setYjsProvider] = useState<files_yjs_Provider | undefined>(undefined);
 	const [providerNodeId, setProviderNodeId] = useState<app_convex_Id<"files_nodes"> | undefined>(undefined);
-	const [syncStatus, setSyncStatus] = useState<ReturnType<LiveblocksYjsProvider["getStatus"]>>("loading");
+	const [syncStatus, setSyncStatus] = useState<ReturnType<files_yjs_Provider["getStatus"]>>("loading");
 	const [syncChanged, setSyncChanged] = useState(false);
-	const lastStatusRef = useRef<ReturnType<LiveblocksYjsProvider["getStatus"]>>("loading");
+	const lastStatusRef = useRef<ReturnType<files_yjs_Provider["getStatus"]>>("loading");
 
 	const onDestroyRef = useRef<() => void>(null);
 
@@ -35,7 +28,7 @@ export function useFilesYjs(props: files_Yjs_Props) {
 		// lastStatusRef.current = "loading";
 
 		const reactStrictWorkaroundTimer = setTimeout(() => {
-			const yjsProvider = new LiveblocksYjsProvider({
+			const yjsProvider = new files_yjs_Provider({
 				nodeId: nodeId,
 				membershipId: membershipId,
 				presenceStore: presenceStore,

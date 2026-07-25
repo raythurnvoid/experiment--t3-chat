@@ -1,0 +1,443 @@
+// Adapted from `references-submodules/liveblocks/packages/liveblocks-react-tiptap/src/comments/CommentsExtension.ts`, plus the
+// thread plugin types that used to live in `src/types.ts`).
+//
+// Keep this module isomorphic: `shared/files.ts` imports the extension to parse and serialize markdown on
+// the Convex side, so it must not reach into browser-only or `src/` modules.
+//
+// The string values below are persisted contracts. `files_COMMENT_MARK_TYPE` is the ProseMirror mark name
+// stored inside Yjs documents and serialized HTML, so renaming the value would orphan existing comments.
+
+import { Extension, Mark, mergeAttributes } from "@tiptap/core";
+import type { Node } from "@tiptap/pm/model";
+import { Plugin, PluginKey, type EditorState } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
+
+export const files_COMMENT_MARK_TYPE = "liveblocksCommentMark";
+
+export const files_THREADS_PLUGIN_KEY = new PluginKey<files_ThreadPluginState>("lb-threads-plugin");
+
+export const files_FILTERED_THREADS_PLUGIN_KEY = new PluginKey<{
+	filteredThreads?: Set<string>;
+}>();
+
+export const enum files_ThreadPluginActions {
+	SET_SELECTED_THREAD_ID = "SET_SELECTED_THREAD_ID",
+}
+
+export type files_ThreadPluginState = {
+	threadPositions: Map<string, { from: number; to: number }>;
+	threadIds: Set<string>;
+	selectedThreadId: string | null;
+	selectedThreadPos: number | null;
+	decorations: DecorationSet;
+};
+
+export type files_CommentsCommands<ReturnType = boolean> = {
+	/**
+	 * Add a comment
+	 */
+	addComment: (id: string) => ReturnType;
+	selectThread: (id: string | null) => ReturnType;
+	addPendingComment: () => ReturnType;
+	/**
+	 * Mark a comment as orphan based on thread ID
+	 */
+	markCommentAsOrphan: (args: { threadId: string; orphan: boolean }) => ReturnType;
+
+	/** @internal */
+	closePendingComment: () => ReturnType;
+};
+
+declare module "@tiptap/core" {
+	interface Commands<ReturnType> {
+		liveblocksComments: files_CommentsCommands<ReturnType>;
+	}
+}
+
+type ThreadPluginAction = {
+	name: files_ThreadPluginActions;
+	data: string | null;
+};
+
+/**
+ * Known issues: Overlapping marks are merged when reloading the doc. May be related:
+ * https://github.com/ueberdosis/tiptap/issues/4339
+ * https://github.com/yjs/@tiptap/y-tiptap/issues/47
+ */
+
+const Comment = Mark.create<{
+	onThreadsChange?: (threadIds: string[]) => void;
+}>({
+	name: files_COMMENT_MARK_TYPE,
+	excludes: "",
+	inclusive: false,
+	keepOnSplit: true,
+	renderMarkdown: (node, helpers) => {
+		const threadId = typeof node.attrs?.threadId === "string" ? node.attrs.threadId : "";
+		if (!threadId) return helpers.renderChildren(node.content || []);
+		const orphan = node.attrs?.orphan === true;
+		return `<span data-type="comment" data-lb-thread-id="${threadId.replaceAll('"', "&quot;")}"${orphan ? ' data-orphan="true"' : ""}>${helpers.renderChildren(node.content || [])}</span>`;
+	},
+
+	parseHTML: () => {
+		return [
+			{
+				tag: "span",
+				getAttrs: (node) =>
+					node.getAttribute("data-lb-thread-id") !== null && node.getAttribute("data-type") === "comment" && null,
+			},
+		];
+	},
+	addAttributes() {
+		// Return an object with attribute configuration
+		return {
+			orphan: {
+				parseHTML: (element) => !!element.getAttribute("data-orphan"),
+				renderHTML: (attributes) => {
+					return (attributes as { orphan: boolean }).orphan
+						? {
+								"data-orphan": "true",
+							}
+						: {};
+				},
+				default: false,
+			},
+			threadId: {
+				parseHTML: (element) => element.getAttribute("data-lb-thread-id"),
+				renderHTML: (attributes) => {
+					return {
+						"data-lb-thread-id": (attributes as { threadId: string }).threadId,
+					};
+				},
+				default: "",
+			},
+		};
+	},
+
+	renderHTML({ HTMLAttributes }: { HTMLAttributes: Record<string, any> }) {
+		const filteredThreads = this.editor
+			? files_FILTERED_THREADS_PLUGIN_KEY.getState(this.editor.state)?.filteredThreads
+			: undefined;
+		const threadId = (HTMLAttributes as { ["data-lb-thread-id"]: string })["data-lb-thread-id"];
+		if (filteredThreads && !filteredThreads.has(threadId)) {
+			return [
+				"span",
+				mergeAttributes(HTMLAttributes, {
+					class: "lb-root lb-tiptap-thread-mark",
+					"data-type": "comment",
+					"data-hidden": "",
+				}),
+			];
+		}
+
+		return [
+			"span",
+			mergeAttributes(HTMLAttributes, {
+				class: "lb-root lb-tiptap-thread-mark",
+				"data-type": "comment",
+			}),
+		];
+	},
+
+	/**
+	 * This plugin tracks the (first) position of each thread mark in the doc and creates a decoration for the selected thread
+	 */
+	addProseMirrorPlugins() {
+		const updateState = (doc: Node, selectedThreadId: string | null) => {
+			const threadPositions = new Map<string, { from: number; to: number }>();
+			const threadIds = new Set<string>();
+			const decorations: Decoration[] = [];
+			// find all thread marks and store their position + create decoration for selected thread
+			doc.descendants((node, pos) => {
+				node.marks.forEach((mark) => {
+					if (mark.type === this.type) {
+						const thisThreadId = (mark.attrs as { threadId: string | undefined }).threadId;
+						if (!thisThreadId) {
+							return;
+						}
+						const from = pos;
+						const to = from + node.nodeSize;
+
+						// FloatingThreads component uses "to" as the position, so always store the largest "to" found
+						// AnchoredThreads component uses "from" as the position, so always store the smallest "from" found
+						const currentPosition = threadPositions.get(thisThreadId) ?? {
+							from: Infinity,
+							to: 0,
+						};
+						threadPositions.set(thisThreadId, {
+							from: Math.min(from, currentPosition.from),
+							to: Math.max(to, currentPosition.to),
+						});
+						threadIds.add(thisThreadId);
+
+						if (selectedThreadId === thisThreadId) {
+							decorations.push(
+								Decoration.inline(from, to, {
+									class: "lb-root lb-tiptap-thread-mark-selected",
+								}),
+							);
+
+							if (this.editor.view) {
+								const decoration = this.editor.view.dom.querySelector(
+									`.lb-tiptap-thread-mark[data-lb-thread-id="${thisThreadId}"]`,
+								);
+
+								if (decoration) {
+									decoration.scrollIntoView({
+										behavior: "smooth",
+										block: "nearest",
+									});
+								}
+							}
+						}
+					}
+				});
+			});
+			return {
+				decorations: DecorationSet.create(doc, decorations),
+				selectedThreadId,
+				threadPositions,
+				threadIds,
+				selectedThreadPos: selectedThreadId !== null ? (threadPositions.get(selectedThreadId)?.to ?? null) : null,
+			};
+		};
+
+		const onThreadsChange = this.options.onThreadsChange;
+
+		return [
+			new Plugin({
+				key: files_THREADS_PLUGIN_KEY,
+				state: {
+					init() {
+						return {
+							threadPositions: new Map<string, { from: number; to: number }>(),
+							threadIds: new Set<string>(),
+							selectedThreadId: null,
+							selectedThreadPos: null,
+							decorations: DecorationSet.empty,
+						} as files_ThreadPluginState;
+					},
+					apply(tr, state) {
+						const action = tr.getMeta(files_THREADS_PLUGIN_KEY) as ThreadPluginAction;
+						if (!tr.docChanged && !action) {
+							return state;
+						}
+
+						let nextState;
+
+						if (!action) {
+							// Doc changed, but no action, just update rects
+							nextState = updateState(tr.doc, state.selectedThreadId);
+						} else if (
+							action.name === files_ThreadPluginActions.SET_SELECTED_THREAD_ID &&
+							state.selectedThreadId !== action.data
+						) {
+							// handle actions, possibly support more actions
+							nextState = updateState(tr.doc, action.data);
+						} else {
+							return state;
+						}
+
+						// Notify about thread ID changes
+						if (!files_thread_id_sets_equal(state.threadIds, nextState.threadIds)) {
+							onThreadsChange?.(Array.from(nextState.threadIds));
+						}
+
+						return nextState;
+					},
+				},
+				props: {
+					decorations: (state) => {
+						return files_THREADS_PLUGIN_KEY.getState(state)?.decorations ?? DecorationSet.empty;
+					},
+					handleClick: (view, pos, event) => {
+						if (event.button !== 0) {
+							return;
+						}
+
+						const selectThread = (threadId: string | null) => {
+							view.dispatch(
+								view.state.tr.setMeta(files_THREADS_PLUGIN_KEY, {
+									name: files_ThreadPluginActions.SET_SELECTED_THREAD_ID,
+									data: threadId,
+								}),
+							);
+						};
+
+						const node = view.state.doc.nodeAt(pos);
+						if (!node) {
+							selectThread(null);
+							return;
+						}
+						const commentMark = node.marks.find((mark) => mark.type === this.type && !mark.attrs.orphan);
+						// nothing to select
+						if (!commentMark) {
+							selectThread(null);
+							return;
+						}
+						const threadId = commentMark?.attrs.threadId as string | undefined;
+
+						const filtered = files_FILTERED_THREADS_PLUGIN_KEY.getState(view.state)?.filteredThreads;
+						if (threadId && filtered && !filtered.has(threadId)) {
+							selectThread(null);
+							return;
+						}
+
+						selectThread(threadId ?? null);
+					},
+				},
+			}),
+		];
+	},
+});
+
+export const files_CommentsExtension = Extension.create<{
+	filteredThreads?: Set<string>;
+	onThreadsChange?: (threadIds: string[]) => void;
+}>({
+	name: "liveblocksComments",
+	priority: 95,
+	addExtensions() {
+		return [
+			Comment.configure({
+				onThreadsChange: this.options.onThreadsChange,
+			}),
+		];
+	},
+
+	addCommands() {
+		return {
+			selectThread:
+				(id: string | null) =>
+				({ tr }) => {
+					const filtered = files_FILTERED_THREADS_PLUGIN_KEY.getState(this.editor.state)?.filteredThreads;
+					if (id && filtered && !filtered.has(id)) {
+						tr.setMeta(files_THREADS_PLUGIN_KEY, {
+							name: files_ThreadPluginActions.SET_SELECTED_THREAD_ID,
+							data: null,
+						});
+						return true;
+					}
+
+					tr.setMeta(files_THREADS_PLUGIN_KEY, {
+						name: files_ThreadPluginActions.SET_SELECTED_THREAD_ID,
+						data: id,
+					});
+					return true;
+				},
+			addComment:
+				(id: string) =>
+				({ commands, state }) => {
+					if (state.selection.empty) {
+						return false;
+					}
+					commands.setMark(files_COMMENT_MARK_TYPE, { threadId: id });
+					return true;
+				},
+			markCommentAsOrphan:
+				(args: { threadId: string; orphan: boolean }) =>
+				({ tr, state }) => {
+					const markType = state.schema.marks[files_COMMENT_MARK_TYPE];
+					if (!markType) {
+						return false;
+					}
+
+					state.doc.descendants((node, pos) => {
+						node.marks.forEach((mark) => {
+							if (mark.type !== markType) return;
+							const threadId = mark.attrs.threadId as string | undefined;
+							if (threadId !== args.threadId) return;
+
+							tr.removeMark(pos, pos + node.nodeSize, mark).addMark(
+								pos,
+								pos + node.nodeSize,
+								markType.create({
+									...mark.attrs,
+									orphan: args.orphan,
+								}),
+							);
+						});
+					});
+
+					return true;
+				},
+		};
+	},
+
+	addProseMirrorPlugins() {
+		return [
+			new Plugin({
+				key: files_FILTERED_THREADS_PLUGIN_KEY,
+				state: {
+					init: () => ({
+						filteredThreads: this.options.filteredThreads,
+					}),
+					apply(tr, value) {
+						const meta = tr.getMeta(files_FILTERED_THREADS_PLUGIN_KEY) as { filteredThreads?: Set<string> } | undefined;
+						if (meta?.filteredThreads) {
+							return { filteredThreads: meta.filteredThreads };
+						}
+						return value;
+					},
+				},
+				view: (view) => {
+					const syncDom = () => {
+						const filteredThreads = files_FILTERED_THREADS_PLUGIN_KEY.getState(view.state)?.filteredThreads;
+
+						// Toggle attribute for all comment-mark spans
+						const els = view.dom.querySelectorAll<HTMLElement>("span.lb-tiptap-thread-mark[data-lb-thread-id]");
+						els.forEach((el) => {
+							if (el.getAttribute("data-type") !== "comment") {
+								el.setAttribute("data-type", "comment");
+							}
+
+							const id = el.getAttribute("data-lb-thread-id");
+							if (!id) return;
+							if (!filteredThreads || filteredThreads.has(id)) {
+								el.removeAttribute("data-hidden");
+							} else {
+								el.setAttribute("data-hidden", "");
+							}
+						});
+					};
+
+					queueMicrotask(syncDom);
+
+					return {
+						update: (view, prevState) => {
+							const curr = files_FILTERED_THREADS_PLUGIN_KEY.getState(view.state)?.filteredThreads;
+							const prev = files_FILTERED_THREADS_PLUGIN_KEY.getState(prevState)?.filteredThreads;
+
+							if (!files_thread_id_sets_equal(prev, curr) || view.state.doc !== prevState.doc) {
+								syncDom();
+
+								const selected = files_THREADS_PLUGIN_KEY.getState(view.state)?.selectedThreadId;
+								if (selected && curr && !curr.has(selected)) {
+									view.dispatch(
+										view.state.tr.setMeta(files_THREADS_PLUGIN_KEY, {
+											name: files_ThreadPluginActions.SET_SELECTED_THREAD_ID,
+											data: null,
+										}),
+									);
+								}
+							}
+						},
+					};
+				},
+			}),
+		];
+	},
+});
+
+export function files_thread_id_sets_equal(a?: Set<string>, b?: Set<string>): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	if (a.size !== b.size) return false;
+	for (const v of a) if (!b.has(v)) return false;
+	return true;
+}
+
+export function files_get_thread_ids_from_editor_state(state: EditorState): string[] {
+	const pluginState = files_THREADS_PLUGIN_KEY.getState(state);
+	return pluginState ? Array.from(pluginState.threadIds) : [];
+}
