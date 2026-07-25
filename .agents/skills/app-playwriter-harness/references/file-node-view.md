@@ -139,6 +139,28 @@ await state.page.keyboard.press("Control+V");
 5. Reload. Both panes must return to the committed content and the badge must disappear — proof that nothing over-cap was persisted and that no accept was applied locally. Do not try to trim by select-all + paste; `Control+A` over ~950K chars does not finish.
 6. Regression guard for the normal path: make a small edit in the unstaged pane, click `Accept all pending changes and save`, and confirm no toast, the staged pane takes the new text, and it survives a reload.
 
+### Content Too Large Banner QA
+
+Checks the durable server state: when materialization rebuilds Markdown over the cap it stops committing and sets `files_nodes.contentTooLargeByteSize`. The banner lives in the shared top floating surface (`.FileNodeViewTopFloating-content-too-large-message`, inside the existing `role="status" aria-live="polite"` surface).
+
+The editors block over-cap content before it is pushed, so the UI cannot produce this state. Drive it from the CLI instead, in `packages/app`:
+
+1. Open any Markdown file and read its `data-file-id` from the sidebar row. Look up its org and workspace ids with `pnpm exec convex data files_nodes --limit 1000 --order asc`, filtered on that id (there is no per-id filter, so pipe through `Select-String`).
+2. Read the current sequence with `pnpm exec convex run files_nodes:get_file_content_materialization_state '{"organizationId":…,"workspaceId":…,"nodeId":…}'`. `mark_file_content_too_large` only applies when `sequence` equals both `yjsLastSequenceDoc.lastSequence` and `targetSequence`, so pass that one number for both.
+3. Prove the banner arrives reactively, without a reload: start a runner that waits on the selector, then run the mutation while it waits.
+
+```powershell
+Start-Job -ScriptBlock { vp env exec pnpx playwriter -s 13 -f <wait-runner> --timeout 30000 } -Name banner | Out-Null
+Start-Sleep -Seconds 3
+pnpm exec convex run files_nodes:mark_file_content_too_large '{…,"sequence":4,"targetSequence":4,"byteSize":987654}'
+Receive-Job -Name banner -Wait
+```
+
+The wait runner reads the message before and after `waitForSelector`, and logs `performance.now()` so the report can show the DOM changed mid-session rather than on a load.
+
+4. Assert the message names the size, the limit and how much to remove, that it is ellipsized with the full text in `title`, and that the icon uses the red token. Do not screenshot it: the floating surface never settles for Playwright's stability check and both page and element screenshots time out.
+5. Clear it the real way: type a few characters in the editor, then wait for `waitForSelector(…, { state: "detached" })`. Materialization runs through the workpool, so allow up to ~90s; it cleared in ~14s in practice. Remove the typed characters afterwards if the file is not disposable.
+
 ## Agent Sidebar
 
 - Switch with `#app_file_editor_sidebar_tabs_agent`.

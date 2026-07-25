@@ -4243,6 +4243,130 @@ async function test_materialize_markdown_file(
 	return nodeId;
 }
 
+test("materialize_file_content marks over-cap content too large and leaves the node on its last good content", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Too Large User",
+		email: "too-large-user@example.com",
+	});
+	const r2Writes = test_setup_r2_capture();
+
+	const smallMarkdown = "# Small\n";
+	const nodeId = await test_materialize_markdown_file(t, asUser, db, "/too-large.md", smallMarkdown);
+	const beforePush = await t.run(async (ctx) => ({
+		assetCount: (await ctx.db.query("files_r2_assets").collect()).length,
+		assetId: (await ctx.db.get("files_nodes", nodeId))?.assetId,
+	}));
+	const r2WriteCountBeforePush = r2Writes.size;
+
+	// A few very long paragraphs rather than many short ones: the byte size is what matters, and
+	// Yjs stores each paragraph as one item, so this builds the same over-cap document in a
+	// fraction of the time. Plain `x` runs also round-trip through Markdown unchanged.
+	const overCapParagraph = `${"x".repeat(47_000)}\n\n`;
+	const overCapMarkdown = overCapParagraph.repeat(
+		Math.ceil((files_MAX_TEXT_CONTENT_BYTES + 1) / overCapParagraph.length),
+	);
+	const overCapYjsDoc = files_yjs_doc_create_from_markdown({ markdown: overCapMarkdown });
+	if ("_nay" in overCapYjsDoc) {
+		throw new Error(overCapYjsDoc._nay.message);
+	}
+	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		membershipId: db.membershipId,
+		nodeId,
+		update: files_u8_to_array_buffer(encodeStateAsUpdate(overCapYjsDoc)),
+		sessionId: "too-large-session",
+	});
+	overCapYjsDoc.destroy();
+	if (pushResult._nay) {
+		throw new Error(pushResult._nay.message);
+	}
+
+	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		nodeId,
+		userId: db.userId,
+		targetSequence: pushResult._yay.newSequence,
+	});
+
+	expect(materialized._nay).toMatchObject({
+		message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit`,
+	});
+
+	const afterReject = await t.run(async (ctx) => {
+		const fileNode = await ctx.db.get("files_nodes", nodeId);
+		const jobs = await ctx.db
+			.query("files_content_materialization_jobs")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+			.collect();
+		const assetCount = (await ctx.db.query("files_r2_assets").collect()).length;
+		return { fileNode, jobs, assetCount };
+	});
+
+	expect(afterReject.fileNode?.contentTooLargeByteSize).toBeGreaterThan(files_MAX_TEXT_CONTENT_BYTES);
+	// The node keeps pointing at the last content that fit, so every committed reader stays readable.
+	expect(afterReject.fileNode?.assetId).toBe(beforePush.assetId);
+	// Retrying cannot make the content smaller, so the job settles instead of lingering.
+	expect(afterReject.jobs).toHaveLength(0);
+	// The guard runs before `insert_asset` and the R2 writes, so an over-cap run leaves no orphan
+	// asset doc and no new object in the bucket.
+	expect(afterReject.assetCount).toBe(beforePush.assetCount);
+	expect(r2Writes.size).toBe(r2WriteCountBeforePush);
+});
+
+test("materialize_file_content clears the too-large mark once the content fits again", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Trimmed User",
+		email: "trimmed-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const nodeId = await test_materialize_markdown_file(t, asUser, db, "/trimmed.md", "# Trimmed\n");
+	await t.run(async (ctx) => {
+		return await ctx.db.patch("files_nodes", nodeId, {
+			contentTooLargeByteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
+		});
+	});
+
+	const trimmedYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "# Trimmed again\n" });
+	if ("_nay" in trimmedYjsDoc) {
+		throw new Error(trimmedYjsDoc._nay.message);
+	}
+	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		membershipId: db.membershipId,
+		nodeId,
+		update: files_u8_to_array_buffer(encodeStateAsUpdate(trimmedYjsDoc)),
+		sessionId: "trimmed-session",
+	});
+	trimmedYjsDoc.destroy();
+	if (pushResult._nay) {
+		throw new Error(pushResult._nay.message);
+	}
+
+	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		nodeId,
+		userId: db.userId,
+		targetSequence: pushResult._yay.newSequence,
+	});
+	if (materialized._nay) {
+		throw new Error(materialized._nay.message);
+	}
+
+	const fileNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", nodeId));
+	expect(fileNode?.contentTooLargeByteSize).toBeUndefined();
+});
+
 async function test_insert_searchable_markdown_file(
 	t: ReturnType<typeof test_convex>,
 	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,

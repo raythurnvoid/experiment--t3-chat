@@ -1,7 +1,9 @@
 // Client-side half of the content size cap. `files_MAX_TEXT_CONTENT_BYTES` is enforced on every
 // server write path that receives a whole string, but the editors only send Yjs deltas, so the
-// size is never knowable server-side until materialization. These helpers let the editors measure
-// and reject over-cap content before it is persisted.
+// server cannot see the size until materialization reconstructs the document. These helpers let
+// the editors measure and reject over-cap content before it is persisted. They also build the
+// message for the `files_nodes.contentTooLargeByteSize` state. Materialization sets that state when
+// the reconstructed document is over the cap.
 //
 // Imports `shared/files.ts` directly rather than `@/lib/files.ts` to stay out of the Convex,
 // Monaco and Yjs module graph: these are plain functions shared by both editors.
@@ -66,6 +68,16 @@ export function file_editor_get_size_status_message(args: { byteSize: number | n
 /** Message shown when an edit or a save is rejected for going over the size cap. */
 export function file_editor_get_size_error_message(byteSize: number) {
 	return `This file would be ${files_format_size(byteSize)}, over the ${files_format_size(files_MAX_TEXT_CONTENT_BYTES)} limit. Remove about ${files_format_size(byteSize - files_MAX_TEXT_CONTENT_BYTES)}.`;
+}
+
+/**
+ * Message for the durable `files_nodes.contentTooLargeByteSize` state, shown while the server
+ * refuses to materialize the file. Editors keep syncing the live document, so nobody loses work.
+ * What stops updating is the saved copy. Downloads, search, the bash tools and the AI tools read
+ * that copy.
+ */
+export function file_editor_get_content_too_large_message(byteSize: number) {
+	return `This file is ${files_format_size(byteSize)}, over the ${files_format_size(files_MAX_TEXT_CONTENT_BYTES)} limit. Its saved copy is not updating. Remove about ${files_format_size(byteSize - files_MAX_TEXT_CONTENT_BYTES)}.`;
 }
 
 /**

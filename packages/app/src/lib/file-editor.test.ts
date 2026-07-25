@@ -2,11 +2,12 @@ import { describe, expect, test } from "vitest";
 import {
 	file_editor_SIZE_MEASURE_CHARS,
 	file_editor_SIZE_WARN_BYTES,
+	file_editor_get_content_too_large_message,
 	file_editor_get_size_badge_text,
 	file_editor_get_size_status_message,
 	file_editor_should_block_growth,
 } from "./file-editor.ts";
-import { files_MAX_TEXT_CONTENT_BYTES } from "../../shared/files.ts";
+import { files_MAX_TEXT_CONTENT_BYTES, files_format_size } from "../../shared/files.ts";
 
 describe("editor size cap thresholds", () => {
 	test("warns before reaching the cap", () => {
@@ -62,6 +63,25 @@ describe("file_editor_get_size_status_message", () => {
 
 		expect(file_editor_get_size_status_message({ byteSize: overCap, blocks: "editing" })).toContain("editing");
 		expect(file_editor_get_size_status_message({ byteSize: overCap, blocks: "saving" })).toContain("save");
+	});
+});
+
+describe("file_editor_get_content_too_large_message", () => {
+	test("names the size, the limit and how much to remove", () => {
+		const message = file_editor_get_content_too_large_message(files_MAX_TEXT_CONTENT_BYTES + 100_000);
+
+		expect(message).toContain(files_format_size(files_MAX_TEXT_CONTENT_BYTES + 100_000));
+		expect(message).toContain(files_format_size(files_MAX_TEXT_CONTENT_BYTES));
+		expect(message).toContain(`Remove about ${files_format_size(100_000)}`);
+	});
+
+	test("says the saved copy is stale, not that editing stopped", () => {
+		// The live document keeps syncing while the file is over the cap. Only the saved copy
+		// falls behind, and that is what downloads, search and the tools read.
+		const message = file_editor_get_content_too_large_message(files_MAX_TEXT_CONTENT_BYTES + 1);
+
+		expect(message).toContain("saved copy");
+		expect(message).not.toContain("editing");
 	});
 });
 

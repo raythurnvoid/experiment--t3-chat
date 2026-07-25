@@ -62,6 +62,7 @@ import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/a
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
+import { file_editor_get_content_too_large_message } from "@/lib/file-editor.ts";
 import {
 	files_ROOT_ID,
 	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
@@ -361,18 +362,23 @@ type FileNodeViewTopFloating_ClassNames =
 	| "FileNodeViewTopFloating-activity"
 	| "FileNodeViewTopFloating-activity-icon"
 	| "FileNodeViewTopFloating-activity-icon-failed"
-	| "FileNodeViewTopFloating-activity-message";
+	| "FileNodeViewTopFloating-activity-message"
+	| "FileNodeViewTopFloating-content-too-large"
+	| "FileNodeViewTopFloating-content-too-large-icon"
+	| "FileNodeViewTopFloating-content-too-large-message";
 
 type FileNodeViewTopFloating_Props = {
 	nodeId: app_convex_Id<"files_nodes"> | null;
+	/** Byte size recorded by `files_nodes.contentTooLargeByteSize`, or `null` while the content fits. */
+	contentTooLargeByteSize: number | null;
 	pendingSlot: React.ReactNode;
 };
 
-// The single floating surface of the sticky row: the node's activity status and the
-// pending-updates controls, split by a separator like the toolbar. Subscribes to one node's
-// activities slice, so the parent view never re-renders on feed traffic.
+// The single floating surface of the sticky row: the node's activity status, the over-cap content
+// warning and the pending-updates controls, split by separators like the toolbar. Subscribes to one
+// node's activities slice, so the parent view never re-renders on feed traffic.
 const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: FileNodeViewTopFloating_Props) {
-	const { nodeId, pendingSlot } = props;
+	const { nodeId, contentTooLargeByteSize, pendingSlot } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const convex = useConvex();
 
@@ -399,7 +405,14 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 			});
 	});
 
-	if (!activity && !pendingSlot) {
+	// Carries the measured size on purpose, unlike the editor toolbar live regions, which say the
+	// same thing for every size so they do not speak on each keystroke. This size only changes when
+	// a materialization run fails, which is at most every 30 seconds, and a user who is trimming
+	// the file needs to hear whether the number is going down.
+	const contentTooLargeMessage =
+		contentTooLargeByteSize == null ? null : file_editor_get_content_too_large_message(contentTooLargeByteSize);
+
+	if (!activity && !contentTooLargeMessage && !pendingSlot) {
 		return null;
 	}
 
@@ -452,7 +465,23 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 					) : null}
 				</div>
 			) : null}
-			{activity && pendingSlot ? <MySeparator orientation="vertical" /> : null}
+			{activity && contentTooLargeMessage ? <MySeparator orientation="vertical" /> : null}
+			{contentTooLargeMessage ? (
+				<div className={"FileNodeViewTopFloating-content-too-large" satisfies FileNodeViewTopFloating_ClassNames}>
+					<MyIcon
+						className={"FileNodeViewTopFloating-content-too-large-icon" satisfies FileNodeViewTopFloating_ClassNames}
+					>
+						<CircleAlert />
+					</MyIcon>
+					<span
+						className={"FileNodeViewTopFloating-content-too-large-message" satisfies FileNodeViewTopFloating_ClassNames}
+						title={contentTooLargeMessage}
+					>
+						{contentTooLargeMessage}
+					</span>
+				</div>
+			) : null}
+			{(activity || contentTooLargeMessage) && pendingSlot ? <MySeparator orientation="vertical" /> : null}
 			{pendingSlot}
 		</MyFloatingSurface>
 	);
@@ -2420,6 +2449,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const topStickyFloatingSlot = (
 		<FileNodeViewTopFloating
 			nodeId={resolvedNode?.kind === "file" ? resolvedNode._id : null}
+			contentTooLargeByteSize={resolvedNode?.contentTooLargeByteSize ?? null}
 			pendingSlot={
 				hasPendingUpdates ? (
 					<FileEditorPendingUpdatesFloating

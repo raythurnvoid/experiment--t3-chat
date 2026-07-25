@@ -456,6 +456,14 @@ const app_convex_schema = defineSchema({
 		/** ID of the last YJS sequence for the file */
 		yjsSnapshotId: v.optional(v.id("files_yjs_snapshots")),
 		assetId: v.optional(v.id("files_r2_assets")),
+		/**
+		 * Byte size of the last materialization that produced Markdown over
+		 * `files_MAX_TEXT_CONTENT_BYTES`. While set, the committed content stays at the last
+		 * sequence that fit. Search and downloads serve that older text. Bash reads still rebuild
+		 * the newest text from the Yjs log, so they and the committed readers disagree. Cleared by
+		 * the next materialization that fits.
+		 */
+		contentTooLargeByteSize: v.optional(v.number()),
 		/** Archive Operation UUID. Undefined means active */
 		archiveOperationId: v.optional(v.string()),
 		/** "root" for root items, otherwise parent folder `_id` */

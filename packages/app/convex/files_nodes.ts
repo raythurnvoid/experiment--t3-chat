@@ -3805,28 +3805,16 @@ export const list_tree = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 	},
+	// Return whole node documents. Listing the fields here meant every new column broke this query
+	// at runtime with a returns-validation error. The four overrides narrow what the handler below
+	// guarantees: the visible tree never carries reserved `GLOBAL`/`SYSTEM` values.
 	returns: v.array(
 		v.object({
-			_id: v.id("files_nodes"),
-			_creationTime: v.number(),
+			...doc(app_convex_schema, "files_nodes").fields,
 			organizationId: v.id("organizations"),
 			workspaceId: v.id("organizations_workspaces"),
-			path: v.string(),
-			treePath: v.string(),
-			pathDepth: v.number(),
-			lowercaseExtension: v.union(v.string(), v.null()),
-			name: v.string(),
-			kind: doc(app_convex_schema, "files_nodes").fields.kind,
-			contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
-			statsId: doc(app_convex_schema, "files_nodes").fields.statsId,
-			yjsLastSequenceId: doc(app_convex_schema, "files_nodes").fields.yjsLastSequenceId,
-			yjsSnapshotId: doc(app_convex_schema, "files_nodes").fields.yjsSnapshotId,
-			assetId: doc(app_convex_schema, "files_nodes").fields.assetId,
-			archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
-			parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 			createdBy: v.id("users"),
 			updatedBy: v.id("users"),
-			updatedAt: v.number(),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -7900,8 +7888,10 @@ export const finalize_file_content_materialization = internalMutation({
 			await Promise.all([
 				// Point the node at the new version snapshot. It now holds the file's current
 				// bytes, so downloads sign it and reads use its size as the byte cap.
+				// Reaching here means the content fit, so clear any earlier over-cap marker.
 				ctx.db.patch("files_nodes", args.nodeId, {
 					assetId: args.versionSnapshotAssetId,
+					contentTooLargeByteSize: undefined,
 				}),
 				ctx.db.patch("files_r2_assets", state.yjsSnapshotAsset._id, {
 					r2Key: r2_create_asset_key({
@@ -7985,6 +7975,58 @@ type finalize_file_content_materialization_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+/**
+ * Settles a materialization that produced Markdown over `files_MAX_TEXT_CONTENT_BYTES`.
+ *
+ * Retrying cannot make the content smaller. So this records why the node stopped advancing and
+ * deletes the job row instead of failing. It does not cancel the workpool item, the same way
+ * `finalize_file_content_materialization` does not. A later run for the same sequence just marks
+ * the node again.
+ */
+export const mark_file_content_too_large = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		sequence: v.number(),
+		targetSequence: v.number(),
+		byteSize: v.number(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const state = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+		})) as get_file_content_materialization_state_Result;
+		if (!state) {
+			return null;
+		}
+
+		// Use the same staleness gate as `finalize_file_content_materialization`. A newer push
+		// already replaced this job. Its own materialization decides whether the content fits.
+		if (state.yjsLastSequenceDoc.lastSequence !== args.sequence || args.sequence !== args.targetSequence) {
+			return null;
+		}
+
+		const jobs = await ctx.db
+			.query("files_content_materialization_jobs")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
+			.collect();
+
+		await Promise.all([
+			ctx.db.patch("files_nodes", args.nodeId, {
+				contentTooLargeByteSize: args.byteSize,
+			}),
+			...jobs
+				.filter((job) => job.targetSequence <= args.targetSequence)
+				.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
+		]);
+
+		return null;
+	},
+});
+
 export const materialize_file_content = internalAction({
 	args: {
 		organizationId: v.id("organizations"),
@@ -8010,11 +8052,43 @@ export const materialize_file_content = internalAction({
 		}
 
 		const sequence = reconstructed._yay.sequence;
+
+		// The Yjs path is the one write path the cap cannot cover earlier. `yjs_push_update` only
+		// ever sees a delta, so this is the first point where the whole Markdown exists. Check
+		// before `insert_asset` and the R2 writes below, so an over-cap run leaves no orphan asset.
+		//
+		// Do not throw for over-cap content. This action runs in a workpool with `maxParallelism: 1`
+		// and infinite retries, so a throw would retry forever and block materialization for every
+		// other file.
+		const markdownByteSize = files_get_utf8_byte_size(reconstructed._yay.markdown);
+		if (markdownByteSize > files_MAX_TEXT_CONTENT_BYTES) {
+			const errorMessage = `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit`;
+			console.warn(errorMessage, {
+				nodeId: args.nodeId,
+				sequence,
+				markdownByteSize,
+			});
+			await ctx.runMutation(internal.files_nodes.mark_file_content_too_large, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: args.nodeId,
+				sequence,
+				targetSequence: args.targetSequence,
+				byteSize: markdownByteSize,
+			});
+			return Result({
+				_nay: {
+					name: "nay",
+					message: errorMessage,
+				},
+			});
+		}
+
 		const versionSnapshotAssetId = (await ctx.runMutation(internal.r2.insert_asset, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			kind: "content_snapshot",
-			size: files_get_utf8_byte_size(reconstructed._yay.markdown),
+			size: markdownByteSize,
 			createdBy: args.userId,
 		})) as Id<"files_r2_assets">;
 
@@ -8058,7 +8132,7 @@ export const materialize_file_content = internalAction({
 			targetSequence: args.targetSequence,
 			markdown: reconstructed._yay.markdown,
 			versionSnapshotAssetId,
-			markdownSize: files_get_utf8_byte_size(reconstructed._yay.markdown),
+			markdownSize: markdownByteSize,
 			yjsSnapshotSize: reconstructed._yay.snapshotUpdate.byteLength,
 		})) as finalize_file_content_materialization_Result;
 		if (finalizationResult._nay) {

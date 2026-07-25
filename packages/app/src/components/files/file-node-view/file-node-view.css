@@ -310,7 +310,8 @@
 		padding: 4px 8px;
 	}
 
-	.FileNodeViewTopFloating-activity {
+	.FileNodeViewTopFloating-activity,
+	.FileNodeViewTopFloating-content-too-large {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -331,7 +332,14 @@
 		color: var(--color-red-09);
 	}
 
-	.FileNodeViewTopFloating-activity-message {
+	.FileNodeViewTopFloating-content-too-large-icon {
+		flex: 0 0 auto;
+
+		color: var(--color-red-09);
+	}
+
+	.FileNodeViewTopFloating-activity-message,
+	.FileNodeViewTopFloating-content-too-large-message {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
