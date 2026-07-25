@@ -96,6 +96,7 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 - Read `references/plugin-gallery.md` for driving the Gallery plugin page inside its sandboxed iframe.
 - Read `references/plugin-configuration.md` for saving upload-folder YAML and proving matched and unmatched automatic runs.
 - Read `references/file-node-view.md` for selected-file editor surfaces, comments, diff, and right-sidebar workflows.
+- Read `references/collab-yjs-comments-regression.md` before changing the integrated collaboration code (`files-yjs-*.ts`, `file-editor-rich-text-*.ts`) or upgrading `@liveblocks/core`.
 - Read `references/known-hazards.md` before debugging browser interaction failures.
 - Read `references/snippets.md` for short Playwriter commands.
 - Read `references/r2-file-content-regression.md` for deep R2-backed files, uploads, comments, and agent regression QA.
