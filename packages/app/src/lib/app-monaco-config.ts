@@ -1,14 +1,14 @@
 // Minimal for Markdown-only: editor worker is enough
-import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import { app_colors_css_vars } from "@/assets/ts/app-colors-css-vars.ts";
 
 // If you later need other languages, add these:
-// import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-// import CssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
-// import HtmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
-// import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
+// import JsonWorker from "monaco-editor/languages/features/json/json.worker?worker";
+// import CssWorker from "monaco-editor/languages/features/css/css.worker?worker";
+// import HtmlWorker from "monaco-editor/languages/features/html/html.worker?worker";
+// import TsWorker from "monaco-editor/languages/features/typescript/ts.worker?worker";
 
 self.MonacoEnvironment = {
 	getWorker(_moduleId: string, _label: string) {

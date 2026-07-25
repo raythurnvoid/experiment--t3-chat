@@ -5,7 +5,7 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			"@": fileURLToPath(new URL("./src", import.meta.url)),
-			"monaco-editor/esm/vs/editor/editor.worker?worker": fileURLToPath(
+			"monaco-editor/editor/editor.worker?worker": fileURLToPath(
 				new URL("./src/test-stubs/monaco-worker.ts", import.meta.url),
 			),
 			"monaco-editor": fileURLToPath(new URL("./src/test-stubs/monaco-editor.ts", import.meta.url)),
