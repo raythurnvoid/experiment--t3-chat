@@ -152,6 +152,28 @@ export function ai_chat_is_optimistic_thread(thread?: ai_chat_Thread | null) {
 	return thread._id === clientGeneratedId;
 }
 
+/**
+ * A thread is unread while its newest message is newer than the read cursor.
+ * Nothing writes "unread": a new message makes it true on its own.
+ */
+export function ai_chat_thread_is_unread(thread: { lastMessageAt?: number; readAt?: number }) {
+	return (thread.lastMessageAt ?? 0) > (thread.readAt ?? 0);
+}
+
+/**
+ * A just-finished answer stays unread for the moment it takes the read-cursor mutation
+ * to land, so the dot waits this long before fading in and a watched chat never blinks.
+ */
+export const ai_chat_UNREAD_DOT_GRACE_MS = 10_000;
+
+/**
+ * Remaining grace for an unread dot, used as a CSS `animation-delay`.
+ * Threads that went unread long ago get `0` and show immediately.
+ */
+export function ai_chat_get_unread_dot_delay_ms(lastMessageAt?: number, now = Date.now()) {
+	return Math.max(0, ai_chat_UNREAD_DOT_GRACE_MS - (now - (lastMessageAt ?? 0)));
+}
+
 export function ai_chat_get_message_text(message: UIMessage) {
 	const parts = message.parts ?? [];
 

@@ -55,7 +55,7 @@ import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import { useUiId } from "@/lib/ui.tsx";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { ai_chat_is_optimistic_thread } from "@/lib/ai-chat.ts";
+import { ai_chat_is_optimistic_thread, ai_chat_thread_is_unread, ai_chat_get_unread_dot_delay_ms } from "@/lib/ai-chat.ts";
 import type { AiChatThreadListController } from "@/hooks/ai-chat-controller.tsx";
 
 const ai_chat_threads_RESULTS_LIST_ID = "ai_chat_threads_results_list";
@@ -238,6 +238,7 @@ type AiChatThreadsListItem_ClassNames =
 	| "AiChatThreadsListItem-state-hidden"
 	| "AiChatThreadsListItem-trigger"
 	| "AiChatThreadsListItem-title"
+	| "AiChatThreadsListItem-unread-dot"
 	| "AiChatThreadsListItem-actions"
 	| "AiChatThreadsListItem-action";
 
@@ -290,6 +291,8 @@ const AiChatThreadsListItem = memo(function AiChatThreadsListItem(props: AiChatT
 	const isStarred = thread.starred === true;
 	const starButtonLabel = isStarred ? "Remove from favorites" : "Add to favorites";
 	const archiveLabel = isArchived ? "Unarchive" : "Archive";
+	// The open chat is being read right now, so it never shows a dot.
+	const isUnread = !isActive && ai_chat_thread_is_unread(thread);
 
 	return (
 		<MySidebarListItem
@@ -309,6 +312,14 @@ const AiChatThreadsListItem = memo(function AiChatThreadsListItem(props: AiChatT
 				<MySidebarListItemTitle
 					className={cn("AiChatThreadsListItem-title" satisfies AiChatThreadsListItem_ClassNames)}
 				>
+					{isUnread ? (
+						<span
+							className={cn("AiChatThreadsListItem-unread-dot" satisfies AiChatThreadsListItem_ClassNames)}
+							style={{ animationDelay: `${ai_chat_get_unread_dot_delay_ms(thread.lastMessageAt)}ms` }}
+							role="img"
+							aria-label="Unread"
+						/>
+					) : null}
 					{threadTitle}
 				</MySidebarListItemTitle>
 			</MySidebarListItemPrimaryAction>

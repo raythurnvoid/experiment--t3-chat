@@ -494,6 +494,7 @@ export const thread_create = mutation({
 			clientGeneratedId: args.clientGeneratedId,
 			title: args.title ?? null,
 			lastMessageAt: args.lastMessageAt,
+			readAt: args.lastMessageAt,
 			archived: false,
 			runtime: "aisdk_5",
 			stateId: null,
@@ -654,6 +655,7 @@ export const thread_branch = mutation({
 			clientGeneratedId,
 			title,
 			lastMessageAt: now,
+			readAt: now,
 			archived: false,
 			runtime: "aisdk_5",
 			stateId: null,
@@ -734,6 +736,7 @@ export const thread_branch = mutation({
 
 		await ctx.db.patch("ai_chat_threads", newThreadId, {
 			lastMessageAt: now,
+			readAt: now,
 			updatedAt: now,
 			updatedBy: userAuth.id,
 		});
@@ -811,6 +814,60 @@ export const thread_update = mutation({
 					: {},
 			),
 		);
+
+		return Result({ _yay: null });
+	},
+});
+
+/**
+ * Move the thread read cursor up to the newest message.
+ *
+ * Unread is derived (`lastMessageAt > readAt`), so nothing ever marks a thread
+ * unread: a new message does that on its own. This is the only write.
+ */
+export const thread_mark_read = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		threadId: v.string(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
+		if (!threadId) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const thread = await ctx.db.get("ai_chat_threads", threadId);
+		if (!thread) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		// Reading is not a content edit, so `updatedAt`/`updatedBy` stay untouched.
+		// `Math.max` keeps the cursor correct when the newest message is already persisted.
+		await ctx.db.patch("ai_chat_threads", threadId, {
+			readAt: Math.max(Date.now(), thread.lastMessageAt ?? 0),
+		});
 
 		return Result({ _yay: null });
 	},

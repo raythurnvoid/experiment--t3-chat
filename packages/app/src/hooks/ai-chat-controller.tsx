@@ -29,6 +29,7 @@ import {
 	ai_chat_get_message_text,
 	ai_chat_is_model_id,
 	ai_chat_is_mode_id,
+	ai_chat_thread_is_unread,
 	type ai_chat_ModelId,
 	type ai_chat_ModeId,
 	type ai_chat_Thread,
@@ -349,6 +350,7 @@ function create_optimistic_thread(tenant: {
 		updatedBy: "" as app_convex_Id<"users">,
 		updatedAt: now,
 		lastMessageAt: now,
+		readAt: now,
 	};
 }
 
@@ -1067,6 +1069,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	const updateThread = useMutation(app_convex_api.ai_chat.thread_update);
 	const branchThread = useMutation(app_convex_api.ai_chat.thread_branch);
 	const addThreadMessages = useMutation(app_convex_api.ai_chat.thread_messages_add);
+	const markThreadReadMutation = useMutation(app_convex_api.ai_chat.thread_mark_read);
 
 	const selectedModelId = selectedThreadId ? (session?.selectedModelId ?? draftSelectedModelId) : draftSelectedModelId;
 	const selectedModeId = selectedThreadId ? (session?.selectedModeId ?? draftSelectedModeId) : draftSelectedModeId;
@@ -1191,6 +1194,12 @@ const useThreadList = (props?: useThreadList_Props) => {
 	});
 
 	const handleChatFinish = useLiveRef<(options: ThreadChatOnFinish) => void>((options) => {
+		// The stream runs in exactly one tab, so this cannot double-write across tabs.
+		// `visibilityState` is read once here, not observed, so a hidden tab simply stays unread.
+		if (options.chatId === selectedThreadId && document.visibilityState === "visible") {
+			markThreadRead(options.chatId);
+		}
+
 		if (!options.isAbort) {
 			return;
 		}
@@ -1243,6 +1252,36 @@ const useThreadList = (props?: useThreadList_Props) => {
 			});
 	});
 
+	const markThreadRead = useFn((threadId: string) => {
+		if (is_ai_chat_optimistic_thread_id(threadId)) {
+			return;
+		}
+
+		// No `.catch()`: a throw here should surface as an unhandled rejection instead of being swallowed.
+		markThreadReadMutation({ membershipId, threadId }).then((result) => {
+			if (result._nay) {
+				console.error("[AiChatController.useThreadList.markThreadRead] Failed to move the read cursor", {
+					result,
+					threadId,
+				});
+			}
+		});
+	});
+
+	/** Skips the write when there is nothing to clear, so entering/leaving read chats is free. */
+	const markThreadReadIfUnread = useFn((threadId: string | null) => {
+		if (!threadId) {
+			return;
+		}
+
+		const thread = threads.results.find((thread) => thread._id === threadId);
+		if (!thread || !ai_chat_thread_is_unread(thread)) {
+			return;
+		}
+
+		markThreadRead(threadId);
+	});
+
 	const createThreadChat = (chatId: string | null) => {
 		return create_chat_instance({
 			chatId,
@@ -1267,6 +1306,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 			draftSelectedModelId: nextSelectedModelId,
 			draftSelectedModeId: nextSelectedModeId,
 		}));
+		markThreadReadIfUnread(selectedThreadId);
 		setSelectedThreadId(threadId, { persist: false });
 
 		if (message?.trim()) {
@@ -1301,6 +1341,11 @@ const useThreadList = (props?: useThreadList_Props) => {
 				return { ...base, ...prev, chat: threadChat };
 			});
 		}
+
+		// Leaving and entering are the moments the user is verifiably done reading.
+		// Leaving covers answers that landed while they sat in the chat.
+		markThreadReadIfUnread(selectedThreadId);
+		markThreadReadIfUnread(threadId);
 
 		setSelectedThreadId(threadId, { persist: !is_ai_chat_optimistic_thread_id(threadId) });
 	});
@@ -1561,6 +1606,7 @@ const useThreadRuntimeController = () => {
 	const updateThread = useMutation(app_convex_api.ai_chat.thread_update);
 	const branchThread = useMutation(app_convex_api.ai_chat.thread_branch);
 	const addThreadMessages = useMutation(app_convex_api.ai_chat.thread_messages_add);
+	const markThreadReadMutation = useMutation(app_convex_api.ai_chat.thread_mark_read);
 
 	const persistedThreadMessages = useQuery(
 		app_convex_api.ai_chat.thread_messages_list,
@@ -1741,7 +1787,29 @@ const useThreadRuntimeController = () => {
 		);
 	});
 
+	const markThreadRead = useFn((threadId: string) => {
+		if (is_ai_chat_optimistic_thread_id(threadId)) {
+			return;
+		}
+
+		// No `.catch()`: a throw here should surface as an unhandled rejection instead of being swallowed.
+		markThreadReadMutation({ membershipId, threadId }).then((result) => {
+			if (result._nay) {
+				console.error("[AiChatController.useThreadRuntime.markThreadRead] Failed to move the read cursor", {
+					result,
+					threadId,
+				});
+			}
+		});
+	});
+
 	const handleChatFinish = useLiveRef<(options: ThreadChatOnFinish) => void>((options) => {
+		// The stream runs in exactly one tab, so this cannot double-write across tabs.
+		// `visibilityState` is read once here, not observed, so a hidden tab simply stays unread.
+		if (options.chatId === selectedThreadId && document.visibilityState === "visible") {
+			markThreadRead(options.chatId);
+		}
+
 		if (!options.isAbort) {
 			return;
 		}

@@ -153,6 +153,31 @@
 		grid-column: 1;
 	}
 
+	/* Inline-block and placed before the title text so the title keeps its
+	   `text-overflow: ellipsis`, which a flex container on the title would break. */
+	.AiChatThreadsListItem-unread-dot {
+		display: inline-block;
+		vertical-align: middle;
+
+		width: 8px;
+		height: 8px;
+		margin-right: 6px;
+
+		border-radius: 999px;
+		background: var(--color-accent-alt-07);
+
+		/* Delayed by an inline `animation-delay` so a freshly answered chat does not
+		   blink a dot while the read-cursor mutation is still in flight. */
+		opacity: 0;
+		animation: AiChatThreadsListItem-unread-dot-appear 150ms ease forwards;
+	}
+
+	@keyframes AiChatThreadsListItem-unread-dot-appear {
+		to {
+			opacity: 1;
+		}
+	}
+
 	.AiChatThreadsListItem-actions {
 		grid-column: 2;
 		grid-row: 1;

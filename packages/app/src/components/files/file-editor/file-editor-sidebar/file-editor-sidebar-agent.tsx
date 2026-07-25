@@ -59,7 +59,7 @@ import {
 	type AiChatThreadListController,
 } from "@/hooks/ai-chat-controller.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { ai_chat_is_optimistic_thread } from "@/lib/ai-chat.ts";
+import { ai_chat_is_optimistic_thread, ai_chat_thread_is_unread, ai_chat_get_unread_dot_delay_ms } from "@/lib/ai-chat.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_local_storage_set_value, type storage_local_ValueByKey, useAppLocalStorageValue } from "@/lib/storage.ts";
@@ -92,6 +92,7 @@ function get_tab_title(args: {
 type FileEditorSidebarAgentThreadPickerItem_ClassNames =
 	| "FileEditorSidebarAgentThreadPicker-item"
 	| "FileEditorSidebarAgentThreadPicker-item-title"
+	| "FileEditorSidebarAgentThreadPicker-item-unread-dot"
 	| "FileEditorSidebarAgentThreadPicker-item-actions"
 	| "FileEditorSidebarAgentThreadPicker-item-action";
 
@@ -105,6 +106,8 @@ type FileEditorSidebarAgentThreadPickerItem_Props = {
 	isOptimistic: boolean;
 	starred: boolean;
 	archived: boolean;
+	unread: boolean;
+	lastMessageAt: number | undefined;
 	onStarredChange: (starred: boolean) => void;
 	onArchiveChange: (archived: boolean) => void;
 };
@@ -112,7 +115,8 @@ type FileEditorSidebarAgentThreadPickerItem_Props = {
 const FileEditorSidebarAgentThreadPickerItem = memo(function FileEditorSidebarAgentThreadPickerItem(
 	props: FileEditorSidebarAgentThreadPickerItem_Props,
 ) {
-	const { value, title, isOptimistic, starred, archived, onStarredChange, onArchiveChange } = props;
+	const { value, title, isOptimistic, starred, archived, unread, lastMessageAt, onStarredChange, onArchiveChange } =
+		props;
 	const selectStore = MySearchSelect.useStore();
 
 	const isActiveItem =
@@ -175,6 +179,16 @@ const FileEditorSidebarAgentThreadPickerItem = memo(function FileEditorSidebarAg
 					"FileEditorSidebarAgentThreadPicker-item-title" satisfies FileEditorSidebarAgentThreadPickerItem_ClassNames,
 				)}
 			>
+				{unread ? (
+					<span
+						className={cn(
+							"FileEditorSidebarAgentThreadPicker-item-unread-dot" satisfies FileEditorSidebarAgentThreadPickerItem_ClassNames,
+						)}
+						style={{ animationDelay: `${ai_chat_get_unread_dot_delay_ms(lastMessageAt)}ms` }}
+						role="img"
+						aria-label="Unread"
+					/>
+				) : null}
 				{title}
 			</span>
 			{!isOptimistic ? (
@@ -232,6 +246,7 @@ type FileEditorSidebarAgentThreadPickerList_ClassNames =
 type FileEditorSidebarAgentThreadPickerList_Props = {
 	threads: AiChatThreadListController["currentThreadsWithOptimistic"]["unarchived"]["results"];
 	threadTitleById: AiChatThreadListController["streamingTitleByThreadId"];
+	selectedThreadId: string | null;
 	onStarredChange: (args: { threadId: string; starred: boolean }) => void;
 	onArchiveChange: (args: { threadId: string; archived: boolean }) => void;
 };
@@ -239,7 +254,7 @@ type FileEditorSidebarAgentThreadPickerList_Props = {
 const FileEditorSidebarAgentThreadPickerList = memo(function FileEditorSidebarAgentThreadPickerList(
 	props: FileEditorSidebarAgentThreadPickerList_Props,
 ) {
-	const { threads, threadTitleById, onStarredChange, onArchiveChange } = props;
+	const { threads, threadTitleById, selectedThreadId, onStarredChange, onArchiveChange } = props;
 
 	return (
 		<div
@@ -274,6 +289,8 @@ const FileEditorSidebarAgentThreadPickerList = memo(function FileEditorSidebarAg
 								isOptimistic={isOptimisticThread}
 								starred={thread.starred === true}
 								archived={thread.archived === true}
+								unread={thread._id !== selectedThreadId && ai_chat_thread_is_unread(thread)}
+								lastMessageAt={thread.lastMessageAt}
 								onStarredChange={(starred) => onStarredChange({ threadId: thread._id, starred })}
 								onArchiveChange={(archived) => onArchiveChange({ threadId: thread._id, archived })}
 							/>
@@ -342,6 +359,7 @@ const FileEditorSidebarAgentThreadPicker = memo(function FileEditorSidebarAgentT
 							<FileEditorSidebarAgentThreadPickerList
 								threads={threads}
 								threadTitleById={controller.streamingTitleByThreadId}
+								selectedThreadId={controller.selectedThreadId}
 								onStarredChange={handleStarredChange}
 								onArchiveChange={handleArchiveChange}
 							/>
@@ -523,6 +541,7 @@ type FileEditorSidebarAgentHeaderTabs_ClassNames =
 	| "FileEditorSidebarAgentHeaderTabs-tab"
 	| "FileEditorSidebarAgentHeaderTabs-tab-primary-action"
 	| "FileEditorSidebarAgentHeaderTabs-tab-title"
+	| "FileEditorSidebarAgentHeaderTabs-tab-unread-dot"
 	| "FileEditorSidebarAgentHeaderTabs-tab-close";
 
 type FileEditorSidebarAgentHeaderTabs_CustomAttributes = {
@@ -659,6 +678,9 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 							>
 								{openTabs.map((entry, index) => {
 									const isSelectedTab = entry.id === selectedChatTabId;
+									const entryThread = currentThreads.find((thread) => thread._id === entry.id);
+									// The open tab is being read right now, so it never shows a dot.
+									const isUnreadTab = !isSelectedTab && !!entryThread && ai_chat_thread_is_unread(entryThread);
 									const canCloseOtherTabs = openTabs.length > 1;
 									const canCloseTabsToRight = index < openTabs.length - 1;
 									// The last tab can't be closed when it is already a new chat; otherwise closing it
@@ -696,6 +718,18 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 																	"FileEditorSidebarAgentHeaderTabs-tab-title" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
 																)}
 															>
+																{isUnreadTab ? (
+																	<span
+																		className={cn(
+																			"FileEditorSidebarAgentHeaderTabs-tab-unread-dot" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
+																		)}
+																		style={{
+																			animationDelay: `${ai_chat_get_unread_dot_delay_ms(entryThread?.lastMessageAt)}ms`,
+																		}}
+																		role="img"
+																		aria-label="Unread"
+																	/>
+																) : null}
 																{entry.title}
 															</span>
 														</MyTabsTabPrimaryAction>

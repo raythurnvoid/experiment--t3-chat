@@ -546,6 +546,18 @@ export const backfill_files_nodes_path_depth = app_migrations.define({
 	},
 });
 
+/** Existing threads predate the read cursor; treat their history as already read. */
+export const backfill_ai_chat_threads_read_at = app_migrations.define({
+	table: "ai_chat_threads",
+	migrateOne: async (ctx, thread) => {
+		if (thread.readAt !== undefined || thread.lastMessageAt === undefined) {
+			return;
+		}
+
+		await ctx.db.patch("ai_chat_threads", thread._id, { readAt: thread.lastMessageAt });
+	},
+});
+
 export const backfill_files_nodes_lowercase_extension = app_migrations.define({
 	table: "files_nodes",
 	migrateOne: async (ctx, fileNode) => {
@@ -1000,4 +1012,7 @@ export const run_remove_plugins_versions_unused_fields = app_migrations.runner(
 );
 export const run_backfill_plugins_versions_backend_entrypoint_file_sha256 = app_migrations.runner(
 	internal.migrations.backfill_plugins_versions_backend_entrypoint_file_sha256,
+);
+export const run_backfill_ai_chat_threads_read_at = app_migrations.runner(
+	internal.migrations.backfill_ai_chat_threads_read_at,
 );

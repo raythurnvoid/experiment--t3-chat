@@ -42,6 +42,11 @@ const app_convex_schema = defineSchema({
 		 * timestamp in milliseconds
 		 **/
 		lastMessageAt: v.optional(v.number()),
+		/**
+		 * Read cursor, timestamp in milliseconds.
+		 * The thread is unread while `lastMessageAt > readAt`.
+		 **/
+		readAt: v.optional(v.number()),
 	}).index("by_organization_workspace_archived_lastMessageAt", [
 		"organizationId",
 		"workspaceId",

@@ -33,8 +33,9 @@
 
 	/* #region header */
 	.FileEditorSidebarAgentHeader {
-		background: var(--color-base-1-04);
-		border-bottom: 1px solid var(--color-base-1-06);
+		/* Sit on the agent pane surface so the chat tab itself is the raised element. */
+		background: var(--color-base-1-02);
+		border-bottom: 1px solid var(--color-fg-02);
 
 		display: flex;
 		align-items: center;
@@ -42,6 +43,8 @@
 
 		contain: content;
 		overflow: auto hidden;
+		/* Keep this structural scrollbar quieter than the chat tabs sitting above it. */
+		scrollbar-color: var(--color-base-1-07) transparent;
 	}
 	/* #endregion header */
 
@@ -71,7 +74,8 @@
 		flex: 1 0 140px;
 		min-width: 140px;
 		max-width: 200px;
-		grid-template-columns: minmax(0, 1fr) 32px;
+		/* Reserve the close button's 36px minimum target column. */
+		grid-template-columns: minmax(0, 1fr) 36px;
 	}
 
 	.FileEditorSidebarAgentHeaderTabs-tab-primary-action {
@@ -88,6 +92,30 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/* Inline-block and before the title text so the title keeps its ellipsis. */
+	.FileEditorSidebarAgentHeaderTabs-tab-unread-dot {
+		display: inline-block;
+		vertical-align: middle;
+
+		width: 8px;
+		height: 8px;
+		margin-right: 6px;
+
+		border-radius: 999px;
+		background: var(--color-accent-alt-07);
+
+		/* Delayed by an inline `animation-delay` so a freshly answered chat does not
+		   blink a dot while the read-cursor mutation is still in flight. */
+		opacity: 0;
+		animation: FileEditorSidebarAgent-unread-dot-appear 150ms ease forwards;
+	}
+
+	@keyframes FileEditorSidebarAgent-unread-dot-appear {
+		to {
+			opacity: 1;
+		}
 	}
 
 	.FileEditorSidebarAgentHeaderTabs-tab-close {
@@ -112,7 +140,7 @@
 		right: 0;
 
 		/* Tabs dissolve into the bar instead of being cut on a hard seam. */
-		background: linear-gradient(to right, transparent 0, var(--color-base-1-04) 32px);
+		background: linear-gradient(to right, transparent 0, var(--color-base-1-02) 32px);
 		/* Gentle lift over the fading tabs. */
 		box-shadow: -12px 0 16px -12px color-mix(in oklch, black 50%, transparent);
 
@@ -140,6 +168,22 @@
 		contain: content;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/* Inline-block and before the title text so the title keeps its ellipsis. */
+	.FileEditorSidebarAgentThreadPicker-item-unread-dot {
+		display: inline-block;
+		vertical-align: middle;
+
+		width: 8px;
+		height: 8px;
+		margin-right: 6px;
+
+		border-radius: 999px;
+		background: var(--color-accent-alt-07);
+
+		opacity: 0;
+		animation: FileEditorSidebarAgent-unread-dot-appear 150ms ease forwards;
 	}
 
 	.FileEditorSidebarAgentThreadPicker-item-actions {

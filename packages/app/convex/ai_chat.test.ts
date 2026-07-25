@@ -258,3 +258,130 @@ describe("ai_chat thread state", () => {
 		expect(retry._yay?.ids).toEqual(first._yay?.ids);
 	});
 });
+
+describe("ai_chat thread read cursor", () => {
+	const seed = async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "personal",
+				workspaceName: "home",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-ai-chat-read-cursor",
+			external_id: seeded.userId,
+			email: "ai-chat-read-cursor@test.local",
+		});
+
+		return { t, seeded, asUser };
+	};
+
+	const makeMessage = (id: string) => ({
+		clientGeneratedMessageId: id,
+		content: {
+			id,
+			role: "assistant",
+			parts: [{ type: "text", text: "Answer" }],
+			metadata: {
+				convexParentId: null,
+				parentClientGeneratedId: null,
+			},
+		},
+	});
+
+	test("a new thread starts read, a new message makes it unread, and thread_mark_read clears it", async () => {
+		const { t, seeded, asUser } = await seed();
+
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_read_cursor",
+			title: "Read cursor",
+			lastMessageAt: Date.now(),
+		});
+		expect(created._yay).toBeTruthy();
+		const threadId = created._yay!.threadId;
+
+		const createdThread = await t.run((ctx) => ctx.db.get("ai_chat_threads", threadId));
+		expect(createdThread?.readAt).toBe(createdThread?.lastMessageAt);
+
+		// A finished answer moves `lastMessageAt` past the cursor. Nothing writes "unread".
+		const added = await asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: seeded.membershipId,
+			threadId,
+			parentId: null,
+			messages: [makeMessage("client_message_read_cursor")],
+		});
+		expect(added._yay).toBeTruthy();
+
+		const unreadThread = await t.run((ctx) => ctx.db.get("ai_chat_threads", threadId));
+		expect((unreadThread?.lastMessageAt ?? 0) > (unreadThread?.readAt ?? 0)).toBe(true);
+
+		const markedRead = await asUser.mutation(api.ai_chat.thread_mark_read, {
+			membershipId: seeded.membershipId,
+			threadId,
+		});
+		expect(markedRead._yay).toBeDefined();
+
+		const readThread = await t.run((ctx) => ctx.db.get("ai_chat_threads", threadId));
+		expect((readThread?.lastMessageAt ?? 0) > (readThread?.readAt ?? 0)).toBe(false);
+		// Reading is not a content edit.
+		expect(readThread?.updatedAt).toBe(unreadThread?.updatedAt);
+	});
+
+	test("thread_mark_read never lands behind an already persisted message", async () => {
+		const { t, seeded, asUser } = await seed();
+
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_read_cursor_future",
+			title: "Read cursor future",
+			lastMessageAt: Date.now(),
+		});
+		const threadId = created._yay!.threadId;
+
+		// Simulate a message stamped ahead of the mutation's own clock.
+		const future = Date.now() + 60_000;
+		await t.run((ctx) => ctx.db.patch("ai_chat_threads", threadId, { lastMessageAt: future }));
+
+		await asUser.mutation(api.ai_chat.thread_mark_read, {
+			membershipId: seeded.membershipId,
+			threadId,
+		});
+
+		const thread = await t.run((ctx) => ctx.db.get("ai_chat_threads", threadId));
+		expect(thread?.readAt).toBe(future);
+		expect((thread?.lastMessageAt ?? 0) > (thread?.readAt ?? 0)).toBe(false);
+	});
+
+	test("a branched thread starts read", async () => {
+		const { t, seeded, asUser } = await seed();
+
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_read_cursor_branch",
+			title: "Read cursor branch",
+			lastMessageAt: Date.now(),
+		});
+		const sourceThreadId = created._yay!.threadId;
+
+		await asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: seeded.membershipId,
+			threadId: sourceThreadId,
+			parentId: null,
+			messages: [makeMessage("client_message_read_cursor_branch")],
+		});
+
+		const branched = await asUser.mutation(api.ai_chat.thread_branch, {
+			membershipId: seeded.membershipId,
+			threadId: sourceThreadId,
+		});
+		expect(branched._yay).toBeTruthy();
+
+		const branchedThread = await t.run((ctx) =>
+			ctx.db.get("ai_chat_threads", branched._yay!.threadId as Id<"ai_chat_threads">),
+		);
+		expect((branchedThread?.lastMessageAt ?? 0) > (branchedThread?.readAt ?? 0)).toBe(false);
+	});
+});
