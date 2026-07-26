@@ -57,7 +57,7 @@ import { Sparkles } from "lucide-react";
 import { FileEditorRichTextDragHandle } from "./file-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
 import { bubbleMenuReevaluateVisibility } from "../../../../../vendor/tiptap/packages/extension-bubble-menu/src/index.ts";
-import { useDebounce, useFn, useRenderPromise } from "../../../../hooks/utils-hooks.ts";
+import { useDebounce, useFn, useRenderPromise, useStateRef } from "../../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFilesYjs } from "@/hooks/files-hooks.ts";
 import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
@@ -400,7 +400,11 @@ export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(p
 	const isPointerSelectingRef = useRef(false);
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
-	const [rendered, setRendered] = useState(true);
+	/**
+	 * A ref because the bubble listeners are registered once on mount and would
+	 * otherwise keep reading the value captured on the first render.
+	 */
+	const [renderedRef, setRendered, rendered] = useStateRef(true);
 
 	const [openAi, setOpenAi] = useState(false);
 
@@ -527,13 +531,21 @@ export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(p
 
 			// Reapply the highlight when the bubble is shown.
 			const handleSelectionUpdate = () => {
+				// Skip while a pointer gesture is in flight. `isShownRef` stays true until the
+				// bubble actually hides, so without this a double-click made while the bubble is
+				// open re-decorates from inside ProseMirror's mousedown handling, mutating the DOM
+				// under a live native selection. It buys nothing: the decoration only paints when
+				// the editor is not focused, and `handleShow` reapplies it once the gesture ends.
+				if (isPointerSelectingRef.current) {
+					return;
+				}
+
 				if (
 					isShownRef.current &&
-					rendered &&
+					renderedRef.current &&
 					!editor.state.selection.empty &&
 					editor.state.selection.from !== editor.state.selection.to
 				) {
-					// TODO: This breaks the selection when double clicking and then dragging
 					editor.chain().clearDecorationHighlight().setDecorationHighlight().run();
 				}
 			};
