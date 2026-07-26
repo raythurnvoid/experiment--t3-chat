@@ -1281,3 +1281,11 @@ For live browser inspection or UI QA, use Playwriter and load `.agents/skills/ap
 - Do not send Convex debug logs to localhost or browser-only ingestion endpoints because Convex runs remotely. Use temporary structured `console.log` calls, then read them with the Convex CLI or an already-running Cursor terminal transcript. Run every Convex CLI command through Vite Plus.
 - Load `.agents/skills/troubleshooting/SKILL.md` for service diagnostics, CLI commands, and transcript locations.
 - Remove temporary logs after verification.
+
+# Git commit messages
+
+Do not use Conventional Commits. Never start a commit subject with a type prefix such as `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `perf:`, `style:`, `build:`, or `ci:`, and do not add a scope in parentheses.
+
+- Write the subject as a plain short sentence that says what the commit does, for example `restore app-command guidance the shell swallowed`.
+- Keep the subject short and simple. Explain the why and the details in the body.
+- The same rule applies to pull request titles.
