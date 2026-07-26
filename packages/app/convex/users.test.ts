@@ -10,6 +10,7 @@ import {
 	organizations_db_ensure_default_organization_and_workspace_for_user,
 } from "./organizations.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
+import { users_get_user_id_from_jwt } from "../shared/users.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 
@@ -753,6 +754,134 @@ describe("resolve_user", () => {
 		expect(blockedBody.message).toBe("Rate limit exceeded");
 		expect(typeof blockedBody.retryAfterMs).toBe("number");
 		expect(users).toHaveLength(2);
+	});
+
+	test("does not rate-limit anonymous token refresh while the token is far from expiry", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_refresh_fast_path_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+
+		await t.run(async (ctx) => test_mocks_cancel_pending_home_file_seeds(ctx));
+
+		// A single page load already validates the cached token twice, so anything at or below
+		// the limiter's burst of 2 used to return 429 on the second reload. The client answered
+		// that by minting a new anonymous user and orphaning this one's workspace.
+		const refreshed: Array<{ status: number; userId: Id<"users">; token: string }> = [];
+		for (let i = 0; i < 6; i++) {
+			const response = await t.fetch("/api/auth/anonymous", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ token: anonymousPayload.token }),
+			});
+			const payload = (await response.json()) as { token: string; userId: Id<"users"> };
+			refreshed.push({ status: response.status, userId: payload.userId, token: payload.token });
+		}
+
+		const users = await t.run((ctx) => ctx.db.query("users").collect());
+
+		expect(refreshed.map((r) => r.status)).toEqual([200, 200, 200, 200, 200, 200]);
+		expect(refreshed.every((r) => r.userId === anonymousPayload.userId)).toBe(true);
+		expect(refreshed.every((r) => r.token === anonymousPayload.token)).toBe(true);
+		expect(users).toHaveLength(1);
+	});
+
+	test("still reissues the anonymous token once it is close to expiry, keeping the same user", async () => {
+		// Fake timers rather than a `Date.now` spy: jose reads `new Date()` when it stamps `iat`,
+		// so a spy would move the handler's freshness check without moving the new token's expiry.
+		vi.useFakeTimers();
+		try {
+			const t = test_convex();
+			await users_test_seed_product(t, {
+				polarProductId: "users_anonymous_refresh_reissue_free_product",
+				name: billing_PRODUCTS.Free.name,
+			});
+
+			const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+
+			await t.run(async (ctx) => test_mocks_cancel_pending_home_file_seeds(ctx));
+
+			// Tokens live 30 days and are reissued inside the last 7, so move into that window.
+			vi.setSystemTime(Date.now() + 24 * 24 * 60 * 60 * 1000);
+
+			const reissueResponse = await t.fetch("/api/auth/anonymous", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ token: anonymousPayload.token }),
+			});
+			const reissuePayload = (await reissueResponse.json()) as { token: string; userId: Id<"users"> };
+
+			const stored = await t.run(async (ctx) => {
+				const user = await ctx.db.get("users", anonymousPayload.userId);
+				return user?.anonymousAuthToken ? await ctx.db.get("users_anon_tokens", user.anonymousAuthToken) : null;
+			});
+
+			expect(reissueResponse.status).toBe(200);
+			expect(reissuePayload.userId).toBe(anonymousPayload.userId);
+			expect(stored?.token).toBe(reissuePayload.token);
+			// The point of reissuing is a later expiry, not just a different string.
+			expect(users_get_user_id_from_jwt(reissuePayload.token).expiresAt).toBeGreaterThan(
+				users_get_user_id_from_jwt(anonymousPayload.token).expiresAt ?? 0,
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("still caps repeated anonymous token refresh well above a normal reload", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_refresh_ceiling_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+
+		await t.run(async (ctx) => test_mocks_cancel_pending_home_file_seeds(ctx));
+
+		// `auth_http_refresh` has capacity 10, so a replayed token still runs out of budget.
+		const statuses: Array<number> = [];
+		for (let i = 0; i < 11; i++) {
+			const response = await t.fetch("/api/auth/anonymous", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ token: anonymousPayload.token }),
+			});
+			statuses.push(response.status);
+		}
+
+		expect(statuses.slice(0, 10)).toEqual([200, 200, 200, 200, 200, 200, 200, 200, 200, 200]);
+		expect(statuses[10]).toBe(429);
 	});
 
 	test("allows stale anonymous token recovery by rejecting refresh before clean anonymous creation", async () => {

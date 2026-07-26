@@ -68,7 +68,8 @@ describe("AppAuthProvider anonymous auth", () => {
 		appFetchAuthAnonymousMock
 			.mockResolvedValueOnce({
 				_nay: {
-					message: "Invalid token",
+					message: "The API responded with an error",
+					data: Response.json({ message: "Invalid token" }, { status: 401 }),
 				},
 			})
 			.mockResolvedValueOnce({
@@ -96,5 +97,49 @@ describe("AppAuthProvider anonymous auth", () => {
 		expect(appFetchAuthAnonymousMock).toHaveBeenNthCalledWith(2);
 		expect(window.localStorage.getItem("app::auth::anonymous_token")).toBe("fresh-token");
 		expect(window.localStorage.getItem("app::auth::anonymous_token_user_id")).toBe("fresh-user");
+	});
+
+	test.each([
+		[
+			"is rate limited",
+			{
+				message: "The API responded with an error",
+				data: Response.json({ message: "Rate limit exceeded", retryAfterMs: 10_000 }, { status: 429 }),
+			},
+		],
+		[
+			"hits a server error",
+			{
+				message: "The API responded with an error",
+				data: Response.json({ message: "Internal server error" }, { status: 500 }),
+			},
+		],
+		["cannot reach the server", { message: "Failed to fetch" }],
+	])("keeps the cached anonymous session when the refresh %s", async (_label, nay) => {
+		window.localStorage.setItem("app::auth::anonymous_token", "cached-token");
+		window.localStorage.setItem("app::auth::anonymous_token_user_id", "cached-user");
+
+		// A failure that is not a rejection must never mint a new user. The new user gets its own
+		// seeded `personal`/`home`, so the cached user's files stay in the database with no
+		// reachable address and the app looks wiped.
+		appFetchAuthAnonymousMock.mockResolvedValue({ _nay: nay });
+
+		render(
+			<AppAuthProvider>
+				<AuthProbe />
+			</AppAuthProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("is-loaded").textContent).toBe("true");
+			expect(screen.getByTestId("is-authenticated").textContent).toBe("true");
+			expect(screen.getByTestId("user-id").textContent).toBe("cached-user");
+		});
+
+		// Every call must carry the cached token. A call without one is the create path.
+		expect(appFetchAuthAnonymousMock).toHaveBeenCalledWith({ token: "cached-token" });
+		expect(appFetchAuthAnonymousMock.mock.calls.every((call) => call[0]?.token === "cached-token")).toBe(true);
+		expect(window.localStorage.getItem("app::auth::anonymous_token")).toBe("cached-token");
+		expect(window.localStorage.getItem("app::auth::anonymous_token_user_id")).toBe("cached-user");
 	});
 });

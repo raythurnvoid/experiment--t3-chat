@@ -7,11 +7,12 @@ The Bash tool is a mixed-path virtual shell. The app mount under `/home/cloud-us
 ## Non-Negotiables
 
 - Use the user's existing local app tab. Do not start the dev server from Codex.
-- **Do not run this eval on an anonymous account.** Observed 2026-07-25: reloading the app
-  can mint a new anonymous user, and each one gets its own freshly seeded `personal/home`
-  workspace. The fixture is not deleted, it becomes unreachable, and every later scenario
-  scores an absent fixture while looking like a normal run. Pin the visible account id
-  before a phase and re-check it before each scenario; abort the batch if it changes.
+- **Prefer a signed-in account for this eval.** Observed 2026-07-25 on an anonymous account:
+  reloading the app minted a new anonymous user, each one got its own freshly seeded
+  `personal/home`, and the fixture became unreachable rather than deleted, so every later
+  scenario scored an absent fixture while looking like a normal run. The reload rotation was
+  fixed 2026-07-26, but a `401` still rotates. Pin the visible account id before a phase and
+  re-check it before each scenario; abort the batch if it changes.
 - Avoid page reloads inside a scored phase. Prefer SPA navigation (clicking a file in the
   tree, switching sidebar tabs) to reach a surface. Reload only between phases, and
   re-verify the fixture afterwards.

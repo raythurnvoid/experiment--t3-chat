@@ -79,6 +79,17 @@ async function auth_get_anonymous_convex_token() {
 			};
 		}
 
+		// Only a `401`/`400` means the server read the token and refused it. That is the stale
+		// dev-reset case this validation exists for. A `429`, a `5xx` or a network failure says
+		// nothing about the identity. Clearing on those mints a new anonymous user, and its freshly
+		// seeded `personal`/`home` hides the previous one, so the old files stay in the database
+		// with no reachable address. Keep the cached token instead and let Convex verify it.
+		const status = refreshResult._nay.data?.status;
+		if (status !== 401 && status !== 400) {
+			console.error("Failed to refresh the anonymous token, keeping the cached one:", refreshResult._nay);
+			return cached;
+		}
+
 		storage_clear_anonymous_token();
 	}
 

@@ -74,7 +74,7 @@ Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={App
 - The frontend calls `/api/auth/anonymous` (or refreshes it) to mint/refresh an anonymous JWT.
 - The JWT subject is the Convex `users` id.
 - The anonymous JWT is stored in `localStorage` and re-used until refreshed/cleared.
-- On anonymous startup, cached anonymous credentials are validated through `/api/auth/anonymous` before the app marks auth loaded. If refresh fails because the token is invalid, stale, or points at a missing user, the client clears both localStorage keys and calls `/api/auth/anonymous` without a token to mint a fresh anonymous user. The current route does not reject a user only because `deletedAt` is set; see the gap below.
+- On anonymous startup, cached anonymous credentials are validated through `/api/auth/anonymous` before the app marks auth loaded. Only a `401` or `400` clears both localStorage keys and mints a fresh anonymous user, because only those mean the server read the token and refused it. On a `429`, a `5xx` or a network failure the client keeps the cached token and lets Convex verify it: discarding it there would mint a new user whose freshly seeded `personal`/`home` hides the previous one, which reads as total data loss. The current route does not reject a user only because `deletedAt` is set; see the gap below.
 
 Anonymous token caching keys (frontend):
 
@@ -95,7 +95,8 @@ Routes implemented in: [users.ts](../../../packages/app/convex/users.ts)
   - verify the provided token matches the stored token for that user
   - return the existing token while it has more than seven days left
   - otherwise issue a new 30-day JWT and store it on the anonymous-token doc
-- The create path is rate-limited by forwarded client IP headers with a stable fallback before minting a user/token. The refresh path is rate-limited by the resolved anonymous user id before reissuing a token. On deny the route returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
+- The create path is rate-limited by forwarded client IP headers with a stable fallback before minting a user/token. On deny the route returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
+- The refresh path is rate-limited twice by the resolved anonymous user id. Validation spends `auth_http_refresh` (capacity 10), which is deliberately well above a normal page load: a load validates the cached token at least twice, and charging that to the strict `auth_http` bucket (capacity 2) made ordinary reloads return `429`. Reissuing a token is a write, so it also spends `auth_http`.
 
 ### Known anonymous deletion gap
 

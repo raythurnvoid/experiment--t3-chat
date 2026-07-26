@@ -57,6 +57,14 @@ const rate_limiter_CONFIG = {
 	ai_chat_thread_write: STRICT_WRITE,
 	ai_inline_http: STRICT_AI_HTTP,
 	auth_http: STRICT_AUTH_OR_BILLING,
+	// Validating a cached anonymous token is a read, and every page load does it at least twice.
+	// Keep the ceiling well above ordinary reloads so a replayed token still cannot flood the route.
+	auth_http_refresh: {
+		kind: "token bucket",
+		rate: 60,
+		period: MINUTE,
+		capacity: 10,
+	},
 	billing_action: STRICT_AUTH_OR_BILLING,
 	comments_write: STRICT_WRITE,
 	files_pending_update_write: BULK_FILES_WRITE,

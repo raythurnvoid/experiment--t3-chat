@@ -991,6 +991,37 @@ export function users_http_routes(router: RouterForConvexModules) {
 									return { status: 401, body: { message: "Invalid token" } } as const;
 								}
 
+								// Charge validation against the read limiter, not the auth write limiter. Every
+								// page load validates the cached token at least twice, and `auth_http` has
+								// capacity 2. An ordinary reload therefore returned 429, and the client answered
+								// that by minting a new anonymous user. The previous user's workspace became
+								// unreachable.
+								const readRateLimit = await rate_limiter_limit_by_key(ctx, {
+									name: "auth_http_refresh",
+									key: userWithAnagraphicAndAnonToken.user._id,
+								});
+								if (readRateLimit) {
+									return {
+										status: 429,
+										body: {
+											message: readRateLimit.message,
+											retryAfterMs: readRateLimit.retryAfterMs,
+										},
+									} as const;
+								}
+
+								// Let a token that is still far from expiry take the read-only fast path.
+								if (
+									authFromToken.expiresAt &&
+									authFromToken.expiresAt > Date.now() + ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS
+								) {
+									return {
+										status: 200,
+										body: { token: body.token, userId: userWithAnagraphicAndAnonToken.user._id },
+									} as const;
+								}
+
+								// Reissuing writes, so it also spends the stricter auth limiter.
 								const rateLimit = await rate_limiter_limit_by_key(ctx, {
 									name: "auth_http",
 									key: userWithAnagraphicAndAnonToken.user._id,
@@ -1002,16 +1033,6 @@ export function users_http_routes(router: RouterForConvexModules) {
 											message: rateLimit.message,
 											retryAfterMs: rateLimit.retryAfterMs,
 										},
-									} as const;
-								}
-
-								if (
-									authFromToken.expiresAt &&
-									authFromToken.expiresAt > Date.now() + ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS
-								) {
-									return {
-										status: 200,
-										body: { token: body.token, userId: userWithAnagraphicAndAnonToken.user._id },
 									} as const;
 								}
 
