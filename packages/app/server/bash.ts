@@ -3494,6 +3494,31 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		});
 
+		test("finds content whose phrase spans a chunk boundary", async () => {
+			// Chunks are cut at a hard character offset with no overlap (see OVERLAP in
+			// files-markdown-chunking-mastra.ts), so a phrase across the cut lives in no single chunk.
+			// Recall must not depend on overlap: the per-chunk term index still has to surface the file.
+			const phrase = "quarterly revenue reconciliation";
+			const filler = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ";
+			const { run } = await create_bash_runner({
+				extraFiles: [
+					{
+						path: "/split/boundary.md",
+						content: `# Report\n\n${filler.repeat(20).slice(0, 1190)}${phrase} tail words follow.\n`,
+					},
+				],
+			});
+
+			const result = await run(`search --limit 5 "${phrase}"`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toContain("Found 1 results");
+			expect(result.stdout).toContain("/split/boundary.md");
+			// The snippet shows the side of the cut that holds most of the phrase, and flags the rest.
+			expect(result.stdout).toContain("revenue reconciliation tail words follow.");
+			expect(result.stdout).toContain("... more content above");
+		});
+
 		test("keeps word-level-only search pages full and the continuation reachable", async () => {
 			// Broad file is seeded first so the limit-1 first page holds only the word-level hit;
 			// the exact match lives on the next page and must stay reachable via Next page.

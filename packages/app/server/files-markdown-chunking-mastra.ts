@@ -14,9 +14,17 @@ export const files_chunk_BITMASK_FLAGS = {
 const MARKDOWN_TABLE_SEPARATOR_REGEX = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
 const MAX_CHUNK_SIZE = 1200;
 
-// TODO: Confirm whether this pipeline should use chunk overlap at all; current app usage keeps it at 0.
-// Observation: we removed local fallback searching and now rely on Mastra startIndex metadata directly.
-// Also tests would need to be updated to handle overlap.
+// Overlap must stay 0: chunks are required to tile the document exactly. `files_merge_contiguous_chunks`
+// (convex/files_nodes.ts) returns null as soon as a chunk does not start where the previous one ended,
+// and its callers turn that into `usable: false`, so any non-zero overlap makes every multi-chunk read
+// of an app file unusable. Overlapping `startIndex`/`endIndex` ranges would also duplicate text in
+// `search` pages, which paginate by chunk.
+//
+// The cost is real but small: an over-size section is cut at a hard character offset, so a phrase lying
+// across the cut is in no single chunk and cannot be reported as an exact chunk match. Recall survives
+// because the full-text index scores each chunk on its own terms and both halves stay searchable — see
+// `bash.ts > finds content whose phrase spans a chunk boundary`. If boundary recall ever needs
+// improving, split over-size sections on word boundaries rather than reintroducing overlap.
 const OVERLAP = 0;
 
 /**

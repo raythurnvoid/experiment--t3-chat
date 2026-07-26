@@ -140,6 +140,30 @@ describe("files_chunk_markdown", () => {
 		expect(chunks._yay.every((chunk) => chunk.lineStart === 1 && chunk.lineEnd === 1)).toBe(true);
 	});
 
+	test("splits a phrase that straddles the size cut, and never overlaps to avoid it", async () => {
+		// Documents the cost of `OVERLAP = 0`: an over-size section is cut at a hard character
+		// offset, so a phrase sitting across the cut is in no single chunk. Overlap is not the fix —
+		// `files_merge_contiguous_chunks` requires each chunk to start exactly where the last ended.
+		// Search still finds this content; `bash.ts > finds content whose phrase spans a chunk
+		// boundary` is the end-to-end guard for that.
+		const phrase = "quarterly revenue reconciliation";
+		const filler = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ";
+		const markdownContent = `# Report\n\n${filler.repeat(20).slice(0, 1190)}${phrase} tail words follow.\n`;
+
+		const chunks = await files_chunk_markdown(markdownContent);
+		if (chunks._nay) throw new Error("Expected markdown chunking to succeed", { cause: chunks._nay });
+
+		expect(markdownContent).toContain(phrase);
+		expect(chunks._yay.some((chunk) => chunk.markdownChunk.includes(phrase))).toBe(false);
+		// Both halves survive, each in its own chunk, which is why per-chunk term search still hits.
+		expect(chunks._yay.some((chunk) => chunk.markdownChunk.includes("quarterly"))).toBe(true);
+		expect(chunks._yay.some((chunk) => chunk.markdownChunk.includes("revenue reconciliation"))).toBe(true);
+		// No overlap: neighbours meet exactly, so merged reads reproduce the source without repeats.
+		for (let i = 1; i < chunks._yay.length; i++) {
+			expect(chunks._yay[i]!.startIndex).toBe(chunks._yay[i - 1]!.endIndex);
+		}
+	});
+
 	test("handles consecutive blank lines (regression)", async () => {
 		// Tiptap's markdown serializer can emit multiple blank lines (>=2) between blocks,
 		// which produce adjacent separator matches in the chunker. Previously the 'start'
