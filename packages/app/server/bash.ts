@@ -34,6 +34,7 @@ import {
 	defineCommand,
 	InMemoryFs,
 	MountableFs,
+	type Command,
 	type CommandName,
 	type CpOptions,
 	type FileContent,
@@ -992,6 +993,23 @@ async function bash_fs_create(args: {
 		}
 	}
 
+	// App commands answer a usage mistake on stderr, usually with a `Try:` line naming the command
+	// that works. That answer is tool guidance, not program output, but `2>/dev/null` deletes it and
+	// a pipe replaces the non-zero exit with the last stage's 0 — leaving an empty stdout and exit 0
+	// that reads as "nothing is there". Record what each app command really printed so the run can
+	// restore guidance the shell swallowed.
+	const appCommandDiagnostics: { name: string; exitCode: number; stderr: string }[] = [];
+	const record_app_command_diagnostics = (command: Command): Command => ({
+		...command,
+		execute: async (commandArgs, commandCtx) => {
+			const result = await command.execute(commandArgs, commandCtx);
+			if (result.exitCode !== 0 && result.stderr) {
+				appCommandDiagnostics.push({ name: command.name, exitCode: result.exitCode, stderr: result.stderr });
+			}
+			return result;
+		},
+	});
+
 	const bash = new Bash({
 		fs,
 		cwd,
@@ -1030,7 +1048,7 @@ async function bash_fs_create(args: {
 			bash_which_command_create(),
 			// Native /tmp wrappers.
 			...native_just_bash_tmp_command_create_all(currentWorkspacePath),
-		],
+		].map(record_app_command_diagnostics),
 		executionLimits: {
 			maxCommandCount: 200,
 			maxLoopIterations: 10_000,
@@ -1081,6 +1099,7 @@ async function bash_fs_create(args: {
 			tmpFs.dirty = false;
 		},
 		path_index_truncated: () => appDbFilesFs.pathIndexTruncated,
+		app_command_diagnostics: () => appCommandDiagnostics,
 		truncate_output,
 		format_output: format_bash_output,
 	};
@@ -1172,6 +1191,23 @@ export async function bash_run_command(
 			(redirectsStderrToStdout && SET_INVALID_OPTION_REGEX.test(result.stdout)))
 	) {
 		result.stderr += "bash: `set -euo pipefail` is unsupported; retry without strict-mode boilerplate.\n";
+	}
+
+	// Restore app-command guidance the shell swallowed. `find … 2>/dev/null | head` discards the
+	// `Try:` line and reports exit 0, so the model sees an empty successful result and can report
+	// "no matching files" as fact. The guidance is the tool answering the mistake, so it survives
+	// redirection; anything still visible in the transcript is skipped so nothing is printed twice.
+	const restoredDiagnostics = new Set<string>();
+	for (const diagnostic of bashFs.app_command_diagnostics()) {
+		const guidance = diagnostic.stderr.trim();
+		if (!guidance || restoredDiagnostics.has(guidance)) {
+			continue;
+		}
+		if (result.stdout.includes(guidance) || result.stderr.includes(guidance)) {
+			continue;
+		}
+		restoredDiagnostics.add(guidance);
+		result.stderr += `bash: ${diagnostic.name} exited ${diagnostic.exitCode} and its stderr was discarded; it said:\n${guidance}\n`;
 	}
 
 	// Only paths under HOME, `/tmp`, and the read-only `/.mounts` and `/.plugins` trees survive between
@@ -1997,6 +2033,34 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).toContain("bash: set: -o: invalid option");
 			expect(result.stderr).toContain("`set -euo pipefail` is unsupported");
 			expect(result.stderr).toContain("retry without strict-mode boilerplate");
+		});
+
+		test("restores app-command guidance that the shell swallowed", async () => {
+			const { run } = await create_bash_runner();
+
+			// `2>/dev/null` drops the `Try:` line and the pipe turns exit 2 into head's exit 0, so
+			// without the restore the model sees an empty successful result and reports "not found".
+			const blinded = await run(`find ${test_db_files_mount} -type f -iname 'readme*' 2>/dev/null | head -n 5`);
+
+			expect(blinded.metadata.exitCode).toBe(0);
+			expect(blinded.stdout).toBe("");
+			expect(blinded.stderr).toContain("find exited 2 and its stderr was discarded");
+			expect(blinded.stderr).toContain("-name/-iname use indexed app-file path word search");
+			expect(blinded.stderr).toContain("or use words like `readme`");
+		});
+
+		test("does not repeat app-command guidance that is already visible", async () => {
+			const { run } = await create_bash_runner();
+
+			const plain = await run(`find ${test_db_files_mount} -type f -iname 'readme*'`);
+			const merged = await run(`find ${test_db_files_mount} -type f -iname 'readme*' 2>&1 || true`);
+
+			expect(plain.metadata.exitCode).toBe(2);
+			expect(plain.stderr).toContain("-name/-iname use indexed app-file path word search");
+			expect(plain.stderr).not.toContain("its stderr was discarded");
+			// `2>&1` keeps the guidance, just on stdout, so it must not be printed a second time.
+			expect(merged.stdout).toContain("-name/-iname use indexed app-file path word search");
+			expect(merged.stderr).not.toContain("its stderr was discarded");
 		});
 
 		test("does not treat file content as an unknown command", async () => {
