@@ -490,44 +490,6 @@
 	}
 	/* #endregion tool bash */
 
-	/* #region tool write_file */
-	.AiChatMessagePartToolWritePage {
-		display: flex;
-		flex-direction: column;
-
-		padding: 0 24px 16px 24px;
-	}
-
-	.AiChatMessagePartToolWritePage-header {
-		display: flex;
-		justify-content: start;
-	}
-	.AiChatMessagePartToolWritePage-header-title {
-		contain: content;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.AiChatMessagePartToolWritePage-header-actions {
-		display: inline-flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.AiChatMessagePartToolWritePage-header-icon {
-		width: 16px;
-		height: 16px;
-	}
-
-	.AiChatMessagePartToolWritePage-diff {
-		margin-top: 4px;
-
-		> .DiffMonospaceBlock-line {
-			white-space: pre;
-		}
-	}
-	/* #endregion tool write_file */
-
 	/* #region tool unknown */
 	.AiChatMessagePartToolUnknown-meta {
 		display: flex;

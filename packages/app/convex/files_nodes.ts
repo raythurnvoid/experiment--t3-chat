@@ -75,7 +75,6 @@ import {
 } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
-import { minimatch } from "minimatch";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
@@ -647,33 +646,6 @@ export type files_nodes_get_by_path_Result =
 	typeof get_by_path extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
-
-async function db_resolve_tree_node_id_from_path(
-	ctx: QueryCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		path: string;
-	},
-) {
-	if (args.path === "/") return files_ROOT_ID;
-
-	const fileNodeByMaterializedPath = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("path", args.path)
-				.eq("archiveOperationId", undefined),
-		)
-		.first();
-	if (fileNodeByMaterializedPath) {
-		return fileNodeByMaterializedPath._id;
-	}
-
-	return null;
-}
 
 async function resolve_parent_path_from_parent_id(
 	ctx: QueryCtx,
@@ -4188,165 +4160,6 @@ export type files_nodes_search_paths_Result =
 	typeof search_paths extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
-
-function matches_path(absPath: string, include: string | undefined) {
-	return include ? minimatch(absPath, include) : true;
-}
-
-export const list_files = internalQuery({
-	args: {
-		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
-		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		path: v.string(),
-		maxDepth: v.number(),
-		limit: v.number(),
-		include: v.optional(v.string()),
-	},
-	returns: v.object({
-		items: v.array(
-			v.object({
-				path: v.string(),
-				kind: v.union(v.literal("folder"), v.literal("file")),
-				updatedAt: v.number(),
-				depthTruncated: v.boolean(),
-			}),
-		),
-		truncated: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		// TODO: when truncating, we truncate the total docs but we don't tell the LLM if we truncated in depth
-		const startNodeId = await db_resolve_tree_node_id_from_path(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			path: args.path,
-		});
-		if (!startNodeId) return { items: [], truncated: false };
-
-		if (startNodeId !== files_ROOT_ID) {
-			const startNode = await ctx.db.get("files_nodes", startNodeId);
-			if (!startNode || startNode.kind !== "folder") {
-				return startNode && matches_path(args.path, args.include)
-					? {
-							items: [
-								{
-									path: startNode.path,
-									kind: startNode.kind,
-									updatedAt: startNode.updatedAt,
-									depthTruncated: false,
-								},
-							],
-							truncated: false,
-						}
-					: { items: [], truncated: false };
-			}
-		}
-
-		// Normalize base path to an absolute path string (leading slash, no trailing slash except root)
-		const basePath = args.path;
-		const maxDepth = Math.max(0, Math.min(10, args.maxDepth));
-		const limit = Math.max(1, Math.min(20, args.limit));
-		const include = args.include;
-
-		const matchesInclude = (absPath: string) => matches_path(absPath, include);
-
-		const results: Array<{
-			path: string;
-			kind: Doc<"files_nodes">["kind"];
-			updatedAt: number;
-			depthTruncated: boolean;
-		}> = [];
-		let truncated = false;
-
-		// Depth-first traversal using an explicit stack.
-		// We iterate children via an indexed query (async iterable) and dive deeper first.
-		const stack: Array<{
-			parentId: Doc<"files_nodes">["parentId"];
-			absPath: string;
-			depth: number;
-			iterator: AsyncIterator<Doc<"files_nodes">> | null;
-		}> = [{ parentId: startNodeId, absPath: basePath, depth: 0, iterator: null }];
-
-		try {
-			// Iterate 1 extra time (less or equal `limit`) to flag the truncation
-			while (stack.length && results.length <= limit) {
-				const frame = stack.at(-1)!;
-
-				// Lazily fetch children by parentId via index; avoid .collect()
-				const iterator =
-					frame.iterator ??
-					ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("parentId", frame.parentId)
-								.eq("archiveOperationId", undefined),
-						)
-						[Symbol.asyncIterator]();
-				// Keep the iterator on the frame immediately so file children and
-				// non-matching children do not restart sibling traversal from the first doc.
-				frame.iterator = iterator;
-
-				const iteratorItem = await iterator.next();
-
-				// No more children at this frame or file is empty or `maxDepth` is reached
-				if (iteratorItem.done) {
-					stack.pop();
-					// Clean up the iterator
-					await iterator.return?.();
-
-					continue;
-				}
-
-				const child = iteratorItem.value;
-				const childPath = path_join(frame.absPath, child.name);
-
-				// If include pattern is provided, only add items that match the glob
-				if (matchesInclude(childPath)) {
-					if (results.length < limit && frame.depth <= maxDepth) {
-						results.push({ path: childPath, kind: child.kind, updatedAt: child.updatedAt, depthTruncated: false });
-					}
-					// Respect the `maxDepth` and mark the depth truncation
-					else if (frame.depth > maxDepth) {
-						stack.pop();
-						// Clean up the iterator
-						await iterator.return?.();
-
-						const lastResult = results.at(-1);
-						if (lastResult) {
-							lastResult.depthTruncated = true;
-						}
-
-						continue;
-					}
-					// Respect `limit` and mark the truncation
-					else {
-						truncated = true;
-						break;
-					}
-				}
-
-				// Then, push the child to dive deeper first (pre-order/JSON.stringify-like walk)
-				const nextDepth = frame.depth + 1;
-				// less or equal `maxDepth` to allow the extra depth iteration
-				if (child.kind === "folder" && nextDepth <= maxDepth + 1) {
-					stack.push({
-						parentId: child._id,
-						absPath: childPath,
-						depth: nextDepth,
-						iterator: null,
-					});
-				}
-			}
-		} finally {
-			// Clean up the iterators
-			await Promise.all(stack.map((frame) => frame.iterator?.return?.()).filter((x) => x != null));
-		}
-
-		return { items: results, truncated };
-	},
-});
 
 export const file_content_materialization_state_validator = v.object({
 	fileNode: doc(app_convex_schema, "files_nodes"),

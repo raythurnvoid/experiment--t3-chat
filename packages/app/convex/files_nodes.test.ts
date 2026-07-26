@@ -171,64 +171,6 @@ async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"user
 	});
 }
 
-async function seed_file_first_list_fixture(ctx: MutationCtx) {
-	const membership = await test_mocks_fill_db_with.membership(ctx);
-	const fixtureFolderId = await ctx.db.insert("files_nodes", {
-		...test_mocks.files.base(),
-		organizationId: membership.organizationId,
-		workspaceId: membership.workspaceId,
-		createdBy: membership.userId,
-		updatedBy: membership.userId,
-		parentId: files_ROOT_ID,
-		name: "fixture",
-		kind: "folder",
-		path: "/fixture",
-		treePath: "/fixture/",
-		updatedAt: 1,
-	});
-	await ctx.db.insert("files_nodes", {
-		...test_mocks.files.base(),
-		organizationId: membership.organizationId,
-		workspaceId: membership.workspaceId,
-		createdBy: membership.userId,
-		updatedBy: membership.userId,
-		parentId: fixtureFolderId,
-		name: "00-source.md",
-		kind: "file",
-		path: "/fixture/00-source.md",
-		treePath: "/fixture/00-source.md",
-		updatedAt: 2,
-	});
-	const nestedFolderId = await ctx.db.insert("files_nodes", {
-		...test_mocks.files.base(),
-		organizationId: membership.organizationId,
-		workspaceId: membership.workspaceId,
-		createdBy: membership.userId,
-		updatedBy: membership.userId,
-		parentId: fixtureFolderId,
-		name: "nested",
-		kind: "folder",
-		path: "/fixture/nested",
-		treePath: "/fixture/nested/",
-		updatedAt: 3,
-	});
-	await ctx.db.insert("files_nodes", {
-		...test_mocks.files.base(),
-		organizationId: membership.organizationId,
-		workspaceId: membership.workspaceId,
-		createdBy: membership.userId,
-		updatedBy: membership.userId,
-		parentId: nestedFolderId,
-		name: "glob-target.md",
-		kind: "file",
-		path: "/fixture/nested/glob-target.md",
-		treePath: "/fixture/nested/glob-target.md",
-		updatedAt: 4,
-	});
-
-	return membership;
-}
-
 async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	const membership = await test_mocks_fill_db_with.membership(ctx);
 	const docsFolderId = await ctx.db.insert("files_nodes", {
@@ -353,183 +295,6 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 
 	return { ...membership, docsFolderId };
 }
-
-test("list_files_new", async () => {
-	const t = test_convex();
-	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
-	const asUser = t.withIdentity({
-		issuer: "https://clerk.test",
-		external_id: db.userId,
-		name: "Test User",
-	});
-
-	const result_root = await asUser.query(internal.files_nodes.list_files, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		path: "/",
-		maxDepth: 10,
-		limit: 100,
-	});
-
-	expect(result_root.items).toHaveLength(Object.keys(db.files).length);
-
-	expect(result_root.items[0], "The first result must be the first file at the root").toStrictEqual({
-		path: `/${db.files.file_root_1.name}`,
-		kind: "folder",
-		updatedAt: db.files.file_root_1.updatedAt,
-		depthTruncated: false,
-	});
-
-	expect(result_root.items[1], "The list must be depth-first").toStrictEqual({
-		path: `/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}`,
-		kind: "folder",
-		updatedAt: db.files.file_root_1_child_1.updatedAt,
-		depthTruncated: false,
-	});
-	expect(result_root.items[2], "The list must be depth-first").toStrictEqual({
-		path: `/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}/${db.files.file_root_1_child_1_deep_1.name}`,
-		kind: "folder",
-		updatedAt: db.files.file_root_1_child_1_deep_1.updatedAt,
-		depthTruncated: false,
-	});
-
-	expect(result_root.truncated).toBe(false);
-
-	const result_under_root1 = await asUser.query(internal.files_nodes.list_files, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		path: `/${db.files.file_root_1.name}`,
-		maxDepth: 10,
-		limit: 100,
-	});
-
-	expect(result_under_root1.items).toHaveLength(
-		[db.files.file_root_1_child_1, db.files.file_root_1_child_1_deep_1, db.files.file_root_1_child_2].length,
-	);
-
-	expect(result_under_root1.items[0], "The first result must be the first child of the root").toStrictEqual({
-		path: `/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}`,
-		kind: "folder",
-		updatedAt: db.files.file_root_1_child_1.updatedAt,
-		depthTruncated: false,
-	});
-
-	// Depth truncation flagging: with maxDepth 1, the first child with deeper matches should be marked
-	const result_depth1 = await asUser.query(internal.files_nodes.list_files, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		path: "/",
-		maxDepth: 1,
-		limit: 100,
-	});
-
-	expect(result_depth1.items[1]).toStrictEqual({
-		path: `/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}`,
-		kind: "folder",
-		updatedAt: db.files.file_root_1_child_1.updatedAt,
-		depthTruncated: true,
-	});
-});
-
-describe("list_files", () => {
-	test("clamps high requested limits to the aggressive internal cap", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => {
-			const membership = await test_mocks_fill_db_with.membership(ctx);
-			for (let index = 0; index < 25; index++) {
-				const name = `file-${String(index).padStart(2, "0")}.md`;
-				await ctx.db.insert("files_nodes", {
-					...test_mocks.files.base(),
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					createdBy: membership.userId,
-					updatedBy: membership.userId,
-					parentId: files_ROOT_ID,
-					name,
-					kind: "file",
-					path: `/${name}`,
-					treePath: `/${name}`,
-					updatedAt: index,
-				});
-			}
-			return membership;
-		});
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Test User",
-		});
-
-		const result = await asUser.query(internal.files_nodes.list_files, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			path: "/",
-			maxDepth: 10,
-			limit: 100,
-		});
-
-		expect(result.items).toHaveLength(20);
-		expect(result.items[0]?.path).toBe("/file-00.md");
-		expect(result.items.at(-1)?.path).toBe("/file-19.md");
-		expect(result.truncated).toBe(true);
-	});
-
-	test("continues sibling traversal after a file child", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => seed_file_first_list_fixture(ctx));
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Test User",
-		});
-
-		const result = await asUser.query(internal.files_nodes.list_files, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			path: "/fixture",
-			maxDepth: 10,
-			limit: 10,
-		});
-
-		expect(result.truncated).toBe(false);
-		expect(result.items.map((item) => item.path)).toEqual([
-			"/fixture/00-source.md",
-			"/fixture/nested",
-			"/fixture/nested/glob-target.md",
-		]);
-	});
-
-	test("finds include matches after non-matching file siblings", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => seed_file_first_list_fixture(ctx));
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Test User",
-		});
-
-		const result = await asUser.query(internal.files_nodes.list_files, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			path: "/fixture",
-			maxDepth: 10,
-			limit: 10,
-			include: "**/glob-target.md",
-		});
-
-		expect(result).toEqual({
-			items: [
-				{
-					path: "/fixture/nested/glob-target.md",
-					kind: "file",
-					updatedAt: 4,
-					depthTruncated: false,
-				},
-			],
-			truncated: false,
-		});
-	});
-});
 
 describe("paginated bash listing queries", () => {
 	test("list_tree returns active and archived nodes in treePath order", async () => {
@@ -1018,7 +783,7 @@ describe("paginated bash listing queries", () => {
 	});
 });
 
-test("generated sibling file is visible in tree and list queries", async () => {
+test("generated sibling file is visible in the tree query", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({
@@ -1053,23 +818,16 @@ test("generated sibling file is visible in tree and list queries", async () => {
 		return { sourceNodeId, markdownNodeId };
 	});
 
-	const [treeNodesList, filesList] = await Promise.all([
-		asUser.query(api.files_nodes.list_tree, {
-			membershipId: db.membershipId,
-		}),
-		asUser.query(internal.files_nodes.list_files, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			path: "/",
-			maxDepth: 10,
-			limit: 100,
-		}),
-	]);
+	const treeNodesList = await asUser.query(api.files_nodes.list_tree, {
+		membershipId: db.membershipId,
+	});
 
 	const treeNodeIds = treeNodesList.map((fileNode) => fileNode._id);
 	expect(treeNodeIds).toContain(sourceNodeId);
 	expect(treeNodeIds).toContain(markdownNodeId);
-	expect(filesList.items.map((item) => item.path)).toEqual(expect.arrayContaining(["/report.pdf", "/report.pdf.md"]));
+	expect(treeNodesList.map((fileNode) => fileNode.path)).toEqual(
+		expect.arrayContaining(["/report.pdf", "/report.pdf.md"]),
+	);
 });
 
 test("get_by_path uses materialized paths", async () => {

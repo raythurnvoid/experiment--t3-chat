@@ -3,16 +3,6 @@ import type { Doc } from "../convex/_generated/dataModel";
 import type {
 	ai_chat_tool_create_bash_ToolInput,
 	ai_chat_tool_create_bash_ToolOutput,
-	ai_chat_tool_create_read_file_ToolInput,
-	ai_chat_tool_create_read_file_ToolOutput,
-	ai_chat_tool_create_list_files_ToolInput,
-	ai_chat_tool_create_list_files_ToolOutput,
-	ai_chat_tool_create_glob_files_ToolInput,
-	ai_chat_tool_create_glob_files_ToolOutput,
-	ai_chat_tool_create_grep_files_ToolInput,
-	ai_chat_tool_create_grep_files_ToolOutput,
-	ai_chat_tool_create_write_file_ToolInput,
-	ai_chat_tool_create_write_file_ToolOutput,
 	ai_chat_tool_create_edit_file_ToolInput,
 	ai_chat_tool_create_edit_file_ToolOutput,
 	ai_chat_tool_create_web_search_ToolInput,
@@ -77,26 +67,6 @@ export type ai_chat_AiSdk5UiTools = {
 	bash: {
 		input: ai_chat_tool_create_bash_ToolInput;
 		output: ai_chat_tool_create_bash_ToolOutput;
-	};
-	read_file: {
-		input: ai_chat_tool_create_read_file_ToolInput;
-		output: ai_chat_tool_create_read_file_ToolOutput;
-	};
-	list_files: {
-		input: ai_chat_tool_create_list_files_ToolInput;
-		output: ai_chat_tool_create_list_files_ToolOutput;
-	};
-	glob_files: {
-		input: ai_chat_tool_create_glob_files_ToolInput;
-		output: ai_chat_tool_create_glob_files_ToolOutput;
-	};
-	grep_files: {
-		input: ai_chat_tool_create_grep_files_ToolInput;
-		output: ai_chat_tool_create_grep_files_ToolOutput;
-	};
-	write_file: {
-		input: ai_chat_tool_create_write_file_ToolInput;
-		output: ai_chat_tool_create_write_file_ToolOutput;
 	};
 	edit_file: {
 		input: ai_chat_tool_create_edit_file_ToolInput;

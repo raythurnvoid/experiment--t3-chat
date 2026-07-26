@@ -3064,17 +3064,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(paginatedCalls).toHaveLength(0);
 		});
 
-		test("does not use the legacy capped list_files query for app ls", async () => {
-			const { run, runQuery } = await create_bash_runner();
-
-			await run(`ls ${test_db_files_mount}/docs`);
-
-			const listCalls = runQuery.mock.calls
-				.map((call) => call[1])
-				.filter((args) => args && typeof args === "object" && "maxDepth" in args);
-			expect(listCalls).toHaveLength(0);
-		});
-
 		test("resolves exact parent folders through db-files path lookups", async () => {
 			const { run, runQuery } = await create_bash_runner();
 

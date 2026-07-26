@@ -35,11 +35,6 @@ import { files_READ_RANGE_MAX_LINES } from "./files_nodes.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
 	ai_chat_tool_create_bash,
-	ai_chat_tool_create_list_files,
-	ai_chat_tool_create_read_file,
-	ai_chat_tool_create_glob_files,
-	ai_chat_tool_create_grep_files,
-	ai_chat_tool_create_write_file,
 	ai_chat_tool_create_edit_file,
 	ai_chat_tool_create_web_search,
 	ai_chat_tool_create_execute_code,
@@ -103,11 +98,6 @@ function ai_chat_system_prompt(args: { organizationName: string; workspaceName: 
 
 const ASK_MODE_SYSTEM_PROMPT_SUFFIX =
 	"Ask mode is for reading, searching, and answering. Durable folder and file changes are handled in Agent mode; /tmp scratch is durable per chat thread but is not app file storage.";
-
-// write_file is replaced by Bash heredoc/redirect writes for NEW generations; it stays in the
-// tools registry (and in ai_chat_WRITE_TOOL_NAMES) so historical thread messages keep validating
-// and Ask mode keeps stripping edit_file.
-const BASH_REPLACED_TOOL_NAMES = ["read_file", "list_files", "glob_files", "grep_files", "write_file"] as const;
 
 /**
  * Resolve the persisted context for a client-provided parent message id.
@@ -206,27 +196,16 @@ function build_agent_configuration(input: {
 		bash: ai_chat_tool_create_bash(ctx, toolCtxData, {
 			allowDbFilesMkdir: modeId === "agent",
 		}),
-		read_file: ai_chat_tool_create_read_file(ctx, ctxData),
-		list_files: ai_chat_tool_create_list_files(ctx, ctxData),
-		glob_files: ai_chat_tool_create_glob_files(ctx, ctxData),
-		grep_files: ai_chat_tool_create_grep_files(ctx, ctxData),
-		write_file: ai_chat_tool_create_write_file(ctx, toolCtxData),
 		edit_file: ai_chat_tool_create_edit_file(ctx, toolCtxData),
 		web_search: ai_chat_tool_create_web_search(),
 		execute_code: ai_chat_tool_create_execute_code(ctx, toolCtxData),
 	};
 
 	const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);
-	const bashReplacedToolNames = new Set<string>(BASH_REPLACED_TOOL_NAMES);
 
-	// Keep the full tool registry for validation. Generation uses bash for
-	// read/search parity while historical legacy-tool messages still validate.
-	const activeTools = (Object.keys(tools) as Array<keyof typeof tools>).filter((name) => {
-		if (bashReplacedToolNames.has(name)) {
-			return false;
-		}
-		return modeId === "ask" ? !writeToolNames.has(name) : true;
-	});
+	const activeTools = (Object.keys(tools) as Array<keyof typeof tools>).filter((name) =>
+		modeId === "ask" ? !writeToolNames.has(name) : true,
+	);
 
 	return {
 		systemPrompt:
@@ -2079,17 +2058,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		name: "Test User",
 	} as unknown as build_agent_configuration_test_user_identity;
 
-	const build_agent_configuration_expected_tool_keys = [
-		"bash",
-		"read_file",
-		"list_files",
-		"glob_files",
-		"grep_files",
-		"write_file",
-		"edit_file",
-		"web_search",
-		"execute_code",
-	] as const;
+	const build_agent_configuration_expected_tool_keys = ["bash", "edit_file", "web_search", "execute_code"] as const;
 
 	const makeCtx = (args?: {
 		runQueryImpl?: (...fnArgs: unknown[]) => Promise<unknown>;
@@ -2169,7 +2138,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("build_agent_configuration", () => {
-		test("returns the full tool registry and keeps edit_file active in Agent mode", () => {
+		test("returns the tool registry and keeps edit_file active in Agent mode", () => {
 			const { ctx } = makeCtx();
 			const configuration = build_agent_configuration({
 				ctx,
@@ -2181,11 +2150,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			expect(Object.keys(configuration.tools)).toEqual(build_agent_configuration_expected_tool_keys);
-			// write_file stays registered for historical messages but is bash-replaced for generation.
 			expect(configuration.activeTools).toEqual(["bash", "edit_file", "web_search", "execute_code"]);
 		});
 
-		test("keeps the full tool registry but excludes write tools from activeTools in Ask mode", () => {
+		test("keeps the tool registry but excludes write tools from activeTools in Ask mode", () => {
 			const { ctx } = makeCtx();
 			const configuration = build_agent_configuration({
 				ctx,
