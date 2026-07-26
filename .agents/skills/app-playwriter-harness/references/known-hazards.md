@@ -105,6 +105,16 @@ Use this file for reusable problems that affect app browser QA.
 - The CLI wait timeout defaults to 10 seconds; it is not a sandbox cap. Pass a suitable `--timeout`. A CLI timeout does not cancel the runner, so verify app state before retrying. Keep interactive calls short, and poll durable state from outside through `convex data` or read-only `convex run` calls.
 - In multi-statement scripts, only `console.log(...)` output is printed; a bare trailing expression is not echoed (single-expression `-e` calls do echo their value as `[return value]`). A `console.log` after an in-call navigation can also be lost — split navigation and observation into separate calls.
 
+## A stale dev server silently disables the React Compiler
+
+Observed 2026-07-26: every route rendered `Something went wrong`, with `Too many re-renders` thrown from `MainAppHeaderOrganizationControls` — a component nobody had touched in 100 commits. The cause was not the component. The running Vite dev server was serving **uncompiled** modules: the React Compiler was applied to nothing under `src/`.
+
+- This repo relies on compiler memoization for correctness, not just speed. `AGENTS.md > Memoization` forbids `useMemo`/`useCallback` for identity stabilization because the compiler supplies it. So when the compiler stops, most components only get slower, but any component whose contract needs a stable identity breaks outright.
+- The one that breaks first is `main-app-header.tsx`: it passes an inline `Object.fromEntries(...)` to Convex `useQueries`, which memoizes its subscription on `[observer, queries]`, and Convex's `useSubscription` runs a render-phase `setState` whenever that identity changes. New object every render → `setState` every render → render loop.
+- Check whether the compiler is live by reading a module straight off the dev server: `curl -s localhost:5173/src/components/my-button.tsx | grep -c '_c('`. Greater than zero means compiled. Zero, plus no `react/compiler-runtime` import and no memoization comments (`enableMemoizationComments: true` is set in `vite.config.ts`), means it is not running.
+- The fix is restarting the dev server; touching `vite.config.ts` forces it. No source change. Root cause of the staleness was not identified — a poisoned transform cache from the Vite 8 upgrade is the suspect, on timing alone.
+- Do not "fix" the render loop by adding `useMemo` to the component. That contradicts the repo guideline and hides a dead compiler that is also silently costing every other component its memoization.
+
 ## R2 Upload Observability
 
 - Browser R2 uploads can record both a `200` response and a `requestfailed` entry with `net::ERR_ABORTED` for the same signed `PUT`. Treat durable Convex state and generated file visibility as the source of truth when the `200` completed and conversion finalized.
