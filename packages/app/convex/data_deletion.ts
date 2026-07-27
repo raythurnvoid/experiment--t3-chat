@@ -18,12 +18,6 @@ import {
 	organizations_DEFAULT_WORKSPACE_NAME,
 	organizations_DEFAULT_ORGANIZATION_NAME,
 } from "../shared/organizations.ts";
-import {
-	access_control_workspace_role_permission_grants,
-	access_control_db_ensure_role_assignment,
-	access_control_db_ensure_role_permission_grant,
-	access_control_organization_role_permission_grants,
-} from "./access_control.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
 import { files_nodes_db_hard_delete_node, files_nodes_db_is_eager_node_safe_to_hard_delete } from "./files_nodes.ts";
@@ -265,8 +259,9 @@ async function db_create_default_organization_and_workspace_for_user(
 		updatedAt: args.now,
 	});
 
-	// Wire the new tenant together: default-workspace pointer, quota docs,
-	// active membership, owner role, and user default pointers.
+	// Connect the new organization: point it at its default workspace, create the quota docs, add an
+	// active membership, and set the user's default organization and workspace. No role assignment:
+	// being in `organizations.ownerUserId` already gives the creator everything.
 	await Promise.all([
 		ctx.db.patch("organizations", organizationId, {
 			defaultWorkspaceId,
@@ -290,44 +285,11 @@ async function db_create_default_organization_and_workspace_for_user(
 			active: true,
 			updatedAt: args.now,
 		}),
-		access_control_db_ensure_role_assignment(ctx, {
-			organizationId,
-			workspaceId: defaultWorkspaceId,
-			userId: args.userId,
-			role: "owner",
-			now: args.now,
-		}),
 		ctx.db.patch("users", args.userId, {
 			defaultOrganizationId: organizationId,
 			defaultWorkspaceId,
 		}),
 	]);
-
-	// Seed organization-level grants from the canonical role permission list.
-	for (const grant of access_control_organization_role_permission_grants) {
-		await access_control_db_ensure_role_permission_grant(ctx, {
-			organizationId,
-			workspaceId: defaultWorkspaceId,
-			resourceKind: "organization",
-			resourceId: String(organizationId),
-			role: grant.role,
-			permission: grant.permission,
-			now: args.now,
-		});
-	}
-
-	// Seed workspace-level grants for the default home workspace.
-	for (const grant of access_control_workspace_role_permission_grants) {
-		await access_control_db_ensure_role_permission_grant(ctx, {
-			organizationId,
-			workspaceId: defaultWorkspaceId,
-			resourceKind: "workspace",
-			resourceId: String(defaultWorkspaceId),
-			role: grant.role,
-			permission: grant.permission,
-			now: args.now,
-		});
-	}
 
 	// Seeding the README needs an action (R2 writes), so it runs right after this mutation.
 	await ctx.scheduler.runAfter(0, internal.files_nodes.create_home_file, {
@@ -862,7 +824,7 @@ async function db_delete_workspace_structure_batch(
 
 	const roleAssignments = await ctx.db
 		.query("access_control_role_assignments")
-		.withIndex("by_organization_workspace_user_role", (q) =>
+		.withIndex("by_organization_workspace_user", (q) =>
 			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
 		)
 		.take(args.batchSize);
@@ -986,7 +948,7 @@ async function db_delete_organization_batch(
 
 	const roleAssignments = await ctx.db
 		.query("access_control_role_assignments")
-		.withIndex("by_organization_workspace_user_role", (q) => q.eq("organizationId", args.organizationId))
+		.withIndex("by_organization_workspace_user", (q) => q.eq("organizationId", args.organizationId))
 		.take(args.batchSize);
 	if (roleAssignments.length > 0) {
 		await Promise.all(roleAssignments.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)));
@@ -1000,6 +962,15 @@ async function db_delete_organization_batch(
 	if (permissionGrants.length > 0) {
 		await Promise.all(permissionGrants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)));
 		return { done: false, deletedCount: permissionGrants.length };
+	}
+
+	const customRoles = await ctx.db
+		.query("access_control_roles")
+		.withIndex("by_organization_normalizedName", (q) => q.eq("organizationId", args.organizationId))
+		.take(args.batchSize);
+	if (customRoles.length > 0) {
+		await Promise.all(customRoles.map((doc) => ctx.db.delete("access_control_roles", doc._id)));
+		return { done: false, deletedCount: customRoles.length };
 	}
 
 	const quotaDocs = await ctx.db
@@ -1045,7 +1016,7 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 	// - remove role and permission docs so the organization is no longer usable;
 	// - remove workspace memberships and keep the affected user ids for default
 	//   tenant checks below.
-	const [, , , userIdsPerWorkspace] = await Promise.all([
+	const [, , , , userIdsPerWorkspace] = await Promise.all([
 		data_deletion_db_request(ctx, {
 			userId: args.organizationOwnerUserId,
 			organizationId: args.organization._id,
@@ -1053,7 +1024,7 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 		}),
 		ctx.db
 			.query("access_control_role_assignments")
-			.withIndex("by_organization_workspace_user_role", (q) => q.eq("organizationId", args.organization._id))
+			.withIndex("by_organization_workspace_user", (q) => q.eq("organizationId", args.organization._id))
 			.collect()
 			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
 		ctx.db
@@ -1063,6 +1034,11 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 			)
 			.collect()
 			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
+		ctx.db
+			.query("access_control_roles")
+			.withIndex("by_organization_normalizedName", (q) => q.eq("organizationId", args.organization._id))
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_roles", doc._id)))),
 		ctx.db
 			.query("organizations_workspaces")
 			.withIndex("by_organization_default", (q) => q.eq("organizationId", args.organization._id))
@@ -1233,7 +1209,7 @@ async function db_finalize_deleted_user(
 			.collect(),
 		ctx.db
 			.query("access_control_role_assignments")
-			.withIndex("by_user_role_organization_workspace", (q) => q.eq("userId", user._id))
+			.withIndex("by_user_organization_workspace", (q) => q.eq("userId", user._id))
 			.collect(),
 		args.deleteUserAuth
 			? ctx.db
@@ -1462,13 +1438,12 @@ async function db_finalize_deleted_user(
 					quotaName: "extra_organizations",
 					userId: remainingMembership.userId,
 				}),
+				// Delete the new owner's role docs in every workspace, not only the default one — same
+				// reason as in `transfer_organization_ownership`.
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_organization_workspace_user_role", (q) =>
-						q
-							.eq("organizationId", organization._id)
-							.eq("workspaceId", defaultWorkspaceId)
-							.eq("userId", remainingMembership.userId),
+					.withIndex("by_organization_user_workspace", (q) =>
+						q.eq("organizationId", organization._id).eq("userId", remainingMembership.userId),
 					)
 					.collect(),
 			]);
@@ -1479,6 +1454,11 @@ async function db_finalize_deleted_user(
 			await Promise.all([
 				ctx.db.patch("organizations", organization._id, {
 					ownerUserId: remainingMembership.userId,
+					// Nobody chose this new owner: it is simply the first member the index returned.
+					// For an `organization_owner` organization, `billing_pick_billed_user_id` sends the
+					// bill to `ownerUserId`. If we left the mode alone, this person would quietly start
+					// paying for everyone else. As the new owner they can set it back.
+					billingMode: "user",
 					updatedAt: args.now,
 				}),
 				// The deleted owner's quota doc is already gone. Charge the organization
@@ -1486,13 +1466,6 @@ async function db_finalize_deleted_user(
 				ctx.db.patch("quotas", nextOwnerQuota._id, {
 					usedCount: nextOwnerQuota.usedCount + 1,
 					updatedAt: args.now,
-				}),
-				access_control_db_ensure_role_assignment(ctx, {
-					organizationId: organization._id,
-					workspaceId: defaultWorkspaceId,
-					userId: remainingMembership.userId,
-					role: "owner",
-					now: args.now,
 				}),
 			]);
 		}
@@ -1931,15 +1904,15 @@ export const hard_delete_user_data = internalMutation({
 				: null;
 		let defaultTenant: { organizationId: Id<"organizations">; defaultWorkspaceId: Id<"organizations_workspaces"> };
 
-		// Reuse the existing default tenant. First ensure its workspace quota doc;
-		// then below ensure the membership, owner role, and grant docs that make
-		// the default organization/workspace usable after reset.
+		// Reuse the existing default organization. First make sure its workspace quota doc exists, then
+		// below make sure the membership exists, so the default organization and workspace still work
+		// after the reset. Ownership needs no work: it lives on `organizations.ownerUserId`, which the
+		// reset never touches.
 		if (
 			organization?.default &&
 			workspace &&
 			workspace.organizationId === organization._id &&
 			organization.defaultWorkspaceId === workspace._id &&
-			workspace.default &&
 			membership
 		) {
 			await quotas_db_ensure(ctx, {
@@ -1996,41 +1969,18 @@ export const hard_delete_user_data = internalMutation({
 				}
 			}
 
-			// The user must remain owner of their personal/home workspace after reset.
-			await access_control_db_ensure_role_assignment(ctx, {
-				organizationId: organization._id,
-				workspaceId: workspace._id,
-				userId: user._id,
-				role: "owner",
-				now,
-			});
+			// This organization is not deleted by the reset, so we have to delete its custom roles here.
+			// Their number per organization is limited, so one pass is enough. Deleting them without
+			// first removing the docs that point at them is safe only here: this is the personal
+			// organization, `invite_user_to_organization_workspace` refuses it, and its only member is
+			// the owner, who has no role assignment. Everywhere else in this file we clean those docs
+			// first.
+			const customRoles = await ctx.db
+				.query("access_control_roles")
+				.withIndex("by_organization_normalizedName", (q) => q.eq("organizationId", organization._id))
+				.collect();
+			await Promise.all(customRoles.map((role) => ctx.db.delete("access_control_roles", role._id)));
 
-			// Re-seed organization-level grants. The helper is idempotent, so existing
-			// grants are reused and missing grants are recreated.
-			for (const grant of access_control_organization_role_permission_grants) {
-				await access_control_db_ensure_role_permission_grant(ctx, {
-					organizationId: organization._id,
-					workspaceId: workspace._id,
-					resourceKind: "organization",
-					resourceId: String(organization._id),
-					role: grant.role,
-					permission: grant.permission,
-					now,
-				});
-			}
-
-			// Re-seed workspace-level grants for the home workspace.
-			for (const grant of access_control_workspace_role_permission_grants) {
-				await access_control_db_ensure_role_permission_grant(ctx, {
-					organizationId: organization._id,
-					workspaceId: workspace._id,
-					resourceKind: "workspace",
-					resourceId: String(workspace._id),
-					role: grant.role,
-					permission: grant.permission,
-					now,
-				});
-			}
 			// Everything below must preserve these default organization/workspace docs.
 			defaultTenant = {
 				organizationId: organization._id,
@@ -2153,6 +2103,9 @@ export const hard_delete_user_data = internalMutation({
 		// Extra workspaces under the personal organization are user-owned data for this
 		// reset flow. Leave only the primary home workspace behind.
 		for (const workspace of defaultOrganizationWorkspaces) {
+			// Everywhere else only `organization.defaultWorkspaceId` decides which workspace is the
+			// default one. Here we also accept the `default` flag on purpose: this loop deletes, so if
+			// the two ever disagree we would rather keep one workspace too many than delete a home.
 			if (workspace._id === defaultTenant.defaultWorkspaceId || workspace.default) {
 				// This is the home workspace doc we intentionally kept.
 				continue;
@@ -2303,6 +2256,8 @@ export const hard_delete_user_data = internalMutation({
 			// only delete extra workspaces that have no active member other than the
 			// reset user.
 			for (const workspace of workspaces) {
+				// Same as the personal-organization loop above: this loop deletes, so it accepts the
+				// `default` flag as well as `organization.defaultWorkspaceId` and keeps either one.
 				if (workspace.default || workspace._id === organization.defaultWorkspaceId) {
 					// The organization default workspace carries the organization membership
 					// roster. Keep it.

@@ -10,10 +10,10 @@ export type MyTabsTab_ClassNames = "MyTabsTab";
 export type MyTabsTab_Props = Ariakit.TabProps;
 
 export const MyTabsTab = memo(function MyTabsTab(props: MyTabsTab_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	const { ref, className, children, ...rest } = props;
 
 	return (
-		<Ariakit.Tab ref={ref} id={id} className={cn("MyTabsTab" satisfies MyTabsTab_ClassNames, className)} {...rest}>
+		<Ariakit.Tab ref={ref} className={cn("MyTabsTab" satisfies MyTabsTab_ClassNames, className)} {...rest}>
 			{children}
 		</Ariakit.Tab>
 	);
@@ -61,12 +61,11 @@ export type MyTabsTabPrimaryAction_ClassNames = "MyTabsTabPrimaryAction";
 export type MyTabsTabPrimaryAction_Props = Ariakit.TabProps;
 
 export const MyTabsTabPrimaryAction = memo(function MyTabsTabPrimaryAction(props: MyTabsTabPrimaryAction_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	const { ref, className, children, ...rest } = props;
 
 	return (
 		<Ariakit.Tab
 			ref={ref}
-			id={id}
 			className={cn("MyTabsTabPrimaryAction" satisfies MyTabsTabPrimaryAction_ClassNames, className)}
 			{...rest}
 		>
@@ -81,9 +80,7 @@ export type MyTabsTabSecondaryAction_ClassNames = "MyTabsTabSecondaryAction";
 
 export type MyTabsTabSecondaryAction_Props = Omit<ComponentPropsWithRef<typeof MyIconButton>, "variant">;
 
-export const MyTabsTabSecondaryAction = memo(function MyTabsTabSecondaryAction(
-	props: MyTabsTabSecondaryAction_Props,
-) {
+export const MyTabsTabSecondaryAction = memo(function MyTabsTabSecondaryAction(props: MyTabsTabSecondaryAction_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -129,15 +126,10 @@ export type MyTabsPanel_ClassNames = "MyTabsPanel";
 export type MyTabsPanel_Props = Ariakit.TabPanelProps;
 
 export const MyTabsPanel = memo(function MyTabsPanel(props: MyTabsPanel_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	const { ref, className, children, ...rest } = props;
 
 	return (
-		<Ariakit.TabPanel
-			ref={ref}
-			id={id}
-			className={cn("MyTabsPanel" satisfies MyTabsPanel_ClassNames, className)}
-			{...rest}
-		>
+		<Ariakit.TabPanel ref={ref} className={cn("MyTabsPanel" satisfies MyTabsPanel_ClassNames, className)} {...rest}>
 			{children}
 		</Ariakit.TabPanel>
 	);
@@ -150,15 +142,10 @@ export type MyTabsList_ClassNames = "MyTabsList";
 export type MyTabsList_Props = Ariakit.TabListProps;
 
 export const MyTabsList = memo(function MyTabsList(props: MyTabsList_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	const { ref, className, children, ...rest } = props;
 
 	return (
-		<Ariakit.TabList
-			ref={ref}
-			id={id}
-			className={cn("MyTabsList" satisfies MyTabsList_ClassNames, className)}
-			{...rest}
-		>
+		<Ariakit.TabList ref={ref} className={cn("MyTabsList" satisfies MyTabsList_ClassNames, className)} {...rest}>
 			{children}
 		</Ariakit.TabList>
 	);

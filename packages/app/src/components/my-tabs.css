@@ -33,7 +33,7 @@
 		line-height: 1;
 
 		background: transparent;
-		color: var(--color-fg-06);
+		color: var(--color-fg-07);
 
 		cursor: pointer;
 		user-select: none;
@@ -92,7 +92,7 @@
 		font-weight: 500;
 		line-height: 1;
 
-		color: var(--color-fg-06);
+		color: var(--color-fg-07);
 
 		&.MyTabsTabSurface-variant-bordered {
 			border-radius: 6px;
@@ -155,7 +155,7 @@
 
 		.MyTabsTabSurface-variant-bordered & {
 			background: transparent;
-			color: var(--color-fg-06);
+			color: var(--color-fg-07);
 
 			&:hover:not([aria-selected="true"]) {
 				background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));

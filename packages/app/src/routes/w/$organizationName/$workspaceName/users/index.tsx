@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
-import { MyButton } from "@/components/my-button.tsx";
+import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl, MyInputLabel } from "@/components/my-input.tsx";
 import {
 	MyModal,
@@ -39,7 +39,13 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { compute_fallback_user_name } from "@/lib/utils.ts";
+import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
+import { app_tenant_primary_workspace_for_organization } from "@/lib/urls.ts";
+import {
+	access_control_display_role_label,
+	access_control_display_role_order,
+	type access_control_DisplayRole,
+} from "../../../../../../shared/access-control.ts";
 
 // #region user list item
 type RouteUsersUserListItem_ClassNames =
@@ -48,18 +54,17 @@ type RouteUsersUserListItem_ClassNames =
 	| "RouteUsersUserListItem-main"
 	| "RouteUsersUserListItem-title"
 	| "RouteUsersUserListItem-name"
-	| "RouteUsersUserListItem-actions"
-	| "RouteUsersUserListItem-remove-trigger";
+	| "RouteUsersUserListItem-actions";
 
 type RouteUsersUserListItem_Props = {
 	userId: app_convex_Id<"users">;
 	authUserId: app_convex_Id<"users"> | null;
 	displayName: string;
-	role: NonNullable<
-		app_convex_FunctionReturnType<typeof app_convex_api.access_control.get_organization_workspace_user_role>
-	>;
-	canManageMembers: boolean;
+	role: access_control_DisplayRole | null;
+	/** `undefined` while the permission query is still loading. */
+	canManageMembers: boolean | undefined;
 	canLeaveOrganization: boolean;
+	organizationIsPersonal: boolean;
 	canTransferOwnership: boolean;
 	onRemove: (userId: app_convex_Id<"users">) => void;
 	onTransfer: (userId: app_convex_Id<"users">, displayName: string) => void;
@@ -73,29 +78,66 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 		role,
 		canManageMembers,
 		canLeaveOrganization,
+		organizationIsPersonal,
 		canTransferOwnership,
 		onRemove,
 		onTransfer,
 	} = props;
 
 	const isCurrentUser = userId === authUserId;
+	const isOwner = role?.kind === "owner";
 	const removeLabel = isCurrentUser ? "Leave" : "Remove";
-	const removeDisabled = role === "owner" || (isCurrentUser ? !canLeaveOrganization : !canManageMembers);
-	const removeDisabledTooltip =
-		isCurrentUser && role === "owner"
-			? "Before leaving this organization, transfer ownership to another member."
-			: !isCurrentUser && !canManageMembers
-				? "You don't have permission to remove users from the organization."
-				: null;
+	const removeDisabled = isOwner || (isCurrentUser ? !canLeaveOrganization : canManageMembers !== true);
+	// This follows `removeDisabled` case by case, so an enabled button can never show a reason that
+	// says it is disabled. The `null` cases are the ones still loading: nothing is wrong yet, the
+	// answer has simply not arrived, and saying "you don't have permission" before we know would be a
+	// guess.
+	const removeDisabledReason = !removeDisabled
+		? null
+		: isOwner
+			? isCurrentUser
+				? organizationIsPersonal
+					? "Your personal organization is only yours, so there is nobody to leave it to."
+					: "Before leaving this organization, transfer ownership to another member."
+				: "The organization owner cannot be removed. Transfer ownership first."
+			: isCurrentUser || canManageMembers !== false
+				? null
+				: "You don't have permission to remove users from the organization.";
+	// Ariakit renders the tooltip in another place in the DOM, and the button never points at it:
+	// `TooltipAnchor` only sets `aria-labelledby`, and only when the tooltip is used as a label instead
+	// of a description. So we give the reason its own element and point the button at it with
+	// `aria-describedby`. Without this a screen reader says "unavailable" and explains nothing.
+	const removeReasonId = `RouteUsers-remove-reason-${userId}`;
+	// We use `aria-disabled`, not `disabled`. A really disabled button cannot be hovered or focused, so
+	// the tooltip would never open and Tab would skip the button. This way it stays focusable and just
+	// ignores the click.
 	const removeButton = (
-		<MyButton variant="ghost_destructive" disabled={removeDisabled} onClick={() => onRemove(userId)}>
+		<MyButton
+			variant="ghost_destructive"
+			className={cn(removeDisabled && ("MyButton-state-disabled" satisfies MyButton_ClassNames))}
+			aria-label={isCurrentUser ? "Leave organization" : `Remove ${displayName}`}
+			aria-disabled={removeDisabled || undefined}
+			aria-describedby={removeDisabledReason ? removeReasonId : undefined}
+			onClick={() => {
+				if (removeDisabled) {
+					return;
+				}
+				onRemove(userId);
+			}}
+		>
 			{isCurrentUser ? <LogOut aria-hidden /> : <Trash2 aria-hidden />}
 			{removeLabel}
 		</MyButton>
 	);
 
+	const roleLabel = role ? access_control_display_role_label(role) : "No role";
+
+	// `data-user-id` here, and `data-role-kind` on the badge below, are the only stable way the E2E
+	// tests can find one row: nothing else in a row is unique, and ids from `useId()` change on every
+	// render. Both are listed as selectors in
+	// `.agents/skills/app-playwriter-harness/references/app-map.md`.
 	return (
-		<div className={"RouteUsersUserListItem" satisfies RouteUsersUserListItem_ClassNames}>
+		<li className={"RouteUsersUserListItem" satisfies RouteUsersUserListItem_ClassNames} data-user-id={userId}>
 			<MyAvatar size="40px" className={"RouteUsersUserListItem-avatar" satisfies RouteUsersUserListItem_ClassNames}>
 				<MyAvatarImage alt={displayName} fallbackDelay={false} />
 				<MyAvatarFallback>{compute_fallback_user_name(displayName)}</MyAvatarFallback>
@@ -106,35 +148,43 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 					<span className={"RouteUsersUserListItem-name" satisfies RouteUsersUserListItem_ClassNames}>
 						{displayName}
 					</span>
-					<MyBadge variant={role === "owner" ? "secondary" : "outline"}>
-						{role === "owner" ? "Owner" : role === "admin" ? "Admin" : "Member"}
+					<MyBadge variant={isOwner ? "secondary" : "outline"} data-role-kind={role?.kind}>
+						{/* The badge is a bare word next to the name, so it says what the word means. Hidden
+						    text and not `aria-label`, because ARIA forbids naming a plain span. */}
+						<span className="sr-only">Role: </span>
+						{roleLabel}
 					</MyBadge>
 				</div>
 			</div>
 
 			<div className={"RouteUsersUserListItem-actions" satisfies RouteUsersUserListItem_ClassNames}>
 				{canTransferOwnership ? (
-					<MyButton variant="outline" onClick={() => onTransfer(userId, displayName)}>
+					<MyButton
+						variant="outline"
+						aria-label={`Transfer ownership to ${displayName}`}
+						onClick={() => onTransfer(userId, displayName)}
+					>
 						<Crown aria-hidden />
 						Transfer ownership
 					</MyButton>
 				) : null}
-				{removeDisabledTooltip ? (
-					<MyTooltip placement="bottom">
-						<MyTooltipTrigger>
-							<span className={"RouteUsersUserListItem-remove-trigger" satisfies RouteUsersUserListItem_ClassNames}>
-								{removeButton}
-							</span>
-						</MyTooltipTrigger>
-						<MyTooltipContent unmountOnHide>
-							<>{removeDisabledTooltip}</>
-						</MyTooltipContent>
-					</MyTooltip>
+				{removeDisabledReason ? (
+					<>
+						<MyTooltip placement="bottom">
+							<MyTooltipTrigger>{removeButton}</MyTooltipTrigger>
+							<MyTooltipContent unmountOnHide>
+								<>{removeDisabledReason}</>
+							</MyTooltipContent>
+						</MyTooltip>
+						<span id={removeReasonId} className="sr-only">
+							{removeDisabledReason}
+						</span>
+					</>
 				) : (
 					removeButton
 				)}
 			</div>
-		</div>
+		</li>
 	);
 });
 // #endregion user list item
@@ -146,19 +196,21 @@ type RouteUsersList_Props = {
 		app_convex_Id<"users">,
 		app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | undefined | Error
 	>;
-	userRoleDict: Record<
-		app_convex_Id<"users">,
-		| app_convex_FunctionReturnType<typeof app_convex_api.access_control.get_organization_workspace_user_role>
-		| undefined
-		| Error
-	>;
+	userRoleDict: Record<app_convex_Id<"users">, access_control_DisplayRole | null | undefined | Error>;
 	authUserId: app_convex_Id<"users"> | null;
-	canManageMembers: boolean;
+	/** `undefined` while the permission query is still loading. */
+	canManageMembers: boolean | undefined;
 	canLeaveOrganization: boolean;
+	organizationIsPersonal: boolean;
 	canTransferOwnership: boolean;
 	onRemove: (userId: app_convex_Id<"users">) => void;
 	onTransfer: (userId: app_convex_Id<"users">, displayName: string) => void;
 };
+
+/** A failed role query is treated like "no role". Loading is handled before any row is rendered. */
+function read_display_role(value: access_control_DisplayRole | null | undefined | Error) {
+	return value == null || value instanceof Error ? null : value;
+}
 
 const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props) {
 	const {
@@ -168,15 +220,20 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 		authUserId,
 		canManageMembers,
 		canLeaveOrganization,
+		organizationIsPersonal,
 		canTransferOwnership,
 		onRemove,
 		onTransfer,
 	} = props;
 
+	// We wait for the roles too, not only for the names. Rendering earlier would show everyone as
+	// "No role", then sort the list again under the user's mouse when the roles arrive, and show
+	// "Transfer ownership" for a moment on the owner's own row, because nothing says yet that they are
+	// the owner.
 	const userRowsLoading = workspaceUserIds.some((userId) => {
 		const anagraphic = userAnagraphicDict[userId];
 
-		return anagraphic === undefined;
+		return anagraphic === undefined || userRoleDict[userId] === undefined;
 	});
 	if (userRowsLoading) {
 		return (
@@ -197,21 +254,12 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 	}
 
 	const sortedWorkspaceUserIds = workspaceUserIds.toSorted((a, b) => {
-		const aRoleDictValue = userRoleDict[a];
-		const aRole =
-			aRoleDictValue === undefined || aRoleDictValue === null || aRoleDictValue instanceof Error
-				? "member"
-				: aRoleDictValue;
-		const bRoleDictValue = userRoleDict[b];
-		const bRole =
-			bRoleDictValue === undefined || bRoleDictValue === null || bRoleDictValue instanceof Error
-				? "member"
-				: bRoleDictValue;
-
-		if (aRole !== bRole) {
-			const aRoleOrder = aRole === "owner" ? 0 : aRole === "admin" ? 1 : 2;
-			const bRoleOrder = bRole === "owner" ? 0 : bRole === "admin" ? 1 : 2;
-			return aRoleOrder - bRoleOrder;
+		// A role is an object, so we cannot compare roles directly. We sort with the shared sort key.
+		const roleOrderDifference =
+			access_control_display_role_order(read_display_role(userRoleDict[a])) -
+			access_control_display_role_order(read_display_role(userRoleDict[b]));
+		if (roleOrderDifference !== 0) {
+			return roleOrderDifference;
 		}
 
 		const aAnagraphic = userAnagraphicDict[a];
@@ -225,18 +273,14 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 	});
 
 	return (
-		<div className={"RouteUsers-list" satisfies RouteUsers_ClassNames}>
+		<ul className={"RouteUsers-list" satisfies RouteUsers_ClassNames} aria-label="Organization members">
 			{sortedWorkspaceUserIds.map((userId) => {
 				const anagraphic = userAnagraphicDict[userId];
 				if (anagraphic === undefined || anagraphic === null || anagraphic instanceof Error) {
 					return null;
 				}
 
-				const roleDictValue = userRoleDict[userId];
-				const role =
-					roleDictValue === undefined || roleDictValue === null || roleDictValue instanceof Error
-						? "member"
-						: roleDictValue;
+				const role = read_display_role(userRoleDict[userId]);
 
 				return (
 					<RouteUsersUserListItem
@@ -247,13 +291,14 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 						role={role}
 						canManageMembers={canManageMembers}
 						canLeaveOrganization={canLeaveOrganization}
-						canTransferOwnership={canTransferOwnership && role !== "owner"}
+						organizationIsPersonal={organizationIsPersonal}
+						canTransferOwnership={canTransferOwnership && role?.kind !== "owner"}
 						onRemove={onRemove}
 						onTransfer={onTransfer}
 					/>
 				);
 			})}
-		</div>
+		</ul>
 	);
 });
 // #endregion user list
@@ -261,7 +306,6 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 // #region invite modal
 type RouteUsersInviteModal_ClassNames =
 	| "RouteUsersInviteModal"
-	| "RouteUsersInviteModal-trigger"
 	| "RouteUsersInviteModal-form"
 	| "RouteUsersInviteModal-workspace-trigger"
 	| "RouteUsersInviteModal-actions";
@@ -301,8 +345,15 @@ const RouteUsersInviteModal = memo(function RouteUsersInviteModal(props: RouteUs
 		onInvite,
 	} = props;
 
+	// Same approach as the Remove button: `aria-disabled` keeps the button reachable with Tab, so the
+	// user can read the reason, and the reason gets its own element that the button points at.
+	const inviteReasonId = "RouteUsersInviteModal-reason";
 	const inviteButton = (
-		<MyButton disabled={inviteButtonDisabled}>
+		<MyButton
+			className={cn(inviteButtonDisabled && ("MyButton-state-disabled" satisfies MyButton_ClassNames))}
+			aria-disabled={inviteButtonDisabled || undefined}
+			aria-describedby={inviteButtonDisabled && inviteButtonDisabledTooltip ? inviteReasonId : undefined}
+		>
 			<UserPlus aria-hidden />
 			Invite
 		</MyButton>
@@ -312,16 +363,17 @@ const RouteUsersInviteModal = memo(function RouteUsersInviteModal(props: RouteUs
 		<MyModal open={inviteModalOpen} setOpen={onInviteModalOpenChange}>
 			{inviteButtonDisabled ? (
 				inviteButtonDisabledTooltip ? (
-					<MyTooltip placement="bottom">
-						<MyTooltipTrigger>
-							<span className={"RouteUsersInviteModal-trigger" satisfies RouteUsersInviteModal_ClassNames}>
-								{inviteButton}
-							</span>
-						</MyTooltipTrigger>
-						<MyTooltipContent unmountOnHide>
-							<>{inviteButtonDisabledTooltip}</>
-						</MyTooltipContent>
-					</MyTooltip>
+					<>
+						<MyTooltip placement="bottom">
+							<MyTooltipTrigger>{inviteButton}</MyTooltipTrigger>
+							<MyTooltipContent unmountOnHide>
+								<>{inviteButtonDisabledTooltip}</>
+							</MyTooltipContent>
+						</MyTooltip>
+						<span id={inviteReasonId} className="sr-only">
+							{inviteButtonDisabledTooltip}
+						</span>
+					</>
 				) : (
 					inviteButton
 				)
@@ -503,9 +555,7 @@ function RouteUsers() {
 	const organizationList = useQuery(app_convex_api.organizations.list);
 	const organization = organizationList?.organizations.find((organization) => organization._id === organizationId);
 	const workspaces = organizationList?.organizationIdsWorkspacesDict[organizationId] ?? [];
-	const defaultWorkspace = organization?.defaultWorkspaceId
-		? workspaces.find((workspace) => workspace._id === organization.defaultWorkspaceId)
-		: workspaces.find((workspace) => workspace.default);
+	const defaultWorkspace = organization ? app_tenant_primary_workspace_for_organization({ organization, workspaces }) : null;
 	const currentWorkspace = workspaces.find((workspace) => workspace._id === workspaceId);
 	const workspaceUserIds = useQuery(app_convex_api.organizations.list_organization_workspace_users, { organizationId, workspaceId });
 	const currentOrganizationRole = useQuery(
@@ -513,7 +563,7 @@ function RouteUsers() {
 		defaultWorkspace ? { organizationId, workspaceId: defaultWorkspace._id } : "skip",
 	);
 
-	const canInviteOrganizationMembers = useQuery(
+	const organizationMembersManagePermission = useQuery(
 		app_convex_api.access_control.get_current_user_organization_permission,
 		auth.userId === null
 			? "skip"
@@ -566,9 +616,7 @@ function RouteUsers() {
 
 	const userRoleQueryResults = useQueries(userRoleQueryProps) as Record<
 		app_convex_Id<"users">,
-		| app_convex_FunctionReturnType<typeof app_convex_api.access_control.get_organization_workspace_user_role>
-		| undefined
-		| Error
+		access_control_DisplayRole | null | undefined | Error
 	>;
 
 	const [inviteModalOpen, setInviteModalOpen] = useState(false);
@@ -583,17 +631,25 @@ function RouteUsers() {
 	const [transferring, setTransferring] = useState(false);
 
 	const organizationIsPersonal = organization?.default === true;
-	const canManageMembers =
-		!organizationIsPersonal && (currentOrganizationRole === "owner" || currentOrganizationRole === "admin");
-	const inviteButtonDisabled = organizationIsPersonal || canInviteOrganizationMembers !== true;
-	const inviteButtonDisabledTooltip =
-		!organizationIsPersonal && canInviteOrganizationMembers === false
+	// One permission query drives both Invite and Remove, so a custom role can never get a working
+	// Invite next to a greyed-out Remove. It keeps three states on purpose: both buttons are disabled
+	// for anything except `true`, and neither says why until the answer arrives.
+	const canManageMembers = organizationIsPersonal ? false : organizationMembersManagePermission;
+	const inviteButtonDisabled = canManageMembers !== true;
+	// Both real reasons need a message, like the Remove button: a disabled button with no explanation
+	// tells the user nothing. The loading case stays quiet on purpose: nothing is wrong yet, the answer
+	// is only not ready.
+	const inviteButtonDisabledTooltip = organizationIsPersonal
+		? "Your personal organization is only yours, so there is nobody to invite."
+		: canManageMembers === false
 			? "You don't have permission to invite people to this organization."
 			: null;
+	// Everyone except the owner may leave; the owner has to transfer ownership first. While the role is
+	// still loading the button stays disabled, so the owner never sees a Leave button that cannot work.
 	const canLeaveOrganization =
-		!organizationIsPersonal && (currentOrganizationRole === "admin" || currentOrganizationRole === "member");
+		!organizationIsPersonal && currentOrganizationRole !== undefined && currentOrganizationRole?.kind !== "owner";
 	const canTransferOwnership =
-		defaultWorkspace?._id === workspaceId && currentOrganizationRole === "owner" && !organizationIsPersonal;
+		defaultWorkspace?._id === workspaceId && currentOrganizationRole?.kind === "owner" && !organizationIsPersonal;
 	const invitedWorkspace = workspaces.find((workspace) => workspace._id === inviteWorkspaceId);
 
 	const handleInvite = useFn(() => {
@@ -616,7 +672,9 @@ function RouteUsers() {
 						inviteWorkspaceId,
 						email: inviteEmail,
 					});
-					toast.error("Failed to invite user");
+					// The server message says the real reason: quota reached, no permission, or unknown
+					// email. A generic "Failed" would leave the user with nothing they can do.
+					toast.error(result._nay.message);
 					return;
 				}
 
@@ -653,7 +711,7 @@ function RouteUsers() {
 						organizationId,
 						userIdToRemove,
 					});
-					toast.error(failureMessage);
+					toast.error(result._nay.message);
 					return;
 				}
 
@@ -697,7 +755,7 @@ function RouteUsers() {
 						organizationId,
 						newOwnerUserId,
 					});
-					toast.error("Failed to transfer ownership");
+					toast.error(result._nay.message);
 					return;
 				}
 
@@ -729,20 +787,25 @@ function RouteUsers() {
 		}
 	}, [transferTarget]);
 
+	// Every branch below renders a `main`, like the api-keys and plugins routes next to this one.
+	// Without it the page would have no main landmark, and the member list would sit outside every
+	// landmark, which makes it hard to reach with a screen reader.
 	return organizationList === undefined || auth.userId === null ? (
-		<div className={"RouteUsers-loading" satisfies RouteUsers_ClassNames}>
+		<main className={"RouteUsers-loading" satisfies RouteUsers_ClassNames} role="status" aria-live="polite">
 			<UsersIcon aria-hidden />
 			Loading users...
-		</div>
+		</main>
 	) : !organization || !defaultWorkspace || !currentWorkspace || workspaceUserIds === null ? (
-		<div className={"RouteUsers-empty" satisfies RouteUsers_ClassNames}>Organization users unavailable.</div>
+		<main className={"RouteUsers-empty" satisfies RouteUsers_ClassNames} role="alert">
+			Organization users unavailable.
+		</main>
 	) : workspaceUserIds === undefined ? (
-		<div className={"RouteUsers-loading" satisfies RouteUsers_ClassNames}>
+		<main className={"RouteUsers-loading" satisfies RouteUsers_ClassNames} role="status" aria-live="polite">
 			<UsersIcon aria-hidden />
 			Loading users...
-		</div>
+		</main>
 	) : (
-		<div className={"RouteUsers" satisfies RouteUsers_ClassNames}>
+		<main className={"RouteUsers" satisfies RouteUsers_ClassNames}>
 			<RouteUsersHeader
 				description={
 					defaultWorkspace._id === workspaceId
@@ -776,6 +839,7 @@ function RouteUsers() {
 				authUserId={auth.userId}
 				canManageMembers={canManageMembers}
 				canLeaveOrganization={canLeaveOrganization}
+				organizationIsPersonal={organizationIsPersonal}
 				canTransferOwnership={canTransferOwnership}
 				onRemove={handleRemove}
 				onTransfer={handleTransferTarget}
@@ -789,7 +853,7 @@ function RouteUsers() {
 				onTransferConfirmationChange={setTransferConfirmation}
 				onTransfer={handleTransfer}
 			/>
-		</div>
+		</main>
 	);
 }
 

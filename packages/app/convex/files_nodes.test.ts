@@ -2149,12 +2149,22 @@ describe("files_nodes.remove_eager_created_node_if_safe", () => {
 			const otherUserId = await ctx.db.insert("users", {
 				clerkUserId: "clerk_eager_ancestor_renamed_other",
 			});
+			const now = Date.now();
 			const otherMembershipId = await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: otherUserId,
 				active: true,
-				updatedAt: Date.now(),
+				updatedAt: now,
+			});
+			// Writing files needs `content.write`, which comes from the member role.
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: otherUserId,
+				role: "member",
+				createdAt: now,
+				updatedAt: now,
 			});
 			return { otherUserId, otherMembershipId };
 		});
@@ -2386,7 +2396,7 @@ describe("files_nodes.get_authorized_by_path", () => {
 		expect(missing).toBeNull();
 	});
 
-	test("returns null for a member without asset.read", async () => {
+	test("returns null for a member without content.read", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -2410,15 +2420,16 @@ describe("files_nodes.get_authorized_by_path", () => {
 		});
 		expect(allowed?.nodeId).toBe(created._yay.nodeId);
 
-		// Organization owners short-circuit every permission check, so move ownership away and
-		// drop the user's role assignments to leave a member with no `asset.read`.
+		// Every permission check answers "yes" for the organization owner, so we give ownership to
+		// somebody else and delete this user's role assignments. What is left is a member with no
+		// `content.read`.
 		await t.run(async (ctx) => {
 			const otherOwnerId = await ctx.db.insert("users", { clerkUserId: null });
 			await ctx.db.patch("organizations", db.organizationId, { ownerUserId: otherOwnerId });
 
 			const roleAssignments = await ctx.db
 				.query("access_control_role_assignments")
-				.withIndex("by_organization_workspace_user_role", (q) => q.eq("organizationId", db.organizationId))
+				.withIndex("by_organization_workspace_user", (q) => q.eq("organizationId", db.organizationId))
 				.collect();
 			await Promise.all(
 				roleAssignments

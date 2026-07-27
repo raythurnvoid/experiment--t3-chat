@@ -120,6 +120,172 @@ Checks the files-sidebar splitter geometry, grip icon contrast, and cursor at th
 vp env exec pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' }); await state.appPlaywriterHarness.inspectElement({ selector: '.MyPanelResizeHandle', attribute: { name: 'aria-label', value: 'Resize files sidebar' }, computedStyles: [{ name: 'pill', selector: '.MyPanelResizeHandleGrip-pill', properties: ['backgroundColor', 'outlineColor', 'outlineWidth'] }, { name: 'icon', selector: '.MyPanelResizeHandleGrip-icon', properties: ['stroke', 'color', 'zIndex'] }], hitTargets: [{ name: 'grip center', selector: '.MyPanelResizeHandleGrip' }] });"
 ```
 
+## Run A Real axe-core Audit
+
+`auditAccessibility(...)` is only a screen. For rule-level findings, inject axe-core. The dev server sets no CSP that blocks it, so `addScriptTag` works (verified 2026-07-26, axe-core 4.12.1, 572KB).
+
+Install axe-core outside the repo first, so no `node_modules` appears in `git status`:
+
+```powershell
+$axeDir = Join-Path $env:TEMP "axe-install"
+New-Item -ItemType Directory -Force $axeDir | Out-Null
+Set-Location $axeDir
+if (-not (Test-Path "$axeDir/package.json")) { '{"name":"axe-tmp","private":true}' | Set-Content "$axeDir/package.json" }
+vp env exec pnpm add axe-core
+```
+
+Then in a runner: read it from the OS temp dir (the sandbox `fs` can read there), inject, and run with the fire-and-forget pattern from `known-hazards.md` so each CLI call stays under 5000ms.
+
+```js
+// runner 1: inject
+const fs = require("node:fs"), os = require("node:os");
+await state.page.addScriptTag({ content: fs.readFileSync(os.tmpdir() + "/axe-install/node_modules/axe-core/axe.min.js", "utf8") });
+console.log("AXE:", await state.page.evaluate(() => window.axe && window.axe.version));
+
+// runner 2: start (scope to a selector to keep it fast, e.g. ".MainAppHeaderOrganizationSwitcherModal")
+state.axeDone = false;
+state.page.evaluate(async () => {
+	const r = await window.axe.run(document);
+	const map = (a) => a.map((v) => ({ id: v.id, impact: v.impact, n: v.nodes.length, t: v.nodes.slice(0, 3).map((x) => x.target.join(" ")) }));
+	return { violations: map(r.violations), incomplete: map(r.incomplete) };
+}).then((r) => { state.axe = r; state.axeDone = true; }).catch((e) => { state.axe = { err: e.message }; state.axeDone = true; });
+console.log("STARTED");
+
+// runner 3: read state.axeDone / state.axe
+```
+
+Always report `incomplete` too — the app's ARIA-on-`<span>` badges and gradient backgrounds land there, not in `violations`. `window.axe` is lost on every reload and `goto`, so re-inject after each navigation.
+
+Scope traps that silently change the result:
+
+- Close every tooltip before a document-scope run. An open Ariakit tooltip portals a bare `<div>` onto `<body>`, outside all landmarks, and that alone produces a `region` violation that is yours, not the app's.
+- With an Ariakit modal open the app shell goes `inert`, so axe skips it and a document-scope run audits **only the modal**. App-shell rules then come back `PASS` or `INAPPLICABLE` for a reason that has nothing to do with the app shell. `#root` itself does **not** carry the attribute — probe `document.querySelector("header.MainAppHeader").closest("[inert]")`, not `#root.hasAttribute("inert")`, or you will conclude the shell is in scope when it is not. Confirm scope from the result: read the checked nodes of `landmark-no-duplicate-banner`; if `.MainAppHeader` is absent, the PASS only covers modal content.
+
+## Read The Chrome Accessibility Tree
+
+Use this when the DOM and assistive tech disagree — `aria-describedby` can be present while the AX `description` is null, and `aria-disabled` shows up as AX `disabled` with `focusable: true`.
+
+The sandbox global is `getCDPSession({ page })`. Passing the page directly (`getCDPSession(state.page)`) throws `Cannot read properties of undefined (reading 'isClosed')` and can take the Node host down with a libuv assertion.
+
+```js
+// runner 1: install once per session
+state.cdp = await getCDPSession({ page: state.page });
+await state.cdp.send("DOM.enable");
+await state.cdp.send("Accessibility.enable");
+state.axFor = async function (selector) {
+	const doc = await state.cdp.send("DOM.getDocument", { depth: 1 });
+	const q = await state.cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector });
+	if (!q.nodeId) return { selector, found: false };
+	const ax = await state.cdp.send("Accessibility.queryAXTree", { nodeId: q.nodeId });
+	return ax.nodes.filter((n) => !n.ignored).map((n) => {
+		const props = Object.fromEntries((n.properties || []).map((p) => [p.name, p.value && p.value.value]));
+		return { role: n.role?.value, name: n.name?.value ?? null, description: n.description?.value ?? null, focusable: props.focusable, disabled: props.disabled };
+	});
+};
+
+// later runners: log from the CALLER, never from inside the state function
+console.log(JSON.stringify(await state.axFor("button.Something")));
+```
+
+`depth: 1` is enough — `DOM.querySelector` pushes the matched node itself. The CDP session survives `page.reload()`, so `state.axFor` keeps working after a navigation.
+
+**Never run two of these helpers concurrently.** Each one calls `DOM.getDocument`, which invalidates the node ids handed out by the previous call, so `Promise.all([axFor(a), axFor(b)])` fails with `Protocol error (DOM.querySelector): Could not find node with given id`. Await them in sequence inside one async IIFE and park the result on `state`.
+
+To count landmarks for a whole page, query `"html"` and filter roles — `Accessibility.queryAXTree` returns the full subtree (~2900 nodes on `/files`), and the non-ignored subset is small enough to scan for `banner` / `contentinfo` / `region` duplicates. This is the ground truth when axe's scope is in doubt.
+
+## Measure Contrast Yourself When axe Says INCOMPLETE
+
+This app writes colours as `oklch(...)` and paints panel backgrounds with `linear-gradient`. Two consequences:
+
+- axe cannot resolve a gradient background and reports `color-contrast` as `incomplete` ("background color could not be determined"), so those elements are neither pass nor fail until you measure them.
+- `getComputedStyle(el).color` returns the literal `oklch(...)`, so any `rgba?\(...\)` regex parser returns null. Resolve colours through a 1x1 canvas instead, which accepts every CSS colour syntax.
+
+```js
+const cv = document.createElement("canvas"); cv.width = cv.height = 1;
+const ctx = cv.getContext("2d", { willReadFrequently: true });
+const toRgb = (css) => { ctx.globalCompositeOperation = "copy"; ctx.fillStyle = css; ctx.fillRect(0, 0, 1, 1);
+	ctx.globalCompositeOperation = "source-over"; const d = ctx.getImageData(0, 0, 1, 1).data;
+	return { r: d[0], g: d[1], b: d[2], a: d[3] / 255 }; };
+```
+
+Then walk ancestors for the background: stop at the first opaque `backgroundColor`, but also read `backgroundImage` on the way up and pull its colour stops out with `/oklch\([^)]*\)|rgba?\([^)]*\)|#[0-9a-f]{3,8}/gi`. Compose against the **lightest** stop for light-on-dark text — that is the worst case and matches what axe reports when it can measure. A plain ancestor walk that ignores `backgroundImage` runs straight past `.MyModalPopover` / `.MainAppHeader` to `<body>` and reports a contrast ratio that is too generous.
+
+Cross-check a single element without trusting your own maths by asking axe for just that node:
+
+```js
+await window.axe.run({ include: [[".Some-selector"]] }, { runOnly: { type: "rule", values: ["color-contrast"] } });
+```
+
+Its `passes[0].nodes[0].any[0].data` carries `fgColor`, `bgColor`, `contrastRatio`, `fontSize`, and `expectedContrastRatio`.
+
+`Page.captureScreenshot` is not a usable fallback here: it hangs indefinitely whenever the browser window is occluded, even though `evaluate` keeps working.
+
+## Watch Convex Mutations On The Wire
+
+Use this to prove a feature is or is not still talking to the server (heartbeats, background writes) instead of guessing from the UI. Convex sends every mutation as a WebSocket frame, so one CDP listener catches them all.
+
+```js
+// runner 1: install
+state.cdp = await getCDPSession({ page: state.page });
+await state.cdp.send("Network.enable");
+state.frames = [];
+state.cdp.on("Network.webSocketFrameSent", (e) => {
+	const p = e.response && e.response.payloadData;
+	if (typeof p === "string" && p.indexOf("presence:") !== -1) state.frames.push({ t: Date.now(), p: p.slice(0, 260) });
+});
+
+// later runners: group by udfPath, and print the age of each frame
+// {"type":"Mutation","requestId":168,"udfPath":"presence:heartbeat","args":[{...}]}
+```
+
+Frames carry the real arguments, so they double as an identity probe (a `presence:heartbeat` frame contains `roomId` and `userId`). Filter with `indexOf` on the udf prefix, not a broad regex — `ModifyQuerySet` subscription frames mention the same paths.
+
+Clean up with `await state.cdp.send("Network.disable")`. The session object has **no** `removeAllListeners` (it is a thin proxy, only `_playwrightSession` is enumerable); use `state.cdp.off(event, handler)` if you kept the handler reference.
+
+## Query Convex Directly From Outside The Page
+
+To read server state with no browser involved, run a query from the CLI. `pnpm exec convex` is not linked in this repo, so go through the binary:
+
+```powershell
+cd packages/app
+$raw = vp env exec node node_modules/convex/bin/main.js run users:get '{"userId":"<id>"}' 2>&1 | Out-String
+$json = $raw.Substring($raw.IndexOf('{')) | ConvertFrom-Json
+$json._id
+```
+
+The CLI prints progress text before the JSON, so slice from the first `{` before `ConvertFrom-Json`. A function returning null prints **empty** stdout — treat that as null instead of parsing it. Long results are worse to filter in PowerShell than in the query: pass the query's own filter args when it has them.
+
+⚠ `convex run` carries an **admin key, not a user identity**, so `ctx.auth.getUserIdentity()` is null by default and any handler that calls `require_identity` refuses it. Pass `--identity '<json>'` to supply a fake identity when you need one; the admin key still authorizes the call, so this reaches internal functions too.
+
+Presence is no longer usable as the "is the client registered" probe from here. All seven handlers require an identity, `listRoom` refuses `app_presence_global` outright even *with* one, and `heartbeat` refuses an identity-less caller with its own message before `require_identity` is reached — so it is not a `convex run` workaround either. Check presence registration from **inside the page** instead, where the app's own identity is live: `presence:heartbeat` for the room, then `presence:list` with the returned room token.
+
+## Prove A Public Convex Query Needs No Auth (truly anonymous)
+
+`convex run` reaches the deployment with an admin key, so it proves the *handler* ignores identity but is not a faithful "attacker with no account". For an unauthenticated-access repro, POST to the public HTTP query endpoint with **no `Authorization` header** from the sandbox's Node `fetch`. Node `fetch` runs in the relay process, not the page, so it carries no browser cookies and no Clerk/anonymous token — a genuine no-account request. Get the public deployment URL from the live page module, never from `.env`:
+
+```js
+// runner: get URL (public value shipped to every client), park on state
+state.convexUrl = await state.page.evaluate(async () => (await import("/src/lib/app-convex-client.ts")).app_convex_deployment_url);
+
+// runner: unauthenticated query
+const resp = await fetch(state.convexUrl + "/api/query", {
+	method: "POST",
+	headers: { "Content-Type": "application/json" }, // no Authorization = unauthenticated
+	body: JSON.stringify({ path: "presence:listRoom", args: { roomId: "app_presence_global" }, format: "json" }),
+});
+const json = await resp.json(); // { status: "success" | "error", value | errorMessage }
+```
+
+HTTP `200` + `{ status: "success" }` proves the query executed with no identity. Both `presence:listRoom` and `users:get_anagraphic({ userId })` used to answer unauthenticated, and chaining them walked a room roster into an address book. Both are gated now — `listRoom` throws `Unauthenticated`, `get_anagraphic` returns `null` — so this probe is the **regression check**, not a live repro.
+
+Run it a second time **signed in**. `listRoom` must still refuse, now with `Unauthorized`: the global room is refused for any caller, because an identity is not a tenant and an anonymous account costs one unauthenticated POST. A `200` with a user list from a signed-in session is the regression this second probe exists to catch.
+
+Do **not** read either result as "the roster is protected". It is not. `presence:heartbeat` mints the global room's token for any caller and `presence:list` then answers with the same roster — verified against `grand-finch-267`, where one anonymous identity got `Unauthorized` from `listRoom` and 104 users from `heartbeat` + `list` in the same session. These two probes guard the `listRoom` door only.
+
+⚠ A source fix is not a deployed fix. These handlers live in Convex, so an edit in the working tree changes nothing until someone pushes it. A verification run once reported this leak as still open when the fix was already written and its tests passing: no `convex dev` was running, and the deployment was serving an *intermediate* version whose `returns` validator already matched the new shape while the handler did not. Check the deployment before concluding, and never read a matching validator as proof the whole file shipped.
+
+`users_anagraphics.email` is a required field on the returned doc: a real address for signed-in (Clerk) users, `""` for anonymous ones — and `""` for anyone the caller is not, which is exactly what the fix does. When reproducing an email leak, redact in the report — log `{ present, length, hasAt }`, never the value. To chain many ids for a blast-radius count, use `Promise.all` over the presence ids with the fire-and-forget pattern (stays under the 5000ms CLI budget).
+
 ## Propose A Durable Memory
 
 ```powershell

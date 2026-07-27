@@ -83,7 +83,7 @@ const BillingAccountManagementPanelHeader = memo(function BillingAccountManageme
 	const { children } = props;
 
 	return (
-		<header className={"BillingAccountManagementPanelHeader" satisfies BillingAccountManagementPanelHeader_ClassNames}>
+		<div className={"BillingAccountManagementPanelHeader" satisfies BillingAccountManagementPanelHeader_ClassNames}>
 			<h2
 				className={"BillingAccountManagementPanelHeader-title" satisfies BillingAccountManagementPanelHeader_ClassNames}
 			>
@@ -96,7 +96,7 @@ const BillingAccountManagementPanelHeader = memo(function BillingAccountManageme
 			>
 				{children}
 			</p>
-		</header>
+		</div>
 	);
 });
 // #endregion header

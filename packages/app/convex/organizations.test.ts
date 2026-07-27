@@ -1,21 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { R2 } from "@convex-dev/r2";
-import { api, internal } from "./_generated/api.js";
+import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	organizations_db_create,
 	organizations_db_create_workspace,
 	organizations_db_ensure_default_organization_and_workspace_for_user,
 } from "./organizations.ts";
-import {
-	access_control_db_ensure_public_permission_grant,
-	access_control_db_ensure_role_assignment,
-	access_control_db_ensure_role_permission_grant,
-	access_control_db_ensure_user_permission_grant,
-	access_control_db_has_permission,
-} from "./access_control.ts";
+import { access_control_db_ensure_role_assignment, access_control_db_has_permission } from "./access_control.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { organizations_DESCRIPTION_MAX_LENGTH, organizations_NAME_MAX_LENGTH } from "../shared/organizations.ts";
@@ -268,6 +262,67 @@ async function organizations_test_seed_workspace_scoped_rows(
 }
 
 describe("create_organization", () => {
+	test("refuses an anonymous caller", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) => ctx.db.insert("users", { clerkUserId: null }));
+		await organizations_test_bootstrap_user(t, { userId });
+
+		// Anyone can make an anonymous account with one request that needs no login. Owning an
+		// organization is what unlocks the invite, and an invite puts an active membership and a
+		// notification into a real user's account with no step where they accept.
+		const asAnonymous = t.withIdentity({
+			issuer: process.env.VITE_CONVEX_HTTP_URL!,
+			subject: userId,
+			name: "Anonymous Organizations Test",
+		});
+
+		const result = await asAnonymous.mutation(api.organizations.create_organization, {
+			description: "",
+			name: "anon-owned-org",
+		});
+
+		// The handler answers every auth failure with this same word. The sentence the user reads is
+		// written by the dialog, in `main-app-header-organization-controls-modal.tsx`.
+		expect(result._nay?.message).toBe("Unauthenticated");
+		const organizations = await t.run((ctx) => ctx.db.query("organizations").collect());
+		expect(organizations.some((organization) => organization.name === "anon-owned-org")).toBe(false);
+	});
+
+	test("refuses a signed-in caller whose account is already deleted", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) => ctx.db.insert("users", { clerkUserId: "clerk-user-tombstoned" }));
+		await organizations_test_bootstrap_user(t, { userId });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+			email: "organizations-test-user@test.local",
+		});
+
+		// First check that the same caller succeeds *before* we mark the account as deleted. The handler
+		// answers "Unauthenticated" from two places: this deleted-account check, and the "no identity"
+		// check above it. Without this first call, a broken test setup whose identity never worked would
+		// give the same message, and the test would pass for the wrong reason.
+		const beforeDeletion = await asUser.mutation(api.organizations.create_organization, {
+			description: "",
+			name: "live-owner-org",
+		});
+		expect(beforeDeletion._nay).toBeUndefined();
+
+		// When the Clerk cleanup fails, the Clerk session stays alive after the local deletion. So a
+		// user doc marked as deleted can still arrive here with a valid identity.
+		await t.run((ctx) => ctx.db.patch("users", userId, { deletedAt: Date.now() }));
+
+		const result = await asUser.mutation(api.organizations.create_organization, {
+			description: "",
+			name: "deleted-owner-org",
+		});
+
+		expect(result._nay?.message).toBe("Unauthenticated");
+		const organizations = await t.run((ctx) => ctx.db.query("organizations").collect());
+		expect(organizations.some((organization) => organization.name === "deleted-owner-org")).toBe(false);
+	});
+
 	test("accepts names with digits after the first character", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -315,34 +370,36 @@ describe("create_organization", () => {
 		expect(result._yay?.name).toBe("acme-labs");
 		expect(result._yay?.defaultWorkspaceName).toBe("home");
 
-		const { organization, workspace, ownerRole, permissionGrants, userQuota, organizationQuota } = result._yay
+		const { organization, workspace, roleAssignments, permissionGrants, userQuota, organizationQuota } = result._yay
 			? await t.run(async (ctx) => {
-					const [organization, workspace, ownerRole, permissionGrants, userQuota, organizationQuota] = await Promise.all([
-						ctx.db.get("organizations", result._yay!.organizationId),
-						ctx.db.get("organizations_workspaces", result._yay!.defaultWorkspaceId),
-						ctx.db
-							.query("access_control_role_assignments")
-							.withIndex("by_organization_workspace_role_user", (q) =>
-								q
-									.eq("organizationId", result._yay!.organizationId)
-									.eq("workspaceId", result._yay!.defaultWorkspaceId)
-									.eq("role", "owner"),
-							)
-							.first(),
-						ctx.db
-							.query("access_control_permission_grants")
-							.withIndex("by_organization_workspace_resource_user_permission", (q) =>
-								q.eq("organizationId", result._yay!.organizationId),
-							)
-							.collect(),
-						organizations_test_read_user_extra_organization_quota_doc(ctx, { userId }),
-						organizations_test_read_organization_extra_workspace_quota_doc(ctx, { organizationId: result._yay!.organizationId }),
-					]);
+					const [organization, workspace, roleAssignments, permissionGrants, userQuota, organizationQuota] =
+						await Promise.all([
+							ctx.db.get("organizations", result._yay!.organizationId),
+							ctx.db.get("organizations_workspaces", result._yay!.defaultWorkspaceId),
+							ctx.db
+								.query("access_control_role_assignments")
+								.withIndex("by_organization_workspace_user", (q) =>
+									q
+										.eq("organizationId", result._yay!.organizationId)
+										.eq("workspaceId", result._yay!.defaultWorkspaceId),
+								)
+								.collect(),
+							ctx.db
+								.query("access_control_permission_grants")
+								.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+									q.eq("organizationId", result._yay!.organizationId),
+								)
+								.collect(),
+							organizations_test_read_user_extra_organization_quota_doc(ctx, { userId }),
+							organizations_test_read_organization_extra_workspace_quota_doc(ctx, {
+								organizationId: result._yay!.organizationId,
+							}),
+						]);
 
 					return {
 						organization,
 						workspace,
-						ownerRole,
+						roleAssignments,
 						permissionGrants,
 						userQuota,
 						organizationQuota,
@@ -351,7 +408,7 @@ describe("create_organization", () => {
 			: {
 					organization: null,
 					workspace: null,
-					ownerRole: null,
+					roleAssignments: [],
 					permissionGrants: [],
 					userQuota: null,
 					organizationQuota: null,
@@ -360,19 +417,10 @@ describe("create_organization", () => {
 		expect(organization?.name).toBe("acme-labs");
 		expect(organization?.billingMode).toBe("user");
 		expect(organization?.ownerUserId).toBe(userId);
-		expect(ownerRole?.userId).toBe(userId);
-		expect(permissionGrants.some((grant) => grant.role === "member" && grant.permission === "workspace.create")).toBe(
-			true,
-		);
-		expect(
-			permissionGrants.some((grant) => grant.role === "admin" && grant.permission === "organization.members.manage"),
-		).toBe(true);
-		expect(
-			permissionGrants.some((grant) => grant.role === "member" && grant.permission === "organization.members.manage"),
-		).toBe(false);
-		expect(
-			permissionGrants.some((grant) => grant.role === "admin" && grant.permission === "organization.roles.manage"),
-		).toBe(true);
+		// The permissions of the system roles live in code, so creating an organization writes no role
+		// assignment for the owner and no grant docs at all.
+		expect(roleAssignments).toHaveLength(0);
+		expect(permissionGrants).toHaveLength(0);
 		expect(workspace?.name).toBe("home");
 		expect(userQuota?.usedCount).toBe(1);
 		expect(userQuota?.maxCount).toBe(2);
@@ -941,7 +989,7 @@ describe("create_workspace", () => {
 
 		const membership = result._yay
 			? await t.run(async (ctx) => {
-					const [membership, roleAssignment, workspaceGrant, organizationQuota] = await Promise.all([
+					const [membership, roleAssignment, workspaceGrants, organizationQuota] = await Promise.all([
 						ctx.db
 							.query("organizations_workspaces_users")
 							.withIndex("by_workspace_user_active", (q) =>
@@ -950,41 +998,36 @@ describe("create_workspace", () => {
 							.first(),
 						ctx.db
 							.query("access_control_role_assignments")
-							.withIndex("by_organization_workspace_user_role", (q) =>
+							.withIndex("by_organization_workspace_user", (q) =>
 								q
 									.eq("organizationId", wsResult._yay!.organizationId)
 									.eq("workspaceId", result._yay!.workspaceId)
-									.eq("userId", userId)
-									.eq("role", "member"),
+									.eq("userId", userId),
 							)
 							.first(),
 						ctx.db
 							.query("access_control_permission_grants")
-							.withIndex("by_organization_workspace_resource_role_permission", (q) =>
-								q
-									.eq("organizationId", wsResult._yay!.organizationId)
-									.eq("workspaceId", result._yay!.workspaceId)
-									.eq("resourceKind", "workspace")
-									.eq("resourceId", result._yay!.workspaceId)
-									.eq("principalKind", "role")
-									.eq("role", "member")
-									.eq("permission", "workspace.update"),
+							.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+								q.eq("organizationId", wsResult._yay!.organizationId).eq("workspaceId", result._yay!.workspaceId),
 							)
-							.first(),
+							.collect(),
 						organizations_test_read_organization_extra_workspace_quota_doc(ctx, { organizationId: wsResult._yay!.organizationId }),
 					]);
 
 					return {
 						membership,
 						roleAssignment,
-						workspaceGrant,
+						workspaceGrants,
 						organizationQuota,
 					};
 				})
 			: null;
 		expect(membership?.membership).toBeTruthy();
-		expect(membership?.roleAssignment).toBeTruthy();
-		expect(membership?.workspaceGrant).toBeTruthy();
+		// No role assignment inside the new workspace. The creator's organization-wide role already
+		// works here, and always writing `member` would let someone whose role has only
+		// `workspace.create` write files in the workspace they just made.
+		expect(membership?.roleAssignment).toBeNull();
+		expect(membership?.workspaceGrants).toHaveLength(0);
 		expect(membership?.organizationQuota?.usedCount).toBe(1);
 	});
 
@@ -1507,7 +1550,7 @@ describe("invite_user_to_organization_workspace", () => {
 					.collect(),
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_organization_user_workspace_role", (q) =>
+					.withIndex("by_organization_user_workspace", (q) =>
 						q.eq("organizationId", created._yay!.organizationId).eq("userId", invitedUserId),
 					)
 					.collect(),
@@ -1531,9 +1574,11 @@ describe("invite_user_to_organization_workspace", () => {
 		expect(afterInvite.memberships.map((membership) => membership.workspaceId).sort()).toEqual(
 			[created._yay!.defaultWorkspaceId, selectedWorkspace._yay!.workspaceId].sort(),
 		);
-		expect(afterInvite.roleAssignments.map((assignment) => assignment.workspaceId).sort()).toEqual(
-			[created._yay!.defaultWorkspaceId, selectedWorkspace._yay!.workspaceId].sort(),
-		);
+		// One role assignment, on the default workspace. That is the organization-wide role, and it
+		// already works in every workspace where the invited user is an active member.
+		expect(afterInvite.roleAssignments.map((assignment) => assignment.workspaceId)).toEqual([
+			created._yay!.defaultWorkspaceId,
+		]);
 		expect([afterInvite.homeQuota, afterInvite.selectedQuota]).toMatchObject([
 			{ quotaName: "active_api_credentials", usedCount: 0 },
 			{ quotaName: "active_api_credentials", usedCount: 0 },
@@ -1571,7 +1616,7 @@ describe("invite_user_to_organization_workspace", () => {
 					.collect(),
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_organization_user_workspace_role", (q) =>
+					.withIndex("by_organization_user_workspace", (q) =>
 						q.eq("organizationId", created._yay!.organizationId).eq("userId", invitedUserId),
 					)
 					.collect(),
@@ -1672,6 +1717,409 @@ describe("invite_user_to_organization_workspace", () => {
 		expect(afterInvite.notification?.actorUserId).toBe(adminId);
 	});
 
+	test("inviting the owner to a workspace leaves them without an assignment", async () => {
+		const t = test_convex();
+		const [ownerId, adminId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-owner-invite-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-owner-invite-admin" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, adminId] });
+
+		const created = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "owner-invite-team",
+				now: Date.now(),
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		// A workspace created by the admin, which the owner is not a member of.
+		// `organizations_db_create` makes only the creator a member, so the owner stays outside.
+		const sideWorkspaceId = await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				userId: adminId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				userId: adminId,
+				role: "admin",
+				now,
+			});
+
+			const workspace = await organizations_db_create_workspace(ctx, {
+				userId: adminId,
+				organizationId: created._yay!.organizationId,
+				name: "owner-invite-side",
+				description: "",
+				now,
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+			return workspace._yay.workspaceId;
+		});
+
+		const admin = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: adminId,
+			name: "Admin",
+			email: "owner-invite-admin@test.local",
+		});
+
+		const result = await admin.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: created._yay!.organizationId,
+			workspaceId: sideWorkspaceId,
+			userIdToAdd: ownerId,
+		});
+		expect(result._nay).toBeUndefined();
+
+		// The owner has no role assignment anywhere, whatever the invite did with memberships.
+		const assignments = await t.run((ctx) =>
+			ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_user_workspace", (q) =>
+					q.eq("organizationId", created._yay!.organizationId).eq("userId", ownerId),
+				)
+				.collect(),
+		);
+		expect(assignments).toHaveLength(0);
+	});
+
+	test("rejects an invite that would activate a role stronger than the inviter's", async () => {
+		const t = test_convex();
+		const [ownerId, managerId, invitedUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-activation-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-activation-manager" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-activation-invitee" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, managerId, invitedUserId] });
+
+		const created = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "invite-activate",
+				now: Date.now(),
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		const { sideWorkspaceId, managerRoleId } = await t.run(async (ctx) => {
+			const now = Date.now();
+
+			// This role covers everything the invited `member` role gets, so the invite below cannot be
+			// refused because of the role it hands out. Any refusal must come from what the invited
+			// user already has.
+			const managerRoleId = await ctx.db.insert("access_control_roles", {
+				organizationId: created._yay!.organizationId,
+				name: "People ops",
+				normalizedName: "people ops",
+				description: "",
+				permissions: [
+					"organization.members.manage",
+					"workspace.create",
+					"workspace.update",
+					"content.read",
+					"content.write",
+				],
+				createdBy: ownerId,
+				createdAt: now,
+				updatedAt: now,
+			});
+
+			// The invited user's organization-wide role can manage plugins. The inviter's role cannot.
+			const operatorRoleId = await ctx.db.insert("access_control_roles", {
+				organizationId: created._yay!.organizationId,
+				name: "Plugin operator",
+				normalizedName: "plugin operator",
+				description: "",
+				permissions: ["content.read", "workspace.plugins.manage"],
+				createdBy: ownerId,
+				createdAt: now,
+				updatedAt: now,
+			});
+
+			for (const [userId, role] of [
+				[managerId, managerRoleId],
+				[invitedUserId, operatorRoleId],
+			] as const) {
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: created._yay!.organizationId,
+					workspaceId: created._yay!.defaultWorkspaceId,
+					userId,
+					active: true,
+					updatedAt: now,
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId: created._yay!.organizationId,
+					workspaceId: created._yay!.defaultWorkspaceId,
+					userId,
+					role,
+					now,
+				});
+			}
+
+			const workspace = await organizations_db_create_workspace(ctx, {
+				userId: managerId,
+				organizationId: created._yay!.organizationId,
+				name: "invite-act-side",
+				description: "",
+				now,
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return { sideWorkspaceId: workspace._yay.workspaceId, managerRoleId };
+		});
+
+		const manager = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: managerId,
+			name: "Manager",
+			email: "invite-activation-manager@test.local",
+		});
+
+		// A workspace-scoped permission works only where its holder is a member. So the membership this
+		// invite would write is exactly what turns "Manage plugins" on for the invited user in the side
+		// workspace — a power the inviter cannot give with `set_user_role`.
+		const blocked = await manager.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: created._yay!.organizationId,
+			workspaceId: sideWorkspaceId,
+			userIdToAdd: invitedUserId,
+		});
+		expect(blocked._nay?.message).toBe('You cannot invite this member, because their role grants "Manage plugins"');
+
+		const noMembership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", invitedUserId)
+						.eq("organizationId", created._yay!.organizationId)
+						.eq("workspaceId", sideWorkspaceId),
+				)
+				.first(),
+		);
+		expect(noMembership).toBeNull();
+
+		// Give the inviter the same permission, then send the same invite again. It now succeeds, which
+		// proves the refusal came from this rule and not from something else.
+		await t.run(async (ctx) => {
+			const role = await ctx.db.get("access_control_roles", managerRoleId);
+			await ctx.db.patch("access_control_roles", managerRoleId, {
+				permissions: [...role!.permissions, "workspace.plugins.manage"],
+			});
+			await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
+				name: "organizations_write",
+				key: managerId,
+			});
+		});
+
+		const allowed = await manager.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: created._yay!.organizationId,
+			workspaceId: sideWorkspaceId,
+			userIdToAdd: invitedUserId,
+		});
+		expect(allowed._nay).toBeUndefined();
+	});
+
+	test("lets a member manager invite the owner into a side workspace", async () => {
+		const t = test_convex();
+		const [ownerId, managerId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-owner-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-owner-manager" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, managerId] });
+
+		const created = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "invite-owner",
+				now: Date.now(),
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		const sideWorkspaceId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const managerRoleId = await ctx.db.insert("access_control_roles", {
+				organizationId: created._yay!.organizationId,
+				name: "People ops",
+				normalizedName: "people ops",
+				description: "",
+				permissions: [
+					"organization.members.manage",
+					"workspace.create",
+					"workspace.update",
+					"content.read",
+					"content.write",
+				],
+				createdBy: ownerId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				userId: managerId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				userId: managerId,
+				role: managerRoleId,
+				now,
+			});
+
+			const workspace = await organizations_db_create_workspace(ctx, {
+				userId: managerId,
+				organizationId: created._yay!.organizationId,
+				name: "invite-own-side",
+				description: "",
+				now,
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return workspace._yay.workspaceId;
+		});
+
+		const manager = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: managerId,
+			name: "Manager",
+			email: "invite-owner-manager@test.local",
+		});
+
+		// The permission check answers `"all"` for the owner, which is more than this inviter has. If we
+		// compared the two sets, we would refuse every invite of the owner into a workspace they are not
+		// already in. There is nothing to protect here: the owner passes every check by being the owner,
+		// with or without a membership. This test locks in that we skip the comparison for an owner.
+		const invited = await manager.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: created._yay!.organizationId,
+			workspaceId: sideWorkspaceId,
+			userIdToAdd: ownerId,
+		});
+		expect(invited._nay).toBeUndefined();
+
+		const membership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", ownerId)
+						.eq("organizationId", created._yay!.organizationId)
+						.eq("workspaceId", sideWorkspaceId),
+				)
+				.first(),
+		);
+		expect(membership).not.toBeNull();
+	});
+
+	test("rejects an invite from a role that cannot hand out what member grants", async () => {
+		const t = test_convex();
+		const [ownerId, managerId, invitedUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-ceiling-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-ceiling-manager" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-ceiling-invitee" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, managerId, invitedUserId] });
+
+		const created = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "invite-ceiling-team",
+				now: Date.now(),
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		// This role can manage members and nothing else. Every invite writes the `member` role, which
+		// gives more than this role has, so the invite must be refused. Otherwise its holder could
+		// invite an account of their own and give it the read and write access they do not have.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			const roleId = await ctx.db.insert("access_control_roles", {
+				organizationId: created._yay!.organizationId,
+				name: "People ops",
+				normalizedName: "people ops",
+				description: "",
+				permissions: ["organization.members.manage"],
+				createdBy: ownerId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				userId: managerId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				userId: managerId,
+				role: roleId,
+				now,
+			});
+		});
+
+		const manager = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: managerId,
+			name: "Manager",
+			email: "invite-ceiling-manager@test.local",
+		});
+
+		const result = await manager.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: created._yay!.organizationId,
+			workspaceId: created._yay!.defaultWorkspaceId,
+			userIdToAdd: invitedUserId,
+		});
+		expect(result._nay?.message).toBe(
+			'You cannot invite someone as Member, because that role grants "Create workspace"',
+		);
+
+		const membership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", invitedUserId)
+						.eq("organizationId", created._yay!.organizationId)
+						.eq("workspaceId", created._yay!.defaultWorkspaceId),
+				)
+				.first(),
+		);
+		expect(membership).toBeNull();
+	});
+
 	test("rejects invites from regular organization members", async () => {
 		const t = test_convex();
 		const [ownerId, memberId, invitedUserId] = await t.run(async (ctx) =>
@@ -1741,6 +2189,61 @@ describe("invite_user_to_organization_workspace", () => {
 
 		expect(afterInvite.membership).toHaveLength(0);
 		expect(afterInvite.notifications).toHaveLength(0);
+	});
+
+	test("does not reveal whether an email is registered to a caller outside the organization", async () => {
+		const t = test_convex();
+		const [ownerId, outsiderId, registeredUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-oracle-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-oracle-outsider" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-oracle-registered" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, outsiderId, registeredUserId] });
+
+		const created = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "invite-oracle-team",
+				default: false,
+				now: Date.now(),
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		await t.run((ctx) =>
+			ctx.db.insert("users_anagraphics", {
+				userId: registeredUserId,
+				displayName: "Registered User",
+				email: "invite-oracle-registered@test.local",
+				updatedAt: Date.now(),
+			}),
+		);
+
+		const outsider = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: outsiderId,
+			name: "Outsider",
+			email: "invite-oracle-outsider@test.local",
+		});
+
+		// The error must be the same whether the address has an account or not. Anyone can create an
+		// identity, so a different answer for a known address would let anyone test email addresses.
+		const registered = await outsider.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: created._yay!.organizationId,
+			workspaceId: created._yay!.defaultWorkspaceId,
+			email: "invite-oracle-registered@test.local",
+		});
+		const unknown = await outsider.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: created._yay!.organizationId,
+			workspaceId: created._yay!.defaultWorkspaceId,
+			email: "invite-oracle-nobody@test.local",
+		});
+
+		expect(registered._nay?.message).toBe("Not found");
+		expect(unknown._nay?.message).toBe(registered._nay?.message);
 	});
 });
 
@@ -2100,7 +2603,7 @@ describe("remove_user_from_organization", () => {
 					.collect(),
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_organization_user_workspace_role", (q) =>
+					.withIndex("by_organization_user_workspace", (q) =>
 						q.eq("organizationId", created._yay!.organizationId).eq("userId", memberId),
 					)
 					.collect(),
@@ -2115,7 +2618,7 @@ describe("remove_user_from_organization", () => {
 });
 
 describe("access_control.transfer_organization_ownership", () => {
-	test("moves the owner role and updates extra-organization quota usage", async () => {
+	test("moves ownership to the organization doc and updates extra-organization quota usage", async () => {
 		const t = test_convex();
 		const [ownerId, newOwnerId] = await t.run(async (ctx) =>
 			Promise.all([
@@ -2157,6 +2660,37 @@ describe("access_control.transfer_organization_ownership", () => {
 					updatedAt: now,
 				}),
 			]);
+
+			// A second role, giving extra power inside one workspace. It does nothing while this user
+			// owns the organization, so the transfer has to delete it too. Otherwise it would start
+			// working again if ownership later moved to somebody else.
+			const secondWorkspace = await organizations_db_create_workspace(ctx, {
+				userId: ownerId,
+				organizationId: created._yay!.organizationId,
+				name: "transfer-side",
+				description: "",
+				now,
+			});
+			if (secondWorkspace._nay) {
+				throw new Error(secondWorkspace._nay.message);
+			}
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: created._yay!.organizationId,
+				workspaceId: secondWorkspace._yay.workspaceId,
+				userId: newOwnerId,
+				active: true,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: created._yay!.organizationId,
+				workspaceId: secondWorkspace._yay.workspaceId,
+				userId: newOwnerId,
+				role: "admin",
+				createdAt: now,
+				updatedAt: now,
+			});
 		});
 
 		const transferResult = await owner.mutation(api.access_control.transfer_organization_ownership, {
@@ -2166,43 +2700,23 @@ describe("access_control.transfer_organization_ownership", () => {
 		expect(transferResult._yay).toBeNull();
 
 		const afterTransfer = await t.run(async (ctx) => {
-			const [
-				organization,
-				ownerRoles,
-				newOwnerRoles,
-				oldOwnerMemberRole,
-				oldOwnerQuota,
-				newOwnerQuota,
-				oldOwnerHomeMembership,
-			] =
+			const [organization, newOwnerRoles, oldOwnerMemberRole, oldOwnerQuota, newOwnerQuota, oldOwnerHomeMembership] =
 				await Promise.all([
 					ctx.db.get("organizations", created._yay!.organizationId),
+					// Read the assignments in every workspace, not only the default one.
 					ctx.db
 						.query("access_control_role_assignments")
-						.withIndex("by_organization_workspace_role_user", (q) =>
-							q
-								.eq("organizationId", created._yay!.organizationId)
-								.eq("workspaceId", created._yay!.defaultWorkspaceId)
-								.eq("role", "owner"),
-							)
-							.collect(),
-					ctx.db
-						.query("access_control_role_assignments")
-						.withIndex("by_organization_workspace_user_role", (q) =>
-							q
-								.eq("organizationId", created._yay!.organizationId)
-								.eq("workspaceId", created._yay!.defaultWorkspaceId)
-								.eq("userId", newOwnerId),
+						.withIndex("by_organization_user_workspace", (q) =>
+							q.eq("organizationId", created._yay!.organizationId).eq("userId", newOwnerId),
 						)
 						.collect(),
 					ctx.db
 						.query("access_control_role_assignments")
-						.withIndex("by_organization_workspace_user_role", (q) =>
+						.withIndex("by_organization_workspace_user", (q) =>
 							q
 								.eq("organizationId", created._yay!.organizationId)
 								.eq("workspaceId", created._yay!.defaultWorkspaceId)
-								.eq("userId", ownerId)
-								.eq("role", "member"),
+								.eq("userId", ownerId),
 						)
 						.first(),
 					organizations_test_read_user_extra_organization_quota_doc(ctx, { userId: ownerId }),
@@ -2221,7 +2735,6 @@ describe("access_control.transfer_organization_ownership", () => {
 
 			return {
 				organization,
-				ownerRoles,
 				newOwnerRoles,
 				oldOwnerMemberRole,
 				oldOwnerQuota,
@@ -2231,10 +2744,9 @@ describe("access_control.transfer_organization_ownership", () => {
 		});
 
 		expect(afterTransfer.organization?.ownerUserId).toBe(newOwnerId);
-		expect(afterTransfer.ownerRoles).toHaveLength(1);
-		expect(afterTransfer.ownerRoles[0]?.userId).toBe(newOwnerId);
-		expect(afterTransfer.newOwnerRoles.map((assignment) => assignment.role)).toEqual(["owner"]);
-		expect(afterTransfer.oldOwnerMemberRole?.userId).toBe(ownerId);
+		// The new owner's role assignment is deleted, and the old owner is set to `member`.
+		expect(afterTransfer.newOwnerRoles).toHaveLength(0);
+		expect(afterTransfer.oldOwnerMemberRole?.role).toBe("member");
 		expect(afterTransfer.oldOwnerQuota?.usedCount).toBe(0);
 		expect(afterTransfer.newOwnerQuota?.usedCount).toBe(1);
 		expect(afterTransfer.oldOwnerHomeMembership).not.toBeNull();
@@ -2301,8 +2813,7 @@ describe("access_control", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				defaultWorkspaceId: created._yay!.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "organization",
-				resourceId: created._yay!.organizationId,
+				resource: { kind: "organization", id: String(created._yay!.organizationId) },
 				permission: "organization.members.manage",
 				userId: memberId,
 			});
@@ -2311,8 +2822,7 @@ describe("access_control", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				defaultWorkspaceId: created._yay!.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "organization",
-				resourceId: created._yay!.organizationId,
+				resource: { kind: "organization", id: String(created._yay!.organizationId) },
 				permission: "organization.members.manage",
 				userId: adminId,
 			});
@@ -2321,8 +2831,7 @@ describe("access_control", () => {
 				workspaceId: workspace._yay!.workspaceId,
 				defaultWorkspaceId: created._yay!.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "workspace",
-				resourceId: workspace._yay!.workspaceId,
+				resource: { kind: "workspace", id: String(workspace._yay!.workspaceId) },
 				permission: "workspace.members.manage",
 				userId: memberId,
 			});
@@ -2331,29 +2840,8 @@ describe("access_control", () => {
 				workspaceId: workspace._yay!.workspaceId,
 				defaultWorkspaceId: created._yay!.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "workspace",
-				resourceId: workspace._yay!.workspaceId,
+				resource: { kind: "workspace", id: String(workspace._yay!.workspaceId) },
 				permission: "workspace.members.manage",
-				userId: adminId,
-			});
-			const memberApiCredentialAccess = await access_control_db_has_permission(ctx, {
-				organizationId: created._yay!.organizationId,
-				workspaceId: workspace._yay!.workspaceId,
-				defaultWorkspaceId: created._yay!.defaultWorkspaceId,
-				organizationOwnerUserId: ownerId,
-				resourceKind: "workspace",
-				resourceId: workspace._yay!.workspaceId,
-				permission: "api.credentials.manage",
-				userId: memberId,
-			});
-			const adminApiCredentialAccess = await access_control_db_has_permission(ctx, {
-				organizationId: created._yay!.organizationId,
-				workspaceId: workspace._yay!.workspaceId,
-				defaultWorkspaceId: created._yay!.defaultWorkspaceId,
-				organizationOwnerUserId: ownerId,
-				resourceKind: "workspace",
-				resourceId: workspace._yay!.workspaceId,
-				permission: "api.credentials.manage",
 				userId: adminId,
 			});
 
@@ -2362,8 +2850,6 @@ describe("access_control", () => {
 				adminOrganizationAccess,
 				memberWorkspaceAccess,
 				adminWorkspaceAccess,
-				memberApiCredentialAccess,
-				adminApiCredentialAccess,
 			};
 		});
 
@@ -2371,8 +2857,6 @@ describe("access_control", () => {
 		expect(result.adminOrganizationAccess).toBe(true);
 		expect(result.memberWorkspaceAccess).toBe(false);
 		expect(result.adminWorkspaceAccess).toBe(true);
-		expect(result.memberApiCredentialAccess).toBe(false);
-		expect(result.adminApiCredentialAccess).toBe(true);
 	});
 
 	test("returns current organization permission for owners and admins but not regular members", async () => {
@@ -2460,7 +2944,7 @@ describe("access_control", () => {
 		expect(memberPermission).toBe(false);
 	});
 
-	test("returns the current user's exact role for one organization/workspace scope", async () => {
+	test("prefers the workspace-local role and otherwise shows the organization-wide one", async () => {
 		const t = test_convex();
 		const [ownerId, scopedUserId] = await t.run(async (ctx) =>
 			Promise.all([
@@ -2562,12 +3046,14 @@ describe("access_control", () => {
 			workspaceId: organization.defaultWorkspaceId,
 		});
 
-		expect(ownerRole).toBe("owner");
-		expect(localWorkspaceRole).toBe("member");
+		expect(ownerRole).toEqual({ kind: "owner" });
+		expect(localWorkspaceRole).toEqual({ kind: "system", role: "member" });
 		expect(siblingWorkspaceRoleBeforeDefaultRole).toBeNull();
-		expect(localWorkspaceRoleAfterDefaultRole).toBe("member");
-		expect(siblingWorkspaceRoleAfterDefaultRole).toBeNull();
-		expect(defaultWorkspaceRoleAfterDefaultRole).toBe("admin");
+		// Where the user has a role inside the workspace, that role is shown...
+		expect(localWorkspaceRoleAfterDefaultRole).toEqual({ kind: "system", role: "member" });
+		// ...and everywhere else the organization-wide role is shown, which matches the real access.
+		expect(siblingWorkspaceRoleAfterDefaultRole).toEqual({ kind: "system", role: "admin" });
+		expect(defaultWorkspaceRoleAfterDefaultRole).toEqual({ kind: "system", role: "admin" });
 	});
 
 	test("keeps extra-ws role assignments local and default-ws assignments organization-wide", async () => {
@@ -2612,18 +3098,6 @@ describe("access_control", () => {
 				}),
 			]);
 
-			for (const workspaceId of [workspaceAId, workspaceBId]) {
-				await access_control_db_ensure_role_permission_grant(ctx, {
-					organizationId: organization.organizationId,
-					workspaceId,
-					resourceKind: "workspace",
-					resourceId: workspaceId,
-					role: "member",
-					permission: "workspace.update",
-					now,
-				});
-			}
-
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: organization.organizationId,
 				workspaceId: workspaceAId,
@@ -2637,8 +3111,7 @@ describe("access_control", () => {
 				workspaceId: workspaceAId,
 				defaultWorkspaceId: organization.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "workspace",
-				resourceId: workspaceAId,
+				resource: { kind: "workspace", id: String(workspaceAId) },
 				permission: "workspace.update",
 				userId: scopedUserId,
 			});
@@ -2647,8 +3120,7 @@ describe("access_control", () => {
 				workspaceId: workspaceBId,
 				defaultWorkspaceId: organization.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "workspace",
-				resourceId: workspaceBId,
+				resource: { kind: "workspace", id: String(workspaceBId) },
 				permission: "workspace.update",
 				userId: scopedUserId,
 			});
@@ -2661,13 +3133,41 @@ describe("access_control", () => {
 				now,
 			});
 
+			// For organization-scoped permissions, the organization-wide role works in every workspace.
+			const workspaceBOrganizationScopedAccess = await access_control_db_has_permission(ctx, {
+				organizationId: organization.organizationId,
+				workspaceId: workspaceBId,
+				defaultWorkspaceId: organization.defaultWorkspaceId,
+				organizationOwnerUserId: ownerId,
+				resource: { kind: "workspace", id: String(workspaceBId) },
+				permission: "workspace.create",
+				userId: scopedUserId,
+			});
+			// Its workspace-scoped half needs membership in that workspace.
+			const workspaceBAccessWithoutMembership = await access_control_db_has_permission(ctx, {
+				organizationId: organization.organizationId,
+				workspaceId: workspaceBId,
+				defaultWorkspaceId: organization.defaultWorkspaceId,
+				organizationOwnerUserId: ownerId,
+				resource: { kind: "workspace", id: String(workspaceBId) },
+				permission: "workspace.update",
+				userId: scopedUserId,
+			});
+
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: organization.organizationId,
+				workspaceId: workspaceBId,
+				userId: scopedUserId,
+				active: true,
+				updatedAt: now,
+			});
+
 			const workspaceBAccessAfterOrganizationRole = await access_control_db_has_permission(ctx, {
 				organizationId: organization.organizationId,
 				workspaceId: workspaceBId,
 				defaultWorkspaceId: organization.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "workspace",
-				resourceId: workspaceBId,
+				resource: { kind: "workspace", id: String(workspaceBId) },
 				permission: "workspace.update",
 				userId: scopedUserId,
 			});
@@ -2675,12 +3175,16 @@ describe("access_control", () => {
 			return {
 				workspaceALocalAccess,
 				workspaceBAccessBeforeOrganizationRole,
+				workspaceBOrganizationScopedAccess,
+				workspaceBAccessWithoutMembership,
 				workspaceBAccessAfterOrganizationRole,
 			};
 		});
 
 		expect(result.workspaceALocalAccess).toBe(true);
 		expect(result.workspaceBAccessBeforeOrganizationRole).toBe(false);
+		expect(result.workspaceBOrganizationScopedAccess).toBe(true);
+		expect(result.workspaceBAccessWithoutMembership).toBe(false);
 		expect(result.workspaceBAccessAfterOrganizationRole).toBe(true);
 	});
 
@@ -2741,23 +3245,29 @@ describe("access_control", () => {
 				}),
 			]);
 
+			// File sharing does not write these grants yet, so the test inserts the docs straight into the
+			// table. `resourceId` is the restricted scope node, never the file that was opened.
 			await Promise.all([
-				access_control_db_ensure_user_permission_grant(ctx, {
+				ctx.db.insert("access_control_permission_grants", {
 					organizationId: organization.organizationId,
 					workspaceId: organization.defaultWorkspaceId,
 					resourceKind: "file",
-					resourceId: nodeId,
+					resourceId: String(nodeId),
+					principalKind: "user",
 					userId: grantedUserId,
-					permission: "asset.write",
-					now,
+					permission: "content.write",
+					createdAt: now,
+					updatedAt: now,
 				}),
-				access_control_db_ensure_public_permission_grant(ctx, {
+				ctx.db.insert("access_control_permission_grants", {
 					organizationId: organization.organizationId,
 					workspaceId: organization.defaultWorkspaceId,
 					resourceKind: "file",
-					resourceId: nodeId,
-					permission: "asset.read",
-					now,
+					resourceId: String(nodeId),
+					principalKind: "public",
+					permission: "content.read",
+					createdAt: now,
+					updatedAt: now,
 				}),
 			]);
 
@@ -2766,9 +3276,8 @@ describe("access_control", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				defaultWorkspaceId: organization.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "file",
-				resourceId: nodeId,
-				permission: "asset.write",
+				resource: { kind: "file", id: String(nodeId), restrictedScopeNodeId: null },
+				permission: "content.write",
 				userId: grantedUserId,
 			});
 			const otherUserAccess = await access_control_db_has_permission(ctx, {
@@ -2776,9 +3285,8 @@ describe("access_control", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				defaultWorkspaceId: organization.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "file",
-				resourceId: nodeId,
-				permission: "asset.write",
+				resource: { kind: "file", id: String(nodeId), restrictedScopeNodeId: null },
+				permission: "content.write",
 				userId: otherUserId,
 			});
 			const publicReadAccess = await access_control_db_has_permission(ctx, {
@@ -2786,9 +3294,8 @@ describe("access_control", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				defaultWorkspaceId: organization.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "file",
-				resourceId: nodeId,
-				permission: "asset.read",
+				resource: { kind: "file", id: String(nodeId), restrictedScopeNodeId: null },
+				permission: "content.read",
 				allowPublic: true,
 			});
 			const publicWriteAccess = await access_control_db_has_permission(ctx, {
@@ -2796,9 +3303,8 @@ describe("access_control", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				defaultWorkspaceId: organization.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "file",
-				resourceId: nodeId,
-				permission: "asset.write",
+				resource: { kind: "file", id: String(nodeId), restrictedScopeNodeId: null },
+				permission: "content.write",
 				allowPublic: true,
 			});
 			const otherPagePublicAccess = await access_control_db_has_permission(ctx, {
@@ -2806,9 +3312,8 @@ describe("access_control", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				defaultWorkspaceId: organization.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "file",
-				resourceId: otherNodeId,
-				permission: "asset.read",
+				resource: { kind: "file", id: String(otherNodeId), restrictedScopeNodeId: null },
+				permission: "content.read",
 				allowPublic: true,
 			});
 			const publicAccessWithoutPublicFlag = await access_control_db_has_permission(ctx, {
@@ -2816,9 +3321,8 @@ describe("access_control", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				defaultWorkspaceId: organization.defaultWorkspaceId,
 				organizationOwnerUserId: ownerId,
-				resourceKind: "file",
-				resourceId: nodeId,
-				permission: "asset.read",
+				resource: { kind: "file", id: String(nodeId), restrictedScopeNodeId: null },
+				permission: "content.read",
 			});
 
 			return {
@@ -3202,16 +3706,8 @@ describe("edit_workspace", () => {
 		const zebraId = extra._yay!.workspaceId;
 
 		await t.run(async (ctx) => {
-			const now = Date.now();
 			await ctx.db.patch("organizations_workspaces", homeId, { default: false });
 			await ctx.db.patch("organizations", organizationId, { defaultWorkspaceId: zebraId });
-			await access_control_db_ensure_role_assignment(ctx, {
-				organizationId,
-				workspaceId: zebraId,
-				userId,
-				role: "owner",
-				now,
-			});
 		});
 
 		const blocked = await asUser.mutation(api.organizations.edit_workspace, {
@@ -3402,6 +3898,104 @@ describe("edit_workspace", () => {
 });
 
 describe("delete_workspace", () => {
+	test("rejects deleting the primary workspace when workspace.default is true", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-delete-primary-ws",
+			}),
+		);
+		await organizations_test_bootstrap_user(t, { userId });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+			email: "organizations-test-user@test.local",
+		});
+
+		const wsResult = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId,
+				description: "",
+				name: "delete-primary-ws",
+				now: Date.now(),
+			}),
+		);
+		if (wsResult._nay) {
+			throw new Error(wsResult._nay.message);
+		}
+		expect(wsResult._yay).toBeTruthy();
+
+		const result = await asUser.mutation(api.organizations.delete_workspace, {
+			workspaceId: wsResult._yay!.defaultWorkspaceId,
+		});
+
+		expect(result._nay?.message).toBe("Cannot delete the default workspace");
+	});
+
+	test("rejects deleting the primary workspace when only defaultWorkspaceId matches", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-delete-primary-ws-id",
+			}),
+		);
+		await organizations_test_bootstrap_user(t, { userId });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+			email: "organizations-test-user@test.local",
+		});
+
+		const wsResult = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId,
+				description: "",
+				name: "delete-primary-ws-id",
+				now: Date.now(),
+			}),
+		);
+		if (wsResult._nay) {
+			throw new Error(wsResult._nay.message);
+		}
+		expect(wsResult._yay).toBeTruthy();
+		const organizationId = wsResult._yay!.organizationId;
+		const homeId = wsResult._yay!.defaultWorkspaceId;
+
+		const extra = await t.run((ctx) =>
+			organizations_db_create_workspace(ctx, {
+				userId,
+				description: "",
+				organizationId,
+				name: "zebra-docs",
+				now: Date.now(),
+			}),
+		);
+		if (extra._nay) {
+			throw new Error(extra._nay.message);
+		}
+		expect(extra._yay).toBeTruthy();
+		const zebraId = extra._yay!.workspaceId;
+
+		// Move the pointer to zebra and clear the flag on home. The guard must follow the
+		// organization doc, not the `default` flag on the workspace doc.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("organizations_workspaces", homeId, { default: false });
+			await ctx.db.patch("organizations", organizationId, { defaultWorkspaceId: zebraId });
+		});
+
+		const blocked = await asUser.mutation(api.organizations.delete_workspace, {
+			workspaceId: zebraId,
+		});
+		expect(blocked._nay?.message).toBe("Cannot delete the default workspace");
+
+		const ok = await asUser.mutation(api.organizations.delete_workspace, {
+			workspaceId: homeId,
+		});
+		expect(ok._yay).toBeNull();
+	});
+
 	test("queues tenant-scoped purge work and keeps the user's personal/home default", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -3498,7 +4092,7 @@ describe("delete_workspace", () => {
 					.collect(),
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_organization_workspace_user_role", (q) =>
+					.withIndex("by_organization_workspace_user", (q) =>
 						q.eq("organizationId", created._yay!.organizationId).eq("workspaceId", extraWorkspace._yay!.workspaceId),
 					)
 					.collect(),
@@ -3587,6 +4181,78 @@ describe("delete_workspace", () => {
 		);
 		expect(purgeRequestsAfter).toHaveLength(0);
 	});
+
+	test("a member cannot delete a workspace, not even one it created", async () => {
+		const t = test_convex();
+		const [ownerId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-delete-ws-member" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-delete-ws-member-target" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "delete-ws-member-owner@test.local",
+		});
+		const member = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "delete-ws-member@test.local",
+		});
+
+		const created = await owner.mutation(api.organizations.create_organization, {
+			description: "",
+			name: "delete-ws-roles",
+		});
+		expect(created._yay).toBeTruthy();
+		const organization = created._yay!;
+
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: organization.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				userId: memberId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: organization.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				userId: memberId,
+				role: "member",
+				now,
+			});
+		});
+
+		const workspace = await member.mutation(api.organizations.create_workspace, {
+			organizationId: organization.organizationId,
+			name: "member-space",
+			description: "",
+		});
+		expect(workspace._nay).toBeUndefined();
+
+		await t.run((ctx) =>
+			ctx.runMutation(components.rate_limiter.lib.resetRateLimit, { name: "organizations_write", key: memberId }),
+		);
+
+		// `member` has `workspace.create` but not `workspace.delete`, so creating a workspace does not
+		// give the right to delete it.
+		const denied = await member.mutation(api.organizations.delete_workspace, {
+			workspaceId: workspace._yay!.workspaceId,
+		});
+		expect(denied._nay?.message).toBe("Permission denied");
+
+		// The owner deletes it instead.
+		const allowed = await owner.mutation(api.organizations.delete_workspace, {
+			workspaceId: workspace._yay!.workspaceId,
+		});
+		expect(allowed._nay).toBeUndefined();
+	});
 });
 
 describe("delete_organization", () => {
@@ -3624,6 +4290,15 @@ describe("delete_organization", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: memberId,
 				active: true,
+			});
+			// A membership alone gives no permission. Without this role the test would use a user with no
+			// permissions at all, instead of the member its name promises.
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				userId: memberId,
+				role: "member",
+				now: Date.now(),
 			});
 		});
 
@@ -3745,7 +4420,7 @@ describe("delete_organization", () => {
 				ctx.db.query("organizations_workspaces_users").collect(),
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_organization_workspace_user_role", (q) => q.eq("organizationId", created._yay!.organizationId))
+					.withIndex("by_organization_workspace_user", (q) => q.eq("organizationId", created._yay!.organizationId))
 					.collect(),
 				ctx.db
 					.query("access_control_permission_grants")
@@ -4223,6 +4898,91 @@ describe("set_organization_billing_mode", () => {
 				message: "Permission denied",
 			},
 		});
+	});
+
+	test("denies an admin but allows a custom role that holds the billing permission", async () => {
+		const t = test_convex();
+		const [ownerId, adminId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-set-billing-role-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-set-billing-role-admin" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, adminId] });
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "billing-role-owner@test.local",
+		});
+		const admin = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: adminId,
+			name: "Admin",
+			email: "billing-role-admin@test.local",
+		});
+		const created = await owner.mutation(api.organizations.create_organization, {
+			description: "",
+			name: "billing-mode-role",
+		});
+		expect(created._yay).toBeTruthy();
+		const organization = created._yay!;
+
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: organization.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				userId: adminId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: organization.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				userId: adminId,
+				role: "admin",
+				now,
+			});
+		});
+
+		// The `admin` role does not include billing, on purpose.
+		const asAdmin = await admin.mutation(api.organizations.set_organization_billing_mode, {
+			organizationId: organization.organizationId,
+			billingMode: "organization_owner",
+		});
+		expect(asAdmin._nay?.message).toBe("Permission denied");
+
+		const role = await owner.mutation(api.access_control.create_role, {
+			organizationId: organization.organizationId,
+			name: "Treasurer",
+			description: "",
+			permissions: ["organization.billing.manage"],
+		});
+		expect(role._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const assignment = await ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", organization.organizationId)
+						.eq("workspaceId", organization.defaultWorkspaceId)
+						.eq("userId", adminId),
+				)
+				.first();
+			await ctx.db.patch("access_control_role_assignments", assignment!._id, { role: role._yay!.roleId });
+			await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
+				name: "organizations_write",
+				key: adminId,
+			});
+		});
+
+		const asTreasurer = await admin.mutation(api.organizations.set_organization_billing_mode, {
+			organizationId: organization.organizationId,
+			billingMode: "organization_owner",
+		});
+		expect(asTreasurer._nay).toBeUndefined();
 	});
 });
 

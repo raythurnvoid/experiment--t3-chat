@@ -15,6 +15,37 @@ const plugins_capability_validator = v.union(
 	v.literal("workspace.files.read"),
 );
 
+/**
+ * The full list of permissions. Users build roles out of these, but can never add a new one.
+ **/
+const access_control_permission_validator = v.union(
+	v.literal("organization.update"),
+	v.literal("organization.members.manage"),
+	v.literal("organization.roles.manage"),
+	v.literal("organization.billing.manage"),
+	v.literal("workspace.create"),
+	v.literal("workspace.update"),
+	v.literal("workspace.delete"),
+	v.literal("workspace.members.manage"),
+	v.literal("content.read"),
+	v.literal("content.write"),
+	v.literal("content.permissions.manage"),
+	v.literal("workspace.plugins.manage"),
+);
+
+/**
+ * A role you can give to someone: the name of a system role, or the id of a custom role.
+ *
+ * Owner cannot be given this way. The only source of ownership is `organizations.ownerUserId`, so
+ * an owner has no role assignment doc.
+ */
+const access_control_role_ref_validator = v.union(
+	v.literal("admin"),
+	v.literal("member"),
+	v.literal("viewer"),
+	v.id("access_control_roles"),
+);
+
 const app_convex_schema = defineSchema({
 	// #region ai
 	ai_chat_threads: defineTable({
@@ -468,6 +499,18 @@ const app_convex_schema = defineSchema({
 		archiveOperationId: v.optional(v.string()),
 		/** "root" for root items, otherwise parent folder `_id` */
 		parentId: v.union(v.id("files_nodes"), v.literal("root")),
+		/**
+		 * The nearest restricted folder above this node, or this node itself when it is the restricted
+		 * one. When it is not set, the node uses normal workspace access.
+		 *
+		 * A node is restricted exactly when `restrictedScopeNodeId === _id`. Permission grants are
+		 * stored only on that node, so a restricted folder and everything inside it share one pointer.
+		 *
+		 * Nothing writes this field yet. The permission check already reads it, but the code that has
+		 * to copy the parent's pointer when a node is created or moved arrives with the file-sharing
+		 * milestone. So today it is always unset and every node uses workspace access.
+		 */
+		restrictedScopeNodeId: v.optional(v.id("files_nodes")),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** Updated by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
@@ -1211,7 +1254,12 @@ const app_convex_schema = defineSchema({
 		archivedAt: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_organization_workspace_archivedAt_updatedAt", ["organizationId", "workspaceId", "archivedAt", "updatedAt"])
+		.index("by_organization_workspace_archivedAt_updatedAt", [
+			"organizationId",
+			"workspaceId",
+			"archivedAt",
+			"updatedAt",
+		])
 		// The producer→activity link lives only here (no back-link on the producer doc): the
 		// producer finds its activity through this index, and its absence means "never opted in".
 		.index("by_source_id", ["source.id"])
@@ -1270,42 +1318,60 @@ const app_convex_schema = defineSchema({
 	// #endregion data deletion
 
 	// #region access control
+
+	/**
+	 * Custom roles, which always apply to the whole organization. System roles live in code, so they
+	 * have no docs here.
+	 **/
+	access_control_roles: defineTable({
+		organizationId: v.id("organizations"),
+		name: v.string(),
+		/** `name` in lowercase, without spaces around it. Unique per organization, never a system role name. */
+		normalizedName: v.string(),
+		description: v.string(),
+		permissions: v.array(access_control_permission_validator),
+		/** Kept even after that user is deleted: the role belongs to the organization, not to them. */
+		createdBy: v.id("users"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	}).index("by_organization_normalizedName", ["organizationId", "normalizedName"]),
+
 	access_control_role_assignments: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
-		role: v.union(v.literal("owner"), v.literal("admin"), v.literal("member")),
+		role: access_control_role_ref_validator,
 		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_organization_workspace_user_role", ["organizationId", "workspaceId", "userId", "role"])
-		.index("by_organization_workspace_role_user", ["organizationId", "workspaceId", "role", "userId"])
-		.index("by_user_role_organization_workspace", ["userId", "role", "organizationId", "workspaceId"])
-		.index("by_organization_user_workspace_role", ["organizationId", "userId", "workspaceId", "role"]),
+		// `role` is left out of this key on purpose. There is one assignment per (organization,
+		// workspace, user), so changing a role updates the existing doc instead of adding a second one.
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_organization_user_workspace", ["organizationId", "userId", "workspaceId"])
+		.index("by_user_organization_workspace", ["userId", "organizationId", "workspaceId"])
+		.index("by_organization_role_workspace_user", ["organizationId", "role", "workspaceId", "userId"]),
 
 	access_control_permission_grants: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		/**
+		 * What the grant is about. `"thread"` is never written: no code makes a thread grant, and
+		 * `access_control_Resource` cannot build one. Chat threads are checked with `content.read` and
+		 * `content.write` on their workspace instead. The literal stays so old docs still validate.
+		 */
 		resourceKind: v.union(v.literal("organization"), v.literal("workspace"), v.literal("file"), v.literal("thread")),
+		/**
+		 * The id of the thing this grant is about, written as a string.
+		 *
+		 * For `resourceKind: "file"` this is always the id of the restricted scope node — the folder that
+		 * was restricted — never the id of the file that was opened. So a restricted folder and
+		 * everything inside it share one set of grants.
+		 */
 		resourceId: v.string(),
 		principalKind: v.union(v.literal("role"), v.literal("user"), v.literal("public")),
 		userId: v.optional(v.id("users")),
-		role: v.optional(v.union(v.literal("owner"), v.literal("admin"), v.literal("member"))),
-		permission: v.union(
-			v.literal("organization.update"),
-			v.literal("organization.delete"),
-			v.literal("organization.members.manage"),
-			v.literal("organization.roles.manage"),
-			v.literal("workspace.create"),
-			v.literal("workspace.update"),
-			v.literal("workspace.delete"),
-			v.literal("workspace.members.manage"),
-			v.literal("asset.read"),
-			v.literal("asset.write"),
-			v.literal("asset.permissions.manage"),
-			v.literal("api.credentials.manage"),
-			v.literal("workspace.plugins.manage"),
-		),
+		role: v.optional(access_control_role_ref_validator),
+		permission: access_control_permission_validator,
 		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
@@ -1352,6 +1418,17 @@ const app_convex_schema = defineSchema({
 			"resourceId",
 			"principalKind",
 			"permission",
+		])
+		// Finds every grant that still points at one role, so deleting a custom role can refuse.
+		// `principalKind` comes first, like in the three lookups above, instead of trusting that
+		// `role` is only ever set on a doc whose principal is a role.
+		.index("by_organization_role_workspace_resource", [
+			"organizationId",
+			"principalKind",
+			"role",
+			"workspaceId",
+			"resourceKind",
+			"resourceId",
 		]),
 	// #endregion access control
 
@@ -1409,12 +1486,7 @@ const app_convex_schema = defineSchema({
 		.index("by_user_quotaName", ["userId", "quotaName"])
 		.index("by_organization_quotaName", ["organizationId", "quotaName"])
 		.index("by_workspace_quotaName", ["workspaceId", "quotaName"])
-		.index("by_user_organization_workspace_quotaName", [
-			"userId",
-			"organizationId",
-			"workspaceId",
-			"quotaName",
-		]),
+		.index("by_user_organization_workspace_quotaName", ["userId", "organizationId", "workspaceId", "quotaName"]),
 	// #endregion organizations
 
 	// #region billing

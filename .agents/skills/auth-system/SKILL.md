@@ -18,8 +18,8 @@ Prefer reusing existing generic Convex queries instead of creating narrowly tail
 
 - Convex query results are cached client-side and kept consistent via subscriptions.
 - Reusing the same query + args lets multiple UI surfaces share that cache entry.
-- `users.get_anagraphic` is currently a public, unguarded full-document query. It accepts any `users` id and returns `users_anagraphics`, including normalized email. Reuse it only for current-user UI with `auth.userId`.
-- Do not add new cross-user `get_anagraphic` call sites or present it as a safe generic profile query. Existing cross-user call sites are a known privacy gap. Product policy must decide whether email is self-only or visible to authorized co-members before a replacement query's authorization and return shape are documented.
+- `users.get_anagraphic` requires an authenticated identity — anonymous accounts included — and returns `null` without one. Cross-user calls are fine and deliberate: it accepts any `users` id and returns the display name and avatar, because those render beside file edits, snapshots and notifications where the caller often shares no tenant with the person named.
+- `email` is the exception, and the decision is settled: it comes back only when you ask about yourself, and is `""` for everyone else. `""` is the value anonymous users already carry, so every reader already has a no-email branch. Do not widen the query to "fix" a caller that wants somebody else's address — see `../access-control/SKILL.md`.
 - Favor generic, composable queries only when their authorization and returned fields are safe for every intended caller.
 
 ## Frictionless onboarding
@@ -100,9 +100,15 @@ Routes implemented in: [users.ts](../../../packages/app/convex/users.ts)
 
 ### Known anonymous deletion gap
 
-The current anonymous refresh lookup verifies the token and user id but does not check `users.deletedAt`. `server_convex_get_user_fallback_to_anonymous` also trusts the JWT subject without loading a live user row. A tombstoned anonymous user can therefore keep or refresh a token during the retention period, and handlers that trust only the auth id can still accept account-level writes. The anonymous-to-Clerk upgrade path must also reject a tombstoned anonymous source unless the recovery policy explicitly selects it.
+**Closed:** the refresh lookup now checks `users.deletedAt` (`get_with_anagraphic_and_anonymous_auth_token`), so a tombstoned anonymous user can no longer mint a fresh JWT. Covered by a test asserting `401`.
 
-Do not describe a tombstone as anonymous-session revocation. Fix this at the auth and write boundaries: reject deleted anonymous users during refresh and upgrade, require a live user row for anonymous account-level writes, and add focused tests for refresh, upgrade, and a representative write after tombstoning.
+**Still open:**
+
+- `server_convex_get_user_fallback_to_anonymous` trusts the JWT subject without loading a live user doc, so a JWT issued *before* the tombstone stays valid until it expires — up to 30 days. Refresh is closed; expiry is not.
+- The anonymous-to-Clerk upgrade path still accepts a tombstoned anonymous source. The anonymous anagraphic carries `email: ""`, so the deleted-reclaim-by-email branch in `resolve_user` cannot select it, and the upgrade patches `clerkUserId` without clearing `deletedAt`.
+- Handlers that trust only the auth id can still accept account-level writes.
+
+Do not describe a tombstone as anonymous-session revocation. Fix the rest at the auth and write boundaries: reject tombstoned sources during upgrade, require a live user doc for anonymous account-level writes, and add focused tests for upgrade and a representative write after tombstoning.
 
 Anonymous JWT properties:
 
@@ -234,7 +240,7 @@ Summary:
 - Tables: `organizations`, `organizations_workspaces`, `organizations_workspaces_users`, `access_control_role_assignments`, `access_control_permission_grants`, `notifications`, `data_deletion_requests`; `users.defaultOrganizationId` / `defaultWorkspaceId`.
 - Bootstrap: `create_anonymous_user` and `resolve_user` call `organizations_db_ensure_default_organization_and_workspace_for_user`.
 - The default `personal` organization is private. Invites/member-management writes reject it.
-- Organization ownership lives in `organizations.ownerUserId` for default and non-default organizations; a mirrored default-workspace owner role assignment remains for role display and access-control compatibility. Only non-default ownership consumes the extra-organization quota and can be transferred.
+- Organization ownership lives in `organizations.ownerUserId` for default and non-default organizations. Owners hold **no** role assignment; role display resolves ownership from `ownerUserId` before reading assignments. Only non-default ownership consumes the extra-organization quota and can be transferred.
 - **Implementation note:** Many app surfaces may still use older hardcoded organization/workspace ids outside this tenancy module—verify callsites.
 
 Authorization helpers in `organizations.ts` call the backend access-control permission checker. Frontend guards and full permission-management UI are intentionally incremental follow-up work.
@@ -276,13 +282,20 @@ Important: “public write” means anyone who knows the asset id can write (sha
 
 Canonical access-control details live in `../access-control/SKILL.md`.
 
-Permissions are represented by allow-only docs in `access_control_permission_grants`. Grants can target roles, specific users, or public access for `organization`, `workspace`, `file`, and `thread` resources.
+Role authority is **code**, not data: system roles live in `access_control_SYSTEM_ROLE_MATRIX`.
+`access_control_permission_grants` is allow-only and reserved for per-file sharing — it can target a
+role, a specific user, or public access for `organization`, `workspace`, `file` and `thread` resources,
+but **nothing writes one today**. The file-sharing milestone is its first writer.
 
-Current roles are `owner`, `admin`, and `member`. The owner is a system role on the organization default workspace with full organization authority; admin/member authority is represented by seeded grant docs. Direct user and public grants allow asset-level access without changing a user’s role.
+System roles are `admin`, `member`, `viewer`. Ownership is `organizations.ownerUserId` and carries no
+doc; there is no `owner` role. Direct user and public grants will allow file-level access without
+changing anyone's role.
 
-The owner may:
+The intended per-file sharing capabilities, once that milestone lands — handing any of these out will
+require `content.permissions.manage`, which is declared with `enforcedBy: "file-sharing"` and is not
+enforced yet:
 
-- allow anonymous users to write on a public asset (edit-by-link)
+- allow anonymous users to write on a public file (edit-by-link)
 - allow anonymous users to read only
 - grant write permissions to a specific anonymous user id (while keeping others read-only)
 
@@ -317,7 +330,7 @@ When a public Convex handler needs the current app user, resolve auth with `serv
 - Convex auth returns a user id, but that id does not resolve to a row in the `users` table.
 - The caller is anonymous and the resolved row has `deletedAt`.
 
-Keep the Clerk rule separate: trust Clerk session invalidation and the signed-in recovery flow. Do not add the anonymous `deletedAt` rejection as a generic guard for Clerk callers.
+`access_control_db_authorize_membership` applies the `deletedAt` rejection to **every** caller, anonymous or signed in, at all of its call sites. That is deliberate, and it is safe because recovery clears the tombstone before any workspace handler runs: `users.resolve_user` patches `deletedAt: undefined` at sign-in, the `/api/auth/resolve-user` route refuses a tombstoned user the read-only fast path so it must fall through to that patch, and `delete_current_user_account` deletes the Clerk account outright, so the old session is gone anyway. An earlier version of this file told you *not* to guard Clerk callers generically; that advice was wrong and contradicted `access-control/SKILL.md`.
 
 Reserve `Unauthorized` for a resolved app user who lacks permission for a resource. Use `Not found`, `User not found`, or a more specific message for target resources or target users, not for the current caller principal.
 

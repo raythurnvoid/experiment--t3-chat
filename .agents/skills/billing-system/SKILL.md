@@ -100,7 +100,7 @@ Organization-scoped paid operations resolve the billed user before paid work sta
 - Created/non-personal organizations store `organizations.billingMode`, with `"user"` as the default.
 - `"user"` bills the acting member. The billed user and actor are the same user id.
 - `"organization_owner"` bills `organizations.ownerUserId`. The actor is attribution only.
-- `organizations.ownerUserId` is trusted as the owner source of truth. The default-workspace owner role assignment is only the access-control/role-display mirror.
+- `organizations.ownerUserId` is the only source of ownership; there is no owner role assignment. `organization.billing.manage` is the permission that gates billing changes, and it is the one permission `admin` deliberately lacks, because billing charges the owner.
 - Ownership transfer changes future owner-billed operations only. In-flight chat/file operations keep the billed user captured before the operation started.
 - There is no company table, sponsorship ledger, employee balance table, allowance model, balance transfer, or Polar team-customer migration in this model.
 
@@ -156,7 +156,7 @@ There is one DB credit gate plus the action-facing query wrapper:
 
 - `billing_db_check_credits(ctx, { userId, minimumRequiredCents })` — loads the synced Polar product from `snapshot.subscription.productId`, reads `snapshot.meter?.balance ?? 0`, and returns `{ hasCredits }`. Missing billing state, missing products, and insufficient Free-plan balance return `hasCredits: false`; paid plans return `hasCredits: true` even with a negative balance.
 - `internal.billing.check_credits` — `internalQuery` wrapper for action code such as chat routes. Without `organizationId`, it returns `{ hasCredits }`. With `organizationId`, it resolves the organization payer and returns `{ hasCredits, billedUser }` so actions can freeze the billed user before paid work starts. Missing organization or billed-user docs are impossible states from membership-derived inputs and should throw instead of returning `Result` or `null`.
-- DB-capable file mutations resolve `organization`, optional owner assignment, and `billedUser` inline before calling `billing_db_check_credits`. Keep that local instead of reintroducing an organization credit helper.
+- DB-capable file mutations resolve `organization` and `billedUser` inline (`billing_pick_billed_user_id` reads only `default`, `billingMode`, `ownerUserId`; no assignment is read) before calling `billing_db_check_credits`. Keep that local instead of reintroducing an organization credit helper.
 
 Missing snapshots or subscriptions are treated as `hasCredits: false` in gate helpers. The billing panel waits for the product list and subscription query. It can render an active plan before a Free-plan usage snapshot arrives, but a paid metered plan treats a missing matching snapshot as an impossible state.
 
@@ -192,7 +192,7 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 
 File saves ([yjs_push_update](../../../packages/app/convex/files_nodes.ts), [save_file_pending_update](../../../packages/app/convex/files_pending_updates.ts), and snapshot restore through [restore_snapshot_r2](../../../packages/app/convex/files_nodes.ts) / [restore_snapshot](../../../packages/app/convex/files_nodes.ts)) fail fast before the yjs push or restore write:
 
-1. Resolve `organization`, optional owner assignment, and `billedUser` inline, then call `billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 })`. When it returns `hasCredits: false`, the caller returns `_nay` with the literal `"Insufficient funds"` message to the frontend.
+1. Resolve `organization` and `billedUser` inline (`billing_pick_billed_user_id` reads only `default`, `billingMode`, `ownerUserId`; no assignment is read), then call `billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 })`. When it returns `hasCredits: false`, the caller returns `_nay` with the literal `"Insufficient funds"` message to the frontend.
 2. Run the yjs push; obtain the new sequence.
 3. Emit the existing `billing_event("file_save")` through `billing_ingest_events` with `externalId = composite_id("billing", "file_save", billedUserId, actorUserId, organizationId, workspaceId, fileId, yjsSequence)` and literal `metadata.amount: 1`.
 
@@ -217,10 +217,10 @@ Anonymous users participate in credit gating through a **synthetic `billing_usag
 The billing indicator ([main-app-header-billing-indicator.tsx](../../../packages/app/src/components/main-app-header-billing-indicator.tsx)) composes existing user and organization data:
 
 - `api.organizations.list` for the current organization billing mode and owner id.
-- `api.users.get_anagraphic` for the owner label used by the owner-billing tooltip. This current cross-user call returns the full anagraphic doc, including email, through an unguarded query. It is a known privacy gap, not a safe pattern to copy.
+- `api.users.get_anagraphic` for the owner label used by the owner-billing tooltip. That query now blanks `email` for anyone but the caller, so the tooltip renders "billed to Jane Doe" and no longer "Jane Doe (jane@…)" — the label already had that fallback branch. Restoring the address needs a membership-proven query, not a wider `get_anagraphic`.
 - `api.billing.get_usage_snapshot` and `api.billing.list_products` only when the current signed-in user is the displayed payer.
 
-The indicator displays the current user's balance for personal organizations, `"user"` organizations, and owner-billed organizations where the current user is the owner. Do not show a billing-mode badge for personal or `"user"` organizations. For owner-billed organizations, show a badge with an info tooltip: members see `Owner billing` and copy naming the owner as the billed user; owners see `Organization billing` and copy explaining that member usage in the organization is billed to their account. For owner-billed organizations viewed by a non-owner member, do not query or expose the owner's usage snapshot. Billing portal actions stay current-user-only; members do not receive the owner payer's Polar portal link. Do not add more cross-user anagraphic reads until product policy defines whether email is visible to co-members and a public-safe, membership-scoped profile query replaces the current endpoint.
+The indicator displays the current user's balance for personal organizations, `"user"` organizations, and owner-billed organizations where the current user is the owner. Do not show a billing-mode badge for personal or `"user"` organizations. For owner-billed organizations, show a badge with an info tooltip: members see `Owner billing` and copy naming the owner as the billed user; owners see `Organization billing` and copy explaining that member usage in the organization is billed to their account. For owner-billed organizations viewed by a non-owner member, do not query or expose the owner's usage snapshot. Billing portal actions stay current-user-only; members do not receive the owner payer's Polar portal link. Cross-user `get_anagraphic` reads are safe for a display name or avatar; only the address is withheld, and getting it back needs a membership-proven query rather than a wider `get_anagraphic`.
 
 ## Function definitions
 

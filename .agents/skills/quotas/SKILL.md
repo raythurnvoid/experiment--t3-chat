@@ -95,7 +95,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 ## Ownership transfer
 
 - `access_control.transfer_organization_ownership` must respect the recipient’s persisted `extra_organizations` quota doc.
-- Transfer reads both owner quota docs directly in `access_control.transfer_organization_ownership` alongside the organization/member reads, then releases one old-owner usage unit and consumes one new-owner quota unit in the same mutation write phase as patching `organizations.ownerUserId` and replacing the mirrored default-workspace owner assignment.
+- Transfer reads both owner quota docs directly in `access_control.transfer_organization_ownership` alongside the organization/member reads, then releases one old-owner usage unit and consumes one new-owner quota unit in the same mutation write phase as patching `organizations.ownerUserId` and deleting all of the new owner.s assignments in that organization and giving the old owner a `member` assignment.
 - Auth-removing user finalization must preserve a shared organization when another active member remains. It transfers ownership to the first remaining default-workspace member and increments that user's persisted usage even when the user is already at the normal creation limit. In that forced handoff, `usedCount` may exceed `maxCount`; new organization creation stays blocked until later deletions bring usage below the limit.
 - Do not recompute quota usage from organization docs during normal product flows; use audits or explicit maintenance flows if drift ever needs investigation.
 

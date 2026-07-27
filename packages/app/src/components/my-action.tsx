@@ -43,7 +43,6 @@ export const MyPrimaryAction = memo(function MyPrimaryAction(props: MyPrimaryAct
 			{...rest}
 		>
 			{children}
-			{tooltip && <span className={cn("sr-only")}>{tooltip}</span>}
 		</button>
 	);
 
@@ -72,7 +71,17 @@ export type MyPrimaryActionLink_Props = Omit<ComponentPropsWithRef<typeof Link>,
 };
 
 export const MyPrimaryActionLink = memo(function MyPrimaryActionLink(props: MyPrimaryActionLink_Props) {
-	const { ref, id, className, tooltip, tooltipTimeout, tooltipDisabled = false, tooltipPlacement = "bottom", children, ...rest } = props;
+	const {
+		ref,
+		id,
+		className,
+		tooltip,
+		tooltipTimeout,
+		tooltipDisabled = false,
+		tooltipPlacement = "bottom",
+		children,
+		...rest
+	} = props;
 
 	const linkElement = (
 		<Link
@@ -87,7 +96,6 @@ export const MyPrimaryActionLink = memo(function MyPrimaryActionLink(props: MyPr
 			{...rest}
 		>
 			{children}
-			{tooltip && <span className={cn("sr-only")}>{tooltip}</span>}
 		</Link>
 	);
 

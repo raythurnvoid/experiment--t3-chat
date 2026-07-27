@@ -122,8 +122,7 @@ async function db_authorize_plugin_management(
 		workspaceId: membership.workspaceId,
 		defaultWorkspaceId: organization.defaultWorkspaceId,
 		organizationOwnerUserId: organization.ownerUserId,
-		resourceKind: "workspace",
-		resourceId: String(membership.workspaceId),
+		resource: { kind: "workspace", id: String(membership.workspaceId) },
 		permission: "workspace.plugins.manage",
 		userId: args.userId,
 	});
@@ -131,7 +130,10 @@ async function db_authorize_plugin_management(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	return Result({ _yay: { membership } });
+	// We return what this function already loaded and checked. A caller that needs a second permission
+	// then does not have to load the organization again, or check again that `defaultWorkspaceId` is
+	// set.
+	return Result({ _yay: { membership, organization, defaultWorkspaceId: organization.defaultWorkspaceId } });
 }
 
 function version_r2_keys(version: Doc<"plugins_versions">) {
@@ -1124,11 +1126,7 @@ export const run_version_review = internalAction({
 
 		const framedArtifactSource = format_review_files(reviewFiles);
 		if (context.previousPassed && previousReviewFiles.length > 0) {
-			const patch = createPatch(
-				"artifact.txt",
-				format_review_files(previousReviewFiles),
-				framedArtifactSource,
-			);
+			const patch = createPatch("artifact.txt", format_review_files(previousReviewFiles), framedArtifactSource);
 			if (
 				files_get_utf8_byte_size(framedArtifactSource) + files_get_utf8_byte_size(patch) <=
 				files_MAX_TEXT_CONTENT_BYTES
@@ -1975,9 +1973,7 @@ export const get_publisher_plugin = query({
 		const [versions, reviews] = await Promise.all([
 			ctx.db
 				.query("plugins_versions")
-				.withIndex("by_name_sourceStatus", (q) =>
-					q.eq("name", args.pluginName).eq("sourceStatus", "ready"),
-				)
+				.withIndex("by_name_sourceStatus", (q) => q.eq("name", args.pluginName).eq("sourceStatus", "ready"))
 				.order("desc")
 				.collect(),
 			ctx.db
@@ -2585,7 +2581,23 @@ export const list_installations = query({
 	returns: v.array(
 		v.object({
 			installation: doc(app_convex_schema, "plugins_workspace_installations"),
-			version: doc(app_convex_schema, "plugins_versions"),
+			// Return only these fields, never the whole version doc. Installing a plugin does not mean
+			// the publisher trusts you: everyone owns their personal organization, so anyone can install
+			// a published plugin and read whatever this returns. The full doc holds the publisher's
+			// source repository, R2 object keys, build errors and `users` id. The installer needs none
+			// of that.
+			version: v.object({
+				_id: v.id("plugins_versions"),
+				name: doc(app_convex_schema, "plugins_versions").fields.name,
+				version: doc(app_convex_schema, "plugins_versions").fields.version,
+				artifactHash: doc(app_convex_schema, "plugins_versions").fields.artifactHash,
+				reviewStatus: doc(app_convex_schema, "plugins_versions").fields.reviewStatus,
+				sourceCommitSha: doc(app_convex_schema, "plugins_versions").fields.sourceCommitSha,
+				events: doc(app_convex_schema, "plugins_versions").fields.events,
+				configuration: doc(app_convex_schema, "plugins_versions").fields.configuration,
+				capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
+				outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
+			}),
 			handlers: v.array(doc(app_convex_schema, "plugins_workspace_event_handlers")),
 		}),
 	),
@@ -2622,7 +2634,22 @@ export const list_installations = query({
 					.query("plugins_workspace_event_handlers")
 					.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
 					.collect();
-				return { installation, version, handlers };
+				return {
+					installation,
+					version: {
+						_id: version._id,
+						name: version.name,
+						version: version.version,
+						artifactHash: version.artifactHash,
+						reviewStatus: version.reviewStatus,
+						sourceCommitSha: version.sourceCommitSha,
+						events: version.events,
+						configuration: version.configuration,
+						capabilities: version.capabilities,
+						outboundOrigins: version.outboundOrigins,
+					},
+					handlers,
+				};
 			}),
 		);
 
@@ -3209,6 +3236,23 @@ export const list_recent_runs = query({
 			return [];
 		}
 
+		// `workspace.plugins.manage` and `content.read` are two different permissions, and a custom role
+		// can have one without the other. We still return the run docs, because someone who manages
+		// plugins has to see failures. But the file a run touched is workspace content, so without
+		// `content.read` it becomes `null` — the same value a run whose file was deleted returns.
+		//
+		// `file` is the only content field hidden here. `errorMessage` is text written by the plugin and
+		// can still contain a path; that is the plugin author's choice.
+		const canReadContent = await access_control_db_has_permission(ctx, {
+			organizationId: authorization._yay.membership.organizationId,
+			workspaceId: authorization._yay.membership.workspaceId,
+			defaultWorkspaceId: authorization._yay.defaultWorkspaceId,
+			organizationOwnerUserId: authorization._yay.organization.ownerUserId,
+			resource: { kind: "workspace", id: String(authorization._yay.membership.workspaceId) },
+			permission: "content.read",
+			userId: userAuth.id,
+		});
+
 		// The by_installation_updatedAt index already yields the runs in updatedAt order.
 		const runs = await ctx.db
 			.query("plugins_event_runs")
@@ -3219,8 +3263,8 @@ export const list_recent_runs = query({
 		return await Promise.all(
 			runs.map(async (run) => {
 				const [fileNode, asset] = await Promise.all([
-					ctx.db.get("files_nodes", run.fileNodeId),
-					ctx.db.get("files_r2_assets", run.assetId),
+					canReadContent ? ctx.db.get("files_nodes", run.fileNodeId) : null,
+					canReadContent ? ctx.db.get("files_r2_assets", run.assetId) : null,
 				]);
 				return {
 					_id: run._id,

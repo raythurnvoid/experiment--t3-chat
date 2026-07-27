@@ -11,7 +11,14 @@ import { BillingAccountManagementPanel } from "@/components/billing/billing-acco
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyCheckboxButton, MyCheckboxButtonIcon } from "@/components/my-checkbox-button.tsx";
-import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl, MyInputLabel } from "@/components/my-input.tsx";
+import {
+	MyInput,
+	MyInputArea,
+	MyInputBackground,
+	MyInputBox,
+	MyInputControl,
+	MyInputLabel,
+} from "@/components/my-input.tsx";
 import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
 import {
 	MyModal,
@@ -118,8 +125,13 @@ const MainAppAccountManagementDeleteAccountOrganizationResolverRow = memo(
 	function MainAppAccountManagementDeleteAccountOrganizationResolverRow(
 		props: MainAppAccountManagementDeleteAccountOrganizationResolverRow_Props,
 	) {
-		const { blockingOrganization, deleteConfirmed, resolving, onNavigateToOrganizationUsers, onDeleteConfirmationChange } =
-			props;
+		const {
+			blockingOrganization,
+			deleteConfirmed,
+			resolving,
+			onNavigateToOrganizationUsers,
+			onDeleteConfirmationChange,
+		} = props;
 		const organizationDescription = blockingOrganization.organization.description.trim()
 			? blockingOrganization.organization.description
 			: "(No description)";
@@ -569,7 +581,7 @@ const MainAppAccountManagementProfile = memo(function MainAppAccountManagementPr
 
 	return (
 		<div className={"MainAppAccountManagementProfile" satisfies MainAppAccountManagementProfile_ClassNames}>
-			<header className={"MainAppAccountManagementProfile-header" satisfies MainAppAccountManagementProfile_ClassNames}>
+			<div className={"MainAppAccountManagementProfile-header" satisfies MainAppAccountManagementProfile_ClassNames}>
 				<div>
 					<h2 className={"MainAppAccountManagementProfile-title" satisfies MainAppAccountManagementProfile_ClassNames}>
 						Profile
@@ -582,7 +594,7 @@ const MainAppAccountManagementProfile = memo(function MainAppAccountManagementPr
 						Review your profile details.
 					</p>
 				</div>
-			</header>
+			</div>
 			<div className={"MainAppAccountManagementProfile-body" satisfies MainAppAccountManagementProfile_ClassNames}>
 				<div className={"MainAppAccountManagementProfile-summary" satisfies MainAppAccountManagementProfile_ClassNames}>
 					<MyAvatar
@@ -687,8 +699,14 @@ type MainAppAccountManagementSecurity_Props = {
 const MainAppAccountManagementSecurity = memo(function MainAppAccountManagementSecurity(
 	props: MainAppAccountManagementSecurity_Props,
 ) {
-	const { isAnonymous, sessions, isLoadingSessions, onRefreshSessions, onDeleteAccount, onNavigateToOrganizationUsers } =
-		props;
+	const {
+		isAnonymous,
+		sessions,
+		isLoadingSessions,
+		onRefreshSessions,
+		onDeleteAccount,
+		onNavigateToOrganizationUsers,
+	} = props;
 
 	const [busySessionId, setBusySessionId] = useState<string | null>(null);
 

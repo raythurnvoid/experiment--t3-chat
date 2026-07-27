@@ -90,13 +90,11 @@ export const MyButton = memo(function MyButton(props: MyButton_Props) {
 			className={cn(
 				"MyButton" satisfies MyButton_ClassNames,
 				variant === "default" && ("MyButton-variant-default" satisfies MyButton_ClassNames),
-				variant === "default-embedded" &&
-					("MyButton-variant-default-embedded" satisfies MyButton_ClassNames),
+				variant === "default-embedded" && ("MyButton-variant-default-embedded" satisfies MyButton_ClassNames),
 				variant === "accent" && ("MyButton-variant-accent" satisfies MyButton_ClassNames),
 				variant === "destructive" && ("MyButton-variant-destructive" satisfies MyButton_ClassNames),
 				variant === "outline" && ("MyButton-variant-outline" satisfies MyButton_ClassNames),
-				variant === "outline_destructive" &&
-					("MyButton-variant-outline_destructive" satisfies MyButton_ClassNames),
+				variant === "outline_destructive" && ("MyButton-variant-outline_destructive" satisfies MyButton_ClassNames),
 				variant === "secondary" && ("MyButton-variant-secondary" satisfies MyButton_ClassNames),
 				variant === "secondary-subtle" && ("MyButton-variant-secondary-subtle" satisfies MyButton_ClassNames),
 				variant === "floating" && ("MyButton-variant-floating" satisfies MyButton_ClassNames),
@@ -114,7 +112,6 @@ export const MyButton = memo(function MyButton(props: MyButton_Props) {
 			{...rest}
 		>
 			{children}
-			{tooltip && <span className={cn("sr-only")}>{tooltip}</span>}
 		</button>
 	);
 

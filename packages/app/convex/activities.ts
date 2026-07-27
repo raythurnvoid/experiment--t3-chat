@@ -11,6 +11,7 @@ import type { ExcludeStrict } from "type-fest";
 import type { Doc } from "./_generated/dataModel.js";
 import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server.js";
 import { organizations_db_get_membership } from "./organizations.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
 import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
@@ -126,6 +127,15 @@ export const list_recent = query({
 			return [];
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
+			return [];
+		}
+
 		// Newest activity first; running items bubble up because every change bumps updatedAt.
 		// Dismissed items (archivedAt > 0) stay in the table for their producers; the index skips them here.
 		return await ctx.db
@@ -157,6 +167,15 @@ export const archive_activity = mutation({
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		const activity = await ctx.db.get("activities", args.activityId);
@@ -201,6 +220,15 @@ export const archive_all_activities = mutation({
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		const active = await ctx.db

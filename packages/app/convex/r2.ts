@@ -31,6 +31,7 @@ import {
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
 import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -379,6 +380,16 @@ export const get_data_for_create_signed_download_url = internalQuery({
 			return null;
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "content.read",
+			fileNode,
+		});
+		if (authorized._nay) {
+			return null;
+		}
+
 		const assetId = fileNode.assetId;
 		const asset = await ctx.db.get("files_r2_assets", assetId);
 		if (!asset || asset.organizationId !== fileNode.organizationId || asset.workspaceId !== fileNode.workspaceId) {
@@ -617,6 +628,16 @@ export const get_asset = query({
 			fileNode.workspaceId !== membership.workspaceId ||
 			!fileNode.assetId
 		) {
+			return null;
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+			fileNode,
+		});
+		if (authorized._nay) {
 			return null;
 		}
 

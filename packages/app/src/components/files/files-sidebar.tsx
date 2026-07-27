@@ -3158,6 +3158,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			.then((result) => {
 				if (result._nay) {
 					console.error("[FilesSidebar.moveNodesToParent] Failed to move nodes", { result });
+					if (result._nay.message === "Permission denied") {
+						toast.error("You don't have permission to edit files in this workspace.");
+						return;
+					}
+					toast.error(result._nay.message);
 					return;
 				}
 			})
@@ -3395,6 +3400,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				.then((result) => {
 					if (result._nay) {
 						console.error("[FilesSidebar.handleDropForeignDragObject] Failed to move nodes", { result });
+						if (result._nay.message === "Permission denied") {
+							toast.error("You don't have permission to edit files in this workspace.");
+							return;
+						}
+						toast.error(result._nay.message);
 						return;
 					}
 				})
@@ -3614,9 +3624,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			)
 			.then((result) => {
 				if (result._nay) {
+					console.error("[FilesSidebar.handleRename] Failed to rename node", { result });
+					// A refused permission is not a bad name. Showing it under the name input would tell the
+					// user to pick another name, which never helps here.
+					if (result._nay.message === "Permission denied") {
+						toast.error("You don't have permission to edit files in this workspace.");
+						return;
+					}
 					renameValidation.cacheValidationMessage(result._nay.message);
 					setRenameError(itemId, result._nay.message);
-					console.error("[FilesSidebar.handleRename] Failed to rename node", { result });
 				}
 			})
 			.catch((error) => {
@@ -4019,6 +4035,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		createNodePromise
 			.then((result) => {
 				if (result._nay) {
+					console.error("[FilesSidebar.handleCreateNodeClick] Failed to create node", {
+						result,
+					});
+					// A refused permission is not a bad name. Showing it under the name input would tell the
+					// user to pick another name, which never helps here.
+					if (result._nay.message === "Permission denied") {
+						toast.error("You don't have permission to create files in this workspace.");
+						return;
+					}
 					const createNodeValidation = files_get_node_path_validation({
 						scopeId: membershipId,
 						fileNodesList: treeItems.list,
@@ -4027,9 +4052,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						nameOrPath: nextNodeName,
 					});
 					createNodeValidation.cacheValidationMessage(result._nay.message);
-					console.error("[FilesSidebar.handleCreateNodeClick] Failed to create node", {
-						result,
-					});
 					return;
 				}
 
@@ -4128,6 +4150,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						nodeId,
 						nodeIdsToArchive,
 					});
+					if (result._nay.message === "Permission denied") {
+						toast.error("You don't have permission to edit files in this workspace.");
+						return;
+					}
+					toast.error(result._nay.message);
 					return;
 				}
 
@@ -4176,6 +4203,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			.then((result) => {
 				if (result._nay) {
 					console.error("[FilesSidebar.handleUnarchive] Failed to unarchive file", { result, nodeId });
+					if (result._nay.message === "Permission denied") {
+						toast.error("You don't have permission to edit files in this workspace.");
+						return;
+					}
+					toast.error(result._nay.message);
 					return;
 				}
 			})
@@ -4382,8 +4414,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		reconcileTreeSelectionToNavigatedNode(tree());
 	}, [selectedNodeId, visibleFileIds]);
 
+	// The `aside` gets a name because the app sidebar is also a `complementary` landmark. Two landmarks
+	// of the same type with no name sound identical to a screen reader moving between them.
 	return (
-		<aside className={"FilesSidebar" satisfies FilesSidebar_ClassNames}>
+		<aside aria-label="Files" className={"FilesSidebar" satisfies FilesSidebar_ClassNames}>
 			<input
 				ref={uploadInputRef}
 				type="file"

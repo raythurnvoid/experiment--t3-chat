@@ -461,6 +461,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 			state={sidebarState}
 			inert={sidebarState === "closed" ? true : undefined}
 			aria-hidden={sidebarState === "closed" ? true : undefined}
+			aria-label="Main"
 		>
 			<MySidebarHeader className={"MainAppSidebar-header" satisfies MainAppSidebar_ClassNames}>
 				<MyIconButton

@@ -854,19 +854,8 @@ describe("organization billing check", () => {
 			polarProductId,
 			balanceCents: 10,
 		});
-		await t.run(async (ctx) => {
-			const ownerAssignment = await ctx.db
-				.query("access_control_role_assignments")
-				.withIndex("by_organization_workspace_role_user", (q) =>
-					q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("role", "owner"),
-				)
-				.first();
-			if (!ownerAssignment) {
-				throw new Error("Expected owner assignment");
-			}
-			await ctx.db.delete("access_control_role_assignments", ownerAssignment._id);
-		});
-
+		// The caller is a normal member, so the only thing that can make someone the owner is
+		// `organizations.ownerUserId`.
 		const result = await t.query(internal.billing.check_credits, {
 			userId: scope.actorUserId,
 			organizationId: scope.organizationId,

@@ -30,6 +30,7 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_fetch_json } from "../server/server-fetch.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { organizations_db_ensure_default_organization_and_workspace_for_user } from "./organizations.ts";
+import { access_control_db_ensure_organization_member_role } from "./access_control.ts";
 import {
 	billing_action_delete_polar_customer_by_user_id,
 	billing_action_revoke_polar_subscription,
@@ -406,7 +407,13 @@ export const get_with_anagraphic_and_anonymous_auth_token = internalQuery({
 		}
 
 		const user = await ctx.db.get("users", userId);
-		if (!user || !user.anonymousAuthToken || user.anonymousAuthToken !== tokenId) {
+		// Deleting an anonymous account only sets `deletedAt` on the user. The token doc stays until
+		// the retention job removes it much later. Without the `deletedAt` check here, the deleted
+		// account could keep getting new JWTs during all that time.
+		// This only stops new JWTs. A JWT that was already given out keeps working until it expires,
+		// because `server_convex_get_user_fallback_to_anonymous` trusts the JWT and never loads the
+		// user doc.
+		if (!user || user.deletedAt != null || !user.anonymousAuthToken || user.anonymousAuthToken !== tokenId) {
 			return null;
 		}
 
@@ -431,6 +438,8 @@ export const get_with_anagraphic_and_anonymous_auth_token = internalQuery({
  *
  * You can also use this for the current logged-in profile in the UI by passing
  * the authenticated `userId` from `AppAuthProvider.useAuth()`.
+ *
+ * `email` comes back only when you ask for yourself.
  */
 export const get_anagraphic = query({
 	args: {
@@ -438,12 +447,31 @@ export const get_anagraphic = query({
 	},
 	returns: v.union(doc(app_convex_schema, "users_anagraphics"), v.null()),
 	handler: async (ctx, args) => {
+		// Being logged in, anonymous included, is the only rule for reading a name and avatar. They are
+		// shown next to file edits, snapshots and notifications, where the caller often shares no
+		// organization with the person being named. We also do not check `deletedAt` here, unlike the
+		// membership helper: an account waiting to be deleted still reads names everywhere else in the
+		// app, and there is nothing sensitive to reach here.
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return null;
+		}
+
 		const user = await ctx.db.get("users", args.userId);
 		if (!user || !user.anagraphic) {
 			return null;
 		}
 
-		return await ctx.db.get("users_anagraphics", user.anagraphic);
+		const anagraphic = await ctx.db.get("users_anagraphics", user.anagraphic);
+		if (!anagraphic) {
+			return null;
+		}
+
+		// Anyone who can call this query needs only a `users` id, and ids are not secret: a presence
+		// list hands out a whole room of them at once. Without this, a caller could turn that list into
+		// a list of email addresses. We send `""`, which is what anonymous users already have, so every
+		// reader already handles an empty email.
+		return user._id === userAuth.id ? anagraphic : { ...anagraphic, email: "" };
 	},
 });
 
@@ -573,6 +601,8 @@ export const resolve_user = internalMutation({
 					.collect(),
 			]);
 
+			const reactivatedMemberships = memberships.filter((membership) => membership.active === false);
+
 			await Promise.all([
 				ctx.db.patch("users", deletedUser._id, {
 					clerkUserId: args.clerkUserId,
@@ -590,18 +620,40 @@ export const resolve_user = internalMutation({
 					userId: deletedUser._id,
 					now,
 				}),
-				...memberships
-					.filter((membership) => membership.active === false)
-					.map((membership) =>
-						ctx.db.patch("organizations_workspaces_users", membership._id, {
-							active: true,
-							updatedAt: now,
-						}),
-					),
+				...reactivatedMemberships.map((membership) =>
+					ctx.db.patch("organizations_workspaces_users", membership._id, {
+						active: true,
+						updatedAt: now,
+					}),
+				),
 				...deletionRequests
 					.filter((row) => row.scope === "user")
 					.map((row) => ctx.db.delete("data_deletion_requests", row._id)),
 			]);
+
+			// A membership that comes back also needs its organization role back. The role assignment
+			// normally survives account deletion, because `delete_role` lowers an inactive holder
+			// instead of deleting them. But the old migration
+			// `backfill_access_control_member_assignments` skipped inactive docs. So a membership that
+			// was already waiting for deletion when that migration ran comes back with no role at all.
+			// That user would be an active member with zero permissions: the file tree would load empty
+			// instead of showing an error, and nobody could tell what is wrong. The helper keeps any role
+			// that is still there, whatever it is.
+			await Promise.all(
+				reactivatedMemberships.map(async (membership) => {
+					const organization = await ctx.db.get("organizations", membership.organizationId);
+					if (!organization) {
+						return;
+					}
+
+					await access_control_db_ensure_organization_member_role(ctx, {
+						organization,
+						workspaceId: membership.workspaceId,
+						userId: deletedUser._id,
+						now,
+					});
+				}),
+			);
 
 			await organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
 				userId: deletedUser._id,

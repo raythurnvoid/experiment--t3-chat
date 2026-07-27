@@ -17,12 +17,11 @@ import {
 } from "../shared/organizations.ts";
 import app_convex_schema from "./schema.ts";
 import {
-	access_control_workspace_role_permission_grants,
 	access_control_db_ensure_role_assignment,
-	access_control_db_ensure_role_permission_grant,
 	access_control_db_has_permission,
-	access_control_organization_role_permission_grants,
+	access_control_db_resolve_effective_permissions,
 } from "./access_control.ts";
+import { access_control_PERMISSION_CATALOG, access_control_SYSTEM_ROLE_MATRIX } from "../shared/access-control.ts";
 import { data_deletion_db_request } from "./data_deletion.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
@@ -145,20 +144,14 @@ export async function organizations_db_create(
 			now: args.now,
 		}),
 
+		// The creator gets no role assignment: being in `organizations.ownerUserId` already gives them
+		// everything.
 		ctx.db.insert("organizations_workspaces_users", {
 			organizationId: organizationId,
 			workspaceId: defaultWorkspaceId,
 			userId: args.userId,
 			active: true,
 			updatedAt: args.now,
-		}),
-
-		access_control_db_ensure_role_assignment(ctx, {
-			organizationId,
-			workspaceId: defaultWorkspaceId,
-			userId: args.userId,
-			role: "owner",
-			now: args.now,
 		}),
 	];
 
@@ -172,30 +165,6 @@ export async function organizations_db_create(
 	}
 
 	await Promise.all(updates);
-
-	for (const grant of access_control_organization_role_permission_grants) {
-		await access_control_db_ensure_role_permission_grant(ctx, {
-			organizationId,
-			workspaceId: defaultWorkspaceId,
-			resourceKind: "organization",
-			resourceId: String(organizationId),
-			role: grant.role,
-			permission: grant.permission,
-			now: args.now,
-		});
-	}
-
-	for (const grant of access_control_workspace_role_permission_grants) {
-		await access_control_db_ensure_role_permission_grant(ctx, {
-			organizationId,
-			workspaceId: defaultWorkspaceId,
-			resourceKind: "workspace",
-			resourceId: String(defaultWorkspaceId),
-			role: grant.role,
-			permission: grant.permission,
-			now: args.now,
-		});
-	}
 
 	// Seeding the README needs an action (R2 writes), so it runs right after this mutation.
 	await ctx.scheduler.runAfter(0, internal.files_nodes.create_home_file, {
@@ -250,6 +219,34 @@ export async function organizations_db_create_workspace(
 		return Result({
 			_nay: {
 				message: "Not found",
+			},
+		});
+	}
+
+	const defaultWorkspaceId = organization.defaultWorkspaceId;
+	if (!defaultWorkspaceId) {
+		const errorMessage = "organization.defaultWorkspaceId is not set";
+		const errorData = { organizationId: organization._id };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	// Creating a workspace uses up the organization's workspace quota, so not every member may do it.
+	// We check on the default workspace, because this permission is organization-scoped and only works
+	// from there.
+	const canCreateWorkspace = await access_control_db_has_permission(ctx, {
+		organizationId: organization._id,
+		workspaceId: defaultWorkspaceId,
+		defaultWorkspaceId,
+		organizationOwnerUserId: organization.ownerUserId,
+		resource: { kind: "organization", id: String(organization._id) },
+		permission: "workspace.create",
+		userId: args.userId,
+	});
+	if (!canCreateWorkspace) {
+		return Result({
+			_nay: {
+				message: "Permission denied",
 			},
 		});
 	}
@@ -316,25 +313,9 @@ export async function organizations_db_create_workspace(
 		now: args.now,
 	});
 
-	await access_control_db_ensure_role_assignment(ctx, {
-		organizationId: args.organizationId,
-		workspaceId,
-		userId: args.userId,
-		role: "member",
-		now: args.now,
-	});
-
-	for (const grant of access_control_workspace_role_permission_grants) {
-		await access_control_db_ensure_role_permission_grant(ctx, {
-			organizationId: args.organizationId,
-			workspaceId,
-			resourceKind: "workspace",
-			resourceId: String(workspaceId),
-			role: grant.role,
-			permission: grant.permission,
-			now: args.now,
-		});
-	}
+	// We write no role assignment here. The creator's organization-wide role already works in this
+	// workspace through the membership we just created. Also, always giving `member` would let someone
+	// whose role only has `workspace.create` write files in the workspace they just made.
 
 	// Seeding the README needs an action (R2 writes), so it runs right after this mutation.
 	await ctx.scheduler.runAfter(0, internal.files_nodes.create_home_file, {
@@ -383,6 +364,19 @@ export const list = query({
 		organizationIdsWorkspacesDict: v.record(
 			v.id("organizations"),
 			v.array(doc(app_convex_schema, "organizations_workspaces")),
+		),
+		// What the caller may do in each workspace listed above, so the switcher can hide buttons the
+		// server would refuse. `"all"` means the caller is the organization owner.
+		//
+		// This travels with the list instead of being its own query, even though our guidelines
+		// normally prefer separate queries. Two reasons. The switcher draws every organization and
+		// workspace at once, so a separate query would mean either one call per membership, or a second
+		// round trip that makes the buttons appear after the names. And the price of joining them is
+		// that this query re-runs when a role changes — which is exactly when the switcher's old
+		// answer is wrong anyway.
+		workspaceIdsPermissionsDict: v.record(
+			v.id("organizations_workspaces"),
+			v.union(v.literal("all"), v.array(doc(app_convex_schema, "access_control_permission_grants").fields.permission)),
 		),
 	}),
 	handler: async (ctx) => {
@@ -460,9 +454,38 @@ export const list = query({
 			),
 		);
 
+		const workspaceIdsPermissionsDict = Object.fromEntries(
+			await Promise.all(
+				organizations.flatMap((organization) =>
+					(organizationIdsWorkspacesDict[organization._id] ?? []).map(async (workspace) => {
+						const defaultWorkspaceId = organization.defaultWorkspaceId;
+						// Do not use this workspace id as a stand-in for the default one. Organization-wide
+						// permissions only work from the default workspace, so that would make a role that
+						// exists only in this workspace look organization-wide. Report nothing instead and
+						// let the server refuse the action.
+						if (!defaultWorkspaceId) {
+							console.error("organization.defaultWorkspaceId is not set", { organizationId: organization._id });
+							return [workspace._id, []] as const;
+						}
+
+						const permissions = await access_control_db_resolve_effective_permissions(ctx, {
+							organizationId: organization._id,
+							workspaceId: workspace._id,
+							defaultWorkspaceId,
+							organizationOwnerUserId: organization.ownerUserId,
+							userId: userAuth.id,
+						});
+
+						return [workspace._id, permissions === "all" ? "all" : [...permissions]] as const;
+					}),
+				),
+			),
+		);
+
 		return {
 			organizations,
 			organizationIdsWorkspacesDict,
+			workspaceIdsPermissionsDict,
 		};
 	},
 });
@@ -685,7 +708,22 @@ export const create_organization = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
+		// Only a signed-in user can create an organization. Making an anonymous account costs one
+		// request with no login, and whoever creates an organization can invite any user by email.
+		// The invited user joins right away, with no step where they accept. So anonymous creation
+		// would let anyone push real users into memberships and notifications for free.
+		// Anonymous users are not left with nothing: signup already gives them a `personal`
+		// organization.
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		// A deleted account keeps its `users` doc with `deletedAt` set, and its old session token can
+		// still work. `access_control_db_authorize_membership` rejects such a user for the same reason.
+		// Without this check, an account whose deletion did not finish in Clerk could still create new
+		// organizations.
+		const user = await ctx.db.get("users", userAuth.id);
+		if (!user || user.deletedAt != null) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
@@ -785,6 +823,86 @@ export const invite_user_to_organization_workspace = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
+		const now = Date.now();
+
+		// Check the caller's permission on this organization BEFORE looking up the `email`. That lookup
+		// answers "does this address have an account here?". When it ran first, anyone could use this
+		// endpoint to test email addresses: an unknown address answered "User to add not found", while
+		// a known one gave a different error. Anyone can create an anonymous account and ask. Now only
+		// a member with `organization.members.manage` reaches the lookup, and for them "this address is
+		// unknown" is the answer they asked for.
+		const [organization, workspace] = await Promise.all([
+			ctx.db.get("organizations", args.organizationId),
+			ctx.db.get("organizations_workspaces", args.workspaceId),
+		]);
+
+		if (!organization || !workspace || workspace.organizationId !== args.organizationId) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		if (!organization.defaultWorkspaceId) {
+			const errorMessage = "organization.defaultWorkspaceId is not set";
+			const errorData = {
+				organizationId: organization._id,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		const defaultWorkspaceId = organization.defaultWorkspaceId;
+		const isDefaultWorkspace = workspace._id === defaultWorkspaceId;
+
+		if (organization.default) {
+			return Result({ _nay: { message: "Cannot add user to default organization" } });
+		}
+
+		const [currentHomeMembership, callerPermissions] = await Promise.all([
+			// Check if the current user is part of the organization before adding another user.
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", userAuth.id)
+						.eq("organizationId", organization._id)
+						.eq("workspaceId", defaultWorkspaceId),
+				)
+				.first(),
+			access_control_db_resolve_effective_permissions(ctx, {
+				organizationId: organization._id,
+				workspaceId: defaultWorkspaceId,
+				defaultWorkspaceId,
+				organizationOwnerUserId: organization.ownerUserId,
+				userId: userAuth.id,
+			}),
+		]);
+		if (!currentHomeMembership) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		if (callerPermissions !== "all" && !callerPermissions.has("organization.members.manage")) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// An invite gives out a role, so it follows the same rule as `set_user_role`: the invited role
+		// must be one the inviter could give. Without this, someone whose role only manages members
+		// could invite an account of their own and give it full read and write access.
+		if (callerPermissions !== "all") {
+			const missing = access_control_SYSTEM_ROLE_MATRIX.member.permissions.find(
+				(permission) => !callerPermissions.has(permission),
+			);
+			if (missing) {
+				// The message names the role, unlike the similar errors in `access_control.ts`. An invite
+				// takes no role argument, so the caller never chose this role and cannot choose another.
+				return Result({
+					_nay: {
+						message: `You cannot invite someone as ${access_control_SYSTEM_ROLE_MATRIX.member.label}, because that role grants "${access_control_PERMISSION_CATALOG[missing].label}"`,
+					},
+				});
+			}
+		}
+
+		// From here down the caller is a member with the right permission, so looking up the invited
+		// user tells them nothing they could not already see on the members page.
 		let userIdToAdd = args.userIdToAdd ?? null;
 		if (!userIdToAdd) {
 			const email = args.email?.trim().toLowerCase() ?? "";
@@ -807,67 +925,9 @@ export const invite_user_to_organization_workspace = mutation({
 			return Result({ _nay: { message: "Cannot invite yourself" } });
 		}
 
-		const now = Date.now();
-
-		// Load the user, organization, and requested workspace before checking membership and permissions.
-		const [userToAdd, organization, workspace] = await Promise.all([
-			ctx.db.get("users", userIdToAdd),
-			ctx.db.get("organizations", args.organizationId),
-			ctx.db.get("organizations_workspaces", args.workspaceId),
-		]);
-
+		const userToAdd = await ctx.db.get("users", userIdToAdd);
 		if (!userToAdd || userToAdd.deletedAt != null) {
 			return Result({ _nay: { message: "User to add not found" } });
-		}
-
-		if (!organization || !workspace || workspace.organizationId !== args.organizationId) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		if (!organization.defaultWorkspaceId) {
-			const errorMessage = "organization.defaultWorkspaceId is not set";
-			const errorData = {
-				organizationId: organization._id,
-			};
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-		const defaultWorkspaceId = organization.defaultWorkspaceId;
-		const isDefaultWorkspace = workspace._id === defaultWorkspaceId;
-
-		if (organization.default) {
-			return Result({ _nay: { message: "Cannot add user to default organization" } });
-		}
-
-		const [currentHomeMembership, canManageMembers] = await Promise.all([
-			// Check if the current user is part of the organization before adding another user.
-			ctx.db
-				.query("organizations_workspaces_users")
-				.withIndex("by_active_user_organization_workspace", (q) =>
-					q
-						.eq("active", true)
-						.eq("userId", userAuth.id)
-						.eq("organizationId", organization._id)
-						.eq("workspaceId", defaultWorkspaceId),
-				)
-				.first(),
-			access_control_db_has_permission(ctx, {
-				organizationId: organization._id,
-				workspaceId: defaultWorkspaceId,
-				defaultWorkspaceId,
-				organizationOwnerUserId: organization.ownerUserId,
-				resourceKind: "organization",
-				resourceId: String(organization._id),
-				permission: "organization.members.manage",
-				userId: userAuth.id,
-			}),
-		]);
-		if (!currentHomeMembership) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		if (!canManageMembers) {
-			return Result({ _nay: { message: "Permission denied" } });
 		}
 
 		// Check if the user is already in the default workspace and in the requested workspace.
@@ -901,6 +961,62 @@ export const invite_user_to_organization_workspace = mutation({
 			return Result({ _yay: null });
 		}
 
+		// The role given by this invite is not the only thing that matters. The invited user may
+		// already have a role for the whole organization. Adding them to this workspace turns ON the
+		// workspace-scoped permissions of that role here, because the permission checker gives those
+		// only to a real member of the workspace.
+		//
+		// So we also compare what the invited user already has against what the caller has. Without
+		// this, a caller who only has `organization.members.manage` could put a very powerful member
+		// into a workspace where `set_user_role` would never let them give those powers.
+		//
+		// We look at workspace-scoped permissions only. Organization-scoped ones come from the
+		// assignment in the default workspace and do not need a membership, so the invite does not
+		// change them.
+		//
+		// This runs after the "already a member" return above, because only an invite that really
+		// writes a membership turns anything on. We measure the caller in the target workspace, the
+		// same place `set_user_role` measures them, so a caller with extra power only in this
+		// workspace is still allowed to give what they can already give here.
+		if (callerPermissions !== "all") {
+			const [inviteePermissions, callerWorkspacePermissions] = await Promise.all([
+				access_control_db_resolve_effective_permissions(ctx, {
+					organizationId: organization._id,
+					workspaceId: defaultWorkspaceId,
+					defaultWorkspaceId,
+					organizationOwnerUserId: organization.ownerUserId,
+					userId: userIdToAdd,
+				}),
+				isDefaultWorkspace
+					? callerPermissions
+					: access_control_db_resolve_effective_permissions(ctx, {
+							organizationId: organization._id,
+							workspaceId: workspace._id,
+							defaultWorkspaceId,
+							organizationOwnerUserId: organization.ownerUserId,
+							userId: userAuth.id,
+						}),
+			]);
+
+			// `"all"` means "this user is the organization owner". An invited owner already has every
+			// permission, so the invite cannot raise them. An owner caller was already handled by the
+			// `callerPermissions !== "all"` check above.
+			if (inviteePermissions !== "all" && callerWorkspacePermissions !== "all") {
+				const missing = [...inviteePermissions].find(
+					(permission) =>
+						access_control_PERMISSION_CATALOG[permission].scope === "workspace" &&
+						!callerWorkspacePermissions.has(permission),
+				);
+				if (missing) {
+					return Result({
+						_nay: {
+							message: `You cannot invite this member, because their role grants "${access_control_PERMISSION_CATALOG[missing].label}"`,
+						},
+					});
+				}
+			}
+		}
+
 		// Add the user to the default workspace and, when different, to the requested workspace.
 		await Promise.all([
 			existingHomeMembership
@@ -921,13 +1037,24 @@ export const invite_user_to_organization_workspace = mutation({
 						workspaceId: defaultWorkspaceId,
 						now,
 					}),
-			access_control_db_ensure_role_assignment(ctx, {
-				organizationId: organization._id,
-				workspaceId: defaultWorkspaceId,
-				userId: userIdToAdd,
-				role: "member",
-				now,
-			}),
+			// The role is written on the default workspace only. That single assignment already works in
+			// every workspace where the user is an active member, so a second one here would add
+			// nothing. Worse, it would make a later per-workspace change look like it worked when it
+			// did not.
+			//
+			// Never for the owner: an owner has no role assignment, and every check answers "owner"
+			// before it reads one. This case can really happen, because the membership insert above is
+			// conditional while this write is not. So inviting the owner into a workspace they are not
+			// in would leave them a stray `member` doc and quietly break that rule.
+			userIdToAdd === organization.ownerUserId
+				? null
+				: access_control_db_ensure_role_assignment(ctx, {
+						organizationId: organization._id,
+						workspaceId: defaultWorkspaceId,
+						userId: userIdToAdd,
+						role: "member",
+						now,
+					}),
 			isDefaultWorkspace
 				? null
 				: ctx.db.insert("organizations_workspaces_users", {
@@ -944,15 +1071,6 @@ export const invite_user_to_organization_workspace = mutation({
 						userId: userIdToAdd,
 						organizationId: organization._id,
 						workspaceId: workspace._id,
-						now,
-					}),
-			isDefaultWorkspace
-				? null
-				: access_control_db_ensure_role_assignment(ctx, {
-						organizationId: organization._id,
-						workspaceId: workspace._id,
-						userId: userIdToAdd,
-						role: "member",
 						now,
 					}),
 			ctx.db.insert("notifications", {
@@ -1016,8 +1134,7 @@ export const remove_user_from_organization = mutation({
 				workspaceId: defaultWorkspaceId,
 				defaultWorkspaceId,
 				organizationOwnerUserId: organization.ownerUserId,
-				resourceKind: "organization",
-				resourceId: String(organization._id),
+				resource: { kind: "organization", id: String(organization._id) },
 				permission: "organization.members.manage",
 				userId: userAuth.id,
 			}),
@@ -1046,10 +1163,13 @@ export const remove_user_from_organization = mutation({
 
 		const now = Date.now();
 
+		// We include inactive memberships on purpose. A user whose account is being deleted has all of
+		// their memberships turned off. Skipping those would leave the membership, the API keys, and
+		// the quota docs in place, so restoring the account would put them back in this organization.
 		const memberships = await ctx.db
 			.query("organizations_workspaces_users")
-			.withIndex("by_active_user_organization_workspace", (q) =>
-				q.eq("active", true).eq("userId", args.userIdToRemove).eq("organizationId", organization._id),
+			.withIndex("by_user_organization_workspace_active", (q) =>
+				q.eq("userId", args.userIdToRemove).eq("organizationId", organization._id),
 			)
 			.collect();
 		const apiCredentialsPromise = Promise.all(
@@ -1104,7 +1224,7 @@ export const remove_user_from_organization = mutation({
 				),
 			ctx.db
 				.query("access_control_role_assignments")
-				.withIndex("by_organization_user_workspace_role", (q) =>
+				.withIndex("by_organization_user_workspace", (q) =>
 					q.eq("organizationId", organization._id).eq("userId", args.userIdToRemove),
 				)
 				.collect()
@@ -1161,7 +1281,11 @@ export const edit_organization = mutation({
 			!organization ||
 			defaultWorkspace === null ||
 			defaultWorkspace.organizationId !== args.organizationId ||
-			!(organization.defaultWorkspaceId === defaultWorkspace._id || defaultWorkspace.default) ||
+			// We trust only `organization.defaultWorkspaceId`, never the `default` flag on the workspace
+			// doc. The check below treats this id as the place where organization-wide roles work. If we
+			// accepted any workspace that calls itself default, a role that exists only in that
+			// workspace could claim organization-wide power.
+			organization.defaultWorkspaceId !== defaultWorkspace._id ||
 			!organizationUserLookup
 		) {
 			return Result({
@@ -1177,8 +1301,7 @@ export const edit_organization = mutation({
 				workspaceId: defaultWorkspace._id,
 				defaultWorkspaceId: defaultWorkspace._id,
 				organizationOwnerUserId: organization.ownerUserId,
-				resourceKind: "organization",
-				resourceId: String(organization._id),
+				resource: { kind: "organization", id: String(organization._id) },
 				permission: "organization.update",
 				userId: userAuth.id,
 			}))
@@ -1272,13 +1395,46 @@ export const set_organization_billing_mode = mutation({
 			return Result({ _nay: { message: "Cannot manage billing for the default organization" } });
 		}
 
-		if (organization.ownerUserId !== userAuth.id) {
+		const defaultWorkspaceId = organization.defaultWorkspaceId;
+		if (!defaultWorkspaceId) {
+			const errorMessage = "organization.defaultWorkspaceId is not set";
+			const errorData = { organizationId: organization._id };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+
+		// The permission check does not verify membership, so we do it here. Otherwise a user whose
+		// memberships were turned off for account deletion could still change who pays.
+		const homeMembership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", userAuth.id)
+					.eq("organizationId", organization._id)
+					.eq("workspaceId", defaultWorkspaceId),
+			)
+			.first();
+		if (!homeMembership) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "organizations_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const canManageBilling = await access_control_db_has_permission(ctx, {
+			organizationId: organization._id,
+			workspaceId: defaultWorkspaceId,
+			defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resource: { kind: "organization", id: String(organization._id) },
+			permission: "organization.billing.manage",
+			userId: userAuth.id,
+		});
+		if (!canManageBilling) {
+			return Result({ _nay: { message: "Permission denied" } });
 		}
 
 		await ctx.db.patch("organizations", organization._id, {
@@ -1345,7 +1501,9 @@ export const edit_workspace = mutation({
 			!defaultWorkspace ||
 			workspace.organizationId !== args.organizationId ||
 			defaultWorkspace.organizationId !== args.organizationId ||
-			!(organization.defaultWorkspaceId === defaultWorkspace._id || defaultWorkspace.default) ||
+			// Same rule as `edit_organization`: the default workspace comes from the organization doc,
+			// not from a workspace that says it is the default one.
+			organization.defaultWorkspaceId !== defaultWorkspace._id ||
 			!defaultWorkspaceMembership ||
 			!workspaceMembership
 		) {
@@ -1362,8 +1520,7 @@ export const edit_workspace = mutation({
 				workspaceId: workspace._id,
 				defaultWorkspaceId: defaultWorkspace._id,
 				organizationOwnerUserId: organization.ownerUserId,
-				resourceKind: "workspace",
-				resourceId: String(workspace._id),
+				resource: { kind: "workspace", id: String(workspace._id) },
 				permission: "workspace.update",
 				userId: userAuth.id,
 			})) &&
@@ -1372,8 +1529,7 @@ export const edit_workspace = mutation({
 				workspaceId: defaultWorkspace._id,
 				defaultWorkspaceId: defaultWorkspace._id,
 				organizationOwnerUserId: organization.ownerUserId,
-				resourceKind: "organization",
-				resourceId: String(organization._id),
+				resource: { kind: "organization", id: String(organization._id) },
 				permission: "organization.update",
 				userId: userAuth.id,
 			}))
@@ -1385,10 +1541,9 @@ export const edit_workspace = mutation({
 			});
 		}
 
-		if (
-			(organization.defaultWorkspaceId !== undefined && workspace._id === organization.defaultWorkspaceId) ||
-			workspace.default
-		) {
+		// We trust only `organization.defaultWorkspaceId`, never the `default` flag on the workspace doc.
+		// Two sources of truth can disagree, and this one decides where organization-wide roles work.
+		if (workspace._id === organization.defaultWorkspaceId) {
 			return Result({
 				_nay: {
 					message: "Cannot edit the default workspace",
@@ -1551,7 +1706,7 @@ export const delete_organization = mutation({
 				),
 			ctx.db
 				.query("access_control_role_assignments")
-				.withIndex("by_organization_workspace_user_role", (q) => q.eq("organizationId", organization._id))
+				.withIndex("by_organization_workspace_user", (q) => q.eq("organizationId", organization._id))
 				.collect()
 				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
 			ctx.db
@@ -1583,6 +1738,11 @@ export const delete_organization = mutation({
 						}),
 					),
 				),
+			ctx.db
+				.query("access_control_roles")
+				.withIndex("by_organization_normalizedName", (q) => q.eq("organizationId", organization._id))
+				.collect()
+				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_roles", doc._id)))),
 		]);
 
 		const affectedUserIds = new Set<Id<"users">>(userIdsPerWorkspace.flat());
@@ -1670,7 +1830,9 @@ export const delete_workspace = mutation({
 			});
 		}
 
-		if (workspace.default) {
+		// Same as `edit_workspace`: the default workspace comes from the organization doc, not from the
+		// `default` flag on the workspace doc.
+		if (workspace._id === organization.defaultWorkspaceId) {
 			return Result({
 				_nay: {
 					message: "Cannot delete the default workspace",
@@ -1678,25 +1840,23 @@ export const delete_workspace = mutation({
 			});
 		}
 
+		// The organization-wide role works in a workspace only while the caller is a member of it, and
+		// the permission check does not verify that. Handlers that use
+		// `access_control_db_authorize_membership` pass it a membership doc. This handler builds the
+		// ids itself, so it has to check membership here.
+		const isWorkspaceMember =
+			organization.ownerUserId === userAuth.id ||
+			workspaceUserLookup.some((workspaceUser) => workspaceUser.userId === userAuth.id && workspaceUser.active);
+
 		if (
+			!isWorkspaceMember ||
 			!(await access_control_db_has_permission(ctx, {
 				organizationId: organization._id,
 				workspaceId: workspace._id,
 				defaultWorkspaceId: organizationUserLookup.workspaceId,
 				organizationOwnerUserId: organization.ownerUserId,
-				resourceKind: "workspace",
-				resourceId: String(workspace._id),
-				permission: "workspace.update",
-				userId: userAuth.id,
-			})) &&
-			!(await access_control_db_has_permission(ctx, {
-				organizationId: organization._id,
-				workspaceId: organizationUserLookup.workspaceId,
-				defaultWorkspaceId: organizationUserLookup.workspaceId,
-				organizationOwnerUserId: organization.ownerUserId,
-				resourceKind: "organization",
-				resourceId: String(organization._id),
-				permission: "organization.update",
+				resource: { kind: "workspace", id: String(workspace._id) },
+				permission: "workspace.delete",
 				userId: userAuth.id,
 			}))
 		) {
@@ -1753,7 +1913,7 @@ export const delete_workspace = mutation({
 				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("quotas", doc._id)))),
 			ctx.db
 				.query("access_control_role_assignments")
-				.withIndex("by_organization_workspace_user_role", (q) =>
+				.withIndex("by_organization_workspace_user", (q) =>
 					q.eq("organizationId", organization._id).eq("workspaceId", workspace._id),
 				)
 				.collect()

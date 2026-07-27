@@ -127,7 +127,7 @@ Expected result: moving a pending file back to its source cancels the proposal i
 
 ## Scenario 8 — chained mv -f replaces consume the whole chain
 
-1. Create committed `/pwl-f.md` ("alpha"), `/pwl-g.md` ("beta"), `/pwl-h.md` ("gamma") — e.g. via chat `write_file` + Accept all.
+1. Create committed `/pwl-f.md` ("alpha"), `/pwl-g.md` ("beta"), `/pwl-h.md` ("gamma") — e.g. via chat `edit_file` + Accept all.
 2. Chat, one turn: `mv -f pwl-f.md pwl-g.md && mv -f pwl-g.md pwl-h.md`.
 3. Expect exit 0 with TWO stdout lines `pending replace created: /pwl-f.md -> /pwl-g.md ...` and `... /pwl-g.md -> /pwl-h.md ...`; panel shows two rows caption `Replaced` (`/pwl-f.md → /pwl-g.md`, `/pwl-g.md → /pwl-h.md`); replace-move rows use `Accept changes to <destPath>` labels.
 4. Accept the SECOND link FIRST (`Accept changes to /pwl-h.md`).

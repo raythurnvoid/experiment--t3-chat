@@ -16,11 +16,7 @@ export function url_path_files(args: { organizationName: string; workspaceName: 
  * route accepts the readable `/files/{path}` shape too, but only as an entry point: it resolves
  * the path to a node id and then replaces the URL with this shape.
  */
-export function url_path_file_by_node_id(args: {
-	organizationName: string;
-	workspaceName: string;
-	nodeId: string;
-}) {
+export function url_path_file_by_node_id(args: { organizationName: string; workspaceName: string; nodeId: string }) {
 	return `/w/${args.organizationName}/${args.workspaceName}/files?nodeId=${encodeURIComponent(args.nodeId)}`;
 }
 
@@ -82,18 +78,18 @@ export function url_path_plugin_page(args: {
 	return `/w/${args.organizationName}/${args.workspaceName}/plugins/${args.pluginName}/pages/${args.pageId}`;
 }
 
-export function app_tenantPaths_scopeKey(args: { organizationId: string; workspaceId: string }) {
+export function app_tenant_scope_key(args: { organizationId: string; workspaceId: string }) {
 	return `${args.organizationId}::${args.workspaceId}`;
 }
 
-type App_tenant_organization_for_defaults = {
+type OrganizationFields = {
 	_id: string;
 	default: boolean;
 	defaultWorkspaceId?: string;
 	name: string;
 };
 
-type App_tenant_workspace_for_defaults = {
+type WorkspaceFields = {
 	_id: string;
 	default: boolean;
 	name: string;
@@ -103,24 +99,24 @@ type App_tenant_workspace_for_defaults = {
  * Resolve the actual organization primary workspace when the client can see it.
  * If `defaultWorkspaceId` is present but omitted from `workspaces`, the primary is hidden to this user.
  */
-export function app_tenant_primary_workspace_for_organization(args: {
-	organization: App_tenant_organization_for_defaults;
-	workspaces: App_tenant_workspace_for_defaults[];
-}): App_tenant_workspace_for_defaults | null {
+export function app_tenant_primary_workspace_for_organization<Workspace extends WorkspaceFields>(args: {
+	organization: OrganizationFields;
+	workspaces: Workspace[];
+}): Workspace | null {
 	if (args.organization.defaultWorkspaceId) {
-		return args.workspaces.find((p) => p._id === args.organization.defaultWorkspaceId) ?? null;
+		return args.workspaces.find((workspace) => workspace._id === args.organization.defaultWorkspaceId) ?? null;
 	}
 
-	return args.workspaces.find((p) => p.default) ?? null;
+	return args.workspaces.find((workspace) => workspace.default) ?? null;
 }
 
 /**
  * Pick a navigable default workspace for one organization using the same rules as `organizations.list`-based routing.
  */
 export function app_tenant_default_workspace_for_organization(args: {
-	organization: App_tenant_organization_for_defaults;
-	workspaces: App_tenant_workspace_for_defaults[];
-}): App_tenant_workspace_for_defaults | null {
+	organization: OrganizationFields;
+	workspaces: WorkspaceFields[];
+}): WorkspaceFields | null {
 	const workspace = app_tenant_primary_workspace_for_organization(args) ?? args.workspaces[0];
 	return workspace ?? null;
 }
@@ -129,10 +125,10 @@ export function app_tenant_default_workspace_for_organization(args: {
  * Resolve default organization + workspace from `organizations.list` (same flags as server-side defaults).
  */
 export function app_tenant_defaults_from_organization_list(args: {
-	organizations: App_tenant_organization_for_defaults[];
-	organizationIdsWorkspacesDict: Record<string, App_tenant_workspace_for_defaults[]>;
+	organizations: OrganizationFields[];
+	organizationIdsWorkspacesDict: Record<string, WorkspaceFields[]>;
 }): { organizationName: string; workspaceName: string } | null {
-	const organization = args.organizations.find((w) => w.default) ?? args.organizations[0];
+	const organization = args.organizations.find((candidate) => candidate.default) ?? args.organizations[0];
 	if (!organization) {
 		return null;
 	}

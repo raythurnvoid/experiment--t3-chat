@@ -221,7 +221,7 @@ async function mint_reader_session(
 			resourceId: String(fixture.membership.workspaceId),
 			principalKind: "user",
 			userId,
-			permission: "asset.read",
+			permission: "content.read",
 			createdAt: now,
 			updatedAt: now,
 		});
@@ -826,7 +826,7 @@ describe("plugin ui sessions", () => {
 		expect(body.truncated).toBe(false);
 	});
 
-	test("suppresses signed urls when asset.read is revoked during signing", async () => {
+	test("suppresses signed urls when content.read is revoked during signing", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
 		const seeded = await seed_upload_node(t, fixture, { filename: "photo.png", contentType: "image/png" });

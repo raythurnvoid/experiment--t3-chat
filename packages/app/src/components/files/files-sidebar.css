@@ -602,7 +602,7 @@
 	.FilesSidebarTreeItemSecondaryContent-text {
 		font-size: 0.75rem;
 		line-height: 1rem;
-		color: var(--color-fg-06);
+		color: var(--color-fg-07);
 
 		contain: content;
 		text-overflow: ellipsis;

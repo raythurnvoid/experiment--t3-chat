@@ -62,20 +62,21 @@ For `POST /api/chat`:
 
 1. Validate the request body, including allowlisted `model`, `mode`, and `trigger`, and require one of `threadId` or `clientGeneratedThreadId`.
 2. Resolve the authenticated or anonymous app user and load the app `users` doc.
-3. Load the membership doc, derive the agent configuration, and validate UI messages against the full tool registry.
-4. Resolve the existing thread or keep the optimistic client thread id for a new thread.
-5. Rate-limit and credit-gate the request before LLM work.
-6. Create the thread if needed and persist incoming user messages before generation.
-7. Convert stored UI messages to model messages.
-8. Run `streamText(...)` with the current tools and `activeTools`.
-9. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
-10. Persist the assistant response in `onFinish`.
-11. If the thread has no title yet, generate a short title and persist it.
-12. Emit `ai_usage` billing events from captured token usage after successful generation.
+3. Load the membership doc, then rate-limit the request.
+4. Check the workspace permission through `get_current_user_workspace_permission`: `content.read` in both modes, plus `content.write` for `mode: "agent"`. Two separate questions, not "the stronger one" — the catalog lets an owner compose a write-without-read role. Such a role never actually reached bash (`thread_get` and `thread_create` gate on `content.read` as well) but it got a 400 that reads like a malformed request, and the route was relying on another handler's gate; asking here makes it self-gating and the answer a correct 403. This runs before any tool executes, and it is **the** authorization boundary for the AI file tools — the internal file functions they call take a `userId` argument and check nothing themselves, so a gap here is a gap in the whole file surface. Ask mode is read-only because its write tools are left out of the tool registry handed to `streamText`, and bash **app-file** writes are gated by `allowDbFilesMkdir: false`. That flag does not touch the per-thread `/tmp` scratch filesystem, which stays writable in both modes. Excluding a tool from `activeTools` does **not** make it unreachable: the AI SDK uses `activeTools` only to build the provider payload, while parsing and execution look the name up in the `tools` record. Keep the registry itself mode-correct.
+5. Derive the agent configuration and validate UI messages against the full registry (`validationTools`, which keeps the write tools so stored history from an agent-mode turn still validates in ask mode).
+6. Resolve the existing thread or keep the optimistic client thread id for a new thread, then credit-gate before LLM work.
+7. Create the thread if needed and persist incoming user messages before generation.
+8. Convert stored UI messages to model messages.
+9. Run `streamText(...)` with the current tools and `activeTools`.
+10. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
+11. Persist the assistant response in `onFinish`.
+12. If the thread has no title yet, generate a short title and persist it.
+13. Emit `ai_usage` billing events from captured token usage after successful generation.
 
 Non-obvious runtime details:
 
-- Ask mode keeps the full tool registry for UI-message validation, but removes `write_file` and `edit_file` from `activeTools`. `write_file` is additionally in `BASH_REPLACED_TOOL_NAMES`, so it is registered-but-inactive in every mode: Agent-mode file writes go through `bash` shell writes instead.
+- Ask mode drops the write tools (`ai_chat_WRITE_TOOL_NAMES`, today just `edit_file`) from the `tools` record `streamText` receives, not only from `activeTools`. `validationTools` keeps the whole registry so a thread that ran in agent mode still validates its stored `edit_file` parts when reopened in ask mode. Agent-mode file writes otherwise go through `bash` shell writes.
 - User messages are persisted before generation so they survive aborts/stopped generations.
 - As soon as a running user message is visible, the shared message list shows a temporary `Thinking` assistant row without message actions. This covers the time before AI SDK creates the assistant message. While the running assistant message has no visible text, reasoning, tool, file, or source part, its renderer keeps showing `Thinking`. Active runs use their live parts so the placeholder disappears with the first visible part and does not remain beside later streaming text or tool calls. Empty text and reasoning parts do not count as visible content. Do not show the placeholder for a non-running empty assistant message.
 - Pre-stream send failures, such as credit-gate HTTP failures, remain transient client state in AI SDK `chat.error`; the UI shows inline feedback on the failed user message and retries by replacing that same client-only message from its original parent without appending a duplicate.
@@ -92,17 +93,14 @@ Non-obvious runtime details:
 
 # Current Toolbelt
 
-The main tool object currently contains:
+The main tool object contains exactly four tools:
 
 - `bash`
-- `read_file`
-- `list_files`
-- `glob_files`
-- `grep_files`
-- `write_file` (registered for validation only; inactive for new generation — bash shell writes replaced it)
-- `edit_file`
+- `edit_file` (the whole of `ai_chat_WRITE_TOOL_NAMES`; absent from the registry in ask mode)
 - `web_search`
 - `execute_code`
+
+`read_file`, `list_files`, `glob_files`, `grep_files`, and `write_file` were deleted, not deactivated — `bash` replaced all five, and the `BASH_REPLACED_TOOL_NAMES` list that used to hold them is gone too. Old threads still render their stored parts, because rendering reads the message, not the registry.
 
 Important limitation:
 
@@ -151,14 +149,14 @@ Important limitation:
 - Keep Bash commands simple: avoid strict-mode boilerplate such as `set -euo pipefail` because `pipefail` is unsupported, comments inside command strings, and process substitution. For multi-command inspection or eval checks, do not use `set -e` or hide stderr with `2>/dev/null`; later commands and visible stderr should still be observed.
 - Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.
 - In Agent mode, create or overwrite app files with shell redirects (`cat > file <<'EOF' ... EOF`, `>`), append with `>>`, and use `edit_file` for targeted edits. These shell writes, like Agent-mode app-to-app `mv`, `cp`, and `rm`, are reviewable pending proposals, not immediate committed filesystem mutations (accepting an `rm` archives the file instead of hard-deleting it, and the agent's own reads see a pending-deleted path as gone). Links are still not shell operations. App-to-`/tmp` copy remains immediate thread scratch. Do not work around an unsupported app operation by copying app files to `/tmp` unless the user asked for a scratch copy.
-- Legacy `read_file`, `list_files`, `glob_files`, `grep_files`, and `write_file` tool definitions remain in the runtime registry for historical message validation, but new generation should prefer `bash` (including shell writes) plus `edit_file`.
+- Legacy `read_file`, `list_files`, `glob_files`, `grep_files`, and `write_file` no longer exist in code at all — not in the registry, not in `validationTools`, not under any "replaced tool names" list. `bash` and `edit_file` cover what they did. Their stored parts in old threads still render, because rendering reads the message, not the registry.
 - When using the agent itself to create large QA corpora, keep prompts to small batches and verify actual app files after each batch. Assistant summary text can say a batch succeeded even when the model stopped before issuing every requested write.
 - The agent does not currently read raw R2 binaries through this toolbelt.
 - `read_file` and `grep_files` read Markdown-backed content through Convex actions that overlay pending edits and fetch committed Markdown from R2 when needed. Uploaded source paths do not alias to generated Markdown outputs.
 - Uploaded source files are discoverable through path listing; their raw R2 binaries are not directly read by this toolbelt.
 - `web_search` uses the server-side Exa integration and should be used for current public facts, docs, release notes, news, and information outside the app files. Keep file tools first when the answer should come from the user's files.
 - `execute_code` runs an untrusted JavaScript snippet in an isolated Cloudflare Dynamic Worker (Worker Loader) hosted by the separate `bonobo-senate-code-execution-runner` Worker, reached over HTTP from the Convex action (`CODE_EXECUTION_RUNNER_URL` + `CODE_EXECUTION_RUNNER_SECRET` env). Use it for computation, JSON shaping, parsing, quick algorithmic work, gatewayed fetches, or file-aware calculations that are better expressed in code. The snippet body is `async (input) => { ... }`: it `return`s a JSON-serializable value and may `console.*`; `input` is an opaque optional JSON argument. The app tool creates a short-lived `public_api_grants` doc with explicit file read/list scopes and a nullable path prefix, then passes the token privately to the runner gateway; the snippet sees `fetch` and `process.env.T3_APP_ORIGIN`, not the raw grant token. To read app files, code should `POST` to `${process.env.T3_APP_ORIGIN}/api/v1/files/list` for discovery, `/api/v1/files/read-many` for folder-scale reads, and `/api/v1/files/read` for one-off reads; the runner gateway authorizes those app API requests. Do not pass app file paths or contents through `input`.
-- User API credentials and public API grants both authorize through `public_api.ts`. Any signed-in active workspace member can create and manage their own reveal-once `pk_...` credentials; `api.credentials.manage` is reserved for future workspace-wide administration. User credentials support `files:list`, `files:read`, `files:write`, and `files:download`, while public API grants remain read-only. The workspace `API keys` page creates fixed list/read keys, shows the full key only after create or rotate, lets the user test that revealed key through the real list route, and provides list/read examples. User API key reads return committed content only; public API grant reads keep the current user's pending overlay.
+- User API credentials and public API grants both authorize through `public_api.ts`. Any signed-in active workspace member can create and manage their own reveal-once `pk_...` credentials, and there is no workspace-wide key administration, so no permission gates this. User credentials support `files:list`, `files:read`, `files:write`, and `files:download`, while public API grants remain read-only. The workspace `API keys` page creates fixed list/read keys, shows the full key only after create or rotate, lets the user test that revealed key through the real list route, and provides list/read examples. User API key reads return committed content only; public API grant reads keep the current user's pending overlay.
 
 # Uploaded Source And Plugin-Generated Files
 
@@ -175,7 +173,7 @@ Important limitation:
 - If a Bash unreadable-source advisory suggests generated output paths, read the exact generated output path when the user wants converted text; do not expect the uploaded source path to auto-read or alias to that sibling.
 - For images and videos, read `/a.png.description.md`, `/clip.mp4.summary.md`, or `/clip.mp4.transcript.md`; do not treat `/a.png` or `/clip.mp4` as aliases for the generated files.
 - Bash discovery commands expose generated outputs as ordinary files. Use exact Bash reads such as `cat /home/cloud-usr/w/{organizationName}/{workspaceName}/report.pdf.md` once generated output is finalized.
-- Legacy `read_file("/report.pdf")` does not read generated Markdown; `read_file("/report.pdf.md")` reads the generated output once finalized if a historical validation path still invokes that tool.
+- In an old thread, a stored `read_file("/report.pdf")` part did not read generated Markdown; `read_file("/report.pdf.md")` was the path that did. The tool itself is gone — use a Bash read.
 - Native source-file reading is planned for provider-supported files, especially PDFs. The agent should decide when Markdown search/results are enough and when to read the original source file with provider-native capabilities.
 - Original binary access is exposed to authorized plugin runs through short-lived download URLs. Do not infer a user-facing download UI from that backend route.
 
@@ -190,7 +188,7 @@ Important limitation:
 - Does not alias `/` to app files; `/` only exposes normal mount-point directories such as `/home` and `/tmp`.
 - `cat` reads app-file operands from materialized Markdown chunks and preserves the current user's pending-update overlay. It does not fall back to full-content reconstruction for unreadable or unmaterialized files; summarize stderr as an advisory or failure, not file content.
 - Lists direct app children through `files_nodes.list_children`, and folder subtrees through `files_nodes.list_subtree` after exact targets are resolved with `files_nodes.get_by_path`.
-- Agent-mode shell content writes (`>`, `>>`, heredoc redirects, `touch`, `tee`) create pending content proposals through `bash_DbFilesFs.writeFile`/`appendFile` in `server/bash-utils.ts`; a missing target is eagerly created empty (like `write_file` did) and stamped `eagerCreated`. An existing target at the requested path is always written as-is; a missing target whose name normalization would silently change the path (README casing, leading dots, spaces) is refused with the normalized path in the error, while normalization that lands on an existing file overwrites that file. Ask mode rejects app writes; `sed -i` stays rejected in both modes. Agent-mode `mv`, `cp`, and `rm` use pending structural proposals instead of direct mutations; Ask mode rejects app `rm` too.
+- Agent-mode shell content writes (`>`, `>>`, heredoc redirects, `touch`, `tee`) create pending content proposals through `bash_DbFilesFs.writeFile`/`appendFile` in `server/bash-utils.ts`; a missing target is eagerly created empty and stamped `eagerCreated`. An existing target at the requested path is always written as-is; a missing target whose name normalization would silently change the path (README casing, leading dots, spaces) is refused with the normalized path in the error, while normalization that lands on an existing file overwrites that file. Ask mode rejects app writes; `sed -i` stays rejected in both modes. Agent-mode `mv`, `cp`, and `rm` use pending structural proposals instead of direct mutations; Ask mode rejects app `rm` too.
 - Convert bash paths to app paths before calling `edit_file` by removing the current workspace path prefix `/home/cloud-usr/w/{organizationName}/{workspaceName}` while preserving the full remaining suffix. For example, `/home/cloud-usr/w/personal/home/folder/README.md` becomes `/folder/README.md`, never `/README.md`.
 - Creates persistent folders only through `mkdir` under the app file tree in Agent-mode `bash`; Ask-mode `bash` rejects durable folder creation.
 - Provides `/tmp` as writable durable scratch space scoped to the chat thread. `/tmp` persists across later `bash` calls in the same chat and reloads from Convex if the warm backend runtime cache is gone, but a new chat has a separate scratch filesystem. App-mount guards should not prevent `/tmp`-only commands from using native-style scratch utilities.
@@ -210,7 +208,7 @@ Important limitation:
 - Visibility is gated per bash run: `bash_run_command` fetches the raw mount docs via `internal.github_mounts.list_mounts` (name-ordered by index; no bash knowledge in `github_mounts.ts`), and `bash_fs_create` mounts only docs with a non-null `lastCommitSha`, creating one `bash_DbFilesFs` per mount with `dbFilesPathPrefix: "/<name>/<commitSha>"`, mounted at `/.mounts/<name>` — the same shape as plugin mounts. The sha is pinned for the whole run, so a pointer flip mid-run never tears reads; an in-progress or failed first sync exposes nothing. `/.mounts` itself does not exist with zero synced mounts, and `/.mounts/<unknown>` resolves to plain ENOENT (no existence leak). `bash_resolve_db_files_shell_path` in `bash-utils.ts` maps each shell path against the available `bash_DbFilesRoots` (`app`, per-mount `externalMounts`, and per-plugin `plugins` mounts) to a `bash_DbFilesShellPathResolution` (`app | outside_db_files | external_mount | external_mounts_root | plugins_root`) and read commands branch on it.
 - External mount content is committed-only: it has no Yjs snapshot/sequence docs, never creates `files_pending_updates`, and reads through committed chunks/assets only.
 - Read commands (`ls`, `find`, `tree`, `cat`, `head`, `tail`, `wc`, `stat`, `sed`, `grep`, `textgrep`) work against mounts exactly like app files. Bare `ls /.mounts` lists the mounted names (synthesized from the mount table, no Convex call). Root-scope `search`, `tree`, and `find` at `/.mounts` fan out across every mount in name order via `bash_external_mounts_fan_out_paginate` with a composite cursor pinning the `[name, commitSha]` listing snapshot — a resync between pages fails the continuation with "listing changed; rerun without --cursor". `meta search` and `find --prefix` still require a single-mount scope.
-- Agent-only external mounts are strictly read-only. Shell redirects, `touch`, `rm`, `mv`, `tee`, and `cp` into `/.mounts` are rejected with `bash_read_only_mount_error`; `cp /.mounts/<name>/<file> /tmp/<name>` (copy OUT to scratch) is allowed; `bash /.mounts/...`, `source /.mounts/...`, and `. /.mounts/...` script execution are rejected. `source` and `.` remain available for `/tmp` scratch scripts when their literal path resolves outside the app file tree and external mount trees. `write_file`/`edit_file` reject `/.mounts` paths.
+- Agent-only external mounts are strictly read-only. Shell redirects, `touch`, `rm`, `mv`, `tee`, and `cp` into `/.mounts` are rejected with `bash_read_only_mount_error`; `cp /.mounts/<name>/<file> /tmp/<name>` (copy OUT to scratch) is allowed; `bash /.mounts/...`, `source /.mounts/...`, and `. /.mounts/...` script execution are rejected. `source` and `.` remain available for `/tmp` scratch scripts when their literal path resolves outside the app file tree and external mount trees. `edit_file` rejects `/.mounts` paths.
 - Agent-only external mounts never appear in the Files sidebar or public file API. They are a Bash-only read surface; `execute_code` reads files through tenant-scoped `/api/v1/files/*` grants and cannot list/read `GLOBAL`/`GITHUB` mount docs.
 
 ### Workspace-gated plugin source mounts (`/.plugins`)
@@ -220,13 +218,13 @@ Important limitation:
 - Visibility is gated per workspace by enabled `plugins_workspace_installations` rows: `bash_run_command` calls `internal.plugins.list_bash_source_mounts` (backed by the `by_organization_workspace_status_pluginName` index) and creates one `bash_DbFilesFs` per installed plugin with `dbFilesPathPrefix: "/<pluginVersionId>"`, mounted at `/.plugins/<pluginName>`. The installation row acts as the symlink: upgrades retarget the version root atomically, uninstall removes visibility, and workspaces share one tree with zero copies.
 - No installation → no existence: `/.plugins` itself does not exist when the workspace has zero enabled installations, and `/.plugins/<notInstalled>` resolves to plain ENOENT (no existence leak). Publishers get no special access; they must install the plugin to browse its source via the agent.
 - Bare `ls /.plugins` lists installed plugin names (synthesized from the mount table, no Convex call). Inside one plugin, read commands (`ls`, `cat`, `head`, `tail`, `wc`, `stat`, `sed`, `grep`, `textgrep`, `search`, `meta search`, `tree`, `find`) work exactly like `/.mounts` through the translated `dbFilesPath`. Root-scope `search`, `tree`, and `find` at `/.plugins` fan out across every installed plugin in plugin-name order via `bash_plugins_fan_out_paginate` (`bash-utils.ts`): each plugin's version-keyed tree is paged sequentially with the existing single-scope queries, results are rewritten to `/.plugins/<pluginName>/...` paths, and the continuation carries a composite cursor pinning the `[pluginName, pluginVersionId]` listing snapshot — if installations change between pages the continuation fails with "listing changed; rerun without --cursor". `find` depth predicates are translated by -1 per plugin (plugin folders sit at depth 1 under `/.plugins`); `find --prefix /.plugins` and root-scope `meta search` still print guidance to scope to one plugin.
-- Same read-only rules as `/.mounts`: all writes (shell redirects, `touch`, `rm`, `mv`, `tee`, `cp` destination, `write_file`, `edit_file`) are rejected, `bash`/`source`/`.` script execution from `/.plugins` is rejected, `cp /.plugins/<pluginName>/<file> /tmp/<name>` (copy OUT to scratch) is allowed, and `cd` into a plugin mount persists across turns. Plugin source is committed-only content with no pending-update overlay.
+- Same read-only rules as `/.mounts`: all writes (shell redirects, `touch`, `rm`, `mv`, `tee`, `cp` destination, `edit_file`) are rejected, `bash`/`source`/`.` script execution from `/.plugins` is rejected, `cp /.plugins/<pluginName>/<file> /tmp/<name>` (copy OUT to scratch) is allowed, and `cd` into a plugin mount persists across turns. Plugin source is committed-only content with no pending-update overlay.
 - Registry hard deletes sweep each version's `GLOBAL`/`PLUGINS` tree (`db_delete_plugin_source_tree_batch`) before deleting the version doc; `plugins.delete_plugin_source_tree_batch` drains one version's tree standalone.
 - `execute_code` and the public file API cannot reach `/.plugins`: grants are tenant-scoped and never authorize reserved-scope docs.
 
 ## Legacy `read_file`
 
-Legacy file tools stay documented because old assistant messages may need validation/rendering and tests still cover them. Do not prefer them for new agent generation; use Bash exact reads and discovery instead.
+These tools are **deleted**. The sections below stay only so an old assistant message that still carries their parts can be read and rendered correctly. They cannot be called, and they are not in `validationTools` either. The app does not send them — `prepareSendMessagesRequest` posts `messagesToAppend`, at most the one new user message, never the transcript — but that is client behaviour, not a guarantee: the route validates whatever `body.messages` contains, so a client that ever posted a stored legacy tool part would get a `400`. Use Bash exact reads and discovery instead.
 
 - Reads one Markdown file by absolute path and returns numbered lines.
 - Path must be absolute and resolve to an app file.
@@ -259,9 +257,9 @@ Legacy file tools stay documented because old assistant messages may need valida
 - Uploaded source paths are not Markdown-readable unless the source itself has editable Markdown state.
 - Produces grouped line-oriented output similar to ripgrep.
 
-## `write_file`
+## Legacy `write_file`
 
-- Registered-but-inactive: it stays in the tool registry so old threads validate and render, but it is in `BASH_REPLACED_TOOL_NAMES` and never active for new generation. Agent-mode file creation/overwrite now goes through `bash` shell writes with the same pending-proposal behavior.
+- Deleted, like the other legacy tools above. Agent-mode file creation/overwrite goes through `bash` shell writes with the same pending-proposal behavior. The rest of this section describes what its stored parts mean, not something that can run.
 - Proposes full Markdown file content for review.
 - Does not directly commit file content.
 - Creates the file path if it does not exist; intermediate path segments become folders.
@@ -269,7 +267,7 @@ Legacy file tools stay documented because old assistant messages may need valida
 - Paths must be real Markdown paths ending in `.md`, for example `/readme.md` or `/docs/setup.md`.
 - When converting a Bash path, preserve the full suffix after `/home/cloud-usr/w/{organizationName}/{workspaceName}`; do not collapse nested files to their basename.
 - Stores the proposed result in `files_pending_updates` through `upsert_file_pending_update_internal_action`, which fetches the latest R2-backed base before the mutation writes.
-- `write_file` remains Markdown-path-oriented and is not the normal way to target converted uploaded sources such as PDFs.
+- It was Markdown-path-oriented, so a stored part never targeted a converted upload source such as a PDF directly.
 
 ## `edit_file`
 
@@ -321,7 +319,7 @@ Reads:
 
 Writes:
 
-- Agent-mode bash shell writes (`bash_DbFilesFs.writeFile`/`appendFile`), `write_file`, and `edit_file` call action-aware pending-update helpers so the latest R2-backed base Yjs state is resolved before internal mutations write docs.
+- Agent-mode bash shell writes (`bash_DbFilesFs.writeFile`/`appendFile`) and `edit_file` call action-aware pending-update helpers so the latest R2-backed base Yjs state is resolved before internal mutations write docs.
 - They update the current user's pending `unstaged` branch.
 - Agent-mode app-to-app `mv` stores `pendingMove`. App-to-app `cp` stores `copiedFrom` and may mark a newly created destination as `eagerCreated` so discard or expiry can remove it safely. A replacement proposal records the replaced destination instead of committing over it immediately. Bash shell writes to a missing path also eagerly create the node and stamp `eagerCreated`.
 - The client is expected to open the diff/review UI before live file content changes.
@@ -332,11 +330,11 @@ Writes:
 2. Folder nodes are not content-readable or content-writable by AI file tools.
 3. File reads are user-scoped because pending overlays are user-scoped.
 4. `bash` can read, list, navigate, and search app files. In Agent mode it can create folders, write file content as pending proposals (redirects, `tee`, and `touch` on a new path; `touch` on an existing app file is a no-op), and propose app-to-app moves, copies, and deletes (accepting a delete archives the node); links still fail.
-5. `mkdir`, nested bash write and `write_file` paths, and pending copy destinations may create persistent intermediate folders. Do not claim `mkdir` is the only AI path that creates folders.
-6. Bash shell writes, `write_file`, `edit_file`, app-to-app `mv`, and app-to-app `cp` create pending review state rather than immediately committing the proposed content or structure.
-7. Bash shell writes and `write_file` pass the already-resolved `userId` into `create_file_by_path`; pending-update docs store the same id.
-8. New generation uses Bash `search` for full-text content search, Bash `meta search` for indexed frontmatter metadata, and Bash `find` for path discovery; legacy `grep_files` / `glob_files` are validation-only surfaces.
-9. Legacy `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
+5. `mkdir`, nested bash write paths, and pending copy destinations may create persistent intermediate folders. Do not claim `mkdir` is the only AI path that creates folders.
+6. Bash shell writes, `edit_file`, app-to-app `mv`, and app-to-app `cp` create pending review state rather than immediately committing the proposed content or structure.
+7. Bash shell writes pass the already-resolved `userId` into `create_file_by_path`; pending-update docs store the same id.
+8. Use Bash `search` for full-text content search, Bash `meta search` for indexed frontmatter metadata, and Bash `find` for path discovery; `grep_files` / `glob_files` no longer exist.
+9. Line-numbered `read_file` output in an old thread is not valid `edit_file.oldString` input — the prefixes are not part of the file.
 10. Request messages are persisted before generation; assistant responses are persisted after streaming finishes. `thread_messages_add` is idempotent by thread and client-generated message id so finish/abort/retry overlap cannot create duplicate sibling messages.
 11. Current chat file tools do not read raw uploaded R2 binaries; plugin-generated Markdown outputs are ordinary Markdown files whose committed Markdown is also stored in R2.
 12. Source-path reads must preserve the product distinction between the original R2 object and generated editable Markdown outputs.
@@ -369,7 +367,7 @@ Writes:
 - Bash shell writes, `edit_file`, app-to-app `mv`, and app-to-app `cp` create reviewable pending state instead of silently committing live changes.
 - Accept and discard checks cover pending moves, copies, replacements, eager-created destinations, and mixed content-plus-structure rows.
 - `edit_file` fails on missing/ambiguous single-match replacements.
-- Legacy `grep_files` behaves like regex/line search when validating old tool calls.
+- Stored `grep_files` parts in old threads show regex/line search output.
 - Uploaded source files are not described as raw-binary-readable until a native source-file tool exists.
 - With the matching upload plugin installed and enabled, generated outputs are read, searched, edited, and listed by their actual visible paths, preferably through Bash (including shell writes) plus `edit_file`.
 - Tool descriptions stay aligned with actual behavior.
@@ -385,7 +383,7 @@ content written/typed into the workspace.
 - [ ] **Cap total written-document size (the real gap).** Uploads are size-capped via
       `files_MAX_UPLOADS_BYTES` from `shared/files.ts`, but typed/written Markdown has no
       size limit. Add a content-agnostic per-document byte cap at the write choke points
-      — `write_file`/`edit_file` (`server/server-ai-tools.ts` → `create_file_by_path` /
+      — bash shell writes / `edit_file` (`server/server-ai-tools.ts` → `create_file_by_path` /
       `action_create_markdown_node` / the edit pending-update path in `convex/files_nodes.ts`)
       and ideally the editor save/materialization — rejecting oversized content with a clear
       error (mirror the upload "File too large" path). This bounds a 10 MB single line and 10 MB

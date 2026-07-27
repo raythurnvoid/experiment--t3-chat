@@ -28,6 +28,7 @@ import {
 	Trash2,
 } from "lucide-react";
 
+import { toast } from "sonner";
 import { useFn, useLiveRef } from "@/hooks/utils-hooks.ts";
 import { MyPrimaryAction } from "@/components/my-action.tsx";
 import { MyButton } from "@/components/my-button.tsx";
@@ -85,6 +86,14 @@ function is_rejected_name_message(validationMessage: string) {
 	return validationMessage === "Organization name already exists" || validationMessage === "Workspace name already exists";
 }
 
+// The menu hides Edit from anyone who cannot use it, so this error only happens when the user's role
+// changed while the dialog was open. Nothing the user types can fix that, so we close the dialog
+// instead of showing "Permission denied" under the name field, which would look like the name is
+// wrong.
+function is_permission_denied_message(validationMessage: string) {
+	return validationMessage === "Permission denied";
+}
+
 // Use canonical submit values so autofix-only edits do not enable Save.
 function get_canonical_name_value(value: string) {
 	return organizations_name_autofix(value);
@@ -127,7 +136,8 @@ export type MainAppHeaderOrganizationSwitcherModal_ListItem = {
 	description: string;
 	isCurrent?: boolean;
 	isDefault?: boolean;
-	ownershipBadge?: "personal" | "owner" | "member";
+	/** About ownership only. A user's role is shown on the users page, not in this picker. */
+	ownershipBadge?: "personal" | "owner" | "joined";
 	billingBadge?: "members_pay" | "my_balance" | "owner_pays";
 	onManageBilling?: () => void;
 	onEdit?: () => void;
@@ -226,8 +236,8 @@ export const MainAppHeaderOrganizationSwitcherModalListItem = memo(function Main
 			? "Personal"
 			: item.ownershipBadge === "owner"
 				? "Owner"
-				: item.ownershipBadge === "member"
-					? "Member"
+				: item.ownershipBadge === "joined"
+					? "Joined"
 					: null;
 	const billingBadgeLabel =
 		item.billingBadge === "members_pay"
@@ -1246,6 +1256,14 @@ export const MainAppHeaderOrganizationSwitcherModalCreateModal = memo(
 					if (result._nay) {
 						if (result._nay.message === "Organization quota reached") {
 							setSubmitValidationMessage(quotas.extra_organizations.disabledReason);
+						} else if (result._nay.message === "Unauthenticated") {
+							// The backend replies with the single word "Unauthenticated" for every auth failure.
+							// Only this dialog knows which action was refused, so it writes the sentence the user
+							// reads. The quota message above is split the same way.
+							// The button is already disabled for anonymous sessions, so we reach this only in a
+							// race: the user signed out, or the session became anonymous, between opening this
+							// dialog and submitting it.
+							setSubmitValidationMessage("Sign in to create an organization.");
 						} else if (result._nay.message === "Description is too long") {
 							descriptionFieldRef.current?.setServerValidationMessage(result._nay.message);
 						} else if (is_rejected_name_message(result._nay.message)) {
@@ -1458,6 +1476,11 @@ export const MainAppHeaderOrganizationSwitcherModalEditModal = memo(function Mai
 		setSubmitValidationMessage(undefined);
 	});
 
+	const handlePermissionDenied = useFn(() => {
+		setTarget(null);
+		toast.error("You no longer have permission to edit this");
+	});
+
 	const handleFormSubmit = useFn<NonNullable<ComponentPropsWithoutRef<"form">["onSubmit"]>>((event) => {
 		event.preventDefault();
 		if (isSubmitting || !target) {
@@ -1499,6 +1522,8 @@ export const MainAppHeaderOrganizationSwitcherModalEditModal = memo(function Mai
 						descriptionFieldRef.current?.setServerValidationMessage(result._nay.message);
 					} else if (is_rejected_name_message(result._nay.message)) {
 						nameFieldRef.current?.setRejectedNameValidationMessage(name, result._nay.message);
+					} else if (is_permission_denied_message(result._nay.message)) {
+						handlePermissionDenied();
 					} else {
 						setSubmitValidationMessage(result._nay.message);
 					}
@@ -1534,6 +1559,8 @@ export const MainAppHeaderOrganizationSwitcherModalEditModal = memo(function Mai
 					descriptionFieldRef.current?.setServerValidationMessage(result._nay.message);
 				} else if (is_rejected_name_message(result._nay.message)) {
 					nameFieldRef.current?.setRejectedNameValidationMessage(name, result._nay.message);
+				} else if (is_permission_denied_message(result._nay.message)) {
+					handlePermissionDenied();
 				} else {
 					setSubmitValidationMessage(result._nay.message);
 				}

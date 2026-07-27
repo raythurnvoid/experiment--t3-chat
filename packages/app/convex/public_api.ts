@@ -263,17 +263,21 @@ async function authorize_credential_management(
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
 
-	// Keep personal key management based on self-membership. Reserve api.credentials.manage for future workspace-wide administration.
+	// API keys belong to one user: each user manages their own keys through their own membership.
+	// Nobody manages keys for the whole workspace, so no permission is checked here. `mint_page_session`
+	// checks when the token is created; here we do not need that, because every route that accepts a
+	// `user_api_key` passes `requiredUserPermission`. So a key can never do more than the user who owns
+	// it: a scope they cannot use simply answers 403.
 	return Result({ _yay: { user, membership, organization, workspace } });
 }
 
-async function has_workspace_asset_permission(
+async function has_workspace_content_permission(
 	ctx: QueryCtx,
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
-		permission: "asset.read" | "asset.write";
+		permission: "content.read" | "content.write";
 	},
 ) {
 	const [organization, workspace] = await Promise.all([
@@ -294,19 +298,19 @@ async function has_workspace_asset_permission(
 		workspaceId: workspace._id,
 		defaultWorkspaceId: organization.defaultWorkspaceId,
 		organizationOwnerUserId: organization.ownerUserId,
-		resourceKind: "workspace",
-		resourceId: String(workspace._id),
+		resource: { kind: "workspace", id: String(workspace._id) },
 		permission: args.permission,
 		userId: args.userId,
 	});
 }
 
 /**
- * Both asset ACL facts at once: resolve_principal returns these instead of judging the route's
- * requiredUserPermission itself, so its result stays cacheable per token (verdicts live in
- * public_api_resolve_live_principal). Revoking a role invalidates the cached facts immediately.
+ * Reads both content permissions at once. `resolve_principal` returns them instead of deciding the
+ * route's `requiredUserPermission` itself, so its answer depends only on the token and can be cached
+ * per token. The yes/no decision is made later, in `public_api_resolve_live_principal`. Because this
+ * is a Convex query, taking a role away updates the cached answer right away.
  */
-async function get_workspace_asset_permissions(
+async function get_workspace_content_permissions(
 	ctx: QueryCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -315,8 +319,8 @@ async function get_workspace_asset_permissions(
 	},
 ) {
 	const [read, write] = await Promise.all([
-		has_workspace_asset_permission(ctx, { ...args, permission: "asset.read" }),
-		has_workspace_asset_permission(ctx, { ...args, permission: "asset.write" }),
+		has_workspace_content_permission(ctx, { ...args, permission: "content.read" }),
+		has_workspace_content_permission(ctx, { ...args, permission: "content.write" }),
 	]);
 	return { read, write };
 }
@@ -696,7 +700,7 @@ export const api_credential_rotate = mutation({
 
 /**
  * Facts only, keyed on the presented token alone so Convex can cache the result: identity,
- * tenancy, scopes, expiry timestamps, and asset ACL facts. The two verdicts that depend on the
+ * tenancy, scopes, expiry timestamps, and content permissions. The two verdicts that depend on the
  * caller's clock and route — token expiry and requiredUserPermission — are applied by
  * public_api_resolve_live_principal; never call this directly from a route. Liveness checks
  * (revocation, disable, uninstall, membership loss) are writes, so they invalidate the cache.
@@ -713,7 +717,7 @@ export const resolve_principal = internalQuery({
 				workspaceId: v.id("organizations_workspaces"),
 				userId: v.id("users"),
 				expiresAt: v.number(),
-				assetPermissions: v.object({ read: v.boolean(), write: v.boolean() }),
+				contentPermissions: v.object({ read: v.boolean(), write: v.boolean() }),
 				scopes: grant_scopes_validator,
 				principalKey: v.string(),
 				credentialId: v.null(),
@@ -724,7 +728,7 @@ export const resolve_principal = internalQuery({
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
 				userId: v.id("users"),
-				assetPermissions: v.object({ read: v.boolean(), write: v.boolean() }),
+				contentPermissions: v.object({ read: v.boolean(), write: v.boolean() }),
 				scopes: user_credential_scopes_validator,
 				principalKey: v.string(),
 				credentialId: v.id("api_credentials"),
@@ -756,7 +760,7 @@ export const resolve_principal = internalQuery({
 				pluginVersionId: v.id("plugins_versions"),
 				sessionId: v.id("plugins_ui_sessions"),
 				sessionExpiresAt: v.number(),
-				assetPermissions: v.object({ read: v.boolean(), write: v.boolean() }),
+				contentPermissions: v.object({ read: v.boolean(), write: v.boolean() }),
 				scopes: plugin_ui_scopes_validator,
 				principalKey: v.string(),
 				credentialId: v.null(),
@@ -878,7 +882,7 @@ export const resolve_principal = internalQuery({
 			if (!membership) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
-			const assetPermissions = await get_workspace_asset_permissions(ctx, {
+			const contentPermissions = await get_workspace_content_permissions(ctx, {
 				organizationId: session.organizationId,
 				workspaceId: session.workspaceId,
 				userId: session.userId,
@@ -901,7 +905,7 @@ export const resolve_principal = internalQuery({
 					pluginVersionId: session.pluginVersionId,
 					sessionId: session._id,
 					sessionExpiresAt: session.expiresAt,
-					assetPermissions,
+					contentPermissions,
 					scopes,
 					// Keep one rate-limit identity across token rotation and fresh iframe sessions.
 					principalKey: `plugin_ui:${session.organizationId}:${session.workspaceId}:${session.userId}:${session.installationId}`,
@@ -955,7 +959,7 @@ export const resolve_principal = internalQuery({
 			if (!membership) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
-			const assetPermissions = await get_workspace_asset_permissions(ctx, {
+			const contentPermissions = await get_workspace_content_permissions(ctx, {
 				organizationId: credential.organizationId,
 				workspaceId: credential.workspaceId,
 				userId: credential.userId,
@@ -967,7 +971,7 @@ export const resolve_principal = internalQuery({
 					organizationId: credential.organizationId,
 					workspaceId: credential.workspaceId,
 					userId: credential.userId,
-					assetPermissions,
+					contentPermissions,
 					scopes: credential.scopes,
 					principalKey: credential.keyId,
 					credentialId: credential._id,
@@ -998,7 +1002,7 @@ export const resolve_principal = internalQuery({
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const assetPermissions = await get_workspace_asset_permissions(ctx, {
+		const contentPermissions = await get_workspace_content_permissions(ctx, {
 			organizationId: grant.organizationId,
 			workspaceId: grant.workspaceId,
 			userId: grant.userId,
@@ -1011,7 +1015,7 @@ export const resolve_principal = internalQuery({
 				workspaceId: grant.workspaceId,
 				userId: grant.userId,
 				expiresAt: grant.expiresAt,
-				assetPermissions,
+				contentPermissions,
 				scopes: grant.scopes,
 				principalKey: grant.principalKey,
 				credentialId: null,
@@ -1040,7 +1044,7 @@ export async function public_api_resolve_live_principal(
 	args: {
 		presented: string;
 		now: number;
-		requiredUserPermission?: "asset.read" | "asset.write";
+		requiredUserPermission?: "content.read" | "content.write";
 	},
 ) {
 	const resolved: public_api_resolve_principal_Result = await ctx.runQuery(internal.public_api.resolve_principal, {
@@ -1065,7 +1069,9 @@ export async function public_api_resolve_live_principal(
 
 	if (args.requiredUserPermission && principal.kind !== "plugin_run") {
 		const allowed =
-			args.requiredUserPermission === "asset.read" ? principal.assetPermissions.read : principal.assetPermissions.write;
+			args.requiredUserPermission === "content.read"
+				? principal.contentPermissions.read
+				: principal.contentPermissions.write;
 		if (!allowed) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
@@ -1209,7 +1215,7 @@ async function authorize_request<K extends PrincipalKind>(
 		requiredScope: Scope;
 		allowedKinds: readonly K[];
 		/** ACL required from user principals (grants and API keys); plugin runs use scopes only. */
-		requiredUserPermission?: "asset.read" | "asset.write";
+		requiredUserPermission?: "content.read" | "content.write";
 		route: string;
 	},
 ) {
@@ -1437,11 +1443,11 @@ async function db_revalidate_file_write_principal(
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 	if (
-		!(await has_workspace_asset_permission(ctx, {
+		!(await has_workspace_content_permission(ctx, {
 			organizationId: credential.organizationId,
 			workspaceId: credential.workspaceId,
 			userId: credential.userId,
-			permission: "asset.write",
+			permission: "content.write",
 		}))
 	) {
 		return Result({ _nay: { message: "Permission denied" } });
@@ -2144,7 +2150,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const auth = await authorize_request(ctx, request, {
 								requiredScope: public_api_SCOPE_FILES_LIST,
 								allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui"],
-								requiredUserPermission: "asset.read",
+								requiredUserPermission: "content.read",
 								route: path,
 							});
 							if (auth._nay) {
@@ -2251,7 +2257,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const auth = await authorize_request(ctx, request, {
 								requiredScope: public_api_SCOPE_FILES_READ,
 								allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui"],
-								requiredUserPermission: "asset.read",
+								requiredUserPermission: "content.read",
 								route: path,
 							});
 							if (auth._nay) {
@@ -2348,7 +2354,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const auth = await authorize_request(ctx, request, {
 								requiredScope: public_api_SCOPE_FILES_READ,
 								allowedKinds: ["user_api_key", "public_api_grant"],
-								requiredUserPermission: "asset.read",
+								requiredUserPermission: "content.read",
 								route: path,
 							});
 							if (auth._nay) {
@@ -2479,7 +2485,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const auth = await authorize_request(ctx, request, {
 								requiredScope: public_api_SCOPE_FILES_WRITE,
 								allowedKinds: ["user_api_key", "plugin_run"],
-								requiredUserPermission: "asset.write",
+								requiredUserPermission: "content.write",
 								route: path,
 							});
 							if (auth._nay) {
@@ -2973,7 +2979,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const auth = await authorize_request(ctx, request, {
 								requiredScope: public_api_SCOPE_FILES_WRITE,
 								allowedKinds: ["user_api_key", "plugin_run"],
-								requiredUserPermission: "asset.write",
+								requiredUserPermission: "content.write",
 								route: path,
 							});
 							if (auth._nay) {
@@ -3314,7 +3320,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const auth = await authorize_request(ctx, request, {
 								requiredScope: public_api_SCOPE_FILES_DOWNLOAD,
 								allowedKinds: ["user_api_key", "plugin_run", "plugin_ui"],
-								requiredUserPermission: "asset.read",
+								requiredUserPermission: "content.read",
 								route: path,
 							});
 							if (auth._nay) {
@@ -3442,7 +3448,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const signingAuthority = await public_api_resolve_live_principal(ctx, {
 								presented: presentedToken,
 								now: Date.now(),
-								requiredUserPermission: "asset.read",
+								requiredUserPermission: "content.read",
 							});
 							if (signingAuthority._nay) {
 								const status = signingAuthority._nay.message === "Permission denied" ? 403 : 401;
@@ -3522,7 +3528,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const revalidated = await public_api_resolve_live_principal(ctx, {
 								presented: presentedToken,
 								now: Date.now(),
-								requiredUserPermission: "asset.read",
+								requiredUserPermission: "content.read",
 							});
 							if (revalidated._nay) {
 								const status = revalidated._nay.message === "Permission denied" ? 403 : 401;

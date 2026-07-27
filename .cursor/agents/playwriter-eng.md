@@ -61,7 +61,7 @@ Ariakit modals stay mounted in the DOM while closed (`hidden` + `display: none`)
 4. Trust tool-part terminal text over the model's final prose — small models misreport their own tool output.
 5. Pending panel rows: `.FileEditorSidebarPending .FileEditorSidebarPending-item`, caption `.FileEditorSidebarPending-item-caption`, per-row accept `button.FileEditorSidebarPending-accept`. Switch to the sidebar tab (`#app_file_editor_sidebar_tabs_pending` / `_agent`) before clicking — hidden tab panels keep DOM readable but not clickable.
 6. Files tree rows are `[role="treeitem"]` with `aria-label` = node name; committed create/rename flow: New file/New folder button, then `F2` → `.FilesSidebarTreeItemTitle-input` → type → Enter.
-7. Chat file tools: only `bash`, `write_file`, `edit_file`, `web_search`, `execute_code` are active; `read_file`/`list_files`/`glob_files`/`grep_files` are registered but filtered out of generation (ai_chat.ts `BASH_REPLACED_TOOL_NAMES`) — do not write eval criteria that require them.
+7. Chat file tools: the registry holds exactly `bash`, `edit_file`, `web_search`, `execute_code`. `read_file`/`list_files`/`glob_files`/`grep_files`/`write_file` were deleted from the code — they are not registered anywhere, and `BASH_REPLACED_TOOL_NAMES` no longer exists. Ask mode additionally drops `edit_file` from the registry, so it has three tools. Do not write eval criteria that require a deleted tool.
 
 ## External iframe CSP triage
 

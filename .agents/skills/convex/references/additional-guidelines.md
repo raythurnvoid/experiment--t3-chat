@@ -618,7 +618,7 @@ Convex query results are automatically cached by the client and kept consistent 
 
 Practical implication for this repo:
 
-- For the current user's own profile, reuse the current-user-safe profile query from both surfaces. For another user's profile, use only a public-safe display-profile query that enforces the required tenant or audience scope. Do not add new cross-user calls to `users.get_anagraphic`: it currently has no auth or tenancy check and returns the full anagraphic doc, including email. Treat that endpoint as a known privacy gap until production code is fixed.
+- For the current user's own profile, reuse the current-user-safe profile query from both surfaces. For another user's profile, use only a public-safe display-profile query that enforces the required tenant or audience scope. `users.get_anagraphic` is the worked example: it requires an identity, returns display name and avatar for any `users` id because those render cross-tenant, and blanks `email` for anyone but the caller. Field-level audience beats a second query when only one field has a narrower audience.
 
 # Migrations
 

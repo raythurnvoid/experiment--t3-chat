@@ -119,10 +119,6 @@
 		justify-content: end;
 		gap: 8px;
 	}
-
-	.RouteUsersUserListItem-remove-trigger {
-		display: inline-flex;
-	}
 	/* #endregion user list item */
 
 	/* #region invite modal */
@@ -133,10 +129,6 @@
 
 		width: min(92vw, 480px);
 		padding: 18px;
-	}
-
-	.RouteUsersInviteModal-trigger {
-		display: inline-flex;
 	}
 
 	.RouteUsersInviteModal-form {

@@ -355,6 +355,26 @@ describe("ai_chat thread read cursor", () => {
 		expect((thread?.lastMessageAt ?? 0) > (thread?.readAt ?? 0)).toBe(false);
 	});
 
+	test("thread_create clamps a timestamp from the future", async () => {
+		const { t, seeded, asUser } = await seed();
+
+		const future = Date.now() + 60_000;
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_read_cursor_clamp",
+			title: "Read cursor clamp",
+			lastMessageAt: future,
+		});
+		expect(created._yay).toBeTruthy();
+
+		// Without the limit, this thread would sort above every other thread in `threads_list` until a
+		// message replaced the value. `readAt` copies the same value, so the thread would also look read
+		// during all that time.
+		const thread = await t.run((ctx) => ctx.db.get("ai_chat_threads", created._yay!.threadId));
+		expect(thread?.lastMessageAt ?? Infinity).toBeLessThan(future);
+		expect(thread?.readAt).toBe(thread?.lastMessageAt);
+	});
+
 	test("a branched thread starts read", async () => {
 		const { t, seeded, asUser } = await seed();
 

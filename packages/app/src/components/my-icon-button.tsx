@@ -28,7 +28,6 @@ export const MyIconButton = memo(function MyIconButton(props: MyIconButton_Props
 			{...rest}
 		>
 			{children}
-			{tooltip && <span className={cn("sr-only")}>{tooltip}</span>}
 		</MyButton>
 	);
 

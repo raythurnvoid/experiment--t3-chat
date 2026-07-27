@@ -11371,6 +11371,15 @@ describe("discard_file_pending_structural", () => {
 				active: true,
 				updatedAt: Date.now(),
 			});
+			// Writing files needs `content.write`, which comes from the member role.
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: otherUserId,
+				role: "member",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
 			return { otherUserId, otherMembershipId };
 		});
 		const asOtherUser = t.withIdentity({
@@ -11462,6 +11471,15 @@ describe("discard_file_pending_structural", () => {
 				active: true,
 				updatedAt: Date.now(),
 			});
+			// Writing files needs `content.write`, which comes from the member role.
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: otherUserId,
+				role: "member",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
 			const folderId = await seed_folder_node({
 				ctx,
 				organizationId: dest.organizationId,
@@ -11546,6 +11564,15 @@ describe("discard_file_pending_structural", () => {
 				workspaceId: dest.workspaceId,
 				userId: otherUserId,
 				active: true,
+				updatedAt: Date.now(),
+			});
+			// Writing files needs `content.write`, which comes from the member role.
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: otherUserId,
+				role: "member",
+				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 			return { otherUserId, otherMembershipId };
@@ -12955,6 +12982,15 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 				workspaceId: dest.workspaceId,
 				userId: otherUserId,
 				active: true,
+				updatedAt: Date.now(),
+			});
+			// Writing files needs `content.write`, which comes from the member role.
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: otherUserId,
+				role: "member",
+				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 			return { otherUserId, otherMembershipId };

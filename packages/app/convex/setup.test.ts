@@ -1,4 +1,5 @@
 import "./setup-env.test.ts";
+import { afterEach } from "vitest";
 import { convexTest } from "convex-test";
 import schema from "./schema.ts";
 import { faker } from "@faker-js/faker";
@@ -22,8 +23,51 @@ import { quotas_db_ensure } from "./quotas.ts";
 
 const convex_test_modules = import.meta.glob("./**/*.ts");
 
+const test_convex_instances: Array<ReturnType<typeof convexTest>> = [];
+
+// convex-test runs scheduled functions as floating promises — nothing awaits them, and teardown does
+// not either. A README seed seeded by one test was still issuing its R2 writes while a later test
+// ran, so those writes landed in that test's `globalThis.fetch` spy and failed an exact-compare
+// assertion at random. Cancel what has not started yet, then wait for whatever already has, so every
+// test owns its own background work instead of leaving it for the next one.
+afterEach(async () => {
+	const instances = test_convex_instances.splice(0);
+	if (instances.length === 0) {
+		return;
+	}
+
+	// Vitest registers this hook when the file is imported, and its default `stack` order runs such
+	// hooks *after* each test file's own `afterEach` — including the ones that put the real `fetch`
+	// back. So a request sent from here would really leave the machine. We block it: these leftover
+	// jobs are checked by no test, and they fail with or without network, only slower.
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = (() => Promise.reject(new Error("fetch is closed during test teardown"))) as typeof fetch;
+
+	try {
+		for (const t of instances) {
+			try {
+				await t.run(async (ctx) => {
+					const jobs = await ctx.db.system.query("_scheduled_functions").collect();
+					for (const job of jobs) {
+						if (job.state.kind === "pending") {
+							await ctx.scheduler.cancel(job._id);
+						}
+					}
+				});
+				await t.finishInProgressScheduledFunctions();
+			} catch {
+				// Best-effort cleanup. A test that already deleted its own data can make this throw,
+				// and a cleanup failure must not turn into a test failure.
+			}
+		}
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
 export function test_convex() {
 	const t = convexTest(schema, convex_test_modules);
+	test_convex_instances.push(t);
 	const withIdentity = t.withIdentity.bind(t);
 	t.withIdentity = ((identity) => {
 		// Use realistic Clerk identities by default; tests that cover the missing
@@ -208,7 +252,9 @@ export const test_mocks_fill_db_with = {
 		if (organizationName === "personal" && workspaceName === "home") {
 			const membershipId = await ctx.db
 				.query("organizations_workspaces_users")
-				.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", user.defaultWorkspaceId!).eq("userId", userId))
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", user.defaultWorkspaceId!).eq("userId", userId),
+				)
 				.first()
 				.then((membership) => membership?._id);
 			if (!membershipId) {

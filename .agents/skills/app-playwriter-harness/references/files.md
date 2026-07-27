@@ -174,7 +174,7 @@ Use this after changing the AI bash tool, tool rendering, or agent file-access c
 - In Agent mode, ask it to create a timestamped folder with `mkdir /home/cloud-usr/w/personal/home/playwriter-ai-chat-qa-<timestamp>`; verify the new turn shows a Bash disclosure and does not show a `create_folder` tool.
 - In Ask mode, ask it to try `mkdir /home/cloud-usr/w/personal/home/playwriter-ai-chat-ask-denied-<timestamp>`; verify bash reports that durable folder creation belongs in Agent mode and no folder appears.
 - Ask it to try `echo nope > /home/cloud-usr/w/personal/home/agent-bash-qa.md`; verify the bash result reports a read-only filesystem error.
-- Ask it to make one real Markdown edit; verify the new turn uses `write_file` or `edit_file`, not a bash write under the workspace mount.
+- Ask it to make one real Markdown edit; verify the new turn uses `edit_file`, not a bash write under the workspace mount.
 - Inspect the latest assistant tool parts and verify new turns do not show legacy `Read file`, `List files`, `Glob files`, `Grep files`, or `Search files` disclosures unless they came from older transcript history.
 
 ### File Agent Corpus Generation
@@ -182,7 +182,7 @@ Use this after changing the AI bash tool, tool rendering, or agent file-access c
 Use this when creating many QA files through the app agent.
 
 - Use fresh chats for each small batch so model context stays clean.
-- Keep each prompt to 3-4 `write_file` paths. Larger batches can make the assistant claim success before every file is actually persisted.
+- Keep each prompt to 3-4 `edit_file` paths. Larger batches can make the assistant claim success before every file is actually persisted.
 - After clicking `New chat`, verify `[aria-label="Open chats"] [role="tab"][aria-selected="true"]` has an id that starts with `ai_thread-` before sending. If it immediately reverts to an older persisted id, debug the optimistic tab cleanup before continuing.
 - Include a unique batch token in every requested file, but treat the Convex file-node query as the source of truth for count and paths.
 - Query actual file nodes after every batch with `app_convex.query(app_convex_api.files_nodes.list_tree, { membershipId })`; do not rely on assistant summary text or visible tool previews for the final count.

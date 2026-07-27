@@ -8,6 +8,7 @@ import { plugins_ai_review } from "./plugins.ts";
 import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { plugins_validate_manifest, type plugins_Capability } from "../shared/plugins.ts";
+import type { access_control_Permission } from "../shared/access-control.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -3010,6 +3011,119 @@ describe("plugins Phase 0", () => {
 			...media_plugin_consent,
 		});
 		expect(installed).toEqual({ _nay: { message: "Permission denied" } });
+	});
+
+	test("hides run file details from a plugin manager who cannot read content", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		await insert_event_run(t, fixture, {
+			eventId: "plugin:run-file-visibility",
+			status: "succeeded",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+
+		// `workspace.plugins.manage` and `content.read` are two different permissions, so a custom role
+		// can give the first one without the second.
+		async function seed_plugin_manager(args: { clerkUserId: string; permissions: access_control_Permission[] }) {
+			const userId = await t.run(async (ctx) => {
+				const now = Date.now();
+				const userId = await ctx.db.insert("users", { clerkUserId: args.clerkUserId });
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: fixture.membership.organizationId,
+					workspaceId: fixture.membership.workspaceId,
+					userId,
+					active: true,
+					updatedAt: now,
+				});
+				const roleId = await ctx.db.insert("access_control_roles", {
+					organizationId: fixture.membership.organizationId,
+					name: args.clerkUserId,
+					normalizedName: args.clerkUserId,
+					description: "",
+					permissions: args.permissions,
+					createdBy: fixture.membership.userId,
+					createdAt: now,
+					updatedAt: now,
+				});
+				await ctx.db.insert("access_control_role_assignments", {
+					organizationId: fixture.membership.organizationId,
+					workspaceId: fixture.membership.workspaceId,
+					userId,
+					role: roleId,
+					createdAt: now,
+					updatedAt: now,
+				});
+				return userId;
+			});
+			const membershipId = await t.run(async (ctx) => {
+				const member = await ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) =>
+						q.eq("workspaceId", fixture.membership.workspaceId).eq("userId", userId).eq("active", true),
+					)
+					.first();
+				if (!member) {
+					throw new Error("Expected seeded membership");
+				}
+				return member._id;
+			});
+			return { userId, membershipId };
+		}
+
+		const operator = await seed_plugin_manager({
+			clerkUserId: "plugin-operator",
+			permissions: ["workspace.plugins.manage"],
+		});
+		const reader = await seed_plugin_manager({
+			clerkUserId: "plugin-reader",
+			permissions: ["workspace.plugins.manage", "content.read"],
+		});
+
+		const operatorRuns = await t.withIdentity(user_identity(operator.userId)).query(api.plugins.list_recent_runs, {
+			membershipId: operator.membershipId,
+			installationId: fixture.installationId,
+		});
+		expect(operatorRuns).toHaveLength(1);
+		expect(operatorRuns[0]!.file).toBeNull();
+
+		// The control user is NOT the owner, on purpose. The permission check answers "yes" for an owner
+		// immediately, so an owner would see the file even if this query asked for the wrong permission,
+		// the wrong resource, or the wrong workspace. Only a non-owner proves the arguments are right.
+		const readerRuns = await t.withIdentity(user_identity(reader.userId)).query(api.plugins.list_recent_runs, {
+			membershipId: reader.membershipId,
+			installationId: fixture.installationId,
+		});
+		expect(readerRuns[0]!.file).toMatchObject({ name: "expired.png" });
+	});
+
+	test("does not hand the publisher's source and storage keys to an installer", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+
+		const listed = await t
+			.withIdentity(user_identity(fixture.membership.userId))
+			.query(api.plugins.list_installations, { membershipId: fixture.membership.membershipId });
+		expect(listed).toHaveLength(1);
+
+		// Installing a plugin does not mean the publisher trusts you. Everyone owns their personal
+		// organization, so everyone passes the plugin-management check somewhere, and anyone can install
+		// a published plugin only to read what this query returns.
+		for (const field of [
+			"sourceRepositoryUrl",
+			"sourceOwner",
+			"sourceRepo",
+			"manifestR2Key",
+			"backendEntrypointFile",
+			"files",
+			"sourceLastError",
+			"createdBy",
+		]) {
+			expect(listed[0]!.version).not.toHaveProperty(field);
+		}
+
+		// Control: the fields the install UI needs are still there after we cut the doc down.
+		expect(listed[0]!.version.name).toBeTruthy();
+		expect(listed[0]!.version.capabilities).toBeDefined();
 	});
 });
 

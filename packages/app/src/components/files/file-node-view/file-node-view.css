@@ -556,15 +556,21 @@
 		font-size: 0.875rem;
 		cursor: grab;
 
-		&:not(:last-child) .FileNodeViewFolderExplorer-cell {
+		/* The open link sits inside the first cell but must cover the whole row, so the row has to be
+		   its positioning parent. */
+		position: relative;
+
+		/* The bottom border and the hover color are painted on the row, not on each cell. The open link
+		   covers the whole row from inside the first cell, so anything a later cell paints on top would
+		   hide the link's focus outline. Painting them on the row keeps them under every cell, so no
+		   cell has to be raised above the actions cell, which would steal clicks meant for the menu
+		   button. */
+		&:not(:last-child) {
 			border-bottom: 1px solid var(--color-fg-03);
 		}
 
-		&:hover .FileNodeViewFolderExplorer-cell {
-			background: var(--color-base-1-05);
-		}
-
-		&:has(.FileNodeViewFolderExplorer-row-action:focus-visible) .FileNodeViewFolderExplorer-cell {
+		&:hover,
+		&:has(.FileNodeViewFolderExplorer-row-action:focus-visible) {
 			background: var(--color-base-1-05);
 		}
 
@@ -577,26 +583,28 @@
 		filter: opacity(0.6);
 	}
 
-	.FileNodeViewFolderExplorer-row-drop-target .FileNodeViewFolderExplorer-cell {
+	.FileNodeViewFolderExplorer-row-drop-target {
 		background: var(--color-base-1-06);
 	}
 
 	.FileNodeViewFolderExplorer-row-action {
-		grid-column: 1 / 4;
-		grid-row: 1;
-		align-self: stretch;
-		justify-self: stretch;
-
-		min-width: 0;
+		position: absolute;
+		inset: 0;
 
 		border-radius: 6px;
 
 		z-index: 0;
 
+		/* The cells ignore the mouse, so this link can catch clicks anywhere on the row. That means the
+		   link itself has to turn the mouse back on. The actions cell turns it back on too, and it wins
+		   over the link because every cell has `z-index: 1` while this link has `z-index: 0`. Without
+		   that the ⋮ button could not be clicked: a positioned element is painted above a static one
+		   whatever their order in the HTML. */
+		pointer-events: auto;
+
 		&:focus-visible {
 			outline: 2px solid var(--color-fg-12);
 			outline-offset: -2px;
-			z-index: 2;
 		}
 	}
 
@@ -636,6 +644,10 @@
 
 		justify-content: center;
 		padding: 4px 6px;
+
+		/* This stops the open link underneath from catching a click that just missed the menu button,
+		   which would open the file instead of doing nothing. The other cells keep ignoring clicks. */
+		pointer-events: auto;
 	}
 
 	.FileNodeViewFolderExplorer-cell-updated-by,

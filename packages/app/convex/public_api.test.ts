@@ -10,6 +10,7 @@ import {
 	files_yjs_doc_update_from_markdown,
 } from "../server/files.ts";
 import { r2_create_asset_key } from "./r2.ts";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
 import {
@@ -1227,6 +1228,89 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/" }),
 		});
 		expect(response.status).toBe(403);
+	});
+
+	test("refuses a write to a viewer's API key while still allowing it to read", async () => {
+		const t = test_convex();
+		const owner = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-viewer-owner" });
+
+		// A normal member, not the organization owner. The permission check answers "yes" for the owner
+		// before it even looks at a role, so a key created by the owner would prove nothing here.
+		const viewer = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-public-api-viewer" });
+			const organization = await ctx.db.get("organizations", owner.organizationId);
+			const defaultWorkspaceId = organization!.defaultWorkspaceId!;
+
+			for (const workspaceId of [defaultWorkspaceId, owner.workspaceId]) {
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: owner.organizationId,
+					workspaceId,
+					userId,
+					active: true,
+					updatedAt: now,
+				});
+			}
+			// The organization-wide role is stored on the default workspace, the same way an invite
+			// writes it.
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: owner.organizationId,
+				workspaceId: defaultWorkspaceId,
+				userId,
+				role: "viewer",
+				now,
+			});
+
+			await quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId,
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				now,
+			});
+
+			const membershipId = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", owner.workspaceId).eq("userId", userId))
+				.first()
+				.then((membership) => membership!._id);
+
+			return { userId, membershipId } as const;
+		});
+
+		const asViewer = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-viewer",
+			external_id: viewer.userId,
+		});
+
+		// Creating a key checks nothing on purpose. API keys belong to one user, and a scope the owner
+		// of the key cannot use is simply meant to answer 403 when it is used. That choice only works
+		// because of the permission check made on every request, shown below. So this test also checks
+		// that creating the key succeeds.
+		const created = await asViewer.mutation(api.public_api.api_credential_create, {
+			membershipId: viewer.membershipId,
+			name: "Viewer key",
+			scopes: ["files:list", "files:read", "files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		const credential = created._yay!.credential;
+
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/notes/viewer.md", content: "# Nope\n" }),
+		});
+		expect(written.status).toBe(403);
+
+		// Control: the same key works on a read route. Without this, a broken key, a wrong scope or a
+		// missing membership would give the same 403 and the test would prove nothing.
+		const listed = await t.fetch("/api/v1/files/list", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/" }),
+		});
+		expect(listed.status).toBe(200);
 	});
 
 	test("lists active and revoked API credentials newest first", async () => {

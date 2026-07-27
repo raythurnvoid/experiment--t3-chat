@@ -940,6 +940,43 @@ describe("resolve_user", () => {
 		expect(after.freshUser?._id).toBe(freshPayload.userId);
 	});
 
+	test("rejects refresh for a deleted anonymous user whose token doc still exists", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_tombstone_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+
+		const refresh = () =>
+			t.fetch("/api/auth/anonymous", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ token: anonymousPayload.token }),
+			});
+
+		// Control: the same token, before we mark the account as deleted. This route answers 401 from
+		// three different places, so without this call the check below could not tell "refused because
+		// the account is deleted" from "the test setup never created a working token".
+		expect((await refresh()).status).toBe(200);
+
+		// Deleting the account only sets `deletedAt`; the token doc stays until the retention job
+		// removes it much later. So the token doc alone does not prove the account is still alive.
+		await t.run((ctx) => ctx.db.patch("users", anonymousPayload.userId, { deletedAt: Date.now() }));
+
+		expect((await refresh()).status).toBe(401);
+	});
+
 	test("returns a conflict when another live user already owns the email and leaves the anonymous user untouched", async () => {
 		const t = test_convex();
 		const existingUser = await t.run((ctx) =>
@@ -999,6 +1036,84 @@ describe("resolve_user", () => {
 		expect(after.anonymousUser?.clerkUserId).toBeNull();
 		expect(after.anonymousUser?.anonymousAuthToken).toBeDefined();
 		expect(after.conflictingUser).toBeNull();
+	});
+});
+
+describe("get_anagraphic", () => {
+	test("hands the email to the profile's owner and to nobody else", async () => {
+		const t = test_convex();
+		const subject = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-anagraphic-subject",
+				displayName: "Anagraphic Subject",
+				email: "anagraphic-subject@test.local",
+			}),
+		);
+		const stranger = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-anagraphic-stranger",
+				displayName: "Anagraphic Stranger",
+				email: "anagraphic-stranger@test.local",
+			}),
+		);
+
+		const asStranger = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: `clerk-${stranger.userId}`,
+			name: "Anagraphic Stranger",
+			external_id: stranger.userId,
+			email: "anagraphic-stranger@test.local",
+		});
+		const asSelf = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: `clerk-${subject.userId}`,
+			name: "Anagraphic Subject",
+			external_id: subject.userId,
+			email: "anagraphic-subject@test.local",
+		});
+
+		// The only argument is a `users` id, and ids are not secret: a presence list hands them out. So
+		// another user gets the name they need to show on screen, and no email address.
+		const strangerView = await asStranger.query(api.users.get_anagraphic, { userId: subject.userId });
+		expect(strangerView?.displayName).toBe("Anagraphic Subject");
+		expect(strangerView?.email).toBe("");
+
+		const selfView = await asSelf.query(api.users.get_anagraphic, { userId: subject.userId });
+		expect(selfView?.email).toBe("anagraphic-subject@test.local");
+	});
+
+	test("returns nothing to a caller with no identity", async () => {
+		const t = test_convex();
+		const subject = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-anagraphic-unauthenticated",
+				displayName: "Anagraphic Unauthenticated",
+				email: "anagraphic-unauthenticated@test.local",
+			}),
+		);
+
+		expect(await t.query(api.users.get_anagraphic, { userId: subject.userId })).toBeNull();
+	});
+
+	test("still answers an anonymous caller asking about themselves", async () => {
+		const t = test_convex();
+		const anonymous = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-anagraphic-anonymous",
+				displayName: "Anagraphic Anonymous",
+			}),
+		);
+
+		// Anonymous accounts have a real Convex identity too. It comes from the second `customJwt`
+		// provider, and the user id is in `subject` instead of `external_id`. If this query accepted
+		// only Clerk identities, the profile in the sidebar would be empty for them on every page.
+		const asAnonymous = t.withIdentity({
+			issuer: process.env.VITE_CONVEX_HTTP_URL!,
+			subject: anonymous.userId,
+		});
+
+		const ownProfile = await asAnonymous.query(api.users.get_anagraphic, { userId: anonymous.userId });
+		expect(ownProfile?.displayName).toBe("Anagraphic Anonymous");
 	});
 });
 
@@ -1090,11 +1205,12 @@ describe("list_current_user_account_deletion_blocking_organizations", () => {
 				userId: owner.userId,
 				active: true,
 			});
+			// A strong role inside one workspace must not be shown as organization ownership.
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: workspaceScopedOrganization._yay.organizationId,
 				workspaceId: workspaceScopedWorkspace._yay.workspaceId,
 				userId: owner.userId,
-				role: "owner",
+				role: "admin",
 				now,
 			});
 
@@ -1186,16 +1302,8 @@ describe("delete_current_user_account", () => {
 
 		expect(transferResult._nay).toBeUndefined();
 		const after = await t.run(async (ctx) => {
-			const [ownerRole, collaboratorQuota] = await Promise.all([
-				ctx.db
-					.query("access_control_role_assignments")
-					.withIndex("by_organization_workspace_role_user", (q) =>
-						q
-							.eq("organizationId", organization.organizationId)
-							.eq("workspaceId", organization.defaultWorkspaceId)
-							.eq("role", "owner"),
-					)
-					.first(),
+			const [organizationDoc, collaboratorQuota] = await Promise.all([
+				ctx.db.get("organizations", organization.organizationId),
 				ctx.db
 					.query("quotas")
 					.withIndex("by_user_quotaName", (q) =>
@@ -1204,10 +1312,10 @@ describe("delete_current_user_account", () => {
 					.first(),
 			]);
 
-			return { ownerRole, collaboratorQuota };
+			return { organizationDoc, collaboratorQuota };
 		});
 
-		expect(after.ownerRole?.userId).toBe(collaborator.userId);
+		expect(after.organizationDoc?.ownerUserId).toBe(collaborator.userId);
 		expect(after.collaboratorQuota?.usedCount).toBe(1);
 
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -1221,17 +1329,9 @@ describe("delete_current_user_account", () => {
 
 			expect(deleteResult._nay).toBeUndefined();
 			const afterDeletion = await t.run(async (ctx) => {
-				const [user, ownerRole, organizationRequests] = await Promise.all([
+				const [user, organizationDoc, organizationRequests] = await Promise.all([
 					ctx.db.get("users", owner.userId),
-					ctx.db
-						.query("access_control_role_assignments")
-						.withIndex("by_organization_workspace_role_user", (q) =>
-							q
-								.eq("organizationId", organization.organizationId)
-								.eq("workspaceId", organization.defaultWorkspaceId)
-								.eq("role", "owner"),
-						)
-						.first(),
+					ctx.db.get("organizations", organization.organizationId),
 					ctx.db
 						.query("data_deletion_requests")
 						.withIndex("by_organization_scope", (q) =>
@@ -1240,11 +1340,11 @@ describe("delete_current_user_account", () => {
 						.collect(),
 				]);
 
-				return { user, ownerRole, organizationRequests };
+				return { user, organizationDoc, organizationRequests };
 			});
 
 			expect(afterDeletion.user?.deletedAt).toBeTypeOf("number");
-			expect(afterDeletion.ownerRole?.userId).toBe(collaborator.userId);
+			expect(afterDeletion.organizationDoc?.ownerUserId).toBe(collaborator.userId);
 			expect(afterDeletion.organizationRequests).toHaveLength(0);
 		} finally {
 			fetchSpy.mockRestore();
@@ -1313,17 +1413,9 @@ describe("delete_current_user_account", () => {
 		expect(result._yay).toBeUndefined();
 		expect(result._nay?.message).toBe("Resolve owned organizations before deleting account");
 		const after = await t.run(async (ctx) => {
-			const [user, ownerRoles, memberships, organizationRequests, ownerQuota] = await Promise.all([
+			const [user, organizationDoc, memberships, organizationRequests, ownerQuota] = await Promise.all([
 				ctx.db.get("users", seeded.userId),
-				ctx.db
-					.query("access_control_role_assignments")
-					.withIndex("by_organization_workspace_role_user", (q) =>
-						q
-							.eq("organizationId", organization.organizationId)
-							.eq("workspaceId", organization.defaultWorkspaceId)
-							.eq("role", "owner"),
-					)
-					.collect(),
+				ctx.db.get("organizations", organization.organizationId),
 				ctx.db
 					.query("organizations_workspaces_users")
 					.withIndex("by_active_organization_workspace_user", (q) =>
@@ -1342,11 +1434,11 @@ describe("delete_current_user_account", () => {
 					.first(),
 			]);
 
-			return { user, ownerRoles, memberships, organizationRequests, ownerQuota };
+			return { user, organizationDoc, memberships, organizationRequests, ownerQuota };
 		});
 
 		expect(after.user?.deletedAt).toBeUndefined();
-		expect(after.ownerRoles).toHaveLength(1);
+		expect(after.organizationDoc?.ownerUserId).toBe(seeded.userId);
 		expect(after.memberships).toHaveLength(1);
 		expect(after.organizationRequests).toHaveLength(0);
 		expect(after.ownerQuota?.usedCount).toBe(1);
@@ -1403,15 +1495,12 @@ describe("delete_current_user_account", () => {
 
 			expect(deleteAccountResult._nay).toBeUndefined();
 			const after = await t.run(async (ctx) => {
-				const [user, ownerRoles, organizationRequests] = await Promise.all([
+				const [user, roleAssignments, organizationRequests] = await Promise.all([
 					ctx.db.get("users", seeded.userId),
 					ctx.db
 						.query("access_control_role_assignments")
-						.withIndex("by_organization_workspace_role_user", (q) =>
-							q
-								.eq("organizationId", organization.organizationId)
-								.eq("workspaceId", organization.defaultWorkspaceId)
-								.eq("role", "owner"),
+						.withIndex("by_organization_workspace_user", (q) =>
+							q.eq("organizationId", organization.organizationId).eq("workspaceId", organization.defaultWorkspaceId),
 						)
 						.collect(),
 					ctx.db
@@ -1422,11 +1511,11 @@ describe("delete_current_user_account", () => {
 						.collect(),
 				]);
 
-				return { user, ownerRoles, organizationRequests };
+				return { user, roleAssignments, organizationRequests };
 			});
 
 			expect(after.user?.deletedAt).toBeTypeOf("number");
-			expect(after.ownerRoles).toHaveLength(0);
+			expect(after.roleAssignments).toHaveLength(0);
 			expect(after.organizationRequests).toHaveLength(1);
 		} finally {
 			fetchSpy.mockRestore();
@@ -2129,6 +2218,68 @@ describe("delete_current_user_account", () => {
 			fetchSpy.mockRestore();
 		}
 	});
+
+	test("leaves the Clerk link in place when Clerk cleanup fails, so the account stays reclaimable", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-account-delete-clerk-failure",
+				displayName: "Delete Clerk Failure User",
+				email: "delete-clerk-failure-user@test.local",
+			}),
+		);
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-user-account-delete-clerk-failure",
+			external_id: seeded.userId,
+			name: "Delete Clerk Failure User",
+			email: "delete-clerk-failure-user@test.local",
+		});
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			// Clerk refuses to delete the account. Everything else works, so the local deletion still
+			// runs.
+			if (users_test_fetch_url(input).startsWith("https://api.clerk.com/")) {
+				return new Response(null, { status: 500 });
+			}
+			return new Response(null, { status: 200 });
+		});
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_clerk_failure" as never);
+
+		try {
+			const deleteResult = await asUser.action(api.users.delete_current_user_account, {});
+			expect(deleteResult._nay).toBeUndefined();
+
+			// Because the Clerk delete failed, the link to the Clerk account is still there, and that is
+			// what keeps the Clerk session working.
+			const afterDeletion = await t.run((ctx) => ctx.db.get("users", seeded.userId));
+			expect(afterDeletion?.deletedAt).toBeTypeOf("number");
+			expect(afterDeletion?.clerkUserId).toBe("clerk-user-account-delete-clerk-failure");
+
+			// Signing in again with that same Clerk account undoes the deletion. This is a known problem:
+			// the user was told their account was deleted, but their Clerk account survived, so signing
+			// in brings the account back like any normal "I changed my mind" recovery.
+			// We tried refusing here and removed it again. That refusal can only hit this one person,
+			// who is the victim of a failed cleanup and not an attacker, and `app-auth.tsx` would show
+			// them only a generic "Signup/signin failed." before signing them out. The real fix belongs
+			// to the delete side: retry the Clerk delete from the retention job, or tell the user the
+			// deletion did not finish.
+			const restoreResult = await t.run((ctx) =>
+				ctx.runMutation(internal.users.resolve_user, {
+					clerkUserId: "clerk-user-account-delete-clerk-failure",
+					email: "delete-clerk-failure-user@test.local",
+					displayName: "Delete Clerk Failure User",
+				}),
+			);
+			expect(restoreResult._yay?.restoredDeletedAccount).toBe(true);
+
+			const after = await t.run((ctx) => ctx.db.get("users", seeded.userId));
+			expect(after?.deletedAt).toBeUndefined();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
 });
 
 describe("hard_delete_user_now", () => {
@@ -2188,7 +2339,7 @@ describe("hard_delete_user_now", () => {
 					organization,
 					workspace,
 					membership,
-					ownerRole,
+					roleAssignment,
 					requests,
 					files,
 					snapshots,
@@ -2212,12 +2363,11 @@ describe("hard_delete_user_now", () => {
 						.first(),
 					ctx.db
 						.query("access_control_role_assignments")
-						.withIndex("by_organization_workspace_user_role", (q) =>
+						.withIndex("by_organization_workspace_user", (q) =>
 							q
 								.eq("organizationId", seeded.defaultOrganizationId)
 								.eq("workspaceId", seeded.defaultWorkspaceId)
-								.eq("userId", seeded.userId)
-								.eq("role", "owner"),
+								.eq("userId", seeded.userId),
 						)
 						.first(),
 					ctx.db.query("data_deletion_requests").collect(),
@@ -2247,7 +2397,7 @@ describe("hard_delete_user_now", () => {
 					organization,
 					workspace,
 					membership,
-					ownerRole,
+					roleAssignment,
 					requests,
 					files,
 					snapshots,
@@ -2268,7 +2418,10 @@ describe("hard_delete_user_now", () => {
 			expect(after.organization?._id).toBe(seeded.defaultOrganizationId);
 			expect(after.workspace?._id).toBe(seeded.defaultWorkspaceId);
 			expect(after.membership?._id).toBeDefined();
-			expect(after.ownerRole?._id).toBeDefined();
+			// After the reset, ownership is still stored in the organization doc, not as a role
+			// assignment.
+			expect(after.organization?.ownerUserId).toBe(seeded.userId);
+			expect(after.roleAssignment).toBeNull();
 			expect(after.requests).toHaveLength(0);
 			expect(after.files).toHaveLength(0);
 			expect(after.snapshots).toHaveLength(1);

@@ -32,6 +32,7 @@ import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_e
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_ROOT_ID,
@@ -1068,6 +1069,14 @@ export const upsert_file_pending_update = action({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
+		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+			membershipId: args.membershipId,
+			permission: "content.write",
+		});
+		if (!allowed) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
 		const base = await files_pending_update_action_get_latest_file_yjs_state(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1441,6 +1450,15 @@ export const apply_file_pending_move = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const pendingUpdate = await files_db_get_pending_update(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1508,6 +1526,15 @@ export const apply_file_pending_archive = mutation({
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		const pendingUpdate = await files_db_get_pending_update(ctx, {
@@ -1628,6 +1655,15 @@ export const discard_file_pending_structural = mutation({
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		const pendingUpdate = await files_db_get_pending_update(ctx, {
@@ -1751,6 +1787,20 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_pending_update_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const existingPendingUpdate = await files_db_get_pending_update(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1822,11 +1872,6 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 					cause: branchDocsHaveChanges._nay,
 				},
 			});
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_pending_update_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		if (!branchDocsHaveChanges._yay) {
@@ -2050,6 +2095,17 @@ export const persist_file_pending_update_rebased_state = action({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		// No rate limit here. The mutation this action calls counts against the same limit, so counting
+		// again would cut every user's real save budget in half. A refused caller costs us only the
+		// permission query. An action cannot read the database, so that check goes through a query.
+		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+			membershipId: args.membershipId,
+			permission: "content.write",
+		});
+		if (!allowed) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
 		const latestBase = await files_pending_update_action_get_latest_file_yjs_state(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -2092,6 +2148,15 @@ export const get_file_pending_update = query({
 			return null;
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
+			return null;
+		}
+
 		return await files_db_get_pending_update(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -2131,6 +2196,15 @@ export const list_files_pending_updates = query({
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
+			return [];
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return [];
 		}
 
@@ -2183,6 +2257,15 @@ export const get_file_pending_update_last_sequence_saved = query({
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
+			return null;
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return null;
 		}
 
@@ -2311,6 +2394,16 @@ export const save_file_pending_update_in_db = internalMutation({
 			targetNode.archiveOperationId !== undefined
 		) {
 			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+			fileNode: targetNode,
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		const pendingUpdate = await files_db_get_pending_update(ctx, {
@@ -2710,6 +2803,16 @@ export const save_file_pending_update = action({
 		});
 		if (!membership || membership.userId !== userAuth.id) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		// Same as `persist_file_pending_update_rebased_state` above: no rate limit here, and the
+		// permission check goes through a query.
+		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+			membershipId: args.membershipId,
+			permission: "content.write",
+		});
+		if (!allowed) {
+			return Result({ _nay: { message: "Permission denied" } });
 		}
 
 		const base = await files_pending_update_action_get_latest_file_yjs_state(ctx, {

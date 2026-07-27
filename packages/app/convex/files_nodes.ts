@@ -94,7 +94,7 @@ import type { RouterForConvexModules } from "./http.ts";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
-import { access_control_db_has_permission } from "./access_control.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
@@ -1084,6 +1084,15 @@ export const create_folder_node = mutation({
 
 		if (!membership || membership.userId !== userAuth.id || membership.active === false) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		// We trust that the front-end is validating the input correctly.
@@ -2149,6 +2158,15 @@ export const create_markdown_node = action({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		// An action cannot read the database, so the permission check goes through a query.
+		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+			membershipId: args.membershipId,
+			permission: "content.write",
+		});
+		if (!allowed) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
 		const created = await action_create_markdown_node(ctx, {
 			userId: userAuth.id,
 			organizationId: membership.organizationId,
@@ -2195,9 +2213,19 @@ export const create_upload_node = mutation({
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
+
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		if (args.size > files_MAX_UPLOADS_BYTES) {
@@ -2885,6 +2913,17 @@ export const rename_node = mutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+			fileNode,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const pathSegments = path_extract_segments_from(args.path);
 		// Resolve the target first so simple and nested renames share one conflict/write path.
 		let targetParentId = fileNode.parentId;
@@ -3076,6 +3115,15 @@ export const move_nodes = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -3096,6 +3144,7 @@ export const move_nodes = mutation({
 			) {
 				continue;
 			}
+
 			const movedPath = path_join(targetParentPath, fileNode.name);
 			fileNodesToMove.push({ itemId, fileNode, movedPath });
 		}
@@ -3239,6 +3288,15 @@ export const archive_nodes = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const nodeIds = [];
 		for (const maybeNodeId of args.nodeIds) {
 			const nodeId = ctx.db.normalizeId("files_nodes", maybeNodeId);
@@ -3333,6 +3391,15 @@ export const unarchive_nodes = mutation({
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		if (args.nodeIds.length === 0) {
@@ -3657,41 +3724,30 @@ export const get_file_node_for_membership = query({
 			return null;
 		}
 
-		const organization = await ctx.db.get("organizations", membership.organizationId);
-		if (!organization?.defaultWorkspaceId) {
-			return null;
-		}
-
-		const hasAssetRead = await access_control_db_has_permission(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			defaultWorkspaceId: organization.defaultWorkspaceId,
-			organizationOwnerUserId: organization.ownerUserId,
-			resourceKind: "workspace",
-			resourceId: String(membership.workspaceId),
-			permission: "asset.read",
-			userId: userAuth.id,
-		});
-		if (!hasAssetRead) {
-			return null;
-		}
-
 		const fileNodeId = ctx.db.normalizeId("files_nodes", args.fileNodeId);
 		if (!fileNodeId) {
 			return null;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", fileNodeId).then((fileNode) => {
-			if (
-				!fileNode ||
-				fileNode.organizationId !== membership.organizationId ||
-				fileNode.workspaceId !== membership.workspaceId
-			) {
-				return null;
-			}
+		const fileNode = await ctx.db.get("files_nodes", fileNodeId);
+		if (!fileNode) {
+			return null;
+		}
 
-			return fileNode;
+		// We check the permission against the node, not the workspace, so this handler is already
+		// correct once files can be restricted. Nothing writes `restrictedScopeNodeId` yet, so today
+		// both give the same answer. The snapshot handlers still pass no node; they need the same check
+		// before file sharing ships.
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+			fileNode,
 		});
+		if (authorized._nay) {
+			return null;
+		}
+
 		return fileNode;
 	},
 });
@@ -3720,28 +3776,6 @@ export const get_authorized_by_path = query({
 			return null;
 		}
 
-		// Path links reach the same nodes as `?nodeId=` links, so gate them on the same
-		// `asset.read` permission. Otherwise a shared path URL would hand out a node id
-		// that `get_file_node_for_membership` would then refuse to open.
-		const organization = await ctx.db.get("organizations", membership.organizationId);
-		if (!organization?.defaultWorkspaceId) {
-			return null;
-		}
-
-		const hasAssetRead = await access_control_db_has_permission(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			defaultWorkspaceId: organization.defaultWorkspaceId,
-			organizationOwnerUserId: organization.ownerUserId,
-			resourceKind: "workspace",
-			resourceId: String(membership.workspaceId),
-			permission: "asset.read",
-			userId: userAuth.id,
-		});
-		if (!hasAssetRead) {
-			return null;
-		}
-
 		const fileNode =
 			args.path === "/"
 				? null
@@ -3757,6 +3791,19 @@ export const get_authorized_by_path = query({
 						.first();
 
 		if (!fileNode) {
+			return null;
+		}
+
+		// A link that uses a path opens the same nodes as a link that uses `?nodeId=`, so it gets the
+		// same check on the node. Otherwise a shared path URL would give out a node id that
+		// `get_file_node_for_membership` would then refuse to open.
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+			fileNode,
+		});
+		if (authorized._nay) {
 			return null;
 		}
 
@@ -3798,6 +3845,15 @@ export const list_tree = query({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		if (!membership || membership.userId !== userAuth.id || membership.active === false) {
+			return [];
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return [];
 		}
 
@@ -6470,6 +6526,16 @@ export const get_file_last_yjs_sequence = query({
 			return null;
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+			fileNode,
+		});
+		if (authorized._nay) {
+			return null;
+		}
+
 		const lastYjsSequenceDoc = await ctx.db
 			.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId)
 			.then((doc) => {
@@ -6813,6 +6879,17 @@ export const get_file_snapshots_list = query({
 			};
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
+			return {
+				snapshots: [],
+			};
+		}
+
 		const snapshots = await ctx.db
 			.query("files_snapshots")
 			.withIndex("by_organization_workspace_fileNode_archivedAt", (q) => {
@@ -6851,6 +6928,15 @@ export const get_file_snapshot = query({
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
+			return null;
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return null;
 		}
 
@@ -6927,6 +7013,15 @@ export const get_data_for_create_file_snapshot_content_url = internalQuery({
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
+			return null;
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return null;
 		}
 
@@ -7026,6 +7121,15 @@ export const archive_snapshot = mutation({
 			return Result({ _yay: null });
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
 		if (
 			!snapshot ||
@@ -7068,6 +7172,15 @@ export const unarchive_snapshot = mutation({
 			return Result({ _yay: null });
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
 		if (
 			!snapshot ||
@@ -7104,6 +7217,15 @@ export const get_data_for_yjs_prepare_doc_last_snapshot = internalQuery({
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
+			return null;
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return null;
 		}
 
@@ -7307,6 +7429,16 @@ export const yjs_push_update = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+			fileNode,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const organization = await ctx.db.get("organizations", membership.organizationId);
 		if (!organization) {
 			const errorMessage = "membership.organizationId points to a missing organizations doc";
@@ -7428,6 +7560,16 @@ export const yjs_get_incremental_updates = query({
 			fileNode.workspaceId !== membership.workspaceId ||
 			fileNode.kind !== "file"
 		) {
+			return null;
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+			fileNode,
+		});
+		if (authorized._nay) {
 			return null;
 		}
 
@@ -7997,6 +8139,15 @@ export const restore_snapshot = internalMutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const [snapshotContent, fileNode] = await Promise.all([
 			db_get_file_snapshot_content(ctx, {
 				organizationId: membership.organizationId,
@@ -8247,6 +8398,15 @@ export const get_data_for_restore_snapshot = internalQuery({
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
+			return null;
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
 			return null;
 		}
 
@@ -8638,6 +8798,25 @@ export function files_http_routes(router: RouterForConvexModules) {
 										status: 403,
 										body: {
 											message: "Unauthorized",
+										},
+									} as const;
+								}
+
+								// The assistant writes text back into a document, so a read-only user has no use for it.
+								// Checked before the credit check so a denied call never bills the organization.
+								//
+								// We ask for `content.write` only. `/api/chat` also asks for `content.read`, but this
+								// route never reads the file: the client sends all the text it needs in the request
+								// body. So a role with write but no read learns nothing new here.
+								const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+									membershipId: membership._id,
+									permission: "content.write",
+								});
+								if (!allowed) {
+									return {
+										status: 403,
+										body: {
+											message: "Permission denied",
 										},
 									} as const;
 								}

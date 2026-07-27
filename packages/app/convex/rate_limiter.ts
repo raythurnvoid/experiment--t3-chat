@@ -88,11 +88,34 @@ const rate_limiter_CONFIG = {
 		capacity: 3,
 	},
 	presence_write: STRICT_WRITE,
+	// Setting up roles is bursty: an admin assigns a role to several people, or edits a role and
+	// assigns it, in a few seconds. `STRICT_WRITE` only allows two in a row, which would read as a
+	// broken page rather than as a limit.
+	roles_write: {
+		kind: "token bucket",
+		rate: 30,
+		period: MINUTE,
+		capacity: 8,
+	},
 	save_file_pending_update: BULK_FILES_WRITE,
 	organizations_write: STRICT_WRITE,
 } as const;
 
 const rate_limiter = new RateLimiter(components.rate_limiter, rate_limiter_CONFIG);
+
+/**
+ * Turns a rate limit key into a short number, so a log line can name the caller without printing
+ * the key. This is only a label. It hides the key from someone reading the logs, but it is not
+ * secure: anyone who guesses the key can compute the same number.
+ */
+function key_digest(key: string) {
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < key.length; index += 1) {
+		hash ^= key.charCodeAt(index);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return (hash >>> 0).toString(16).padStart(8, "0");
+}
 
 export async function rate_limiter_limit_by_key(
 	ctx: MutationCtx | ActionCtx,
@@ -111,9 +134,15 @@ export async function rate_limiter_limit_by_key(
 		return null;
 	}
 
+	// Never log the key itself. Some callers pass a real token as the key: the presence writes pass a
+	// `sessionToken`, and `removeSessionData` passes a room token. Printing them would leave working
+	// tokens in the logs for anyone who can read them.
+	// We hash instead of cutting the string short, because many keys end with the same text (a route
+	// or a path). Their last characters look the same for every caller, so a cut string could not tell
+	// two callers apart.
 	console.warn("Rate limit exceeded", {
 		name: args.name,
-		key: args.key,
+		keyDigest: key_digest(args.key),
 		retryAfterMs: limit.retryAfter,
 	});
 

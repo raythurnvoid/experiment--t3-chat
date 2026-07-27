@@ -3,13 +3,9 @@ import { v } from "convex/values";
 import { components, internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id, TableNames } from "./_generated/dataModel.js";
 import { internalMutation, type MutationCtx } from "./_generated/server.js";
-import type { access_control_Permission, access_control_Role } from "../shared/access-control.ts";
 import { quotas } from "../shared/quotas.ts";
-import {
-	access_control_db_ensure_role_assignment,
-	access_control_db_ensure_role_permission_grant,
-} from "./access_control.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
+import { access_control_db_ensure_organization_member_role } from "./access_control.ts";
 
 const app_migrations = new Migrations<DataModel>(components.migrations, {
 	internalMutation,
@@ -108,6 +104,7 @@ type RebrandCleanupTableName = Exclude<TableNames, "users" | "users_anagraphics"
 const rebrand_cleanup_tables = [
 	"access_control_permission_grants",
 	"access_control_role_assignments",
+	"access_control_roles",
 	"ai_chat_files_content",
 	"ai_chat_files",
 	"ai_chat_threads_messages_aisdk_5",
@@ -181,40 +178,6 @@ function files_migrations_lowercase_extension(path: string, kind: Doc<"files_nod
 	}
 	return name.slice(dotIndex + 1).toLowerCase();
 }
-
-const access_control_organization_role_permission_grants = [
-	{ role: "admin", permission: "organization.update" },
-	{ role: "admin", permission: "organization.members.manage" },
-	{ role: "admin", permission: "workspace.create" },
-	{ role: "admin", permission: "workspace.update" },
-	{ role: "admin", permission: "workspace.delete" },
-	{ role: "admin", permission: "workspace.members.manage" },
-	{ role: "admin", permission: "asset.read" },
-	{ role: "admin", permission: "asset.write" },
-	{ role: "admin", permission: "organization.roles.manage" },
-	{ role: "admin", permission: "asset.permissions.manage" },
-	{ role: "admin", permission: "api.credentials.manage" },
-	{ role: "member", permission: "organization.update" },
-	{ role: "member", permission: "workspace.create" },
-	{ role: "member", permission: "workspace.update" },
-	{ role: "member", permission: "workspace.delete" },
-	{ role: "member", permission: "asset.read" },
-	{ role: "member", permission: "asset.write" },
-] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
-
-const access_control_workspace_role_permission_grants = [
-	{ role: "admin", permission: "workspace.update" },
-	{ role: "admin", permission: "workspace.delete" },
-	{ role: "admin", permission: "workspace.members.manage" },
-	{ role: "admin", permission: "asset.read" },
-	{ role: "admin", permission: "asset.write" },
-	{ role: "admin", permission: "asset.permissions.manage" },
-	{ role: "admin", permission: "api.credentials.manage" },
-	{ role: "member", permission: "workspace.update" },
-	{ role: "member", permission: "workspace.delete" },
-	{ role: "member", permission: "asset.read" },
-	{ role: "member", permission: "asset.write" },
-] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
 
 export const remove_billing_usage_snapshots_last_granted_period_start = app_migrations.define({
 	table: "billing_usage_snapshots",
@@ -303,16 +266,37 @@ export const backfill_organization_home_memberships = app_migrations.define({
 			return;
 		}
 
+		const now = Date.now();
 		await ctx.db.insert("organizations_workspaces_users", {
 			organizationId: membership.organizationId,
 			workspaceId: defaultWorkspaceId,
 			userId: membership.userId,
 			active: true,
-			updatedAt: Date.now(),
+			updatedAt: now,
+		});
+
+		// A membership alone gives no permission, so the repaired membership also needs the role that
+		// carries the organization-wide permissions.
+		await access_control_db_ensure_organization_member_role(ctx, {
+			organization,
+			workspaceId: defaultWorkspaceId,
+			userId: membership.userId,
+			now,
 		});
 	},
 });
 
+/**
+ * Give every active membership the role it needs to keep working.
+ *
+ * Before the permission rework, having a membership was enough to read and write files. Now the
+ * permissions come from the role assignment. So a membership written by the old code would quietly
+ * lose access: the file tree would load empty instead of showing an error. Owners are skipped,
+ * because being in `organizations.ownerUserId` already gives them everything.
+ *
+ * Safe to run again: `access_control_db_ensure_organization_member_role` keeps an existing assignment, so it
+ * never overwrites a role somebody set on purpose.
+ */
 export const backfill_access_control_member_assignments = app_migrations.define({
 	table: "organizations_workspaces_users",
 	migrateOne: async (ctx, membership) => {
@@ -320,113 +304,17 @@ export const backfill_access_control_member_assignments = app_migrations.define(
 			return;
 		}
 
-		const existingAssignments = await ctx.db
-			.query("access_control_role_assignments")
-			.withIndex("by_organization_workspace_user_role", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("userId", membership.userId),
-			)
-			.collect();
-		if (existingAssignments.length > 0) {
+		const organization = await ctx.db.get("organizations", membership.organizationId);
+		if (!organization) {
 			return;
 		}
 
-		await access_control_db_ensure_role_assignment(ctx, {
-			organizationId: membership.organizationId,
+		await access_control_db_ensure_organization_member_role(ctx, {
+			organization,
 			workspaceId: membership.workspaceId,
 			userId: membership.userId,
-			role: "member",
 			now: Date.now(),
 		});
-	},
-});
-
-export const seed_access_control_organization_permission_grants = app_migrations.define({
-	table: "organizations",
-	migrateOne: async (ctx, organization) => {
-		if (!organization.defaultWorkspaceId) {
-			return;
-		}
-
-		const now = Date.now();
-		for (const grant of access_control_organization_role_permission_grants) {
-			await access_control_db_ensure_role_permission_grant(ctx, {
-				organizationId: organization._id,
-				workspaceId: organization.defaultWorkspaceId,
-				resourceKind: "organization",
-				resourceId: String(organization._id),
-				role: grant.role,
-				permission: grant.permission,
-				now,
-			});
-		}
-	},
-});
-
-export const seed_access_control_workspace_permission_grants = app_migrations.define({
-	table: "organizations_workspaces",
-	migrateOne: async (ctx, workspace) => {
-		const now = Date.now();
-		for (const grant of access_control_workspace_role_permission_grants) {
-			await access_control_db_ensure_role_permission_grant(ctx, {
-				organizationId: workspace.organizationId,
-				workspaceId: workspace._id,
-				resourceKind: "workspace",
-				resourceId: String(workspace._id),
-				role: grant.role,
-				permission: grant.permission,
-				now,
-			});
-		}
-	},
-});
-
-export const remove_access_control_member_management_grants = app_migrations.define({
-	table: "access_control_permission_grants",
-	migrateOne: async (ctx, grant) => {
-		if (
-			grant.principalKind !== "role" ||
-			grant.role !== "member" ||
-			(grant.permission !== "organization.members.manage" && grant.permission !== "workspace.members.manage")
-		) {
-			return;
-		}
-
-		await ctx.db.delete("access_control_permission_grants", grant._id);
-	},
-});
-
-export const cleanup_duplicate_access_control_owner_assignments = app_migrations.define({
-	table: "organizations",
-	migrateOne: async (ctx, organization) => {
-		if (!organization.defaultWorkspaceId) {
-			return;
-		}
-		const defaultWorkspaceId = organization.defaultWorkspaceId;
-
-		const ownerAssignments = await ctx.db
-			.query("access_control_role_assignments")
-			.withIndex("by_organization_workspace_role_user", (q) =>
-				q.eq("organizationId", organization._id).eq("workspaceId", defaultWorkspaceId).eq("role", "owner"),
-			)
-			.collect();
-
-		const sortedOwnerAssignments = ownerAssignments.sort((a, b) => a._creationTime - b._creationTime);
-		const organizationOwnerUserId = organization.ownerUserId;
-		const keptAssignment = organizationOwnerUserId
-			? (sortedOwnerAssignments.find((assignment) => assignment.userId === organizationOwnerUserId) ??
-				sortedOwnerAssignments[0])
-			: sortedOwnerAssignments[0];
-		if (!keptAssignment) {
-			return;
-		}
-
-		const duplicateAssignments = sortedOwnerAssignments.filter((assignment) => assignment._id !== keptAssignment._id);
-		await Promise.all(
-			duplicateAssignments.map((assignment) => ctx.db.delete("access_control_role_assignments", assignment._id)),
-		);
 	},
 });
 
@@ -910,18 +798,6 @@ export const run_backfill_organization_home_memberships = app_migrations.runner(
 );
 export const run_backfill_access_control_member_assignments = app_migrations.runner(
 	internal.migrations.backfill_access_control_member_assignments,
-);
-export const run_seed_access_control_organization_permission_grants = app_migrations.runner(
-	internal.migrations.seed_access_control_organization_permission_grants,
-);
-export const run_seed_access_control_workspace_permission_grants = app_migrations.runner(
-	internal.migrations.seed_access_control_workspace_permission_grants,
-);
-export const run_remove_access_control_member_management_grants = app_migrations.runner(
-	internal.migrations.remove_access_control_member_management_grants,
-);
-export const run_cleanup_duplicate_access_control_owner_assignments = app_migrations.runner(
-	internal.migrations.cleanup_duplicate_access_control_owner_assignments,
 );
 export const run_update_extra_organizations_quota_max_count_to_2 = app_migrations.runner(
 	internal.migrations.update_extra_organizations_quota_max_count_to_2,

@@ -1246,17 +1246,8 @@ describe("init_user_deletion", () => {
 
 		expect(requestId).toBeTruthy();
 		const after = await t.run(async (ctx) => {
-			const [user, ownerRole, organizationDoc, collaboratorQuota, organizationRequests] = await Promise.all([
+			const [user, organizationDoc, collaboratorQuota, organizationRequests] = await Promise.all([
 				ctx.db.get("users", owner.userId),
-				ctx.db
-					.query("access_control_role_assignments")
-					.withIndex("by_organization_workspace_role_user", (q) =>
-						q
-							.eq("organizationId", organization.organizationId)
-							.eq("workspaceId", organization.defaultWorkspaceId)
-							.eq("role", "owner"),
-					)
-					.first(),
 				ctx.db.get("organizations", organization.organizationId),
 				ctx.db
 					.query("quotas")
@@ -1272,12 +1263,11 @@ describe("init_user_deletion", () => {
 					.collect(),
 			]);
 
-			return { user, ownerRole, organizationDoc, collaboratorQuota, organizationRequests };
+			return { user, organizationDoc, collaboratorQuota, organizationRequests };
 		});
 
 		expect(after.user?.deletedAt).toBe(42_002);
-		expect(after.ownerRole?.userId).toBe(collaborator.userId);
-		expect(after.organizationDoc).not.toBeNull();
+		expect(after.organizationDoc?.ownerUserId).toBe(collaborator.userId);
 		expect(after.collaboratorQuota?.usedCount).toBe(1);
 		expect(after.organizationRequests).toHaveLength(0);
 	});
@@ -1328,17 +1318,14 @@ describe("init_user_deletion", () => {
 
 		expect(requestId).toBeTruthy();
 		const after = await t.run(async (ctx) => {
-			const [user, organizationDoc, ownerRoles, permissionGrants, memberships, requests, ownerQuota] =
+			const [user, organizationDoc, roleAssignments, permissionGrants, memberships, requests, ownerQuota] =
 				await Promise.all([
 					ctx.db.get("users", owner.userId),
 					ctx.db.get("organizations", organization.organizationId),
 					ctx.db
 						.query("access_control_role_assignments")
-						.withIndex("by_organization_workspace_role_user", (q) =>
-							q
-								.eq("organizationId", organization.organizationId)
-								.eq("workspaceId", organization.defaultWorkspaceId)
-								.eq("role", "owner"),
+						.withIndex("by_organization_workspace_user", (q) =>
+							q.eq("organizationId", organization.organizationId).eq("workspaceId", organization.defaultWorkspaceId),
 						)
 						.collect(),
 					ctx.db
@@ -1365,12 +1352,12 @@ describe("init_user_deletion", () => {
 						.first(),
 				]);
 
-			return { user, organizationDoc, ownerRoles, permissionGrants, memberships, requests, ownerQuota };
+			return { user, organizationDoc, roleAssignments, permissionGrants, memberships, requests, ownerQuota };
 		});
 
 		expect(after.user?.deletedAt).toBe(42_003);
 		expect(after.organizationDoc).not.toBeNull();
-		expect(after.ownerRoles).toHaveLength(0);
+		expect(after.roleAssignments).toHaveLength(0);
 		expect(after.permissionGrants).toHaveLength(0);
 		expect(after.memberships).toHaveLength(0);
 		expect(after.requests).toHaveLength(1);
@@ -1583,7 +1570,7 @@ describe("process_user_deletion_request", () => {
 					.collect(),
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_user_role_organization_workspace", (q) => q.eq("userId", deletedUser.userId))
+					.withIndex("by_user_organization_workspace", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
 				ctx.db
 					.query("access_control_permission_grants")
@@ -1826,11 +1813,21 @@ describe("process_user_deletion_request", () => {
 				throw new Error(created._nay.message);
 			}
 
+			const now = Date.now();
 			await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: created._yay.organizationId,
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: deletedUser.userId,
 				active: true,
+			});
+			// Creating a workspace needs `workspace.create`, which comes from the member role.
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: created._yay.organizationId,
+				workspaceId: created._yay.defaultWorkspaceId,
+				userId: deletedUser.userId,
+				role: "member",
+				createdAt: now,
+				updatedAt: now,
 			});
 
 			const extraWorkspace = await organizations_db_create_workspace(ctx, {
@@ -1838,7 +1835,7 @@ describe("process_user_deletion_request", () => {
 				organizationId: created._yay.organizationId,
 				name: "shared-orphan-extra",
 				description: "",
-				now: Date.now(),
+				now,
 			});
 			if (extraWorkspace._nay) {
 				throw new Error(extraWorkspace._nay.message);
@@ -3011,12 +3008,11 @@ describe("hard_delete_user_data", () => {
 					.first(),
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_organization_workspace_user_role", (q) =>
+					.withIndex("by_organization_workspace_user", (q) =>
 						q
 							.eq("organizationId", user.defaultOrganizationId)
 							.eq("workspaceId", user.defaultWorkspaceId)
-							.eq("userId", user.userId)
-							.eq("role", "owner"),
+							.eq("userId", user.userId),
 					)
 					.first(),
 				ctx.db
@@ -3100,8 +3096,10 @@ describe("hard_delete_user_data", () => {
 		expect(after.defaultOrganization?._id).toBe(user.defaultOrganizationId);
 		expect(after.defaultWorkspace?._id).toBe(user.defaultWorkspaceId);
 		expect(after.defaultMembership?._id).toBeDefined();
-		expect(after.defaultOwnerRole?._id).toBeDefined();
-		expect(after.defaultOrganizationGrants.length).toBeGreaterThan(0);
+		// The reset keeps the owner in the organization doc. It writes no role assignment and no grant.
+		expect(after.defaultOwnerRole).toBeNull();
+		expect(after.defaultOrganization?.ownerUserId).toBe(user.userId);
+		expect(after.defaultOrganizationGrants).toHaveLength(0);
 		expect(after.defaultWorkspaceFiles).toHaveLength(0);
 		expect(after.extraWorkspace).toBeNull();
 		expect(after.ownedOrganization).toBeNull();
@@ -3238,12 +3236,11 @@ describe("hard_delete_user_data", () => {
 					.first(),
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_organization_workspace_user_role", (q) =>
+					.withIndex("by_organization_workspace_user", (q) =>
 						q
 							.eq("organizationId", user.defaultOrganizationId)
 							.eq("workspaceId", user.defaultWorkspaceId)
-							.eq("userId", user.userId)
-							.eq("role", "owner"),
+							.eq("userId", user.userId),
 					)
 					.first(),
 				quotas_db_get(ctx, {
@@ -3288,7 +3285,8 @@ describe("hard_delete_user_data", () => {
 		expect(after.defaultOrganization?._id).toBe(user.defaultOrganizationId);
 		expect(after.defaultWorkspace?._id).toBe(user.defaultWorkspaceId);
 		expect(after.defaultMembership?._id).toBeDefined();
-		expect(after.ownerRole?._id).toBeDefined();
+		expect(after.ownerRole).toBeNull();
+		expect(after.defaultOrganization?.ownerUserId).toBe(user.userId);
 		expect(after.defaultApiCredentialQuota.usedCount).toBe(0);
 		expect(after.extraWorkspace).toBeNull();
 		expect(after.defaultContent).toBe(0);
@@ -3733,7 +3731,7 @@ describe("finalize_user_deletion_data", () => {
 					.first(),
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_organization_workspace_user_role", (q) =>
+					.withIndex("by_organization_workspace_user", (q) =>
 						q
 							.eq("organizationId", shared.organizationId)
 							.eq("workspaceId", shared.defaultWorkspaceId)
@@ -3773,7 +3771,9 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.deletedOwner).toBeNull();
 		expect(after.organization?.ownerUserId).toBe(collaborator.userId);
 		expect(after.collaboratorMembership).not.toBeNull();
-		expect(after.collaboratorRoles.map((assignment) => assignment.role)).toEqual(["owner"]);
+		// The new owner gets all their power from the organization doc, so their role assignment is
+		// deleted.
+		expect(after.collaboratorRoles).toHaveLength(0);
 		expect(after.collaboratorQuota?.usedCount).toBe(collaboratorQuotaMax + 1);
 		expect(after.futureWorkspaceRequest).toBeNull();
 		expect(after.defaultWorkspaceFiles).toHaveLength(1);

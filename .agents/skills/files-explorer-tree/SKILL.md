@@ -135,7 +135,7 @@ Tree-item components:
 - Only a resolved `null` renders the not-found panel. `undefined` still means loading, so a cold pasted link must not flash not-found.
 - Path lookup is exact and case-sensitive because it rides `by_organization_workspace_path_archiveOperation`. Copy path emits the stored path, so a path built from it matches. A hand-typed `/readme.md` for a stored `README.md` misses on purpose and recovers through the not-found panel's search link. Do not add a case-insensitive server fallback.
 - Canonicalize a splat with `path_extract_segments_from`. Do not use `files_get_normalized_node_path_segments` for lookups: it is the create/rename normalizer and rewrites characters, which would resolve to a different file.
-- `get_authorized_by_path` checks `asset.read` like `get_file_node_for_membership`, so a path link cannot hand out a node id the id route would refuse.
+- `get_authorized_by_path` authorizes `content.read` with the loaded `fileNode` passed, like `get_file_node_for_membership`, so a path link cannot hand out a node id the id route would refuse.
 - Three copy actions, all multi-select aware in the sidebar and joined with newlines: Copy path (sidebar row menu and breadcrumb) copies the plain path for pasting into search or an AI chat message; Copy link (same two places) copies the absolute `?nodeId=` URL built from `url_path_file_by_node_id`, so a shared link survives rename and move; Copy node id (sidebar row menu only) copies the bare id.
 - Copy link deliberately does not emit the readable `/files/<path>` shape. That shape has no in-app producer: it exists so a hand-written or externally generated path can be opened, and the sidebar search still unwraps it when pasted.
 

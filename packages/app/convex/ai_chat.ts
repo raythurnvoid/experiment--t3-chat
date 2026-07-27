@@ -1,7 +1,16 @@
 import { composite_id, omit_properties, should_never_happen } from "../shared/shared-utils.ts";
 import { ai_chat_MODEL_IDS, ai_chat_MODE_IDS, type ai_chat_AiSdk5UiMessage } from "../shared/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
-import { query, mutation, httpAction, internalMutation, internalQuery, type ActionCtx } from "./_generated/server.js";
+import {
+	query,
+	mutation,
+	httpAction,
+	internalMutation,
+	internalQuery,
+	type ActionCtx,
+	type MutationCtx,
+	type QueryCtx,
+} from "./_generated/server.js";
 import { api, internal } from "./_generated/api.js";
 import {
 	paginationOptsValidator,
@@ -31,6 +40,7 @@ import {
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
 import { files_READ_RANGE_MAX_LINES } from "./files_nodes.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
@@ -61,6 +71,46 @@ export {
 	list_files_pending_updates,
 	save_file_pending_update,
 } from "./files_pending_updates.ts";
+
+/**
+ * A chat thread is a conversation, not a file. Reading the workspace is enough to open a thread and
+ * to run your own: no thread handler in this file touches a file. That is why a read-only role can
+ * use ask mode, and why the agent-mode branch of `/api/chat` asks for `content.write` as well.
+ *
+ * Changing somebody else's thread is a different question — see `authorize_thread_mutation`.
+ */
+const THREAD_PERMISSION = "content.read" as const;
+
+/**
+ * Threads are shared by the whole workspace: `threads_list` reads them by organization and workspace,
+ * with no filter on the user. So `THREAD_PERMISSION` decides who may open a thread, and this decides
+ * who may change one: its author, or anyone who can edit workspace content.
+ *
+ * Without this check a read-only role could archive or rename the whole chat history of the
+ * workspace. Worse, `thread_messages_add` would let it write text into someone else's thread.
+ * `/api/chat` sends the stored messages back to the model as earlier conversation, so the next person
+ * who continues that thread in agent mode would hand that text to an agent that can edit files. A
+ * read-only role would have turned itself into a writer.
+ */
+async function authorize_thread_mutation(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		thread: Doc<"ai_chat_threads">;
+	},
+) {
+	if (args.thread.createdBy === args.userAuth.id) {
+		return Result({ _yay: null });
+	}
+
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth: args.userAuth,
+		membership: args.membership,
+		permission: "content.write",
+	});
+	return authorized._nay ? authorized : Result({ _yay: null });
+}
 
 const TITLE_MODEL_ID = "gpt-4.1-nano" as const;
 
@@ -192,7 +242,12 @@ function build_agent_configuration(input: {
 	// their ctxData; the lazy getter resolves after the http handler creates/loads the thread.
 	const toolCtxData = { ...ctxData, getThreadId };
 
-	const tools = {
+	// We list every tool here, in both modes. `validateUIMessages` fails when a message mentions a tool
+	// name that is not in this list. The route accepts whatever messages a client posts, and a thread
+	// that once ran in agent mode can hold agent-only tool calls. So a list that changed with the mode
+	// would turn "this thread once ran in agent mode" into a 400. Our own app posts only the new user
+	// message, but the route cannot count on that.
+	const validationTools = {
 		bash: ai_chat_tool_create_bash(ctx, toolCtxData, {
 			allowDbFilesMkdir: modeId === "agent",
 		}),
@@ -203,9 +258,17 @@ function build_agent_configuration(input: {
 
 	const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);
 
-	const activeTools = (Object.keys(tools) as Array<keyof typeof tools>).filter((name) =>
-		modeId === "ask" ? !writeToolNames.has(name) : true,
-	);
+	// The tools the model can really call. In ask mode we remove the write tools from this object, not
+	// only from `activeTools`. `activeTools` is just a hint: it only shapes the request sent to the
+	// model. When a tool call comes back, the SDK looks the name up in this object to parse and run it,
+	// and `experimental_repairToolCall` also matches wrong upper/lower case against it. So a write tool
+	// left here stays callable in ask mode. `edit_file` checks no permission by itself, because this
+	// route is meant to be the check.
+	const tools = Object.fromEntries(
+		Object.entries(validationTools).filter(([name]) => !(modeId === "ask" && writeToolNames.has(name))),
+	) as Partial<typeof validationTools>;
+
+	const activeTools = Object.keys(tools) as Array<keyof typeof validationTools>;
 
 	return {
 		systemPrompt:
@@ -213,6 +276,7 @@ function build_agent_configuration(input: {
 				? `${ai_chat_system_prompt(ctxData)}\n${ASK_MODE_SYSTEM_PROMPT_SUFFIX}`
 				: ai_chat_system_prompt(ctxData),
 		tools,
+		validationTools,
 		activeTools,
 	};
 }
@@ -338,13 +402,29 @@ export const threads_list = query({
 			};
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: THREAD_PERMISSION,
+		});
+		if (authorized._nay) {
+			return {
+				page: [],
+				isDone: true,
+				continueCursor: "",
+			};
+		}
+
 		const numItems = math_clamp(args.paginationOpts.numItems ?? 100, 1, 100);
 		const archived = args.archived ?? false;
 
 		const threads_query = ctx.db
 			.query("ai_chat_threads")
 			.withIndex("by_organization_workspace_archived_lastMessageAt", (q) =>
-				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("archived", archived),
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("archived", archived),
 			);
 
 		const result = await threads_query.order("desc").paginate({
@@ -381,6 +461,15 @@ export const thread_get = query({
 			return null;
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: THREAD_PERMISSION,
+		});
+		if (authorized._nay) {
+			return null;
+		}
+
 		const id_normalized = ctx.db.normalizeId("ai_chat_threads", args.threadId);
 
 		if (!id_normalized) {
@@ -389,7 +478,11 @@ export const thread_get = query({
 
 		const thread = await ctx.db.get("ai_chat_threads", id_normalized);
 
-		if (!thread || thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
+		if (
+			!thread ||
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId
+		) {
 			return null;
 		}
 
@@ -426,20 +519,36 @@ export const thread_create = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const now = Date.now();
-
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: THREAD_PERMISSION,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
+		const now = Date.now();
+
+		// We do not trust `lastMessageAt`. This is a public mutation, and the only real caller
+		// (`/api/chat`) sends its own server time anyway. `threads_list` sorts on this field, so a time
+		// in the future would put the thread at the top of the list for every member until the first
+		// message replaces it. `readAt` copies this value too, so until then the thread also looks
+		// read.
+		const lastMessageAt = args.lastMessageAt == null ? undefined : Math.min(args.lastMessageAt, now);
 
 		const threadId = await ctx.db.insert("ai_chat_threads", {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			clientGeneratedId: args.clientGeneratedId,
 			title: args.title ?? null,
-			lastMessageAt: args.lastMessageAt,
-			readAt: args.lastMessageAt,
+			lastMessageAt,
+			readAt: lastMessageAt,
 			archived: false,
 			runtime: "aisdk_5",
 			stateId: null,
@@ -492,6 +601,20 @@ export const thread_branch = mutation({
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: THREAD_PERMISSION,
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
@@ -581,11 +704,6 @@ export const thread_branch = mutation({
 		const title = `${baseTitle} (${maxSuffix + 1})`;
 		const clientGeneratedId = get_id_generator("ai_thread")();
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
 		const sourceState = thread.stateId ? await ctx.db.get("ai_chat_threads_state", thread.stateId) : null;
 		if (!sourceState) {
 			throw should_never_happen("AI chat thread state missing", {
@@ -609,21 +727,35 @@ export const thread_branch = mutation({
 			updatedAt: now,
 			starred: false,
 		});
+		// Branching stays open to any member: it copies messages the caller can already read.
+		// The scratch state is different. It is the `/tmp` files and the `bashCwd` of the source
+		// thread. To reach those inside the source thread you must send a prompt there, and
+		// `thread_messages_add` asks for `content.write` unless you created the thread. Copying them
+		// into a new thread that the caller owns would skip that check, so we copy them only when the
+		// caller was allowed to write in the source thread.
+		const threadAuthorized = await authorize_thread_mutation(ctx, { userAuth, membership, thread });
+		const canReadSourceScratch = !threadAuthorized._nay;
+
 		const stateId = await ctx.db.insert("ai_chat_threads_state", {
 			organizationId,
 			workspaceId,
 			threadId: newThreadId,
-			bashCwd: sourceState.bashCwd,
+			// `"~"` is the folder a brand-new thread starts in. Using it makes a branch without scratch
+			// access look like a fresh thread instead of a half-copied one.
+			bashCwd: canReadSourceScratch ? sourceState.bashCwd : "~",
 			updatedBy: userAuth.id,
 			updatedAt: now,
 		});
 		await ctx.db.patch("ai_chat_threads", newThreadId, { stateId });
-		await ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
-			organizationId,
-			workspaceId,
-			sourceThreadId: threadId,
-			targetThreadId: newThreadId,
-		});
+
+		if (canReadSourceScratch) {
+			await ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
+				organizationId,
+				workspaceId,
+				sourceThreadId: threadId,
+				targetThreadId: newThreadId,
+			});
+		}
 
 		if (!newestMessage) {
 			return Result({ _yay: { threadId: newThreadId } });
@@ -716,6 +848,20 @@ export const thread_update = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: THREAD_PERMISSION,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
 		if (!threadId) {
 			return Result({ _nay: { message: "Not found" } });
@@ -729,9 +875,9 @@ export const thread_update = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
+		const threadAuthorized = await authorize_thread_mutation(ctx, { userAuth, membership, thread });
+		if (threadAuthorized._nay) {
+			return threadAuthorized;
 		}
 
 		await ctx.db.patch(
@@ -790,6 +936,20 @@ export const thread_mark_read = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: THREAD_PERMISSION,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
 		if (!threadId) {
 			return Result({ _nay: { message: "Not found" } });
@@ -803,11 +963,17 @@ export const thread_mark_read = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
+		// This write does not call `authorize_thread_mutation`, unlike the other thread writes. Threads
+		// belong to the whole workspace, and the list shows them as unread until someone opens them. So
+		// asking for `content.write` would leave a read-only role with unread badges it can never clear
+		// on threads it is allowed to read. None of the problems that helper exists to stop can happen
+		// by moving a read marker.
+		//
+		// `readAt` is one field on the shared thread, not one marker per user. So whoever opens a
+		// thread clears the badge for the whole workspace. That is how the feature already works for
+		// every member; blocking this one write would only make the badge permanent for readers, it
+		// would not make it private.
+		//
 		// Reading is not a content edit, so `updatedAt`/`updatedBy` stay untouched.
 		// `Math.max` keeps the cursor correct when the newest message is already persisted.
 		await ctx.db.patch("ai_chat_threads", threadId, {
@@ -841,6 +1007,20 @@ export const thread_archive = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: THREAD_PERMISSION,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
 		if (!thread) {
 			return Result({ _nay: { message: "Not found" } });
@@ -850,12 +1030,12 @@ export const thread_archive = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const now = Date.now();
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
+		const threadAuthorized = await authorize_thread_mutation(ctx, { userAuth, membership, thread });
+		if (threadAuthorized._nay) {
+			return threadAuthorized;
 		}
+
+		const now = Date.now();
 
 		await ctx.db.patch("ai_chat_threads", args.threadId, {
 			archived: true,
@@ -895,13 +1075,26 @@ export const thread_messages_list = query({
 			return null;
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: THREAD_PERMISSION,
+		});
+		if (authorized._nay) {
+			return null;
+		}
+
 		const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
 		if (!threadId) {
 			return null;
 		}
 
 		const thread = await ctx.db.get("ai_chat_threads", threadId);
-		if (!thread || thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
+		if (
+			!thread ||
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId
+		) {
 			return null;
 		}
 
@@ -953,12 +1146,26 @@ export const thread_messages_add = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: THREAD_PERMISSION,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
 		if (!thread) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 		if (thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const threadAuthorized = await authorize_thread_mutation(ctx, { userAuth, membership, thread });
+		if (threadAuthorized._nay) {
+			return threadAuthorized;
 		}
 
 		const parentId = args.parentId ? ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.parentId) : null;
@@ -988,6 +1195,9 @@ export const thread_messages_add = mutation({
 			}
 		}
 
+		// Here the rate limit runs after the permission check, unlike the other handlers in this file.
+		// The limit costs one token per new message, and we only know how many messages are new after
+		// we have looked up the ones already stored.
 		if (newClientGeneratedMessageIds.size > 0) {
 			const rateLimit = await rate_limiter_limit_by_key(ctx, {
 				name: "ai_chat_message_write",
@@ -1139,6 +1349,46 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										},
 									} as const;
 								}
+								const rateLimit = await rate_limiter_limit_by_key(ctx, {
+									name: "ai_chat_http",
+									key: membership.userId,
+								});
+								if (rateLimit) {
+									return {
+										status: 429,
+										body: {
+											message: rateLimit.message,
+											retryAfterMs: rateLimit.retryAfterMs,
+										},
+									} as const;
+								}
+
+								// In both modes the AI tools read workspace files, and the tools check no permission
+								// themselves — this route is their only check — so `content.read` is always needed.
+								// Agent mode can also edit files, so it asks for `content.write` too.
+								// We ask for both instead of only the stronger one, because a custom role can have
+								// write without read. Such a role was already refused later by the `content.read`
+								// check inside `thread_get` / `thread_create`, but that answers 400, which looks
+								// like a broken request. Checking here lets the route answer 403 itself.
+								// We write the names here instead of reusing `THREAD_PERMISSION`: that one guards
+								// the thread record, these guard file access, so they must not change together.
+								const chatPermissions =
+									body.mode === "agent" ? (["content.read", "content.write"] as const) : (["content.read"] as const);
+								for (const permission of chatPermissions) {
+									const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+										membershipId: membership._id,
+										permission,
+									});
+									if (!allowed) {
+										return {
+											status: 403,
+											body: {
+												message: "Permission denied",
+											},
+										} as const;
+									}
+								}
+
 								const tenant = await ctx.runQuery(internal.organizations.get_tenant, {
 									organizationId: membership.organizationId,
 									workspaceId: membership.workspaceId,
@@ -1155,7 +1405,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								let threadId: Id<"ai_chat_threads"> | null = null;
 								let createdThreadId = null;
 
-								const { systemPrompt, tools, activeTools } = build_agent_configuration({
+								const { systemPrompt, tools, validationTools, activeTools } = build_agent_configuration({
 									ctx,
 									ctxData: {
 										organizationId: membership.organizationId,
@@ -1177,7 +1427,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									try {
 										await validateUIMessages<ai_chat_AiSdk5UiMessage>({
 											messages: body.messages,
-											tools: tools,
+											tools: validationTools,
 										});
 									} catch (error) {
 										if (error instanceof TypeValidationError) {
@@ -1253,20 +1503,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											},
 										} as const;
 									}
-								}
-
-								const rateLimit = await rate_limiter_limit_by_key(ctx, {
-									name: "ai_chat_http",
-									key: membership.userId,
-								});
-								if (rateLimit) {
-									return {
-										status: 429,
-										body: {
-											message: rateLimit.message,
-											retryAfterMs: rateLimit.retryAfterMs,
-										},
-									} as const;
 								}
 
 								// Check credits after cheap request validation but before any LLM work.
@@ -1449,7 +1685,10 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											activeTools,
 											experimental_repairToolCall: async (failed) => {
 												const lowerToolName = failed.toolCall.toolName.toLowerCase();
-												if (lowerToolName !== failed.toolCall.toolName && lowerToolName in tools) {
+												// `Object.hasOwn`, not `in`: `tools` is a plain object, so `in` also finds
+												// keys from `Object.prototype`. With `in`, the name `"Constructor"` would
+												// be "fixed" to `"constructor"`, which is a built-in function, not a tool.
+												if (lowerToolName !== failed.toolCall.toolName && Object.hasOwn(tools, lowerToolName)) {
 													return {
 														...failed.toolCall,
 														toolName: lowerToolName,
@@ -1812,6 +2051,35 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
+								const rateLimit = await rate_limiter_limit_by_key(ctx, {
+									name: "ai_chat_http",
+									key: membership.userId,
+								});
+								if (rateLimit) {
+									return {
+										status: 429,
+										body: {
+											message: rateLimit.message,
+											retryAfterMs: rateLimit.retryAfterMs,
+										},
+									} as const;
+								}
+
+								// The only thing this route runs is the thread titler above. It writes a thread
+								// title and never touches a file, so reading is enough.
+								const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+									membershipId: membership._id,
+									permission: THREAD_PERMISSION,
+								});
+								if (!allowed) {
+									return {
+										status: 403,
+										body: {
+											message: "Permission denied",
+										},
+									} as const;
+								}
+
 								const messages = body.messages || [];
 								const thread_id = body.thread_id;
 
@@ -1842,20 +2110,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										status: 401,
 										body: {
 											message: "Unauthenticated",
-										},
-									} as const;
-								}
-
-								const rateLimit = await rate_limiter_limit_by_key(ctx, {
-									name: "ai_chat_http",
-									key: membership.userId,
-								});
-								if (rateLimit) {
-									return {
-										status: 429,
-										body: {
-											message: rateLimit.message,
-											retryAfterMs: rateLimit.retryAfterMs,
 										},
 									} as const;
 								}
@@ -2153,7 +2407,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(configuration.activeTools).toEqual(["bash", "edit_file", "web_search", "execute_code"]);
 		});
 
-		test("keeps the tool registry but excludes write tools from activeTools in Ask mode", () => {
+		test("drops write tools from the tool registry itself in Ask mode, not only from activeTools", () => {
 			const { ctx } = makeCtx();
 			const configuration = build_agent_configuration({
 				ctx,
@@ -2164,8 +2418,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
 			});
 
-			expect(Object.keys(configuration.tools)).toEqual(build_agent_configuration_expected_tool_keys);
+			// The `tools` object is what really matters. `activeTools` only shapes the request sent to
+			// the model. The SDK parses and runs a tool call by looking its name up in `tools`, so
+			// leaving `edit_file` there would keep it callable in ask mode whatever `activeTools` says.
+			expect(Object.keys(configuration.tools)).toEqual(["bash", "web_search", "execute_code"]);
 			expect(configuration.activeTools).toEqual(["bash", "web_search", "execute_code"]);
+			expect("edit_file" in configuration.tools).toBe(false);
+
+			// The list used to validate messages still holds every tool. It has to accept the
+			// `edit_file` parts that an earlier agent-mode turn stored in the same thread.
+			expect(Object.keys(configuration.validationTools)).toEqual(build_agent_configuration_expected_tool_keys);
 		});
 
 		test("accepts a historical execute_code tool part when validating stored UI messages", async () => {
@@ -2204,7 +2466,40 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			} as unknown as ai_chat_AiSdk5UiMessage;
 
 			await expect(
-				validateUIMessages<ai_chat_AiSdk5UiMessage>({ messages: [message], tools: configuration.tools }),
+				validateUIMessages<ai_chat_AiSdk5UiMessage>({ messages: [message], tools: configuration.validationTools }),
+			).resolves.toBeDefined();
+		});
+
+		test("still validates a stored edit_file part after the thread is reopened in Ask mode", async () => {
+			const { ctx } = makeCtx();
+			const configuration = build_agent_configuration({
+				ctx,
+				ctxData: build_agent_configuration_test_ctx_data,
+				args: {
+					modeId: "ask",
+				},
+				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+			});
+
+			// Ask mode cannot call `edit_file`, but an earlier agent-mode turn in the same thread may
+			// have stored one. If we validated against the callable tools instead of the full list, that
+			// old message would be rejected and the request would fail with "Invalid messages format".
+			const message = {
+				id: "message_edit_file_history",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-edit_file",
+						toolCallId: "call_edit_file_history",
+						state: "output-available",
+						input: { path: "/notes.md", oldString: "before", newString: "after" },
+						output: { ok: true },
+					},
+				],
+			} as unknown as ai_chat_AiSdk5UiMessage;
+
+			await expect(
+				validateUIMessages<ai_chat_AiSdk5UiMessage>({ messages: [message], tools: configuration.validationTools }),
 			).resolves.toBeDefined();
 		});
 
@@ -2241,8 +2536,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// tool descriptions are plain text while the system prompt uses markdown.
 			const agentSurface = [
 				configuration.systemPrompt,
-				configuration.tools.bash.description,
-				configuration.tools.edit_file.description,
+				configuration.validationTools.bash.description,
+				configuration.validationTools.edit_file.description,
 			]
 				.join("\n")
 				.replaceAll("`", "");
@@ -2259,9 +2554,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain(
 				"Do not call /tmp ephemeral or temporary in a way that implies same-chat data loss.",
 			);
-			expect(agentSurface).toContain(
-				"that is expected evidence of per-chat isolation, not a global Bash failure.",
-			);
+			expect(agentSurface).toContain("that is expected evidence of per-chat isolation, not a global Bash failure.");
 			expect(agentSurface).toContain(
 				"Bash cwd persists across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating cd.",
 			);
@@ -2278,9 +2571,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain(
 				"If file fails or the user asks for it, do not stop after reporting that it is unavailable",
 			);
-			expect(agentSurface).toContain(
-				"/tmp native commands are Just Bash browser commands, not host GNU coreutils.",
-			);
+			expect(agentSurface).toContain("/tmp native commands are Just Bash browser commands, not host GNU coreutils.");
 			expect(agentSurface).toContain(
 				"if a /tmp option fails but the command is useful, retry once with simpler native syntax.",
 			);
@@ -2322,15 +2613,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"For recursive grep requests over an app folder, the first Bash command should be search --path <folder> <content terms>",
 			);
 			expect(agentSurface).toContain("do not run ls first to verify that folder");
+			expect(agentSurface).toContain('Plain requests like "search for X with limit N" mean content search');
 			expect(agentSurface).toContain(
-				"Plain requests like \"search for X with limit N\" mean content search",
+				'If the user says "search for the X file", "find the X file", "file named X", or "path/name contains X", use find.',
 			);
-			expect(agentSurface).toContain(
-				"If the user says \"search for the X file\", \"find the X file\", \"file named X\", or \"path/name contains X\", use find.",
-			);
-			expect(agentSurface).toContain(
-				"run search --path <folder> X or search X; do not substitute find --path-query.",
-			);
+			expect(agentSurface).toContain("run search --path <folder> X or search X; do not substitute find --path-query.");
 			expect(agentSurface).toContain(
 				"For search --path and meta search --path, the same app-root path rule applies: pass /home/cloud-usr/w/personal/home/folder or relative folder, never raw /folder.",
 			);
@@ -2342,15 +2629,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(agentSurface).toContain("bare ls -t is still workspace-wide");
 			expect(agentSurface).toContain("ls -R lists a paginated subtree as full app shell paths");
-			expect(agentSurface).toContain(
-				"when the user asks for tree-shaped output, use tree, not ls -R",
-			);
+			expect(agentSurface).toContain("when the user asks for tree-shaped output, use tree, not ls -R");
 			expect(agentSurface).toContain(
 				"Use find -name QUERY or find --path-query QUERY only for indexed app-file path/name word search",
 			);
-			expect(agentSurface).toContain(
-				"Prefer --path-query QUERY for natural \"path/name contains QUERY\" requests",
-			);
+			expect(agentSurface).toContain('Prefer --path-query QUERY for natural "path/name contains QUERY" requests');
 			expect(agentSurface).toContain(
 				"For regex path requests against app files, say regex is unsupported and use token search when a plain token is obvious",
 			);
@@ -2358,17 +2641,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain(
 				"find --prefix <prefix> --limit N [--cursor CURSOR] for a folder-boundary subtree scan",
 			);
-			expect(agentSurface).toContain(
-				"sibling-prefix paths such as /docs-archive are excluded from /docs",
-			);
+			expect(agentSurface).toContain("sibling-prefix paths such as /docs-archive are excluded from /docs");
 			expect(agentSurface).toContain("find searches app paths/names only, not file content.");
 			expect(agentSurface).toContain(
 				"find -maxdepth N and find -mindepth N filter non-search app subtree results by depth.",
 			);
 			expect(agentSurface).toContain("When asked for app files under a folder, include -type f");
-			expect(agentSurface).toContain(
-				"find -type f and find -type d restrict app results to files or folders.",
-			);
+			expect(agentSurface).toContain("find -type f and find -type d restrict app results to files or folders.");
 			expect(agentSurface).toContain(
 				"General glob/regex patterns and GNU find extensions such as -printf, -mtime, -newer, -exec, and -ok are not supported for app paths",
 			);
@@ -2377,7 +2656,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(agentSurface).toContain("Pass one distinctive word or a few plain terms");
 			expect(agentSurface).toContain(
-				"For requests like \"where does X appear\" or \"which files mention X\", run search first",
+				'For requests like "where does X appear" or "which files mention X", run search first',
 			);
 			expect(agentSurface).toContain(
 				"For recursive grep, grep -R, or rg wording over an app folder, do not try native rg or multi-file grep first",
@@ -2386,14 +2665,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain("it is not regex, glob, path/name search, or exact grep");
 			expect(agentSurface).toContain("broad folder scopes with common terms can be heavier");
 			expect(agentSurface).toContain("bare search scopes to that cwd");
-			expect(agentSurface).toContain(
-				"Use exact app paths with cat [-n] [--] [FILE...], head, tail, wc, and stat",
-			);
+			expect(agentSurface).toContain("Use exact app paths with cat [-n] [--] [FILE...], head, tail, wc, and stat");
 			expect(agentSurface).toContain("cat unreadable-file advisories are stderr, not file content");
 			expect(agentSurface).toContain("Uploaded source files do not alias to generated Markdown outputs.");
-			expect(agentSurface).toContain(
-				"read the exact generated output path when the user wants converted text",
-			);
+			expect(agentSurface).toContain("read the exact generated output path when the user wants converted text");
 			expect(agentSurface).toContain("these readers fetch at most 10 app files per command");
 			expect(agentSurface).toContain("accepts multiple files (per-file counts plus a total)");
 			expect(agentSurface).toContain("Large files are not read inline");
@@ -2402,9 +2677,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search",
 			);
 			expect(agentSurface).toContain("grep [-n] [-i] [-F] PATTERN <file>");
-			expect(agentSurface).toContain(
-				"regex by default; -F/--fixed-strings uses literal substring matching",
-			);
+			expect(agentSurface).toContain("regex by default; -F/--fixed-strings uses literal substring matching");
 			expect(agentSurface).toContain("textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file>");
 			expect(agentSurface).toContain("For rendered plain-text chunk scans");
 			expect(agentSurface).toContain("not exact recursive regex/fixed-string grep");
@@ -2414,9 +2687,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(agentSurface).toContain("Use tree [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape");
 			expect(agentSurface).toContain("also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context.");
-			expect(agentSurface).toContain(
-				"When using bash -c or sh -c to compare /tmp and app-mount behavior",
-			);
+			expect(agentSurface).toContain("When using bash -c or sh -c to compare /tmp and app-mount behavior");
 			expect(agentSurface).toContain("For xargs path checks, print pathnames into xargs");
 			expect(agentSurface).toContain("avoid strict-mode boilerplate such as set -euo pipefail");
 			expect(agentSurface).toContain("pipefail is unsupported");
@@ -2427,13 +2698,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain(
 				"The blank line between the shell prompt and output is transcript formatting, not file content.",
 			);
-			expect(agentSurface).toContain(
-				"mv <app-path> <app-path> proposes a pending move/rename (one source only)",
-			);
+			expect(agentSurface).toContain("mv <app-path> <app-path> proposes a pending move/rename (one source only)");
 			expect(agentSurface).toContain(
 				"If copying a path from bash, remove the /home/cloud-usr/w/<organization>/<workspace> current workspace path prefix before passing it here.",
 			);
-			expect(agentSurface).toContain("create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect");
+			expect(agentSurface).toContain(
+				"create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect",
+			);
 			expect(agentSurface).toContain("never /README.md");
 			expect(agentSurface).not.toContain("convenience mount root");
 			expect(agentSurface).not.toContain('words like "files"');

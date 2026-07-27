@@ -23,6 +23,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { allowed_origins, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2_fetch_object_from_bucket, r2_get_bucket } from "./r2.ts";
@@ -87,7 +88,6 @@ export const mint_page_session = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		// Membership is enough on purpose: using an installed page is not plugin management.
 		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
@@ -95,9 +95,24 @@ export const mint_page_session = mutation({
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
+
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_ui_session_mint", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		// Opening an installed page is not managing plugins, so we do not ask for
+		// `workspace.plugins.manage`. But the token created here can read files through the public API,
+		// so it must not go to someone who cannot read the workspace. Checking when the token is
+		// created is the safe order: if a future route accepts a `plugin_ui` token and forgets to pass
+		// `requiredUserPermission`, nothing leaks.
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		const installation = await ctx.db
@@ -202,6 +217,16 @@ export const refresh_page_session = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
+		// Rotating a token creates a new one, so it follows the same rule as `mint_page_session`.
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const now = Date.now();
 		const expiresAt = now + SESSION_TTL_MS;
 		const token = `plu_${crypto_random_hex(32)}`;
@@ -282,6 +307,16 @@ export const list_ui_pages = query({
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
+			return [];
+		}
+
+		// Which plugins a workspace runs counts as workspace content, like the activity feed.
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return [];
 		}
 

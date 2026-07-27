@@ -86,9 +86,9 @@ export const MyModalHeader = memo(function MyModalHeader(props: MyModalHeader_Pr
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<header id={id} ref={ref} className={cn("MyModalHeader" satisfies MyModalHeader_ClassNames, className)} {...rest}>
+		<div id={id} ref={ref} className={cn("MyModalHeader" satisfies MyModalHeader_ClassNames, className)} {...rest}>
 			{children}
-		</header>
+		</div>
 	);
 });
 
@@ -119,9 +119,9 @@ export const MyModalFooter = memo(function MyModalFooter(props: MyModalFooter_Pr
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<footer id={id} ref={ref} className={cn("MyModalFooter" satisfies MyModalFooter_ClassNames, className)} {...rest}>
+		<div id={id} ref={ref} className={cn("MyModalFooter" satisfies MyModalFooter_ClassNames, className)} {...rest}>
 			{children}
-		</footer>
+		</div>
 	);
 });
 

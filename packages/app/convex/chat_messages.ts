@@ -1,11 +1,14 @@
 import { v } from "convex/values";
+import { doc } from "convex-helpers/validators";
 import { mutation, query } from "./_generated/server.js";
+import app_convex_schema from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import type { Doc } from "./_generated/dataModel.js";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -48,6 +51,15 @@ export const chat_messages_threads_create = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const threadId = await ctx.db.insert("chat_messages", {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -88,6 +100,20 @@ export const chat_messages_add = mutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "comments_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const root = await ctx.db.get("chat_messages", args.rootId);
 		if (!root) {
 			return Result({ _nay: { message: "Root message not found" } });
@@ -95,11 +121,6 @@ export const chat_messages_add = mutation({
 
 		if (!chat_messages_has_membership_scope(root, membership)) {
 			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "comments_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const messageId = await ctx.db.insert("chat_messages", {
@@ -127,6 +148,7 @@ export const chat_messages_list = query({
 		threadId: v.id("chat_messages"),
 		limit: v.number(),
 	},
+	returns: { messages: v.array(doc(app_convex_schema, "chat_messages")) },
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -138,6 +160,15 @@ export const chat_messages_list = query({
 			userId: userAuth.id,
 		});
 		if (!membership) {
+			return { messages: [] };
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return { messages: [] };
 		}
 
@@ -185,6 +216,20 @@ export const chat_messages_archive = mutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "comments_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const message = await ctx.db.get("chat_messages", args.messageId);
 		if (!message) {
 			return Result({ _nay: { message: "Message not found" } });
@@ -192,11 +237,6 @@ export const chat_messages_archive = mutation({
 
 		if (!chat_messages_has_membership_scope(message, membership)) {
 			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "comments_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		await ctx.db.patch("chat_messages", args.messageId, {
@@ -215,6 +255,7 @@ export const chat_messages_get = query({
 		membershipId: v.id("organizations_workspaces_users"),
 		messageId: v.id("chat_messages"),
 	},
+	returns: v.union(doc(app_convex_schema, "chat_messages"), v.null()),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -226,6 +267,15 @@ export const chat_messages_get = query({
 			userId: userAuth.id,
 		});
 		if (!membership) {
+			return null;
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return null;
 		}
 
@@ -270,6 +320,15 @@ export const chat_messages_threads_list = query({
 			userId: userAuth.id,
 		});
 		if (!membership) {
+			return { threads: [] };
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return { threads: [] };
 		}
 

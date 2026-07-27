@@ -4,6 +4,7 @@ import { useQueries, useQuery } from "convex/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Bell, CircleAlert, CircleCheck, FileText, LoaderCircle, X } from "lucide-react";
 import { memo, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -20,6 +21,7 @@ import {
 import { format_relative_time } from "@/lib/date.ts";
 import { cn } from "@/lib/utils.ts";
 import { path_name_of } from "@/lib/paths.ts";
+import { app_tenant_primary_workspace_for_organization } from "@/lib/urls.ts";
 
 // #region list item
 type AppNotificationsListItem_ClassNames =
@@ -183,9 +185,12 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 						) ?? null;
 					const defaultWorkspaceOfInvitedOrganization =
 						// Keep organization-valid invites actionable after the originally invited workspace is deleted.
-						organizationList?.organizationIdsWorkspacesDict[notification.organizationId]?.find(
-							(workspace) => workspace._id === organization?.defaultWorkspaceId || workspace.default,
-						) ?? null;
+						organization
+							? app_tenant_primary_workspace_for_organization({
+									organization,
+									workspaces: organizationList?.organizationIdsWorkspacesDict[notification.organizationId] ?? [],
+								})
+							: null;
 					const workspace = invitedWorkspace ?? defaultWorkspaceOfInvitedOrganization;
 					const actorAnagraphicQueryResult = actorAnagraphicQueryResults[notification.actorUserId];
 					const actorAnagraphic =
@@ -355,6 +360,7 @@ export const AppNotifications = memo(function AppNotifications() {
 			.then((result) => {
 				if (result._nay) {
 					console.error("[AppNotifications.archiveNotification] Failed to archive notification", { result });
+					toast.error(result._nay.message);
 				}
 			})
 			.catch((error) => {
@@ -368,6 +374,7 @@ export const AppNotifications = memo(function AppNotifications() {
 			.then((result) => {
 				if (result._nay) {
 					console.error("[AppNotifications.dismissAll] Failed to archive notifications", { result });
+					toast.error(result._nay.message);
 				}
 			})
 			.catch((error) => {
@@ -378,6 +385,7 @@ export const AppNotifications = memo(function AppNotifications() {
 			.then((result) => {
 				if (result._nay) {
 					console.error("[AppNotifications.dismissAll] Failed to archive activities", { result });
+					toast.error(result._nay.message);
 				}
 			})
 			.catch((error) => {
@@ -420,6 +428,7 @@ export const AppNotifications = memo(function AppNotifications() {
 			.then((result) => {
 				if (result._nay) {
 					console.error("[AppNotifications.archiveActivity] Failed to archive activity", { result });
+					toast.error(result._nay.message);
 				}
 			})
 			.catch((error) => {

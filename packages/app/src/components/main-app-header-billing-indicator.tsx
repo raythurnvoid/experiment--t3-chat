@@ -168,11 +168,9 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 		return null;
 	}
 
-	const ownerLabel = organizationOwnerAnagraphic
-		? organizationOwnerAnagraphic.email
-			? `${organizationOwnerAnagraphic.displayName} (${organizationOwnerAnagraphic.email})`
-			: organizationOwnerAnagraphic.displayName
-		: "the organization owner";
+	// Name only, no email. This label is shown when the owner is somebody else, and `get_anagraphic`
+	// sends an empty email for everyone except the caller, so there is never an email to show here.
+	const ownerLabel = organizationOwnerAnagraphic?.displayName || "the organization owner";
 	const ownerBillingBadgeLabel = ownerBilledToAnotherUser ? "Owner billing" : "Organization billing";
 	const ownerBillingTooltip = ownerBilledToAnotherUser
 		? `Usage in this organization is billed to ${ownerLabel}.`

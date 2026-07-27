@@ -205,7 +205,6 @@ type FileNodeViewHeader_ClassNames =
 	| "FileNodeViewHeader-breadcrumb-home"
 	| "FileNodeViewHeader-breadcrumb-segment"
 	| "FileNodeViewHeader-breadcrumb-segment-current"
-	| "FileNodeViewHeader-breadcrumb-separator"
 	| "FileNodeViewHeader-switch-group";
 
 type FileNodeViewHeader_Props = {
@@ -271,7 +270,9 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									</MyLinkIcon>
 								</MyLink>
 							</li>
-							<span>/</span>
+							{/* Separators are list items too: an `ol` may own only `li`, and a screen reader
+							    should not read the slashes out. */}
+							<li aria-hidden="true">/</li>
 							{breadcrumbPath.map((item, index) => {
 								const isCurrentNode = index === breadcrumbPath.length - 1;
 								return (
@@ -299,15 +300,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 												</MyLink>
 											</li>
 										)}
-										{index < breadcrumbPath.length - 1 && (
-											<span
-												className={cn(
-													"FileNodeViewHeader-breadcrumb-separator" satisfies FileNodeViewHeader_ClassNames,
-												)}
-											>
-												/
-											</span>
-										)}
+										{index < breadcrumbPath.length - 1 && <li aria-hidden="true">/</li>}
 									</React.Fragment>
 								);
 							})}
@@ -1802,20 +1795,23 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 			)}
 			data-file-node-id={child._id}
 		>
-			<Link
-				aria-label={`Open ${child.name}`}
-				className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
-				to="/w/$organizationName/$workspaceName/files"
-				params={{ organizationName, workspaceName }}
-				search={(prev) => ({ ...prev, nodeId: child._id, view: editorMode })}
-				draggable={false}
-			/>
 			<MyGridTableCell
 				className={cn(
 					"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
 					"FileNodeViewFolderExplorer-cell-name" satisfies FileNodeViewFolderExplorerRow_ClassNames,
 				)}
 			>
+				{/* The row-wide open link lives inside the first cell, not next to the cells: a `role="row"`
+				    may only own cells, and a link sitting directly under it is an invalid tree for a
+				    screen reader. The CSS still stretches it across the whole row. */}
+				<Link
+					aria-label={`Open ${child.name}`}
+					className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+					to="/w/$organizationName/$workspaceName/files"
+					params={{ organizationName, workspaceName }}
+					search={(prev) => ({ ...prev, nodeId: child._id, view: editorMode })}
+					draggable={false}
+				/>
 				<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
 					{child.kind === "folder" ? <Folder /> : <FileText />}
 				</MyIcon>
@@ -2648,7 +2644,10 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				minSize={40}
 				className={"FileNodeView-main-panel" satisfies FileNodeView_ClassNames}
 			>
-				<div className={"FileNodeView-editor-area" satisfies FileNodeView_ClassNames}>
+				{/* The editor area is this route's main content, and the files sidebar next to it is not.
+				    The api-keys, plugins and users routes each render their own; without one here the
+			    layout wraps `<Outlet />` in nothing and `/files` had no main landmark at all. */}
+				<main className={"FileNodeView-editor-area" satisfies FileNodeView_ClassNames}>
 					<MyPanelGroup
 						className={"FileNodeView-content-group" satisfies FileNodeView_ClassNames}
 						defaultLayout={DEFAULT_EDITOR_PANEL_LAYOUT}
@@ -2707,7 +2706,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 							<FileEditorSidebar commentsContainerRef={setCommentsPortalHost} />
 						</MyPanel>
 					</MyPanelGroup>
-				</div>
+				</main>
 			</MyPanel>
 		</MyPanelGroup>
 	);
