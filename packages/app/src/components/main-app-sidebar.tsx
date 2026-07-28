@@ -16,6 +16,7 @@ import {
 	PanelLeftClose,
 	PanelLeftOpen,
 	Puzzle,
+	ShieldCheck,
 	Sun,
 	UserRoundCog,
 	Users,
@@ -30,6 +31,7 @@ import {
 	url_path_files,
 	url_path_plugin_page,
 	url_path_plugins,
+	url_path_roles,
 	url_path_users,
 } from "@/lib/urls.ts";
 
@@ -429,6 +431,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	const filesPath = url_path_files({ organizationName, workspaceName });
 	const apiKeysPath = url_path_api_keys({ organizationName, workspaceName });
 	const usersPath = url_path_users({ organizationName, workspaceName });
+	const rolesPath = url_path_roles({ organizationName, workspaceName });
 	const pluginsPath = url_path_plugins({ organizationName, workspaceName });
 
 	const [isOpen, setIsOpen] = useAppLocalStorageStateValue("app_state::sidebar::main_app_open");
@@ -530,14 +533,22 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 							) : null,
 						),
 					)}
-					{/* Personal organizations keep member management out of main nav; direct URLs stay guarded/read-only. */}
+					{/* Personal organizations keep member and role management out of main nav; direct URLs stay guarded/read-only. */}
 					{showUsersNavigation ? (
-						<MainAppSidebarItem
-							to={usersPath}
-							label="Users"
-							icon={UserRoundCog}
-							tooltip={mainAppSidebarCollapsed ? "Users" : undefined}
-						/>
+						<>
+							<MainAppSidebarItem
+								to={usersPath}
+								label="Users"
+								icon={UserRoundCog}
+								tooltip={mainAppSidebarCollapsed ? "Users" : undefined}
+							/>
+							<MainAppSidebarItem
+								to={rolesPath}
+								label="Roles"
+								icon={ShieldCheck}
+								tooltip={mainAppSidebarCollapsed ? "Roles" : undefined}
+							/>
+						</>
 					) : null}
 				</MySidebarList>
 			</MySidebarScrollableArea>

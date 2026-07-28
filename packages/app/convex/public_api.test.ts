@@ -1251,7 +1251,7 @@ describe("public files API", () => {
 					updatedAt: now,
 				});
 			}
-			// The organization-wide role is stored on the default workspace, the same way an invite
+			// The organization role is stored on the default workspace, the same way an invite
 			// writes it.
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: owner.organizationId,

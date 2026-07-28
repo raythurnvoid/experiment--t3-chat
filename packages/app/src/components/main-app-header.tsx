@@ -22,7 +22,10 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { app_tenant_default_workspace_for_organization, app_tenant_primary_workspace_for_organization } from "@/lib/urls.ts";
+import {
+	app_tenant_default_workspace_for_organization,
+	app_tenant_primary_workspace_for_organization,
+} from "@/lib/urls.ts";
 import { organizations_switcher_list_secondary_line } from "@/lib/organizations.ts";
 import { cn } from "@/lib/utils.ts";
 import type { access_control_Permission } from "../../shared/access-control.ts";
@@ -68,7 +71,7 @@ function main_app_header_organization_controls_move_list_item_to_front_by_id<T e
  * from it means "you are not a member here" and the answer is "no". While the list is still loading
  * the whole map is `undefined`, which also answers "no", so the action stays hidden or disabled until
  * the list arrives. An organization-wide permission can be read at any workspace of the organization,
- * because it comes from the organization-wide role.
+ * because it comes from the organization role.
  */
 function main_app_header_organization_controls_has_permission(args: {
 	permissionsDict: Record<string, "all" | access_control_Permission[]> | undefined;
@@ -171,7 +174,9 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 	);
 
 	const draftWorkspaces =
-		draftOrganizationId && organizationList ? organizationList.organizationIdsWorkspacesDict[draftOrganizationId] : undefined;
+		draftOrganizationId && organizationList
+			? organizationList.organizationIdsWorkspacesDict[draftOrganizationId]
+			: undefined;
 
 	const currentOrganizationName =
 		organizations?.find((organization) => organization._id === organizationId)?.name ?? organizationName ?? "…";
@@ -420,9 +425,12 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 						});
 
 						if (!defaultWorkspace) {
-							console.error("[MainAppHeaderOrganizationControls] Failed to resolve default workspace for organization", {
-								organizationId: organization._id,
-							});
+							console.error(
+								"[MainAppHeaderOrganizationControls] Failed to resolve default workspace for organization",
+								{
+									organizationId: organization._id,
+								},
+							);
 							return;
 						}
 
@@ -438,139 +446,140 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 
 	const workspaceItemsRaw: MainAppHeaderOrganizationSwitcherModal_ListItem[] = (draftWorkspaces ?? []).map(
 		(workspace) => {
-		const primaryWorkspace =
-			draftOrganizationRecord && organizationList
-				? app_tenant_primary_workspace_for_organization({
-						organization: draftOrganizationRecord,
-						workspaces: organizationList.organizationIdsWorkspacesDict[draftOrganizationRecord._id] ?? [],
-					})
-				: null;
-		const workspaceIsPrimary = primaryWorkspace?._id === workspace._id;
-		// We check both permissions, because `edit_workspace` on the server accepts either one. Every
-		// system role that has `organization.update` also has `workspace.update`, so the second check
-		// looks useless. But a custom role can have one without the other, and only checking both
-		// matches what the server does.
-		const canUpdateWorkspace =
-			main_app_header_organization_controls_has_permission({
+			const primaryWorkspace =
+				draftOrganizationRecord && organizationList
+					? app_tenant_primary_workspace_for_organization({
+							organization: draftOrganizationRecord,
+							workspaces: organizationList.organizationIdsWorkspacesDict[draftOrganizationRecord._id] ?? [],
+						})
+					: null;
+			const workspaceIsPrimary = primaryWorkspace?._id === workspace._id;
+			// We check both permissions, because `edit_workspace` on the server accepts either one. Every
+			// system role that has `organization.update` also has `workspace.update`, so the second check
+			// looks useless. But a custom role can have one without the other, and only checking both
+			// matches what the server does.
+			const canUpdateWorkspace =
+				main_app_header_organization_controls_has_permission({
+					permissionsDict: organizationList?.workspaceIdsPermissionsDict,
+					workspaceId: workspace._id,
+					permission: "workspace.update",
+				}) ||
+				main_app_header_organization_controls_has_permission({
+					permissionsDict: organizationList?.workspaceIdsPermissionsDict,
+					workspaceId: workspace._id,
+					permission: "organization.update",
+				});
+			const canDeleteWorkspace = main_app_header_organization_controls_has_permission({
 				permissionsDict: organizationList?.workspaceIdsPermissionsDict,
 				workspaceId: workspace._id,
-				permission: "workspace.update",
-			}) ||
-			main_app_header_organization_controls_has_permission({
-				permissionsDict: organizationList?.workspaceIdsPermissionsDict,
-				workspaceId: workspace._id,
-				permission: "organization.update",
+				permission: "workspace.delete",
 			});
-		const canDeleteWorkspace = main_app_header_organization_controls_has_permission({
-			permissionsDict: organizationList?.workspaceIdsPermissionsDict,
-			workspaceId: workspace._id,
-			permission: "workspace.delete",
-		});
 
-		return {
-			id: workspace._id,
-			label: workspace.name,
-			description: organizations_switcher_list_secondary_line({
-				storedDescription: workspace.description ?? "",
-				isDefaultOrganization: false,
-				isPrimaryWorkspace: workspaceIsPrimary,
-			}),
-			isDefault: workspace.default,
-			onEdit:
-				workspaceIsPrimary || !primaryWorkspace || !canUpdateWorkspace
-					? undefined
-					: () => {
-							if (!draftOrganizationRecord) {
-								console.error("[MainAppHeaderOrganizationControls] Missing draft organization for workspace edit");
-								return;
-							}
-
-							setEditTarget({
-								kind: "workspace",
-								id: workspace._id,
-								initialName: workspace.name,
-								initialDescription: workspace.description ?? "",
-								organizationId: draftOrganizationRecord._id,
-								defaultWorkspaceId: primaryWorkspace._id as app_convex_Id<"organizations_workspaces">,
-							});
-						},
-			onDelete:
-				workspace.default || !canDeleteWorkspace
-					? undefined
-					: () => {
-							void (async (/* iife */) => {
-								const result = await app_convex.mutation(app_convex_api.organizations.delete_workspace, {
-									workspaceId: workspace._id,
-								});
-
-								if (result == null) {
+			return {
+				id: workspace._id,
+				label: workspace.name,
+				description: organizations_switcher_list_secondary_line({
+					storedDescription: workspace.description ?? "",
+					isDefaultOrganization: false,
+					isPrimaryWorkspace: workspaceIsPrimary,
+				}),
+				isDefault: workspace.default,
+				onEdit:
+					workspaceIsPrimary || !primaryWorkspace || !canUpdateWorkspace
+						? undefined
+						: () => {
+								if (!draftOrganizationRecord) {
+									console.error("[MainAppHeaderOrganizationControls] Missing draft organization for workspace edit");
 									return;
 								}
 
-								if (result._nay) {
-									console.error("[MainAppHeaderOrganizationControls] Failed to delete workspace", {
-										error: result._nay,
+								setEditTarget({
+									kind: "workspace",
+									id: workspace._id,
+									initialName: workspace.name,
+									initialDescription: workspace.description ?? "",
+									organizationId: draftOrganizationRecord._id,
+									defaultWorkspaceId: primaryWorkspace._id as app_convex_Id<"organizations_workspaces">,
+								});
+							},
+				onDelete:
+					workspace.default || !canDeleteWorkspace
+						? undefined
+						: () => {
+								void (async (/* iife */) => {
+									const result = await app_convex.mutation(app_convex_api.organizations.delete_workspace, {
 										workspaceId: workspace._id,
 									});
-									toast.error(result._nay.message);
-									return;
-								}
 
-								await app_convex.query(app_convex_api.organizations.list, {});
-
-								if (workspace._id === workspaceId && organizationId && workspaces && organizations) {
-									const currentOrganization = organizations.find((candidate) => candidate._id === organizationId);
-									if (!currentOrganization) {
+									if (result == null) {
 										return;
 									}
 
-									const remaining = workspaces.filter((other) => other._id !== workspace._id);
-									const fallback = remaining.find((other) => other.default) ?? remaining[0];
-									if (!fallback) {
+									if (result._nay) {
+										console.error("[MainAppHeaderOrganizationControls] Failed to delete workspace", {
+											error: result._nay,
+											workspaceId: workspace._id,
+										});
+										toast.error(result._nay.message);
 										return;
 									}
 
-									navigateToOrganizationWorkspace(currentOrganization.name, fallback.name);
-									return;
-								}
+									await app_convex.query(app_convex_api.organizations.list, {});
 
-								if (workspace._id === draftWorkspaceId && draftOrganizationId && organizationList) {
-									const nextWorkspaces = organizationList.organizationIdsWorkspacesDict[draftOrganizationId] ?? [];
-									const fallback =
-										nextWorkspaces.find((other) => other._id !== workspace._id && other.default) ??
-										nextWorkspaces.find((other) => other._id !== workspace._id);
-									if (!fallback) {
-										if (organizationId && workspaceId) {
-											setLocalDraft({ organizationId, workspaceId });
+									if (workspace._id === workspaceId && organizationId && workspaces && organizations) {
+										const currentOrganization = organizations.find((candidate) => candidate._id === organizationId);
+										if (!currentOrganization) {
+											return;
 										}
+
+										const remaining = workspaces.filter((other) => other._id !== workspace._id);
+										const fallback = remaining.find((other) => other.default) ?? remaining[0];
+										if (!fallback) {
+											return;
+										}
+
+										navigateToOrganizationWorkspace(currentOrganization.name, fallback.name);
 										return;
 									}
 
-									setLocalDraft({
-										organizationId: draftOrganizationId,
-										workspaceId: fallback._id as app_convex_Id<"organizations_workspaces">,
-									});
-								}
-							})().catch((error) => {
-								toast.error("Failed to delete workspace");
-								console.error("[MainAppHeaderOrganizationControls] Unexpected delete workspace error", {
-									error,
-									workspaceId: workspace._id,
-								});
-							});
-						},
-			onSelect: () => {
-				if (workspace._id === draftWorkspaceId) {
-					return;
-				}
+									if (workspace._id === draftWorkspaceId && draftOrganizationId && organizationList) {
+										const nextWorkspaces = organizationList.organizationIdsWorkspacesDict[draftOrganizationId] ?? [];
+										const fallback =
+											nextWorkspaces.find((other) => other._id !== workspace._id && other.default) ??
+											nextWorkspaces.find((other) => other._id !== workspace._id);
+										if (!fallback) {
+											if (organizationId && workspaceId) {
+												setLocalDraft({ organizationId, workspaceId });
+											}
+											return;
+										}
 
-				setLocalDraft({
-					organizationId: draftOrganizationId,
-					workspaceId: workspace._id,
-				});
-			},
-		};
-	});
+										setLocalDraft({
+											organizationId: draftOrganizationId,
+											workspaceId: fallback._id as app_convex_Id<"organizations_workspaces">,
+										});
+									}
+								})().catch((error) => {
+									toast.error("Failed to delete workspace");
+									console.error("[MainAppHeaderOrganizationControls] Unexpected delete workspace error", {
+										error,
+										workspaceId: workspace._id,
+									});
+								});
+							},
+				onSelect: () => {
+					if (workspace._id === draftWorkspaceId) {
+						return;
+					}
+
+					setLocalDraft({
+						organizationId: draftOrganizationId,
+						workspaceId: workspace._id,
+					});
+				},
+			};
+		},
+	);
 
 	const workspaceItems =
 		draftOrganizationId === organizationId
@@ -598,53 +607,57 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 		navigateToOrganizationWorkspace(nextOrganization.name, nextWorkspace.name);
 	});
 
-	const handleOrganizationSwitcherAfterCreate = useFn<MainAppHeaderOrganizationSwitcherModal_Props["onAfterCreateOrganization"]>(
-		(selection) => {
-			setLocalDraft({
-				organizationId: selection.organizationId,
-				workspaceId: selection.workspaceId,
-			});
+	const handleOrganizationSwitcherAfterCreate = useFn<
+		MainAppHeaderOrganizationSwitcherModal_Props["onAfterCreateOrganization"]
+	>((selection) => {
+		setLocalDraft({
+			organizationId: selection.organizationId,
+			workspaceId: selection.workspaceId,
+		});
+	});
+
+	const handleOrganizationSwitcherAfterEdit = useFn<MainAppHeaderOrganizationSwitcherModal_Props["onAfterEdit"]>(
+		(args) => {
+			if (args.kind === "organization") {
+				if (organizationId === args.organizationId && currentOrganizationName === args.oldName) {
+					navigateToOrganizationWorkspace(args.newName, currentWorkspaceName);
+				}
+				return;
+			}
+
+			if (args.workspaceId && workspaceId === args.workspaceId && currentWorkspaceName === args.oldName) {
+				navigateToOrganizationWorkspace(currentOrganizationName, args.newName);
+			}
 		},
 	);
-
-	const handleOrganizationSwitcherAfterEdit = useFn<MainAppHeaderOrganizationSwitcherModal_Props["onAfterEdit"]>((args) => {
-		if (args.kind === "organization") {
-			if (organizationId === args.organizationId && currentOrganizationName === args.oldName) {
-				navigateToOrganizationWorkspace(args.newName, currentWorkspaceName);
-			}
-			return;
-		}
-
-		if (args.workspaceId && workspaceId === args.workspaceId && currentWorkspaceName === args.oldName) {
-			navigateToOrganizationWorkspace(currentOrganizationName, args.newName);
-		}
-	});
 
 	const handleOrganizationSwitcherCancel = useFn<MainAppHeaderOrganizationSwitcherModal_Props["onCancel"]>(() => {
 		setIsOpen(false);
 	});
 
-	const handleOrganizationSwitcherCreateOrganization = useFn<MainAppHeaderOrganizationSwitcherModal_Props["createOrganization"]>(
-		(args) => {
-			return app_convex.mutation(app_convex_api.organizations.create_organization, args);
-		},
-	);
-
-	const handleOrganizationSwitcherCreateWorkspace = useFn<MainAppHeaderOrganizationSwitcherModal_Props["createWorkspace"]>(
-		(args) => {
-			return app_convex.mutation(app_convex_api.organizations.create_workspace, args);
-		},
-	);
-
-	const handleOrganizationSwitcherEditOrganization = useFn<MainAppHeaderOrganizationSwitcherModal_Props["editOrganization"]>(
-		(args) => {
-			return app_convex.mutation(app_convex_api.organizations.edit_organization, args);
-		},
-	);
-
-	const handleOrganizationSwitcherEditWorkspace = useFn<MainAppHeaderOrganizationSwitcherModal_Props["editWorkspace"]>((args) => {
-		return app_convex.mutation(app_convex_api.organizations.edit_workspace, args);
+	const handleOrganizationSwitcherCreateOrganization = useFn<
+		MainAppHeaderOrganizationSwitcherModal_Props["createOrganization"]
+	>((args) => {
+		return app_convex.mutation(app_convex_api.organizations.create_organization, args);
 	});
+
+	const handleOrganizationSwitcherCreateWorkspace = useFn<
+		MainAppHeaderOrganizationSwitcherModal_Props["createWorkspace"]
+	>((args) => {
+		return app_convex.mutation(app_convex_api.organizations.create_workspace, args);
+	});
+
+	const handleOrganizationSwitcherEditOrganization = useFn<
+		MainAppHeaderOrganizationSwitcherModal_Props["editOrganization"]
+	>((args) => {
+		return app_convex.mutation(app_convex_api.organizations.edit_organization, args);
+	});
+
+	const handleOrganizationSwitcherEditWorkspace = useFn<MainAppHeaderOrganizationSwitcherModal_Props["editWorkspace"]>(
+		(args) => {
+			return app_convex.mutation(app_convex_api.organizations.edit_workspace, args);
+		},
+	);
 
 	const handleOrganizationSwitcherSetOrganizationBillingMode = useFn<
 		MainAppHeaderOrganizationSwitcherModal_Props["setOrganizationBillingMode"]
@@ -695,7 +708,9 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 					</span>
 
 					<ChevronsUpDown
-						className={cn("MainAppHeaderOrganizationControls-icon" satisfies MainAppHeaderOrganizationControls_ClassNames)}
+						className={cn(
+							"MainAppHeaderOrganizationControls-icon" satisfies MainAppHeaderOrganizationControls_ClassNames,
+						)}
 					/>
 				</MyButton>
 			</MyModalTrigger>

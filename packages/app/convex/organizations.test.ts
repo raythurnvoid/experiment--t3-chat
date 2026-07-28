@@ -61,7 +61,10 @@ async function organizations_test_process_organization_deletion_request_until_do
 	throw new Error("Organization deletion request did not finish");
 }
 
-async function organizations_test_seed_default_organization(ctx: MutationCtx, args: { userId: Id<"users">; now?: number }) {
+async function organizations_test_seed_default_organization(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; now?: number },
+) {
 	await organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
 		userId: args.userId,
 		now: args.now ?? Date.now(),
@@ -110,7 +113,10 @@ async function organizations_test_bootstrap_users(
 	await Promise.all(args.userIds.map((userId) => organizations_test_bootstrap_user(t, { userId })));
 }
 
-async function organizations_test_read_user_extra_organization_quota_doc(ctx: MutationCtx, args: { userId: Id<"users"> }) {
+async function organizations_test_read_user_extra_organization_quota_doc(
+	ctx: MutationCtx,
+	args: { userId: Id<"users"> },
+) {
 	return await ctx.db
 		.query("quotas")
 		.withIndex("by_user_quotaName", (q) => q.eq("userId", args.userId).eq("quotaName", "extra_organizations"))
@@ -803,9 +809,7 @@ describe("create_organization", () => {
 			]);
 
 			return {
-				userQuotas: userQuotas.filter(
-					(doc) => doc.userId === userId && doc.quotaName === "extra_organizations",
-				),
+				userQuotas: userQuotas.filter((doc) => doc.userId === userId && doc.quotaName === "extra_organizations"),
 				organizationQuotas: organizationQuotas.filter(
 					(doc) => doc.organizationId === created._yay!.organizationId && doc.quotaName === "extra_workspaces",
 				),
@@ -845,7 +849,9 @@ describe("organizations_db_ensure_default_organization_and_workspace_for_user", 
 		const rows = await t.run(async (ctx) => {
 			const user = await ctx.db.get("users", userId);
 			const organizationQuota = user?.defaultOrganizationId
-				? await organizations_test_read_organization_extra_workspace_quota_doc(ctx, { organizationId: user.defaultOrganizationId })
+				? await organizations_test_read_organization_extra_workspace_quota_doc(ctx, {
+						organizationId: user.defaultOrganizationId,
+					})
 				: null;
 			const userQuota = await organizations_test_read_user_extra_organization_quota_doc(ctx, { userId });
 
@@ -873,8 +879,12 @@ describe("organizations_db_ensure_default_organization_and_workspace_for_user", 
 		await organizations_test_bootstrap_user(t, { userId });
 		const after = await t.run(async (ctx) => {
 			const user = await ctx.db.get("users", userId);
-			const organization = user?.defaultOrganizationId ? await ctx.db.get("organizations", user.defaultOrganizationId) : null;
-			const workspace = user?.defaultWorkspaceId ? await ctx.db.get("organizations_workspaces", user.defaultWorkspaceId) : null;
+			const organization = user?.defaultOrganizationId
+				? await ctx.db.get("organizations", user.defaultOrganizationId)
+				: null;
+			const workspace = user?.defaultWorkspaceId
+				? await ctx.db.get("organizations_workspaces", user.defaultWorkspaceId)
+				: null;
 			const memberships = await ctx.db
 				.query("organizations_workspaces_users")
 				.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", userId))
@@ -883,7 +893,8 @@ describe("organizations_db_ensure_default_organization_and_workspace_for_user", 
 			return {
 				defaultPersonalMemberships: memberships.filter(
 					(membership) =>
-						membership.organizationId === user?.defaultOrganizationId && membership.workspaceId === user?.defaultWorkspaceId,
+						membership.organizationId === user?.defaultOrganizationId &&
+						membership.workspaceId === user?.defaultWorkspaceId,
 				),
 				workspace,
 				organization,
@@ -1011,7 +1022,9 @@ describe("create_workspace", () => {
 								q.eq("organizationId", wsResult._yay!.organizationId).eq("workspaceId", result._yay!.workspaceId),
 							)
 							.collect(),
-						organizations_test_read_organization_extra_workspace_quota_doc(ctx, { organizationId: wsResult._yay!.organizationId }),
+						organizations_test_read_organization_extra_workspace_quota_doc(ctx, {
+							organizationId: wsResult._yay!.organizationId,
+						}),
 					]);
 
 					return {
@@ -1023,7 +1036,7 @@ describe("create_workspace", () => {
 				})
 			: null;
 		expect(membership?.membership).toBeTruthy();
-		// No role assignment inside the new workspace. The creator's organization-wide role already
+		// No role assignment inside the new workspace. The creator's organization role already
 		// works here, and always writing `member` would let someone whose role has only
 		// `workspace.create` write files in the workspace they just made.
 		expect(membership?.roleAssignment).toBeNull();
@@ -1574,7 +1587,7 @@ describe("invite_user_to_organization_workspace", () => {
 		expect(afterInvite.memberships.map((membership) => membership.workspaceId).sort()).toEqual(
 			[created._yay!.defaultWorkspaceId, selectedWorkspace._yay!.workspaceId].sort(),
 		);
-		// One role assignment, on the default workspace. That is the organization-wide role, and it
+		// One role assignment, on the default workspace. That is the organization role, and it
 		// already works in every workspace where the invited user is an active member.
 		expect(afterInvite.roleAssignments.map((assignment) => assignment.workspaceId)).toEqual([
 			created._yay!.defaultWorkspaceId,
@@ -1702,10 +1715,7 @@ describe("invite_user_to_organization_workspace", () => {
 				ctx.db
 					.query("notifications")
 					.withIndex("by_organization_user_archivedAt", (q) =>
-						q
-							.eq("organizationId", created._yay!.organizationId)
-							.eq("userId", invitedUserId)
-							.eq("archivedAt", 0),
+						q.eq("organizationId", created._yay!.organizationId).eq("userId", invitedUserId).eq("archivedAt", 0),
 					)
 					.first(),
 			]);
@@ -1839,7 +1849,7 @@ describe("invite_user_to_organization_workspace", () => {
 				updatedAt: now,
 			});
 
-			// The invited user's organization-wide role can manage plugins. The inviter's role cannot.
+			// The invited user's organization role can manage plugins. The inviter's role cannot.
 			const operatorRoleId = await ctx.db.insert("access_control_roles", {
 				organizationId: created._yay!.organizationId,
 				name: "Plugin operator",
@@ -2478,18 +2488,14 @@ describe("remove_user_from_organization", () => {
 		const quotaDocsAfterRemove = await t.run((ctx) =>
 			ctx.db
 				.query("quotas")
-				.withIndex("by_user_quotaName", (q) =>
-					q.eq("userId", memberId).eq("quotaName", "active_api_credentials"),
-				)
+				.withIndex("by_user_quotaName", (q) => q.eq("userId", memberId).eq("quotaName", "active_api_credentials"))
 				.collect(),
 		);
 		expect(
 			quotaDocsAfterRemove.filter((quotaDoc) => quotaDoc.organizationId === organization._yay!.organizationId),
 		).toHaveLength(0);
 		expect(
-			quotaDocsAfterRemove.some(
-				(quotaDoc) => quotaDoc.organizationId === otherOrganization._yay!.organizationId,
-			),
+			quotaDocsAfterRemove.some((quotaDoc) => quotaDoc.organizationId === otherOrganization._yay!.organizationId),
 		).toBe(true);
 
 		const reinviteResult = await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
@@ -2510,9 +2516,7 @@ describe("remove_user_from_organization", () => {
 		const quotaDocsAfterReinvite = await t.run((ctx) =>
 			ctx.db
 				.query("quotas")
-				.withIndex("by_user_quotaName", (q) =>
-					q.eq("userId", memberId).eq("quotaName", "active_api_credentials"),
-				)
+				.withIndex("by_user_quotaName", (q) => q.eq("userId", memberId).eq("quotaName", "active_api_credentials"))
 				.collect(),
 		);
 		expect(quotaDocsAfterReinvite).toEqual(
@@ -2661,7 +2665,7 @@ describe("access_control.transfer_organization_ownership", () => {
 				}),
 			]);
 
-			// A second role, giving extra power inside one workspace. It does nothing while this user
+			// A second role, this time a workspace role. It does nothing while this user
 			// owns the organization, so the transfer has to delete it too. Otherwise it would start
 			// working again if ownership later moved to somebody else.
 			const secondWorkspace = await organizations_db_create_workspace(ctx, {
@@ -2944,7 +2948,7 @@ describe("access_control", () => {
 		expect(memberPermission).toBe(false);
 	});
 
-	test("prefers the workspace-local role and otherwise shows the organization-wide one", async () => {
+	test("prefers the workspace role and otherwise shows the organization role", async () => {
 		const t = test_convex();
 		const [ownerId, scopedUserId] = await t.run(async (ctx) =>
 			Promise.all([
@@ -3051,12 +3055,12 @@ describe("access_control", () => {
 		expect(siblingWorkspaceRoleBeforeDefaultRole).toBeNull();
 		// Where the user has a role inside the workspace, that role is shown...
 		expect(localWorkspaceRoleAfterDefaultRole).toEqual({ kind: "system", role: "member" });
-		// ...and everywhere else the organization-wide role is shown, which matches the real access.
+		// ...and everywhere else the organization role is shown, which matches the real access.
 		expect(siblingWorkspaceRoleAfterDefaultRole).toEqual({ kind: "system", role: "admin" });
 		expect(defaultWorkspaceRoleAfterDefaultRole).toEqual({ kind: "system", role: "admin" });
 	});
 
-	test("keeps extra-ws role assignments local and default-ws assignments organization-wide", async () => {
+	test("keeps workspace role assignments local and default-workspace assignments organization-wide", async () => {
 		const t = test_convex();
 		const [ownerId, scopedUserId] = await t.run(async (ctx) =>
 			Promise.all([
@@ -3133,7 +3137,7 @@ describe("access_control", () => {
 				now,
 			});
 
-			// For organization-scoped permissions, the organization-wide role works in every workspace.
+			// For organization-scoped permissions, the organization role works in every workspace.
 			const workspaceBOrganizationScopedAccess = await access_control_db_has_permission(ctx, {
 				organizationId: organization.organizationId,
 				workspaceId: workspaceBId,
@@ -4083,7 +4087,9 @@ describe("delete_workspace", () => {
 				ctx.db.get("organizations_workspaces", extraWorkspace._yay!.workspaceId),
 				ctx.db.query("data_deletion_requests").collect(),
 				ctx.db.get("users", userId),
-				organizations_test_read_organization_extra_workspace_quota_doc(ctx, { organizationId: created._yay!.organizationId }),
+				organizations_test_read_organization_extra_workspace_quota_doc(ctx, {
+					organizationId: created._yay!.organizationId,
+				}),
 				ctx.db
 					.query("quotas")
 					.withIndex("by_workspace_quotaName", (q) =>
@@ -4118,7 +4124,8 @@ describe("delete_workspace", () => {
 			return {
 				workspace,
 				requests: requests.filter(
-					(row) => row.organizationId === created._yay!.organizationId && row.workspaceId === extraWorkspace._yay!.workspaceId,
+					(row) =>
+						row.organizationId === created._yay!.organizationId && row.workspaceId === extraWorkspace._yay!.workspaceId,
 				),
 				user,
 				organizationQuota,
@@ -4127,28 +4134,23 @@ describe("delete_workspace", () => {
 				permissionGrants,
 				files: files.filter(
 					(row) =>
-						row.organizationId === created._yay!.organizationId &&
-						row.workspaceId === extraWorkspace._yay!.workspaceId,
+						row.organizationId === created._yay!.organizationId && row.workspaceId === extraWorkspace._yay!.workspaceId,
 				),
 				assets: assets.filter(
 					(row) =>
-						row.organizationId === created._yay!.organizationId &&
-						row.workspaceId === extraWorkspace._yay!.workspaceId,
+						row.organizationId === created._yay!.organizationId && row.workspaceId === extraWorkspace._yay!.workspaceId,
 				),
 				aiThreads: aiThreads.filter(
 					(row) =>
-						row.organizationId === created._yay!.organizationId &&
-						row.workspaceId === extraWorkspace._yay!.workspaceId,
+						row.organizationId === created._yay!.organizationId && row.workspaceId === extraWorkspace._yay!.workspaceId,
 				),
 				aiMessages: aiMessages.filter(
 					(row) =>
-						row.organizationId === created._yay!.organizationId &&
-						row.workspaceId === extraWorkspace._yay!.workspaceId,
+						row.organizationId === created._yay!.organizationId && row.workspaceId === extraWorkspace._yay!.workspaceId,
 				),
 				chatMessages: chatMessages.filter(
 					(row) =>
-						row.organizationId === created._yay!.organizationId &&
-						row.workspaceId === extraWorkspace._yay!.workspaceId,
+						row.organizationId === created._yay!.organizationId && row.workspaceId === extraWorkspace._yay!.workspaceId,
 				),
 				notifications,
 			};
@@ -4176,7 +4178,8 @@ describe("delete_workspace", () => {
 
 		const purgeRequestsAfter = await t.run(async (ctx) =>
 			(await ctx.db.query("data_deletion_requests").collect()).filter(
-				(row) => row.organizationId === created._yay!.organizationId && row.workspaceId === extraWorkspace._yay!.workspaceId,
+				(row) =>
+					row.organizationId === created._yay!.organizationId && row.workspaceId === extraWorkspace._yay!.workspaceId,
 			),
 		);
 		expect(purgeRequestsAfter).toHaveLength(0);
@@ -4659,12 +4662,13 @@ describe("process_workspace_deletion_request", () => {
 
 			return {
 				victimRequests: requests.filter(
-					(row) => row.organizationId === created._yay!.organizationId && row.workspaceId === victimWorkspace._yay!.workspaceId,
+					(row) =>
+						row.organizationId === created._yay!.organizationId &&
+						row.workspaceId === victimWorkspace._yay!.workspaceId,
 				),
 				controlPages: files.filter(
 					(row) =>
-						row.organizationId === created._yay!.organizationId &&
-						row.workspaceId === created._yay!.defaultWorkspaceId,
+						row.organizationId === created._yay!.organizationId && row.workspaceId === created._yay!.defaultWorkspaceId,
 				),
 				victimPages: files.filter(
 					(row) =>
@@ -4673,8 +4677,7 @@ describe("process_workspace_deletion_request", () => {
 				),
 				controlAssets: assets.filter(
 					(row) =>
-						row.organizationId === created._yay!.organizationId &&
-						row.workspaceId === created._yay!.defaultWorkspaceId,
+						row.organizationId === created._yay!.organizationId && row.workspaceId === created._yay!.defaultWorkspaceId,
 				),
 				victimAssets: assets.filter(
 					(row) =>
@@ -4683,8 +4686,7 @@ describe("process_workspace_deletion_request", () => {
 				),
 				controlAiThreads: aiThreads.filter(
 					(row) =>
-						row.organizationId === created._yay!.organizationId &&
-						row.workspaceId === created._yay!.defaultWorkspaceId,
+						row.organizationId === created._yay!.organizationId && row.workspaceId === created._yay!.defaultWorkspaceId,
 				),
 				victimAiThreads: aiThreads.filter(
 					(row) =>
@@ -4693,8 +4695,7 @@ describe("process_workspace_deletion_request", () => {
 				),
 				controlAiMessages: aiMessages.filter(
 					(row) =>
-						row.organizationId === created._yay!.organizationId &&
-						row.workspaceId === created._yay!.defaultWorkspaceId,
+						row.organizationId === created._yay!.organizationId && row.workspaceId === created._yay!.defaultWorkspaceId,
 				),
 				victimAiMessages: aiMessages.filter(
 					(row) =>
@@ -4703,8 +4704,7 @@ describe("process_workspace_deletion_request", () => {
 				),
 				controlChatMessages: chatMessages.filter(
 					(row) =>
-						row.organizationId === created._yay!.organizationId &&
-						row.workspaceId === created._yay!.defaultWorkspaceId,
+						row.organizationId === created._yay!.organizationId && row.workspaceId === created._yay!.defaultWorkspaceId,
 				),
 				victimChatMessages: chatMessages.filter(
 					(row) =>

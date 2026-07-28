@@ -17,6 +17,7 @@ import { Route as WOrganizationNameWorkspaceNameFilesIndexRouteImport } from './
 import { Route as WOrganizationNameWorkspaceNameFilesSplatRouteImport } from './routes/w/$organizationName/$workspaceName/files/$'
 import { Route as WOrganizationNameWorkspaceNamePluginsIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsPluginNameRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/$pluginName'
+import { Route as WOrganizationNameWorkspaceNameRolesIndexRouteImport } from './routes/w/$organizationName/$workspaceName/roles/index'
 import { Route as WOrganizationNameWorkspaceNameUsersIndexRouteImport } from './routes/w/$organizationName/$workspaceName/users/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsPublisherIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/publisher/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/$pluginName_.pages.$pageId'
@@ -68,6 +69,12 @@ const WOrganizationNameWorkspaceNamePluginsPluginNameRoute =
     path: '/plugins/$pluginName',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
+const WOrganizationNameWorkspaceNameRolesIndexRoute =
+  WOrganizationNameWorkspaceNameRolesIndexRouteImport.update({
+    id: '/roles/',
+    path: '/roles/',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
 const WOrganizationNameWorkspaceNameUsersIndexRoute =
   WOrganizationNameWorkspaceNameUsersIndexRouteImport.update({
     id: '/users/',
@@ -96,6 +103,7 @@ export interface FileRoutesByFullPath {
   '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
+  '/w/$organizationName/$workspaceName/roles/': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   '/w/$organizationName/$workspaceName/users/': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   '/w/$organizationName/$workspaceName/plugins/publisher/': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId': typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
@@ -109,6 +117,7 @@ export interface FileRoutesByTo {
   '/w/$organizationName/$workspaceName/chat': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
+  '/w/$organizationName/$workspaceName/roles': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   '/w/$organizationName/$workspaceName/users': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   '/w/$organizationName/$workspaceName/plugins/publisher': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId': typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
@@ -123,6 +132,7 @@ export interface FileRoutesById {
   '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
+  '/w/$organizationName/$workspaceName/roles/': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   '/w/$organizationName/$workspaceName/users/': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   '/w/$organizationName/$workspaceName/plugins/publisher/': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName_/pages/$pageId': typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
@@ -138,6 +148,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/chat/'
     | '/w/$organizationName/$workspaceName/files/'
     | '/w/$organizationName/$workspaceName/plugins/'
+    | '/w/$organizationName/$workspaceName/roles/'
     | '/w/$organizationName/$workspaceName/users/'
     | '/w/$organizationName/$workspaceName/plugins/publisher/'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId'
@@ -151,6 +162,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/chat'
     | '/w/$organizationName/$workspaceName/files'
     | '/w/$organizationName/$workspaceName/plugins'
+    | '/w/$organizationName/$workspaceName/roles'
     | '/w/$organizationName/$workspaceName/users'
     | '/w/$organizationName/$workspaceName/plugins/publisher'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId'
@@ -164,6 +176,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/chat/'
     | '/w/$organizationName/$workspaceName/files/'
     | '/w/$organizationName/$workspaceName/plugins/'
+    | '/w/$organizationName/$workspaceName/roles/'
     | '/w/$organizationName/$workspaceName/users/'
     | '/w/$organizationName/$workspaceName/plugins/publisher/'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName_/pages/$pageId'
@@ -232,6 +245,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WOrganizationNameWorkspaceNamePluginsPluginNameRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
+    '/w/$organizationName/$workspaceName/roles/': {
+      id: '/w/$organizationName/$workspaceName/roles/'
+      path: '/roles'
+      fullPath: '/w/$organizationName/$workspaceName/roles/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameRolesIndexRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
     '/w/$organizationName/$workspaceName/users/': {
       id: '/w/$organizationName/$workspaceName/users/'
       path: '/users'
@@ -263,6 +283,7 @@ interface WOrganizationNameWorkspaceNameRouteRouteChildren {
   WOrganizationNameWorkspaceNameChatIndexRoute: typeof WOrganizationNameWorkspaceNameChatIndexRoute
   WOrganizationNameWorkspaceNameFilesIndexRoute: typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   WOrganizationNameWorkspaceNamePluginsIndexRoute: typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
+  WOrganizationNameWorkspaceNameRolesIndexRoute: typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   WOrganizationNameWorkspaceNameUsersIndexRoute: typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute: typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
   WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute: typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
@@ -282,6 +303,8 @@ const WOrganizationNameWorkspaceNameRouteRouteChildren: WOrganizationNameWorkspa
       WOrganizationNameWorkspaceNameFilesIndexRoute,
     WOrganizationNameWorkspaceNamePluginsIndexRoute:
       WOrganizationNameWorkspaceNamePluginsIndexRoute,
+    WOrganizationNameWorkspaceNameRolesIndexRoute:
+      WOrganizationNameWorkspaceNameRolesIndexRoute,
     WOrganizationNameWorkspaceNameUsersIndexRoute:
       WOrganizationNameWorkspaceNameUsersIndexRoute,
     WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute:

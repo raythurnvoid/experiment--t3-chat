@@ -1778,8 +1778,8 @@ describe("custom roles", () => {
 		const sideWorkspaceId = await t.run(async (ctx) => {
 			await ctx.db.patch("organizations_workspaces_users", membershipId, { active: false });
 
-			// The same role again, this time as extra power inside one workspace. That doc is not the
-			// organization-wide role, so deleting the role must remove it instead of lowering it.
+			// The same role again, this time as a workspace role. That doc is not the
+			// organization role, so deleting the role must remove it instead of lowering it.
 			const now = Date.now();
 			const workspace = await organizations_db_create_workspace(ctx, {
 				userId: ownerId,
@@ -1817,7 +1817,7 @@ describe("custom roles", () => {
 		expect(deleted._nay).toBeUndefined();
 
 		const [leftover, sideLeftover, remainingRoles] = await t.run(async (ctx) => [
-			// The organization-wide role is lowered to the weakest role instead of being deleted. So
+			// The organization role is lowered to the weakest role instead of being deleted. So
 			// nothing points at a role that no longer exists, and the user still has a role if their
 			// account comes back.
 			await ctx.db
@@ -1829,7 +1829,7 @@ describe("custom roles", () => {
 						.eq("userId", memberId),
 				)
 				.first(),
-			// The extra workspace role is deleted: losing extra power is not losing access.
+			// The workspace role is deleted: losing a workspace role is not losing access.
 			await ctx.db
 				.query("access_control_role_assignments")
 				.withIndex("by_organization_workspace_user", (q) =>
@@ -2030,7 +2030,7 @@ describe("custom roles", () => {
 		expect(role?.name).toBe("Treasurer");
 	});
 
-	test("a workspace-local role does not confer organization-scoped permissions", async () => {
+	test("a workspace role does not confer organization-scoped permissions", async () => {
 		const t = test_convex();
 		const ownerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-scope-gate-owner" });
 		const memberId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-scope-gate-member" });
@@ -2113,12 +2113,12 @@ describe("custom roles", () => {
 		expect(organizationScoped).toBe(false);
 		expect(workspaceScoped).toBe(true);
 		expect(effective).not.toContain("organization.members.manage");
-		// This one comes from the same workspace-local `admin` role, so the filter removes only the
+		// This one comes from the same `admin` workspace role, so the filter removes only the
 		// organization-scoped permissions.
 		expect(effective).toContain("workspace.delete");
 	});
 
-	test("deleting a role is allowed when only an extra workspace role would go", async () => {
+	test("deleting a role is allowed when only an workspace role would go", async () => {
 		const t = test_convex();
 		const ownerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-no-demote-owner" });
 		const stewardId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-no-demote-steward" });
@@ -2155,8 +2155,8 @@ describe("custom roles", () => {
 		});
 		expect(assigned._nay).toBeUndefined();
 
-		// The only user with this role has it in another workspace, so deleting the role only removes
-		// extra power and gives nothing. The steward still cannot read, so a check that ignored
+		// The only user with this role has it as a workspace role, so deleting the role only takes
+		// that away and gives nothing. The steward still cannot read, so a check that ignored
 		// `demotes` would refuse here by mistake.
 		const sideWorkspaceId = await t.run(async (ctx) => {
 			const now = Date.now();
@@ -2284,8 +2284,8 @@ describe("custom roles", () => {
 		});
 
 		// A second workspace that the member also belongs to. It must not get its own role assignment:
-		// the organization-wide role lives on the default workspace, and a role written here would be
-		// extra power that nobody asked for.
+		// the organization role lives on the default workspace, and a role written here would be a
+		// workspace role that nobody asked for.
 		await t.run(async (ctx) => {
 			const now = Date.now();
 			const workspace = await organizations_db_create_workspace(ctx, {
@@ -2907,7 +2907,7 @@ describe("set_user_role", () => {
 		});
 		expect(assigned._nay).toBeUndefined();
 
-		// The organization-wide role carries this permission everywhere, but a workspace-scoped
+		// The organization role carries this permission everywhere, but a workspace-scoped
 		// permission must not work in a workspace whose files its holder cannot even read.
 		const denied = await asManager.mutation(api.access_control.set_user_role, {
 			organizationId: organization.organizationId,
@@ -2939,7 +2939,7 @@ describe("set_user_role", () => {
 		expect(allowed._nay).toBeUndefined();
 	});
 
-	test("a workspace-local role can be revoked, which unblocks deleting it", async () => {
+	test("a workspace role can be revoked, which unblocks deleting it", async () => {
 		const t = test_convex();
 		const ownerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-revoke-owner" });
 		const memberId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-revoke-member" });
@@ -2950,7 +2950,7 @@ describe("set_user_role", () => {
 		});
 		const asOwner = access_control_test_identity(t, ownerId);
 
-		// This role has `workspace.delete`, which the organization-wide `member` role does not. So giving
+		// This role has `workspace.delete`, which the `member` organization role does not. So giving
 		// it in another workspace really adds power, instead of changing nothing.
 		const created = await asOwner.mutation(api.access_control.create_role, {
 			organizationId: organization.organizationId,
@@ -3028,7 +3028,7 @@ describe("set_user_role", () => {
 				permission: "content.write",
 			}),
 		]);
-		// The extra workspace role is gone and the organization-wide role did not change.
+		// The workspace role is gone and the organization role did not change.
 		expect(canDeleteWorkspace).toBe(false);
 		expect(canWrite).toBe(true);
 
@@ -3037,7 +3037,7 @@ describe("set_user_role", () => {
 		expect(deleted._nay).toBeUndefined();
 	});
 
-	test("the organization-wide role cannot be revoked", async () => {
+	test("the organization role cannot be revoked", async () => {
 		const t = test_convex();
 		const ownerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-revoke-organization-owner" });
 		const memberId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-revoke-organization-member" });
@@ -3189,7 +3189,7 @@ describe("set_user_role", () => {
 
 		// Removing a role does not check what the caller has, so `admin` can be removed even though the
 		// manager could never give it. The manager gains nothing from this: the target simply falls back
-		// to their organization-wide role.
+		// to their organization role.
 		await access_control_test_reset_write_rate_limit(t, managerId);
 		const revoked = await access_control_test_identity(t, managerId).mutation(api.access_control.set_user_role, {
 			organizationId: organization.organizationId,
@@ -3210,7 +3210,7 @@ describe("set_user_role", () => {
 		expect(remaining).toBeNull();
 	});
 
-	test("a workspace-local admin has no say over organization roles", async () => {
+	test("a admin by workspace role has no say over organization roles", async () => {
 		const t = test_convex();
 		const ownerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-ws-admin-owner" });
 		const workspaceAdminId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-ws-admin" });
@@ -3273,7 +3273,7 @@ describe("set_user_role", () => {
 		expect(localAssignment._nay).toBeUndefined();
 
 		// An admin role given inside one workspace carries no organization-wide power, so it cannot
-		// change anything in the default workspace, where the organization-wide roles live.
+		// change anything in the default workspace, where the organization roles live.
 		await access_control_test_reset_write_rate_limit(t, workspaceAdminId);
 
 		const organizationAssignment = await asWorkspaceAdmin.mutation(api.access_control.set_user_role, {
@@ -3417,7 +3417,7 @@ describe("role and permission queries", () => {
 		});
 
 		// `outsiderId` joins the organization through its default workspace and gets the
-		// organization-wide `admin` role, but is never added to the second workspace below.
+		// `admin` organization role, but is never added to the second workspace below.
 		const outsiderId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-role-peek-outsider" });
 		const sideWorkspaceId = await t.run(async (ctx) => {
 			const now = Date.now();
@@ -3462,7 +3462,7 @@ describe("role and permission queries", () => {
 
 		// The outsider is not in this workspace, so this query must return nothing. Without the check on
 		// the target's membership, the fallback to the default workspace would return their
-		// organization-wide `admin` role.
+		// `admin` organization role.
 		const outsiderRole = await asMember.query(api.access_control.get_organization_workspace_user_role, {
 			organizationId: organization.organizationId,
 			workspaceId: sideWorkspaceId,

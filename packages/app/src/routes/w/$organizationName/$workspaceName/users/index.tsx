@@ -10,7 +10,14 @@ import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
-import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl, MyInputLabel } from "@/components/my-input.tsx";
+import {
+	MyInput,
+	MyInputArea,
+	MyInputBackground,
+	MyInputBox,
+	MyInputControl,
+	MyInputLabel,
+} from "@/components/my-input.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -44,7 +51,11 @@ import { app_tenant_primary_workspace_for_organization } from "@/lib/urls.ts";
 import {
 	access_control_display_role_label,
 	access_control_display_role_order,
+	access_control_SYSTEM_ROLE_MATRIX,
+	access_control_SYSTEM_ROLES,
 	type access_control_DisplayRole,
+	type access_control_Permission,
+	type access_control_RoleRef,
 } from "../../../../../../shared/access-control.ts";
 
 // #region user list item
@@ -54,19 +65,31 @@ type RouteUsersUserListItem_ClassNames =
 	| "RouteUsersUserListItem-main"
 	| "RouteUsersUserListItem-title"
 	| "RouteUsersUserListItem-name"
+	| "RouteUsersUserListItem-role-select"
 	| "RouteUsersUserListItem-actions";
+
+/**
+ * One entry of the role select. `value` is what `set_user_role` stores; the empty string is the
+ * "no workspace role" entry, which sends `null` and leaves only the organization role.
+ */
+type RouteUsersAssignableRole = { value: string; label: string };
 
 type RouteUsersUserListItem_Props = {
 	userId: app_convex_Id<"users">;
 	authUserId: app_convex_Id<"users"> | null;
 	displayName: string;
 	role: access_control_DisplayRole | null;
+	assignableRoles: readonly RouteUsersAssignableRole[];
 	/** `undefined` while the permission query is still loading. */
 	canManageMembers: boolean | undefined;
+	/** Whether the caller may change roles here. Wider than `canManageMembers`, see the root. */
+	canChangeRoles: boolean;
+	roleChangePending: boolean;
 	canLeaveOrganization: boolean;
 	organizationIsPersonal: boolean;
 	canTransferOwnership: boolean;
 	onRemove: (userId: app_convex_Id<"users">) => void;
+	onRoleChange: (userId: app_convex_Id<"users">, role: access_control_RoleRef | null) => void;
 	onTransfer: (userId: app_convex_Id<"users">, displayName: string) => void;
 };
 
@@ -76,11 +99,15 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 		authUserId,
 		displayName,
 		role,
+		assignableRoles,
 		canManageMembers,
+		canChangeRoles,
+		roleChangePending,
 		canLeaveOrganization,
 		organizationIsPersonal,
 		canTransferOwnership,
 		onRemove,
+		onRoleChange,
 		onTransfer,
 	} = props;
 
@@ -131,6 +158,12 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 	);
 
 	const roleLabel = role ? access_control_display_role_label(role) : "No role";
+	// The owner has no role assignment to change, and changing your own role can only lower it with no
+	// way back, so both keep the read-only badge instead of a select.
+	const canChangeRole = canChangeRoles && !isOwner && !isCurrentUser;
+	// The value the server stores: a system role name, or the id of a custom role. Owner is never one
+	// of these, which is why the owner cannot appear in the list.
+	const roleValue = role?.kind === "system" ? role.role : role?.kind === "custom" ? role.roleId : "";
 
 	// `data-user-id` here, and `data-role-kind` on the badge below, are the only stable way the E2E
 	// tests can find one row: nothing else in a row is unique, and ids from `useId()` change on every
@@ -148,12 +181,69 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 					<span className={"RouteUsersUserListItem-name" satisfies RouteUsersUserListItem_ClassNames}>
 						{displayName}
 					</span>
-					<MyBadge variant={isOwner ? "secondary" : "outline"} data-role-kind={role?.kind}>
-						{/* The badge is a bare word next to the name, so it says what the word means. Hidden
-						    text and not `aria-label`, because ARIA forbids naming a plain span. */}
-						<span className="sr-only">Role: </span>
-						{roleLabel}
-					</MyBadge>
+					{canChangeRole ? (
+						<MySelect
+							value={roleValue}
+							setValue={(value) => onRoleChange(userId, value === "" ? null : (value as access_control_RoleRef))}
+						>
+							{/* 
+							Closed while the change is in flight: the list re-sorts by role when the answer
+							arrives, so a second pick would land on a row that has already moved. 
+							*/}
+							<MySelectTrigger disabled={roleChangePending}>
+								{/* 
+								A button may carry `aria-label`, unlike the badge below. The name repeats the member
+								like the Remove button in this row does, so the control still makes sense on its
+								own in a screen reader's list of form controls. 
+								*/}
+								<MyButton
+									type="button"
+									variant="outline"
+									className={"RouteUsersUserListItem-role-select" satisfies RouteUsersUserListItem_ClassNames}
+									aria-label={`Role for ${displayName}`}
+									aria-busy={roleChangePending || undefined}
+									data-role-kind={role?.kind}
+									data-role-value={roleValue}
+								>
+									<span>{roleChangePending ? "Saving..." : roleLabel}</span>
+									<MySelectOpenIndicator />
+								</MyButton>
+							</MySelectTrigger>
+							{/* `
+							unmountOnHide` because the popover portals out of this row: without it every closed
+							member's option list stays in the DOM and a test matching on role names finds many. 
+							*/}
+							<MySelectPopover unmountOnHide>
+								<MySelectPopoverScrollableArea>
+									<MySelectPopoverContent>
+										{assignableRoles.map((assignableRole) => (
+											<MySelectItem
+												key={assignableRole.value}
+												value={assignableRole.value}
+												data-role-value={assignableRole.value}
+											>
+												{assignableRole.label}
+												{roleValue === assignableRole.value ? <MySelectItemIndicator /> : null}
+											</MySelectItem>
+										))}
+									</MySelectPopoverContent>
+								</MySelectPopoverScrollableArea>
+							</MySelectPopover>
+						</MySelect>
+					) : (
+						<MyBadge
+							variant={isOwner ? "secondary" : "outline"}
+							data-role-kind={role?.kind}
+							data-role-value={roleValue}
+						>
+							{/* 
+							The badge is a bare word next to the name, so it says what the word means. Hidden
+							text and not `aria-label`, because ARIA forbids naming a plain span. 
+							*/}
+							<span className="sr-only">Role: </span>
+							{roleLabel}
+						</MyBadge>
+					)}
 				</div>
 			</div>
 
@@ -197,13 +287,17 @@ type RouteUsersList_Props = {
 		app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | undefined | Error
 	>;
 	userRoleDict: Record<app_convex_Id<"users">, access_control_DisplayRole | null | undefined | Error>;
+	assignableRoles: readonly RouteUsersAssignableRole[];
 	authUserId: app_convex_Id<"users"> | null;
 	/** `undefined` while the permission query is still loading. */
 	canManageMembers: boolean | undefined;
+	canChangeRoles: boolean;
+	roleChangePendingUserId: app_convex_Id<"users"> | null;
 	canLeaveOrganization: boolean;
 	organizationIsPersonal: boolean;
 	canTransferOwnership: boolean;
 	onRemove: (userId: app_convex_Id<"users">) => void;
+	onRoleChange: (userId: app_convex_Id<"users">, role: access_control_RoleRef | null) => void;
 	onTransfer: (userId: app_convex_Id<"users">, displayName: string) => void;
 };
 
@@ -217,12 +311,16 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 		workspaceUserIds,
 		userAnagraphicDict,
 		userRoleDict,
+		assignableRoles,
 		authUserId,
 		canManageMembers,
+		canChangeRoles,
+		roleChangePendingUserId,
 		canLeaveOrganization,
 		organizationIsPersonal,
 		canTransferOwnership,
 		onRemove,
+		onRoleChange,
 		onTransfer,
 	} = props;
 
@@ -289,11 +387,15 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 						authUserId={authUserId}
 						displayName={anagraphic.displayName}
 						role={role}
+						assignableRoles={assignableRoles}
 						canManageMembers={canManageMembers}
+						canChangeRoles={canChangeRoles}
+						roleChangePending={roleChangePendingUserId === userId}
 						canLeaveOrganization={canLeaveOrganization}
 						organizationIsPersonal={organizationIsPersonal}
 						canTransferOwnership={canTransferOwnership && role?.kind !== "owner"}
 						onRemove={onRemove}
+						onRoleChange={onRoleChange}
 						onTransfer={onTransfer}
 					/>
 				);
@@ -555,9 +657,14 @@ function RouteUsers() {
 	const organizationList = useQuery(app_convex_api.organizations.list);
 	const organization = organizationList?.organizations.find((organization) => organization._id === organizationId);
 	const workspaces = organizationList?.organizationIdsWorkspacesDict[organizationId] ?? [];
-	const defaultWorkspace = organization ? app_tenant_primary_workspace_for_organization({ organization, workspaces }) : null;
+	const defaultWorkspace = organization
+		? app_tenant_primary_workspace_for_organization({ organization, workspaces })
+		: null;
 	const currentWorkspace = workspaces.find((workspace) => workspace._id === workspaceId);
-	const workspaceUserIds = useQuery(app_convex_api.organizations.list_organization_workspace_users, { organizationId, workspaceId });
+	const workspaceUserIds = useQuery(app_convex_api.organizations.list_organization_workspace_users, {
+		organizationId,
+		workspaceId,
+	});
 	const currentOrganizationRole = useQuery(
 		app_convex_api.access_control.get_current_user_role,
 		defaultWorkspace ? { organizationId, workspaceId: defaultWorkspace._id } : "skip",
@@ -572,6 +679,10 @@ function RouteUsers() {
 					permission: "organization.members.manage",
 				},
 	);
+
+	// Any active member may read this, so the role select can show custom role names to everybody. The
+	// server still refuses a change the caller is not allowed to make.
+	const customRoles = useQuery(app_convex_api.access_control.list_roles, { organizationId });
 
 	// The react compiler is unable to memoize code that uses the returned value from a hook
 	const userAnagraphicQueryProps = useMemo(
@@ -629,12 +740,65 @@ function RouteUsers() {
 	} | null>(null);
 	const [transferConfirmation, setTransferConfirmation] = useState("");
 	const [transferring, setTransferring] = useState(false);
+	// Only one row can be waiting at a time, because its select is closed while it waits.
+	const [roleChangePendingUserId, setRoleChangePendingUserId] = useState<app_convex_Id<"users"> | null>(null);
 
 	const organizationIsPersonal = organization?.default === true;
 	// One permission query drives both Invite and Remove, so a custom role can never get a working
 	// Invite next to a greyed-out Remove. It keeps three states on purpose: both buttons are disabled
 	// for anything except `true`, and neither says why until the answer arrives.
 	const canManageMembers = organizationIsPersonal ? false : organizationMembersManagePermission;
+
+	// The caller's permissions in this workspace. `set_user_role` measures both what the caller may do
+	// and what they may hand out at `args.workspaceId`, and `organizations.list` fills this dict with
+	// the same helper and the same arguments, so this is the same set the server compares against.
+	// The react compiler cannot memoize a value built from a hook result, so this one is by hand.
+	const callerPermissionsValue = organizationList?.workspaceIdsPermissionsDict[workspaceId];
+	const callerPermissions = useMemo(
+		(): ReadonlySet<access_control_Permission> | "all" =>
+			callerPermissionsValue === "all" ? "all" : new Set<access_control_Permission>(callerPermissionsValue),
+		[callerPermissionsValue],
+	);
+
+	// Changing a role is not the same permission as Invite and Remove, which work across the whole
+	// organization. Outside the default workspace `set_user_role` also takes `workspace.members.manage`,
+	// so somebody can run one workspace without being able to touch the organization's member list.
+	const isDefaultWorkspace = defaultWorkspace?._id === workspaceId;
+	const canChangeRoles =
+		!organizationIsPersonal &&
+		(canManageMembers === true ||
+			(!isDefaultWorkspace && (callerPermissions === "all" || callerPermissions.has("workspace.members.manage"))));
+
+	// Only the roles the server would accept. It refuses any role holding a permission the caller does
+	// not hold, so offering the rest would just be a list of guaranteed error toasts.
+	const assignableRoles = useMemo((): RouteUsersAssignableRole[] => {
+		const canHandOut = (permissions: readonly access_control_Permission[]) =>
+			callerPermissions === "all" || permissions.every((permission) => callerPermissions.has(permission));
+
+		const options: RouteUsersAssignableRole[] = [];
+
+		// Outside the default workspace the assignment is a workspace role, which only adds to the
+		// organization role. This entry is the only way to take one back: every weaker role is refused
+		// by the "adds nothing" rule, so without it a workspace role would be permanent and the role
+		// itself undeletable.
+		if (!isDefaultWorkspace) {
+			options.push({ value: "", label: "No workspace role" });
+		}
+
+		for (const systemRole of access_control_SYSTEM_ROLES) {
+			if (canHandOut(access_control_SYSTEM_ROLE_MATRIX[systemRole].permissions)) {
+				options.push({ value: systemRole, label: access_control_SYSTEM_ROLE_MATRIX[systemRole].label });
+			}
+		}
+
+		for (const customRole of customRoles ?? []) {
+			if (canHandOut(customRole.permissions)) {
+				options.push({ value: customRole._id, label: customRole.name });
+			}
+		}
+
+		return options;
+	}, [callerPermissions, customRoles, isDefaultWorkspace]);
 	const inviteButtonDisabled = canManageMembers !== true;
 	// Both real reasons need a message, like the Remove button: a disabled button with no explanation
 	// tells the user nothing. The loading case stays quiet on purpose: nothing is wrong yet, the answer
@@ -724,6 +888,46 @@ function RouteUsers() {
 					userIdToRemove,
 				});
 				toast.error(failureMessage);
+			});
+	});
+
+	const handleRoleChange = useFn((userId: app_convex_Id<"users">, role: access_control_RoleRef | null) => {
+		setRoleChangePendingUserId(userId);
+		app_convex
+			.mutation(app_convex_api.access_control.set_user_role, {
+				organizationId,
+				workspaceId,
+				userId,
+				role,
+			})
+			.then((result) => {
+				if (result._nay) {
+					console.error("[RouteUsers.handleRoleChange] Failed to change role:", {
+						error: result._nay,
+						organizationId,
+						workspaceId,
+						userId,
+						role,
+					});
+					// The server message names the real reason, for example a role that grants more than the
+					// caller has. A generic "Failed" would hide which role is the problem.
+					toast.error(result._nay.message);
+					return;
+				}
+
+				toast.success(role === null ? "Workspace role removed" : "Role updated");
+			})
+			.catch((error) => {
+				console.error("[RouteUsers.handleRoleChange] Failed to change role:", {
+					error,
+					organizationId,
+					workspaceId,
+					userId,
+				});
+				toast.error("Failed to change role");
+			})
+			.finally(() => {
+				setRoleChangePendingUserId((current) => (current === userId ? null : current));
 			});
 	});
 
@@ -836,12 +1040,16 @@ function RouteUsers() {
 				workspaceUserIds={workspaceUserIds}
 				userAnagraphicDict={userAnagraphicQueryResults}
 				userRoleDict={userRoleQueryResults}
+				assignableRoles={assignableRoles}
 				authUserId={auth.userId}
 				canManageMembers={canManageMembers}
+				canChangeRoles={canChangeRoles}
+				roleChangePendingUserId={roleChangePendingUserId}
 				canLeaveOrganization={canLeaveOrganization}
 				organizationIsPersonal={organizationIsPersonal}
 				canTransferOwnership={canTransferOwnership}
 				onRemove={handleRemove}
+				onRoleChange={handleRoleChange}
 				onTransfer={handleTransferTarget}
 			/>
 

@@ -1,0 +1,297 @@
+@layer components {
+	/* #region root */
+	.RouteRoles {
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+
+		width: min(100%, 960px);
+		min-height: 0;
+		height: 100%;
+		margin-inline: auto;
+		padding: 24px;
+		overflow: auto;
+	}
+
+	.RouteRoles-loading,
+	.RouteRoles-unavailable {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		min-height: 180px;
+
+		color: var(--color-fg-08);
+	}
+
+	.RouteRoles-list {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+	}
+
+	.RouteRoles-section {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.RouteRoles-section-title {
+		margin: 0;
+
+		font-size: 15px;
+		font-weight: 600;
+		color: var(--color-fg-12);
+	}
+
+	.RouteRoles-section-description {
+		margin: 4px 0 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RouteRoles-section-empty {
+		padding: 24px;
+		border: 1px dashed var(--color-base-1-07);
+		border-radius: 10px;
+
+		font-size: 13px;
+		text-align: center;
+		color: var(--color-fg-08);
+	}
+	/* #endregion root */
+
+	/* #region header */
+	.RouteRolesHeader {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 16px;
+	}
+
+	.RouteRolesHeader-title {
+		margin: 0;
+
+		font-size: 24px;
+		font-weight: 650;
+		line-height: 1.2;
+		color: var(--color-fg-12);
+	}
+
+	.RouteRolesHeader-description {
+		margin: 6px 0 0;
+
+		font-size: 14px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RouteRolesHeader-toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: end;
+		gap: 8px;
+	}
+	/* #endregion header */
+
+	/* #region role list item */
+	.RouteRolesListItem {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+
+		padding: 14px 16px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 10px;
+
+		background: var(--color-base-1-03);
+	}
+
+	.RouteRolesListItem-head {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
+	.RouteRolesListItem-identity {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		min-width: 0;
+	}
+
+	/* A role name is free text up to 40 characters with no spaces required, so it has to be allowed to
+	   break. Without this one long word pushes the Edit and Delete buttons off the card. */
+	.RouteRolesListItem-name {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+
+		min-width: 0;
+
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--color-fg-12);
+		overflow-wrap: anywhere;
+	}
+
+	.RouteRolesListItem-description {
+		min-width: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+		overflow-wrap: anywhere;
+	}
+
+	.RouteRolesListItem-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex: none;
+	}
+
+	.RouteRolesListItem-permissions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+	}
+	/* #endregion role list item */
+
+	/* #region permission picker */
+	.RouteRolesPermissionPicker {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+	}
+
+	.RouteRolesPermissionPicker-group {
+		margin: 0;
+		padding: 0;
+		border: 0;
+	}
+
+	.RouteRolesPermissionPicker-group-title {
+		padding: 0 0 6px;
+
+		font-size: 12px;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		color: var(--color-fg-08);
+	}
+
+	.RouteRolesPermissionPicker-list {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+	}
+
+	/* A permission needs a label and an explanation, so this row has to wrap and grow. The base
+	   MyButton is one nowrap line 36px tall, which would cut both off. */
+	.RouteRolesPermissionPicker-permission {
+		align-items: start;
+		justify-content: start;
+		white-space: normal;
+
+		width: 100%;
+		height: auto;
+		padding: 8px 10px;
+
+		text-align: start;
+	}
+
+	.RouteRolesPermissionPicker-permission .MyCheckboxButton-box {
+		margin-top: 1px;
+	}
+
+	/* Matches the checkbox row above it: same padding and a transparent border, so a locked permission
+	   sits on the same grid as the ones you can switch. */
+	.RouteRolesPermissionPicker-permission-locked {
+		display: flex;
+		align-items: start;
+		gap: 8px;
+
+		width: 100%;
+		padding: 8px 10px;
+		border: 1px solid transparent;
+
+		color: var(--color-fg-08);
+	}
+
+	.RouteRolesPermissionPicker-permission-locked-icon {
+		flex: none;
+		width: 16px;
+		height: 16px;
+
+		margin-top: 2px;
+	}
+
+	.RouteRolesPermissionPicker-permission-text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		min-width: 0;
+	}
+
+	.RouteRolesPermissionPicker-permission-label {
+		font-size: 13px;
+		font-weight: 500;
+	}
+
+	.RouteRolesPermissionPicker-permission-description {
+		font-size: 12px;
+		line-height: 1.4;
+		font-weight: 400;
+		color: var(--color-fg-08);
+	}
+	/* #endregion permission picker */
+
+	/* #region role editor modal */
+	.RouteRolesEditorModal-fields {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+	}
+	/* #endregion role editor modal */
+
+	@media (max-width: 640px) {
+		.RouteRoles {
+			padding: 16px;
+		}
+
+		.RouteRolesHeader {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.RouteRolesHeader-toolbar {
+			justify-content: start;
+		}
+
+		.RouteRolesListItem-head {
+			flex-direction: column;
+		}
+	}
+}

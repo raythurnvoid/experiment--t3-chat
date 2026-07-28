@@ -24,17 +24,20 @@ Membership says where you are. Access control says what you may do there.
 
 ## Where a role binds
 
-- An assignment on `organization.defaultWorkspaceId` is the **organization-wide** role. It reaches
-  every workspace the user is an active member of.
-- An assignment on any other workspace is **extra elevation** in that workspace only. Roles only ever
-  add, so a weaker workspace-local role cannot take anything away. `set_user_role` refuses one that
-  would change nothing, and takes `role: null` to remove the elevation instead. Without that revoke
-  the two guards deadlock: no weaker role is accepted, and `delete_role` refuses while it is held.
+Two names, used everywhere in this subsystem. Nothing else should be called "extra" or "elevation".
+
+- An assignment on `organization.defaultWorkspaceId` is the **organization role**. It reaches every
+  workspace the user is an active member of.
+- An assignment on any other workspace is a **workspace role**. It works in that workspace only, and
+  it can only add: a weaker workspace role cannot take anything away. `set_user_role` refuses one
+  that would change nothing, and takes `role: null` to remove the workspace role instead. Without
+  that revoke the two guards deadlock: no weaker role is accepted, and `delete_role` refuses while
+  it is held.
 - A permission's `scope` in the catalog decides how far it reaches:
   - `scope: "organization"` binds only from the default-workspace assignment.
   - `scope: "workspace"` binds at the workspace the assignment sits on. The checker does not test
     membership there — the caller already proved it. Membership **is** tested when a workspace-scoped
-    permission arrives from the organization-wide role, because that role reaches workspaces the user
+    permission arrives from the organization role, because that role reaches workspaces the user
     may not belong to.
 
 ## Roles
@@ -46,8 +49,9 @@ Membership says where you are. Access control says what you may do there.
     `content.permissions.manage` (not enforced yet).
   - `member` — `workspace.create`, `workspace.update`, `content.read`, `content.write`.
   - `viewer` — `content.read` only.
-- **Custom roles** are `access_control_roles` docs, organization-wide, at most 20 per organization.
-  Users compose them from the fixed permission catalog; they can never invent a permission.
+- **Custom roles** are `access_control_roles` docs, organization-wide, capped per organization by
+  `MAX_CUSTOM_ROLES` in `convex/access_control.ts`. Users compose them from the fixed permission
+  catalog; they can never invent a permission.
 - An assignment's `role` field is either a system role key or a custom role doc id.
 
 # Tables
@@ -225,7 +229,7 @@ starts writing grants.
   `set_user_role` and `invite_user_to_organization_workspace` all compare the target role's
   permissions against the caller's own set. Without this an admin mints a custom role above itself.
   The rule forbids **escalation, not destruction**. Revoking takes no ceiling: it hands out nothing,
-  and it can only return the target to their organization-wide role, so it never reaches past the
+  and it can only return the target to their organization role, so it never reaches past the
   caller's own level and never drops anyone below the floor every member stands on. Nor do
   `set_user_role` demoting someone out of a strong role, or
   `organizations.remove_user_from_organization`, which has no ceiling at all — an admin can strip a
@@ -259,13 +263,13 @@ starts writing grants.
 - `list_roles({ organizationId })` — any member with an active membership on the **default**
   workspace; `[]` when not one. `assignmentCount` counts assignment **docs, not people** — UI copy has
   to say "assignments". It saturates at `MAX_ROLE_ASSIGNMENT_COUNT`, includes holders in retention, and
-  counts a workspace-local elevation separately, so it can exceed the number of people who actually
+  counts a workspace role separately, so it can exceed the number of people who actually
   have to be moved before a delete.
 - `create_role`, `update_role`, `delete_role` — need `organization.roles.manage`. `delete_role` refuses
   while any holder with an active membership still has the role, and refuses above the assignment cap
   rather than deleting a partial page. An assignment whose holder has no active membership **at that
   assignment's own workspace** is the exception, and is demoted instead: default-workspace rows drop to
-  `viewer`, workspace-local rows are deleted. That demotion is a role hand-out like any other, so it
+  `viewer`, workspace role rows are deleted. That demotion is a role hand-out like any other, so it
   takes the same ceiling — the delete is refused when the caller cannot hand out what `viewer` grants,
   which is reachable because nothing forces a custom role to include `content.read`. Full reasoning
   lives in the code comment above the demotion.
@@ -278,7 +282,7 @@ starts writing grants.
   that disjunction, and each is a state the UI has to render: the caller needs an active membership on
   the **default** workspace whatever their permissions; the target may never be the owner; and the
   target needs an active membership at the workspace being changed. `role: null` revokes a
-  workspace-local elevation; at the default workspace it is refused, because every member needs an
+  workspace role; at the default workspace it is refused, because every member needs an
   organization role and weakening it says the same thing readably. No single handler *checks* that
   invariant; the write paths below establish, preserve and repair it between them.
 - `organization.roles.manage` reaches member authority indirectly: editing a role's permissions
@@ -316,10 +320,10 @@ After seeded grants were removed, the assignment doc is the only source of membe
 non-owner. Production writers are few on purpose:
 
 - `organizations.invite_user_to_organization_workspace` — one `member` assignment on the default
-  workspace. That one doc is the organization-wide role, so no second doc for the invited workspace.
+  workspace. That one doc is the organization role, so no second doc for the invited workspace.
 - `access_control.set_user_role` — the only handler whose *purpose* is changing or revoking a role.
   Three other paths rewrite assignments as a side effect: the two below, and `delete_role` (demote to
-  `viewer`, delete elevations).
+  `viewer`, delete workspace roles).
 - `access_control.transfer_organization_ownership` — deletes **all** of the new owner's assignments in
   the organization, and gives the old owner `member`.
 - the ownership handoff in `data_deletion.ts` — when a deleted user owns a non-default organization
@@ -343,7 +347,7 @@ Paths that deliberately write **none**:
 
 - `organizations_db_create` and every personal-organization creation in `data_deletion.ts` — the
   creator becomes the owner, and owners hold no assignment.
-- `organizations_db_create_workspace` — the creator's organization-wide role already reaches the new
+- `organizations_db_create_workspace` — the creator's organization role already reaches the new
   workspace.
 
 `access_control_db_ensure_role_assignment` inserts when absent, so a repeat call is a no-op.
@@ -458,6 +462,45 @@ Public grant docs are capability-like access, not membership.
 
 Anonymous upgrade semantics live in `../auth-system/SKILL.md`.
 
+# UI surfaces
+
+Two routes reach the whole model. Both are gated by queries, not by route guards, like `users/` and
+`api-keys/` next to them; a member who types the URL gets a read-only page, not a redirect.
+
+- **`/w/:org/:workspace/roles`** authors custom roles. System roles render read-only from
+  `access_control_SYSTEM_ROLE_MATRIX`; custom roles come from `list_roles`. The permission picker
+  offers exactly `access_control_ENFORCED_PERMISSIONS`, grouped by the catalog's `group` in
+  `access_control_PERMISSION_GROUPS` order.
+- **`/w/:org/:workspace/users`** assigns them, through a role select in each member row.
+
+Both mirror the server's ceiling client-side from
+`organizations.list().workspaceIdsPermissionsDict`, which is built by
+`access_control_db_resolve_effective_permissions` with the same arguments the server uses. **The two
+routes read it at different workspaces, on purpose, because the server does:**
+
+- Role CRUD measures the ceiling at the **default** workspace (`authorize_role_management`), so the
+  roles page reads `workspaceIdsPermissionsDict[organization.defaultWorkspaceId]`.
+- `set_user_role` measures it at **`args.workspaceId`**, so the users page reads
+  `workspaceIdsPermissionsDict[workspaceId]`.
+
+Consequences the UI has to carry, each of which is a server rule and not a style choice:
+
+- A role holding a permission the caller lacks **keeps** its Edit and Delete buttons, but they carry
+  `aria-disabled="true"` (never the `disabled` attribute, so they stay focusable and hoverable) and
+  an `aria-describedby` reason naming the missing permission. `update_role` and `delete_role` both
+  refuse that role, so the click does nothing — but a button that silently vanishes teaches nobody
+  the ceiling rule, and this is the rule users hit without warning. The buttons are gone entirely
+  only when the caller may not manage roles at all; the header's `New role` tooltip covers that case.
+- The users-page select lists only roles the caller could hand out, for the same reason.
+- Outside the default workspace the select adds a **`No workspace role`** option that sends
+  `role: null`. Without it a workspace role is permanent: every weaker role is refused by
+  the "adds nothing" rule, and `delete_role` then refuses forever because somebody still holds it.
+- Outside the default workspace the select also appears for `workspace.members.manage`, which
+  `set_user_role` accepts there. Invite and Remove stay on `organization.members.manage`, so those
+  two flags must not be merged into one.
+- The delete dialog must not promise that members are demoted. `delete_role` **refuses** while an
+  active member holds the role; it only demotes holders with no active membership.
+
 # Load the skill that owns each adjacent rule
 
 - `../organizations-tenancy/SKILL.md` — membership, invitations, tenant deletion lifecycle.
@@ -475,3 +518,5 @@ Anonymous upgrade semantics live in `../auth-system/SKILL.md`.
 - `packages/app/convex/access_control.test.ts`
 - `packages/app/convex/organizations.test.ts`
 - `packages/app/convex/data_deletion.test.ts`
+- `packages/app/src/routes/w/$organizationName/$workspaceName/roles/index.tsx` (+ `index.css`, `index.test.tsx`)
+- `packages/app/src/routes/w/$organizationName/$workspaceName/users/index.tsx` (+ `index.test.tsx`)

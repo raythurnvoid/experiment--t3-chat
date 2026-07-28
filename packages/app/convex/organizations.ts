@@ -313,7 +313,7 @@ export async function organizations_db_create_workspace(
 		now: args.now,
 	});
 
-	// We write no role assignment here. The creator's organization-wide role already works in this
+	// We write no role assignment here. The creator's organization role already works in this
 	// workspace through the membership we just created. Also, always giving `member` would let someone
 	// whose role only has `workspace.create` write files in the workspace they just made.
 
@@ -976,8 +976,8 @@ export const invite_user_to_organization_workspace = mutation({
 		//
 		// This runs after the "already a member" return above, because only an invite that really
 		// writes a membership turns anything on. We measure the caller in the target workspace, the
-		// same place `set_user_role` measures them, so a caller with extra power only in this
-		// workspace is still allowed to give what they can already give here.
+		// same place `set_user_role` measures them, so a caller who only holds a workspace role here
+		// is still allowed to give what they can already give here.
 		if (callerPermissions !== "all") {
 			const [inviteePermissions, callerWorkspacePermissions] = await Promise.all([
 				access_control_db_resolve_effective_permissions(ctx, {
@@ -1282,7 +1282,7 @@ export const edit_organization = mutation({
 			defaultWorkspace === null ||
 			defaultWorkspace.organizationId !== args.organizationId ||
 			// We trust only `organization.defaultWorkspaceId`, never the `default` flag on the workspace
-			// doc. The check below treats this id as the place where organization-wide roles work. If we
+			// doc. The check below treats this id as the place where organization roles work. If we
 			// accepted any workspace that calls itself default, a role that exists only in that
 			// workspace could claim organization-wide power.
 			organization.defaultWorkspaceId !== defaultWorkspace._id ||
@@ -1542,7 +1542,7 @@ export const edit_workspace = mutation({
 		}
 
 		// We trust only `organization.defaultWorkspaceId`, never the `default` flag on the workspace doc.
-		// Two sources of truth can disagree, and this one decides where organization-wide roles work.
+		// Two sources of truth can disagree, and this one decides where organization roles work.
 		if (workspace._id === organization.defaultWorkspaceId) {
 			return Result({
 				_nay: {
@@ -1840,7 +1840,7 @@ export const delete_workspace = mutation({
 			});
 		}
 
-		// The organization-wide role works in a workspace only while the caller is a member of it, and
+		// The organization role works in a workspace only while the caller is a member of it, and
 		// the permission check does not verify that. Handlers that use
 		// `access_control_db_authorize_membership` pass it a membership doc. This handler builds the
 		// ids itself, so it has to check membership here.

@@ -111,6 +111,21 @@
 		color: var(--color-fg-12);
 	}
 
+	/* 
+	The role select sits where the badge used to, so it stays 
+	small next to the name instead of
+	growing to the button height the rest of the row uses. 
+	*/
+	.RouteUsersUserListItem-role-select {
+		gap: 4px;
+
+		height: 26px;
+		padding: 2px 6px;
+
+		font-size: 12px;
+		font-weight: 500;
+	}
+
 	.RouteUsersUserListItem-actions {
 		grid-column: 3;
 

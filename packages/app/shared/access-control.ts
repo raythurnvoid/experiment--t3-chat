@@ -22,15 +22,41 @@ export type access_control_ResourceKind = Doc<"access_control_permission_grants"
 type PermissionScope = "organization" | "workspace";
 
 /**
- * The groups that permissions are sorted into. The role editor will add the array that fixes the
- * order they are shown in.
+ * The groups that permissions are sorted into.
  **/
 type PermissionGroup = "Organization" | "Workspaces" | "Content" | "Integrations";
 
 /**
+ * Sort rank of each permission group: power over the whole organization first, then the shape of its
+ * workspaces, then everyday content, then add-ons.
+ *
+ * Written as a full map on purpose: a group added to `PermissionGroup` without a rank here is a type
+ * error. Without that, the role editor would simply never show that group's permissions.
+ */
+const PERMISSION_GROUP_ORDER = {
+	Organization: 0,
+	Workspaces: 1,
+	Content: 2,
+	Integrations: 3,
+} satisfies Record<PermissionGroup, number>;
+
+/** The permission groups the role editor shows, in order. */
+export const access_control_PERMISSION_GROUPS = (Object.keys(PERMISSION_GROUP_ORDER) as PermissionGroup[]).sort(
+	(a, b) => PERMISSION_GROUP_ORDER[a] - PERMISSION_GROUP_ORDER[b],
+);
+
+/**
+ * Name and description limits of a custom role. Shared because the role editor puts them on its
+ * inputs, so the form stops text the server would refuse anyway.
+ **/
+export const access_control_MAX_ROLE_NAME_LENGTH = 40;
+
+export const access_control_MAX_ROLE_DESCRIPTION_LENGTH = 200;
+
+/**
  * Display text and scope for every permission. The permission check reads `scope` from here, and the
- * role editor will show `label`, `description` and `group`. So this list is the one place both read
- * from. Today only `label` and `scope` are used; `description` and `group` wait for the editor.
+ * role editor shows `label`, `description` and `group`. So this list is the one place both read
+ * from.
  *
  * Every permission here must be checked somewhere in the code. A permission that is not checked yet
  * must be marked with `enforcedBy: "file-sharing"` and arrive with that milestone. A permission the

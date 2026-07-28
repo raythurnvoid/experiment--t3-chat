@@ -6,6 +6,8 @@ import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/s
 import {
 	access_control_ENFORCED_PERMISSIONS,
 	access_control_is_system_role,
+	access_control_MAX_ROLE_DESCRIPTION_LENGTH,
+	access_control_MAX_ROLE_NAME_LENGTH,
 	access_control_PERMISSION_CATALOG,
 	access_control_RESERVED_ROLE_NAMES,
 	access_control_SYSTEM_ROLE_MATRIX,
@@ -28,10 +30,6 @@ export const experimental_reuseContext = true;
 
 /** Most custom roles an organization may define. */
 const MAX_CUSTOM_ROLES = 20;
-
-const MAX_ROLE_NAME_LENGTH = 40;
-
-const MAX_ROLE_DESCRIPTION_LENGTH = 200;
 
 /**
  * How many assignments of one role we ever load at once.
@@ -154,7 +152,7 @@ function db_get_active_membership(
 
 /**
  * The roles that apply to a user in one workspace: the role they have in that workspace, plus their
- * organization-wide role, which is stored on the default workspace.
+ * organization role, which is stored on the default workspace.
  */
 async function resolve_role_refs(
 	ctx: QueryCtx | MutationCtx,
@@ -195,7 +193,7 @@ async function resolve_role_refs(
  *
  * This function does not check that the user is a member of the workspace; the caller must do that.
  * `access_control_db_has_permission` is almost the same, but it does check membership in one case: a
- * workspace-scoped permission that arrives from the organization-wide role, which otherwise would
+ * workspace-scoped permission that arrives from the organization role, which otherwise would
  * reach workspaces the user does not belong to. This function skips that check, so every caller that
  * lets a user *do* something must prove membership first. The one caller that does not need to is the
  * "would this role change anything" test in `set_user_role`: it only asks what a user already has.
@@ -377,7 +375,7 @@ export async function access_control_db_ensure_role_assignment(
 }
 
 /**
- * Give one membership the organization-wide `member` role, when that membership needs one.
+ * Give one membership the `member` organization role, when that membership needs one.
  *
  * A membership on its own gives no permission any more, so a membership written or reactivated
  * without an assignment would quietly see an empty file tree instead of an error. `member` is the
@@ -385,7 +383,7 @@ export async function access_control_db_ensure_role_assignment(
  *
  * It does nothing in three cases: the user owns the organization (owners have no assignment doc),
  * the organization has no default workspace (logged, not thrown), and the membership is outside the
- * default workspace (the assignment there is already the organization-wide role).
+ * default workspace (the assignment there is already the organization role).
  *
  * Callers run during sign-in and during migrations, where one broken organization must not stop the
  * whole job, so this never throws.
@@ -515,7 +513,7 @@ async function has_restricted_file_permission(
  *
  * The caller must load the file, workspace, or organization first and pass the ids taken from it.
  * This helper does not load the organization, and it checks workspace membership in one case only: a
- * workspace-scoped permission that arrives from the organization-wide role, which otherwise would
+ * workspace-scoped permission that arrives from the organization role, which otherwise would
  * reach workspaces the user does not belong to. In every other case the handler that calls this must
  * check membership itself.
  *
@@ -590,7 +588,7 @@ export async function access_control_db_has_permission(
 	const scope = access_control_PERMISSION_CATALOG[args.permission].scope;
 
 	// An organization-scoped permission only works when it comes from the default workspace, because
-	// that is where a user's organization-wide role is stored.
+	// that is where a user's organization role is stored.
 	if (scope === "workspace" || args.workspaceId === args.defaultWorkspaceId) {
 		const assignment = await db_get_role_assignment(ctx, {
 			organizationId: args.organizationId,
@@ -612,7 +610,7 @@ export async function access_control_db_has_permission(
 		return false;
 	}
 
-	// Nothing so far, so try the organization-wide role, stored on the default workspace.
+	// Nothing so far, so try the organization role, stored on the default workspace.
 	const defaultAssignment = await db_get_role_assignment(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.defaultWorkspaceId,
@@ -718,7 +716,7 @@ export async function access_control_db_authorize_membership(
 /**
  * The role to show in the UI for a user in one workspace.
  *
- * When the user has no role in that workspace, it falls back to their organization-wide role from
+ * When the user has no role in that workspace, it falls back to their organization role from
  * the default workspace, the same way the permission check does. So someone who can work in a
  * workspace is never shown as having no role there.
  */
@@ -818,7 +816,7 @@ export const get_organization_workspace_user_role = query({
 		]);
 
 		// We need both memberships, not only the caller's. `resolve_display_role` answers `owner`
-		// before it reads anything, and otherwise falls back to the organization-wide role. So without
+		// before it reads anything, and otherwise falls back to the organization role. So without
 		// checking the target's membership, this query would report a role for someone who is not in
 		// this workspace at all — for example an account being deleted, whose membership is inactive
 		// but whose role assignment is still there. Callers only ask about users they took from this
@@ -1006,8 +1004,8 @@ async function validate_role_name(
 	if (name.length === 0) {
 		return Result({ _nay: { message: "Name cannot be empty" } });
 	}
-	if (name.length > MAX_ROLE_NAME_LENGTH) {
-		return Result({ _nay: { message: `Name must be at most ${MAX_ROLE_NAME_LENGTH} characters` } });
+	if (name.length > access_control_MAX_ROLE_NAME_LENGTH) {
+		return Result({ _nay: { message: `Name must be at most ${access_control_MAX_ROLE_NAME_LENGTH} characters` } });
 	}
 
 	const normalizedName = name.toLowerCase();
@@ -1088,8 +1086,8 @@ export const list_roles = query({
 					.take(MAX_ROLE_ASSIGNMENT_COUNT);
 
 				// This counts assignment docs, not people. It also counts users whose account is being
-				// deleted, and it counts an extra role in one workspace apart from the organization-wide
-				// role. Only users with an active membership block `delete_role`, so this number can be
+				// deleted, and it counts a workspace role apart from the same user's organization role.
+				// Only users with an active membership block `delete_role`, so this number can be
 				// higher than the number of users who really must be moved off the role first. Loading
 				// every membership to make it exact would cost one read per assignment per role.
 				return {
@@ -1147,8 +1145,10 @@ export const create_role = mutation({
 		}
 
 		const description = args.description.trim();
-		if (description.length > MAX_ROLE_DESCRIPTION_LENGTH) {
-			return Result({ _nay: { message: `Description must be at most ${MAX_ROLE_DESCRIPTION_LENGTH} characters` } });
+		if (description.length > access_control_MAX_ROLE_DESCRIPTION_LENGTH) {
+			return Result({
+				_nay: { message: `Description must be at most ${access_control_MAX_ROLE_DESCRIPTION_LENGTH} characters` },
+			});
 		}
 
 		const existingRoles = await ctx.db
@@ -1156,7 +1156,9 @@ export const create_role = mutation({
 			.withIndex("by_organization_normalizedName", (q) => q.eq("organizationId", organization._id))
 			.take(MAX_CUSTOM_ROLES);
 		if (existingRoles.length >= MAX_CUSTOM_ROLES) {
-			return Result({ _nay: { message: `An organization can have at most ${MAX_CUSTOM_ROLES} custom roles` } });
+			return Result({
+				_nay: { message: `An organization can have at most ${MAX_CUSTOM_ROLES} custom roles` },
+			});
 		}
 
 		const now = Date.now();
@@ -1239,8 +1241,10 @@ export const update_role = mutation({
 
 		if (args.description != null) {
 			const description = args.description.trim();
-			if (description.length > MAX_ROLE_DESCRIPTION_LENGTH) {
-				return Result({ _nay: { message: `Description must be at most ${MAX_ROLE_DESCRIPTION_LENGTH} characters` } });
+			if (description.length > access_control_MAX_ROLE_DESCRIPTION_LENGTH) {
+				return Result({
+					_nay: { message: `Description must be at most ${access_control_MAX_ROLE_DESCRIPTION_LENGTH} characters` },
+				});
 			}
 			patch.description = description;
 		}
@@ -1355,7 +1359,7 @@ export const delete_role = mutation({
 
 		// Every user left here has no active membership in the workspace of their assignment, so
 		// `set_user_role` refuses to move them off the role. In practice their account is being deleted.
-		// The assignment on the default workspace is their organization-wide role, and every member
+		// The assignment on the default workspace is their organization role, and every member
 		// needs one, so we lower it to the weakest role instead of deleting it. Deleting it would not
 		// leave them with nothing: `users.resolve_user` writes `member` back if they come back, which
 		// is more than the role they really had. Writing `viewer` keeps the fallback clear and small,
@@ -1405,7 +1409,7 @@ export const set_user_role = mutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
-		// `null` removes an extra role given inside one workspace. Without it, that extra power could
+		// `null` removes the workspace role. Without it, a workspace role could
 		// never be taken back: any weaker role is rejected by the "changes nothing" rule below, and
 		// `delete_role` refuses while somebody still holds the role. The two checks would block each
 		// other forever.
@@ -1486,7 +1490,7 @@ export const set_user_role = mutation({
 			// `workspace.members.manage` never works in the default workspace, because roles there are
 			// organization-wide. It also works only in a workspace the caller belongs to, the same rule
 			// the permission check uses for every other workspace-scoped permission. Without the
-			// membership test, an organization-wide role holding only this permission could give write
+			// membership test, an organization role holding only this permission could give write
 			// access inside a workspace where its own holder cannot read a single file.
 			(!isDefaultWorkspace && Boolean(callerWorkspaceMembership) && callerPermissions.has("workspace.members.manage"));
 		if (!canManage) {
@@ -1494,7 +1498,7 @@ export const set_user_role = mutation({
 		}
 
 		if (args.role === null) {
-			// The assignment on the default workspace is the organization-wide role, and every member has
+			// The assignment on the default workspace is the organization role, and every member has
 			// one. Removing it would leave a member who can open the app but do nothing in it, and the
 			// members page would have no name to show for that state. Setting a weaker role says the
 			// same thing and stays readable.
@@ -1508,10 +1512,10 @@ export const set_user_role = mutation({
 
 			// Removing a role does not check what the caller has, unlike giving a role below. That check
 			// exists so nobody gives out more than they have, and removing gives out nothing: it can only
-			// send the target back to their organization-wide role, which every member already has. So
-			// the worst a caller can do here is undo extra power. They can never go above their own
-			// level, and never push somebody below the normal floor. It does mean a caller can remove
-			// extra power that they could not give back; the owner can restore it.
+			// send the target back to their organization role, which every member already has. So
+			// the worst a caller can do here is take a workspace role away. They can never go above
+			// their own level, and never push somebody below the normal floor. It does mean a caller
+			// can remove a workspace role they could not give back; the owner can restore it.
 			const assignment = await db_get_role_assignment(ctx, {
 				organizationId: organization._id,
 				workspaceId: args.workspaceId,
@@ -1535,10 +1539,10 @@ export const set_user_role = mutation({
 		// Nobody may give out more than they have. We compare every permission in the role, even one
 		// that would do nothing in this workspace today. That way the saved assignment never promises
 		// more than the caller could give. If we compared only the permissions that work today, the doc
-		// would become extra power on the day those rules change.
+		// grant more than the caller has on the day those rules change.
 		//
 		// `callerPermissions` is read at `args.workspaceId`, and
-		// `access_control_db_resolve_effective_permissions` also adds the organization-wide role
+		// `access_control_db_resolve_effective_permissions` also adds the organization role
 		// without checking membership. So a caller who is not a member here can look like they hold
 		// workspace-scoped permissions that the permission check would refuse them in this workspace.
 		// That looks like a hole but is not one. The same caller can give the same role in the default
@@ -1558,7 +1562,7 @@ export const set_user_role = mutation({
 			}
 		}
 
-		// Roles can only add power. A workspace role weaker than the organization-wide role changes
+		// Roles can only add power. A workspace role weaker than the organization role changes
 		// nothing. Accepting it would report success, show the weaker name on the members page, and
 		// still leave the user with all their old access.
 		if (!isDefaultWorkspace) {

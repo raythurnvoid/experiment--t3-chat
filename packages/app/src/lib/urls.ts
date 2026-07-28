@@ -65,6 +65,10 @@ export function url_path_users(args: { organizationName: string; workspaceName: 
 	return `/w/${args.organizationName}/${args.workspaceName}/users`;
 }
 
+export function url_path_roles(args: { organizationName: string; workspaceName: string }) {
+	return `/w/${args.organizationName}/${args.workspaceName}/roles`;
+}
+
 export function url_path_plugins(args: { organizationName: string; workspaceName: string }) {
 	return `/w/${args.organizationName}/${args.workspaceName}/plugins`;
 }

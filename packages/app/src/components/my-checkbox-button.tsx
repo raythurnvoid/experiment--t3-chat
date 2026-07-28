@@ -58,7 +58,10 @@ export type MyCheckboxButton_Props = Omit<
 	className?: string;
 	style?: ComponentPropsWithRef<"label">["style"];
 	inputClassName?: string;
-	variant?: "ghost_destructive" | "outline_destructive";
+	/**
+	 * `outline` is for a checkbox that picks something; the destructive ones remove something.
+	 **/
+	variant?: "ghost_destructive" | "outline_destructive" | "outline";
 	children?: ReactNode;
 	onCheckedChange?: (checked: boolean) => void;
 };
@@ -90,10 +93,9 @@ export const MyCheckboxButton = memo(function MyCheckboxButton(props: MyCheckbox
 				"MyCheckboxButton" satisfies MyCheckboxButton_ClassNames,
 				"MyButton" satisfies MyButton_ClassNames,
 				disabled && ("MyButton-state-disabled" satisfies MyButton_ClassNames),
-				variant === "ghost_destructive" &&
-					("MyButton-variant-ghost_destructive" satisfies MyButton_ClassNames),
-				variant === "outline_destructive" &&
-					("MyButton-variant-outline_destructive" satisfies MyButton_ClassNames),
+				variant === "ghost_destructive" && ("MyButton-variant-ghost_destructive" satisfies MyButton_ClassNames),
+				variant === "outline_destructive" && ("MyButton-variant-outline_destructive" satisfies MyButton_ClassNames),
+				variant === "outline" && ("MyButton-variant-outline" satisfies MyButton_ClassNames),
 				className,
 			)}
 			style={style}
