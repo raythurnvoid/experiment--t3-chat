@@ -31,7 +31,10 @@ import {
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
-import { access_control_db_authorize_membership } from "./access_control.ts";
+import {
+	access_control_db_authorize_membership,
+	access_control_db_filter_readable_file_nodes,
+} from "./access_control.ts";
 import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -436,6 +439,12 @@ export const get_data_for_public_download_url = internalQuery({
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		fileNodeId: v.string(),
+		/**
+		 * Who is asking. Required, not optional, so a new caller cannot forget it and hand out a signed
+		 * URL for a restricted file. The tenant check below is not enough on its own: a node id from
+		 * before the file was restricted still names a node in the right workspace.
+		 */
+		visibilityUserId: v.id("users"),
 	},
 	returns: v.union(
 		v.object({
@@ -471,6 +480,16 @@ export const get_data_for_public_download_url = internalQuery({
 			!fileNode.assetId ||
 			!fileNode.contentType
 		) {
+			return null;
+		}
+
+		const [readableNode] = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.visibilityUserId,
+			nodes: [fileNode],
+		});
+		if (!readableNode) {
 			return null;
 		}
 

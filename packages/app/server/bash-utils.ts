@@ -524,6 +524,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				: (this.ctx.runQuery(internal.files_nodes.get_by_path, {
 						organizationId: this.ctxData.organizationId,
 						workspaceId: this.ctxData.workspaceId,
+						visibilityUserId: this.ctxData.userId,
 						path: dbFilesPath,
 						overlayUserId: this.overlayUserId,
 					}) as Promise<files_nodes_get_by_path_Result>);
@@ -1097,6 +1098,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		const dbFilesDoc = (await this.ctx.runQuery(internal.files_nodes.get_by_path, {
 			organizationId: this.ctxData.organizationId,
 			workspaceId: this.ctxData.workspaceId,
+			visibilityUserId: this.ctxData.userId,
 			path: normalizedPath,
 			overlayUserId: this.overlayUserId,
 		})) as files_nodes_get_by_path_Result;

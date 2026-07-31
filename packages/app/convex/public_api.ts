@@ -271,6 +271,11 @@ async function authorize_credential_management(
 	return Result({ _yay: { user, membership, organization, workspace } });
 }
 
+/**
+ * Pass `fileNode` when the answer is about one file. Without it the question is about the workspace,
+ * and a restricted file would be judged by the caller's role, which is exactly what a restriction
+ * takes away.
+ */
 async function has_workspace_content_permission(
 	ctx: QueryCtx,
 	args: {
@@ -278,6 +283,7 @@ async function has_workspace_content_permission(
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		permission: "content.read" | "content.write";
+		fileNode?: Doc<"files_nodes">;
 	},
 ) {
 	const [organization, workspace] = await Promise.all([
@@ -298,7 +304,13 @@ async function has_workspace_content_permission(
 		workspaceId: workspace._id,
 		defaultWorkspaceId: organization.defaultWorkspaceId,
 		organizationOwnerUserId: organization.ownerUserId,
-		resource: { kind: "workspace", id: String(workspace._id) },
+		resource: args.fileNode
+			? {
+					kind: "file",
+					id: String(args.fileNode._id),
+					restrictedScopeNodeId: args.fileNode.restrictedScopeNodeId ?? null,
+				}
+			: { kind: "workspace", id: String(workspace._id) },
 		permission: args.permission,
 		userId: args.userId,
 	});
@@ -1039,6 +1051,17 @@ type Principal = NonNullable<public_api_resolve_principal_Result["_yay"]>;
  * through here, except plugins_runtime's runner-host route, which applies the plugin_run
  * expiry inline because a value import from this module would be a runtime cycle.
  */
+/**
+ * Whose eyes a public-API call reads files with.
+ *
+ * A plugin run has no user of its own, so it reads as the person whose upload started it. Without
+ * that rule, installing a plugin would be a way around a restricted folder: run it over the folder
+ * and read what it writes back. Every other principal kind carries the user it belongs to.
+ */
+export function public_api_visibility_user_id(principal: { actorUserId: Id<"users"> } | { userId: Id<"users"> }) {
+	return "actorUserId" in principal ? principal.actorUserId : principal.userId;
+}
+
 export async function public_api_resolve_live_principal(
 	ctx: ActionCtx,
 	args: {
@@ -1592,6 +1615,21 @@ export const publish_file_write = internalMutation({
 			)
 			.first();
 		if (activeNode) {
+			// This lookup is raw on purpose: a path holds one active node, so a restricted file the caller
+			// cannot see still has to block the create below, or two nodes would end up on one path. That
+			// makes the node-level check the only thing standing between the caller and somebody else's
+			// restricted file, which `replace` would archive.
+			if (
+				!(await has_workspace_content_permission(ctx, {
+					organizationId: stage.organizationId,
+					workspaceId: stage.workspaceId,
+					userId: stage.userId,
+					permission: "content.write",
+					fileNode: activeNode,
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
 			if (activeNode.kind !== "file") {
 				return Result({ _nay: { message: "A folder already exists at this path" } });
 			}
@@ -1736,6 +1774,21 @@ export const publish_file_fill = internalMutation({
 			return Result({ _nay: { message: "The file changed during the write" } });
 		}
 
+		// `db_revalidate_file_write_principal` above asks about the workspace, and a write can be staged
+		// for a while. This is the commit, so the node itself is asked again here: a grant taken away
+		// during staging has to stop the write, not arrive too late.
+		if (
+			!(await has_workspace_content_permission(ctx, {
+				organizationId: stage.organizationId,
+				workspaceId: stage.workspaceId,
+				userId: stage.userId,
+				permission: "content.write",
+				fileNode,
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
 		const contentSnapshotAsset = await ctx.db.get("files_r2_assets", stage.contentSnapshotAssetId);
 		if (!contentSnapshotAsset) {
 			// Unreachable while the stage exists: cleanup deletes the asset docs and the stage together.
@@ -1862,6 +1915,21 @@ export const publish_file_touch = internalMutation({
 			)
 			.first();
 		if (activeNode) {
+			// This lookup is raw, because a path holds one active node and a restricted one still has to
+			// stop the create below. So it can find a file the caller may not touch, and answering the
+			// touch would hand back its stable node id.
+			if (
+				!(await has_workspace_content_permission(ctx, {
+					organizationId: stage.organizationId,
+					workspaceId: stage.workspaceId,
+					userId: stage.userId,
+					permission: "content.write",
+					fileNode: activeNode,
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+
 			if (activeNode.kind !== "file") {
 				return Result({ _nay: { message: "A folder already exists at this path" } });
 			}
@@ -2008,6 +2076,7 @@ export const start_run_activity = internalMutation({
 				pluginName: version.name,
 			},
 			title: args.title || `${version.displayName} plugin · ${fileNode.name}`,
+			target: { type: "file_node", id: fileNode._id, path: fileNode.path, message: "" },
 			timeoutAt: now + args.timeoutMs,
 			now,
 		});
@@ -2173,6 +2242,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const result = await ctx.runQuery(internal.files_nodes.list_subtree, {
 								organizationId: principal.organizationId,
 								workspaceId: principal.workspaceId,
+								visibilityUserId: public_api_visibility_user_id(principal),
 								folderPath: requestedPath,
 								numItems,
 								cursor: body._yay.cursor ?? null,
@@ -2608,6 +2678,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const activeNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 								organizationId: principal.organizationId,
 								workspaceId: principal.workspaceId,
+								visibilityUserId: public_api_visibility_user_id(principal),
 								path: requestedPath,
 							})) as files_nodes_get_by_path_Result;
 							if (activeNode?.kind === "folder") {
@@ -3112,6 +3183,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								const activeNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 									organizationId: principal.organizationId,
 									workspaceId: principal.workspaceId,
+									visibilityUserId: public_api_visibility_user_id(principal),
 									path: requestedPath,
 								})) as files_nodes_get_by_path_Result;
 								if (activeNode?.kind === "folder") {
@@ -3380,6 +3452,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 										organizationId: principal.organizationId,
 										workspaceId: principal.workspaceId,
 										fileNodeId,
+										visibilityUserId: public_api_visibility_user_id(principal),
 									}),
 								),
 							);
@@ -3435,6 +3508,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 												organizationId: principal.organizationId,
 												workspaceId: principal.workspaceId,
 												fileNodeId: data.fileNode._id,
+												visibilityUserId: public_api_visibility_user_id(principal),
 											},
 										);
 										return refreshed?.asset.r2Key ?? null;

@@ -564,6 +564,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			const scopedFolder = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 				organizationId: scope.ctxData.organizationId,
 				workspaceId: scope.ctxData.workspaceId,
+				visibilityUserId: scope.ctxData.userId,
 				path: scope.dbFilesPath,
 				overlayUserId: scope.fs.overlayUserId,
 			})) as files_nodes_get_by_path_Result;

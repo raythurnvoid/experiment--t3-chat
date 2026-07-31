@@ -197,6 +197,7 @@ async function find_oversized_file_operand(
 				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 						organizationId: pathResolution.ctxData.organizationId,
 						workspaceId: pathResolution.ctxData.workspaceId,
+						visibilityUserId: pathResolution.ctxData.userId,
 						path: pathResolution.dbFilesPath,
 						overlayUserId: pathResolution.fs.overlayUserId,
 					})) as files_nodes_get_by_path_Result);
@@ -298,6 +299,7 @@ export function bash_head_tail_wc_command_create(
 							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 									organizationId: pathResolution.ctxData.organizationId,
 									workspaceId: pathResolution.ctxData.workspaceId,
+									visibilityUserId: pathResolution.ctxData.userId,
 									path: dbFilesPath,
 									overlayUserId: pathResolution.fs.overlayUserId,
 								})) as files_nodes_get_by_path_Result);
@@ -564,6 +566,7 @@ export function bash_head_tail_wc_command_create(
 							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 									organizationId: pathResolution.ctxData.organizationId,
 									workspaceId: pathResolution.ctxData.workspaceId,
+									visibilityUserId: pathResolution.ctxData.userId,
 									path: dbFilesPath,
 									overlayUserId: pathResolution.fs.overlayUserId,
 								})) as files_nodes_get_by_path_Result);

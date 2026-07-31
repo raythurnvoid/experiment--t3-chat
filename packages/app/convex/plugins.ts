@@ -46,7 +46,7 @@ import { github_fetch_repo_head, github_fetch_with_retry, github_raw_url } from 
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { crypto_decrypt_secret_value, crypto_encrypt_secret_value, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
-import { access_control_db_has_permission } from "./access_control.ts";
+import { access_control_db_filter_readable_file_nodes, access_control_db_has_permission } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2_delete_object, r2_fetch_object_from_bucket, r2_put_object } from "./r2.ts";
 import { files_nodes_db_delete_subtree_batch } from "./files_nodes.ts";
@@ -3238,8 +3238,10 @@ export const list_recent_runs = query({
 
 		// `workspace.plugins.manage` and `content.read` are two different permissions, and a custom role
 		// can have one without the other. We still return the run docs, because someone who manages
-		// plugins has to see failures. But the file a run touched is workspace content, so without
-		// `content.read` it becomes `null` — the same value a run whose file was deleted returns.
+		// plugins has to see failures. The file a run touched is workspace content, so it becomes `null`
+		// unless this caller may read that one file — the same value a run whose file was deleted returns.
+		// A failed check does not decide on its own: it is handed to the filter below, because a grant on
+		// one folder is enough to read the runs about what is inside it.
 		//
 		// `file` is the only content field hidden here. `errorMessage` is text written by the plugin and
 		// can still contain a path; that is the plugin author's choice.
@@ -3260,12 +3262,29 @@ export const list_recent_runs = query({
 			.order("desc")
 			.take(PLUGIN_RECENT_RUNS_LIMIT);
 
+		// `canReadContent` answered for the workspace, and a run's file can sit in a restricted folder.
+		// Same rule as the file lists: the name and path go away with the file, so managing plugins is not
+		// a way to read what is inside a folder you were never given. Asked once for the whole page,
+		// because the filter answers once per restricted scope and these runs usually share one.
+		const runFileNodes = await Promise.all(runs.map((run) => ctx.db.get("files_nodes", run.fileNodeId)));
+		const readableNodeIds = new Set(
+			(
+				await access_control_db_filter_readable_file_nodes(ctx, {
+					organizationId: authorization._yay.membership.organizationId,
+					workspaceId: authorization._yay.membership.workspaceId,
+					userId: userAuth.id,
+					nodes: runFileNodes.filter((fileNode) => fileNode !== null),
+					hasWorkspaceRead: canReadContent,
+				})
+			).map((fileNode) => fileNode._id),
+		);
+
 		return await Promise.all(
-			runs.map(async (run) => {
-				const [fileNode, asset] = await Promise.all([
-					canReadContent ? ctx.db.get("files_nodes", run.fileNodeId) : null,
-					canReadContent ? ctx.db.get("files_r2_assets", run.assetId) : null,
-				]);
+			runs.map(async (run, runIndex) => {
+				const fileNode = runFileNodes[runIndex];
+				const readableFileNode = fileNode && readableNodeIds.has(fileNode._id) ? fileNode : null;
+				const asset = readableFileNode ? await ctx.db.get("files_r2_assets", run.assetId) : null;
+
 				return {
 					_id: run._id,
 					event: run.event,
@@ -3283,11 +3302,11 @@ export const list_recent_runs = query({
 					...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }),
 					...(run.finishedAt === undefined ? {} : { finishedAt: run.finishedAt }),
 					file:
-						fileNode && asset
+						readableFileNode && asset
 							? {
-									name: fileNode.name,
-									path: fileNode.path,
-									contentType: fileNode.contentType ?? null,
+									name: readableFileNode.name,
+									path: readableFileNode.path,
+									contentType: readableFileNode.contentType ?? null,
 									size: asset.size,
 								}
 							: null,

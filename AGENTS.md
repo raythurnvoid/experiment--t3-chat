@@ -1270,9 +1270,22 @@ The `SearchProvider` example above is the canonical attached-hook pattern.
 - For browser calls to app-owned HTTP routes, use helpers in `packages/app/src/lib/fetch.ts`, including `app_fetch_main_api_url(...)` when building an app URL.
 - Third-party services use their own documented base URLs and clients. Never use `VITE_CONVEX_HTTP_URL` as a third-party origin.
 
+# Verifying a fix or a review report
+
+A flow that runs without an error only proves the code did not crash. It does not prove the reported problem is gone. Never report a fix as verified on that basis.
+
+- Prove the problem is real before fixing it. Read the claim against the actual code, and say plainly when a claim is wrong or bigger than the code supports. Show the code that settles it.
+- Prove the fix works by making the check fail on purpose. Turn the fix off, watch the check fail, turn it back on, watch it pass. A check that stays green with the fix removed proves nothing.
+- Check the exact thing the report describes, in the place it describes. A nearby check that looks similar is not the same check.
+- Say which checks ran, which passed, and what you could not verify.
+
 # Browser QA
 
 For live browser inspection or UI QA, use Playwriter and load `.agents/skills/app-playwriter-harness/SKILL.md`. Use another browser tool only when Playwriter cannot perform the task or the user requests it.
+
+Run a Playwriter check for every change the running app can reach, not only for UI work. Backend-only changes count: tests run against their own harness, so they cannot show that the real app still reaches the changed code. Drive the flow that the change affects, and follow the verification rules above — walking a happy path is not a check. Say so explicitly when a change genuinely cannot be reached from the app.
+
+Before trusting any browser result about Convex code, check that the browser runs your working tree. `pnpm run dev` starts Vite only; the app then talks to the deployment already in `packages/app/.env.local`, so edits under `convex/` reach the browser only while `convex dev` is pushing them. Prove it once per session by breaking one check on purpose and watching the app's behaviour change. Without that, a green browser run says nothing about your edits.
 
 # Temporary debug logging
 

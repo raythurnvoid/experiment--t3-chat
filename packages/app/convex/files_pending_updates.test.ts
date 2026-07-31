@@ -8,6 +8,7 @@ import type { MutationCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
 import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared/billing.ts";
 import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 
 const test = baseTest;
 import { billing_event } from "../server/billing.ts";
@@ -2090,6 +2091,7 @@ describe("pending update provenance", () => {
 		const hiddenSource = await t.query(internal.files_nodes.get_by_path, {
 			organizationId: dest.organizationId,
 			workspaceId: dest.workspaceId,
+			visibilityUserId: dest.userId,
 			path: "/identical-replace-src.md",
 			overlayUserId: dest.userId,
 		});
@@ -2097,6 +2099,7 @@ describe("pending update provenance", () => {
 		const committedSource = await t.query(internal.files_nodes.get_by_path, {
 			organizationId: dest.organizationId,
 			workspaceId: dest.workspaceId,
+			visibilityUserId: dest.userId,
 			path: "/identical-replace-src.md",
 		});
 		expect(committedSource?._id).toBe(source.nodeId);
@@ -2191,6 +2194,168 @@ describe("pending update provenance", () => {
 			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: sourceRow._id });
 			expect(cleanupTasks).toHaveLength(0);
 		});
+	});
+
+	/**
+	 * A replace-move proposed by somebody who is not the organization owner, where the destination is
+	 * restricted and shared with them but the source is an open file the workspace role decides.
+	 *
+	 * `role` is what that person holds when the save lands: `member` can write workspace content,
+	 * `viewer` cannot. A proposal outlives the access that made it, so the save has to ask again.
+	 */
+	async function seed_cross_scope_replace_move(args: {
+		t: ReturnType<typeof test_convex>;
+		suffix: string;
+		role: "member" | "viewer";
+	}) {
+		const t = args.t;
+		const source = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: `/replace-perm-src-${args.suffix}.md`,
+				name: `replace-perm-src-${args.suffix}.md`,
+				markdown: "# Replace permission source",
+			}),
+		);
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: `/replace-perm-dest-${args.suffix}.md`,
+				name: `replace-perm-dest-${args.suffix}.md`,
+				markdown: "# Replace permission dest",
+				membership: {
+					userId: source.userId,
+					organizationId: source.organizationId,
+					workspaceId: source.workspaceId,
+					membershipId: source.membershipId,
+				},
+			}),
+		);
+
+		// The seeded user owns the organization and passes every check, so the save has to be made by
+		// somebody else. This one is restricted to the destination and holds nothing on the source.
+		const sharee = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: `clerk_replace_perm_${args.suffix}` });
+			await seed_billing_snapshot_for_user(ctx, userId);
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: source.organizationId,
+				workspaceId: source.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: source.organizationId,
+				workspaceId: source.workspaceId,
+				userId,
+				role: args.role,
+				now,
+			});
+
+			// Restrict the destination and share it, without going through the sharing mutations: this
+			// test is about the save, and the owner's rate limit is not part of it.
+			await ctx.db.patch("files_nodes", dest.nodeId, { restrictedScopeNodeId: dest.nodeId });
+			for (const permission of ["content.read", "content.write"] as const) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: source.organizationId,
+					workspaceId: source.workspaceId,
+					resourceKind: "file",
+					resourceId: String(dest.nodeId),
+					principalKind: "user",
+					userId,
+					permission,
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+
+			return { userId, membershipId };
+		});
+
+		// Staged as well as unstaged: a save that publishes nothing never reaches the archive at all,
+		// and both tests below would pass without proving anything.
+		const replacementMarkdown = normalize_pending_update_markdown(`${source.baseMarkdown}\n\nMoved in`);
+		const proposed = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: source.organizationId,
+			workspaceId: source.workspaceId,
+			userId: sharee.userId,
+			nodeId: dest.nodeId,
+			stagedMarkdown: replacementMarkdown,
+			unstagedMarkdown: replacementMarkdown,
+			copiedFrom: {
+				nodeId: source.nodeId,
+				path: `/replace-perm-src-${args.suffix}.md`,
+				archivesSourceOnAccept: true,
+			},
+		});
+		if (proposed._nay) {
+			throw new Error(proposed._nay.message);
+		}
+
+		const asSharee = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: sharee.userId,
+			name: "Sharee",
+		});
+
+		return {
+			sourceNodeId: source.nodeId,
+			destNodeId: dest.nodeId,
+			organizationId: source.organizationId,
+			workspaceId: source.workspaceId,
+			membershipId: sharee.membershipId,
+			asSharee,
+		};
+	}
+
+	test("accepting a replace-move does not archive a source the saver may no longer write", async () => {
+		const t = test_convex();
+		const seeded = await seed_cross_scope_replace_move({ t, suffix: "viewer", role: "viewer" });
+
+		const saved = await seeded.asSharee.action(api.ai_chat.save_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.destNodeId,
+		});
+		if (saved._nay) {
+			throw new Error(saved._nay.message);
+		}
+
+		// The save itself went through, so the archive below was skipped on purpose and not because
+		// nothing was published.
+		const committedMarkdown = await t.run((ctx) =>
+			read_file_markdown_from_yjs({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				nodeId: seeded.destNodeId,
+			}),
+		);
+		expect(committedMarkdown).toContain("Moved in");
+
+		// The grant covers the destination only. The source is open, and this role cannot write open
+		// content, so accepting must not consume it.
+		const sourceNode = await t.run((ctx) => ctx.db.get("files_nodes", seeded.sourceNodeId));
+		expect(sourceNode?.archiveOperationId).toBeUndefined();
+	});
+
+	test("accepting a replace-move still archives a source the saver may write", async () => {
+		const t = test_convex();
+		const seeded = await seed_cross_scope_replace_move({ t, suffix: "member", role: "member" });
+
+		const saved = await seeded.asSharee.action(api.ai_chat.save_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.destNodeId,
+		});
+		if (saved._nay) {
+			throw new Error(saved._nay.message);
+		}
+
+		// Same save by the same person, one role stronger. Without this the test above would pass for a
+		// save that quietly did nothing at all.
+		const sourceNode = await t.run((ctx) => ctx.db.get("files_nodes", seeded.sourceNodeId));
+		expect(sourceNode?.archiveOperationId).toBeDefined();
 	});
 
 	test("a replace proposal keeps the source's content when its row is mixed", async () => {
@@ -9871,6 +10036,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 		const forProposer = await t.query(internal.files_nodes.get_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
+			visibilityUserId: seeded.userId,
 			path: "/overlay-delete.md",
 			overlayUserId: seeded.userId,
 		});
@@ -9879,6 +10045,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 		const committed = await t.query(internal.files_nodes.get_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
+			visibilityUserId: seeded.userId,
 			path: "/overlay-delete.md",
 		});
 		expect(committed?._id).toBe(seeded.nodeId);
@@ -9919,6 +10086,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 		const childForProposer = await t.query(internal.files_nodes.get_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
+			visibilityUserId: seeded.userId,
 			path: "/overlay-delete-folder/child.md",
 			overlayUserId: seeded.userId,
 		});
@@ -9927,6 +10095,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 		const childCommitted = await t.query(internal.files_nodes.get_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
+			visibilityUserId: seeded.userId,
 			path: "/overlay-delete-folder/child.md",
 		});
 		expect(childCommitted?._id).toBe(seeded.nodeId);
@@ -13255,6 +13424,7 @@ describe("pending path overlay reads", () => {
 		const atDest = await t.query(internal.files_nodes.get_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
+			visibilityUserId: seeded.userId,
 			path: "/overlay-dest.md",
 			overlayUserId: seeded.userId,
 		});
@@ -13265,6 +13435,7 @@ describe("pending path overlay reads", () => {
 		const atSource = await t.query(internal.files_nodes.get_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
+			visibilityUserId: seeded.userId,
 			path: "/overlay-src.md",
 			overlayUserId: seeded.userId,
 		});
@@ -13274,12 +13445,14 @@ describe("pending path overlay reads", () => {
 		const committedSource = await t.query(internal.files_nodes.get_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
+			visibilityUserId: seeded.userId,
 			path: "/overlay-src.md",
 		});
 		expect(committedSource?._id).toBe(seeded.nodeId);
 		const committedDest = await t.query(internal.files_nodes.get_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
+			visibilityUserId: seeded.userId,
 			path: "/overlay-dest.md",
 		});
 		expect(committedDest).toBeNull();
@@ -13310,6 +13483,7 @@ describe("pending path overlay reads", () => {
 		const newcomer = await t.query(internal.files_nodes.get_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
+			visibilityUserId: seeded.userId,
 			path: "/overlay-src.md",
 			overlayUserId: seeded.userId,
 		});

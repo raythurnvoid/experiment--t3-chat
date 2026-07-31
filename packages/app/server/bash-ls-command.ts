@@ -232,6 +232,7 @@ async function get_path_entry(args: {
 	const dbFilesDoc = (await args.ctx.runQuery(internal.files_nodes.get_by_path, {
 		organizationId: args.ctxData.organizationId,
 		workspaceId: args.ctxData.workspaceId,
+		visibilityUserId: args.ctxData.userId,
 		path: args.dbFilesPath,
 		overlayUserId: args.dbFilesFs.overlayUserId,
 	})) as files_nodes_get_by_path_Result;
@@ -352,6 +353,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			const result = (await ctx.runQuery(internal.files_nodes.list_children, {
 				organizationId: targets[0].pathResolution.ctxData.organizationId,
 				workspaceId: targets[0].pathResolution.ctxData.workspaceId,
+				visibilityUserId: targets[0].pathResolution.ctxData.userId,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
 				orderBy: "updatedAt",
@@ -520,6 +522,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 					organizationId: target.pathResolution.ctxData.organizationId,
 					workspaceId: target.pathResolution.ctxData.workspaceId,
+					visibilityUserId: target.pathResolution.ctxData.userId,
 					folderPath: committedFolderPath,
 					numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 					cursor,
@@ -565,6 +568,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						const injectedDoc = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 							organizationId: target.pathResolution.ctxData.organizationId,
 							workspaceId: target.pathResolution.ctxData.workspaceId,
+							visibilityUserId: target.pathResolution.ctxData.userId,
 							path: move.committedPath,
 						})) as files_nodes_get_by_path_Result;
 						if (!injectedDoc) {
@@ -591,6 +595,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						const splice = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 							organizationId: target.pathResolution.ctxData.organizationId,
 							workspaceId: target.pathResolution.ctxData.workspaceId,
+							visibilityUserId: target.pathResolution.ctxData.userId,
 							folderPath: move.committedPath,
 							numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 							cursor: null,
@@ -652,6 +657,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				const result = (await ctx.runQuery(internal.files_nodes.list_children, {
 					organizationId: target.pathResolution.ctxData.organizationId,
 					workspaceId: target.pathResolution.ctxData.workspaceId,
+					visibilityUserId: target.pathResolution.ctxData.userId,
 					parentId,
 					numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 					cursor,
@@ -689,6 +695,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						const injectedDoc = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 							organizationId: target.pathResolution.ctxData.organizationId,
 							workspaceId: target.pathResolution.ctxData.workspaceId,
+							visibilityUserId: target.pathResolution.ctxData.userId,
 							path: injection.committedPath,
 						})) as files_nodes_get_by_path_Result;
 						if (!injectedDoc) {

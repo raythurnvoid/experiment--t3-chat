@@ -106,6 +106,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				const sourceNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 					organizationId,
 					workspaceId,
+					visibilityUserId: userId,
 					path: sourceDbFilesPath,
 					overlayUserId: userId,
 				})) as files_nodes_get_by_path_Result;
@@ -136,6 +137,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 								organizationId,
 								workspaceId,
+								visibilityUserId: userId,
 								path: rawDestDbFilesPath,
 								overlayUserId: userId,
 							})) as files_nodes_get_by_path_Result);
@@ -198,6 +200,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 								organizationId,
 								workspaceId,
+								visibilityUserId: userId,
 								path: destPath,
 								overlayUserId: userId,
 							})) as files_nodes_get_by_path_Result);
@@ -255,6 +258,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						const committedOccupant = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 							organizationId,
 							workspaceId,
+							visibilityUserId: userId,
 							path: creationDestPath,
 						})) as files_nodes_get_by_path_Result;
 						if (committedOccupant) {

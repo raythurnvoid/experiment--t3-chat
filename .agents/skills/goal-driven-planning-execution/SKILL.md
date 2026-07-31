@@ -75,7 +75,7 @@ Execute iteratively:
 4. Use subagents to review the slice when the surface is broad or security-sensitive.
 5. Repeat for the next slice.
 6. Run broader scoped lint/typecheck/tests after all slices pass when the change's risk or blast radius justifies them. Run full suites only when the user explicitly requested broad verification.
-7. Run Playwriter/browser QA for UI or live app behavior.
+7. Run Playwriter/browser QA. This is not only for UI work: see the Browser QA rule in AGENTS.md.
 8. Run code-uniformity and vocabulary audit.
 9. Re-read the final diff.
 10. Report what changed, what passed, what was not verified, docs updated, and security/accessibility considerations.
@@ -96,7 +96,8 @@ Verification should match risk and blast radius.
 - For backend business logic: focused unit tests first, then broader tests when shared behavior changed.
 - For Convex schema/routes/actions: run focused Convex tests first. `convex dev --once` changes deployment state and can regenerate files, so do not use it as a read-only analysis command. Load the Convex admin operations skill and run `vp env exec pnpm --dir packages/app exec convex dev --once` only when the task requires that deployment check and the user has authorized the state change.
 - For runtime/tooling Workers: package typecheck and package tests.
-- For UI/live app behavior: load the Playwriter and app harness skills, attach to the user's exact existing browser session/tab, and use DOM attributes or persisted-doc readback when relevant.
+- For anything the running app can reach, UI or backend: load the Playwriter and app harness skills, attach to the user's exact existing browser session/tab, and use DOM attributes or persisted-doc readback when relevant.
+- Prove every fix by breaking it on purpose first. A check that still passes with the fix removed did not test the fix. This applies to tests and to browser checks.
 - For broad changes: decide which broader scoped checks are justified by the affected surface. Always use focused checks first, and run full app lint or full tests only when the user explicitly requested broad verification. Run `git diff --check` and the vocabulary audit when they apply.
 
 Always say which checks ran and which were intentionally skipped.

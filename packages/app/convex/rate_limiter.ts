@@ -68,6 +68,15 @@ const rate_limiter_CONFIG = {
 	billing_action: STRICT_AUTH_OR_BILLING,
 	comments_write: STRICT_WRITE,
 	files_pending_update_write: BULK_FILES_WRITE,
+	// Sharing is bursty in the same way as `roles_write`: somebody restricts a folder and then adds
+	// three people to it in a few seconds. It gets its own bucket so that sharing several files does
+	// not eat the budget for managing organization roles, and the other way round.
+	files_sharing_write: {
+		kind: "token bucket",
+		rate: 30,
+		period: MINUTE,
+		capacity: 8,
+	},
 	files_snapshot_write: STRICT_WRITE,
 	files_tree_write: BULK_FILES_WRITE,
 	files_yjs_push_update: STRICT_WRITE,

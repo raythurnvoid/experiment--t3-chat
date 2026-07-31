@@ -94,7 +94,13 @@ import type { RouterForConvexModules } from "./http.ts";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
-import { access_control_db_authorize_membership } from "./access_control.ts";
+import {
+	access_control_db_authorize_membership,
+	access_control_db_authorize_node,
+	access_control_db_can_act_on_file_node,
+	access_control_db_filter_readable_file_nodes,
+} from "./access_control.ts";
+import type { access_control_Permission } from "../shared/access-control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
@@ -633,12 +639,28 @@ export const get_by_path = internalQuery({
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		path: v.string(),
+		/**
+		 * Who is looking. Required, not optional, so a new caller cannot forget it and quietly get an
+		 * unfiltered view: a restricted node answers `null` for anybody without a grant on it.
+		 */
+		visibilityUserId: v.id("users"),
 		/** When set, resolve through this user's pending path overlay (their pending moves). */
 		overlayUserId: v.optional(v.id("users")),
 	},
 	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
 	handler: async (ctx, args) => {
-		return await files_db_get_visible_node_by_path(ctx, args);
+		const fileNode = await files_db_get_visible_node_by_path(ctx, args);
+		if (!fileNode) {
+			return null;
+		}
+
+		const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.visibilityUserId,
+			nodes: [fileNode],
+		});
+		return readable ?? null;
 	},
 });
 
@@ -730,6 +752,196 @@ async function cascade_file_descendants_path(
 	}
 }
 
+/**
+ * The restricted scope a new or moved child inherits from where it sits: the nearest restricted
+ * folder at or above `parentId`, or `undefined` when that chain has none.
+ *
+ * The parent already carries the answer, because every node stores its nearest restricted ancestor.
+ * So this is one read and never a walk up the tree.
+ */
+export async function files_nodes_db_resolve_parent_restricted_scope(
+	ctx: MutationCtx,
+	args: {
+		parentId: Doc<"files_nodes">["parentId"];
+	},
+) {
+	if (args.parentId === files_ROOT_ID) {
+		return undefined;
+	}
+
+	const parent = await ctx.db.get("files_nodes", args.parentId);
+	return parent?.restrictedScopeNodeId;
+}
+
+/**
+ * Rewrite `restrictedScopeNodeId` on every descendant of a node whose own scope just changed.
+ *
+ * `scopeNodeId` is the scope the descendants must inherit, which is the scope the node itself now
+ * has. Pass `undefined` to clear it, which is what unrestricting a folder outside any other
+ * restricted folder does.
+ *
+ * A descendant that is restricted itself keeps its own scope, and the walk stops there: everything
+ * below it already points at it, and that stays true however the folders above it changed. This is
+ * what makes a restricted folder inside another restricted folder keep its own, narrower list of
+ * people.
+ *
+ * It reads and patches the whole subtree in one mutation, like `archive_nodes` does. A subtree big
+ * enough to pass Convex's per-mutation limits would fail the whole call, and nothing would be half
+ * restricted, so the answer stays consistent. Split this into a job if that limit is ever reached.
+ */
+export async function files_nodes_db_cascade_restricted_scope(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		parentId: Id<"files_nodes">;
+		scopeNodeId: Id<"files_nodes"> | undefined;
+	},
+) {
+	const stack: Array<Id<"files_nodes">> = [args.parentId];
+
+	while (stack.length > 0) {
+		const parentId = stack.pop();
+		if (parentId === undefined) {
+			continue;
+		}
+
+		const children = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", parentId),
+			)
+			.collect();
+
+		await Promise.all(
+			children.map(async (child) => {
+				if (child.restrictedScopeNodeId === child._id) {
+					return;
+				}
+
+				if (child.restrictedScopeNodeId !== args.scopeNodeId) {
+					await ctx.db.patch("files_nodes", child._id, { restrictedScopeNodeId: args.scopeNodeId });
+				}
+				stack.push(child._id);
+			}),
+		);
+	}
+}
+
+/**
+ * Whether the caller may act on every node a sweep collected.
+ *
+ * A cascade — archive a folder, restore a folder — gathers descendants nobody named. The handler's
+ * own check asked about the node the caller pointed at, so a restricted folder nested inside an open
+ * one would be swept along by somebody holding no grant on it.
+ *
+ * Pass the named node's own scope as `rootScopeNodeId`: descendants sharing it were already covered.
+ * Everything else is asked once per distinct scope, so a restricted folder holding 500 files costs
+ * one check and an ordinary tree costs none.
+ */
+export async function files_nodes_db_can_act_on_swept_nodes(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		userId: Id<"users">;
+		rootScopeNodeId: Id<"files_nodes"> | undefined;
+		nodes: readonly Doc<"files_nodes">[];
+		permission: access_control_Permission;
+	},
+) {
+	const checkedScopeNodeIds = new Set<Id<"files_nodes">>();
+
+	for (const node of args.nodes) {
+		const scopeNodeId = node.restrictedScopeNodeId;
+		if (!scopeNodeId || scopeNodeId === args.rootScopeNodeId || checkedScopeNodeIds.has(scopeNodeId)) {
+			continue;
+		}
+
+		checkedScopeNodeIds.add(scopeNodeId);
+		const allowed = await access_control_db_can_act_on_file_node(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			fileNode: node,
+			permission: args.permission,
+		});
+		if (!allowed) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/**
+ * Check `content.write` on the node that decides a file write.
+ *
+ * For a change to an existing node that is the node itself. For a new node, or for one about to be
+ * dropped somewhere, it is the folder it lands in. At the root there is no node to ask about, so
+ * the workspace answers.
+ *
+ * Asking the node, and not the workspace, is what makes a grant useful: somebody whose only power
+ * in this workspace is a grant on one restricted folder can still work inside it, which a
+ * workspace-wide check would refuse at the door.
+ */
+async function authorize_file_write(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		nodeId: Doc<"files_nodes">["parentId"];
+	},
+) {
+	if (args.nodeId === files_ROOT_ID) {
+		return await access_control_db_authorize_membership(ctx, {
+			userAuth: args.userAuth,
+			membership: args.membership,
+			permission: "content.write",
+		});
+	}
+
+	return await access_control_db_authorize_node(ctx, {
+		userAuth: args.userAuth,
+		membership: args.membership,
+		nodeId: args.nodeId,
+		permission: "content.write",
+	});
+}
+
+/**
+ * Whether the caller may write a file here. `nodeId` is the node that decides, the same one
+ * `authorize_file_write` takes.
+ *
+ * An action cannot read the database, so every action that writes a file asks this first. Without
+ * it those actions would still be asking the workspace, and would refuse the one person a grant was
+ * meant for.
+ */
+export const get_current_user_file_write_permission = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return false;
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return false;
+		}
+
+		const authorized = await authorize_file_write(ctx, { userAuth, membership, nodeId: args.nodeId });
+		return authorized._nay === undefined;
+	},
+});
+
 async function db_insert_node(
 	ctx: MutationCtx,
 	args: {
@@ -749,11 +961,19 @@ async function db_insert_node(
 		now: number;
 	},
 ) {
+	// A new node sits inside its parent, so it starts with the parent's restricted scope. Without
+	// this, a file created inside a restricted folder would be open to the whole workspace, which is
+	// the one thing the person who restricted that folder asked us not to do.
+	const restrictedScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
+		parentId: args.parentId,
+	});
+
 	const nodeId = await ctx.db.insert("files_nodes", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		parentId: args.parentId,
 		path: args.path,
+		restrictedScopeNodeId,
 		treePath: derive_tree_path_for_file_node(args.path, args.kind),
 		pathDepth: files_path_depth(args.path),
 		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
@@ -979,6 +1199,25 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			if (parentPathPromise) {
 				await parentPathPromise;
 			}
+
+			// The caller was authorized against the parent they named, and this node is one this walk
+			// found on its own. Without asking about it, typing `private/new.md` would write inside a
+			// restricted folder the caller was never given, and hitting an existing restricted file would
+			// report that it is there. SYSTEM writes come from trusted server flows, so there is no user
+			// to ask about.
+			if (
+				args.userId !== users_SYSTEM_AUTHOR &&
+				!(await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					fileNode: existing,
+					permission: "content.write",
+				}))
+			) {
+				return Result({ _nay: { name: "nay", message: "Permission denied" } });
+			}
+
 			if (!isLeaf) {
 				// Reuse active intermediate folders, but reject files that already own the path.
 				if (existing.kind === "folder") {
@@ -1086,10 +1325,10 @@ export const create_folder_node = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await authorize_file_write(ctx, {
 			userAuth,
 			membership,
-			permission: "content.write",
+			nodeId: args.parentId,
 		});
 		if (authorized._nay) {
 			return authorized;
@@ -1138,6 +1377,23 @@ export const create_folder_node_by_path = internalMutation({
 					.eq("archiveOperationId", undefined),
 			)
 			.first();
+
+		// The lookup above is raw, so it also finds a node the caller cannot see. Handing back the id of a
+		// restricted folder would be enough: `mkdir` remembers what it gets, so `stat` would then read that
+		// folder too. A taken path still says something is there, as every path entrypoint does, but not what.
+		if (
+			activeNode &&
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNode: activeNode,
+				permission: "content.write",
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
 		if (activeNode?.kind === "folder") {
 			return Result({ _yay: { nodeId: activeNode._id, exists: true } });
 		}
@@ -1543,6 +1799,7 @@ export async function files_nodes_db_hard_delete_node(
 		snapshots,
 		pendingUpdates,
 		lastSequenceSavedDocs,
+		shareGrants,
 	] = await Promise.all([
 		// The by-fileNode chunk indexes cover both committed and pending chunk docs.
 		ctx.db
@@ -1609,6 +1866,18 @@ export async function files_nodes_db_hard_delete_node(
 				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
 			.collect(),
+		// A single file can be restricted too, and then it owns share grants. Deleting the file without
+		// them would leave rows nothing can ever reach or remove.
+		ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("resourceKind", "file")
+					.eq("resourceId", String(node._id)),
+			)
+			.collect(),
 	]);
 
 	// node.assetId points at the newest version snapshot for editable files, so the same asset id
@@ -1642,6 +1911,7 @@ export async function files_nodes_db_hard_delete_node(
 		...snapshots.map((snapshot) => ctx.db.delete("files_snapshots", snapshot._id)),
 		...pendingUpdates.map((pendingUpdate) => ctx.db.delete("files_pending_updates", pendingUpdate._id)),
 		...lastSequenceSavedDocs.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
+		...shareGrants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)),
 	]);
 
 	for (const assetId of assetIds) {
@@ -2158,10 +2428,12 @@ export const create_markdown_node = action({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		// An action cannot read the database, so the permission check goes through a query.
-		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+		// An action cannot read the database, so the permission check goes through a query. It asks
+		// about the folder the file goes into, like the two create mutations do, so a grant on a
+		// restricted folder still lets its people add files there.
+		const allowed = await ctx.runQuery(api.files_nodes.get_current_user_file_write_permission, {
 			membershipId: args.membershipId,
-			permission: "content.write",
+			nodeId: args.parentId,
 		});
 		if (!allowed) {
 			return Result({ _nay: { message: "Permission denied" } });
@@ -2219,10 +2491,10 @@ export const create_upload_node = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await authorize_file_write(ctx, {
 			userAuth,
 			membership,
-			permission: "content.write",
+			nodeId: args.parentId,
 		});
 		if (authorized._nay) {
 			return authorized;
@@ -2270,6 +2542,20 @@ export const create_upload_node = mutation({
 						message: "The path cannot point to a folder",
 					},
 				});
+			}
+
+			// Uploading over a name archives whatever holds it. The check above asked about the folder, so
+			// without this an upload could replace a restricted file the caller cannot even open.
+			if (
+				!(await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					fileNode: existingNode,
+					permission: "content.write",
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
 			}
 
 			await files_nodes_db_archive_nodes(ctx, {
@@ -2662,6 +2948,28 @@ async function db_apply_node_move(
 		parentId: args.node._id,
 		parentPath: args.destPath,
 	});
+
+	// The node landed under a new parent, so it inherits that parent's restricted scope. A node that
+	// is restricted itself keeps its own scope, and carries its whole subtree with it, so nothing
+	// below it changes either.
+	//
+	// Moving a file out of a restricted folder does open it to the workspace. That is on purpose: only
+	// somebody who may already edit that file can move it, and they could copy its text out anyway.
+	// `args.node` was read before the patch above, so it still holds the scope from before the move.
+	if (args.node.restrictedScopeNodeId !== args.node._id) {
+		const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
+			parentId: args.destParentId,
+		});
+		if (destScopeNodeId !== args.node.restrictedScopeNodeId) {
+			await ctx.db.patch("files_nodes", args.node._id, { restrictedScopeNodeId: destScopeNodeId });
+			await files_nodes_db_cascade_restricted_scope(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				parentId: args.node._id,
+				scopeNodeId: destScopeNodeId,
+			});
+		}
+	}
 }
 
 /**
@@ -2860,6 +3168,22 @@ export async function files_nodes_db_apply_pending_move(
 		// Archive (never hard-delete) the occupant of the destination path — a file, or an
 		// empty folder — whether it was the proposed replace target or a newcomer created
 		// after the proposal.
+		//
+		// The caller was authorized for the node being moved and for the destination folder. This
+		// occupant is neither: it is whatever happens to sit on the path right now, so it needs its own
+		// answer before it is archived.
+		if (
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.updatedBy,
+				fileNode: validated._yay.replacesNode,
+				permission: "content.write",
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
 		await files_nodes_db_archive_nodes(ctx, {
 			nodeIds: [validated._yay.replacesNode._id],
 			updatedBy: args.updatedBy,
@@ -2956,6 +3280,20 @@ export const rename_node = mutation({
 						});
 					}
 
+					// A path-like rename is a move, and this is the folder it would land in. The check at
+					// the top of the handler asked about the node being renamed, not about here. Asked
+					// through the membership, because `access_control_db_can_act_on_file_node` waves an open
+					// node through on the promise that workspace write was already proved, and here it was
+					// not: a grant on the node being renamed says nothing about this folder.
+					const authorizedSegment = await authorize_file_write(ctx, {
+						userAuth,
+						membership,
+						nodeId: existing._id,
+					});
+					if (authorizedSegment._nay) {
+						return Result({ _nay: { name: "nay", message: "Permission denied" } });
+					}
+
 					if (existing.kind === "folder") {
 						targetParentId = existing._id;
 						targetParentPath = existing.path;
@@ -2979,6 +3317,18 @@ export const rename_node = mutation({
 					if (targetParentPath == null) {
 						return Result({ _yay: null });
 					}
+				}
+
+				// Creating the missing segment writes into whatever holds it, so that folder decides. Nothing
+				// has asked about it: the loop starts at the renamed node's own parent, which a grant on the
+				// node says nothing about.
+				const authorizedNewSegment = await authorize_file_write(ctx, {
+					userAuth,
+					membership,
+					nodeId: targetParentId,
+				});
+				if (authorizedNewSegment._nay) {
+					return Result({ _nay: { name: "nay", message: "Permission denied" } });
 				}
 
 				const folderPath = path_join(targetParentPath, name);
@@ -3085,6 +3435,25 @@ export const rename_node = mutation({
 			parentId: args.nodeId,
 			parentPath: renamedPath,
 		});
+
+		// A rename can be a move: typing `private/notes.md` re-parents the node into `private`. So the
+		// same rule as `move_nodes` applies, or a file renamed into a restricted folder would keep the
+		// open access it had outside and stay readable by the whole workspace.
+		if (targetParentId !== fileNode.parentId && fileNode.restrictedScopeNodeId !== args.nodeId) {
+			const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
+				parentId: targetParentId,
+			});
+			if (destScopeNodeId !== fileNode.restrictedScopeNodeId) {
+				await ctx.db.patch("files_nodes", args.nodeId, { restrictedScopeNodeId: destScopeNodeId });
+				await files_nodes_db_cascade_restricted_scope(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					parentId: args.nodeId,
+					scopeNodeId: destScopeNodeId,
+				});
+			}
+		}
+
 		return Result({ _yay: null });
 	},
 });
@@ -3115,13 +3484,15 @@ export const move_nodes = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		// The destination is the first question: dropping into a folder writes into that folder. Each
+		// moved node is asked about separately below, because moving something is also a write to it.
+		const authorizedTarget = await authorize_file_write(ctx, {
 			userAuth,
 			membership,
-			permission: "content.write",
+			nodeId: args.targetParentId,
 		});
-		if (authorized._nay) {
-			return authorized;
+		if (authorizedTarget._nay) {
+			return authorizedTarget;
 		}
 
 		const targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
@@ -3143,6 +3514,18 @@ export const move_nodes = mutation({
 				fileNode.workspaceId !== membership.workspaceId
 			) {
 				continue;
+			}
+
+			// A node the caller may not write refuses the whole call instead of being skipped quietly.
+			// A silent skip would leave the sidebar showing a move that never happened.
+			const authorizedNode = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.write",
+				fileNode,
+			});
+			if (authorizedNode._nay) {
+				return authorizedNode;
 			}
 
 			const movedPath = path_join(targetParentPath, fileNode.name);
@@ -3224,6 +3607,25 @@ export const move_nodes = mutation({
 				parentId: fileNodeToMove.itemId,
 				parentPath: fileNodeToMove.movedPath,
 			});
+
+			// Same rule as `db_apply_node_move`: the node inherits the restricted scope of where it
+			// landed, unless it is the restricted node itself, which carries its own subtree with it.
+			// This mutation patches nodes by hand instead of going through that helper, so the rule has
+			// to be applied here too.
+			if (fileNodeToMove.fileNode.restrictedScopeNodeId !== fileNodeToMove.itemId) {
+				const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
+					parentId: args.targetParentId,
+				});
+				if (destScopeNodeId !== fileNodeToMove.fileNode.restrictedScopeNodeId) {
+					await ctx.db.patch("files_nodes", fileNodeToMove.itemId, { restrictedScopeNodeId: destScopeNodeId });
+					await files_nodes_db_cascade_restricted_scope(ctx, {
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						parentId: fileNodeToMove.itemId,
+						scopeNodeId: destScopeNodeId,
+					});
+				}
+			}
 		}
 		return Result({ _yay: null });
 	},
@@ -3288,15 +3690,6 @@ export const archive_nodes = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.write",
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
 		const nodeIds = [];
 		for (const maybeNodeId of args.nodeIds) {
 			const nodeId = ctx.db.normalizeId("files_nodes", maybeNodeId);
@@ -3328,6 +3721,31 @@ export const archive_nodes = mutation({
 			return fileNodes;
 		}
 
+		// Per node, not per workspace: archiving is a write to the node itself, and a grant on one
+		// restricted folder has to be enough to archive what is inside it. The nodes are already loaded
+		// here, so this costs no extra read for an unrestricted tree.
+		for (const fileNode of fileNodes._yay) {
+			const authorized = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.write",
+				fileNode,
+			});
+			if (authorized._nay) {
+				// Somebody who cannot even see this node hears the same answer as somebody who named an id
+				// that is not there. Two different refusals would confirm the file exists.
+				const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					nodes: [fileNode],
+				});
+				return readable
+					? authorized
+					: Result({ _nay: { name: "nay", message: "Not found", data: { nodeId: fileNode._id } } });
+			}
+		}
+
 		const nodeIdsToArchive = new Set<Id<"files_nodes">>();
 
 		for (const fileNode of fileNodes._yay) {
@@ -3350,10 +3768,27 @@ export const archive_nodes = mutation({
 				)
 				.collect();
 
-			for (const descendantFileNode of descendantFileNodes) {
-				if (descendantFileNode.archiveOperationId !== undefined) {
-					continue;
-				}
+			const activeDescendants = descendantFileNodes.filter(
+				(descendantFileNode) => descendantFileNode.archiveOperationId === undefined,
+			);
+
+			// A folder can hold a restricted folder the caller was never given, and the check above only
+			// asked about the node they named. Without this, writing to the folder above is enough to
+			// archive somebody else's restricted subtree.
+			if (
+				!(await files_nodes_db_can_act_on_swept_nodes(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					rootScopeNodeId: fileNode.restrictedScopeNodeId,
+					nodes: activeDescendants,
+					permission: "content.write",
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+
+			for (const descendantFileNode of activeDescendants) {
 				nodeIdsToArchive.add(descendantFileNode._id);
 			}
 		}
@@ -3367,6 +3802,35 @@ export const archive_nodes = mutation({
 		return Result({ _yay: null });
 	},
 });
+
+/**
+ * The two fields that name whatever blocked a restore, kept only for a caller who may read it.
+ *
+ * Every conflict refusal in `unarchive_nodes` names a second node, and the caller did not always ask
+ * about that one: it can be an ancestor the sweep walked up to, or a node already sitting on the
+ * target path. A `content.write` role without `content.read` reaches these refusals, so the path is
+ * worth hiding, and the id is worth hiding on its own — it opens files elsewhere. The message stays
+ * either way, because a caller has to learn the restore is blocked.
+ */
+async function unarchive_conflict_fields(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		conflictFileNode: Doc<"files_nodes">;
+	},
+) {
+	const authorized = await access_control_db_authorize_node(ctx, {
+		userAuth: args.userAuth,
+		membership: args.membership,
+		nodeId: args.conflictFileNode._id,
+		permission: "content.read",
+	});
+
+	return authorized._nay
+		? {}
+		: { conflictingNodeId: args.conflictFileNode._id, conflictingFilePath: args.conflictFileNode.path };
+}
 
 export const unarchive_nodes = mutation({
 	args: {
@@ -3391,15 +3855,6 @@ export const unarchive_nodes = mutation({
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.write",
-		});
-		if (authorized._nay) {
-			return authorized;
 		}
 
 		if (args.nodeIds.length === 0) {
@@ -3436,6 +3891,30 @@ export const unarchive_nodes = mutation({
 			return fileNodes;
 		}
 
+		// Per node, like `archive_nodes`. An archived node keeps the restricted scope it had, so
+		// restoring something out of a restricted folder still asks that folder for permission.
+		for (const fileNode of fileNodes._yay) {
+			const authorized = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.write",
+				fileNode,
+			});
+			if (authorized._nay) {
+				// Same as `archive_nodes`: a node the caller cannot see answers "Not found", so the refusal
+				// does not tell them it is in the archive.
+				const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					nodes: [fileNode],
+				});
+				return readable
+					? authorized
+					: Result({ _nay: { name: "nay", message: "Not found", data: { nodeId: fileNode._id } } });
+			}
+		}
+
 		const fileNodesToUnarchive = [...fileNodes._yay];
 
 		// Find the top most shared ancestor for each requested file node.
@@ -3460,8 +3939,11 @@ export const unarchive_nodes = mutation({
 							nodeId: fileNode._id,
 							filePath: fileNode.path,
 							targetPath: fileNode.path,
-							conflictingNodeId: conflictedCurrentFileNode._id,
-							conflictingFilePath: conflictedCurrentFileNode.path,
+							...(await unarchive_conflict_fields(ctx, {
+								userAuth,
+								membership,
+								conflictFileNode: conflictedCurrentFileNode,
+							})),
 						},
 					},
 				});
@@ -3572,8 +4054,11 @@ export const unarchive_nodes = mutation({
 											nodeId: ancestorFileNode._id,
 											filePath: ancestorFileNode.path,
 											targetPath: ancestorTargetPath,
-											conflictingNodeId: conflictedAncestorFileNode._id,
-											conflictingFilePath: conflictedAncestorFileNode.path,
+											...(await unarchive_conflict_fields(ctx, {
+												userAuth,
+												membership,
+												conflictFileNode: conflictedAncestorFileNode,
+											})),
 										},
 									},
 								});
@@ -3641,6 +4126,44 @@ export const unarchive_nodes = mutation({
 			return plansResult;
 		}
 
+		// `plans` holds the whole restored subtree, not only the nodes the caller named, and an archived
+		// node keeps the restricted scope it had. Without this, restoring an open folder would also
+		// restore a restricted folder nested inside it for somebody holding no grant on it.
+		//
+		// No `rootScopeNodeId` here: the named nodes were each checked above, and this call is about
+		// everything the sweep added, which can carry any scope.
+		if (
+			!(await files_nodes_db_can_act_on_swept_nodes(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				rootScopeNodeId: undefined,
+				nodes: plans.map((plan) => plan.fileNode),
+				permission: "content.write",
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// A plan that lands somewhere new is a move, and dropping into a folder writes into that folder.
+		// Asked before the conflict loop, like `move_nodes`, so a refused caller is not told which path is
+		// taken. Same skip as the scope loop below, because a node that carries its own restriction keeps
+		// it wherever it lands, so moving that one opens nothing.
+		for (const plan of plans) {
+			if (plan.targetParentId === plan.fileNode.parentId || plan.fileNode.restrictedScopeNodeId === plan.fileNode._id) {
+				continue;
+			}
+
+			const authorizedTarget = await authorize_file_write(ctx, {
+				userAuth,
+				membership,
+				nodeId: plan.targetParentId,
+			});
+			if (authorizedTarget._nay) {
+				return authorizedTarget;
+			}
+		}
+
 		for (const [ancestorTargetPath, ancestorFileNode] of ancestorFileNodesByTargetPath) {
 			// Check whether an active file node already exists for the same path.
 			const conflictFileNode = await ctx.db
@@ -3664,8 +4187,11 @@ export const unarchive_nodes = mutation({
 							nodeId: ancestorFileNode._id,
 							filePath: ancestorFileNode.path,
 							targetPath: ancestorTargetPath,
-							conflictingNodeId: conflictFileNode._id,
-							conflictingFilePath: conflictFileNode.path,
+							...(await unarchive_conflict_fields(ctx, {
+								userAuth,
+								membership,
+								conflictFileNode,
+							})),
 						},
 					},
 				});
@@ -3699,6 +4225,29 @@ export const unarchive_nodes = mutation({
 				}
 			}),
 		);
+
+		// A subtree whose parent stayed archived comes back at the top of the tree. That is a move to a
+		// new parent, so it follows the same rule as `rename_node`: it inherits the scope of where it
+		// lands, which at the root is none. Without this it would keep pointing at a restricted folder
+		// still in the archive, and nobody could open the share dialog that decides who gets in.
+		for (const plan of plans) {
+			if (plan.targetParentId === plan.fileNode.parentId || plan.fileNode.restrictedScopeNodeId === plan.fileNode._id) {
+				continue;
+			}
+
+			const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
+				parentId: plan.targetParentId,
+			});
+			if (destScopeNodeId !== plan.fileNode.restrictedScopeNodeId) {
+				await ctx.db.patch("files_nodes", plan.fileNode._id, { restrictedScopeNodeId: destScopeNodeId });
+				await files_nodes_db_cascade_restricted_scope(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					parentId: plan.fileNode._id,
+					scopeNodeId: destScopeNodeId,
+				});
+			}
+		}
 
 		return Result({ _yay: null });
 	},
@@ -3734,10 +4283,8 @@ export const get_file_node_for_membership = query({
 			return null;
 		}
 
-		// We check the permission against the node, not the workspace, so this handler is already
-		// correct once files can be restricted. Nothing writes `restrictedScopeNodeId` yet, so today
-		// both give the same answer. The snapshot handlers still pass no node; they need the same check
-		// before file sharing ships.
+		// The permission is checked against the node, not the workspace, so a file inside a restricted
+		// folder is refused here even for somebody the workspace lets read everything else.
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
@@ -3848,22 +4395,33 @@ export const list_tree = query({
 			return [];
 		}
 
+		// A failed check does not end the query here. Somebody whose role gives no workspace-wide read
+		// can still have been given one folder, and showing them that folder is the whole point of
+		// sharing. The filter below is told what the check said and keeps only what they were given.
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
 			permission: "content.read",
 		});
-		if (authorized._nay) {
-			return [];
-		}
 
-		const fileNodes = await ctx.db
+		const allFileNodes = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_treePath", (q) =>
 				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
 			)
 			.order("asc")
 			.collect();
+
+		// The tree is the widest leak in the app: it carries the name and the path of every node in the
+		// workspace. Without this filter a restricted file would still be listed for everybody, and the
+		// name of a file is often the whole secret.
+		const fileNodes = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			nodes: allFileNodes,
+			hasWorkspaceRead: !authorized._nay,
+		});
 
 		return fileNodes.map((fileNode) => {
 			if (fileNode.createdBy === users_SYSTEM_AUTHOR || fileNode.updatedBy === users_SYSTEM_AUTHOR) {
@@ -3893,6 +4451,7 @@ async function db_list_children(
 	args: {
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
+		visibilityUserId: Id<"users">;
 		numItems: number;
 		cursor: string | null;
 		parentId?: Id<"files_nodes"> | typeof files_ROOT_ID;
@@ -3900,6 +4459,16 @@ async function db_list_children(
 		order?: "asc" | "desc";
 	},
 ) {
+	// A page can come back shorter than `numItems` once restricted nodes are dropped. The cursor still
+	// points at the right place, so paging keeps working; only the page size varies.
+	const filter_readable = (nodes: Doc<"files_nodes">[]) =>
+		access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.visibilityUserId,
+			nodes,
+		});
+
 	if (args.parentId == null) {
 		if (args.orderBy === "name") {
 			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
@@ -3920,7 +4489,7 @@ async function db_list_children(
 			});
 
 		return {
-			items: result.page.map((fileNode) => ({
+			items: (await filter_readable(result.page)).map((fileNode) => ({
 				name: fileNode.name,
 				kind: fileNode.kind,
 				path: fileNode.path,
@@ -3978,7 +4547,7 @@ async function db_list_children(
 					});
 
 	return {
-		items: result.page.map((fileNode) => ({
+		items: (await filter_readable(result.page)).map((fileNode) => ({
 			name: fileNode.name,
 			kind: fileNode.kind,
 			path: fileNode.path,
@@ -3995,6 +4564,8 @@ export const list_children = internalQuery({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		/** Who is looking. Required so a new caller cannot forget it and list restricted nodes. */
+		visibilityUserId: v.id("users"),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
 		parentId: v.optional(v.union(v.id("files_nodes"), v.literal(files_ROOT_ID))),
@@ -4029,6 +4600,8 @@ export const list_subtree = internalQuery({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		/** Who is looking. Required so a new caller cannot forget it and walk into a restricted folder. */
+		visibilityUserId: v.id("users"),
 		folderPath: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -4102,13 +4675,25 @@ export const list_subtree = internalQuery({
 		} else if (maxAbsoluteDepth != null) {
 			filteredQuery = query.filter((q) => q.lte(q.field("pathDepth"), maxAbsoluteDepth));
 		}
-		return await filteredQuery.paginate({
+		const result = await filteredQuery.paginate({
 			cursor: args.cursor,
 			numItems: args.numItems,
 			...(minAbsoluteDepth == null && maxAbsoluteDepth == null
 				? {}
 				: { maximumRowsRead: SUBTREE_FILTER_MAX_ROWS_READ }),
 		});
+
+		// A page can come back shorter once restricted nodes are dropped. The cursor is unchanged, so
+		// paging still walks the whole subtree; only the page size varies.
+		return {
+			...result,
+			page: await access_control_db_filter_readable_file_nodes(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.visibilityUserId,
+				nodes: result.page,
+			}),
+		};
 	},
 });
 
@@ -4123,6 +4708,8 @@ export const search_paths = internalQuery({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		/** Who is looking. Required so a new caller cannot forget it and match a restricted path. */
+		visibilityUserId: v.id("users"),
 		pathQuery: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -4200,8 +4787,15 @@ export const search_paths = internalQuery({
 			numItems: args.numItems,
 		});
 
+		const readable = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.visibilityUserId,
+			nodes: result.page,
+		});
+
 		return {
-			items: result.page.map((fileNode) => ({
+			items: readable.map((fileNode) => ({
 				path: fileNode.path,
 				kind: fileNode.kind,
 				updatedAt: fileNode.updatedAt,
@@ -4394,6 +4988,16 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 
 		if (fileNode == null) return null;
 		if (fileNode.kind !== "file") return null;
+
+		// Same reason as in `read_file_content_from_chunks`: `userId` is the person asking, and this is
+		// the second door onto file bytes.
+		const [readableNode] = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodes: [fileNode],
+		});
+		if (!readableNode) return null;
 
 		// External (reserved) scope: no Yjs/pending/materialization. Read the linked R2 content asset
 		// directly and leave `content` undefined so `get_file_last_available_markdown_content_by_path`
@@ -4830,6 +5434,18 @@ async function db_resolve_committed_chunk_source(
 	if (fileNode == null) return null;
 	if (fileNode.kind !== "file") return null;
 
+	// The third door onto a file, next to `read_file_content_from_chunks` and the markdown one. It
+	// hands out no text, but `wc` reports exact line, word and byte counts, which is plenty to learn
+	// from a file somebody was not given.
+	const readable = await access_control_db_can_act_on_file_node(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		fileNode,
+		permission: "content.read",
+	});
+	if (!readable) return null;
+
 	// Exact wc counts from the linked file_stats doc (read O(1) by id — the back-ref the node holds).
 	// null when unlinked (old file not yet migrated) or flagged unprocessable (-1), so the stats
 	// query falls back to the windowed estimate. Shared by both scopes.
@@ -5147,6 +5763,20 @@ export const read_file_content_from_chunks = internalQuery({
 		});
 		if (fileNode == null) return null;
 		if (fileNode.kind !== "file") return null;
+
+		// `userId` is the person asking, so the restricted check belongs here and not in each caller.
+		// Every reader of file bytes lands in this query or in the markdown one next to it — bash `cat`,
+		// `head`, `tail`, `wc`, `sed`, the AI edit tool, the public API — and a check in one of them is a
+		// check in all of them. Answering `null` is the same answer a missing file gives, which is what
+		// the caller already handles.
+		const [readableNode] = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodes: [fileNode],
+		});
+		if (!readableNode) return null;
+
 		const requestedOrganizationId = args.organizationId;
 		const requestedWorkspaceId = args.workspaceId;
 		const realTenantScope =
@@ -6695,18 +7325,38 @@ export const text_search_files = internalQuery({
 			numItems: pageLimit,
 		});
 
-		const items = result.page.map((searchChunk) => ({
-			path: searchChunk.path,
-			markdownChunk: searchChunk.markdownChunk,
-			chunkIndex: searchChunk.chunkIndex,
-			startIndex: searchChunk.startIndex,
-			endIndex: searchChunk.endIndex,
-			lineStart: searchChunk.lineStart,
-			lineEnd: searchChunk.lineEnd,
-			chunkFlags: searchChunk.chunkFlags,
-			hasChunkAbove: searchChunk.hasChunkAbove,
-			hasChunkBelow: searchChunk.hasChunkBelow,
-		}));
+		// A chunk carries the text of its file, so a hit inside a restricted file would print the very
+		// thing the restriction protects. Each distinct file on the page is looked up once, and the
+		// filter answers once per restricted scope, so a page of chunks from one file costs one check.
+		const pageNodeIds = [...new Set(result.page.map((searchChunk) => searchChunk.fileNodeId))];
+		const pageNodes = (await Promise.all(pageNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
+			(fileNode) => fileNode !== null,
+		);
+		const readableNodeIds = new Set(
+			(
+				await access_control_db_filter_readable_file_nodes(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					nodes: pageNodes,
+				})
+			).map((fileNode) => fileNode._id),
+		);
+
+		const items = result.page
+			.filter((searchChunk) => readableNodeIds.has(searchChunk.fileNodeId))
+			.map((searchChunk) => ({
+				path: searchChunk.path,
+				markdownChunk: searchChunk.markdownChunk,
+				chunkIndex: searchChunk.chunkIndex,
+				startIndex: searchChunk.startIndex,
+				endIndex: searchChunk.endIndex,
+				lineStart: searchChunk.lineStart,
+				lineEnd: searchChunk.lineEnd,
+				chunkFlags: searchChunk.chunkFlags,
+				hasChunkAbove: searchChunk.hasChunkAbove,
+				hasChunkBelow: searchChunk.hasChunkBelow,
+			}));
 
 		return {
 			items,
@@ -6786,6 +7436,7 @@ export const create_file_by_path = internalAction({
 		const activeFileNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
+			visibilityUserId: args.userId,
 			path: args.path,
 		})) as Doc<"files_nodes"> | null;
 		if (activeFileNode?.kind === "file") {
@@ -6879,9 +7530,12 @@ export const get_file_snapshots_list = query({
 			};
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		// Against the node, not the workspace: a file's version list says when it changed and how
+		// often, and a restricted file must not answer that to everybody in the workspace.
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.read",
 		});
 		if (authorized._nay) {
@@ -6931,9 +7585,10 @@ export const get_file_snapshot = query({
 			return null;
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.read",
 		});
 		if (authorized._nay) {
@@ -7016,9 +7671,10 @@ export const get_data_for_create_file_snapshot_content_url = internalQuery({
 			return null;
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth: { id: args.userId },
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.read",
 		});
 		if (authorized._nay) {
@@ -7121,15 +7777,8 @@ export const archive_snapshot = mutation({
 			return Result({ _yay: null });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.write",
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
+		// The snapshot comes first here, because the permission belongs to the file it is a version of.
+		// This mutation takes only a snapshot id, so there is no node to check until it is loaded.
 		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
 		if (
 			!snapshot ||
@@ -7137,6 +7786,16 @@ export const archive_snapshot = mutation({
 			snapshot.workspaceId !== membership.workspaceId
 		) {
 			return Result({ _yay: null });
+		}
+
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: snapshot.fileNodeId,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		await ctx.db.patch("files_snapshots", args.snapshotId, {
@@ -7172,15 +7831,8 @@ export const unarchive_snapshot = mutation({
 			return Result({ _yay: null });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.write",
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
+		// Same order as `archive_snapshot`: the snapshot names the file, and the file carries the
+		// permission.
 		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
 		if (
 			!snapshot ||
@@ -7188,6 +7840,16 @@ export const unarchive_snapshot = mutation({
 			snapshot.workspaceId !== membership.workspaceId
 		) {
 			return Result({ _yay: null });
+		}
+
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: snapshot.fileNodeId,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		await ctx.db.patch("files_snapshots", args.snapshotId, {
@@ -7220,9 +7882,10 @@ export const get_data_for_yjs_prepare_doc_last_snapshot = internalQuery({
 			return null;
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth: { id: args.userId },
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.read",
 		});
 		if (authorized._nay) {
@@ -8139,9 +8802,10 @@ export const restore_snapshot = internalMutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.write",
 		});
 		if (authorized._nay) {
@@ -8401,9 +9065,10 @@ export const get_data_for_restore_snapshot = internalQuery({
 			return null;
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth: { id: args.userId },
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.write",
 		});
 		if (authorized._nay) {

@@ -505,6 +505,23 @@
 
 		contain: content;
 	}
+
+	/* No `pointer-events: auto` here: this badge sits over the row's primary action, so taking the
+	   pointer back would make it a dead click and drop hole in the middle of the row. */
+	.FilesSidebarTreeItemPrimaryContent-restricted-icon {
+		display: flex;
+		align-items: center;
+		flex: none;
+
+		margin-left: 4px;
+
+		color: var(--color-fg-08);
+
+		> svg {
+			width: 12px;
+			height: 12px;
+		}
+	}
 	/* #endregion tree item primary content */
 
 	/* #region tree item icon */

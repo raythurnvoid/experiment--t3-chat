@@ -59,9 +59,9 @@ export const access_control_MAX_ROLE_DESCRIPTION_LENGTH = 200;
  * from.
  *
  * Every permission here must be checked somewhere in the code. A permission that is not checked yet
- * must be marked with `enforcedBy: "file-sharing"` and arrive with that milestone. A permission the
- * editor offers but nothing checks is a switch that does nothing, which is worse than not offering
- * it at all.
+ * must be marked with `enforcedBy` naming the milestone that will check it, and arrive with that
+ * milestone. A permission the editor offers but nothing checks is a switch that does nothing, which
+ * is worse than not offering it at all. Nothing carries the mark today.
  */
 export const access_control_PERMISSION_CATALOG = {
 	"organization.update": {
@@ -129,10 +129,6 @@ export const access_control_PERMISSION_CATALOG = {
 		description: "Restrict files and folders, and choose who can open them.",
 		group: "Content",
 		scope: "workspace",
-		// Nothing checks this yet. The permission check already reads `restrictedScopeNodeId` and the
-		// per-file grants, but no handler writes them, so the file-sharing milestone is what will turn
-		// this permission on. Until then the role editor must not offer it.
-		enforcedBy: "file-sharing",
 	},
 	"workspace.plugins.manage": {
 		label: "Manage plugins",
@@ -147,14 +143,18 @@ export const access_control_PERMISSION_CATALOG = {
 		description: string;
 		group: PermissionGroup;
 		scope: PermissionScope;
-		/** Set only while a permission exists in the catalog but no code checks it yet. */
-		enforcedBy?: "file-sharing";
+		/**
+		 * The milestone that will check this permission. Set only while a permission exists in the
+		 * catalog but no code checks it yet, and removed by that milestone.
+		 */
+		enforcedBy?: string;
 	}
 >;
 
 /**
  * The permissions that some code really checks today. This is exactly the set a custom role may
- * contain. See `enforcedBy` in the catalog for the ones still waiting for their milestone.
+ * contain. See `enforcedBy` in the catalog for the ones still waiting for their milestone; every
+ * permission is enforced today, so this is currently the whole catalog.
  *
  * The name says "enforced", not "grantable", because in this subsystem a "grant" is a doc in
  * `access_control_permission_grants`, and no such doc is involved here.
@@ -162,6 +162,78 @@ export const access_control_PERMISSION_CATALOG = {
 export const access_control_ENFORCED_PERMISSIONS = (
 	Object.keys(access_control_PERMISSION_CATALOG) as access_control_Permission[]
 ).filter((permission) => !("enforcedBy" in access_control_PERMISSION_CATALOG[permission]));
+
+/**
+ * What one person or one role may do on a restricted file or folder.
+ *
+ * A grant doc carries a single permission, so a level is saved as one doc per permission in
+ * `permissions`. The UI only ever shows the level, because "can edit but cannot read" is a state
+ * nobody asks for and the level list makes it unreachable.
+ *
+ * Every level contains the ones before it, so the check for "which level is this" reads the list
+ * from the strongest down and stops at the first full match.
+ */
+export const access_control_FILE_SHARE_LEVELS = {
+	read: {
+		label: "Can view",
+		description: "Open and read this, but change nothing.",
+		permissions: ["content.read"],
+	},
+	write: {
+		label: "Can edit",
+		description: "Open, change, rename, and move this.",
+		permissions: ["content.read", "content.write"],
+	},
+	manage: {
+		label: "Can manage",
+		description: "Everything above, plus choose who else gets access.",
+		permissions: ["content.read", "content.write", "content.permissions.manage"],
+	},
+} as const satisfies Record<
+	string,
+	{ label: string; description: string; permissions: readonly access_control_Permission[] }
+>;
+
+export type access_control_FileShareLevel = keyof typeof access_control_FILE_SHARE_LEVELS;
+
+/**
+ * The share levels the share dialog offers, weakest first.
+ *
+ * Written as a map, not an array, so a level added to `access_control_FILE_SHARE_LEVELS` and
+ * forgotten here is a type error instead of a level the dialog silently never offers. `Object.keys`
+ * hands them back in the order written.
+ */
+const FILE_SHARE_LEVEL_LIST = {
+	read: true,
+	write: true,
+	manage: true,
+} satisfies Record<access_control_FileShareLevel, true>;
+
+export const access_control_FILE_SHARE_LEVEL_KEYS = Object.keys(
+	FILE_SHARE_LEVEL_LIST,
+) as access_control_FileShareLevel[];
+
+/** Every permission any share level can hand out, so a caller can check them in one pass. */
+export const access_control_FILE_SHARE_PERMISSIONS = access_control_FILE_SHARE_LEVELS.manage.permissions;
+
+/**
+ * The level a set of granted permissions adds up to, or `null` when they add up to nothing.
+ *
+ * Read from the strongest level down, so a set holding all three permissions answers `manage` and
+ * not `read`. A set that somehow holds only `content.write` answers `null`: no level offers it
+ * alone, and treating it as "can edit" would report power the reader does not have.
+ */
+export function access_control_file_share_level_from_permissions(
+	permissions: ReadonlySet<access_control_Permission>,
+): access_control_FileShareLevel | null {
+	for (const level of [...access_control_FILE_SHARE_LEVEL_KEYS].reverse()) {
+		if (access_control_FILE_SHARE_LEVELS[level].permissions.every((permission) => permissions.has(permission))) {
+			return level;
+		}
+	}
+
+	return null;
+}
 
 /**
  * The permissions of each system role.
@@ -177,9 +249,7 @@ export const access_control_SYSTEM_ROLE_MATRIX = {
 	admin: {
 		label: "Admin",
 		// Everything except billing. Changing the billing mode costs the owner money, so the owner has
-		// to give that permission out on purpose. File sharing is missing for a different reason: no
-		// code checks it yet, and listing it here would show the role editor a permission it refuses
-		// on a custom role. It arrives with the file-sharing milestone.
+		// to give that permission out on purpose.
 		permissions: [
 			"organization.update",
 			"organization.members.manage",
@@ -190,6 +260,7 @@ export const access_control_SYSTEM_ROLE_MATRIX = {
 			"workspace.members.manage",
 			"content.read",
 			"content.write",
+			"content.permissions.manage",
 			"workspace.plugins.manage",
 		],
 	},

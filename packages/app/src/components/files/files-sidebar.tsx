@@ -25,8 +25,10 @@ import {
 	FolderPlus,
 	Hash,
 	Link2,
+	Lock,
 	Search,
 	Upload,
+	Users,
 	X,
 	CopyMinus,
 	CopyPlus,
@@ -51,6 +53,7 @@ import { useTree } from "@headless-tree/react/react-compiler";
 import { useNavigate } from "@tanstack/react-router";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { FilesNameInputControl } from "./files-name-input.tsx";
+import { FilesShareModal } from "./files-share-modal.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -78,6 +81,7 @@ import {
 	MyMenuItemsGroup,
 	MyMenuPopover,
 	MyMenuPopoverContent,
+	MyMenuPopoverScrollableArea,
 	MyMenuTrigger,
 	type MyMenuItem_Props,
 	type MyMenuPopover_ClassNames,
@@ -163,6 +167,15 @@ type CustomAttributes = {
 
 type FilesSidebarTreeItem_CustomAttributes = {
 	"data-file-id": string;
+};
+
+type FilesSidebarTreeItemRestrictedIcon_CustomAttributes = {
+	/**
+	 * `"self"` because the sidebar only marks the node that carries the restriction. The file header
+	 * uses the same attribute and also emits `"inherited"` for something inside a restricted folder, so
+	 * a browser test reads one value and knows which of the two it found.
+	 */
+	"data-file-restricted": "self";
 };
 
 type TreeItems = {
@@ -384,6 +397,7 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	label: string;
 	archiveOperationId: string | undefined;
 	canRename: boolean;
+	canShare: boolean;
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
 	expandedFolderActionsVisible: boolean;
@@ -393,6 +407,7 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	onCopyLink: () => void;
 	onCopyNodeId: () => void;
 	onRename: () => void;
+	onShare: () => void;
 	onExpandSubtree: () => void;
 	onCollapseSubtree: () => void;
 	onArchive: () => void;
@@ -407,6 +422,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		label,
 		archiveOperationId,
 		canRename,
+		canShare,
 		canExpandSubtree,
 		canCollapseSubtree,
 		expandedFolderActionsVisible,
@@ -416,6 +432,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		onCopyLink,
 		onCopyNodeId,
 		onRename,
+		onShare,
 		onExpandSubtree,
 		onCollapseSubtree,
 		onArchive,
@@ -444,112 +461,124 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 				"data-files-sidebar-tree-context": "",
 			} satisfies Partial<CustomAttributes>)}
 		>
-			<MyMenuPopoverContent>
-				{kind === "folder" ? (
-					<MyMenuItemsGroup>
-						<MyMenuItem
-							className={cn(
-								"FilesSidebarTreeItemMenuPopover-create-action" satisfies FilesSidebarTreeItemMenuPopover_ClassNames,
-								expandedFolderActionsVisible &&
-									("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
-							)}
-							aria-label={`Add file to ${label}`}
-							hideOnClick
-							onClick={onCreateFile}
-						>
+			<MyMenuPopoverScrollableArea>
+				<MyMenuPopoverContent>
+					{kind === "folder" ? (
+						<MyMenuItemsGroup>
+							<MyMenuItem
+								className={cn(
+									"FilesSidebarTreeItemMenuPopover-create-action" satisfies FilesSidebarTreeItemMenuPopover_ClassNames,
+									expandedFolderActionsVisible &&
+										("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
+								)}
+								aria-label={`Add file to ${label}`}
+								hideOnClick
+								onClick={onCreateFile}
+							>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<FilePlus />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Add file</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+							<MyMenuItem
+								className={cn(
+									"FilesSidebarTreeItemMenuPopover-create-action" satisfies FilesSidebarTreeItemMenuPopover_ClassNames,
+									expandedFolderActionsVisible &&
+										("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
+								)}
+								aria-label={`Add folder to ${label}`}
+								hideOnClick
+								onClick={onCreateFolder}
+							>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<FolderPlus />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Add folder</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+						</MyMenuItemsGroup>
+					) : null}
+					<MyMenuItemsGroup separator={kind === "folder" && expandedFolderActionsVisible}>
+						<MyMenuItem hideOnClick onClick={onCopy}>
 							<MyMenuItemContent>
 								<MyMenuItemContentIcon>
-									<FilePlus />
+									<Copy />
 								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Add file</MyMenuItemContentPrimary>
+								<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
 							</MyMenuItemContent>
 						</MyMenuItem>
-						<MyMenuItem
-							className={cn(
-								"FilesSidebarTreeItemMenuPopover-create-action" satisfies FilesSidebarTreeItemMenuPopover_ClassNames,
-								expandedFolderActionsVisible &&
-									("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
-							)}
-							aria-label={`Add folder to ${label}`}
-							hideOnClick
-							onClick={onCreateFolder}
-						>
+						<MyMenuItem hideOnClick onClick={onCopyLink}>
 							<MyMenuItemContent>
 								<MyMenuItemContentIcon>
-									<FolderPlus />
+									<Link2 />
 								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Add folder</MyMenuItemContentPrimary>
+								<MyMenuItemContentPrimary>Copy link</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+						<MyMenuItem hideOnClick onClick={onCopyNodeId}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<Hash />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Copy node id</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+						<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<Edit2 />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
 							</MyMenuItemContent>
 						</MyMenuItem>
 					</MyMenuItemsGroup>
-				) : null}
-				<MyMenuItemsGroup separator={kind === "folder" && expandedFolderActionsVisible}>
-					<MyMenuItem hideOnClick onClick={onCopy}>
-						<MyMenuItemContent>
-							<MyMenuItemContentIcon>
-								<Copy />
-							</MyMenuItemContentIcon>
-							<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
-						</MyMenuItemContent>
-					</MyMenuItem>
-					<MyMenuItem hideOnClick onClick={onCopyLink}>
-						<MyMenuItemContent>
-							<MyMenuItemContentIcon>
-								<Link2 />
-							</MyMenuItemContentIcon>
-							<MyMenuItemContentPrimary>Copy link</MyMenuItemContentPrimary>
-						</MyMenuItemContent>
-					</MyMenuItem>
-					<MyMenuItem hideOnClick onClick={onCopyNodeId}>
-						<MyMenuItemContent>
-							<MyMenuItemContentIcon>
-								<Hash />
-							</MyMenuItemContentIcon>
-							<MyMenuItemContentPrimary>Copy node id</MyMenuItemContentPrimary>
-						</MyMenuItemContent>
-					</MyMenuItem>
-					<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
-						<MyMenuItemContent>
-							<MyMenuItemContentIcon>
-								<Edit2 />
-							</MyMenuItemContentIcon>
-							<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
-						</MyMenuItemContent>
-					</MyMenuItem>
-				</MyMenuItemsGroup>
-				{kind === "folder" ? (
+					{kind === "folder" ? (
+						<MyMenuItemsGroup separator>
+							<MyMenuItem disabled={!canExpandSubtree} hideOnClick onClick={onExpandSubtree}>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<CopyPlus />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Expand subtree</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+							<MyMenuItem disabled={!canCollapseSubtree} hideOnClick onClick={onCollapseSubtree}>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<CopyMinus />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Collapse subtree</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+						</MyMenuItemsGroup>
+					) : null}
 					<MyMenuItemsGroup separator>
-						<MyMenuItem disabled={!canExpandSubtree} hideOnClick onClick={onExpandSubtree}>
+						<MyMenuItem disabled={!canShare} hideOnClick onClick={onShare}>
 							<MyMenuItemContent>
 								<MyMenuItemContentIcon>
-									<CopyPlus />
+									<Users />
 								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Expand subtree</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-						<MyMenuItem disabled={!canCollapseSubtree} hideOnClick onClick={onCollapseSubtree}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<CopyMinus />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Collapse subtree</MyMenuItemContentPrimary>
+								<MyMenuItemContentPrimary>Share</MyMenuItemContentPrimary>
 							</MyMenuItemContent>
 						</MyMenuItem>
 					</MyMenuItemsGroup>
-				) : null}
-				<MyMenuItemsGroup separator>
-					<MyMenuItem
-						variant={isArchived ? "default" : "destructive"}
-						hideOnClick
-						onClick={handleArchiveUnarchiveClick}
-					>
-						<MyMenuItemContent>
-							<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
-							<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
-						</MyMenuItemContent>
-					</MyMenuItem>
-				</MyMenuItemsGroup>
-			</MyMenuPopoverContent>
+					<MyMenuItemsGroup separator>
+						<MyMenuItem
+							variant={isArchived ? "default" : "destructive"}
+							hideOnClick
+							onClick={handleArchiveUnarchiveClick}
+						>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+					</MyMenuItemsGroup>
+				</MyMenuPopoverContent>
+			</MyMenuPopoverScrollableArea>
 		</MyContextMenuPopover>
 	);
 });
@@ -729,13 +758,16 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 // #endregion tree item title
 
 // #region tree item primary content
-type FilesSidebarTreeItemPrimaryContent_ClassNames = "FilesSidebarTreeItemPrimaryContent";
+type FilesSidebarTreeItemPrimaryContent_ClassNames =
+	| "FilesSidebarTreeItemPrimaryContent"
+	| "FilesSidebarTreeItemPrimaryContent-restricted-icon";
 
 type FilesSidebarTreeItemPrimaryContent_Props = {
 	title: string;
 	kind: files_TreeItem["kind"];
 	renameInputProps: ReturnType<FilesSidebarTreeItem_Instance["getRenameInputProps"]>;
 	isRenaming: boolean;
+	isRestricted: boolean;
 	renameError: string | undefined;
 	onRenameErrorClear: () => void;
 };
@@ -743,7 +775,7 @@ type FilesSidebarTreeItemPrimaryContent_Props = {
 const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPrimaryContent(
 	props: FilesSidebarTreeItemPrimaryContent_Props,
 ) {
-	const { title, kind, renameInputProps, isRenaming, renameError, onRenameErrorClear } = props;
+	const { title, kind, renameInputProps, isRenaming, isRestricted, renameError, onRenameErrorClear } = props;
 
 	return (
 		<div className={"FilesSidebarTreeItemPrimaryContent" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}>
@@ -756,6 +788,22 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 				renameError={renameError}
 				onRenameErrorClear={onRenameErrorClear}
 			/>
+			{isRestricted ? (
+				<div
+					className={
+						"FilesSidebarTreeItemPrimaryContent-restricted-icon" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames
+					}
+					// Decoration only: anything hoverable here would sit on top of the row's primary action and
+					// eat its clicks and drops, so the mouse copy lives on the row tooltip instead. The row name
+					// already contains "restricted", so nothing is announced from here.
+					aria-hidden="true"
+					{...({
+						"data-file-restricted": "self",
+					} satisfies FilesSidebarTreeItemRestrictedIcon_CustomAttributes)}
+				>
+					<Lock />
+				</div>
+			) : null}
 		</div>
 	);
 });
@@ -775,6 +823,7 @@ type FilesSidebarTreeItemPrimaryAction_Props = {
 	updatedByDisplayName: string;
 	isPending: boolean;
 	isSelected: boolean;
+	isRestricted: boolean;
 	isDropZoneIncluded: boolean;
 	isTreeDragging: boolean;
 	isFocused: boolean;
@@ -793,6 +842,7 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 		updatedByDisplayName,
 		isPending,
 		isSelected,
+		isRestricted,
 		isDropZoneIncluded,
 		isTreeDragging,
 		isFocused,
@@ -800,7 +850,11 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 		ariaLabel,
 	} = props;
 
-	const tooltipContent = `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedByDisplayName}`;
+	// The lock badge cannot host its own tooltip without covering this button, so a restricted row
+	// explains itself here. The updated-by text stays visible in the row's second line.
+	const tooltipContent = isRestricted
+		? "Only chosen people and roles can open this"
+		: `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedByDisplayName}`;
 
 	return (
 		<MyPrimaryAction
@@ -1089,6 +1143,7 @@ type FilesSidebarTreeItem_Props = {
 	onCopy: (nodeId: string) => void;
 	onCopyLink: (nodeId: string) => void;
 	onCopyNodeId: (nodeId: string) => void;
+	onShare: (nodeId: string) => void;
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -1114,6 +1169,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		onCopy,
 		onCopyLink,
 		onCopyNodeId,
+		onShare,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -1141,6 +1197,11 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		() => itemData.kind === "folder" && isExpanded && item.getChildren().some((child) => child.isExpanded()),
 	);
 	const canRename = files_is_node(itemData);
+	// The synthetic root is not a real node, so there is nothing to share it with. Only the node that
+	// carries the restriction shows the lock: everything under it would repeat the same thing on every
+	// row, and the folder above already says it.
+	const canShare = files_is_node(itemData);
+	const isRestricted = files_is_node(itemData) && itemData.restrictedScopeNodeId === itemData._id;
 
 	const ancestorIds = useVal(() => {
 		const result: string[] = [];
@@ -1183,7 +1244,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 			(pendingUpdate) => pendingUpdate.fileNodeId === itemId && pendingUpdate.eagerCreated != null,
 		);
 
-	const label = `${itemData.name}${isAddedFile ? " added" : ""}${isArchived ? " archived" : ""}`;
+	const label = `${itemData.name}${isAddedFile ? " added" : ""}${isRestricted ? " restricted" : ""}${isArchived ? " archived" : ""}`;
 
 	const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 		onCreateNode(itemId, "file");
@@ -1207,6 +1268,10 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 	const handleRenameClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onRename"]>(() => {
 		onStartRename(itemId);
+	});
+
+	const handleShareClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onShare"]>(() => {
+		onShare(itemId);
 	});
 
 	const handleRenameErrorClear = useFn(() => {
@@ -1311,6 +1376,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 							updatedByDisplayName={updatedByDisplayName}
 							isPending={isPending}
 							isSelected={isSelected || isMenuOpen}
+							isRestricted={isRestricted}
 							isDropZoneIncluded={isDropZoneIncluded}
 							isTreeDragging={isTreeDragging}
 							isFocused={isFocused}
@@ -1330,6 +1396,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 							kind={itemData.kind}
 							renameInputProps={renameInputProps}
 							isRenaming={isRenaming}
+							isRestricted={isRestricted}
 							renameError={renameError}
 							onRenameErrorClear={handleRenameErrorClear}
 						/>
@@ -1379,6 +1446,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					label={label}
 					archiveOperationId={itemData.archiveOperationId}
 					canRename={canRename}
+					canShare={canShare}
 					canExpandSubtree={canExpandSubtree}
 					canCollapseSubtree={canCollapseSubtree}
 					expandedFolderActionsVisible={expandedFolderActionsVisible}
@@ -1388,6 +1456,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					onCopyLink={handleCopyLinkClick}
 					onCopyNodeId={handleCopyNodeIdClick}
 					onRename={handleRenameClick}
+					onShare={handleShareClick}
 					onExpandSubtree={handleExpandSubtreeClick}
 					onCollapseSubtree={handleCollapseSubtreeClick}
 					onArchive={handleArchiveClick}
@@ -1657,6 +1726,7 @@ type FilesSidebarTree_Props = {
 	onCopy: (nodeId: string) => void;
 	onCopyLink: (nodeId: string) => void;
 	onCopyNodeId: (nodeId: string) => void;
+	onShare: (nodeId: string) => void;
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -1683,6 +1753,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		onCopy,
 		onCopyLink,
 		onCopyNodeId,
+		onShare,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -1894,6 +1965,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 								onCopy={onCopy}
 								onCopyLink={onCopyLink}
 								onCopyNodeId={onCopyNodeId}
+								onShare={onShare}
 								onArchive={onArchive}
 								onUnarchive={onUnarchive}
 							/>
@@ -2923,6 +2995,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState<Set<string>>(new Set());
 	const [renamingItem, setRenamingItem] = useState<string | null | undefined>(undefined);
 	const [renameErrorByNodeId, setRenameErrorByNodeId] = useState<Map<string, string>>(new Map());
+	/** The node whose share dialog is open, or `null` when it is closed. */
+	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const isBusy = isCreatingFile || isArchivingSelection;
 	const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -2999,22 +3073,34 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			itemById: new Map<string, files_TreeItem>([[files_ROOT_ID, rootItem]]),
 		} satisfies TreeItems;
 
+		const shownItemIds = new Set<string>([files_ROOT_ID]);
+		for (const item of treeItemsList) {
+			if (files_is_node(item) && (item.archiveOperationId === undefined || showArchived)) {
+				shownItemIds.add(item._id);
+			}
+		}
+
 		// Collect all items from the list to the maps
 		for (const item of treeItemsList) {
 			if (!files_is_node(item) || (item.archiveOperationId !== undefined && !showArchived)) {
 				continue;
 			}
 
-			let siblingsIds = result.itemsIdsByParentId.get(item.parentId);
+			// Somebody who was given one folder gets that folder without the open folders above it, so
+			// its parent is missing here. Show it at the top instead: filed under a parent that never
+			// renders, the folder they were given would be invisible.
+			const parentId = shownItemIds.has(item.parentId) ? item.parentId : files_ROOT_ID;
+
+			let siblingsIds = result.itemsIdsByParentId.get(parentId);
 			if (!siblingsIds) {
 				siblingsIds = new Set();
-				result.itemsIdsByParentId.set(item.parentId, siblingsIds);
+				result.itemsIdsByParentId.set(parentId, siblingsIds);
 			}
 
-			let sortedSiblingsIds = result.sortedItemsIdsByParentId.get(item.parentId);
+			let sortedSiblingsIds = result.sortedItemsIdsByParentId.get(parentId);
 			if (!sortedSiblingsIds) {
 				sortedSiblingsIds = [];
-				result.sortedItemsIdsByParentId.set(item.parentId, sortedSiblingsIds);
+				result.sortedItemsIdsByParentId.set(parentId, sortedSiblingsIds);
 			}
 
 			siblingsIds.add(item._id);
@@ -4107,6 +4193,16 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		});
 	});
 
+	// Sharing is always about one node, unlike copy or archive, which act on the whole selection: a
+	// share list belongs to a single file or folder, so there is nothing to apply to the others.
+	const handleShare = useFn<FilesSidebarTree_Props["onShare"]>((nodeId) => {
+		setShareNodeId(nodeId as app_convex_Id<"files_nodes">);
+	});
+
+	const handleShareModalClose = useFn(() => {
+		setShareNodeId(null);
+	});
+
 	const handleSearchQueryChange = useFn<FilesSidebarTopSection_Props["onSearchQueryChange"]>((nextSearchQuery) => {
 		setSearchQuery(nextSearchQuery);
 		onSearchQueryChange(nextSearchQuery);
@@ -4476,10 +4572,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					onCopy={handleCopy}
 					onCopyLink={handleCopyLink}
 					onCopyNodeId={handleCopyNodeId}
+					onShare={handleShare}
 					onArchive={handleArchive}
 					onUnarchive={handleUnarchive}
 				/>
 			</div>
+
+			<FilesShareModal nodeId={shareNodeId} onClose={handleShareModalClose} />
 		</aside>
 	);
 });

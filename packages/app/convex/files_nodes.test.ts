@@ -335,6 +335,7 @@ describe("paginated bash listing queries", () => {
 		const firstPage = await asUser.query(internal.files_nodes.list_children, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			parentId: db.docsFolderId,
 			numItems: 2,
 			cursor: null,
@@ -343,6 +344,7 @@ describe("paginated bash listing queries", () => {
 		const secondPage = await asUser.query(internal.files_nodes.list_children, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			parentId: db.docsFolderId,
 			numItems: 2,
 			cursor: firstPage.continueCursor,
@@ -369,6 +371,7 @@ describe("paginated bash listing queries", () => {
 		const ascending = await asUser.query(internal.files_nodes.list_children, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
@@ -378,6 +381,7 @@ describe("paginated bash listing queries", () => {
 		const descending = await asUser.query(internal.files_nodes.list_children, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
@@ -409,6 +413,7 @@ describe("paginated bash listing queries", () => {
 		const descending = await asUser.query(internal.files_nodes.list_children, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
@@ -417,6 +422,7 @@ describe("paginated bash listing queries", () => {
 		const ascending = await asUser.query(internal.files_nodes.list_children, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
@@ -443,6 +449,7 @@ describe("paginated bash listing queries", () => {
 		const firstPage = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs",
 			numItems: 2,
 			cursor: null,
@@ -450,6 +457,7 @@ describe("paginated bash listing queries", () => {
 		const secondPage = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs",
 			numItems: 10,
 			cursor: firstPage.continueCursor,
@@ -478,6 +486,7 @@ describe("paginated bash listing queries", () => {
 		const ascending = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
@@ -486,6 +495,7 @@ describe("paginated bash listing queries", () => {
 		const descending = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
@@ -526,6 +536,7 @@ describe("paginated bash listing queries", () => {
 		const filesAtDepthOne = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
@@ -535,6 +546,7 @@ describe("paginated bash listing queries", () => {
 		const foldersAtDepthOne = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
@@ -560,6 +572,7 @@ describe("paginated bash listing queries", () => {
 		const firstPage = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs",
 			kind: "file",
 			lowercaseExtension: "md",
@@ -570,6 +583,7 @@ describe("paginated bash listing queries", () => {
 		const secondPage = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs",
 			kind: "file",
 			lowercaseExtension: "md",
@@ -598,6 +612,7 @@ describe("paginated bash listing queries", () => {
 		const result = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs/",
 			numItems: 20,
 			cursor: null,
@@ -623,6 +638,7 @@ describe("paginated bash listing queries", () => {
 		const result = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs",
 			numItems: 20,
 			cursor: null,
@@ -647,6 +663,7 @@ describe("paginated bash listing queries", () => {
 		const firstPage = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs/a.md",
 			numItems: 1,
 			cursor: null,
@@ -654,6 +671,7 @@ describe("paginated bash listing queries", () => {
 		const secondPage = await asUser.query(internal.files_nodes.list_subtree, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			folderPath: "/docs/a.md",
 			numItems: 1,
 			cursor: firstPage.continueCursor,
@@ -677,6 +695,7 @@ describe("paginated bash listing queries", () => {
 		const desc = await asUser.query(internal.files_nodes.list_children, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			numItems: 50,
 			cursor: null,
 			orderBy: "updatedAt",
@@ -684,6 +703,7 @@ describe("paginated bash listing queries", () => {
 		const asc = await asUser.query(internal.files_nodes.list_children, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			numItems: 50,
 			cursor: null,
 			orderBy: "updatedAt",
@@ -709,6 +729,7 @@ describe("paginated bash listing queries", () => {
 				{
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
+					visibilityUserId: db.userId,
 					numItems: 3,
 					cursor,
 					orderBy: "updatedAt",
@@ -735,6 +756,7 @@ describe("paginated bash listing queries", () => {
 		const workspaceNameOrder = await asUser.query(internal.files_nodes.list_children, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			numItems: 10,
 			cursor: null,
 			orderBy: "name",
@@ -742,6 +764,7 @@ describe("paginated bash listing queries", () => {
 		const invalidParent = await asUser.query(internal.files_nodes.list_children, {
 			organizationId: db.organizationId,
 			workspaceId: "GITHUB",
+			visibilityUserId: db.userId,
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
@@ -764,16 +787,19 @@ describe("paginated bash listing queries", () => {
 		const fileNode = await asUser.query(internal.files_nodes.get_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			path: "/docs/a.md",
 		});
 		const archived = await asUser.query(internal.files_nodes.get_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			path: "/docs/z-archived.md",
 		});
 		const root = await asUser.query(internal.files_nodes.get_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			path: "/",
 		});
 
@@ -847,16 +873,19 @@ test("get_by_path uses materialized paths", async () => {
 		asUser.query(internal.files_nodes.get_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			path: root1Path,
 		}),
 		asUser.query(internal.files_nodes.get_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			path: child1Path,
 		}),
 		asUser.query(internal.files_nodes.get_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
+			visibilityUserId: db.userId,
 			path: deep1Path,
 		}),
 	]);
@@ -3035,6 +3064,7 @@ test("create_folder_node allows tenant files under /.mounts", async () => {
 	const node = await asUser.query(internal.files_nodes.get_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
+		visibilityUserId: db.userId,
 		path: "/.mounts",
 	});
 	expect(node?._id).toBe(result._yay.nodeId);
@@ -3281,6 +3311,7 @@ test("get_by_path ignores archived files with duplicate path", async () => {
 	const resolvedRoot1 = await asUser.query(internal.files_nodes.get_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
+		visibilityUserId: db.userId,
 		path: `/${db.files.file_root_1.name}`,
 	});
 

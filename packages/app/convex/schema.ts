@@ -506,9 +506,8 @@ const app_convex_schema = defineSchema({
 		 * A node is restricted exactly when `restrictedScopeNodeId === _id`. Permission grants are
 		 * stored only on that node, so a restricted folder and everything inside it share one pointer.
 		 *
-		 * Nothing writes this field yet. The permission check already reads it, but the code that has
-		 * to copy the parent's pointer when a node is created or moved arrives with the file-sharing
-		 * milestone. So today it is always unset and every node uses workspace access.
+		 * `files_sharing.ts` sets and clears it; creates and moves copy it from the new parent, so it
+		 * stays right without walking up the tree. See `files_nodes_db_cascade_restricted_scope`.
 		 */
 		restrictedScopeNodeId: v.optional(v.id("files_nodes")),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */

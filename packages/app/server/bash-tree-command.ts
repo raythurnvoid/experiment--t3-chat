@@ -180,6 +180,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					const pageResult = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+						visibilityUserId: pageArgs.mount.fs.ctxData.userId,
 						folderPath: `/${pageArgs.mount.pluginVersionId}`,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
@@ -277,6 +278,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					const pageResult = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+						visibilityUserId: pageArgs.mount.fs.ctxData.userId,
 						folderPath: `/${pageArgs.mount.name}/${pageArgs.mount.commitSha}`,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
@@ -390,6 +392,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 						organizationId: target.pathResolution.ctxData.organizationId,
 						workspaceId: target.pathResolution.ctxData.workspaceId,
+						visibilityUserId: target.pathResolution.ctxData.userId,
 						path: rootDbFilesPath,
 						overlayUserId: target.pathResolution.fs.overlayUserId,
 					})) as files_nodes_get_by_path_Result);
@@ -421,6 +424,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 			organizationId: target.pathResolution.ctxData.organizationId,
 			workspaceId: target.pathResolution.ctxData.workspaceId,
+			visibilityUserId: target.pathResolution.ctxData.userId,
 			folderPath: committedRootPath,
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
@@ -472,6 +476,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				const splice = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 					organizationId: target.pathResolution.ctxData.organizationId,
 					workspaceId: target.pathResolution.ctxData.workspaceId,
+					visibilityUserId: target.pathResolution.ctxData.userId,
 					folderPath: move.committedPath,
 					numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 					cursor: null,

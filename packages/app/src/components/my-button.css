@@ -253,7 +253,9 @@
 
 	.MyButton-variant-outline_destructive {
 		padding: 8px 12px;
-		color: var(--color-red-08);
+		/* `red-09`, not `red-08`: on this background `red-08` is 3.85:1, under the 4.5:1 that 14px text
+		   needs. Hover and active step up from there, so each one still changes the text color. */
+		color: var(--color-red-09);
 		background: var(--color-base-1-03);
 		box-shadow:
 			inset 0 0 0 2px var(--color-red-05),
@@ -262,7 +264,7 @@
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:hover,
 			&:focus-visible {
-				color: var(--color-red-09);
+				color: var(--color-red-10);
 				background: var(--color-red-02);
 				box-shadow:
 					inset 0 0 0 2px var(--color-red-06),
@@ -271,7 +273,7 @@
 
 			&:active {
 				background: var(--color-red-02);
-				color: var(--color-red-10);
+				color: var(--color-red-11);
 				box-shadow:
 					inset 0 2px 0 color-mix(in oklch, black 24%, transparent),
 					inset 0 0 0 2px var(--color-red-07);

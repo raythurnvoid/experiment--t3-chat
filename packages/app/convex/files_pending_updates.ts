@@ -21,6 +21,7 @@ import {
 	files_db_yjs_push_update,
 	files_nodes_db_apply_pending_move,
 	files_nodes_db_archive_nodes,
+	files_nodes_db_can_act_on_swept_nodes,
 	files_nodes_db_hard_delete_node,
 	files_nodes_db_is_eager_node_safe_to_hard_delete,
 	files_nodes_db_remove_created_ancestor_folders_if_safe,
@@ -32,7 +33,11 @@ import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_e
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
-import { access_control_db_authorize_membership } from "./access_control.ts";
+import {
+	access_control_db_authorize_membership,
+	access_control_db_authorize_node,
+	access_control_db_filter_readable_file_nodes,
+} from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_ROOT_ID,
@@ -1069,9 +1074,9 @@ export const upsert_file_pending_update = action({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+		const allowed = await ctx.runQuery(api.files_nodes.get_current_user_file_write_permission, {
 			membershipId: args.membershipId,
-			permission: "content.write",
+			nodeId: args.nodeId,
 		});
 		if (!allowed) {
 			return Result({ _nay: { message: "Permission denied" } });
@@ -1450,9 +1455,12 @@ export const apply_file_pending_move = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		// Against the node, not the workspace: this applies a move to one file, so the file is what
+		// decides. A restricted file is only movable by somebody the share list lets write it.
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.write",
 		});
 		if (authorized._nay) {
@@ -1474,6 +1482,28 @@ export const apply_file_pending_move = mutation({
 			// Bulk retries re-run the whole accept with a stale doc snapshot; a doc whose
 			// move was already applied is a no-op success so the content step can proceed.
 			return Result({ _yay: null });
+		}
+
+		// The destination decides too: dropping a file into a folder is a write to that folder, and at
+		// the root it is a write to the workspace. `move_nodes` asks both legs; this applies the same
+		// move, so without the second leg a grant on one folder would be enough to push a file into
+		// somebody else's restricted folder, or out of one into the open tree.
+		const destParentId = pendingUpdate.pendingMove.destParentId;
+		const authorizedDestination =
+			destParentId === files_ROOT_ID
+				? await access_control_db_authorize_membership(ctx, {
+						userAuth,
+						membership,
+						permission: "content.write",
+					})
+				: await access_control_db_authorize_node(ctx, {
+						userAuth,
+						membership,
+						nodeId: destParentId,
+						permission: "content.write",
+					});
+		if (authorizedDestination._nay) {
+			return authorizedDestination;
 		}
 
 		const applied = await files_nodes_db_apply_pending_move(ctx, {
@@ -1528,9 +1558,10 @@ export const apply_file_pending_archive = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.write",
 		});
 		if (authorized._nay) {
@@ -1584,10 +1615,26 @@ export const apply_file_pending_archive = mutation({
 						.lt("path", `${descendantsPathPrefix}\uffff`),
 				)
 				.collect();
-			for (const descendantFileNode of descendantFileNodes) {
-				if (descendantFileNode.archiveOperationId !== undefined) {
-					continue;
-				}
+			const activeDescendants = descendantFileNodes.filter(
+				(descendantFileNode) => descendantFileNode.archiveOperationId === undefined,
+			);
+
+			// Same rule as `archive_nodes`: the check above asked about this folder, and the sweep can
+			// reach a restricted folder nested inside it that the caller was never given.
+			if (
+				!(await files_nodes_db_can_act_on_swept_nodes(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					rootScopeNodeId: node.restrictedScopeNodeId,
+					nodes: activeDescendants,
+					permission: "content.write",
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+
+			for (const descendantFileNode of activeDescendants) {
 				nodeIdsToArchive.push(descendantFileNode._id);
 			}
 		}
@@ -1657,9 +1704,10 @@ export const discard_file_pending_structural = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.write",
 		});
 		if (authorized._nay) {
@@ -1792,9 +1840,10 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.write",
 		});
 		if (authorized._nay) {
@@ -2097,10 +2146,11 @@ export const persist_file_pending_update_rebased_state = action({
 
 		// No rate limit here. The mutation this action calls counts against the same limit, so counting
 		// again would cut every user's real save budget in half. A refused caller costs us only the
-		// permission query. An action cannot read the database, so that check goes through a query.
-		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+		// permission query. An action cannot read the database, so that check goes through a query,
+		// and it asks about this file, not the workspace, so a grant on a restricted folder still saves.
+		const allowed = await ctx.runQuery(api.files_nodes.get_current_user_file_write_permission, {
 			membershipId: args.membershipId,
-			permission: "content.write",
+			nodeId: args.nodeId,
 		});
 		if (!allowed) {
 			return Result({ _nay: { message: "Permission denied" } });
@@ -2148,9 +2198,10 @@ export const get_file_pending_update = query({
 			return null;
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.read",
 		});
 		if (authorized._nay) {
@@ -2199,20 +2250,39 @@ export const list_files_pending_updates = query({
 			return [];
 		}
 
+		// A failed check does not end the query here, same as `list_tree`. The drafts a guest wrote inside
+		// the one folder they hold are their own: without them they cannot save or discard what they typed.
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
 			permission: "content.read",
 		});
-		if (authorized._nay) {
-			return [];
-		}
 
-		return await files_db_list_pending_updates_for_user(ctx, {
+		const pendingUpdates = await files_db_list_pending_updates_for_user(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 		});
+
+		// These are the caller's own drafts, so they were readable when they were written. They are
+		// filtered anyway, because access can be taken away after the draft exists: the pending-changes
+		// panel must not keep showing the name and path of a file the caller has since lost.
+		const pendingNodes = (
+			await Promise.all(pendingUpdates.map((pendingUpdate) => ctx.db.get("files_nodes", pendingUpdate.fileNodeId)))
+		).filter((fileNode) => fileNode !== null);
+		const readableNodeIds = new Set(
+			(
+				await access_control_db_filter_readable_file_nodes(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					nodes: pendingNodes,
+					hasWorkspaceRead: !authorized._nay,
+				})
+			).map((fileNode) => fileNode._id),
+		);
+
+		return pendingUpdates.filter((pendingUpdate) => readableNodeIds.has(pendingUpdate.fileNodeId));
 	},
 });
 
@@ -2260,9 +2330,10 @@ export const get_file_pending_update_last_sequence_saved = query({
 			return null;
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
+			nodeId: args.nodeId,
 			permission: "content.read",
 		});
 		if (authorized._nay) {
@@ -2294,8 +2365,7 @@ export const get_file_pending_update_last_sequence_saved = query({
 async function files_pending_update_db_archive_replace_source_chain(
 	ctx: MutationCtx,
 	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
+		membership: app_convex_Doc<"organizations_workspaces_users">;
 		copiedFrom: app_convex_Doc<"files_pending_updates">["copiedFrom"];
 		updatedBy: Id<"users">;
 		now: number;
@@ -2311,13 +2381,29 @@ async function files_pending_update_db_archive_replace_source_chain(
 		const sourceNode = await ctx.db.get("files_nodes", copiedFrom.nodeId);
 		if (
 			!sourceNode ||
-			sourceNode.organizationId !== args.organizationId ||
-			sourceNode.workspaceId !== args.workspaceId ||
+			sourceNode.organizationId !== args.membership.organizationId ||
+			sourceNode.workspaceId !== args.membership.workspaceId ||
 			sourceNode.kind !== "file" ||
 			sourceNode.archiveOperationId !== undefined
 		) {
 			return;
 		}
+
+		// The caller was authorized for the file being saved. This is the other end of a replace-move,
+		// found through the proposal's provenance, and a proposal can outlive the access that created
+		// it — so it is asked about now, at the moment it would be archived. Asked through the
+		// membership: the file being saved can be a restricted one this caller holds a grant on, which
+		// says nothing about an open source, and the raw helper waves every open node through.
+		const authorizedSource = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.updatedBy },
+			membership: args.membership,
+			permission: "content.write",
+			fileNode: sourceNode,
+		});
+		if (authorizedSource._nay) {
+			return;
+		}
+
 		await files_nodes_db_archive_nodes(ctx, { nodeIds: [sourceNode._id], updatedBy: args.updatedBy, now: args.now });
 
 		// The acting user's leftover doc on the source must not stay acceptable on the archived
@@ -2325,8 +2411,8 @@ async function files_pending_update_db_archive_replace_source_chain(
 		// carries, or itself a replace-move doc (chained mv -f) whose own source the next hop
 		// archives. Other users' docs stay untouched.
 		const sourcePendingUpdate = await files_db_get_pending_update(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
+			organizationId: args.membership.organizationId,
+			workspaceId: args.membership.workspaceId,
 			userId: args.updatedBy,
 			nodeId: sourceNode._id,
 		});
@@ -2603,8 +2689,7 @@ export const save_file_pending_update_in_db = internalMutation({
 			// Archiving walks the replace chain: each hop's source node and the acting user's own
 			// doc on it — never this doc — so it runs in parallel with the doc writes below.
 			const archiveSourcePromise = files_pending_update_db_archive_replace_source_chain(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
+				membership,
 				copiedFrom: pendingUpdate.copiedFrom,
 				updatedBy: user._id,
 				now,
@@ -2696,8 +2781,7 @@ export const save_file_pending_update_in_db = internalMutation({
 			// the patch below still clears the provenance, so the proposal degrades to a plain edit.
 			diffUpdateForLatestFileYjsDoc
 				? files_pending_update_db_archive_replace_source_chain(ctx, {
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
+						membership,
 						copiedFrom: pendingUpdate.copiedFrom,
 						updatedBy: user._id,
 						now,
@@ -2806,10 +2890,10 @@ export const save_file_pending_update = action({
 		}
 
 		// Same as `persist_file_pending_update_rebased_state` above: no rate limit here, and the
-		// permission check goes through a query.
-		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+		// permission check goes through a query that asks about this file.
+		const allowed = await ctx.runQuery(api.files_nodes.get_current_user_file_write_permission, {
 			membershipId: args.membershipId,
-			permission: "content.write",
+			nodeId: args.nodeId,
 		});
 		if (!allowed) {
 			return Result({ _nay: { message: "Permission denied" } });

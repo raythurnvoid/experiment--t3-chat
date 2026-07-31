@@ -45,8 +45,7 @@ Two names, used everywhere in this subsystem. Nothing else should be called "ext
 - **System roles** are `admin`, `member`, `viewer`. They live in code in
   `access_control_SYSTEM_ROLE_MATRIX`, not in the database. No seeding, no migration when the matrix
   changes, and nobody can edit them.
-  - `admin` — everything except `organization.billing.manage` (it charges the owner) and
-    `content.permissions.manage` (not enforced yet).
+  - `admin` — everything except `organization.billing.manage`, because it charges the owner.
   - `member` — `workspace.create`, `workspace.update`, `content.read`, `content.write`.
   - `viewer` — `content.read` only.
 - **Custom roles** are `access_control_roles` docs, organization-wide, capped per organization by
@@ -85,11 +84,10 @@ Fields: `organizationId`, `workspaceId`, `resourceKind` (`organization` | `works
 `thread`), `resourceId` (stringified id), `principalKind` (`role` | `user` | `public`), optional
 `userId`, optional `role`, `permission`, `createdAt`, `updatedAt`.
 
-**Nothing in production writes grant docs today.** System role permissions moved into code, so the old
-seeded organization and workspace grants are gone. The table stays for per-file sharing, which arrives
-with the file-sharing milestone. The check already reads it, and
-`access_control_db_ensure_user_permission_grant` / `..._public_permission_grant` exist but only tests
-call them.
+**`files_sharing.ts` is the only writer.** System role permissions moved into code, so the old seeded
+organization and workspace grants are gone. Every grant doc alive today is a file share: one doc per
+permission per principal, with the **restricted scope node** as `resourceId`. Nothing writes a
+`public` grant, and the share validator has no `public` arm.
 
 Pick the index that matches the principal kind:
 
@@ -123,7 +121,9 @@ Pick the index that matches the principal kind:
 Rule: **every permission in the catalog must be enforced somewhere**, or be marked
 `enforcedBy: "file-sharing"`. A permission the role editor offers that nothing checks is a switch
 that silently does nothing. `access_control_ENFORCED_PERMISSIONS` filters the marked ones out, and
-`create_role` / `update_role` refuse them. Today `content.permissions.manage` is the only one.
+`create_role` / `update_role` refuse them. **Nothing carries the mark today**:
+`content.permissions.manage` was the last one, and file sharing now enforces it on every share
+change. A test asserts the two lists are equal, so adding a mark without an enforcement fails.
 
 To add a permission: add the literal to `access_control_permission_validator` in
 `packages/app/convex/schema.ts`, add the catalog entry, then add the check that enforces it.
@@ -143,33 +143,35 @@ handler.
 Pass the loaded `fileNode` when the operation targets one; the helper derives the scope tuple. Never
 build a `file` resource by hand.
 
-**Most node-targeting handlers do not pass it yet.** Exactly nine call sites do — `files_nodes.ts`
-rename / get-node / get-by-path / the three yjs handlers, both sites in `r2.ts`, and
-`save_file_pending_update_in_db` in `files_pending_updates.ts`. Everything else authorizes at the
-workspace only:
+**Every handler that names a node passes it now.** The snapshot family, the structural mutations, the
+pending-update family and the yjs handlers all ask about the node. Three shapes are in use, and a new
+handler should copy whichever fits:
 
-- the snapshot family — `get_file_snapshots_list`, `get_file_snapshot`, `archive_snapshot`,
-  `unarchive_snapshot`, `restore_snapshot_r2` and their data queries, plus
-  `create_file_snapshot_content_url` and `yjs_prepare_doc_last_snapshot`
-- the structural mutations — `create_folder_node`, `create_upload_node`, `move_nodes`,
-  `archive_nodes`, `unarchive_nodes`. The two create mutations target a `parentId`, so a restricted
-  *folder* is as reachable as a restricted file.
-- the pending-update family — `apply_file_pending_move`, `apply_file_pending_archive`,
-  `discard_file_pending_structural`, `persist_file_pending_update_rebased_state_in_db`,
-  `get_file_pending_update`, `get_file_pending_update_last_sequence_saved`
-- the workspace-wide listings — `list_tree` and `list_files_pending_updates`. These take no node
-  argument, so `fileNode` cannot fix them; they need a per-node filter, or a restricted node's name
-  and path stay visible to everyone in the workspace.
+- `access_control_db_authorize_membership(..., { fileNode })` when the node is already loaded.
+- `access_control_db_authorize_node(..., { nodeId })` when it is not — it loads and checks in one call.
+- `authorize_file_write(ctx, { nodeId })` in `files_nodes.ts` for a **write target**, where `nodeId`
+  is the node itself for a change to an existing node, or the parent folder for a new node or a move
+  destination. `files_ROOT_ID` falls back to the workspace. An action cannot read the database, so
+  actions ask the same question through the `get_current_user_file_write_permission` query.
 
-That is the same answer today, because nothing writes `restrictedScopeNodeId`. But every one of them
-carries, moves or lists file content, so they all need the node leg before file sharing ships. Fixing
-only the snapshot family would ship restricted files that anybody in the workspace can still move,
-archive, or read the pending content of.
+Two rules that are easy to miss, both of which were real holes:
 
-This list covers handlers that authorize and pass no node. `files_metadata.ts`, `files_snapshot.ts`,
-`ai_chat_files.ts` and `github_mounts.ts` are absent because they export no public query, mutation or
-action at all — they are reached through internal functions, which is the separate unguarded surface
-described under "Not enforced yet".
+- **A write has two legs when it moves something.** `move_nodes` and `apply_file_pending_move` check
+  the destination *and* the node. Checking only one lets a grant on a single folder push files into,
+  or out of, a restricted folder.
+- **A cascade is not covered by the node you named.** `archive_nodes` expands to every descendant by
+  path prefix, so it checks each distinct restricted scope it meets on the way down (once per scope,
+  not once per node). `rename_node` accepts a path and can re-parent, so it carries
+  `restrictedScopeNodeId` over exactly like `move_nodes`.
+
+For listings, use `access_control_db_filter_readable_file_nodes`. For **file bytes**, the check lives
+inside the three readers that resolve a node and then hand back its content:
+`read_file_content_from_chunks`, `get_file_markdown_content_db_state_by_path`, and
+`db_resolve_committed_chunk_source` (the one behind `wc` and the stats — it returns no text, but exact
+line, word and byte counts say plenty about a file you were not given). Every bash command, AI tool
+and public API read route goes through one of the three, so a check in each of those callers would be
+a check waiting to be forgotten. Count the readers before you trust this list: a fourth one added
+later is a fourth door.
 
 ## The raw checker
 
@@ -193,10 +195,10 @@ Order, short-circuiting on the first pass:
 A grant that governs a restricted subtree carries the **restricted scope node** as its `resourceId`,
 never the accessed node. When a node has no scope the check still looks for a grant on the node itself
 before falling back to the caller's role; no `workspace`-resource grant is ever consulted for a file,
-and nothing writes a node grant, so that lookup always misses today.
+and sharing only ever writes grants on a restricted node, so that lookup misses for everything else.
 
-The consequence that matters most for the file-sharing milestone: **inside a restricted subtree a
-role's permissions grant nothing.** `has_restricted_file_permission` consults user grants, public
+The consequence that matters most: **inside a restricted subtree a role's permissions grant
+nothing.** `has_restricted_file_permission` consults user grants, public
 grants, and grant docs that name a role — never the role's own permission set. So a non-owner admin is
 locked out of a restricted file unless a grant names them or a role they hold. Only the owner bypasses
 it.
@@ -207,8 +209,9 @@ it.
 Use it when one handler needs several answers, such as comparing what a caller may hand out.
 
 It reads roles only and **ignores direct grants** on purpose. Every ceiling in the subsystem compares
-through it, so a grant can never widen what a caller may hand out. Keep it that way once file sharing
-starts writing grants.
+through it, so a grant can never widen what a caller may hand out. Keep it that way. File sharing has
+its own ceiling, `caller_can_hand_out_level`, which asks against the node instead, because a manager
+of a restricted folder has to be able to share what the grant gave them and nothing more.
 
 ## Conventions
 
@@ -314,6 +317,38 @@ starts writing grants.
   already carry, so every reader already has a no-email branch — do not "fix" one by widening the
   query.
 
+## File sharing
+
+`convex/files_sharing.ts` owns the whole surface. Four mutations plus one query:
+`get_node_share_state`, `restrict_node`, `unrestrict_node`, `set_node_share_grant`,
+`remove_node_share_grant`. The four writes take `content.permissions.manage` **on the node**, and the
+`files_sharing_write` bucket first. `get_node_share_state` only takes `content.read` on the node: the
+dialog opens for anybody who can see the file, and `canManage` in its answer is what hides the
+controls from a reader.
+
+The model:
+
+- A node is restricted exactly when `restrictedScopeNodeId === _id`. Everything under it points at
+  the same id, kept up to date by `files_nodes_db_cascade_restricted_scope`.
+- Grants are always written on the **scope node**, never on the node being opened. Sending a child's
+  id to `set_node_share_grant` is refused; the dialog sends the folder's id for exactly this reason.
+- Three levels — `read`, `write`, `manage` — each a superset of the last, saved as one grant doc per
+  permission. `access_control_FILE_SHARE_LEVELS` is the source of truth.
+
+Four rules that look like details and are not:
+
+- **The owner holds no grant doc** and never appears in the list. They pass every check anyway, so a
+  row for them would be a switch that changes nothing. `set_node_share_grant` refuses them as a
+  principal, and the dialog shows them as a fixed row instead.
+- **`restrict_node` writes the caller their own `manage` grant**, unless they are the owner. Without
+  it an admin would restrict a folder and lose it in the same click, because a role gives nothing
+  inside a restricted scope.
+- **`would_leave_no_manager`** stops the last manager taking themselves off, so the list stays
+  repairable. It only triggers for somebody who manages it *today* — a list with no manager at all is
+  normal, and is what an owner-restricted folder looks like. The owner is exempt: they are the repair.
+- **Deleting a role is blocked while it is shared.** `delete_role` refuses when any grant names the
+  role. Remove the role from the share list, or unrestrict the node, first.
+
 # Write paths that create an assignment
 
 After seeded grants were removed, the assignment doc is the only source of member authority for a
@@ -379,7 +414,11 @@ docs.
 Be explicit about this when planning work; do not assume the subsystem is complete.
 
 - **AI tools and the bash shell** reach files through internal functions that take `userId` as an
-  argument and check nothing. `/api/chat` is the entry point for the tool-bearing agent, and it asks
+  argument and mostly check nothing. **File content is the exception**: the two content readers now
+  check that `userId` against the node, so `cat`, `head`, `tail`, `wc`, `sed` and the AI edit tool all
+  refuse a restricted file. Everything else on that surface — creating, moving, listing through
+  internal helpers — is still unguarded and any new caller has to check for itself.
+  `/api/chat` is the entry point for the tool-bearing agent, and it asks
   two questions: `content.read` in both modes, plus `content.write` for agent mode. Two questions and
   not one, because the catalog lets an owner compose write-without-read. That role never actually
   reached bash — `thread_get` and `thread_create` gate on `content.read` too — but it got a 400 that
@@ -432,21 +471,11 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   name, path, content type and size unless the caller also holds `content.read`, so a custom role
   carrying only `workspace.plugins.manage` sees run status without file identity. Nothing else on the
   plugin surface takes the content check yet.
-- **File and folder ACL.** `files_nodes.restrictedScopeNodeId` is read by the checker but nothing
-  writes it, so it is always unset and every node inherits workspace access. The whole
-  `content.permissions.manage` surface arrives with that milestone.
-- **No listing surface filters per node.** `list_tree`, `list_children`, `list_subtree`,
-  `search_paths`, `text_search_files`, `files_metadata.search`, `files_metadata.get_by_path` and
-  `activities.list_recent` gate on
-  workspace `content.read` and then return every node they find. `activities.list_recent` belongs on
-  this list because its rows carry `targets[].path`, so it leaks file paths the same way — the
-  neighbouring `plugins.list_recent_runs` bullet already drops a run's file details for exactly that
-  reason. There is no
-  `filter_readable_file_nodes` helper and no `visibilityUserId` argument anywhere yet. Deferred on
-  purpose: with nothing writing `restrictedScopeNodeId`, every one of those filters is a no-op today,
-  and the internal ones are reached only from the still-unguarded bash surface. They must land in the
-  same change that first writes a restricted scope, or a restricted node's name and path leak through
-  every list and search.
+- **A restricted path is still an existence oracle.** A path holds one active node, so creating a
+  file where a restricted one already sits has to fail, and the refusal tells the caller something is
+  there. `files_nodes_db_create_node_recursively_at_path` answers `"This file already exists."`, and
+  the public write route answers `"Permission denied"`. Neither hands over the name, the content or
+  the author, and hiding it would need two nodes on one path. Accepted, not overlooked.
 - **Nothing proves a shared tenant before naming a user.** `users.get_anagraphic` requires an
   identity and hides other people's email, but any signed-in caller still turns any `users` id into a
   display name and avatar. Closing that needs a relationship check the query has no argument for

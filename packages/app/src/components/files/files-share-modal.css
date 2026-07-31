@@ -1,0 +1,256 @@
+@layer components {
+	/* #region root */
+	/* Restricting, unrestricting and stepping into the parent's scope all replace the button that had
+	   focus, so focus moves to the dialog itself. `MyModalPopover` clears its outline for every modal,
+	   so the ring is put back here only, the same way the footer spacer below is. */
+	.FilesShareModal {
+		&[data-focus-visible] {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: 2px;
+		}
+	}
+
+	.FilesShareModal-body {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+	}
+
+	.FilesShareModal-loading {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		min-height: 120px;
+
+		color: var(--color-fg-08);
+	}
+
+	/* Pushes "Done" to the right while "Stop restricting" stays on the left. The footer itself is
+	   shared, so the spacer lives here instead of changing the footer for every modal. */
+	.FilesShareModal-footer-spacer {
+		flex: 1;
+	}
+	/* #endregion root */
+
+	/* #region status */
+	.FilesShareModal-status {
+		display: flex;
+		align-items: start;
+		gap: 12px;
+
+		padding: 14px 16px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 10px;
+
+		background: var(--color-base-1-03);
+	}
+
+	.FilesShareModal-status-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+
+		width: 32px;
+		height: 32px;
+		border-radius: 999px;
+
+		background: var(--color-base-1-05);
+		color: var(--color-fg-10);
+	}
+
+	.FilesShareModal-status-icon > svg {
+		width: 16px;
+		height: 16px;
+	}
+
+	.FilesShareModal-status-main {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		min-width: 0;
+		flex: 1;
+	}
+
+	.FilesShareModal-status-title {
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--color-fg-12);
+	}
+
+	/* A folder path can be one long word, so it has to be allowed to break. Without this it pushes the
+	   buttons off the card. */
+	.FilesShareModal-status-text {
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+		overflow-wrap: anywhere;
+	}
+
+	.FilesShareModal-status-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex: none;
+		flex-wrap: wrap;
+		justify-content: end;
+	}
+	/* #endregion status */
+
+	/* #region add row */
+	.FilesShareModal-add {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	/* The person picker takes the leftover width; the level picker stays as wide as its longest
+	   label, so the two never resize as the selection changes. */
+	.FilesShareModal-add-principal-trigger {
+		flex: 1;
+		justify-content: space-between;
+
+		min-width: 0;
+	}
+
+	.FilesShareModal-add-principal-trigger > span:first-child {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.FilesShareModal-add-level-trigger {
+		flex: none;
+		justify-content: space-between;
+
+		min-width: 130px;
+	}
+	/* #endregion add row */
+
+	/* #region entry row */
+	.FilesShareModal-list {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+
+		/* Removing a row moves focus here, because the button that had it is gone. Show it, so the
+		   keyboard user can see where they landed. Same outline as the other focused lists. */
+		&:focus-visible {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: 2px;
+		}
+	}
+
+	.FilesShareModalEntry {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+
+		padding: 8px 10px;
+		border: 1px solid transparent;
+		border-radius: 10px;
+	}
+
+	.FilesShareModalEntry:hover {
+		border-color: var(--color-base-1-07);
+		background: var(--color-base-1-03);
+	}
+
+	/* One box for both kinds of row, so an avatar and a role icon sit on the same grid. */
+	.FilesShareModalEntry-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+
+		width: 32px;
+		height: 32px;
+		border-radius: 999px;
+
+		color: var(--color-fg-10);
+	}
+
+	div.FilesShareModalEntry-icon {
+		background: var(--color-base-1-05);
+	}
+
+	.FilesShareModalEntry-icon > svg {
+		width: 16px;
+		height: 16px;
+	}
+
+	.FilesShareModalEntry-main {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		min-width: 0;
+		flex: 1;
+	}
+
+	/* A display name and a custom role name are both free text, so both have to be allowed to break. */
+	.FilesShareModalEntry-name {
+		font-size: 14px;
+		font-weight: 500;
+		color: var(--color-fg-12);
+		overflow-wrap: anywhere;
+	}
+
+	.FilesShareModalEntry-meta {
+		font-size: 12px;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+		overflow-wrap: anywhere;
+	}
+
+	.FilesShareModalEntry-actions {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex: none;
+	}
+
+	.FilesShareModalEntry-level-trigger {
+		justify-content: space-between;
+
+		min-width: 130px;
+	}
+	/* #endregion entry row */
+
+	@media (max-width: 640px) {
+		.FilesShareModal-status {
+			flex-wrap: wrap;
+		}
+
+		.FilesShareModal-status-actions {
+			width: 100%;
+			justify-content: start;
+		}
+
+		.FilesShareModal-add {
+			flex-wrap: wrap;
+		}
+
+		.FilesShareModal-add-principal-trigger {
+			flex-basis: 100%;
+		}
+
+		/* The level picker and Remove come to a fixed 170px, and the name column is the only part that
+		   can give, so on a narrow dialog it is squeezed to nothing and the row still overflows. */
+		.FilesShareModalEntry {
+			flex-wrap: wrap;
+		}
+
+		.FilesShareModalEntry-actions {
+			width: 100%;
+		}
+	}
+}

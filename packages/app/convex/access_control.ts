@@ -50,8 +50,8 @@ const MAX_ROLE_ASSIGNMENT_COUNT = 100;
  * grant is stored.
  *
  * When the scope is `null`, the check still looks for a grant on the node itself before it falls back
- * to the caller's role. It never uses a `workspace` grant for a file. Today nothing writes a grant on
- * a node, so that lookup always finds nothing. It is the hook the file-sharing milestone will use.
+ * to the caller's role. It never uses a `workspace` grant for a file. Sharing writes its grants on the
+ * restricted node, so that lookup only finds something for a node that is itself restricted.
  */
 export type access_control_Resource =
 	| { kind: "organization"; id: string }
@@ -509,6 +509,217 @@ async function has_restricted_file_permission(
 }
 
 /**
+ * The restricted scope that is really in force for a node, or `null` when the node uses normal
+ * workspace access.
+ *
+ * The pointer saved on a node can be out of date: the scope node may have been deleted, or made
+ * open again. Such a pointer must not hide the files under it forever, so we follow it only when the
+ * scope node is still really restricted. We also compare organization and workspace, so a pointer
+ * that somehow crossed into another workspace is never answered with this workspace's grants.
+ *
+ * Both readers of `restrictedScopeNodeId` go through here, so the rule for "is this pointer real"
+ * exists once. A second copy of it would let the permission check and the list filter drift apart,
+ * and then a file would be hidden from a list but still open by id, or the other way round.
+ */
+async function db_resolve_live_restricted_scope(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		restrictedScopeNodeId: Id<"files_nodes"> | null;
+	},
+) {
+	if (!args.restrictedScopeNodeId) {
+		return null;
+	}
+
+	const scopeNode = await ctx.db.get("files_nodes", args.restrictedScopeNodeId);
+	if (
+		!scopeNode ||
+		scopeNode.restrictedScopeNodeId !== scopeNode._id ||
+		scopeNode.organizationId !== args.organizationId ||
+		scopeNode.workspaceId !== args.workspaceId
+	) {
+		return null;
+	}
+
+	return scopeNode._id;
+}
+
+/**
+ * Keep only the file nodes the user may read.
+ *
+ * By default every caller has already proved workspace-wide `content.read`, so a node with no
+ * restricted scope passes without a single extra read. Only restricted nodes cost anything, and the
+ * answer is worked out once per scope instead of once per node: a restricted folder with 500 files
+ * inside is one check, not 500.
+ *
+ * Use this on every surface that returns more than one node. Without it a restricted file keeps its
+ * name and path visible in the tree, in search, and in the activity list, which tells everyone in
+ * the workspace exactly what they are not allowed to open.
+ */
+export async function access_control_db_filter_readable_file_nodes<
+	T extends { restrictedScopeNodeId?: Id<"files_nodes"> },
+>(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		userId: Id<"users">;
+		nodes: readonly T[];
+		/**
+		 * Whether the caller holds workspace-wide `content.read`. Defaults to `true`, which is what
+		 * every list surface proves before calling.
+		 *
+		 * Pass `false` for a user whose role gives them no workspace-wide read but who may still have
+		 * been given one folder. Then only the restricted nodes they hold a grant on are kept, and
+		 * every open node is dropped.
+		 */
+		hasWorkspaceRead?: boolean;
+	},
+): Promise<T[]> {
+	const hasWorkspaceRead = args.hasWorkspaceRead ?? true;
+
+	// Nothing here is restricted, so the caller's workspace-wide read already covers all of it. This
+	// is the normal case, and it costs no database read at all. It is also what keeps the reserved
+	// global organization working: nothing can restrict a node there, so we never try to load it as a
+	// real organization below.
+	if (hasWorkspaceRead && !args.nodes.some((node) => node.restrictedScopeNodeId)) {
+		return [...args.nodes];
+	}
+
+	const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
+	const workspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
+	const organization = organizationId ? await ctx.db.get("organizations", organizationId) : null;
+	const defaultWorkspaceId = organization?.defaultWorkspaceId;
+
+	// The owner may read everything.
+	if (organization && args.userId === organization.ownerUserId) {
+		return [...args.nodes];
+	}
+
+	const readableByScopeNodeId = new Map<Id<"files_nodes">, boolean>();
+	const kept: T[] = [];
+
+	for (const node of args.nodes) {
+		const pointer = node.restrictedScopeNodeId;
+		if (!pointer) {
+			// An open node is exactly what workspace-wide read covers, so without that read it is out.
+			if (hasWorkspaceRead) {
+				kept.push(node);
+			}
+			continue;
+		}
+
+		if (!organizationId || !workspaceId || !defaultWorkspaceId) {
+			// The organization cannot be read, so no grant can be checked. Drop the restricted nodes and
+			// keep the rest: refusing everything would empty a whole workspace over a broken
+			// organization doc, and keeping everything would hand out the files this pointer protects.
+			console.error("Cannot resolve the organization while filtering restricted file nodes", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+			});
+			continue;
+		}
+
+		let readable = readableByScopeNodeId.get(pointer);
+		if (readable === undefined) {
+			const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+				organizationId,
+				workspaceId,
+				restrictedScopeNodeId: pointer,
+			});
+			readable = scopeNodeId
+				? await has_restricted_file_permission(ctx, {
+						organizationId,
+						workspaceId,
+						defaultWorkspaceId,
+						scopeNodeId,
+						permission: "content.read",
+						userId: args.userId,
+					})
+				: // A dead pointer means this node is not really restricted, so it is an open node and the
+					// workspace-wide read decides. Caching that under the dead pointer is safe: every node
+					// carrying the same dead pointer gets the same answer.
+					hasWorkspaceRead;
+			readableByScopeNodeId.set(pointer, readable);
+		}
+
+		if (readable) {
+			kept.push(node);
+		}
+	}
+
+	return kept;
+}
+
+/**
+ * Whether `userId` may do `permission` on one already-loaded node, when only the ids are on hand.
+ *
+ * For the handlers that never see a membership doc: the db helpers under `files_nodes.ts`, and the
+ * public-API mutations that authorize a token instead of a member. Like the read filter above, it
+ * assumes the caller already proved the workspace-wide permission, so a node with no restricted scope
+ * costs no database read and answers yes.
+ *
+ * Reach for this whenever a write path **finds** a node after its permission check: the folder a
+ * recursive create walks into, the file already sitting on a destination path, a descendant swept up
+ * by a cascade. Those nodes were never named by the caller, so nothing has asked about them yet, and
+ * every one of them has been a way into a restricted folder at least once.
+ */
+export async function access_control_db_can_act_on_file_node(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		userId: Id<"users">;
+		fileNode: { restrictedScopeNodeId?: Id<"files_nodes"> };
+		permission: access_control_Permission;
+	},
+) {
+	if (!args.fileNode.restrictedScopeNodeId) {
+		return true;
+	}
+
+	const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
+	const workspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
+	const organization = organizationId ? await ctx.db.get("organizations", organizationId) : null;
+	const defaultWorkspaceId = organization?.defaultWorkspaceId;
+	if (!organizationId || !workspaceId || !organization || !defaultWorkspaceId) {
+		// Same call as the read filter: with no organization doc no grant can be checked, and the safe
+		// answer for a restricted node is no.
+		console.error("Cannot resolve the organization while checking a restricted file node", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+		});
+		return false;
+	}
+
+	if (args.userId === organization.ownerUserId) {
+		return true;
+	}
+
+	const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+		organizationId,
+		workspaceId,
+		restrictedScopeNodeId: args.fileNode.restrictedScopeNodeId,
+	});
+	if (!scopeNodeId) {
+		// A dead pointer means this node is not really restricted, and the caller already holds the
+		// workspace-wide permission.
+		return true;
+	}
+
+	return await has_restricted_file_permission(ctx, {
+		organizationId,
+		workspaceId,
+		defaultWorkspaceId,
+		scopeNodeId,
+		permission: args.permission,
+		userId: args.userId,
+	});
+}
+
+/**
  * Answer whether a user, or the public, has one permission on one resource.
  *
  * The caller must load the file, workspace, or organization first and pass the ids taken from it.
@@ -540,24 +751,18 @@ export async function access_control_db_has_permission(
 		return true;
 	}
 
-	if (args.resource.kind === "file" && args.resource.restrictedScopeNodeId) {
-		const scopeNode = await ctx.db.get("files_nodes", args.resource.restrictedScopeNodeId);
-		// The pointer on a node can be out of date: the scope node may have been deleted, or made
-		// public again. Such a pointer must not hide the files forever, so we follow it only when the
-		// scope node is still really restricted. We also compare organization and workspace, so a
-		// pointer that somehow crossed into another workspace is not answered with this workspace's
-		// grants.
-		if (
-			scopeNode &&
-			scopeNode.restrictedScopeNodeId === scopeNode._id &&
-			scopeNode.organizationId === args.organizationId &&
-			scopeNode.workspaceId === args.workspaceId
-		) {
+	if (args.resource.kind === "file") {
+		const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			restrictedScopeNodeId: args.resource.restrictedScopeNodeId,
+		});
+		if (scopeNodeId) {
 			return await has_restricted_file_permission(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				defaultWorkspaceId: args.defaultWorkspaceId,
-				scopeNodeId: scopeNode._id,
+				scopeNodeId,
 				permission: args.permission,
 				userId,
 				allowPublic: args.allowPublic,
@@ -650,7 +855,10 @@ export async function access_control_db_has_permission(
  * `organizations.ts`, which already imports this file. Pass `fileNode` when the operation targets one
  * file or folder: the file scope is worked out here, so call sites cannot build the wrong ids.
  *
- * On success it returns the organization, so handlers do not have to load it again.
+ * On success it returns the organization, so handlers do not have to load it again, and
+ * `defaultWorkspaceId` separately because here it is already known to be set. Read from
+ * `organization` again its type is `Id | undefined`, and an `undefined` would quietly match nothing
+ * instead of failing.
  */
 export async function access_control_db_authorize_membership(
 	ctx: QueryCtx | MutationCtx,
@@ -675,6 +883,7 @@ export async function access_control_db_authorize_membership(
 		console.error("organization.defaultWorkspaceId is not set", { organizationId: args.membership.organizationId });
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
+	const defaultWorkspaceId = organization.defaultWorkspaceId;
 
 	let resource: access_control_Resource;
 	if (args.fileNode) {
@@ -696,7 +905,7 @@ export async function access_control_db_authorize_membership(
 	const allowed = await access_control_db_has_permission(ctx, {
 		organizationId: args.membership.organizationId,
 		workspaceId: args.membership.workspaceId,
-		defaultWorkspaceId: organization.defaultWorkspaceId,
+		defaultWorkspaceId,
 		organizationOwnerUserId: organization.ownerUserId,
 		resource,
 		permission: args.permission,
@@ -706,7 +915,59 @@ export async function access_control_db_authorize_membership(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	return Result({ _yay: { organization } });
+	return Result({ _yay: { organization, defaultWorkspaceId } });
+}
+
+/**
+ * Load one node of this workspace and check a permission against that node.
+ *
+ * Many handlers take a node id and nothing else: the snapshot family, the pending-update family, and
+ * the structural mutations. Every one of them has to load the node, prove it belongs to the
+ * membership's workspace, and only then ask the permission question against it. Those three steps
+ * live here once, because doing them by hand in twenty places is how one of them ends up asking
+ * about the workspace instead and quietly opens every restricted file in it.
+ *
+ * The membership comes in already loaded, for the same reason as
+ * `access_control_db_authorize_membership`: loading it here would import `organizations.ts`, which
+ * already imports this file.
+ */
+export async function access_control_db_authorize_node(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		nodeId: Id<"files_nodes">;
+		permission: access_control_Permission;
+	},
+) {
+	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	if (
+		!fileNode ||
+		fileNode.organizationId !== args.membership.organizationId ||
+		fileNode.workspaceId !== args.membership.workspaceId
+	) {
+		// "Not found" and not "Permission denied": a node of another workspace is not this caller's
+		// business at all, and saying which of the two it is would confirm that the id exists.
+		return Result({ _nay: { message: "Not found" } });
+	}
+
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth: args.userAuth,
+		membership: args.membership,
+		permission: args.permission,
+		fileNode,
+	});
+	if (authorized._nay) {
+		return authorized;
+	}
+
+	return Result({
+		_yay: {
+			fileNode,
+			organization: authorized._yay.organization,
+			defaultWorkspaceId: authorized._yay.defaultWorkspaceId,
+		},
+	});
 }
 
 // #endregion Permission check

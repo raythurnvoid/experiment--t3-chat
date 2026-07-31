@@ -14,6 +14,7 @@ import {
 	type FileEditor_Props,
 } from "@/components/files/file-editor/file-editor.tsx";
 import { FilesSidebarToggle } from "../files-sidebar-toggle.tsx";
+import { FilesShareModal } from "../files-share-modal.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -100,6 +101,8 @@ import {
 	FolderPlus,
 	Home,
 	Link2,
+	Lock,
+	Users,
 } from "lucide-react";
 import React, { memo, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -232,13 +235,36 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 
 	const breadcrumbPath = get_breadcrumb_path(fileNodesList, selectedNodeId);
 
-	const currentNodePath = breadcrumbPath.at(-1)?.path;
+	const currentNode = breadcrumbPath.at(-1);
+	const currentNodePath = currentNode?.path;
 	const currentNodeLink = selectedNodeId
 		? `${window.location.origin}${url_path_file_by_node_id({ organizationName, workspaceName, nodeId: selectedNodeId })}`
 		: undefined;
+	// Restricted anywhere at or above this node, so the button says "restricted" for a file inside a
+	// restricted folder too. The dialog is what explains where the restriction comes from. `null` means
+	// nothing restricts it, and the two other values say whether this node is the one carrying the
+	// restriction or is only inside one.
+	const restrictedState =
+		currentNode?.restrictedScopeNodeId === undefined
+			? null
+			: currentNode.restrictedScopeNodeId === currentNode._id
+				? "self"
+				: "inherited";
+
+	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 
 	const handleEditorModeChange = useFn((mode: string) => {
 		onEditorModeChange(mode as FileEditor_Mode);
+	});
+
+	const handleShareClick = useFn(() => {
+		if (currentNode) {
+			setShareNodeId(currentNode._id);
+		}
+	});
+
+	const handleShareModalClose = useFn(() => {
+		setShareNodeId(null);
 	});
 
 	return (
@@ -315,6 +341,23 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									text={currentNodeLink}
 								/>
 							</li>
+							{/* One button with two faces: the lock says the answer at a glance, and opening it is
+							    how you change the answer. `data-file-restricted` carries the same values the sidebar
+							    row uses, except the sidebar only ever marks the node holding the restriction while
+							    this also reports `"inherited"` for a file inside a restricted folder. */}
+							<li>
+								<MyIconButton
+									variant="ghost-highlightable"
+									tooltip={restrictedState ? "Restricted. Manage who can open this" : "Share"}
+									aria-label={
+										restrictedState ? `Sharing for ${currentNode?.name}, restricted` : `Share ${currentNode?.name}`
+									}
+									data-file-restricted={restrictedState ?? undefined}
+									onClick={handleShareClick}
+								>
+									<MyIconButtonIcon>{restrictedState ? <Lock /> : <Users />}</MyIconButtonIcon>
+								</MyIconButton>
+							</li>
 						</>
 					) : (
 						<li className={cn("FileNodeViewHeader-breadcrumb-segment-current" satisfies FileNodeViewHeader_ClassNames)}>
@@ -336,6 +379,8 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 					</MyButtonGroup>
 				)}
 			</div>
+
+			<FilesShareModal nodeId={shareNodeId} onClose={handleShareModalClose} />
 		</div>
 	);
 });

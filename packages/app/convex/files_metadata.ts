@@ -5,6 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalQuery } from "./_generated/server.js";
 import app_convex_schema from "./schema.ts";
+import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
 	files_metadata_extract_frontmatter,
@@ -579,8 +580,28 @@ export const search = internalQuery({
 			pendingNodeIds,
 		});
 		const result = await query.paginate({ cursor: args.cursor, numItems: args.numItems });
+
+		// Metadata rows carry the file path, so a hit inside a restricted folder would say the file is
+		// there and what it is called. Each distinct file on the page is looked up once.
+		const pageNodeIds = [...new Set(result.page.map((metadataDoc) => metadataDoc.fileNodeId))];
+		const pageNodes = (await Promise.all(pageNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
+			(fileNode) => fileNode !== null,
+		);
+		const readableNodeIds = new Set(
+			(
+				await access_control_db_filter_readable_file_nodes(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					nodes: pageNodes,
+				})
+			).map((fileNode) => fileNode._id),
+		);
+
 		return {
-			items: result.page.map(format_search_result),
+			items: result.page
+				.filter((metadataDoc) => readableNodeIds.has(metadataDoc.fileNodeId))
+				.map(format_search_result),
 			continueCursor: result.continueCursor,
 			isDone: result.isDone,
 		};
@@ -666,6 +687,16 @@ export const get_by_path = internalQuery({
 			overlayUserId: args.overlayUserId,
 		});
 		if (!fileNode || fileNode.kind !== "file") {
+			return null;
+		}
+
+		const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodes: [fileNode],
+		});
+		if (!readable) {
 			return null;
 		}
 

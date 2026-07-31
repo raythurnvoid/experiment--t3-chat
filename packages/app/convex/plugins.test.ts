@@ -2655,7 +2655,9 @@ describe("plugins Phase 0", () => {
 			// Empty title in the request: the host composes it from the plugin and the triggering file.
 			title: "Media plugin · expired.png",
 			errorMessage: null,
-			targets: [],
+			// The triggering file is a target from the start, so the feed can hide the activity when that
+			// file is restricted. The title names it, so an activity naming nothing would leak the name.
+			targets: [{ type: "file_node", id: fixture.upload.nodeId, path: "/expired.png", message: "" }],
 			userId: fixture.membership.userId,
 			source: {
 				type: "plugin_run",
@@ -2687,6 +2689,7 @@ describe("plugins Phase 0", () => {
 		expect(filled.status).toBe(200);
 		const withTargets = await t.run((ctx) => ctx.db.get("activities", activityId));
 		expect(withTargets?.targets).toEqual([
+			{ type: "file_node", id: fixture.upload.nodeId, path: "/expired.png", message: "" },
 			{ type: "file_node", id: touchedBody.files[0].nodeId, path: "/expired.png.description.md", message: "" },
 		]);
 
@@ -3094,6 +3097,43 @@ describe("plugins Phase 0", () => {
 			installationId: fixture.installationId,
 		});
 		expect(readerRuns[0]!.file).toMatchObject({ name: "expired.png" });
+
+		// Workspace `content.read` is not the whole answer: the run's file can sit in a restricted folder,
+		// and the same reader holds nothing on it. Patched straight into the doc, because this test is
+		// about the query and not about the sharing mutations.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", fixture.upload.nodeId, { restrictedScopeNodeId: fixture.upload.nodeId });
+		});
+
+		const restrictedRuns = await t.withIdentity(user_identity(reader.userId)).query(api.plugins.list_recent_runs, {
+			membershipId: reader.membershipId,
+			installationId: fixture.installationId,
+		});
+		expect(restrictedRuns).toHaveLength(1);
+		expect(restrictedRuns[0]!.file).toBeNull();
+
+		// And a grant on that one file brings it back, so the line above is the restriction and not the
+		// query having quietly stopped returning files at all.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				resourceKind: "file",
+				resourceId: String(fixture.upload.nodeId),
+				principalKind: "user",
+				userId: reader.userId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+		});
+
+		const grantedRuns = await t.withIdentity(user_identity(reader.userId)).query(api.plugins.list_recent_runs, {
+			membershipId: reader.membershipId,
+			installationId: fixture.installationId,
+		});
+		expect(grantedRuns[0]!.file).toMatchObject({ name: "expired.png" });
 	});
 
 	test("does not hand the publisher's source and storage keys to an installer", async () => {

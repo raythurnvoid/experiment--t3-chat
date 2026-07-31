@@ -20,6 +20,7 @@ import type * as data_deletion from "../data_deletion.js";
 import type * as files_metadata from "../files_metadata.js";
 import type * as files_nodes from "../files_nodes.js";
 import type * as files_pending_updates from "../files_pending_updates.js";
+import type * as files_sharing from "../files_sharing.js";
 import type * as github_mounts from "../github_mounts.js";
 import type * as http from "../http.js";
 import type * as migrations from "../migrations.js";
@@ -55,6 +56,7 @@ declare const fullApi: ApiFromModules<{
   files_metadata: typeof files_metadata;
   files_nodes: typeof files_nodes;
   files_pending_updates: typeof files_pending_updates;
+  files_sharing: typeof files_sharing;
   github_mounts: typeof github_mounts;
   http: typeof http;
   migrations: typeof migrations;

@@ -11,7 +11,10 @@ import type { ExcludeStrict } from "type-fest";
 import type { Doc } from "./_generated/dataModel.js";
 import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server.js";
 import { organizations_db_get_membership } from "./organizations.ts";
-import { access_control_db_authorize_membership } from "./access_control.ts";
+import {
+	access_control_db_authorize_membership,
+	access_control_db_filter_readable_file_nodes,
+} from "./access_control.ts";
 import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
@@ -33,6 +36,12 @@ export async function activities_db_start(
 		source: Doc<"activities">["source"];
 		/** Status-neutral display text, e.g. "Video plugin · speakers.mp4". */
 		title: Doc<"activities">["title"];
+		/**
+		 * The file the work started from. Named here because the title usually carries its name, and
+		 * `list_recent` decides what to show from the targets: an activity that names nothing is read as
+		 * one about the whole workspace and goes to every reader, title and all.
+		 */
+		target: Doc<"activities">["targets"][number];
 		/** Caller-predicted deadline; must be at most ACTIVITIES_TIMEOUT_MAX_MS after now. */
 		timeoutAt: Doc<"activities">["timeoutAt"];
 		now: number;
@@ -46,7 +55,7 @@ export async function activities_db_start(
 		source: args.source,
 		title: args.title,
 		errorMessage: null,
-		targets: [],
+		targets: [args.target],
 		timeoutAt: args.timeoutAt,
 		archivedAt: 0,
 		updatedAt: args.now,
@@ -127,24 +136,59 @@ export const list_recent = query({
 			return [];
 		}
 
+		// A failed check does not end the query here, same as `list_tree`. A guest holding one folder still
+		// reads the activities about it. What they must not get is an activity that names no file, because
+		// that one is about the workspace.
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
 			permission: "content.read",
 		});
-		if (authorized._nay) {
-			return [];
-		}
+		const hasWorkspaceRead = !authorized._nay;
 
 		// Newest activity first; running items bubble up because every change bumps updatedAt.
 		// Dismissed items (archivedAt > 0) stay in the table for their producers; the index skips them here.
-		return await ctx.db
+		const activities = await ctx.db
 			.query("activities")
 			.withIndex("by_organization_workspace_archivedAt_updatedAt", (q) =>
 				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("archivedAt", 0),
 			)
 			.order("desc")
 			.take(ACTIVITIES_LIST_MAX);
+
+		// A target carries the file's path, and the activity title usually carries its name, so an activity
+		// about a restricted file would say it exists and what it is called. Each node named on the page
+		// is looked up once, and the filter answers once per restricted scope.
+		const targetNodeIds = [...new Set(activities.flatMap((activity) => activity.targets.map((target) => target.id)))];
+		if (targetNodeIds.length === 0) {
+			return hasWorkspaceRead ? activities : [];
+		}
+
+		const targetNodes = (await Promise.all(targetNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
+			(fileNode) => fileNode !== null,
+		);
+		const readableNodeIds = new Set(
+			(
+				await access_control_db_filter_readable_file_nodes(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					nodes: targetNodes,
+					hasWorkspaceRead,
+				})
+			).map((fileNode) => fileNode._id),
+		);
+
+		return activities.flatMap((activity) => {
+			// Only docs written before the target above became mandatory can be empty here.
+			if (activity.targets.length === 0) {
+				return hasWorkspaceRead ? [activity] : [];
+			}
+
+			// One hidden file is enough to drop the whole activity. Keeping it with the readable targets
+			// only would still show the title, and the title usually carries the hidden file's name.
+			return activity.targets.every((target) => readableNodeIds.has(target.id)) ? [activity] : [];
+		});
 	},
 });
 

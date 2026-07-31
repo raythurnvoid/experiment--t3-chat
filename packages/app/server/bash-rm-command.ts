@@ -177,6 +177,7 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			const node = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 				organizationId,
 				workspaceId,
+				visibilityUserId: userId,
 				path: dbFilesPath,
 				overlayUserId: userId,
 			})) as files_nodes_get_by_path_Result;

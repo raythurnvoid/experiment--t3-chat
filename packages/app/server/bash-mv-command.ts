@@ -187,6 +187,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		const sourceNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 			organizationId,
 			workspaceId,
+			visibilityUserId: userId,
 			path: sourceDbFilesPath,
 			overlayUserId: userId,
 		})) as files_nodes_get_by_path_Result;
@@ -206,6 +207,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 						organizationId,
 						workspaceId,
+						visibilityUserId: userId,
 						path: destDbFilesPath,
 						overlayUserId: userId,
 					})) as files_nodes_get_by_path_Result);
@@ -298,6 +300,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				const occupant = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 					organizationId,
 					workspaceId,
+					visibilityUserId: userId,
 					path: intendedDestPath,
 					overlayUserId: userId,
 				})) as files_nodes_get_by_path_Result;
@@ -356,6 +359,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				const destParent = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 					organizationId,
 					workspaceId,
+					visibilityUserId: userId,
 					path: destParentPath,
 					overlayUserId: userId,
 				})) as files_nodes_get_by_path_Result;

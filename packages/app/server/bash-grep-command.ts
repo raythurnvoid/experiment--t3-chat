@@ -451,6 +451,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 								organizationId: pathResolution.ctxData.organizationId,
 								workspaceId: pathResolution.ctxData.workspaceId,
+								visibilityUserId: pathResolution.ctxData.userId,
 								path: target.dbFilesPath,
 								overlayUserId: pathResolution.fs.overlayUserId,
 							})) as files_nodes_get_by_path_Result);
@@ -727,6 +728,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 							organizationId: pathResolution.ctxData.organizationId,
 							workspaceId: pathResolution.ctxData.workspaceId,
+							visibilityUserId: pathResolution.ctxData.userId,
 							path: target.dbFilesPath,
 							overlayUserId: pathResolution.fs.overlayUserId,
 						})) as files_nodes_get_by_path_Result);
@@ -902,6 +904,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 								organizationId: pathResolution.ctxData.organizationId,
 								workspaceId: pathResolution.ctxData.workspaceId,
+								visibilityUserId: pathResolution.ctxData.userId,
 								path: target.dbFilesPath,
 								overlayUserId: pathResolution.fs.overlayUserId,
 							})) as files_nodes_get_by_path_Result);

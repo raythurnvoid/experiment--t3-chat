@@ -540,6 +540,7 @@ async function overlay_apply_subtree_page(args: {
 			const splice = (await args.ctx.runQuery(internal.files_nodes.list_subtree, {
 				organizationId: args.pathResolution.ctxData.organizationId,
 				workspaceId: args.pathResolution.ctxData.workspaceId,
+				visibilityUserId: args.pathResolution.ctxData.userId,
 				folderPath: move.committedPath,
 				numItems: args.numItems,
 				cursor: null,
@@ -740,6 +741,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						const pageResult = (await ctx.runQuery(internal.files_nodes.search_paths, {
 							organizationId: pageArgs.mount.fs.ctxData.organizationId,
 							workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+							visibilityUserId: pageArgs.mount.fs.ctxData.userId,
 							pathQuery,
 							numItems: pageArgs.numItems,
 							cursor: pageArgs.innerCursor,
@@ -762,6 +764,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					const pageResult = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+						visibilityUserId: pageArgs.mount.fs.ctxData.userId,
 						folderPath: `/${pageArgs.mount.pluginVersionId}`,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
@@ -892,6 +895,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						const pageResult = (await ctx.runQuery(internal.files_nodes.search_paths, {
 							organizationId: pageArgs.mount.fs.ctxData.organizationId,
 							workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+							visibilityUserId: pageArgs.mount.fs.ctxData.userId,
 							pathQuery,
 							numItems: pageArgs.numItems,
 							cursor: pageArgs.innerCursor,
@@ -914,6 +918,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					const pageResult = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+						visibilityUserId: pageArgs.mount.fs.ctxData.userId,
 						folderPath: `/${pageArgs.mount.name}/${pageArgs.mount.commitSha}`,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
@@ -1088,6 +1093,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 				organizationId: prefixResolution.ctxData.organizationId,
 				workspaceId: prefixResolution.ctxData.workspaceId,
+				visibilityUserId: prefixResolution.ctxData.userId,
 				folderPath: prefixFolderPath,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
@@ -1145,6 +1151,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				: await ctx.runQuery(internal.files_nodes.get_by_path, {
 						organizationId: pathResolution.ctxData.organizationId,
 						workspaceId: pathResolution.ctxData.workspaceId,
+						visibilityUserId: pathResolution.ctxData.userId,
 						path: target.dbFilesPath,
 						overlayUserId: pathResolution.fs.overlayUserId,
 					});
@@ -1300,6 +1307,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			const result = (await ctx.runQuery(internal.files_nodes.search_paths, {
 				organizationId: pathResolution.ctxData.organizationId,
 				workspaceId: pathResolution.ctxData.workspaceId,
+				visibilityUserId: pathResolution.ctxData.userId,
 				pathQuery,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
@@ -1403,6 +1411,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 				organizationId: pathResolution.ctxData.organizationId,
 				workspaceId: pathResolution.ctxData.workspaceId,
+				visibilityUserId: pathResolution.ctxData.userId,
 				folderPath: committedFolderPath,
 				kind: "file" as const,
 				lowercaseExtension: parsed._yay.extension,
@@ -1489,6 +1498,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 			organizationId: pathResolution.ctxData.organizationId,
 			workspaceId: pathResolution.ctxData.workspaceId,
+			visibilityUserId: pathResolution.ctxData.userId,
 			folderPath: committedFolderPath,
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
