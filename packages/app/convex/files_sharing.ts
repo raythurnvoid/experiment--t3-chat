@@ -450,8 +450,15 @@ export const get_node_share_state = query({
 					isSelf: v.boolean(),
 				}),
 			),
-			/** Whether the caller may restrict this node, or change the list when it is restricted. */
+			/** Whether the caller may change the share list of a node that is already restricted. */
 			canManage: v.boolean(),
+			/**
+			 * Whether the caller may turn this node into a restricted one. Stricter than `canManage`:
+			 * restricting writes the caller a `manage` grant, and nobody hands themselves a level they
+			 * could not hand to somebody else. A role holding "manage permissions" without write clears
+			 * `canManage` and fails this, so the dialog must not offer the action.
+			 */
+			canRestrict: v.boolean(),
 			entries: v.array(
 				v.object({
 					principal: share_principal_validator,
@@ -493,6 +500,20 @@ export const get_node_share_state = query({
 			userId: userAuth.id,
 		});
 
+		// Restricting writes the caller a `manage` grant, so it answers to the same ceiling
+		// `restrict_node` applies. Asked here so the dialog does not offer a button that always fails.
+		// The owner holds no grants and passes every check earlier than this one.
+		const canRestrict =
+			userAuth.id === organization.ownerUserId ||
+			(await caller_can_hand_out_level(ctx, {
+				organization,
+				defaultWorkspaceId,
+				workspaceId: membership.workspaceId,
+				node,
+				userId: userAuth.id,
+				level: "manage",
+			})) === null;
+
 		// A pointer at a node that was deleted, or that is no longer restricted, means this node uses
 		// workspace access again. Reading the scope node here, instead of trusting the pointer, keeps the
 		// dialog saying the same thing the permission check does.
@@ -512,6 +533,7 @@ export const get_node_share_state = query({
 				nodeKind: node.kind,
 				scope: null,
 				canManage,
+				canRestrict,
 				entries: [],
 				organizationOwnerUserId: organization.ownerUserId,
 			};
@@ -534,6 +556,7 @@ export const get_node_share_state = query({
 				isSelf: scopeNode._id === node._id,
 			},
 			canManage,
+			canRestrict,
 			entries: group_grants_into_entries(grants),
 			organizationOwnerUserId: organization.ownerUserId,
 		};

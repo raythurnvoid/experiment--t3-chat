@@ -506,30 +506,29 @@
 		contain: content;
 	}
 
-	/* No `pointer-events: auto` here: this badge sits over the row's primary action, so taking the
-	   pointer back would make it a dead click and drop hole in the middle of the row. */
-	.FilesSidebarTreeItemPrimaryContent-restricted-icon {
-		display: flex;
-		align-items: center;
-		flex: none;
-
-		margin-left: 4px;
-
-		color: var(--color-fg-08);
-
-		/* Two people need more room than the padlock did: lucide draws on a 24px grid, and at 12px the
-		   heads and shoulders merge into one shape. */
-		> svg {
-			width: 14px;
-			height: 14px;
-		}
-	}
 	/* #endregion tree item primary content */
 
 	/* #region tree item icon */
 	.FilesSidebarTreeItemIcon {
 		width: 16px;
 		height: 16px;
+	}
+
+	/* A restricted folder: lucide has no folder-with-person, so one is stacked from two of its icons.
+	   The person sits inside the folder body, which is the lower two thirds of the 24px grid, so the
+	   two outlines never cross. */
+	.FilesSidebarTreeItemIcon-restricted-folder {
+		position: relative;
+
+		> .FilesSidebarTreeItemIcon-restricted-folder-person {
+			position: absolute;
+			left: 50%;
+			bottom: 0.5px;
+			transform: translateX(-50%);
+
+			width: 9px;
+			height: 9px;
+		}
 	}
 	/* #endregion tree item icon */
 

@@ -576,9 +576,11 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 
 								{shareState.canManage ? (
 									<div className={"FilesShareModal-status-actions" satisfies FilesShareModal_ClassNames}>
+										{/* `canRestrict`, not `canManage`: restricting gives the caller a `manage` grant, and
+										    the mutation refuses somebody who could not hand that level to anybody else. */}
 										{!scope ? (
 											<MyButton
-												disabled={busy}
+												disabled={busy || !shareState.canRestrict}
 												aria-busy={pendingKey === "restrict" || undefined}
 												onClick={handleRestrict}
 											>

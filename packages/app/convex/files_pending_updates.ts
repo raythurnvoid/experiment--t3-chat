@@ -1514,6 +1514,34 @@ export const apply_file_pending_move = mutation({
 			destName: pendingUpdate.pendingMove.destName,
 			userId: userAuth.id,
 			updatedBy: userAuth.id,
+			// The same two questions asked above for the clicked node: the node being moved, and the
+			// folder it lands in. A grant on one of them says nothing about the other.
+			authorizeCycleMember: async ({ node, destParentId: memberDestParentId }) => {
+				const authorizedMember = await access_control_db_authorize_node(ctx, {
+					userAuth,
+					membership,
+					nodeId: node._id,
+					permission: "content.write",
+				});
+				if (authorizedMember._nay) {
+					return false;
+				}
+
+				const authorizedMemberDestination =
+					memberDestParentId === files_ROOT_ID
+						? await access_control_db_authorize_membership(ctx, {
+								userAuth,
+								membership,
+								permission: "content.write",
+							})
+						: await access_control_db_authorize_node(ctx, {
+								userAuth,
+								membership,
+								nodeId: memberDestParentId,
+								permission: "content.write",
+							});
+				return !authorizedMemberDestination._nay;
+			},
 		});
 		if (applied._nay) {
 			// Leave the doc intact so the user can retry or discard after a conflict

@@ -7576,6 +7576,121 @@ describe("apply_file_pending_move", () => {
 		expect(appliedB._nay).toBeUndefined();
 	});
 
+	test("accepting one move does not drag a restricted swap partner along", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({ ctx, path: "/cyc-a.md", name: "cyc-a.md", markdown: "# Cycle a" }),
+		);
+		const membership = {
+			userId: seeded.userId,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			membershipId: seeded.membershipId,
+		};
+		const other = await t.run(async (ctx) =>
+			seed_file_with_markdown({ ctx, path: "/cyc-b.md", name: "cyc-b.md", markdown: "# Cycle b", membership }),
+		);
+
+		// The seeded user owns the organization and bypasses every check, so the accept has to be made
+		// by somebody else. This one holds ordinary workspace write and nothing on the restricted file.
+		const mover = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_cycle_perm" });
+			await seed_billing_snapshot_for_user(ctx, userId);
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			return { userId, membershipId };
+		});
+
+		// mv a→tmp, mv b→a, mv a→b leaves the two rows that form the cycle.
+		for (const move of [
+			{ nodeId: seeded.nodeId, destName: "cyc-tmp.md" },
+			{ nodeId: other.nodeId, destName: "cyc-a.md" },
+			{ nodeId: seeded.nodeId, destName: "cyc-b.md" },
+		]) {
+			const proposed = await upsert_file_pending_move_for_test({
+				t,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: mover.userId,
+				nodeId: move.nodeId,
+				destParentId: files_ROOT_ID,
+				destName: move.destName,
+			});
+			if (proposed._nay) {
+				throw new Error(proposed._nay.message);
+			}
+		}
+
+		// Only now is the swap partner closed off. The proposal outlived the access that made it.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", other.nodeId, { restrictedScopeNodeId: other.nodeId });
+		});
+
+		const asMover = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: mover.userId,
+			name: "Mover",
+		});
+		const refused = await asMover.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: mover.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(refused._nay?.message).toBe("Permission denied");
+
+		await t.run(async (ctx) => {
+			expect((await ctx.db.get("files_nodes", seeded.nodeId))?.path).toBe("/cyc-a.md");
+			const partner = await ctx.db.get("files_nodes", other.nodeId);
+			expect(partner?.path).toBe("/cyc-b.md");
+			// The partner is only inside its own scope, so a move would not have opened it. The point is
+			// that it did not move at all.
+			expect(partner?.restrictedScopeNodeId).toBe(other.nodeId);
+		});
+
+		// With a write grant on the partner the same accept goes through, so the refusal above is the
+		// permission check and not the cycle being broken.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const permission of ["content.read", "content.write"] as const) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					resourceKind: "file",
+					resourceId: String(other.nodeId),
+					principalKind: "user",
+					userId: mover.userId,
+					permission,
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+		});
+
+		const applied = await asMover.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: mover.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(applied._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			expect((await ctx.db.get("files_nodes", seeded.nodeId))?.path).toBe("/cyc-b.md");
+			expect((await ctx.db.get("files_nodes", other.nodeId))?.path).toBe("/cyc-a.md");
+		});
+	});
+
 	test("a mixed row inside a swap cycle keeps its content proposal", async () => {
 		const t = test_convex();
 
@@ -10938,7 +11053,27 @@ describe("discard_file_pending_structural", () => {
 		// Another user proposes moving their own file INTO the created folder through the REAL
 		// move-upsert: the row lives on their file, not on the folder, but its destination is
 		// the folder and deleting it would break their Accept later.
-		const otherUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "clerk_discard_move_dest_other" }));
+		const otherUserId = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_discard_move_dest_other" });
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			// Writing files needs `content.write`, which comes from the member role.
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId,
+				role: "member",
+				createdAt: now,
+				updatedAt: now,
+			});
+			return userId;
+		});
 		const otherFile = await t.action(internal.files_nodes.create_file_by_path, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,

@@ -534,6 +534,143 @@ describe("public files API", () => {
 		expect(stages).toEqual([]);
 	});
 
+	test("a replace that cannot recreate the file does not archive it", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-nested-scope-owner" });
+
+		// /outer and /outer/inner are each restricted on their own. The writer holds the inner scope
+		// and nothing on the outer one, which is what nested scopes are for.
+		const seeded = await t.run(async (ctx) => {
+			const now = Date.now();
+			const outerId = await ctx.db.insert("files_nodes", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				parentId: files_ROOT_ID,
+				name: "outer",
+				path: "/outer",
+				treePath: "/outer/",
+				pathDepth: 1,
+				kind: "folder",
+				lowercaseExtension: null,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				updatedAt: now,
+			});
+			const innerId = await ctx.db.insert("files_nodes", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				parentId: outerId,
+				name: "inner",
+				path: "/outer/inner",
+				treePath: "/outer/inner/",
+				pathDepth: 2,
+				kind: "folder",
+				lowercaseExtension: null,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				updatedAt: now,
+			});
+			await ctx.db.patch("files_nodes", outerId, { restrictedScopeNodeId: outerId });
+			await ctx.db.patch("files_nodes", innerId, { restrictedScopeNodeId: innerId });
+
+			const writerId = await ctx.db.insert("users", { clerkUserId: "clerk-nested-scope-writer" });
+			const writerMembershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: writerId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: writerId,
+				role: "member",
+				now,
+			});
+			for (const permission of ["content.read", "content.write"] as const) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					resourceKind: "file",
+					resourceId: String(innerId),
+					principalKind: "user",
+					userId: writerId,
+					permission,
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+
+			return { outerId, innerId, writerId, writerMembershipId };
+		});
+
+		const targetNodeId = await seed_markdown_file({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/outer/inner/report.md",
+			committedMarkdown: "# Original",
+		});
+
+		const stageId = await t.run(async (ctx) => {
+			const now = Date.now();
+			// Inserted rather than created through `api_credential_create`: publication only reads the
+			// doc's owner and revocation, and the real mutation drags in the credential quota.
+			const credentialId = await ctx.db.insert("api_credentials", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: seeded.writerId,
+				name: "Nested writer",
+				keyId: "key-nested-writer",
+				obfuscatedValue: "sk_...aaaa",
+				secretHash: "hash",
+				scopes: ["files:read", "files:write"],
+				createdAt: now,
+				revokedAt: null,
+				lastUsedAt: null,
+			});
+			const asset = async (kind: "yjs_snapshot" | "content_snapshot") =>
+				await ctx.db.insert("files_r2_assets", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					kind,
+					r2Bucket: "test",
+					size: 1,
+					createdBy: seeded.writerId,
+					updatedAt: now,
+				});
+			return await ctx.db.insert("public_api_file_write_stages", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: seeded.writerId,
+				credentialId,
+				path: "/outer/inner/report.md",
+				overwrite: "replace",
+				yjsSnapshotAssetId: await asset("yjs_snapshot"),
+				contentSnapshotAssetId: await asset("content_snapshot"),
+				expiresAt: now + 60_000,
+				updatedAt: now,
+			});
+		});
+
+		// Recreation has to walk /outer, which this writer cannot write, so the replace fails.
+		const published = await t.mutation(internal.public_api.publish_file_write, {
+			stageId,
+			content: "# Replacement",
+		});
+		expect(published._nay?.message).toBe("Permission denied");
+
+		// The point of the fix: the refusal must not leave the caller with no file.
+		await t.run(async (ctx) => {
+			const target = await ctx.db.get("files_nodes", targetNodeId);
+			expect(target?.archiveOperationId).toBeUndefined();
+			expect(target?.path).toBe("/outer/inner/report.md");
+		});
+	});
+
 	test("touches empty Markdown files and fills them in place", async () => {
 		const t = test_convex();
 		install_r2_object_reads();

@@ -114,6 +114,69 @@ async function resolve_role_permissions(
 	return role.permissions;
 }
 
+/**
+ * The first file grant carried by a role that the caller could not hand out on its own.
+ *
+ * A role is not only its permission list. A share list can name a role, and from then on holding
+ * that role opens the restricted node. `resolve_role_permissions` never sees those grants, so the
+ * permission ceiling in `set_user_role` cannot see them either: without this, somebody whose role
+ * only manages members could hand out a payroll folder they cannot open themselves, just by
+ * assigning the role it was shared with.
+ *
+ * A role given on the default workspace is the organization role and works in every workspace, so
+ * that case has to weigh grants from every workspace, not only the one being written. Each grant is
+ * judged in the workspace it lives in, so a caller who is not a member there simply fails the check
+ * — which is right: nobody hands out access where they have none.
+ */
+export async function access_control_db_role_file_grant_caller_cannot_give(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organization: Doc<"organizations">;
+		defaultWorkspaceId: Id<"organizations_workspaces">;
+		workspaceId: Id<"organizations_workspaces">;
+		role: access_control_RoleRef;
+		userId: Id<"users">;
+	},
+) {
+	const isDefaultWorkspace = args.workspaceId === args.defaultWorkspaceId;
+	const grants = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_organization_role_workspace_resource", (q) => {
+			const byRole = q.eq("organizationId", args.organization._id).eq("principalKind", "role").eq("role", args.role);
+			return isDefaultWorkspace ? byRole : byRole.eq("workspaceId", args.workspaceId);
+		})
+		.collect();
+
+	for (const grant of grants) {
+		if (grant.resourceKind !== "file") {
+			continue;
+		}
+
+		// `resourceId` on a file grant is always the restricted scope node's own id, so it is both the
+		// resource and its scope. A node that is gone, or open again, makes the grant give nothing, and
+		// `access_control_db_has_permission` already answers that by falling back to workspace access.
+		const scopeNodeId = ctx.db.normalizeId("files_nodes", grant.resourceId);
+		if (!scopeNodeId) {
+			continue;
+		}
+
+		const allowed = await access_control_db_has_permission(ctx, {
+			organizationId: args.organization._id,
+			workspaceId: grant.workspaceId,
+			defaultWorkspaceId: args.defaultWorkspaceId,
+			organizationOwnerUserId: args.organization.ownerUserId,
+			resource: { kind: "file", id: grant.resourceId, restrictedScopeNodeId: scopeNodeId },
+			permission: grant.permission,
+			userId: args.userId,
+		});
+		if (!allowed) {
+			return grant;
+		}
+	}
+
+	return null;
+}
+
 function db_get_role_assignment(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -1818,6 +1881,27 @@ export const set_user_role = mutation({
 				return Result({
 					_nay: {
 						message: `You cannot assign a role that grants "${access_control_PERMISSION_CATALOG[missing].label}"`,
+					},
+				});
+			}
+
+			// The same rule, for the half of a role that lives outside its permission list. A share list
+			// can name a role, so assigning one also hands over every restricted file shared with it.
+			// The list above cannot see those, and a caller who may manage members is not thereby
+			// somebody who may open a restricted folder.
+			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
+				organization,
+				defaultWorkspaceId,
+				workspaceId: args.workspaceId,
+				role: args.role,
+				userId: userAuth.id,
+			});
+			if (blockingGrant) {
+				// The node is not named. A caller who cannot open it should not learn which file it is
+				// from a refusal, and the role name is enough to act on.
+				return Result({
+					_nay: {
+						message: `You cannot assign this role: it is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
 					},
 				});
 			}

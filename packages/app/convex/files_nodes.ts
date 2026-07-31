@@ -1477,6 +1477,43 @@ export const create_file_node = internalMutation({
 				return Result({ _nay: { message: "External mount sync was superseded" } });
 			}
 		}
+		// Every caller here is an action: it proved this permission in an earlier transaction and then
+		// went off to write R2 objects. A role taken away in that gap would still land a file. The walk
+		// below only asks `access_control_db_can_act_on_file_node`, which waves an open node through on
+		// the promise that the workspace permission was already proved — and that promise is exactly
+		// what goes stale. So ask again, here, in the transaction that writes. SYSTEM writes come from
+		// trusted server flows and have no user to ask about.
+		//
+		// The reserved global scopes (mount mirrors, plugin sources) have no memberships to ask about,
+		// so they are skipped here the same way the node check skips them.
+		const authorUserId = args.userId === users_SYSTEM_AUTHOR ? null : args.userId;
+		const authorOrganizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
+		const authorWorkspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
+		if (authorUserId && authorOrganizationId && authorWorkspaceId) {
+			const membership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", authorUserId)
+						.eq("organizationId", authorOrganizationId)
+						.eq("workspaceId", authorWorkspaceId),
+				)
+				.first();
+			if (!membership) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+
+			const authorized = await authorize_file_write(ctx, {
+				userAuth: { id: authorUserId },
+				membership,
+				nodeId: args.parentId,
+			});
+			if (authorized._nay) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+		}
+
 		const createdAncestorIds: Array<Id<"files_nodes">> = [];
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: args.userId,
@@ -2989,6 +3026,19 @@ export async function files_nodes_db_apply_pending_move(
 		destName: string;
 		userId: string;
 		updatedBy: Id<"users">;
+		/**
+		 * Whether the caller may move one node of a swap cycle to its own destination.
+		 *
+		 * The caller authorized the node it was asked about. A cycle drags in nodes it never named:
+		 * accepting `/A` also moves whatever sits on `/A`'s destination. Those need the same two
+		 * questions, asked now, because a proposal can outlive the access that created it.
+		 *
+		 * Required, not optional, so a new caller cannot quietly move nodes nobody asked about.
+		 */
+		authorizeCycleMember: (args: {
+			node: Doc<"files_nodes">;
+			destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		}) => Promise<boolean>;
 	},
 ) {
 	// A committed rename can land the node at the proposed destination before the accept
@@ -3095,6 +3145,16 @@ export async function files_nodes_db_apply_pending_move(
 			}
 
 			if (isCycle) {
+				// Ask about every node the cycle drags in, before anything is written. The caller proved
+				// only the node it was asked about; these were found by following the chain. Moving one
+				// is a real write: it changes the node's path, and a node that merely sits inside a
+				// restricted folder also loses that folder's scope when it lands somewhere open.
+				for (const member of cycleMembers) {
+					if (!(await args.authorizeCycleMember({ node: member.node, destParentId: member.destParentId }))) {
+						return Result({ _nay: { message: "Permission denied" } });
+					}
+				}
+
 				// A destination can sit inside a folder that is itself a cycle member, so paths
 				// captured before the apply go stale mid-transaction. Compute every member's
 				// final path from the FINAL parent chain (moved parents use their destination,

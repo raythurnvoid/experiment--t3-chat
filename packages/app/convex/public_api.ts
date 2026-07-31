@@ -14,7 +14,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { RegisteredMutation, RegisteredQuery, RouteSpec } from "convex/server";
 import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
-import { access_control_db_has_permission } from "./access_control.ts";
+import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
 import {
 	ACTIVITIES_TIMEOUT_MAX_MS,
 	activities_db_add_target,
@@ -753,7 +753,11 @@ export const resolve_principal = internalQuery({
 				runId: v.id("plugins_event_runs"),
 				installationId: v.id("plugins_workspace_installations"),
 				pluginVersionId: v.id("plugins_versions"),
-				/** Used only for file authorship/audit, never for permission checks. */
+				/**
+				 * The person whose upload started this run. Used for file authorship, and as the eyes the
+				 * run reads and writes files with: a run has no user of its own, so without that it would
+				 * be a way around a restricted folder. See `public_api_visibility_user_id`.
+				 */
 				actorUserId: v.id("users"),
 				sourceFileNodeId: v.id("files_nodes"),
 				sourceAssetId: v.id("files_r2_assets"),
@@ -1439,6 +1443,37 @@ async function db_revalidate_file_write_principal(
 		if (server_path_parent_of(args.path) !== sourceParentPath) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+
+		// A plugin run writes as the person whose upload started it, so that person still has to be
+		// allowed to write here. A run can outlive them: a member is removed, or their role is taken
+		// away, while the run is still going. Asked against the source file rather than the workspace,
+		// because the output lands beside it — a grant on a restricted folder is often the only reason
+		// the actor could write there at all.
+		const actorMembership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!actorMembership) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+		if (
+			!(await has_workspace_content_permission(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				permission: "content.write",
+				fileNode: sourceFileNode,
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
 		return Result({ _yay: { pluginRun } });
 	}
 
@@ -1636,6 +1671,32 @@ export const publish_file_write = internalMutation({
 			if (stage.overwrite === "fail") {
 				return Result({ _nay: { message: "A file already exists at this path" } });
 			}
+
+			// Recreation below walks this file's folders and asks `content.write` on each one, and a
+			// refusal there would return normally — which commits the archive and leaves the caller with
+			// no file at all. So the same question is asked here, while nothing has been written yet.
+			// Nested scopes make this reachable: a grant on an inner restricted folder passes the check
+			// on the file above without saying anything about the restricted folder holding it.
+			let ancestorId = activeNode.parentId;
+			while (ancestorId !== files_ROOT_ID) {
+				const ancestor: Doc<"files_nodes"> | null = await ctx.db.get("files_nodes", ancestorId);
+				if (!ancestor) {
+					break;
+				}
+				if (
+					!(await access_control_db_can_act_on_file_node(ctx, {
+						organizationId: stage.organizationId,
+						workspaceId: stage.workspaceId,
+						userId: stage.userId,
+						fileNode: ancestor,
+						permission: "content.write",
+					}))
+				) {
+					return Result({ _nay: { message: "Permission denied" } });
+				}
+				ancestorId = ancestor.parentId;
+			}
+
 			await files_nodes_db_archive_nodes(ctx, { nodeIds: [activeNode._id], updatedBy: stage.userId, now });
 		}
 

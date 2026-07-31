@@ -20,6 +20,7 @@ import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_has_permission,
 	access_control_db_resolve_effective_permissions,
+	access_control_db_role_file_grant_caller_cannot_give,
 } from "./access_control.ts";
 import { access_control_PERMISSION_CATALOG, access_control_SYSTEM_ROLE_MATRIX } from "../shared/access-control.ts";
 import { data_deletion_db_request } from "./data_deletion.ts";
@@ -896,6 +897,23 @@ export const invite_user_to_organization_workspace = mutation({
 				return Result({
 					_nay: {
 						message: `You cannot invite someone as ${access_control_SYSTEM_ROLE_MATRIX.member.label}, because that role grants "${access_control_PERMISSION_CATALOG[missing].label}"`,
+					},
+				});
+			}
+
+			// A share list can name a role, so the invited role carries every restricted file shared
+			// with it. The permission list above cannot see those, same blind spot `set_user_role` had.
+			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
+				organization,
+				defaultWorkspaceId,
+				workspaceId: defaultWorkspaceId,
+				role: "member",
+				userId: userAuth.id,
+			});
+			if (blockingGrant) {
+				return Result({
+					_nay: {
+						message: `You cannot invite someone as ${access_control_SYSTEM_ROLE_MATRIX.member.label}: that role is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
 					},
 				});
 			}

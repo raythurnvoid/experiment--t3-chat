@@ -457,6 +457,65 @@ describe("enforcement", () => {
 		expect(created._nay?.message).toBe("Permission denied");
 	});
 
+	test("a role taken away during the upload still stops the mutation that writes the node", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "stale-write-org",
+			suffix: "stale-write",
+		});
+
+		// `create_file_node` is the transaction the create action ends with, after the R2 upload.
+		// Calling it on its own is what a stale action looks like: the permission was proved in an
+		// earlier transaction, and by the time this one runs the role may already be gone.
+		const [assetId, yjsSnapshotAssetId] = await t.run(async (ctx) => {
+			const insert_asset = () =>
+				ctx.db.insert("files_r2_assets", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					kind: "upload" as const,
+					r2Bucket: "test-files-bucket",
+					size: 1,
+					createdBy: fixture.memberId,
+					updatedAt: Date.now(),
+				});
+			return [await insert_asset(), await insert_asset()];
+		});
+		const create_node = (path: string) =>
+			t.mutation(internal.files_nodes.create_file_node, {
+				userId: fixture.memberId,
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				parentId: files_ROOT_ID,
+				path,
+				contentType: "text/markdown;charset=utf-8",
+				assetId,
+				yjsSnapshotAssetId,
+				textContent: "",
+				readOnly: false,
+			});
+
+		const asMember = await create_node("/stale-ok.md");
+		expect(asMember._nay).toBeUndefined();
+
+		await access_control_test_demote_to_viewer(fixture);
+
+		const asViewer = await create_node("/stale-denied.md");
+		expect(asViewer._nay?.message).toBe("Permission denied");
+		await t.run(async (ctx) => {
+			const nodes = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.defaultWorkspaceId)
+						.eq("parentId", files_ROOT_ID)
+						.eq("name", "stale-denied.md"),
+				)
+				.collect();
+			expect(nodes).toHaveLength(0);
+		});
+	});
+
 	test("a viewer is refused by the pending-update save action", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -3996,6 +4055,116 @@ describe("file sharing", () => {
 		expect(afterRole.some((fileNode) => fileNode._id === folderId)).toBe(true);
 	});
 
+	test("handing out a role does not hand out the files shared with it", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "role-ceiling-org",
+			suffix: "role-ceiling",
+		});
+		const { folderId } = await seed_restricted_folder(t, fixture, { name: "payroll" });
+
+		// A third member, so the fixture's member can act as the assigner and somebody else receives.
+		const eveId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-role-ceiling-eve" });
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				userId: eveId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				userId: eveId,
+				role: "member",
+				now,
+			});
+		});
+
+		// The role the payroll folder is shared with. Its own permission list says nothing about files,
+		// so the assigner clears the normal ceiling on it without ever seeing the folder.
+		const payrollRole = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "Payroll",
+			description: "",
+			permissions: ["workspace.create"],
+		});
+		expect(payrollRole._nay).toBeUndefined();
+
+		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "role", role: payrollRole._yay!.roleId },
+			level: "manage",
+		});
+		expect(granted._nay).toBeUndefined();
+
+		// The assigner may manage members and may create workspaces, and has no payroll access at all.
+		const assignerRole = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "People manager",
+			description: "",
+			permissions: ["organization.members.manage", "workspace.create"],
+		});
+		expect(assignerRole._nay).toBeUndefined();
+
+		const assignerAssigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: fixture.memberId,
+			role: assignerRole._yay!.roleId,
+		});
+		expect(assignerAssigned._nay).toBeUndefined();
+
+		const beforeAssign = await access_control_test_identity(t, eveId).query(api.files_nodes.list_tree, {
+			membershipId: await access_control_test_read_membership_id(t, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				userId: eveId,
+			}),
+		});
+		expect(beforeAssign.some((fileNode) => fileNode._id === folderId)).toBe(false);
+
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+
+		// The role's own permissions pass the ceiling, so only the grant check can stop this.
+		const escalated = await fixture.asMember.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: eveId,
+			role: payrollRole._yay!.roleId,
+		});
+		expect(escalated._nay?.message).toContain("shared on a file");
+
+		const eveMembershipId = await access_control_test_read_membership_id(t, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: eveId,
+		});
+		const afterAssign = await access_control_test_identity(t, eveId).query(api.files_nodes.list_tree, {
+			membershipId: eveMembershipId,
+		});
+		expect(afterAssign.some((fileNode) => fileNode._id === folderId)).toBe(false);
+
+		// The owner may give it out, and doing so really does open the folder. Without this the test
+		// would pass just as well against a `set_user_role` that refused everybody.
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const byOwner = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: eveId,
+			role: payrollRole._yay!.roleId,
+		});
+		expect(byOwner._nay).toBeUndefined();
+
+		const afterOwnerAssign = await access_control_test_identity(t, eveId).query(api.files_nodes.list_tree, {
+			membershipId: eveMembershipId,
+		});
+		expect(afterOwnerAssign.some((fileNode) => fileNode._id === folderId)).toBe(true);
+	});
+
 	test("an admin's role gives nothing inside a restricted scope", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -4069,6 +4238,55 @@ describe("file sharing", () => {
 
 		// The owner holds no grant doc anywhere, so they are reported as a fixed row instead.
 		expect(shareState?.organizationOwnerUserId).toBe(fixture.ownerId);
+	});
+
+	test("a role that manages permissions but cannot write is not offered the restrict button", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "half-manager-org",
+			suffix: "half-manager",
+		});
+
+		const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: files_ROOT_ID,
+			path: "half-managed",
+		});
+		expect(folder._nay).toBeUndefined();
+
+		// This role may choose who else gets access, but may not change anything itself.
+		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "Sharer",
+			description: "",
+			permissions: ["content.read", "content.permissions.manage"],
+		});
+		expect(role._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+
+		const assigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: fixture.memberId,
+			role: role._yay!.roleId,
+		});
+		expect(assigned._nay).toBeUndefined();
+
+		// Restricting hands the caller a `manage` grant, and `manage` includes write. So the dialog must
+		// not offer a button that `restrict_node` always refuses.
+		const shareState = await fixture.asMember.query(api.files_sharing.get_node_share_state, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: folder._yay!.nodeId,
+		});
+		expect(shareState?.canManage).toBe(true);
+		expect(shareState?.canRestrict).toBe(false);
+
+		const restricted = await fixture.asMember.mutation(api.files_sharing.restrict_node, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: folder._yay!.nodeId,
+		});
+		expect(restricted._nay).toBeDefined();
 	});
 
 	test("the share list cannot be left without a manager", async () => {

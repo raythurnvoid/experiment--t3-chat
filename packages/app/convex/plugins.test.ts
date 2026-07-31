@@ -2073,6 +2073,97 @@ describe("plugins Phase 0", () => {
 		expect(call).toMatchObject({ status: "failed", errorCode: "unpublished_write" });
 	});
 
+	test("refuses to stage a write once the run's actor lost write access", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+
+		// A run writes as the person whose upload started it. That person is a plain member here, not
+		// the organization owner: an owner is allowed everything and would hide the check.
+		const actorUserId = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_plugin_actor_lost_access" });
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId,
+				role: "member",
+				createdAt: now,
+				updatedAt: now,
+			});
+			return userId;
+		});
+		const runId = await insert_event_run(t, fixture, {
+			eventId: "plugin:actor-lost-access-test",
+			status: "running",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		await t.run(async (ctx) =>
+			ctx.db.patch("plugins_event_runs", runId, {
+				actorUserId,
+				apiTokenHash: await crypto_sha256_hex(`plr_${"7".repeat(64)}`),
+				apiTokenExpiresAt: Date.now() + 30 * 60 * 1000,
+				updatedAt: Date.now(),
+			}),
+		);
+		const stage_a_write = async () => {
+			const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+				runId,
+				kind: "api_request",
+				route: "/api/v1/files/write",
+			});
+			if (consumed._nay) {
+				throw new Error(consumed._nay.message);
+			}
+			return await t.mutation(internal.public_api.prepare_file_write, {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId: actorUserId,
+				principalRef: { kind: "plugin_run", runId, callId: consumed._yay.callId },
+				path: "/expired.png.md",
+				overwrite: "replace",
+				contentSize: 5,
+				yjsSnapshotSize: 5,
+			});
+		};
+
+		const allowed = await stage_a_write();
+		expect(allowed._nay).toBeUndefined();
+		if (allowed._yay) {
+			await t.mutation(internal.public_api.cleanup_file_write_stage, { stageId: allowed._yay.stageId });
+		}
+
+		// The run outlives the actor's role: they are demoted to viewer while it is still going.
+		await t.run(async (ctx) => {
+			const assignment = await ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", fixture.membership.organizationId)
+						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("userId", actorUserId),
+				)
+				.unique();
+			if (!assignment) {
+				throw new Error("Expected the actor's role assignment");
+			}
+			await ctx.db.patch("access_control_role_assignments", assignment._id, {
+				role: "viewer",
+				updatedAt: Date.now(),
+			});
+		});
+
+		const refused = await stage_a_write();
+		expect(refused).toMatchObject({ _nay: { message: "Permission denied" } });
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+	});
+
 	test("reaps only expired staged writes and their orphaned asset docs", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);

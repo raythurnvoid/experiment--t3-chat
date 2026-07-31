@@ -2292,7 +2292,27 @@ describe("files_nodes.remove_eager_created_node_if_safe", () => {
 		// Another user proposes moving their own file INTO the created folder through the REAL
 		// move-upsert: the row lives on their file, not on the folder, but its destination is
 		// the folder and deleting it would break their Accept later.
-		const otherUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "clerk_eager_move_dest_other" }));
+		const otherUserId = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_eager_move_dest_other" });
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			// Writing files needs `content.write`, which comes from the member role.
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				createdAt: now,
+				updatedAt: now,
+			});
+			return userId;
+		});
 		const otherFile = await t.action(internal.files_nodes.create_file_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,

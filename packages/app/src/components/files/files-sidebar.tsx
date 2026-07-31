@@ -21,12 +21,14 @@ import {
 	Edit2,
 	FilePlus,
 	FileText,
+	FileUser,
 	Folder,
 	FolderPlus,
 	Hash,
 	Link2,
 	Search,
 	Upload,
+	UserRound,
 	Users,
 	X,
 	CopyMinus,
@@ -262,17 +264,66 @@ async function prepare_image_upload_file(file: File) {
 }
 
 // #region tree item icon
-type FilesSidebarTreeItemIcon_ClassNames = "FilesSidebarTreeItemIcon";
+type FilesSidebarTreeItemIcon_ClassNames =
+	| "FilesSidebarTreeItemIcon"
+	| "FilesSidebarTreeItemIcon-restricted-folder"
+	| "FilesSidebarTreeItemIcon-restricted-folder-person";
 
 type FilesSidebarTreeItemIcon_Props = {
 	kind: files_TreeItem["kind"];
+	isRestricted?: boolean;
 };
 
+/**
+ * The row's leading icon, which also says whether the node is restricted.
+ *
+ * The mark lives here and nowhere else. On the name line it would land at the right edge next to the
+ * hover buttons and read as a third, broken one; on the meta line it needs a word to be understood,
+ * and a word is what the design rejected. The leading slot is the one people scan first, it costs no
+ * width in a narrow sidebar, and it cannot collide with anything.
+ *
+ * People, not a padlock: whoever sees this row is somebody the restriction lets in, and a lock reads
+ * as "you are shut out" to exactly the people who are not.
+ *
+ * Files get lucide's own `FileUser`. Folders have no such icon in the set, so one is composed from
+ * `Folder` and `UserRound` instead of hand-drawing an SVG we would then have to keep in step with
+ * lucide. Both halves inherit `currentColor`, so the mark keeps the row's contrast in every state
+ * and stays visible under forced colors.
+ */
 const FilesSidebarTreeItemIcon = memo(function FilesSidebarTreeItemIcon(props: FilesSidebarTreeItemIcon_Props) {
-	const { kind } = props;
+	const { kind, isRestricted } = props;
+
+	// Decoration only. The row's accessible name already ends in "restricted" and its tooltip spells
+	// out what that means, so announcing it here would say the same thing twice.
+	const restrictedAttributes = isRestricted
+		? ({ "data-file-restricted": "self" } satisfies FilesSidebarTreeItemRestrictedIcon_CustomAttributes)
+		: null;
+
+	if (kind === "folder" && isRestricted) {
+		return (
+			<MyIcon
+				className={cn(
+					"FilesSidebarTreeItemIcon" satisfies FilesSidebarTreeItemIcon_ClassNames,
+					"FilesSidebarTreeItemIcon-restricted-folder" satisfies FilesSidebarTreeItemIcon_ClassNames,
+				)}
+				aria-hidden="true"
+				{...restrictedAttributes}
+			>
+				<Folder />
+				<UserRound
+					className={"FilesSidebarTreeItemIcon-restricted-folder-person" satisfies FilesSidebarTreeItemIcon_ClassNames}
+				/>
+			</MyIcon>
+		);
+	}
+
 	return (
-		<MyIcon className={"FilesSidebarTreeItemIcon" satisfies FilesSidebarTreeItemIcon_ClassNames}>
-			{kind === "folder" ? <Folder /> : <FileText />}
+		<MyIcon
+			className={"FilesSidebarTreeItemIcon" satisfies FilesSidebarTreeItemIcon_ClassNames}
+			aria-hidden="true"
+			{...restrictedAttributes}
+		>
+			{kind === "folder" ? <Folder /> : isRestricted ? <FileUser /> : <FileText />}
 		</MyIcon>
 	);
 });
@@ -757,9 +808,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 // #endregion tree item title
 
 // #region tree item primary content
-type FilesSidebarTreeItemPrimaryContent_ClassNames =
-	| "FilesSidebarTreeItemPrimaryContent"
-	| "FilesSidebarTreeItemPrimaryContent-restricted-icon";
+type FilesSidebarTreeItemPrimaryContent_ClassNames = "FilesSidebarTreeItemPrimaryContent";
 
 type FilesSidebarTreeItemPrimaryContent_Props = {
 	title: string;
@@ -778,7 +827,7 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 
 	return (
 		<div className={"FilesSidebarTreeItemPrimaryContent" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}>
-			<FilesSidebarTreeItemIcon kind={kind} />
+			<FilesSidebarTreeItemIcon kind={kind} isRestricted={isRestricted} />
 			<FilesSidebarTreeItemTitle
 				renameInputProps={renameInputProps}
 				isRenaming={isRenaming}
@@ -787,24 +836,6 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 				renameError={renameError}
 				onRenameErrorClear={onRenameErrorClear}
 			/>
-			{isRestricted ? (
-				<div
-					className={
-						"FilesSidebarTreeItemPrimaryContent-restricted-icon" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames
-					}
-					// People, not a padlock: the row is reached by whoever holds a grant on it, so a lock reads
-					// as "you are shut out" to the very people who are not.
-					// Decoration only: anything hoverable here would sit on top of the row's primary action and
-					// eat its clicks and drops, so the mouse copy lives on the row tooltip instead. The row name
-					// already contains "restricted", so nothing is announced from here.
-					aria-hidden="true"
-					{...({
-						"data-file-restricted": "self",
-					} satisfies FilesSidebarTreeItemRestrictedIcon_CustomAttributes)}
-				>
-					<Users />
-				</div>
-			) : null}
 		</div>
 	);
 });
@@ -851,8 +882,8 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 		ariaLabel,
 	} = props;
 
-	// The sharing badge cannot host its own tooltip without covering this button, so a restricted row
-	// explains itself here. The updated-by text stays visible in the row's second line.
+	// The sharing mark takes no pointer events, so it cannot host its own tooltip; a restricted row
+	// explains itself here instead. The updated-by text stays visible in the row's second line.
 	const tooltipContent = isRestricted
 		? "Only chosen people and roles can open this"
 		: `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedByDisplayName}`;
@@ -1199,7 +1230,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	);
 	const canRename = files_is_node(itemData);
 	// The synthetic root is not a real node, so there is nothing to share it with. Only the node that
-	// carries the restriction shows the lock: everything under it would repeat the same thing on every
+	// carries the restriction is marked: everything under it would repeat the same thing on every
 	// row, and the folder above already says it.
 	const canShare = files_is_node(itemData);
 	const isRestricted = files_is_node(itemData) && itemData.restrictedScopeNodeId === itemData._id;
