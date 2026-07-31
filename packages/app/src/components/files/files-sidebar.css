@@ -517,9 +517,11 @@
 
 		color: var(--color-fg-08);
 
+		/* Two people need more room than the padlock did: lucide draws on a 24px grid, and at 12px the
+		   heads and shoulders merge into one shape. */
 		> svg {
-			width: 12px;
-			height: 12px;
+			width: 14px;
+			height: 14px;
 		}
 	}
 	/* #endregion tree item primary content */

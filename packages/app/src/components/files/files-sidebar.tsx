@@ -25,7 +25,6 @@ import {
 	FolderPlus,
 	Hash,
 	Link2,
-	Lock,
 	Search,
 	Upload,
 	Users,
@@ -793,6 +792,8 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 					className={
 						"FilesSidebarTreeItemPrimaryContent-restricted-icon" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames
 					}
+					// People, not a padlock: the row is reached by whoever holds a grant on it, so a lock reads
+					// as "you are shut out" to the very people who are not.
 					// Decoration only: anything hoverable here would sit on top of the row's primary action and
 					// eat its clicks and drops, so the mouse copy lives on the row tooltip instead. The row name
 					// already contains "restricted", so nothing is announced from here.
@@ -801,7 +802,7 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 						"data-file-restricted": "self",
 					} satisfies FilesSidebarTreeItemRestrictedIcon_CustomAttributes)}
 				>
-					<Lock />
+					<Users />
 				</div>
 			) : null}
 		</div>
@@ -850,7 +851,7 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 		ariaLabel,
 	} = props;
 
-	// The lock badge cannot host its own tooltip without covering this button, so a restricted row
+	// The sharing badge cannot host its own tooltip without covering this button, so a restricted row
 	// explains itself here. The updated-by text stays visible in the row's second line.
 	const tooltipContent = isRestricted
 		? "Only chosen people and roles can open this"
