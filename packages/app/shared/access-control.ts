@@ -199,18 +199,13 @@ export type access_control_FileShareLevel = keyof typeof access_control_FILE_SHA
 /**
  * The share levels the share dialog offers, weakest first.
  *
- * Written as a map, not an array, so a level added to `access_control_FILE_SHARE_LEVELS` and
- * forgotten here is a type error instead of a level the dialog silently never offers. `Object.keys`
- * hands them back in the order written.
+ * Read straight off the levels above, so the order lives in exactly one place: the same object that
+ * says which permissions each level hands out. A second hand-written list would let the two drift,
+ * and the drift is silent — everything that compares two levels compares their position in here, so
+ * a level sitting in the wrong slot quietly redefines which change counts as raising access.
  */
-const FILE_SHARE_LEVEL_LIST = {
-	read: true,
-	write: true,
-	manage: true,
-} satisfies Record<access_control_FileShareLevel, true>;
-
 export const access_control_FILE_SHARE_LEVEL_KEYS = Object.keys(
-	FILE_SHARE_LEVEL_LIST,
+	access_control_FILE_SHARE_LEVELS,
 ) as access_control_FileShareLevel[];
 
 /** Every permission any share level can hand out, so a caller can check them in one pass. */

@@ -1236,6 +1236,8 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	const canCollapseSubtree = useVal(
 		() => itemData.kind === "folder" && isExpanded && item.getChildren().some((child) => child.isExpanded()),
 	);
+	// Only the node that carries the restriction is marked: everything under it would repeat the same
+	// thing on every row, and the folder above already says it.
 	const isRestricted = files_is_node(itemData) && itemData.restrictedScopeNodeId === itemData._id;
 
 	const ancestorIds = useVal(() => {
@@ -1282,16 +1284,31 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	// The same server question every write mutation asks first (`authorize_file_write`): may this
 	// user write at this node? Anything except `true` keeps the write controls disabled, so nothing
 	// here is clickable only to be refused by the backend.
-	const writePermission = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
+	//
+	// Asked in two pieces, because this component is rendered once per visible row and the tree is not
+	// virtualized. Args never vary here, so Convex collapses this to a single subscription no matter
+	// how large the tree is.
+	const workspaceWritePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
 		membershipId,
-		nodeId: files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : files_ROOT_ID,
+		permission: "content.write",
 	});
-	const canWrite = writePermission === true;
+	// Only a node inside a restricted scope needs its own question. Everywhere else the node check
+	// answers yes without reading anything (`access_control_db_can_act_on_file_node`) and the workspace
+	// answer above is already the whole answer — so asking per row would open one subscription, and
+	// about seven document reads, to learn what we just learned once. The synthetic root is the same
+	// case: `authorize_file_write` sends it straight to the workspace check.
+	const restrictedScopeNodeId = files_is_node(itemData) ? itemData.restrictedScopeNodeId : undefined;
+	const nodeWritePermission = useQuery(
+		app_convex_api.files_nodes.get_current_user_file_write_permission,
+		restrictedScopeNodeId ? { membershipId, nodeId: itemId as app_convex_Id<"files_nodes"> } : "skip",
+	);
+	const canWrite = (restrictedScopeNodeId ? nodeWritePermission : workspaceWritePermission) === true;
 	const canRename = files_is_node(itemData) && canWrite;
-	// The synthetic root is not a real node, so there is nothing to share it with. Only the node that
-	// carries the restriction is marked: everything under it would repeat the same thing on every
-	// row, and the folder above already says it.
-	const canShare = files_is_node(itemData) && canWrite;
+	// The synthetic root is not a real node, so there is nothing to share it with. Not gated on
+	// `canWrite`: `get_node_share_state` answers for anybody who may read the node, on purpose, so a
+	// reader can see who else can open it. Gating here would only make this disagree with the header
+	// button in `file-node-view.tsx`, which opens the same dialog and asks nothing.
+	const canShare = files_is_node(itemData);
 
 	const label = `${itemData.name}${isAddedFile ? " added" : ""}${isRestricted ? " restricted" : ""}${isArchived ? " archived" : ""}`;
 

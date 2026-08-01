@@ -144,6 +144,11 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
 		userId: Id<"users">;
 	},
 ) {
+	// Unreachable from today's callers — every one of them is already inside a
+	// `callerPermissions !== "all"` branch, and only the owner reads `"all"`. Kept because the
+	// membership question in the loop below is not owner-aware the way `access_control_db_has_permission`
+	// is: it would refuse an owner who is simply not a member of the workspace a grant lives in, which
+	// they need never be. Delete it only together with that check.
 	if (args.userId === args.organization.ownerUserId) {
 		return null;
 	}

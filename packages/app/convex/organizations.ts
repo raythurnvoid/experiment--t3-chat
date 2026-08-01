@@ -1063,7 +1063,13 @@ export const invite_user_to_organization_workspace = mutation({
 			// nothing on there. For that one the helper widens to every workspace, the same way the
 			// `member` check above does: a role held on the default workspace is the organization role.
 			const joinedWorkspaceIds =
-				isDefaultWorkspace || existingHomeMembership ? [workspace._id] : [workspace._id, defaultWorkspaceId];
+				isDefaultWorkspace || existingHomeMembership ? [workspace._id] : [defaultWorkspaceId, workspace._id];
+			// Each role weighed once. The helper scans every grant naming a role with no limit, so asking
+			// the same role twice doubles the most expensive read in this mutation for no new answer. The
+			// default workspace goes first because a question asked there already weighs grants from every
+			// workspace — it subsumes the same role asked at the target one. `member` was asked at that
+			// same widest scope just above.
+			const weighedRoles = new Set<string>(assignsMemberRole ? ["member"] : []);
 			for (const joinedWorkspaceId of joinedWorkspaceIds) {
 				const heldRoles = await access_control_db_resolve_role_refs(ctx, {
 					organizationId: organization._id,
@@ -1072,6 +1078,11 @@ export const invite_user_to_organization_workspace = mutation({
 					userId: userIdToAdd,
 				});
 				for (const heldRole of heldRoles) {
+					if (weighedRoles.has(heldRole)) {
+						continue;
+					}
+					weighedRoles.add(heldRole);
+
 					const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
 						organization,
 						defaultWorkspaceId,
