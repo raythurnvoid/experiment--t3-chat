@@ -308,6 +308,12 @@
 	}
 
 	.FileNodeViewStoredFile-tabs-bar {
+		/* Stick below the sticky editor toolbar so the tabs stay visible while the page scrolls.
+		Same offset as FileNodeViewTopStickyFloatingContainer. */
+		position: sticky;
+		top: calc(44px + var(--app-scrollbar-w) + 1px);
+		z-index: 1;
+
 		display: flex;
 		align-items: center;
 		min-height: 44px;
