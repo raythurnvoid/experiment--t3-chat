@@ -10,7 +10,7 @@ import {
 	plugins_parse_env_text,
 	plugins_parse_github_repository_url,
 	plugins_parse_installation_configuration_yaml,
-	plugins_pick_file_view,
+	plugins_list_file_view_matches,
 	plugins_validate_manifest,
 	plugins_validate_origin,
 } from "./plugins.ts";
@@ -747,7 +747,7 @@ describe("plugins_dist_review_mechanical_findings", () => {
 	});
 });
 
-describe("plugins_pick_file_view", () => {
+describe("plugins_list_file_view_matches", () => {
 	function file_view_plugin(args: {
 		pluginName: string;
 		installationCreatedAt: number;
@@ -765,7 +765,7 @@ describe("plugins_pick_file_view", () => {
 		};
 	}
 
-	test("picks the view whose declared content types include the file's content type", () => {
+	test("lists the view whose declared content types include the file's content type", () => {
 		const plugins = [
 			file_view_plugin({
 				pluginName: "player",
@@ -777,13 +777,14 @@ describe("plugins_pick_file_view", () => {
 			}),
 		];
 
-		const match = plugins_pick_file_view(plugins, "video/mp4");
-		expect(match?.plugin.pluginName).toBe("player");
-		expect(match?.fileView.id).toBe("video");
-		expect(match?.contentType).toBe("video/mp4");
+		const matches = plugins_list_file_view_matches(plugins, "video/mp4");
+		expect(matches).toHaveLength(1);
+		expect(matches[0]?.plugin.pluginName).toBe("player");
+		expect(matches[0]?.fileView.id).toBe("video");
+		expect(matches[0]?.contentType).toBe("video/mp4");
 	});
 
-	test("returns null without a matching view, without a content type, or while plugins load", () => {
+	test("returns an empty list without a matching view, without a content type, or while plugins load", () => {
 		const plugins = [
 			file_view_plugin({
 				pluginName: "player",
@@ -792,12 +793,12 @@ describe("plugins_pick_file_view", () => {
 			}),
 		];
 
-		expect(plugins_pick_file_view(plugins, "application/zip")).toBeNull();
-		expect(plugins_pick_file_view(plugins, undefined)).toBeNull();
-		expect(plugins_pick_file_view(undefined, "video/mp4")).toBeNull();
+		expect(plugins_list_file_view_matches(plugins, "application/zip")).toEqual([]);
+		expect(plugins_list_file_view_matches(plugins, undefined)).toEqual([]);
+		expect(plugins_list_file_view_matches(undefined, "video/mp4")).toEqual([]);
 	});
 
-	test("picks the earliest installation when several plugins match, regardless of list order", () => {
+	test("orders matches by installation creation time, regardless of list order", () => {
 		const newer = file_view_plugin({
 			pluginName: "newer",
 			installationCreatedAt: 200,
@@ -809,7 +810,11 @@ describe("plugins_pick_file_view", () => {
 			fileViews: [{ id: "video", contentTypes: ["video/mp4"] }],
 		});
 
-		expect(plugins_pick_file_view([newer, older], "video/mp4")?.plugin.pluginName).toBe("older");
-		expect(plugins_pick_file_view([older, newer], "video/mp4")?.plugin.pluginName).toBe("older");
+		expect(plugins_list_file_view_matches([newer, older], "video/mp4").map((match) => match.plugin.pluginName)).toEqual(
+			["older", "newer"],
+		);
+		expect(plugins_list_file_view_matches([older, newer], "video/mp4").map((match) => match.plugin.pluginName)).toEqual(
+			["older", "newer"],
+		);
 	});
 });

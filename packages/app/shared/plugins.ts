@@ -863,24 +863,27 @@ export function plugins_validate_manifest(input: unknown) {
 // #region file view selection
 
 /**
- * Pick the plugin file view to open for a file's content type. When several installed plugins
- * declare a matching view, the earliest installation wins so the chosen view stays stable.
+ * List every plugin file view that matches a file's content type. The result is ordered by
+ * installation creation time, so the tab order in the files UI stays stable and does not depend
+ * on query order. A manifest rejects duplicate content types across its file views, so each
+ * plugin contributes at most one match.
  */
-export function plugins_pick_file_view<
+export function plugins_list_file_view_matches<
 	Plugin extends { installationCreatedAt: number; fileViews: { contentTypes: string[] }[] },
 >(plugins: Plugin[] | undefined, contentType: string | undefined) {
 	if (!plugins || !contentType) {
-		return null;
+		return [];
 	}
 
-	let match: { plugin: Plugin; fileView: Plugin["fileViews"][number]; contentType: string } | null = null;
+	const matches: { plugin: Plugin; fileView: Plugin["fileViews"][number]; contentType: string }[] = [];
 	for (const plugin of plugins) {
 		const fileView = plugin.fileViews.find((item) => item.contentTypes.includes(contentType));
-		if (fileView && (!match || plugin.installationCreatedAt < match.plugin.installationCreatedAt)) {
-			match = { plugin, fileView, contentType };
+		if (fileView) {
+			matches.push({ plugin, fileView, contentType });
 		}
 	}
-	return match;
+	matches.sort((a, b) => a.plugin.installationCreatedAt - b.plugin.installationCreatedAt);
+	return matches;
 }
 
 // #endregion file view selection

@@ -126,7 +126,7 @@ A manifest may declare UI pages the host app embeds:
 
 ### File views
 
-A manifest may also declare file views — frames the host app opens instead of the stored-file details card when a workspace member opens a matching file:
+A manifest may also declare file views — frames the host app offers as tabs next to the stored-file details when a workspace member opens a matching file:
 
 ```jsonc
 "fileViews": [
@@ -138,7 +138,7 @@ A manifest may also declare file views — frames the host app opens instead of 
 - `title` — 1–80 characters. The host shows it in the view bar and the "Open in <title>" button.
 - `entry` — must be a manifest `files[]` entry with contentType `"text/html"`. Pages and file views may share one entry.
 - `contentTypes` — 1–32 exact stored content types (each at most 255 characters) matched against the opened file's stored content type. No wildcards. One manifest may not declare the same content type in two file views, and may declare at most 8 file views with at most 64 content types in total.
-- When several installed plugins match one content type, the host opens the view from the earliest installation.
+- When several installed plugins match one content type, each becomes its own tab, ordered by installation time. The file details tab stays first and opens by default.
 - The host mints the view's session only for files the member can read, and only after the file's upload pipeline is complete.
 
 ### Sandbox and token model

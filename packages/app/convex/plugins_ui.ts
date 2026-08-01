@@ -533,8 +533,8 @@ export const list_file_views = query({
 					pluginName: installation.pluginName,
 					displayName: version.displayName,
 					pluginVersionId: version._id,
-					// When two plugins declare a view for the same content type, the consumer picks the
-					// earliest installation, so which view opens does not depend on query order.
+					// The files UI orders view tabs by installation creation time, so tab order does not
+					// depend on query order.
 					installationCreatedAt: installation._creationTime,
 					fileViews: version.fileViews,
 				};

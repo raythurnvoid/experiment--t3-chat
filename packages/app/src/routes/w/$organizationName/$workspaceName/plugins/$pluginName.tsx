@@ -1063,8 +1063,8 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 							))}
 						</ul>
 						<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
-							Plugin pages are trusted with the data their capabilities expose. The sandbox protects the
-							host app, but a page can send exposed data away by navigating.
+							Plugin pages are trusted with the data their capabilities expose. The sandbox protects the host app, but a
+							page can send exposed data away by navigating.
 						</p>
 					</>
 				)}
@@ -1091,8 +1091,8 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 							))}
 						</ul>
 						<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
-							A file view opens instead of the file details card when a member opens a file with one of
-							these content types.
+							A file view adds a tab next to the file details when a member opens a file with one of these content
+							types.
 						</p>
 					</>
 				)}
