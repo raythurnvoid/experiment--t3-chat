@@ -46,6 +46,8 @@ vp env exec pnpx playwriter -s $session -f "C:/Users/rt0/Documents/workspace/rt0
 vp env exec pnpx playwriter -s $session -e 'await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/w/personal/home/files" });'
 ```
 
+5. Create a reminder now for the end of the task: your final report MUST end with the "Process debt" block from "Leave The Process Better Than You Found It" below (friction log, accessibility screen, recipes). A QA report without that block is incomplete, even when every answer is "none". If you keep a todo list, add this as a todo now.
+
 # Workflow
 
 - Observe before acting: print the URL and call `state.appPlaywriterHarness.observe(...)` or raw `snapshot({ page: state.page })`.
@@ -58,6 +60,18 @@ vp env exec pnpx playwriter -s $session -e 'await state.appPlaywriterHarness.bin
 - For route-specific checks, read the relevant reference recipe and run it with generic helpers instead of adding a new helper function.
 - Keep each execute call focused on one observation or one action, then observe again.
 - Prefer small observe-act-observe scripts over bundled multi-step runners during interactive debugging and eval inspection. Batch only when the user explicitly asks for a runner or the flow is already stable and repeatable.
+
+# Leave The Process Better Than You Found It
+
+Improving the harness and its docs is part of every browser QA task, not a separate request. The user should never need to ask for it.
+
+Before ending any task that used Playwriter, work through this checklist and end your final report with a "Process debt" block stating all three outcomes. A report without that block is an incomplete task, even when every answer is "none":
+
+1. Friction log. Did any command, selector, or documented step fail or mislead you? Fix the doc in the same session: add or correct the entry in `references/known-hazards.md`, the route reference, or this SKILL.md. Follow the Memories rules below — reusable knowledge only, no run diaries. If nothing failed, say "no new hazards" in the report.
+2. Accessibility. QA friction is often an accessibility bug: a control that cannot be located by role and accessible name is also broken for assistive tech. Run `state.appPlaywriterHarness.auditAccessibility(...)` on the main route you drove; skip it only for pure data-readback tasks and say so. Fix small app-side gaps (missing accessible name, wrong role, missing label) in the same session when they sit in or next to code the task already touches; for bigger findings, report them or spawn a follow-up task instead of derailing the current one.
+3. Recipes. If you had to invent a working multi-step sequence for a flow no reference documents, record it in the nearest route reference so the next agent does not re-invent it.
+
+Doc fixes from this checklist ride along with the task's commit or a small separate commit; do not leave them uncommitted.
 
 # Run Playbooks Step By Step
 

@@ -1283,6 +1283,8 @@ A flow that runs without an error only proves the code did not crash. It does no
 
 For live browser inspection or UI QA, use Playwriter and load `.agents/skills/app-playwriter-harness/SKILL.md`. Use another browser tool only when Playwriter cannot perform the task or the user requests it.
 
+Every browser QA task ends with the harness skill's "Leave The Process Better Than You Found It" checklist: fix the docs for any friction you hit, screen the driven route for accessibility gaps, and record invented recipes — in the same session, without the user asking.
+
 Run a Playwriter check for every change the running app can reach, not only for UI work. Backend-only changes count: tests run against their own harness, so they cannot show that the real app still reaches the changed code. Drive the flow that the change affects, and follow the verification rules above — walking a happy path is not a check. Say so explicitly when a change genuinely cannot be reached from the app.
 
 Before trusting any browser result about Convex code, check that the browser runs your working tree. `pnpm run dev` starts Vite only; the app then talks to the deployment already in `packages/app/.env.local`, so edits under `convex/` reach the browser only while `convex dev` is pushing them. Prove it once per session by breaking one check on purpose and watching the app's behaviour change. Without that, a green browser run says nothing about your edits.
