@@ -243,6 +243,7 @@ export const get_data_for_create_signed_download_url = internalQuery({
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
 			fileNode.workspaceId !== membership.workspaceId ||
+			fileNode.archiveOperationId !== undefined ||
 			!fileNode.assetId ||
 			!fileNode.contentType
 		) {
@@ -464,9 +465,12 @@ export const create_signed_download_url = action({
 					membershipId: args.membershipId,
 					fileNodeId: args.fileNodeId,
 				})) as get_data_for_create_signed_download_url_Result;
-				if (refreshed) {
-					asset = refreshed.asset;
+				// A null re-read means the caller lost access to the file: refuse instead of
+				// signing a URL for the stale asset.
+				if (!refreshed) {
+					return Result({ _nay: { message: "Not found" } });
 				}
+				asset = refreshed.asset;
 			}
 		}
 
@@ -511,6 +515,7 @@ export const get_asset = query({
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
 			fileNode.workspaceId !== membership.workspaceId ||
+			fileNode.archiveOperationId !== undefined ||
 			!fileNode.assetId
 		) {
 			return null;

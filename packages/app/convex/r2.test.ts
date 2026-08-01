@@ -546,6 +546,134 @@ describe("r2 asset content", () => {
 		expect(readResult?.pendingUpdateId).toBeNull();
 	});
 
+	test("refuses the signed download when access is lost during materialization", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const db = await test_mocks_fill_db_with.membership(ctx);
+			await seed_billing_snapshot_for_user(ctx, db.userId);
+			return db;
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "revoked-download.md",
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const assets = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", created._yay.nodeId);
+			if (!node?.assetId || !node.yjsSnapshotId) {
+				throw new Error("Expected Markdown node assets");
+			}
+			const yjsSnapshotDoc = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
+			const yjsSnapshotAsset = yjsSnapshotDoc ? await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId) : null;
+			if (!yjsSnapshotAsset?.r2Key) {
+				throw new Error("Expected Yjs snapshot R2 key");
+			}
+
+			return { yjsSnapshotR2Key: yjsSnapshotAsset.r2Key };
+		});
+		const baseSnapshotBytes = r2Objects.get(assets.yjsSnapshotR2Key);
+		if (!baseSnapshotBytes) {
+			throw new Error("Expected Yjs snapshot bytes in R2");
+		}
+
+		// Push a Yjs update so the download action must materialize and re-read the node.
+		const updatedMarkdown = "# Revoked download\n\nThis content only exists in Yjs updates.\n";
+		const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(baseSnapshotBytes));
+		const nextYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(baseSnapshotBytes));
+		const nextProjection = files_yjs_doc_update_from_markdown({
+			mut_yjsDoc: nextYjsDoc,
+			markdown: updatedMarkdown,
+		});
+		if (nextProjection._nay) {
+			throw new Error(nextProjection._nay.message);
+		}
+		const diffUpdate = files_yjs_compute_diff_update_from_yjs_doc({
+			yjsBeforeDoc: baseYjsDoc,
+			yjsDoc: nextProjection._yay,
+		});
+		baseYjsDoc.destroy();
+		nextYjsDoc.destroy();
+		if (!diffUpdate) {
+			throw new Error("Expected a Yjs diff update");
+		}
+
+		const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId: created._yay.nodeId,
+			update: files_u8_to_array_buffer(diffUpdate),
+			sessionId: "revoked-download-session",
+		});
+		if (pushResult._nay) {
+			throw new Error(pushResult._nay.message);
+		}
+
+		// Delete the membership while the action materializes, so the re-read after
+		// materialization runs with the caller's access already gone.
+		let membershipDeleted = false;
+		vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (customKey?: string) => {
+			if (!membershipDeleted) {
+				membershipDeleted = true;
+				await t.run(async (ctx) => ctx.db.delete("organizations_workspaces_users", db.membershipId));
+			}
+			return {
+				key: customKey ?? "test-upload-key",
+				url: r2_url("upload", customKey ?? "test-upload-key"),
+			};
+		});
+
+		const signedDownload = await asUser.action(api.r2.create_signed_download_url, {
+			membershipId: db.membershipId,
+			fileNodeId: created._yay.nodeId,
+		});
+		expect(membershipDeleted).toBe(true);
+		expect(signedDownload._nay).toMatchObject({ message: "Not found" });
+	});
+
+	test("refuses signed downloads and asset reads for archived nodes", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "archived-download.md",
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		await t.run(async (ctx) =>
+			ctx.db.patch("files_nodes", created._yay.nodeId, { archiveOperationId: "archive-download-test" }),
+		);
+
+		const signedDownload = await asUser.action(api.r2.create_signed_download_url, {
+			membershipId: db.membershipId,
+			fileNodeId: created._yay.nodeId,
+		});
+		expect(signedDownload._nay).toMatchObject({ message: "Not found" });
+
+		const asset = await asUser.query(api.r2.get_asset, {
+			membershipId: db.membershipId,
+			fileNodeId: created._yay.nodeId,
+		});
+		expect(asset).toBeNull();
+	});
+
 	test("reads pending-update Markdown before saved R2 content", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));

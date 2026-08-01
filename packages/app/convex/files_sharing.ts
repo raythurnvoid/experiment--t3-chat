@@ -35,6 +35,7 @@ import { v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
+	access_control_FILE_SHARE_LEVEL_KEYS,
 	access_control_FILE_SHARE_LEVELS,
 	access_control_PERMISSION_CATALOG,
 	access_control_FILE_SHARE_PERMISSIONS,
@@ -799,10 +800,28 @@ export const set_node_share_grant = mutation({
 			return principalResult;
 		}
 
+		const grants = await db_list_scope_grants(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			scopeNodeId: node._id,
+		});
+		const entries = group_grants_into_entries(grants);
+		const principalKey = share_principal_key(args.principal);
+		const existingEntry = entries.find((entry) => share_principal_key(entry.principal) === principalKey) ?? null;
+
 		// Sharing with a role is handing the role out, so it needs the same permission as handing it to
 		// one person. `caller_can_hand_out_level` below only asks what the caller holds on this node; it
 		// cannot see that naming a role also changes who may give that role from now on.
-		if (args.principal.kind === "role") {
+		//
+		// Only when this raises the role's level here. Lowering it, or setting what it already has,
+		// hands out nothing new, the same way removing the role in `remove_node_share_grant` asks for
+		// none of this.
+		if (
+			args.principal.kind === "role" &&
+			(!existingEntry ||
+				access_control_FILE_SHARE_LEVEL_KEYS.indexOf(args.level) >
+					access_control_FILE_SHARE_LEVEL_KEYS.indexOf(existingEntry.level))
+		) {
 			const blocked = await access_control_db_caller_cannot_share_with_role(ctx, {
 				organization,
 				defaultWorkspaceId,
@@ -832,16 +851,7 @@ export const set_node_share_grant = mutation({
 			});
 		}
 
-		const grants = await db_list_scope_grants(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			scopeNodeId: node._id,
-		});
-		const entries = group_grants_into_entries(grants);
-		const principalKey = share_principal_key(args.principal);
-		const isNewPrincipal = !entries.some((entry) => share_principal_key(entry.principal) === principalKey);
-
-		if (isNewPrincipal && entries.length >= MAX_FILE_SHARE_PRINCIPALS) {
+		if (!existingEntry && entries.length >= MAX_FILE_SHARE_PRINCIPALS) {
 			return Result({
 				_nay: { message: `One file or folder can be shared with at most ${MAX_FILE_SHARE_PRINCIPALS} people and roles` },
 			});

@@ -101,12 +101,17 @@ type FilesShareModalEntry_Props = {
 	pending: boolean;
 	/** A write is running somewhere in the dialog, so no control here may start a second one. */
 	busy: boolean;
+	/**
+	 * Whether the caller may raise what a role row gets. Mirrors the backend rule: naming a role at a
+	 * higher level hands the role out and needs role management, while a lower or equal level does not.
+	 */
+	canRaiseRoleLevel: boolean;
 	onLevelChange: (principal: FilesSharePrincipal, level: access_control_FileShareLevel) => void;
 	onRemove: (principal: FilesSharePrincipal) => void;
 };
 
 const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShareModalEntry_Props) {
-	const { principal, name, meta, level, editable, pending, busy, onLevelChange, onRemove } = props;
+	const { principal, name, meta, level, editable, pending, busy, canRaiseRoleLevel, onLevelChange, onRemove } = props;
 
 	// `data-share-principal` is the only stable way a browser test can find one row: names are free
 	// text and ids from `useId()` change on every render. It is listed as a selector in
@@ -161,7 +166,17 @@ const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShar
 						<MySelectPopover unmountOnHide>
 							<MySelectPopoverContent>
 								{access_control_FILE_SHARE_LEVEL_KEYS.map((levelKey) => (
-									<MySelectItem key={levelKey} value={levelKey} data-share-level={levelKey}>
+									<MySelectItem
+										key={levelKey}
+										value={levelKey}
+										data-share-level={levelKey}
+										disabled={
+											principal.kind === "role" &&
+											!canRaiseRoleLevel &&
+											access_control_FILE_SHARE_LEVEL_KEYS.indexOf(levelKey) >
+												access_control_FILE_SHARE_LEVEL_KEYS.indexOf(level)
+										}
+									>
 										{access_control_FILE_SHARE_LEVELS[levelKey].label}
 										{level === levelKey ? <MySelectItemIndicator /> : null}
 									</MySelectItem>
@@ -495,9 +510,10 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		)
 		.map((userId) => ({ userId, name: read_display_name(userAnagraphicDict[userId]) }))
 		.sort((a, b) => a.name.localeCompare(b.name));
-	// A caller who does not manage roles is refused for every role, so the picker offers people only.
-	// Rows already on the list still show, and they can still be removed: taking a role back off is a
-	// different mutation and asks only about this node.
+	// A caller who does not manage roles is refused for every new role share, so the picker offers
+	// people only. Rows already on the list still show, and they can still be lowered or removed:
+	// neither hands the role out, and taking a role back off is a different mutation that asks only
+	// about this node.
 	const candidateRoles = (
 		!shareState?.canShareWithRoles
 			? []
@@ -660,7 +676,11 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 														<MySelectItemsGroupText>Roles</MySelectItemsGroupText>
 														{candidateRoles.length === 0 ? (
 															<MySelectItem value="" disabled>
-																Every role is already on the list
+																{/* Empty for two different reasons. A caller who does not manage roles is offered no
+																    role at all, so the "already on the list" wording would be untrue for them. */}
+																{shareState.canShareWithRoles
+																	? "Every role is already on the list"
+																	: "Only people who manage roles can share with a role"}
 															</MySelectItem>
 														) : (
 															candidateRoles.map((candidate) => {
@@ -732,6 +752,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 										editable={false}
 										pending={false}
 										busy={busy}
+										canRaiseRoleLevel={shareState.canShareWithRoles}
 										onLevelChange={handleLevelChange}
 										onRemove={handleRemove}
 									/>
@@ -750,6 +771,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 											editable={canEditList}
 											pending={pendingKey === files_share_principal_value(entry.principal)}
 											busy={busy}
+											canRaiseRoleLevel={shareState.canShareWithRoles}
 											onLevelChange={handleLevelChange}
 											onRemove={handleRemove}
 										/>

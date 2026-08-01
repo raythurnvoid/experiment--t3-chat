@@ -1,5 +1,5 @@
 (() => {
-	const VERSION = "0.6.0";
+	const VERSION = "0.6.1";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	/** Somewhere harmless to move the pointer from, so the next move has a non-zero screen delta. */
 	const HOVERCARD_PARK_POINT = { x: 900, y: 500 };
@@ -12,7 +12,18 @@
 	]);
 
 	function getHarnessPage() {
-		return state.appPlaywriterHarness?.page || state.page || page;
+		const pinned = state.appPlaywriterHarness?.page;
+
+		// `bindOpenTab` sets both, so a disagreement means something else moved `state.page` — usually a
+		// fresh `context.newPage()`. The pinned tab still wins, since surviving that is the point of
+		// pinning, but saying so out loud stops a whole session from observing the wrong tab in silence.
+		if (pinned && state.page && state.page !== pinned && !pinned.isClosed?.() && !state.page.isClosed?.()) {
+			console.log(
+				`[harness] state.page (${state.page.url()}) is not the bound tab (${pinned.url()}); using the bound tab. Call bindOpenTab to move.`,
+			);
+		}
+
+		return [pinned, state.page, page].find((candidate) => candidate && !candidate.isClosed?.()) || page;
 	}
 
 	async function tabs() {
@@ -500,6 +511,19 @@
 					throw new Error(`Could not find element: ${selector}`);
 				}
 
+				// Roles that never take their accessible name from their own text. A combobox showing the
+				// option it currently holds looks named in the DOM, yet reaches a screen reader with no
+				// name at all, so the text fallback below has to stop short of them.
+				const NAME_FROM_CONTENT_FORBIDDEN = new Set([
+					"combobox",
+					"listbox",
+					"textbox",
+					"searchbox",
+					"spinbutton",
+					"slider",
+					"progressbar",
+				]);
+
 				function accessibleName(element) {
 					const ariaLabel = element.getAttribute("aria-label");
 					if (ariaLabel?.trim()) return ariaLabel.trim();
@@ -521,6 +545,7 @@
 					}
 					const title = element.getAttribute("title");
 					if (title?.trim()) return title.trim();
+					if (NAME_FROM_CONTENT_FORBIDDEN.has(element.getAttribute("role"))) return "";
 					return element.textContent?.trim().replace(/\s+/g, " ") || "";
 				}
 

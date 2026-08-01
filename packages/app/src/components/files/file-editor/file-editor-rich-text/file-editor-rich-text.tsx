@@ -753,6 +753,7 @@ export type FileEditorRichText_ClassNames =
 type FileEditorRichTextInner_Props = {
 	filesYjs: NonNullable<ReturnType<typeof useFilesYjs>>;
 	nodeId: app_convex_Id<"files_nodes">;
+	editable: boolean;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
@@ -760,7 +761,8 @@ type FileEditorRichTextInner_Props = {
 };
 
 function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
-	const { filesYjs, nodeId, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot } = props;
+	const { filesYjs, nodeId, editable, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot } =
+		props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -802,6 +804,14 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 	const handleCreate: EditorContentProps["onCreate"] = ({ editor }) => {
 		setEditor(editor);
 	};
+
+	// Same pattern as the comments composer: the editor instance is created once, so a later answer
+	// to "may this user write here" has to go through `setEditable`.
+	useEffect(() => {
+		if (editor) {
+			editor.setEditable(editable, false);
+		}
+	}, [editor, editable]);
 
 	/**
 	 * Reject content that would push the document over the size cap. Every keystroke in this
@@ -881,6 +891,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 						},
 					}}
 					extensions={extensions}
+					editable={editable}
 					immediatelyRender={false}
 					onCreate={handleCreate}
 					slotAfter={
@@ -935,6 +946,7 @@ export type FileEditorRichText_FgColorCssVarKeys =
 
 export type FileEditorRichText_Props = React.ComponentProps<"div"> & {
 	nodeId: app_convex_Id<"files_nodes">;
+	editable: boolean;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
@@ -942,7 +954,8 @@ export type FileEditorRichText_Props = React.ComponentProps<"div"> & {
 };
 
 export function FileEditorRichText(props: FileEditorRichText_Props) {
-	const { nodeId, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot, ...rest } = props;
+	const { nodeId, editable, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot, ...rest } =
+		props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -959,6 +972,7 @@ export function FileEditorRichText(props: FileEditorRichText_Props) {
 				<FileEditorRichTextInner
 					filesYjs={filesYjs}
 					nodeId={nodeId}
+					editable={editable}
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
 					toolbarPortalHost={toolbarPortalHost}

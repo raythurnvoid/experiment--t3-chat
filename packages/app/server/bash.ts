@@ -2095,7 +2095,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			).toBe(true);
 			expect(
 				runAction.mock.calls.some(
-					([ref]) => function_name_of(ref) === "files_nodes:get_file_last_available_markdown_content_by_path",
+					([ref]) => function_name_of(ref) === "files_nodes_content:get_file_last_available_markdown_content_by_path",
 				),
 			).toBe(false);
 		});
@@ -2159,7 +2159,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).toContain(`${test_db_files_mount}/docs/unmaterialized.md`);
 			expect(
 				runAction.mock.calls.some(
-					([ref]) => function_name_of(ref) === "files_nodes:get_file_last_available_markdown_content_by_path",
+					([ref]) => function_name_of(ref) === "files_nodes_content:get_file_last_available_markdown_content_by_path",
 				),
 			).toBe(false);
 		});
@@ -2304,7 +2304,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "r2:get_asset_by_id")).toBe(false);
 			expect(
 				runner.runAction.mock.calls.some(
-					([ref]) => function_name_of(ref) === "files_nodes:get_file_last_available_markdown_content_by_path",
+					([ref]) => function_name_of(ref) === "files_nodes_content:get_file_last_available_markdown_content_by_path",
 				),
 			).toBe(false);
 		});
@@ -5580,7 +5580,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 			let swapped = false;
 			runner.runAction.mockImplementation(async (ref, actionArgs) => {
-				if (!swapped && function_name_of(ref) === "files_nodes:get_file_last_available_markdown_content_by_path") {
+				if (!swapped && function_name_of(ref) === "files_nodes_content:get_file_last_available_markdown_content_by_path") {
 					swapped = true;
 					await runner.t.run(async (ctx) => {
 						await ctx.db.patch("files_nodes", sourceId, {
@@ -6459,7 +6459,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				),
 			).toBe(false);
 			expect(
-				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:create_file_by_path"),
+				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path"),
 			).toBe(false);
 		});
 
@@ -6475,7 +6475,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				expect(result.stderr).toContain("Agent mode");
 			}
 			expect(
-				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:create_file_by_path"),
+				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path"),
 			).toBe(false);
 			expect(await list_pending_updates(runner)).toHaveLength(0);
 		});
@@ -6611,7 +6611,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(dotted.stderr).toContain("app file names are normalized");
 			expect(dotted.stderr).toContain(`${test_db_files_mount}/hidden.md`);
 			expect(
-				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:create_file_by_path"),
+				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path"),
 			).toBe(false);
 			expect(await list_pending_updates(runner)).toHaveLength(0);
 
@@ -7376,7 +7376,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				throw new Error("expected the runner runAction spy to have an implementation");
 			}
 			runner.runAction.mockImplementation(async (ref, actionArgs) => {
-				if (function_name_of(ref) === "files_nodes:create_file_by_path") {
+				if (function_name_of(ref) === "files_nodes_content:create_file_by_path") {
 					await runner.t.run(async (ctx) => {
 						await seed_organization_node(
 							ctx,

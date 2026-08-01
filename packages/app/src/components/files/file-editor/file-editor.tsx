@@ -7,7 +7,7 @@ import { FileEditorPlainTextSkeleton } from "./file-editor-plain-text/file-edito
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, sx } from "@/lib/utils.ts";
 import { FileEditorDiff } from "./file-editor-diff/file-editor-diff.tsx";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
@@ -357,6 +357,7 @@ type FileEditorRender_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	editorMode: FileEditor_Mode;
+	editable: boolean;
 	topSafeArea?: number;
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
@@ -372,6 +373,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		nodeId,
 		pendingUpdateId,
 		editorMode,
+		editable,
 		topSafeArea,
 		presenceStore,
 		commentsPortalHost,
@@ -398,6 +400,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		return (
 			<FileEditorRichText
 				nodeId={nodeId}
+				editable={editable}
 				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
@@ -486,6 +489,15 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		topViewZoneSlot,
 	} = props;
 
+	// The backend already refuses a read-only role's writes; the editor has to know too, so a viewer
+	// gets contenteditable=false instead of keystrokes that never save. Anything except `true` reads
+	// as read-only, including while the answer loads.
+	const { membershipId } = AppTenantProvider.useContext();
+	const canWrite = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
+		membershipId,
+		nodeId,
+	});
+
 	const handleDiffExit = useFn(() => {
 		onEditorModeChange("rich_text_editor");
 		onDiffExit?.();
@@ -557,6 +569,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 							nodeId={nodeId}
 							pendingUpdateId={pendingUpdateId}
 							editorMode={editorMode}
+							editable={canWrite === true}
 							topSafeArea={topSafeArea}
 							presenceStore={presenceStore}
 							commentsPortalHost={commentsPortalHost}

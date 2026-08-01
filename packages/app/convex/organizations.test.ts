@@ -2130,6 +2130,166 @@ describe("invite_user_to_organization_workspace", () => {
 		expect(membership).toBeNull();
 	});
 
+	test("lets a limited manager send invites that hand out no role", async () => {
+		const t = test_convex();
+		const [ownerId, managerId, existingMemberId, assignedUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-noop-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-noop-manager" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-noop-existing" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-noop-assigned" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, managerId, existingMemberId, assignedUserId] });
+
+		const created = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "invite-noop-team",
+				now: Date.now(),
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		// The caller's role can manage members and nothing else, so it could never hand out what
+		// `member` grants. Both invites below write no role at all, so they must not be refused for it.
+		const sideWorkspaceId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const managerRoleId = await ctx.db.insert("access_control_roles", {
+				organizationId: created._yay!.organizationId,
+				name: "People ops",
+				normalizedName: "people ops",
+				description: "",
+				permissions: ["organization.members.manage"],
+				createdBy: ownerId,
+				createdAt: now,
+				updatedAt: now,
+			});
+
+			// The invited user's existing organization role carries no workspace-scoped permission, so
+			// the invite raises nothing the other invite ceilings would weigh.
+			const assignedRoleId = await ctx.db.insert("access_control_roles", {
+				organizationId: created._yay!.organizationId,
+				name: "People ops junior",
+				normalizedName: "people ops junior",
+				description: "",
+				permissions: ["organization.members.manage"],
+				createdBy: ownerId,
+				createdAt: now,
+				updatedAt: now,
+			});
+
+			for (const [userId, role] of [
+				[managerId, managerRoleId],
+				[existingMemberId, null],
+				[assignedUserId, assignedRoleId],
+			] as const) {
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: created._yay!.organizationId,
+					workspaceId: created._yay!.defaultWorkspaceId,
+					userId,
+					active: true,
+					updatedAt: now,
+				});
+				if (role) {
+					await access_control_db_ensure_role_assignment(ctx, {
+						organizationId: created._yay!.organizationId,
+						workspaceId: created._yay!.defaultWorkspaceId,
+						userId,
+						role,
+						now,
+					});
+				}
+			}
+
+			const workspace = await organizations_db_create_workspace(ctx, {
+				userId: ownerId,
+				organizationId: created._yay!.organizationId,
+				name: "invite-noop-side",
+				description: "",
+				now,
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return { sideWorkspaceId: workspace._yay.workspaceId, assignedRoleId };
+		});
+
+		const manager = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: managerId,
+			name: "Manager",
+			email: "invite-noop-manager@test.local",
+		});
+
+		// Already in the requested workspace: the handler answers yes and writes nothing, so there is
+		// no role to weigh against the caller.
+		const repeatInvite = await manager.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: created._yay!.organizationId,
+			workspaceId: created._yay!.defaultWorkspaceId,
+			userIdToAdd: existingMemberId,
+		});
+		expect(repeatInvite._nay).toBeUndefined();
+
+		const existingMemberAssignment = await t.run((ctx) =>
+			ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", created._yay!.organizationId)
+						.eq("workspaceId", created._yay!.defaultWorkspaceId)
+						.eq("userId", existingMemberId),
+				)
+				.first(),
+		);
+		expect(existingMemberAssignment).toBeNull();
+
+		await t.run(async (ctx) => {
+			await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
+				name: "organizations_write",
+				key: managerId,
+			});
+		});
+
+		// Already holding a role: this invite keeps it, so `member` is never handed out and the caller
+		// does not need to hold what `member` grants.
+		const sideInvite = await manager.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: created._yay!.organizationId,
+			workspaceId: sideWorkspaceId.sideWorkspaceId,
+			userIdToAdd: assignedUserId,
+		});
+		expect(sideInvite._nay).toBeUndefined();
+
+		const afterSideInvite = await t.run(async (ctx) => {
+			const [membership, assignment] = await Promise.all([
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_active_user_organization_workspace", (q) =>
+						q
+							.eq("active", true)
+							.eq("userId", assignedUserId)
+							.eq("organizationId", created._yay!.organizationId)
+							.eq("workspaceId", sideWorkspaceId.sideWorkspaceId),
+					)
+					.first(),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_organization_workspace_user", (q) =>
+						q
+							.eq("organizationId", created._yay!.organizationId)
+							.eq("workspaceId", created._yay!.defaultWorkspaceId)
+							.eq("userId", assignedUserId),
+					)
+					.first(),
+			]);
+			return { membership, assignment };
+		});
+		expect(afterSideInvite.membership).not.toBeNull();
+		expect(afterSideInvite.assignment?.role).toBe(sideWorkspaceId.assignedRoleId);
+	});
+
 	test("rejects invites from regular organization members", async () => {
 		const t = test_convex();
 		const [ownerId, memberId, invitedUserId] = await t.run(async (ctx) =>

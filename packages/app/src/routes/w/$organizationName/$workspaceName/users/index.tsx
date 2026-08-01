@@ -512,6 +512,10 @@ const RouteUsersInviteModal = memo(function RouteUsersInviteModal(props: RouteUs
 							<MyButton
 								type="button"
 								variant="outline"
+								// The trigger's only text is the workspace it currently holds, and `combobox` is not a
+								// name-from-content role, so without this a screen reader announces it with no name at
+								// all. Which workspace this picks decides which membership the invite writes.
+								aria-label="Workspace to invite into"
 								className={"RouteUsersInviteModal-workspace-trigger" satisfies RouteUsersInviteModal_ClassNames}
 							>
 								<span>{invitedWorkspace?.name ?? "Select workspace"}</span>

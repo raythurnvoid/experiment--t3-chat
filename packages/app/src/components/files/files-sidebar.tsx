@@ -446,8 +446,10 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	kind: files_TreeItem["kind"];
 	label: string;
 	archiveOperationId: string | undefined;
+	canCreate: boolean;
 	canRename: boolean;
 	canShare: boolean;
+	canArchive: boolean;
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
 	expandedFolderActionsVisible: boolean;
@@ -471,8 +473,10 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		kind,
 		label,
 		archiveOperationId,
+		canCreate,
 		canRename,
 		canShare,
+		canArchive,
 		canExpandSubtree,
 		canCollapseSubtree,
 		expandedFolderActionsVisible,
@@ -522,6 +526,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 										("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
 								)}
 								aria-label={`Add file to ${label}`}
+								disabled={!canCreate}
 								hideOnClick
 								onClick={onCreateFile}
 							>
@@ -539,6 +544,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 										("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
 								)}
 								aria-label={`Add folder to ${label}`}
+								disabled={!canCreate}
 								hideOnClick
 								onClick={onCreateFolder}
 							>
@@ -618,6 +624,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 					<MyMenuItemsGroup separator>
 						<MyMenuItem
 							variant={isArchived ? "default" : "destructive"}
+							disabled={!canArchive}
 							hideOnClick
 							onClick={handleArchiveUnarchiveClick}
 						>
@@ -983,6 +990,7 @@ type FilesSidebarTreeItemActions_Props = {
 	isPending: boolean;
 	isFocused: boolean;
 	canCreateChildren: boolean;
+	canCreate: boolean;
 	onCreateFile: FilesSidebarTreeItemSecondaryAction_Props["onClick"];
 	onCreateFolder: FilesSidebarTreeItemSecondaryAction_Props["onClick"];
 };
@@ -990,7 +998,7 @@ type FilesSidebarTreeItemActions_Props = {
 const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 	props: FilesSidebarTreeItemActions_Props,
 ) {
-	const { label, isPending, isFocused, canCreateChildren, onCreateFile, onCreateFolder } = props;
+	const { label, isPending, isFocused, canCreateChildren, canCreate, onCreateFile, onCreateFolder } = props;
 
 	return (
 		<div
@@ -1004,14 +1012,14 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 						kind="file"
 						label={label}
 						isActive={isFocused}
-						disabled={isPending}
+						disabled={isPending || !canCreate}
 						onClick={onCreateFile}
 					/>
 					<FilesSidebarTreeItemSecondaryActionCreateFile
 						kind="folder"
 						label={label}
 						isActive={isFocused}
-						disabled={isPending}
+						disabled={isPending || !canCreate}
 						onClick={onCreateFolder}
 					/>
 				</>
@@ -1228,11 +1236,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	const canCollapseSubtree = useVal(
 		() => itemData.kind === "folder" && isExpanded && item.getChildren().some((child) => child.isExpanded()),
 	);
-	const canRename = files_is_node(itemData);
-	// The synthetic root is not a real node, so there is nothing to share it with. Only the node that
-	// carries the restriction is marked: everything under it would repeat the same thing on every
-	// row, and the folder above already says it.
-	const canShare = files_is_node(itemData);
 	const isRestricted = files_is_node(itemData) && itemData.restrictedScopeNodeId === itemData._id;
 
 	const ancestorIds = useVal(() => {
@@ -1275,6 +1278,20 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		(pendingUpdates ?? []).some(
 			(pendingUpdate) => pendingUpdate.fileNodeId === itemId && pendingUpdate.eagerCreated != null,
 		);
+
+	// The same server question every write mutation asks first (`authorize_file_write`): may this
+	// user write at this node? Anything except `true` keeps the write controls disabled, so nothing
+	// here is clickable only to be refused by the backend.
+	const writePermission = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
+		membershipId,
+		nodeId: files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : files_ROOT_ID,
+	});
+	const canWrite = writePermission === true;
+	const canRename = files_is_node(itemData) && canWrite;
+	// The synthetic root is not a real node, so there is nothing to share it with. Only the node that
+	// carries the restriction is marked: everything under it would repeat the same thing on every
+	// row, and the folder above already says it.
+	const canShare = files_is_node(itemData) && canWrite;
 
 	const label = `${itemData.name}${isAddedFile ? " added" : ""}${isRestricted ? " restricted" : ""}${isArchived ? " archived" : ""}`;
 
@@ -1460,6 +1477,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 							isPending={isPending}
 							isFocused={isFocused}
 							canCreateChildren={itemData.kind === "folder"}
+							canCreate={canWrite}
 							onCreateFile={handleCreateFileClick}
 							onCreateFolder={handleCreateFolderClick}
 						/>
@@ -1477,8 +1495,10 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					kind={itemData.kind}
 					label={label}
 					archiveOperationId={itemData.archiveOperationId}
+					canCreate={canWrite}
 					canRename={canRename}
 					canShare={canShare}
+					canArchive={canWrite}
 					canExpandSubtree={canExpandSubtree}
 					canCollapseSubtree={canCollapseSubtree}
 					expandedFolderActionsVisible={expandedFolderActionsVisible}

@@ -20,6 +20,7 @@ import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_has_permission,
 	access_control_db_resolve_effective_permissions,
+	access_control_db_resolve_role_refs,
 	access_control_db_role_file_grant_caller_cannot_give,
 } from "./access_control.ts";
 import { access_control_PERMISSION_CATALOG, access_control_SYSTEM_ROLE_MATRIX } from "../shared/access-control.ts";
@@ -884,25 +885,6 @@ export const invite_user_to_organization_workspace = mutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		// An invite gives out a role, so it follows the same rule as `set_user_role`: the invited role
-		// must be one the inviter could give. Without this, someone whose role only manages members
-		// could invite an account of their own and give it full read and write access.
-		if (callerPermissions !== "all") {
-			const missing = access_control_SYSTEM_ROLE_MATRIX.member.permissions.find(
-				(permission) => !callerPermissions.has(permission),
-			);
-			if (missing) {
-				// The message names the role, unlike the similar errors in `access_control.ts`. An invite
-				// takes no role argument, so the caller never chose this role and cannot choose another.
-				return Result({
-					_nay: {
-						message: `You cannot invite someone as ${access_control_SYSTEM_ROLE_MATRIX.member.label}, because that role grants "${access_control_PERMISSION_CATALOG[missing].label}"`,
-					},
-				});
-			}
-
-		}
-
 		// From here down the caller is a member with the right permission, so looking up the invited
 		// user tells them nothing they could not already see on the members page.
 		let userIdToAdd = args.userIdToAdd ?? null;
@@ -1037,6 +1019,24 @@ export const invite_user_to_organization_workspace = mutation({
 					)
 					.first());
 			if (assignsMemberRole) {
+				// An invite gives out a role, so it follows the same rule as `set_user_role`: the invited role
+				// must be one the inviter could give. Without this, someone whose role only manages members
+				// could invite an account of their own and give it full read and write access. Weighed only
+				// here, when the invite really hands out `member`: an invitee who is already in the workspace,
+				// or who keeps a role they already have, receives nothing this check could refuse.
+				const missing = access_control_SYSTEM_ROLE_MATRIX.member.permissions.find(
+					(permission) => !callerPermissions.has(permission),
+				);
+				if (missing) {
+					// The message names the role, unlike the similar errors in `access_control.ts`. An invite
+					// takes no role argument, so the caller never chose this role and cannot choose another.
+					return Result({
+						_nay: {
+							message: `You cannot invite someone as ${access_control_SYSTEM_ROLE_MATRIX.member.label}, because that role grants "${access_control_PERMISSION_CATALOG[missing].label}"`,
+						},
+					});
+				}
+
 				const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
 					organization,
 					defaultWorkspaceId,
@@ -1050,6 +1050,42 @@ export const invite_user_to_organization_workspace = mutation({
 							message: `You cannot invite someone as ${access_control_SYSTEM_ROLE_MATRIX.member.label}: that role is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
 						},
 					});
+				}
+			}
+
+			// The role this invite gives is not the only role the invitee ends up holding here. A file
+			// grant only works for a member of the workspace it lives in, so writing the membership below
+			// is what switches on every grant naming a role they already have. The permission comparison
+			// above cannot see those: a role carries files its permission list says nothing about.
+			//
+			// Weighed per workspace this invite really joins them to. The default workspace is checked
+			// only when its membership is new too, because an invite that writes nothing there switches
+			// nothing on there. For that one the helper widens to every workspace, the same way the
+			// `member` check above does: a role held on the default workspace is the organization role.
+			const joinedWorkspaceIds =
+				isDefaultWorkspace || existingHomeMembership ? [workspace._id] : [workspace._id, defaultWorkspaceId];
+			for (const joinedWorkspaceId of joinedWorkspaceIds) {
+				const heldRoles = await access_control_db_resolve_role_refs(ctx, {
+					organizationId: organization._id,
+					workspaceId: joinedWorkspaceId,
+					defaultWorkspaceId,
+					userId: userIdToAdd,
+				});
+				for (const heldRole of heldRoles) {
+					const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
+						organization,
+						defaultWorkspaceId,
+						workspaceId: joinedWorkspaceId,
+						role: heldRole,
+						userId: userAuth.id,
+					});
+					if (blockingGrant) {
+						return Result({
+							_nay: {
+								message: `You cannot invite this member: a role they already have is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
+							},
+						});
+					}
 				}
 			}
 		}

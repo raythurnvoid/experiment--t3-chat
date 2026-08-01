@@ -4461,6 +4461,159 @@ describe("file sharing", () => {
 		expect(invitedAfterShare._nay).toBeUndefined();
 	});
 
+	test("an invite is weighed against the files the invitee's own role already carries", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "invite-held-role",
+			suffix: "invite-held-role",
+		});
+
+		const bobId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-invite-held-role-bob" });
+		const sideWorkspaceId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const workspace = await organizations_db_create_workspace(ctx, {
+				userId: fixture.ownerId,
+				organizationId: fixture.organizationId,
+				name: "payroll-side",
+				description: "",
+				now,
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+			// Bob is in the organization but not in the side workspace: that membership is what the
+			// invite writes, and what switches his role's grant on there.
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				userId: bobId,
+				active: true,
+				updatedAt: now,
+			});
+			// The inviter IS in the side workspace, so the refusal below is about the folder and not
+			// about her being a stranger to that workspace.
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: workspace._yay.workspaceId,
+				userId: fixture.memberId,
+				active: true,
+				updatedAt: now,
+			});
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return workspace._yay.workspaceId;
+		});
+
+		const ownerSideMembershipId = await access_control_test_read_membership_id(t, {
+			organizationId: fixture.organizationId,
+			workspaceId: sideWorkspaceId,
+			userId: fixture.ownerId,
+		});
+
+		const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: ownerSideMembershipId,
+			parentId: files_ROOT_ID,
+			path: "payroll",
+		});
+		expect(folder._nay).toBeUndefined();
+		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: ownerSideMembershipId,
+			nodeId: folder._yay!.nodeId,
+		});
+		expect(restricted._nay).toBeUndefined();
+
+		const auditorsRole = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "Auditors",
+			description: "",
+			permissions: ["content.read"],
+		});
+		expect(auditorsRole._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: ownerSideMembershipId,
+			nodeId: folder._yay!.nodeId,
+			principal: { kind: "role", role: auditorsRole._yay!.roleId },
+			level: "read",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		// Bob already holds that role, so the invite hands out no role at all and the `member` ceiling
+		// never runs. His own role is the thing the membership switches on.
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const bobAssigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: bobId,
+			role: auditorsRole._yay!.roleId,
+		});
+		expect(bobAssigned._nay).toBeUndefined();
+
+		// The inviter can manage members and holds everything Bob's role holds, so the permission-list
+		// comparison passes and only the file-grant ceiling can refuse.
+		const inviterRole = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "People ops",
+			description: "",
+			permissions: ["organization.members.manage", "content.read", "content.write"],
+		});
+		expect(inviterRole._nay).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const inviterAssigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: fixture.memberId,
+			role: inviterRole._yay!.roleId,
+		});
+		expect(inviterAssigned._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const invited = await fixture.asMember.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: fixture.organizationId,
+			workspaceId: sideWorkspaceId,
+			userIdToAdd: bobId,
+		});
+		expect(invited._nay?.message).toContain("shared on a file");
+
+		// Read the database back. A refusal that returns `_nay` still commits whatever it wrote first.
+		const bobSideMembership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", bobId)
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", sideWorkspaceId),
+				)
+				.first(),
+		);
+		expect(bobSideMembership).toBeNull();
+
+		// Control, and a non-owner one: once the inviter can open the folder herself, the same invite
+		// goes through. An owner arm would prove nothing, because the ceiling only runs for a caller
+		// who is not the owner.
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const sharedWithInviter = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: ownerSideMembershipId,
+			nodeId: folder._yay!.nodeId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "read",
+		});
+		expect(sharedWithInviter._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const invitedAfterShare = await fixture.asMember.mutation(
+			api.organizations.invite_user_to_organization_workspace,
+			{
+				organizationId: fixture.organizationId,
+				workspaceId: sideWorkspaceId,
+				userIdToAdd: bobId,
+			},
+		);
+		expect(invitedAfterShare._nay).toBeUndefined();
+	});
+
 	test("someone given Can manage on a folder cannot share it with a role", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -4529,6 +4682,89 @@ describe("file sharing", () => {
 			level: "read",
 		});
 		expect(sharedByRoleManager._nay).toBeUndefined();
+	});
+
+	test("someone given Can manage may lower a role's level but not raise it", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "share-role-lower",
+			suffix: "share-role-lower",
+		});
+		const { folderId } = await seed_restricted_folder(t, fixture, { name: "payroll" });
+
+		// The role on the list. Its permission list does not matter here; only its level on this
+		// folder does.
+		const payrollRole = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "Payroll",
+			description: "",
+			permissions: ["workspace.create"],
+		});
+		expect(payrollRole._nay).toBeUndefined();
+
+		const sharedWithRole = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "role", role: payrollRole._yay!.roleId },
+			level: "write",
+		});
+		expect(sharedWithRole._nay).toBeUndefined();
+
+		// A plain member given "Can manage" on the folder: they may run its list, but they cannot
+		// manage roles, so they may not raise what a role gets.
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const sharedWithMallory = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "manage",
+		});
+		expect(sharedWithMallory._nay).toBeUndefined();
+
+		// Lowering an existing role row hands out nothing, so it asks for no role management, the same
+		// way removing the row asks for none.
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const lowered = await fixture.asMember.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: folderId,
+			principal: { kind: "role", role: payrollRole._yay!.roleId },
+			level: "read",
+		});
+		expect(lowered._nay).toBeUndefined();
+
+		// Setting the level the role already has changes nothing either.
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const repeated = await fixture.asMember.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: folderId,
+			principal: { kind: "role", role: payrollRole._yay!.roleId },
+			level: "read",
+		});
+		expect(repeated._nay).toBeUndefined();
+
+		// Raising it is handing the role out, and still needs role management.
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const raised = await fixture.asMember.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: folderId,
+			principal: { kind: "role", role: payrollRole._yay!.roleId },
+			level: "write",
+		});
+		expect(raised._nay?.message).toContain("cannot share with a role");
+
+		// The grants hold the lowered level: read only.
+		const roleGrants = await t.run((ctx) =>
+			ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_role_workspace_resource", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("principalKind", "role")
+						.eq("role", payrollRole._yay!.roleId),
+				)
+				.collect(),
+		);
+		expect(roleGrants.map((grant) => grant.permission)).toEqual(["content.read"]);
 	});
 
 	test("editing a role does not hand out the files shared with it", async () => {
@@ -4899,6 +5135,146 @@ describe("file sharing", () => {
 			level: "read",
 		});
 		expect(gaveView._nay).toBeUndefined();
+	});
+
+	test("a role grant in a workspace the caller cannot enter does not let them hand it out", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "outsider-ceiling-org",
+			suffix: "outsider-ceiling",
+		});
+
+		// Alice manages roles for the organization. Bob is an ordinary member. Neither is the owner,
+		// and only Bob is put in the side workspace below.
+		const [aliceId, bobId] = await Promise.all([
+			access_control_test_bootstrap_user(t, { clerkUserId: "clerk-outsider-ceiling-alice" }),
+			access_control_test_bootstrap_user(t, { clerkUserId: "clerk-outsider-ceiling-bob" }),
+		]);
+
+		const sideWorkspaceId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const workspace = await organizations_db_create_workspace(ctx, {
+				userId: fixture.ownerId,
+				organizationId: fixture.organizationId,
+				name: "payroll-side",
+				description: "",
+				now,
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+			for (const userId of [aliceId, bobId]) {
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					userId,
+					active: true,
+					updatedAt: now,
+				});
+			}
+			// Bob is in the side workspace. Alice is not, and that is the whole test.
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: workspace._yay.workspaceId,
+				userId: bobId,
+				active: true,
+				updatedAt: now,
+			});
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return workspace._yay.workspaceId;
+		});
+
+		const ownerSideMembershipId = await access_control_test_read_membership_id(t, {
+			organizationId: fixture.organizationId,
+			workspaceId: sideWorkspaceId,
+			userId: fixture.ownerId,
+		});
+
+		const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: ownerSideMembershipId,
+			parentId: files_ROOT_ID,
+			path: "payroll",
+		});
+		expect(folder._nay).toBeUndefined();
+		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: ownerSideMembershipId,
+			nodeId: folder._yay!.nodeId,
+		});
+		expect(restricted._nay).toBeUndefined();
+
+		// The role Alice holds is also the role the folder is shared with. So the permission check,
+		// asked about Alice directly, finds her own role grant and answers yes — even though no screen
+		// in the product would ever show her that folder, because she cannot enter that workspace.
+		const auditorsRole = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "Auditors",
+			description: "",
+			permissions: ["content.read", "organization.members.manage"],
+		});
+		expect(auditorsRole._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: ownerSideMembershipId,
+			nodeId: folder._yay!.nodeId,
+			principal: { kind: "role", role: auditorsRole._yay!.roleId },
+			level: "read",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const aliceGotRole = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: aliceId,
+			role: auditorsRole._yay!.roleId,
+		});
+		expect(aliceGotRole._nay).toBeUndefined();
+
+		const asAlice = access_control_test_identity(t, aliceId);
+		await access_control_test_reset_write_rate_limit(t, aliceId);
+		const handedOut = await asAlice.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: bobId,
+			role: auditorsRole._yay!.roleId,
+		});
+		expect(handedOut._nay?.message).toContain(access_control_PERMISSION_CATALOG["content.read"].label);
+
+		// Nothing was written, so Bob really did not get the role.
+		const bobAssignment = await t.run((ctx) =>
+			ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.defaultWorkspaceId)
+						.eq("userId", bobId),
+				)
+				.first(),
+		);
+		expect(bobAssignment).toBeNull();
+
+		// Control: put Alice in that workspace and the same call goes through. Without this the test
+		// would pass against a check that refused every role carrying a file.
+		await t.run(async (ctx) => {
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: sideWorkspaceId,
+				userId: aliceId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+		});
+
+		await access_control_test_reset_write_rate_limit(t, aliceId);
+		const handedOutAsMember = await asAlice.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: bobId,
+			role: auditorsRole._yay!.roleId,
+		});
+		expect(handedOutAsMember._nay).toBeUndefined();
 	});
 
 	test("a node from another workspace is not found, even for the owner", async () => {

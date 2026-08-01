@@ -125,8 +125,14 @@ async function resolve_role_permissions(
  *
  * A role given on the default workspace is the organization role and works in every workspace, so
  * that case has to weigh grants from every workspace, not only the one being written. Each grant is
- * judged in the workspace it lives in, so a caller who is not a member there simply fails the check
- * — which is right: nobody hands out access where they have none.
+ * judged in the workspace it lives in, and the caller must be a member there: nobody hands out
+ * access where they have none.
+ *
+ * Membership is asked here by hand. Everywhere else a handler proves it before anything looks at a
+ * node, and `has_restricted_file_permission` leans on that — it answers yes to a role grant without
+ * asking. This function calls the permission check directly, so without the membership question a
+ * caller whose own role is on the share list would be judged able to open a file in a workspace they
+ * cannot enter, and would then be allowed to hand it to somebody who can.
  */
 export async function access_control_db_role_file_grant_caller_cannot_give(
 	ctx: QueryCtx | MutationCtx,
@@ -138,6 +144,10 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
 		userId: Id<"users">;
 	},
 ) {
+	if (args.userId === args.organization.ownerUserId) {
+		return null;
+	}
+
 	const isDefaultWorkspace = args.workspaceId === args.defaultWorkspaceId;
 	const grants = await ctx.db
 		.query("access_control_permission_grants")
@@ -158,6 +168,15 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
 		const scopeNodeId = ctx.db.normalizeId("files_nodes", grant.resourceId);
 		if (!scopeNodeId) {
 			continue;
+		}
+
+		const callerMembership = await db_get_active_membership(ctx, {
+			userId: args.userId,
+			organizationId: args.organization._id,
+			workspaceId: grant.workspaceId,
+		});
+		if (!callerMembership) {
+			return grant;
 		}
 
 		const allowed = await access_control_db_has_permission(ctx, {
@@ -276,7 +295,7 @@ function db_get_active_membership(
  * The roles that apply to a user in one workspace: the role they have in that workspace, plus their
  * organization role, which is stored on the default workspace.
  */
-async function resolve_role_refs(
+export async function access_control_db_resolve_role_refs(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -619,7 +638,7 @@ async function has_restricted_file_permission(
 		return false;
 	}
 
-	const refs = await resolve_role_refs(ctx, {
+	const refs = await access_control_db_resolve_role_refs(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		defaultWorkspaceId: args.defaultWorkspaceId,
