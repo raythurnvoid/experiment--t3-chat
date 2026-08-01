@@ -48,9 +48,9 @@ import { crypto_decrypt_secret_value, crypto_encrypt_secret_value, crypto_sha256
 import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_filter_readable_file_nodes, access_control_db_has_permission } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { r2_delete_object, r2_fetch_object_from_bucket, r2_put_object } from "./r2.ts";
+import { r2_delete_object, r2_fetch_object_from_bucket, r2_put_object } from "./r2_client.ts";
 import { files_nodes_db_delete_subtree_batch } from "./files_nodes.ts";
-import type { files_nodes_create_file_node_internal_Result } from "./files_nodes.ts";
+import type { files_nodes_create_file_node_internal_Result } from "./files_nodes_content.ts";
 import { plugins_runtime_db_enqueue_manual_run } from "./plugins_runtime.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
 
@@ -277,7 +277,7 @@ export const register_plugin_version = internalAction({
 		for (const sourceFile of sourceFiles) {
 			// Re-publish of the same (name, version, artifactHash) reuses the version doc, so existing
 			// file rows hit the "This file already exists." continue branch and stay shared.
-			const created = (await ctx.runAction(internal.files_nodes.create_file_node_internal, {
+			const created = (await ctx.runAction(internal.files_nodes_content.create_file_node_internal, {
 				workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 				path: `/${pluginVersionId}/${sourceFile.path}`,
 				rawText: sourceFile.rawText,

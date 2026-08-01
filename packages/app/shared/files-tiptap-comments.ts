@@ -1,7 +1,7 @@
 // Adapted from `references-submodules/liveblocks/packages/liveblocks-react-tiptap/src/comments/CommentsExtension.ts`, plus the
 // thread plugin types that used to live in `src/types.ts`).
 //
-// Keep this module isomorphic: `shared/files.ts` imports the extension to parse and serialize markdown on
+// Keep this module isomorphic: `shared/files-tiptap.ts` imports the extension to parse and serialize markdown on
 // the Convex side, so it must not reach into browser-only or `src/` modules.
 //
 // The string values below are persisted contracts. `files_COMMENT_MARK_TYPE` is the ProseMirror mark name

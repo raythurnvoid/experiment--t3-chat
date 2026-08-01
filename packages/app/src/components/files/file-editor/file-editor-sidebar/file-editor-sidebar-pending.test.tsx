@@ -74,13 +74,21 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 	},
 }));
 
-// Keep the real module. Fake the expensive headless Tiptap decoders and committed-content fetch
+// Keep the real modules. Fake the expensive headless Tiptap decoders and committed-content fetch
 // so action handlers and delete previews receive deterministic Markdown.
 vi.mock("@/lib/files.ts", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/files.ts")>()),
-	files_yjs_doc_create_from_array_buffer_update: (update: unknown) => update,
-	files_yjs_doc_get_markdown: ({ yjsDoc }: { yjsDoc: unknown }) => ({ _yay: yjsDoc as string }),
 	files_fetch_file_yjs_state_and_markdown: (...args: unknown[]) => fetchFileYjsStateAndMarkdownMock(...args),
+}));
+
+vi.mock("../../../../../shared/files-yjs.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../../../shared/files-yjs.ts")>()),
+	files_yjs_doc_create_from_array_buffer_update: (update: unknown) => update,
+}));
+
+vi.mock("../../../../../shared/files-tiptap.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../../../shared/files-tiptap.ts")>()),
+	files_yjs_doc_get_markdown: ({ yjsDoc }: { yjsDoc: unknown }) => ({ _yay: yjsDoc as string }),
 }));
 
 // The real implementation measures text with Pretext font metrics that happy-dom cannot provide;

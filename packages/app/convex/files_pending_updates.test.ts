@@ -12,18 +12,19 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 
 const test = baseTest;
 import { billing_event } from "../server/billing.ts";
-import { r2_create_asset_key } from "./r2.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 import {
 	files_db_reschedule_pending_update_cleanup_for_user,
 	files_ROOT_ID,
 	files_pending_update_has_yjs_content,
 	files_u8_to_array_buffer,
+} from "../server/files.ts";
+import {
 	files_yjs_compute_diff_update_from_yjs_doc,
 	files_yjs_doc_clone,
 	files_yjs_doc_create_from_array_buffer_update,
-	files_yjs_doc_get_markdown,
-	files_yjs_doc_update_from_markdown,
-} from "../server/files.ts";
+} from "../shared/files-yjs.ts";
+import { files_yjs_doc_get_markdown, files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
 import { files_MAX_TEXT_CONTENT_BYTES, files_get_utf8_byte_size } from "../shared/files.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
@@ -9802,7 +9803,7 @@ describe("apply_file_pending_archive", () => {
 			throw new Error(otherDoc._nay.message);
 		}
 		// A file committed into the folder AFTER the proposal is archived too.
-		const lateFile = await t.action(internal.files_nodes.create_file_by_path, {
+		const lateFile = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -10703,7 +10704,7 @@ describe("discard_file_pending_structural", () => {
 		});
 
 		// write_file eagerly creates the node and captures the CREATION-time committed sequence.
-		const created = await t.action(internal.files_nodes.create_file_by_path, {
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: membership.userId,
@@ -10798,7 +10799,7 @@ describe("discard_file_pending_structural", () => {
 			return seededMembership;
 		});
 
-		const created = await t.action(internal.files_nodes.create_file_by_path, {
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: membership.userId,
@@ -10868,7 +10869,7 @@ describe("discard_file_pending_structural", () => {
 		});
 
 		// write_file on a deep new path eagerly creates the leaf AND its missing folders.
-		const created = await t.action(internal.files_nodes.create_file_by_path, {
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: membership.userId,
@@ -10944,7 +10945,7 @@ describe("discard_file_pending_structural", () => {
 			return seededMembership;
 		});
 
-		const created = await t.action(internal.files_nodes.create_file_by_path, {
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: membership.userId,
@@ -10963,7 +10964,7 @@ describe("discard_file_pending_structural", () => {
 
 		// A second committed file under /r13c makes that folder non-empty once the deep
 		// branch is discarded away.
-		const sibling = await t.action(internal.files_nodes.create_file_by_path, {
+		const sibling = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: membership.userId,
@@ -11019,7 +11020,7 @@ describe("discard_file_pending_structural", () => {
 			return seededMembership;
 		});
 
-		const created = await t.action(internal.files_nodes.create_file_by_path, {
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: membership.userId,
@@ -11074,7 +11075,7 @@ describe("discard_file_pending_structural", () => {
 			});
 			return userId;
 		});
-		const otherFile = await t.action(internal.files_nodes.create_file_by_path, {
+		const otherFile = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: otherUserId,
@@ -11138,7 +11139,7 @@ describe("discard_file_pending_structural", () => {
 			name: "Test User",
 		});
 
-		const created = await t.action(internal.files_nodes.create_file_by_path, {
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: membership.userId,
@@ -13170,7 +13171,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 		});
 
 		// write_file on a deep new path eagerly creates the leaf AND its missing folders.
-		const created = await t.action(internal.files_nodes.create_file_by_path, {
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: membership.userId,
@@ -13519,7 +13520,7 @@ describe("reads behind a pure-move row", () => {
 
 		// The markdown state read returns the committed content but still reports the
 		// structural row's id, so write_file/edit_file mix onto it.
-		const markdownState = await t.query(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
+		const markdownState = await t.query(internal.files_nodes_content.get_file_markdown_content_db_state_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -13685,7 +13686,7 @@ describe("pending path overlay reads", () => {
 
 		// The markdown state read composes with the structural row: content resolves from the
 		// committed tree and the row's id is still reported for mixing.
-		const markdownState = await t.query(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
+		const markdownState = await t.query(internal.files_nodes_content.get_file_markdown_content_db_state_by_path, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,

@@ -82,7 +82,7 @@ type api_schemas_<GroupNameInPascalCase>_<api_path_in_snake_case>_body_schema =
 */
 
 import type { ai_chat_http_routes } from "../convex/ai_chat.ts";
-import type { files_http_routes } from "../convex/files_nodes.ts";
+import type { files_http_routes } from "../convex/files_nodes_ai.ts";
 import type { public_api_http_routes } from "../convex/public_api.ts";
 import type { r2_http_routes } from "../convex/r2.ts";
 import type { plugins_runtime_http_routes } from "../convex/plugins_runtime.ts";

@@ -9,11 +9,8 @@ import { useEffect, useState, useImperativeHandle, type Ref } from "react";
 import { ArrowUp } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { useLiveRef } from "@/hooks/utils-hooks.ts";
-import {
-	files_get_tiptap_shared_extensions,
-	files_tiptap_empty_doc_json,
-	files_tiptap_markdown_to_json,
-} from "../../../lib/files.ts";
+import { files_tiptap_empty_doc_json } from "../../../lib/files.ts";
+import { files_get_tiptap_shared_extensions, files_tiptap_markdown_to_json } from "../../../../shared/files-tiptap.ts";
 import {
 	MyInput,
 	MyInputActions,

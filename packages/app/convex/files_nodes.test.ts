@@ -3,12 +3,8 @@ import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
-import {
-	db_insert_file_text_content,
-	files_db_yjs_push_update,
-	files_line_range_from_text,
-	files_tail_lines_from_text,
-} from "./files_nodes.ts";
+import { files_db_yjs_push_update, files_line_range_from_text, files_tail_lines_from_text } from "./files_nodes.ts";
+import { db_insert_file_text_content } from "./files_nodes_content.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	files_MAX_UPLOADS_BYTES,
@@ -17,9 +13,8 @@ import {
 	files_INITIAL_CONTENT,
 	files_get_utf8_byte_size,
 	files_u8_to_array_buffer,
-	files_yjs_doc_create_from_markdown,
-	files_yjs_doc_update_from_markdown,
 } from "../server/files.ts";
+import { files_yjs_doc_create_from_markdown, files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
@@ -1345,7 +1340,7 @@ test("create_markdown_node preserves caller-provided file names", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "extensionless-create-file",
@@ -1372,7 +1367,7 @@ test("create_markdown_node stores Markdown file properties", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "properties.md",
@@ -1416,7 +1411,7 @@ test("create_markdown_node seeds initial Yjs content on the server", async () =>
 		name: "Initial Content User",
 	});
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "server-initial.md",
@@ -1532,7 +1527,7 @@ test("create_markdown_node writes server-seeded initial content to R2", async ()
 		}),
 	);
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "server-initial-materialized.md",
@@ -1620,7 +1615,7 @@ test("create_markdown_node does not publish a file node when initial R2 writes f
 		vi.fn(async () => new Response(null, { status: 500 })),
 	);
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "broken.md",
@@ -1664,7 +1659,7 @@ test("create_markdown_node cleans up R2 objects when initial metadata sync fails
 			r2Writes.delete(key);
 		});
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "sync-failure.md",
@@ -1708,7 +1703,7 @@ test("create_markdown_node cleans up R2 assets when duplicate path rejects after
 			r2Writes.delete(key);
 		});
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "duplicate.md",
@@ -1736,7 +1731,7 @@ test("create_markdown_node cleans up R2 assets when duplicate path rejects after
 	});
 	const baselineKeys = Array.from(r2Writes.keys()).sort();
 
-	const duplicate = await asUser.action(api.files_nodes.create_markdown_node, {
+	const duplicate = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "duplicate.md",
@@ -1813,7 +1808,7 @@ test("create_markdown_node creates missing folders for nested file paths", async
 		name: "Test User",
 	});
 
-	const result = await asUser.action(api.files_nodes.create_markdown_node, {
+	const result = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "notes/workspaces/plan.md",
@@ -1851,7 +1846,7 @@ test("archived nodes can share path with a new active node", async () => {
 	});
 	const duplicateName = "archived-duplicate-allowed.md";
 
-	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -1866,7 +1861,7 @@ test("archived nodes can share path with a new active node", async () => {
 		nodeIds: [createdFile._yay.nodeId],
 	});
 
-	const recreatedFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const recreatedFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		parentId: files_ROOT_ID,
 		path: duplicateName,
 		membershipId: db.membershipId,
@@ -1900,7 +1895,7 @@ test("create_file_by_path can reuse an existing active file", async () => {
 	});
 	const path = "/existing-by-path.md";
 
-	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -1911,7 +1906,7 @@ test("create_file_by_path can reuse an existing active file", async () => {
 	}
 	expect(createdFile._yay.created).toBe(true);
 
-	const reusedFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const reusedFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -1932,7 +1927,7 @@ test("create_file_by_path reports created ancestor folders deepest-first", async
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 
-	const created = await t.action(internal.files_nodes.create_file_by_path, {
+	const created = await t.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -1961,7 +1956,7 @@ test("create_file_by_path reports created ancestor folders deepest-first", async
 describe("files_nodes.remove_eager_created_node_if_safe", () => {
 	async function create_eager_node(t: ReturnType<typeof test_convex>, path: string) {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes.create_file_by_path, {
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -2129,7 +2124,7 @@ describe("files_nodes.remove_eager_created_node_if_safe", () => {
 
 		// A second committed file under /r12a makes that folder non-empty once the deep
 		// branch is compensated away.
-		const sibling = await t.action(internal.files_nodes.create_file_by_path, {
+		const sibling = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -2313,7 +2308,7 @@ describe("files_nodes.remove_eager_created_node_if_safe", () => {
 			});
 			return userId;
 		});
-		const otherFile = await t.action(internal.files_nodes.create_file_by_path, {
+		const otherFile = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: otherUserId,
@@ -2410,7 +2405,7 @@ describe("files_nodes.get_authorized_by_path", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.action(api.files_nodes.create_markdown_node, {
+		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "lookup.md",
@@ -2454,7 +2449,7 @@ describe("files_nodes.get_authorized_by_path", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.action(api.files_nodes.create_markdown_node, {
+		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "gated.md",
@@ -2512,12 +2507,12 @@ describe("files_nodes.get_authorized_by_path", () => {
 			name: "Second User",
 		});
 
-		const firstCreated = await asFirstUser.action(api.files_nodes.create_markdown_node, {
+		const firstCreated = await asFirstUser.action(api.files_nodes_content.create_markdown_node, {
 			membershipId: first.membershipId,
 			parentId: files_ROOT_ID,
 			path: "shared-name.md",
 		});
-		const secondCreated = await asSecondUser.action(api.files_nodes.create_markdown_node, {
+		const secondCreated = await asSecondUser.action(api.files_nodes_content.create_markdown_node, {
 			membershipId: second.membershipId,
 			parentId: files_ROOT_ID,
 			path: "shared-name.md",
@@ -2826,7 +2821,7 @@ test("rename_node preserves caller-provided file names", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "rename-source.md",
@@ -2864,7 +2859,7 @@ test("rename_node creates missing folders for nested file paths", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "rename-path-source.md",
@@ -2957,7 +2952,7 @@ test("rename_node preserves caller-provided file extensions", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "unsupported-source.md",
@@ -3352,7 +3347,7 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 		nodeIds: [db.files.file_root_2._id],
 	});
 
-	const createByPath = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const createByPath = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -3559,7 +3554,7 @@ test("membership-scoped file and yjs APIs reject cross-user membership ids", asy
 	}
 	expect(unauthorizedRename._nay.message).toBe("Unauthorized");
 
-	const createdFile = await asOwner.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asOwner.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "membership-yjs-regression.md",
@@ -3612,7 +3607,7 @@ test("files_tree_write rate limit runs before membership validation", async () =
 	const createdNodeIds: Array<Id<"files_nodes">> = [];
 
 	for (let i = 0; i < 2; i++) {
-		const result = await asUser.action(api.files_nodes.create_markdown_node, {
+		const result = await asUser.action(api.files_nodes_content.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: `tree-rate-limit-${i}.md`,
@@ -3705,7 +3700,7 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 		}
 	}
 
-	const blocked = await asUser.mutation(internal.files_nodes.restore_snapshot, {
+	const blocked = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_1._id,
 		snapshotId: restoreAssets.snapshotId,
@@ -3759,7 +3754,7 @@ test("materialize_file_content writes empty version and Yjs snapshots to R2 and 
 		}),
 	);
 
-	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -3769,7 +3764,7 @@ test("materialize_file_content writes empty version and Yjs snapshots to R2 and 
 		throw new Error(createdFile._nay.message);
 	}
 
-	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		nodeId: createdFile._yay.nodeId,
@@ -3889,7 +3884,7 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 		}),
 	);
 
-	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -3915,7 +3910,7 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 		throw new Error(pushResult._nay.message);
 	}
 
-	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		nodeId: createdFile._yay.nodeId,
@@ -4034,7 +4029,7 @@ async function test_materialize_markdown_file(
 	path: string,
 	markdown: string,
 ) {
-	const created = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const created = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -4052,7 +4047,7 @@ async function test_materialize_markdown_file(
 	});
 	yjsDoc.destroy();
 	if (pushResult._nay) throw new Error(pushResult._nay.message);
-	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		nodeId,
@@ -4105,7 +4100,7 @@ test("materialize_file_content marks over-cap content too large and leaves the n
 		throw new Error(pushResult._nay.message);
 	}
 
-	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		nodeId,
@@ -4172,7 +4167,7 @@ test("materialize_file_content clears the too-large mark once the content fits a
 		throw new Error(pushResult._nay.message);
 	}
 
-	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		nodeId,
@@ -4266,7 +4261,7 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	);
 	const markdown = `# Chunked Document\n\n${paragraphs.join("\n\n")}`;
 
-	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -4292,7 +4287,7 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 		throw new Error(pushResult._nay.message);
 	}
 
-	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		nodeId,
@@ -4946,7 +4941,7 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	expect(search.items.map((item) => item.path)).toContain(path);
 
 	// get_file_last_available_markdown_content_by_path falls into the raw-R2 `.text()` branch for external.
-	const available = await t.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+	const available = await t.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
 		...readScope,
 		userId: db.userId,
 		path,
@@ -4972,7 +4967,7 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	const markdownA = "# Stats Doc\n\nFirst paragraph alpha.\n\nSecond paragraph beta.";
 	const markdownB = `${markdownA}\n\nThird paragraph gamma delta epsilon.\n\nFourth paragraph zeta eta theta iota.`;
 
-	const created = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const created = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -4990,7 +4985,7 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 		sessionId: "stats-edit-A",
 	});
 	if (pushA._nay) throw new Error(pushA._nay.message);
-	const matA = await t.action(internal.files_nodes.materialize_file_content, {
+	const matA = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		nodeId,
@@ -5038,7 +5033,7 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	});
 	yjsDoc.destroy();
 	if (pushB._nay) throw new Error(pushB._nay.message);
-	const matB = await t.action(internal.files_nodes.materialize_file_content, {
+	const matB = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		nodeId,
@@ -5999,7 +5994,7 @@ test("create_file_snapshot_content_url returns a signed R2 URL without fetching 
 		.spyOn(R2.prototype, "getUrl")
 		.mockImplementation(async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`);
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "snapshot-r2.md",
@@ -6064,7 +6059,7 @@ test("create_file_snapshot_content_url fails when a snapshot asset has no R2 key
 		name: "Missing Snapshot R2 User",
 	});
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "missing-snapshot-r2.md",
@@ -6144,7 +6139,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 		}),
 	);
 
-	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -6168,7 +6163,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	if (pushResult._nay) {
 		throw new Error(pushResult._nay.message);
 	}
-	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		nodeId: createdFile._yay.nodeId,
@@ -6205,7 +6200,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 		return { snapshotId };
 	});
 
-	const restoreResult = await asUser.action(api.files_nodes.restore_snapshot_r2, {
+	const restoreResult = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
 		snapshotId,
@@ -6215,7 +6210,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 		throw new Error(restoreResult._nay.message);
 	}
 
-	const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+	const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -6251,7 +6246,7 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 		email: "rate-limit-user@example.com",
 	});
 
-	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "rate-limit.md",
@@ -6337,7 +6332,7 @@ test("yjs_push_update rate limit applies to anonymous JWT identities", async () 
 		name: "Anonymous User",
 	});
 
-	const createdFile = await asAnonymous.action(api.files_nodes.create_markdown_node, {
+	const createdFile = await asAnonymous.action(api.files_nodes_content.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "rate-limit-anonymous.md",
@@ -6378,7 +6373,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 		email: "restore-credits-user@example.com",
 	});
 
-	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -6446,7 +6441,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 		return { snapshotId, currentSnapshotAssetId, restoredSnapshotAssetId };
 	});
 
-	const restoreResult = await asUser.mutation(internal.files_nodes.restore_snapshot, {
+	const restoreResult = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
 		snapshotId: restoreAssets.snapshotId,
@@ -6541,7 +6536,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		email: "restore-billing-user@example.com",
 	});
 
-	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -6595,7 +6590,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		return { snapshotId, currentSnapshotAssetId, restoredSnapshotAssetId };
 	});
 
-	const restoreResult = await asUser.mutation(internal.files_nodes.restore_snapshot, {
+	const restoreResult = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
 		snapshotId: restoreAssets.snapshotId,
@@ -6864,7 +6859,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 			return { mountId, assetId };
 		});
 
-		const result = await t.mutation(internal.files_nodes.create_file_node, {
+		const result = await t.mutation(internal.files_nodes_content.create_file_node, {
 			userId: users_SYSTEM_AUTHOR,
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -6886,7 +6881,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 		const r2Objects = install_r2_object_capture();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 
-		const created = await t.action(internal.files_nodes.create_file_node_internal, {
+		const created = await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: MOUNT_FILE_PATH,
 			rawText: MOUNT_RAW_TEXT,
@@ -7040,7 +7035,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 		install_r2_object_capture();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 
-		const created = await t.action(internal.files_nodes.create_file_node_internal, {
+		const created = await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: MOUNT_FILE_PATH,
 			rawText: MOUNT_RAW_TEXT,
@@ -7084,7 +7079,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 		install_r2_object_capture();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 
-		const created = await t.action(internal.files_nodes.create_file_node_internal, {
+		const created = await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: MOUNT_FILE_PATH,
 			rawText: MOUNT_RAW_TEXT,
@@ -7121,7 +7116,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 		install_r2_object_capture();
 
 		const oversizePath = "/t3-chat/big.txt";
-		const result = await t.action(internal.files_nodes.create_file_node_internal, {
+		const result = await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: oversizePath,
 			rawText: "a".repeat(files_MAX_TEXT_CONTENT_BYTES + 1),

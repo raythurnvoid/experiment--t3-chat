@@ -1679,7 +1679,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			seedIndex: number,
 		) {
 			const { test_mocks } = await import("../convex/setup.test.ts");
-			const { db_insert_file_text_content } = await import("../convex/files_nodes.ts");
+			const { db_insert_file_text_content } = await import("../convex/files_nodes_content.ts");
 			// Deterministic, distinct recency: later seeds are newer.
 			const updatedAt = spec.updatedAt ?? Date.now() - 1_000_000 + seedIndex * 1000;
 			const segments = spec.path.split("/").filter(Boolean);
@@ -1730,7 +1730,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 			let yjsSnapshotAssetFields: { r2Key?: string; size: number } = { size: 0 };
 			if (spec.withRealYjsSnapshot) {
-				const { files_yjs_doc_create_from_markdown } = await import("./files.ts");
+				const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
 				const { encodeStateAsUpdate } = await import("yjs");
 				const yjsDoc = files_yjs_doc_create_from_markdown({ markdown: content });
 				if ("_nay" in yjsDoc) {
@@ -2207,7 +2207,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const runner = await create_bash_runner({
 				extraFiles: [{ path: "/fresh-size.md", content: "tiny base\n" }],
 			});
-			const { files_yjs_doc_create_from_markdown, files_u8_to_array_buffer } = await import("./files.ts");
+			const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
+			const { files_u8_to_array_buffer } = await import("./files.ts");
 			const { encodeStateAsUpdate } = await import("yjs");
 			const baseYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "tiny base" });
 			if ("_nay" in baseYjsDoc) {
@@ -2265,7 +2266,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const runner = await create_bash_runner({
 				extraFiles: [{ path: "/legacy-pending.md", content: "base\n" }],
 			});
-			const { files_yjs_doc_create_from_markdown, files_u8_to_array_buffer } = await import("./files.ts");
+			const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
+			const { files_u8_to_array_buffer } = await import("./files.ts");
 			const { encodeStateAsUpdate } = await import("yjs");
 			const baseYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "base" });
 			if ("_nay" in baseYjsDoc) {
@@ -4419,7 +4421,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const runner = await create_bash_runner({
 				extraFiles: [{ path: "/draft-stat.md", content: "tiny base\n" }],
 			});
-			const { files_yjs_doc_create_from_markdown, files_u8_to_array_buffer } = await import("./files.ts");
+			const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
+			const { files_u8_to_array_buffer } = await import("./files.ts");
 			const { encodeStateAsUpdate } = await import("yjs");
 			const baseYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "tiny base" });
 			if ("_nay" in baseYjsDoc) {
@@ -4912,7 +4915,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const runner = await create_bash_runner({
 				extraFiles: [{ path: "/draft.md", content: "tiny base\n" }],
 			});
-			const { files_yjs_doc_create_from_markdown, files_u8_to_array_buffer } = await import("./files.ts");
+			const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
+			const { files_u8_to_array_buffer } = await import("./files.ts");
 			const { encodeStateAsUpdate } = await import("yjs");
 			const baseYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "tiny base" });
 			if ("_nay" in baseYjsDoc) {
@@ -5660,7 +5664,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(moveRows[0].pendingMove).toMatchObject({ destName: "second.md" });
 
 			// mv after a write_file-style content upsert degrades to one content-plus-move pending update doc.
-			const { files_yjs_doc_create_from_markdown, files_u8_to_array_buffer } = await import("./files.ts");
+			const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
+			const { files_u8_to_array_buffer } = await import("./files.ts");
 			const { encodeStateAsUpdate } = await import("yjs");
 			const baseYjsDoc = files_yjs_doc_create_from_markdown({
 				markdown: "# Readme\nunique-token here\nmore unique-token below",
@@ -7989,7 +7994,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				const mountId = inserted._yay.mountId;
 				await runner.t.run((ctx) => ctx.db.patch("github_mounts", mountId, { lastCommitSha: MOUNT_COMMIT_SHA }));
 				for (const file of files) {
-					const created = (await runner.t.action(internal.files_nodes.create_file_node_internal, {
+					const created = (await runner.t.action(internal.files_nodes_content.create_file_node_internal, {
 						workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 						path: `/${name}/${MOUNT_COMMIT_SHA}${file.path}`,
 						rawText: file.rawText,
@@ -8266,7 +8271,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					}),
 				);
 				for (const file of files) {
-					const created = (await runner.t.action(internal.files_nodes.create_file_node_internal, {
+					const created = (await runner.t.action(internal.files_nodes_content.create_file_node_internal, {
 						workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 						path: `/${pluginVersionId}${file.path}`,
 						rawText: file.rawText,

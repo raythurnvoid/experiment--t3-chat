@@ -19,14 +19,16 @@ import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type {
-	files_nodes_create_file_by_path_Result,
 	files_nodes_create_folder_node_by_path_Result,
 	files_nodes_get_by_path_Result,
-	files_nodes_get_file_last_available_markdown_content_by_path_Result,
 	files_nodes_read_file_content_from_chunks_Result,
 	files_nodes_remove_eager_created_node_if_safe_Result,
 	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
+import type {
+	files_nodes_create_file_by_path_Result,
+	files_nodes_get_file_last_available_markdown_content_by_path_Result,
+} from "../convex/files_nodes_content.ts";
 import type {
 	files_pending_updates_get_by_file_node_Result,
 	files_pending_updates_get_pending_path_overlay_data_Result,
@@ -509,7 +511,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		// The action fallback reconstructs last-available content; the parallel
 		// db file lookup preserves precise missing/folder/unreadable errors.
 		const fileContentPromise = this.ctx.runAction(
-			internal.files_nodes.get_file_last_available_markdown_content_by_path,
+			internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
 			{
 				organizationId: this.ctxData.organizationId,
 				workspaceId: this.ctxData.workspaceId,
@@ -676,7 +678,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		})) as files_nodes_read_file_content_from_chunks_Result;
 		if (!currentContent && entry != null) {
 			currentContent = (await this.ctx.runAction(
-				internal.files_nodes.get_file_last_available_markdown_content_by_path,
+				internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
 				{
 					organizationId,
 					workspaceId,
@@ -716,7 +718,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				);
 			}
 			const creationPath = translated?.kind === "redirected" ? translated.committedPath : dbFilesPath;
-			const created = (await this.ctx.runAction(internal.files_nodes.create_file_by_path, {
+			const created = (await this.ctx.runAction(internal.files_nodes_content.create_file_by_path, {
 				organizationId,
 				workspaceId,
 				userId,
@@ -735,7 +737,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				// A raced creation reused a pre-existing node: re-read so the proposal overwrites
 				// that content instead of pretending the file is new.
 				currentContent = (await this.ctx.runAction(
-					internal.files_nodes.get_file_last_available_markdown_content_by_path,
+					internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
 					{
 						organizationId,
 						workspaceId,

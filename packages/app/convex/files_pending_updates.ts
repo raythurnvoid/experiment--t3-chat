@@ -29,7 +29,7 @@ import {
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
 import { billing_event } from "../server/billing.ts";
-import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
+import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
@@ -47,18 +47,19 @@ import {
 	files_db_list_pending_updates_for_user,
 	files_db_schedule_pending_update_cleanup,
 	files_pending_update_content_of,
-	files_yjs_doc_apply_array_buffer_update,
-	files_yjs_doc_create_from_array_buffer_update,
-	files_yjs_doc_clone,
-	files_yjs_doc_get_markdown,
-	files_yjs_doc_update_from_markdown,
-	files_yjs_compute_diff_update_from_yjs_doc,
 	files_u8_to_array_buffer,
 	files_u8_equals,
 } from "../server/files.ts";
+import {
+	files_yjs_doc_apply_array_buffer_update,
+	files_yjs_doc_create_from_array_buffer_update,
+	files_yjs_doc_clone,
+	files_yjs_compute_diff_update_from_yjs_doc,
+} from "../shared/files-yjs.ts";
+import { files_yjs_doc_get_markdown, files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_MAX_TEXT_CONTENT_BYTES, files_get_utf8_byte_size } from "../shared/files.ts";
-import { r2_fetch_object_from_bucket } from "./r2.ts";
+import { r2_fetch_object_from_bucket } from "./r2_client.ts";
 import { files_metadata_db_delete_pending, files_metadata_db_replace_pending } from "./files_metadata.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 

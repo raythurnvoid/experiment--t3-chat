@@ -34,9 +34,9 @@ import {
 	files_format_size,
 	files_node_has_editable_yjs_state,
 	files_pending_update_has_yjs_content,
-	files_yjs_doc_create_from_array_buffer_update,
-	files_yjs_doc_get_markdown,
 } from "@/lib/files.ts";
+import { files_yjs_doc_create_from_array_buffer_update } from "../../../../../shared/files-yjs.ts";
+import { files_yjs_doc_get_markdown } from "../../../../../shared/files-tiptap.ts";
 import { async_all_settled_with_limit, delay } from "@/lib/async.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { APP_FONT_FAMILY } from "@/lib/ui.tsx";

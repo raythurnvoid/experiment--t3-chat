@@ -5,10 +5,12 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import type {
 	files_nodes_get_by_path_Result,
 	files_nodes_read_file_content_from_chunks_Result,
+} from "../convex/files_nodes.ts";
+import type {
 	files_nodes_read_file_content_stats_Result,
 	files_nodes_read_file_line_range_Result,
 	files_nodes_read_file_tail_lines_Result,
-} from "../convex/files_nodes.ts";
+} from "../convex/files_nodes_content.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { files_node_has_editable_yjs_state } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -285,7 +287,7 @@ export function bash_head_tail_wc_command_create(
 					throw should_never_happen("wc: operand stopped resolving to an app file path", { file });
 				}
 
-				const stats = (await ctx.runAction(internal.files_nodes.read_file_content_stats, {
+				const stats = (await ctx.runAction(internal.files_nodes_content.read_file_content_stats, {
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
@@ -368,7 +370,7 @@ export function bash_head_tail_wc_command_create(
 				if (command === "tail" && lineCountFromStart && lineCount != null) {
 					const startLine = Math.max(1, lineCount);
 					const maxLines = bash_READ_HEAD_LARGE_FILE_MAX_LINES;
-					const result = (await ctx.runAction(internal.files_nodes.read_file_line_range, {
+					const result = (await ctx.runAction(internal.files_nodes_content.read_file_line_range, {
 						organizationId: oversized.pathResolution.ctxData.organizationId,
 						workspaceId: oversized.pathResolution.ctxData.workspaceId,
 						userId: oversized.pathResolution.ctxData.userId,
@@ -420,7 +422,7 @@ export function bash_head_tail_wc_command_create(
 						? `showing ${maxLines} lines (per-page cap); page again to read further`
 						: null;
 				if (command === "head") {
-					const result = (await ctx.runAction(internal.files_nodes.read_file_line_range, {
+					const result = (await ctx.runAction(internal.files_nodes_content.read_file_line_range, {
 						organizationId: oversized.pathResolution.ctxData.organizationId,
 						workspaceId: oversized.pathResolution.ctxData.workspaceId,
 						userId: oversized.pathResolution.ctxData.userId,
@@ -465,7 +467,7 @@ export function bash_head_tail_wc_command_create(
 					return { stdout, stderr: bash_format_multiline_hint("head", notes), exitCode: 0 };
 				}
 
-				const result = (await ctx.runAction(internal.files_nodes.read_file_tail_lines, {
+				const result = (await ctx.runAction(internal.files_nodes_content.read_file_tail_lines, {
 					organizationId: oversized.pathResolution.ctxData.organizationId,
 					workspaceId: oversized.pathResolution.ctxData.workspaceId,
 					userId: oversized.pathResolution.ctxData.userId,

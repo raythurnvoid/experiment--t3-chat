@@ -3,11 +3,13 @@ import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type {
-	files_nodes_create_file_by_path_Result,
 	files_nodes_get_by_path_Result,
-	files_nodes_get_file_last_available_markdown_content_by_path_Result,
 	files_nodes_remove_eager_created_node_if_safe_Result,
 } from "../convex/files_nodes.ts";
+import type {
+	files_nodes_create_file_by_path_Result,
+	files_nodes_get_file_last_available_markdown_content_by_path_Result,
+} from "../convex/files_nodes_content.ts";
 import type { upsert_file_pending_update_internal_action_Result } from "../convex/files_pending_updates.ts";
 import {
 	files_SYNTHETIC_ROOT_FOLDER,
@@ -221,7 +223,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				// Copy what the agent sees: the last available markdown, including the calling
 				// user's own pending overlay on the source file.
 				const sourceContent = (await ctx.runAction(
-					internal.files_nodes.get_file_last_available_markdown_content_by_path,
+					internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
 					{
 						organizationId,
 						workspaceId,
@@ -269,7 +271,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 							};
 						}
 					}
-					const created = (await ctx.runAction(internal.files_nodes.create_file_by_path, {
+					const created = (await ctx.runAction(internal.files_nodes_content.create_file_by_path, {
 						organizationId,
 						workspaceId,
 						userId,

@@ -28,13 +28,9 @@ import {
 } from "../shared/billing.ts";
 import { date_get_day_start_timestamp, date_MS_DAYS_30 } from "../shared/date.ts";
 import { composite_id } from "../shared/shared-utils.ts";
-import {
-	billing_POLAR_METER_EVENT,
-	type billing_Event,
-	billing_event,
-	billing_polar_client,
-} from "../server/billing.ts";
+import { billing_POLAR_METER_EVENT, billing_event, billing_polar_client } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
+import { billing_db_check_credits, billing_ingest_events, billing_pick_billed_user_id } from "./billing_db.ts";
 import {
 	allowed_origins,
 	server_convex_get_user_fallback_to_anonymous,
@@ -71,59 +67,7 @@ export const billing_polar = new Polar<DataModel>(components.polar, {
 	server: POLAR_SERVER,
 });
 
-const billing_workpool_usage_event = new Workpool(components.billing_workpool_usage_event, {
-	maxParallelism: 1,
-	retryActionsByDefault: true,
-	defaultRetryBehavior: {
-		initialBackoffMs: 10 * 60 * 1000,
-		base: 1.2,
-		maxAttempts: Number.POSITIVE_INFINITY,
-	} as const,
-});
-
 // #region check credits
-
-export function billing_pick_billed_user_id(args: {
-	userId: Id<"users">;
-	organization: Pick<Doc<"organizations">, "default" | "billingMode" | "ownerUserId">;
-}) {
-	if (!args.organization.default && args.organization.billingMode === "organization_owner") return args.organization.ownerUserId;
-	return args.userId;
-}
-
-export async function billing_db_check_credits(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		userId: Id<"users">;
-		minimumRequiredCents: number;
-	},
-) {
-	const hasCredits = await ctx.db
-		.query("billing_usage_snapshots")
-		.withIndex("by_user", (q) => q.eq("userId", args.userId))
-		.first()
-		.then(async (usageSnapshot) => {
-			if (!usageSnapshot?.subscription) {
-				return false;
-			}
-
-			const product = await billing_polar.getProduct(ctx, { productId: usageSnapshot.subscription.productId });
-			if (!product) return false;
-
-			const meterBalanceCents = usageSnapshot.meter?.balance ?? 0;
-
-			if (
-				product.name === ("Free" satisfies keyof typeof billing_PRODUCTS) &&
-				meterBalanceCents < args.minimumRequiredCents
-			) {
-				return false;
-			}
-
-			return true;
-		});
-
-	return { hasCredits };
-}
 
 export const check_credits = internalQuery({
 	args: {
@@ -1860,41 +1804,6 @@ export const ingest_anonymous_user_events = internalMutation({
 	},
 });
 
-/** Route app-owned billing events by billed user row: Polar for signed-in payers, local snapshot updates for anonymous payers. */
-export async function billing_ingest_events(
-	ctx: ActionCtx | MutationCtx,
-	args: {
-		billedUserEvents: Array<{
-			event: billing_Event;
-			billedUser: Doc<"users">;
-		}>;
-	},
-) {
-	const anonymousUserEvents: typeof args.billedUserEvents = [];
-	const signedInEvents: Array<billing_Event> = [];
-
-	for (const userEvent of args.billedUserEvents) {
-		if (userEvent.billedUser.clerkUserId == null) {
-			anonymousUserEvents.push(userEvent);
-			continue;
-		}
-
-		signedInEvents.push(userEvent.event);
-	}
-
-	await Promise.all([
-		signedInEvents.length === 0
-			? Promise.resolve()
-			: billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, {
-					events: signedInEvents,
-				}),
-		anonymousUserEvents.length === 0
-			? Promise.resolve()
-			: ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
-					billedUserEvents: anonymousUserEvents,
-				}),
-	]);
-}
 // #endregion event ingestion
 
 // #region admin

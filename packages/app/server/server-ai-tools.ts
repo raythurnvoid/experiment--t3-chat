@@ -657,7 +657,7 @@ export function ai_chat_tool_create_edit_file(
 			}
 
 			const currentFileContent = await ctx.runAction(
-				internal.files_nodes.get_file_last_available_markdown_content_by_path,
+				internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
 				{
 					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,

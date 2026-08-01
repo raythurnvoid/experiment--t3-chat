@@ -658,7 +658,7 @@ export const sync_materialize_file = internalAction({
 		// records the per-job result, so the finalize barrier still advances if this action is hard-terminated
 		// (timeout / infra kill) and never returns. create_file_node_internal already retries write
 		// conflicts internally and returns _nay on handled failures; surface that as a throw to retry/report.
-		const created = await ctx.runAction(internal.files_nodes.create_file_node_internal, {
+		const created = await ctx.runAction(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: args.storedPath,
 			rawText: args.text,

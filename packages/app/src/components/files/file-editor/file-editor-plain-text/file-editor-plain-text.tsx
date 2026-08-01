@@ -1,17 +1,18 @@
 import "./file-editor-plain-text.css";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import {
-	files_yjs_doc_get_markdown,
-	files_yjs_doc_update_from_markdown,
 	files_u8_to_array_buffer,
-	files_yjs_doc_clone,
-	files_yjs_compute_diff_update_from_yjs_doc,
-	files_headless_tiptap_editor_create,
 	files_monaco_create_editor_model,
 	files_fetch_file_yjs_state_and_markdown,
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
 } from "@/lib/files.ts";
+import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../../../../../shared/files-yjs.ts";
+import {
+	files_yjs_doc_get_markdown,
+	files_yjs_doc_update_from_markdown,
+	files_headless_tiptap_editor_create,
+} from "../../../../../shared/files-tiptap.ts";
 import {
 	file_editor_get_size_badge_text,
 	file_editor_get_size_error_message,

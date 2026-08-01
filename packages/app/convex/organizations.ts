@@ -23,7 +23,7 @@ import {
 	access_control_db_role_file_grant_caller_cannot_give,
 } from "./access_control.ts";
 import { access_control_PERMISSION_CATALOG, access_control_SYSTEM_ROLE_MATRIX } from "../shared/access-control.ts";
-import { data_deletion_db_request } from "./data_deletion.ts";
+import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -168,7 +168,7 @@ export async function organizations_db_create(
 	await Promise.all(updates);
 
 	// Seeding the README needs an action (R2 writes), so it runs right after this mutation.
-	await ctx.scheduler.runAfter(0, internal.files_nodes.create_home_file, {
+	await ctx.scheduler.runAfter(0, internal.files_nodes_content.create_home_file, {
 		organizationId,
 		workspaceId: defaultWorkspaceId,
 		userId: args.userId,
@@ -319,7 +319,7 @@ export async function organizations_db_create_workspace(
 	// whose role only has `workspace.create` write files in the workspace they just made.
 
 	// Seeding the README needs an action (R2 writes), so it runs right after this mutation.
-	await ctx.scheduler.runAfter(0, internal.files_nodes.create_home_file, {
+	await ctx.scheduler.runAfter(0, internal.files_nodes_content.create_home_file, {
 		organizationId: args.organizationId,
 		workspaceId,
 		userId: args.userId,

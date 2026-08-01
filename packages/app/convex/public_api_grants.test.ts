@@ -2,7 +2,8 @@ import { describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
-import { files_ROOT_ID, files_u8_to_array_buffer, files_yjs_create_empty_state_update } from "../server/files.ts";
+import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
+import { files_yjs_create_empty_state_update } from "../shared/files-yjs.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 
 async function seed_public_api_grant(args: {

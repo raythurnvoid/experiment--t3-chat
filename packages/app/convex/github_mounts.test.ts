@@ -386,22 +386,22 @@ describe("clear_pending_root_batch", () => {
 		});
 
 		// Seed an active root, a partial pending root, and the prefix-overlapping "t3-chat-extra".
-		await t.action(internal.files_nodes.create_file_node_internal, {
+		await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/${COMMIT_1}/README.md`,
 			rawText: "active content",
 		});
-		await t.action(internal.files_nodes.create_file_node_internal, {
+		await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/${COMMIT_2}/partial.ts`,
 			rawText: "export const partial = 1;\n",
 		});
-		await t.action(internal.files_nodes.create_file_node_internal, {
+		await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/${COMMIT_2}/src/index.ts`,
 			rawText: "export const x = 1;\n",
 		});
-		await t.action(internal.files_nodes.create_file_node_internal, {
+		await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}-extra/keep.md`,
 			rawText: "do not delete me",
@@ -442,7 +442,7 @@ describe("clear_pending_root_batch", () => {
 			pendingCommitSha: COMMIT_1,
 		});
 
-		await t.action(internal.files_nodes.create_file_node_internal, {
+		await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/${COMMIT_1}/README.md`,
 			rawText: "new content\n",
@@ -466,12 +466,12 @@ describe("clear_pending_root_batch", () => {
 			pendingCommitSha: COMMIT_1,
 		});
 
-		await t.action(internal.files_nodes.create_file_node_internal, {
+		await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/${COMMIT_1}/README.md`,
 			rawText: "hello mount\n",
 		});
-		await t.action(internal.files_nodes.create_file_node_internal, {
+		await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/${COMMIT_1}/src/index.ts`,
 			rawText: "export const x = 1;\n",
@@ -502,7 +502,7 @@ describe("clear_pending_root_batch", () => {
 			pendingCommitSha: COMMIT_1,
 		});
 
-		const created = await t.action(internal.files_nodes.create_file_node_internal, {
+		const created = await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/${COMMIT_1}/stale.ts`,
 			rawText: "stale\n",
@@ -533,7 +533,7 @@ describe("clear_pending_root_batch", () => {
 			pendingCommitSha: COMMIT_1,
 		});
 
-		const created = await t.action(internal.files_nodes.create_file_node_internal, {
+		const created = await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/README.md`,
 			rawText: "not sha-nested\n",
@@ -558,17 +558,17 @@ describe("gc_sweep_mount_roots", () => {
 		await t.run((ctx) => ctx.db.patch("github_mounts", mountId, { lastCommitSha: COMMIT_1 }));
 
 		// Active root, in-flight pending root, and an orphan left by an old crashed run.
-		await t.action(internal.files_nodes.create_file_node_internal, {
+		await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/${COMMIT_1}/README.md`,
 			rawText: "active\n",
 		});
-		await t.action(internal.files_nodes.create_file_node_internal, {
+		await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/${COMMIT_2}/README.md`,
 			rawText: "pending\n",
 		});
-		await t.action(internal.files_nodes.create_file_node_internal, {
+		await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/${COMMIT_3}/orphan.ts`,
 			rawText: "orphan\n",
@@ -781,7 +781,7 @@ describe("sync_mount", () => {
 			syncRunId: "crashed-token",
 			pendingCommitSha: COMMIT_1,
 		});
-		await t.action(internal.files_nodes.create_file_node_internal, {
+		await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: `/${MOUNT}/${COMMIT_1}/README.md`,
 			rawText: "partial leftover\n",

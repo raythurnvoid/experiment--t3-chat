@@ -15,7 +15,7 @@ import {
 } from "novel";
 import { cx } from "class-variance-authority";
 import { common, createLowlight } from "lowlight";
-import { files_get_tiptap_shared_extensions } from "@/lib/files.ts";
+import { files_get_tiptap_shared_extensions } from "../../../../../shared/files-tiptap.ts";
 
 //TODO I am using cx here to get tailwind autocomplete working, idk if someone else can write a regex to just capture the class key in objects
 const decorationHighlight = DecorationHighlight;

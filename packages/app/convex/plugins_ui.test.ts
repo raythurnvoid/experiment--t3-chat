@@ -5,10 +5,11 @@ import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { files_db_yjs_push_update, files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
-import { r2_get_bucket } from "./r2.ts";
+import { r2_get_bucket } from "./r2_client.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
-import { files_u8_to_array_buffer, files_yjs_doc_update_from_markdown } from "../server/files.ts";
+import { files_u8_to_array_buffer } from "../server/files.ts";
+import { files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
 import { plugins_validate_manifest, type plugins_Capability } from "../shared/plugins.ts";
 
 const r2Objects = new Map<string, BodyInit>();
@@ -278,7 +279,7 @@ async function seed_pending_markdown_node(
 	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
 	filename: string,
 ) {
-	const created = await t.action(internal.files_nodes.create_file_by_path, {
+	const created = await t.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: fixture.membership.organizationId,
 		workspaceId: fixture.membership.workspaceId,
 		userId: fixture.membership.userId,

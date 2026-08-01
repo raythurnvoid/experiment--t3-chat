@@ -2,7 +2,7 @@ import { HttpRouter, httpRouter } from "convex/server";
 import { ai_chat_http_routes } from "./ai_chat.ts";
 import { internal } from "./_generated/api.js";
 import { httpAction } from "./_generated/server.js";
-import { files_http_routes } from "./files_nodes.ts";
+import { files_http_routes } from "./files_nodes_ai.ts";
 import { public_api_http_routes } from "./public_api.ts";
 import { r2_http_routes } from "./r2.ts";
 import { plugins_runtime_http_routes } from "./plugins_runtime.ts";

@@ -4144,7 +4144,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
 						path: nextNodeName,
 					})
-				: convex.action(app_convex_api.files_nodes.create_markdown_node, {
+				: convex.action(app_convex_api.files_nodes_content.create_markdown_node, {
 						membershipId,
 						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
 						path: nextNodeName,

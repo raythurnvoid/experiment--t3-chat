@@ -3,13 +3,9 @@ import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
-import {
-	files_ROOT_ID,
-	files_u8_to_array_buffer,
-	files_yjs_doc_get_markdown,
-	files_yjs_doc_update_from_markdown,
-} from "../server/files.ts";
-import { r2_create_asset_key } from "./r2.ts";
+import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
+import { files_yjs_doc_get_markdown, files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
@@ -840,7 +836,7 @@ describe("public files API", () => {
 			path: "/tenant-visible.md",
 			committedMarkdown: "tenant visible content\n",
 		});
-		const mounted = await t.action(internal.files_nodes.create_file_node_internal, {
+		const mounted = await t.action(internal.files_nodes_content.create_file_node_internal, {
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: "/t3-chat/README.md",
 			rawText: mountSentinel,

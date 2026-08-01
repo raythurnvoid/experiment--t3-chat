@@ -1,7 +1,6 @@
 import { Workpool, vWorkId } from "@convex-dev/workpool";
 import type { RegisteredMutation, RegisteredQuery, RouteSpec } from "convex/server";
 import { v } from "convex/values";
-import { R2 } from "@convex-dev/r2";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import { components, internal } from "./_generated/api.js";
@@ -21,6 +20,13 @@ import {
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
+import {
+	r2_create_asset_key,
+	r2_fetch_object_from_bucket,
+	r2_get_bucket,
+	r2_get_download_url,
+	r2_put_object,
+} from "./r2_client.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
@@ -46,39 +52,15 @@ import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
+import { db_get_file_content_materialization_db_state } from "./files_nodes.ts";
 import {
 	db_insert_file_text_content,
-	db_get_file_content_materialization_db_state,
 	files_nodes_create_yjs_snapshot_update_from_markdown,
-} from "./files_nodes.ts";
+} from "./files_nodes_content.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
-
-if (!process.env.R2_BUCKET_FILES) {
-	throw convex_error({ message: "R2_BUCKET_FILES is not set in Convex env" });
-}
-
-const R2_BUCKET_FILES = process.env.R2_BUCKET_FILES;
-
-if (!process.env.R2_ENDPOINT) {
-	throw convex_error({ message: "R2_ENDPOINT is not set in Convex env" });
-}
-
-const R2_ENDPOINT = process.env.R2_ENDPOINT;
-
-if (!process.env.R2_ACCESS_KEY_ID) {
-	throw convex_error({ message: "R2_ACCESS_KEY_ID is not set in Convex env" });
-}
-
-const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
-
-if (!process.env.R2_SECRET_ACCESS_KEY) {
-	throw convex_error({ message: "R2_SECRET_ACCESS_KEY is not set in Convex env" });
-}
-
-const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 
 if (!process.env.CLOUDFLARE_EVENTS_SECRET) {
 	throw convex_error({ message: "CLOUDFLARE_EVENTS_SECRET is not set in Convex env" });
@@ -118,38 +100,6 @@ function r2_require_real_author(createdBy: Id<"users"> | typeof users_SYSTEM_AUT
 		throw should_never_happen(errorMessage, errorData);
 	}
 	return createdBy;
-}
-
-const r2 = new R2(components.r2, {
-	bucket: R2_BUCKET_FILES,
-	endpoint: R2_ENDPOINT,
-	accessKeyId: R2_ACCESS_KEY_ID,
-	secretAccessKey: R2_SECRET_ACCESS_KEY,
-});
-
-export async function r2_get_download_url(args: {
-	key: Parameters<typeof r2.getUrl>[0];
-	options?: Parameters<typeof r2.getUrl>[1];
-}) {
-	return await r2.getUrl(args.key, {
-		...args.options,
-	});
-}
-
-export function r2_get_bucket() {
-	return r2.config.bucket;
-}
-
-export async function r2_generate_upload_url(key: Parameters<typeof r2.generateUploadUrl>[0]) {
-	return await r2.generateUploadUrl(key);
-}
-
-export function r2_create_asset_key(args: {
-	organizationId: string;
-	workspaceId: string;
-	assetId: Id<"files_r2_assets">;
-}) {
-	return `organizations/${args.organizationId}/workspaces/${args.workspaceId}/assets/${args.assetId}`;
 }
 
 function extract_asset_id_from_r2_key(key: string) {
@@ -202,90 +152,6 @@ export const patch_asset = internalMutation({
 		return null;
 	},
 });
-
-export async function r2_put_object(
-	ctx: ActionCtx,
-	args: {
-		key: string;
-		body: BodyInit;
-		contentType?: string;
-	},
-) {
-	// Use signed PUT instead of r2.store() so deterministic content keys remain idempotent across Workpool retries.
-	const upload = await r2_generate_upload_url(args.key);
-	const response = await fetch(upload.url, {
-		method: "PUT",
-		headers: args.contentType ? { "Content-Type": args.contentType } : undefined,
-		body: args.body,
-	});
-	if (!response.ok) {
-		throw convex_error({
-			message: "Failed to write R2 object",
-			cause: {
-				status: response.status,
-				key: args.key,
-			},
-		});
-	}
-
-	await r2.syncMetadata(ctx, args.key);
-}
-
-export async function r2_fetch_object_from_bucket(args: { key: string }) {
-	const url = await r2_get_download_url({
-		key: args.key,
-		options: {
-			expiresIn: 60,
-		},
-	});
-	const response = await fetch(url);
-	if (!response.ok) {
-		throw convex_error({
-			message: "Failed to read R2 object",
-			cause: {
-				status: response.status,
-				key: args.key,
-			},
-		});
-	}
-
-	return response;
-}
-
-/**
- * Fetch a bounded byte range of an R2 object via an HTTP Range request (R2 honors it and
- * returns 206 Partial Content). Lets callers read a window of a large object instead of the
- * whole thing. `start`/`endInclusive` are 0-based byte offsets; the response may be shorter
- * than requested at end-of-object.
- */
-export async function r2_fetch_object_range_from_bucket(args: { key: string; start: number; endInclusive: number }) {
-	const url = await r2_get_download_url({
-		key: args.key,
-		options: {
-			expiresIn: 60,
-		},
-	});
-	const response = await fetch(url, {
-		headers: { Range: `bytes=${args.start}-${args.endInclusive}` },
-	});
-	// 206 = partial content (range honored); 200 = full object (range ignored by store) — both usable.
-	if (!response.ok && response.status !== 206) {
-		throw convex_error({
-			message: "Failed to read R2 object range",
-			cause: {
-				status: response.status,
-				key: args.key,
-				range: `bytes=${args.start}-${args.endInclusive}`,
-			},
-		});
-	}
-
-	return response;
-}
-
-export async function r2_delete_object(ctx: MutationCtx, key: string) {
-	await r2.deleteObject(ctx, key);
-}
 
 export const get_asset_by_r2_event_key = internalQuery({
 	args: {
@@ -580,7 +446,7 @@ export const create_signed_download_url = action({
 			) {
 				const downloadScope = r2_require_real_scope(fileNode.organizationId, fileNode.workspaceId);
 				// Try to store a fresh version snapshot, but still allow downloading the older one if this fails.
-				const materialized = await ctx.runAction(internal.files_nodes.materialize_file_content, {
+				const materialized = await ctx.runAction(internal.files_nodes_content.materialize_file_content, {
 					organizationId: downloadScope.organizationId,
 					workspaceId: downloadScope.workspaceId,
 					nodeId: fileNode._id,

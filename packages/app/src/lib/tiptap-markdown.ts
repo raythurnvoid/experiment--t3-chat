@@ -1,6 +1,6 @@
 import { Editor } from "@tiptap/core";
 import type { JSONContent } from "@tiptap/core";
-import { files_get_tiptap_shared_extensions } from "../../shared/files.ts";
+import { files_get_tiptap_shared_extensions } from "../../shared/files-tiptap.ts";
 
 /**
  * Converts TipTap JSON content to markdown string.

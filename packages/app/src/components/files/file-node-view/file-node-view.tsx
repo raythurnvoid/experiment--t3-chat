@@ -907,7 +907,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const handleCreateReadmeClick = useFn(() => {
 		setIsCreatingReadme(true);
 		convex
-			.action(app_convex_api.files_nodes.create_markdown_node, {
+			.action(app_convex_api.files_nodes_content.create_markdown_node, {
 				membershipId,
 				parentId: folderItemId,
 				path: "README.md" satisfies files_SpecialFileName,
@@ -1608,7 +1608,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 						parentId: folderItemId,
 						path,
 					})
-				: convex.action(app_convex_api.files_nodes.create_markdown_node, {
+				: convex.action(app_convex_api.files_nodes_content.create_markdown_node, {
 						membershipId,
 						parentId: folderItemId,
 						path,

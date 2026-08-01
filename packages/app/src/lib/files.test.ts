@@ -9,14 +9,12 @@ import {
 	files_normalize_upload_file_name,
 	files_ROOT_ID,
 	files_set_node_path_cached_validation_message,
-	files_yjs_compute_diff_update_from_yjs_doc,
-	files_yjs_doc_clone,
-	files_yjs_doc_get_markdown,
-	files_yjs_doc_update_from_markdown,
 	files_yjs_rebase_branch_with_local_markdown,
 	files_yjs_reconcile_branch_with_local_markdown,
 	type files_TreeItem,
 } from "./files.ts";
+import { files_yjs_compute_diff_update_from_yjs_doc, files_yjs_doc_clone } from "../../shared/files-yjs.ts";
+import { files_yjs_doc_get_markdown, files_yjs_doc_update_from_markdown } from "../../shared/files-tiptap.ts";
 import type { Id } from "../../convex/_generated/dataModel";
 import { Doc as YDoc } from "yjs";
 

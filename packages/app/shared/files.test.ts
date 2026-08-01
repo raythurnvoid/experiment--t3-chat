@@ -8,20 +8,22 @@ import {
 	files_normalize_markdown_name,
 	files_normalize_name_input,
 	files_normalize_name,
-	files_parse_markdown_to_html,
 	files_pending_path_overlay_build,
 	files_pending_path_overlay_list_injections,
 	files_pending_path_overlay_pick_visible_entry,
 	files_pending_path_overlay_project_committed_path,
 	files_pending_path_overlay_translate_path,
 	files_ROOT_ID,
+	type files_PendingPathOverlayNode,
+	type files_PendingPathOverlayRow,
+} from "./files.ts";
+import {
+	files_parse_markdown_to_html,
 	files_tiptap_markdown_to_json,
 	files_tiptap_markdown_to_plain_text,
 	files_yjs_doc_get_markdown,
 	files_yjs_doc_update_from_markdown,
-	type files_PendingPathOverlayNode,
-	type files_PendingPathOverlayRow,
-} from "./files.ts";
+} from "./files-tiptap.ts";
 import { Doc as YDoc } from "yjs";
 import stringByteLength from "string-byte-length";
 import type { WorkId } from "@convex-dev/workpool";

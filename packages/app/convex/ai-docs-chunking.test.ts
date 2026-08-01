@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { db_replace_file_chunks } from "./files_nodes.ts";
+import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 

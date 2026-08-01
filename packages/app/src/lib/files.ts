@@ -1,15 +1,16 @@
 import {
-	files_yjs_compute_diff_update_from_yjs_doc,
-	files_yjs_doc_clone,
-	files_yjs_doc_create_from_array_buffer_update,
-	files_yjs_doc_get_markdown,
-	files_yjs_doc_update_from_markdown,
 	files_is_node,
 	files_find_file_stem_end_index,
 	files_get_normalized_node_path_segments,
 	type files_TreeItem,
 	type files_VisibleTreeNode,
 } from "../../shared/files.ts";
+import {
+	files_yjs_compute_diff_update_from_yjs_doc,
+	files_yjs_doc_clone,
+	files_yjs_doc_create_from_array_buffer_update,
+} from "../../shared/files-yjs.ts";
+import { files_yjs_doc_get_markdown, files_yjs_doc_update_from_markdown } from "../../shared/files-tiptap.ts";
 import { composite_key } from "../../shared/shared-utils.ts";
 import type { Doc } from "../../convex/_generated/dataModel";
 import { TypedEventTarget } from "@remix-run/interaction";

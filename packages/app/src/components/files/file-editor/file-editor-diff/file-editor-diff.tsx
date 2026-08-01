@@ -30,16 +30,14 @@ import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
 	files_monaco_create_editor_model,
-	files_headless_tiptap_editor_create,
 	files_pending_update_has_yjs_content,
-	files_yjs_doc_clone,
-	files_yjs_doc_create_from_array_buffer_update,
-	files_yjs_doc_get_markdown,
 	files_fetch_file_yjs_state_and_markdown,
 	files_u8_to_array_buffer,
 	files_yjs_reconcile_branch_with_local_markdown,
 	files_yjs_rebase_branch_with_local_markdown,
 } from "@/lib/files.ts";
+import { files_yjs_doc_clone, files_yjs_doc_create_from_array_buffer_update } from "../../../../../shared/files-yjs.ts";
+import { files_headless_tiptap_editor_create, files_yjs_doc_get_markdown } from "../../../../../shared/files-tiptap.ts";
 import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
 import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";

@@ -6835,7 +6835,7 @@ describe("plugins run_installation_on_files", () => {
 			confirmUpload: false,
 		});
 
-		const markdown = await asOwner.action(api.files_nodes.create_markdown_node, {
+		const markdown = await asOwner.action(api.files_nodes_content.create_markdown_node, {
 			membershipId: membership.membershipId,
 			parentId: "root",
 			path: "/notes.md",

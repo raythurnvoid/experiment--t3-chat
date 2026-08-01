@@ -43,29 +43,32 @@ import {
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
 	files_u8_to_array_buffer,
-	files_yjs_compute_diff_update_from_state_vector,
-	files_yjs_doc_update_from_markdown,
 	type files_ContentType,
 } from "../server/files.ts";
+import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files-yjs.ts";
+import { files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
 import { encodeStateVector } from "yjs";
 import {
-	files_nodes_create_yjs_snapshot_update_from_markdown,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
-	files_nodes_db_fill_markdown_node_content,
-	files_nodes_db_finalize_markdown_node_creation,
-	files_nodes_reconstruct_latest_file_content_from_materialization_state,
 	type files_nodes_get_by_path_Result,
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
+import {
+	files_nodes_create_yjs_snapshot_update_from_markdown,
+	files_nodes_db_fill_markdown_node_content,
+	files_nodes_db_finalize_markdown_node_creation,
+	files_nodes_db_insert_file_content_docs,
+	files_nodes_reconstruct_latest_file_content_from_materialization_state,
+} from "./files_nodes_content.ts";
+import type { r2_get_data_for_public_download_url_Result } from "./r2.ts";
 import {
 	r2_create_asset_key,
 	r2_delete_object,
 	r2_get_bucket,
 	r2_get_download_url,
 	r2_put_object,
-	type r2_get_data_for_public_download_url_Result,
-} from "./r2.ts";
+} from "./r2_client.ts";
 import { type plugins_runtime_consume_run_api_call_Result } from "./plugins_runtime.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -1711,15 +1714,27 @@ export const publish_file_write = internalMutation({
 			// The staged content snapshot holds the file's current bytes. Below it also becomes
 			// the file's first version snapshot.
 			assetId: stage.contentSnapshotAssetId,
-			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
-			textContent: args.content,
-			readOnly: false,
+			expectsTextContent: true,
 			now,
 		});
 		if (created._nay) {
 			// An intermediate segment is owned by a file, or an equivalent structural conflict.
 			return Result({ _nay: { message: created._nay.message } });
 		}
+
+		// Same mutation as the node insert, so a content failure still rolls back the whole create.
+		await files_nodes_db_insert_file_content_docs(ctx, {
+			organizationId: stage.organizationId,
+			workspaceId: stage.workspaceId,
+			nodeId: created._yay,
+			path: stage.path,
+			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			textContent: args.content,
+			readOnly: false,
+			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
+			userId: stage.userId,
+			now,
+		});
 
 		await files_nodes_db_finalize_markdown_node_creation(ctx, {
 			organizationId: stage.organizationId,
@@ -2044,15 +2059,27 @@ export const publish_file_touch = internalMutation({
 			// The staged empty content snapshot holds the file's current (empty) bytes. Below it
 			// also becomes the file's first version snapshot.
 			assetId: stage.contentSnapshotAssetId,
-			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
-			textContent: "",
-			readOnly: false,
+			expectsTextContent: true,
 			now,
 		});
 		if (created._nay) {
 			// An intermediate segment is owned by a file, or an equivalent structural conflict.
 			return Result({ _nay: { message: created._nay.message } });
 		}
+
+		// Same mutation as the node insert, so a content failure still rolls back the whole create.
+		await files_nodes_db_insert_file_content_docs(ctx, {
+			organizationId: stage.organizationId,
+			workspaceId: stage.workspaceId,
+			nodeId: created._yay,
+			path: stage.path,
+			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			textContent: "",
+			readOnly: false,
+			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
+			userId: stage.userId,
+			now,
+		});
 
 		await files_nodes_db_finalize_markdown_node_creation(ctx, {
 			organizationId: stage.organizationId,
@@ -2410,7 +2437,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							}
 
 							const content = await ctx.runAction(
-								internal.files_nodes.get_file_last_available_markdown_content_by_path,
+								internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
 								{
 									organizationId: principal.organizationId,
 									workspaceId: principal.workspaceId,
@@ -2512,7 +2539,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const contents = await Promise.all(
 								requestedPaths.map(async (filePath) => ({
 									path: filePath,
-									content: await ctx.runAction(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+									content: await ctx.runAction(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
 										organizationId: principal.organizationId,
 										workspaceId: principal.workspaceId,
 										userId: principal.userId,
@@ -3550,7 +3577,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 									) {
 										// Try to store a fresh version snapshot, but still allow downloading the
 										// older one if this fails.
-										const materialized = await ctx.runAction(internal.files_nodes.materialize_file_content, {
+										const materialized = await ctx.runAction(internal.files_nodes_content.materialize_file_content, {
 											organizationId: principal.organizationId,
 											workspaceId: principal.workspaceId,
 											nodeId: data.fileNode._id,

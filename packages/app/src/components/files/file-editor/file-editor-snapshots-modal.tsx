@@ -875,7 +875,7 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 
 		setIsRestoring(true);
 		Promise.try(async () => {
-			const restoreResult = await convex.action(app_convex_api.files_nodes.restore_snapshot_r2, {
+			const restoreResult = await convex.action(app_convex_api.files_nodes_content.restore_snapshot_r2, {
 				membershipId,
 				snapshotId: selectedSnapshotId,
 				nodeId: nodeId,

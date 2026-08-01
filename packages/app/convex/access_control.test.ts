@@ -448,7 +448,7 @@ describe("enforcement", () => {
 		// This action checks the permission through `get_current_user_workspace_permission`, so the test
 		// proves two things: the identity survives `ctx.runQuery`, and the refusal happens before any
 		// R2 work.
-		const created = await fixture.asMember.action(api.files_nodes.create_markdown_node, {
+		const created = await fixture.asMember.action(api.files_nodes_content.create_markdown_node, {
 			membershipId: fixture.memberMembershipId,
 			parentId: files_ROOT_ID,
 			path: "viewer-note.md",
@@ -481,7 +481,7 @@ describe("enforcement", () => {
 			return [await insert_asset(), await insert_asset()];
 		});
 		const create_node = (path: string) =>
-			t.mutation(internal.files_nodes.create_file_node, {
+			t.mutation(internal.files_nodes_content.create_file_node, {
 				userId: fixture.memberId,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.defaultWorkspaceId,

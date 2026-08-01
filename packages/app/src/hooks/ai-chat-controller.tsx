@@ -20,7 +20,8 @@ import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { objects_equal_deep } from "@/lib/object.ts";
 import { app_local_storage_get_value, app_local_storage_set_value, type storage_local_Key } from "@/lib/storage.ts";
-import { generate_id, get_id_generator, should_never_happen, type GeneratedIdPrefix } from "@/lib/utils.ts";
+import { should_never_happen } from "@/lib/utils.ts";
+import { generate_id, get_id_generator, type GeneratedIdPrefix } from "../../shared/generated-ids.ts";
 import { useFn, useLiveRef } from "./utils-hooks.ts";
 import {
 	type ai_chat_AiSdk5UiMessage,

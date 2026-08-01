@@ -26,7 +26,7 @@ import { allowed_origins, server_convex_get_user_fallback_to_anonymous } from ".
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { r2_fetch_object_from_bucket, r2_get_bucket } from "./r2.ts";
+import { r2_fetch_object_from_bucket, r2_get_bucket } from "./r2_client.ts";
 import type { RouterForConvexModules } from "./http.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.

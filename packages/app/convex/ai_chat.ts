@@ -1,6 +1,7 @@
 import { composite_id, omit_properties, should_never_happen } from "../shared/shared-utils.ts";
 import { ai_chat_MODEL_IDS, ai_chat_MODE_IDS, type ai_chat_AiSdk5UiMessage } from "../shared/ai-chat.ts";
-import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
+import { math_clamp } from "../src/lib/utils.ts";
+import { get_id_generator } from "../shared/generated-ids.ts";
 import {
 	query,
 	mutation,
@@ -54,7 +55,7 @@ import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { billing_event } from "../server/billing.ts";
-import { billing_ingest_events } from "./billing.ts";
+import { billing_ingest_events } from "./billing_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 

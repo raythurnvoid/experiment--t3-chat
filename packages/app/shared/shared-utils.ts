@@ -1,4 +1,3 @@
-import { createIdGenerator } from "ai";
 import { ConvexError } from "convex/values";
 import type { KeysOfUnion, LiteralUnion } from "type-fest";
 
@@ -149,40 +148,6 @@ export function omit_properties<O extends object, P extends KeysOfUnion<O>>(
 }
 
 export function assume_type<T>(v: any): asserts v is T {}
-
-// #region generated id
-export const get_id_generator = ((/* iife */) => {
-	function value(snakeCasePrefix: string) {
-		return createIdGenerator({
-			prefix: snakeCasePrefix,
-			separator: "-",
-			size: 32,
-		});
-	}
-
-	const cache = new Map<string, ReturnType<typeof value>>();
-
-	return function get_id_generator(snakeCasePrefix: string) {
-		const cacheKey = snakeCasePrefix;
-		const cachedValue = cache.get(cacheKey);
-		if (cachedValue) {
-			return cachedValue;
-		}
-
-		const result = value(snakeCasePrefix);
-		cache.set(cacheKey, result);
-		return result;
-	};
-})();
-
-export type GeneratedIdPrefixKey = "file" | "ai_thread" | "ai_message";
-export type GeneratedIdPrefix = `${GeneratedIdPrefixKey}-`;
-
-export function generate_id<T extends GeneratedIdPrefixKey>(snakeCasePrefix: T): `${T}-${string}` {
-	const idGenerator = get_id_generator(snakeCasePrefix);
-	return idGenerator() as `${T}-${string}`;
-}
-// #endregion generated id
 
 // #region composite ids
 /**

@@ -8,11 +8,12 @@ import {
 	files_ROOT_ID,
 	files_pending_update_has_yjs_content,
 	files_u8_to_array_buffer,
+} from "../server/files.ts";
+import {
 	files_yjs_compute_diff_update_from_yjs_doc,
 	files_yjs_doc_create_from_array_buffer_update,
-	files_yjs_doc_get_markdown,
-	files_yjs_doc_update_from_markdown,
-} from "../server/files.ts";
+} from "../shared/files-yjs.ts";
+import { files_yjs_doc_get_markdown, files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
@@ -408,7 +409,7 @@ describe("r2 asset content", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.action(api.files_nodes.create_markdown_node, {
+		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "README.md",
@@ -477,7 +478,7 @@ describe("r2 asset content", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.action(api.files_nodes.create_markdown_node, {
+		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "stale-read.md",
@@ -534,7 +535,7 @@ describe("r2 asset content", () => {
 			throw new Error(pushResult._nay.message);
 		}
 
-		const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -554,7 +555,7 @@ describe("r2 asset content", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.action(api.files_nodes.create_markdown_node, {
+		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "pending-read.md",
@@ -603,7 +604,7 @@ describe("r2 asset content", () => {
 		}
 		expect(pendingRowMarkdown._yay).toBe(pendingMarkdown);
 
-		const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -1003,7 +1004,7 @@ describe("r2 asset content", () => {
 			runId: pluginRun._id,
 		});
 
-		const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -1162,13 +1163,13 @@ describe("r2 asset content", () => {
 		});
 
 		const [summaryReadResult, transcriptReadResult] = await Promise.all([
-			asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+			asUser.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
 				path: "/clip.mp4.summary.md",
 			}),
-			asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+			asUser.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
@@ -1256,7 +1257,7 @@ describe("r2 asset content", () => {
 		});
 
 		const audioTranscriptReadResult = await asUser.action(
-			internal.files_nodes.get_file_last_available_markdown_content_by_path,
+			internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
 			{
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,

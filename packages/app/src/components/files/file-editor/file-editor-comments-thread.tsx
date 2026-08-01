@@ -3,7 +3,7 @@ import { useMemo, useState, useRef, type ComponentProps, type HTMLAttributes, ty
 import type { chat_messages_Thread } from "@/lib/chat-messages.ts";
 import { compute_fallback_user_name, forward_ref } from "@/lib/utils.ts";
 import { format_relative_time } from "@/lib/date.ts";
-import { files_parse_markdown_to_html } from "@/lib/files.ts";
+import { files_parse_markdown_to_html } from "../../../../shared/files-tiptap.ts";
 import {
 	MyAvatar,
 	MyAvatarImage,

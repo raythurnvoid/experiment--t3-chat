@@ -6,7 +6,7 @@ import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { presence } from "./presence.ts";
 import { test_convex, test_mocks_cancel_pending_home_file_seeds } from "./setup.test.ts";
-import { data_deletion_db_request } from "./data_deletion.ts";
+import { data_deletion_db_request } from "./data_deletion_requests.ts";
 
 const test = baseTest.sequential;
 import {
