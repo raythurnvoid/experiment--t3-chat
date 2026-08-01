@@ -32,7 +32,7 @@ $session = ($sessionOutput | Select-String -Pattern "Session (\d+) created").Mat
 if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() }
 ```
 
-If several browsers are listed, no command lists tabs per browser before a session exists. Create a session on the most likely key and probe `context.pages().map((p) => p.url())`; if the target tab is not there, create a session on the next key and delete the wrong one with `session delete <id>`. If your shell does not keep variables between calls, inline the printed session id into later commands.
+For this project, use the Edge install whose profile the user reserved for QA. The profile name is personal, so it is deliberately not written in this repo — read it from the user's private global agent rules (`~/.claude/CLAUDE.md`), and never copy it into a committed file. Match it by the profile column in `browser list`, not by a remembered key — key ids change. Use whatever account is signed in there; do not sign in or out. If the profile choice is ever unclear, no command lists tabs per browser before a session exists: create a session on the most likely key and probe `context.pages().map((p) => p.url())`; if the target tab is not there, create a session on the next key and delete the wrong one with `session delete <id>`. If your shell does not keep variables between calls, inline the printed session id into later commands.
 
 3. Install the helper namespace in that session. Pass the script with `-f` and an absolute path — the CLI reads the file from the real disk before the sandbox starts. Do not use `-e` with `fs.readFileSync`: the sandbox filesystem cannot read repo files reliably (see `references/known-hazards.md`):
 
