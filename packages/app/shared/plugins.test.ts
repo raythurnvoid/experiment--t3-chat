@@ -7,10 +7,10 @@ import {
 	plugins_dist_review_mechanical_findings,
 	plugins_event_matches_configuration,
 	plugins_get_event_filter_values,
+	plugins_list_file_view_matches,
 	plugins_parse_env_text,
 	plugins_parse_github_repository_url,
 	plugins_parse_installation_configuration_yaml,
-	plugins_list_file_view_matches,
 	plugins_validate_manifest,
 	plugins_validate_origin,
 } from "./plugins.ts";

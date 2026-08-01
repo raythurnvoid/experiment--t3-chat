@@ -710,6 +710,15 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 	// Every matching view becomes a tab, ordered by installation creation time.
 	const fileViewMatches = plugins_list_file_view_matches(fileViewPlugins, node.contentType);
 
+	const [selectedTabId, setSelectedTabId] = useState<string | null | undefined>(STORED_FILE_DETAILS_TAB_ID);
+	// The matches come from a live query, so the selected view's tab can disappear mid-session
+	// (its plugin was uninstalled, or a version update dropped the view). Fall back to the
+	// details tab then, because Ariakit only reassigns a missing selection when it is undefined.
+	const selectedTabIsAlive =
+		selectedTabId === STORED_FILE_DETAILS_TAB_ID ||
+		fileViewMatches.some((match) => stored_file_view_tab_id(match) === selectedTabId);
+	const activeTabId = selectedTabIsAlive ? selectedTabId : STORED_FILE_DETAILS_TAB_ID;
+
 	// The plugin views stream the stored object, so wait until the upload pipeline is finished.
 	const uploadPipelineComplete = !storedFileMetadataIsLoading && activeUploadStatusText === null;
 
@@ -866,7 +875,9 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 				// The caller keys this component by node id, so the selected tab resets to the details
 				// tab when another file opens.
 				<div className={"FileNodeViewStoredFile-tabs" satisfies FileNodeViewStoredFile_ClassNames}>
-					<MyTabs defaultSelectedId={STORED_FILE_DETAILS_TAB_ID}>
+					{/* Keep selectOnMove off: selecting a plugin tab mints a session, so arrow keys
+					    only move focus and Enter/Space selects. */}
+					<MyTabs selectedId={activeTabId} setSelectedId={setSelectedTabId} selectOnMove={false}>
 						<div className={"FileNodeViewStoredFile-tabs-bar" satisfies FileNodeViewStoredFile_ClassNames}>
 							<MyTabsList aria-label="File views">
 								<MyTabsTab id={STORED_FILE_DETAILS_TAB_ID}>File details</MyTabsTab>

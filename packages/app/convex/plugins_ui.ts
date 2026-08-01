@@ -471,7 +471,6 @@ export const list_file_views = query({
 	returns: v.array(
 		v.object({
 			pluginName: v.string(),
-			displayName: v.string(),
 			pluginVersionId: v.id("plugins_versions"),
 			installationCreatedAt: v.number(),
 			fileViews: v.array(
@@ -531,7 +530,6 @@ export const list_file_views = query({
 				}
 				return {
 					pluginName: installation.pluginName,
-					displayName: version.displayName,
 					pluginVersionId: version._id,
 					// The files UI orders view tabs by installation creation time, so tab order does not
 					// depend on query order.

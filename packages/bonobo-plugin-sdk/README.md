@@ -135,7 +135,7 @@ A manifest may also declare file views — frames the host app offers as tabs ne
 ```
 
 - `id` — same rules as page ids and shares their namespace: unique across `pages` and `fileViews` together.
-- `title` — 1–80 characters. The host shows it in the view bar and the "Open in <title>" button.
+- `title` — 1–80 characters. The host shows it as the view's tab label and iframe title.
 - `entry` — must be a manifest `files[]` entry with contentType `"text/html"`. Pages and file views may share one entry.
 - `contentTypes` — 1–32 exact stored content types (each at most 255 characters) matched against the opened file's stored content type. No wildcards. One manifest may not declare the same content type in two file views, and may declare at most 8 file views with at most 64 content types in total.
 - When several installed plugins match one content type, each becomes its own tab, ordered by installation time. The file details tab stays first and opens by default.

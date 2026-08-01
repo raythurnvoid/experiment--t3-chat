@@ -911,12 +911,10 @@ describe("plugin ui sessions", () => {
 		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/clip.mp4" }));
 		const session = await mint_session_token(fixture);
 		const signerCalls: Array<{ key: string; options: Record<string, unknown> | undefined }> = [];
-		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
-			async (key: string, options?: Record<string, unknown>) => {
-				signerCalls.push({ key, options });
-				return `https://r2.test/object?key=${encodeURIComponent(key)}`;
-			},
-		);
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(async (key: string, options?: Record<string, unknown>) => {
+			signerCalls.push({ key, options });
+			return `https://r2.test/object?key=${encodeURIComponent(key)}`;
+		});
 
 		const response = await t.fetch("/api/v1/files/download-urls", {
 			method: "POST",
@@ -1361,15 +1359,12 @@ describe("plugin ui file view sessions", () => {
 		const listed = await fixture.asOwner.query(api.plugins_ui.list_file_views, {
 			membershipId: fixture.membership.membershipId,
 		});
-		// Pin the exact installation creation time: the chooser's earliest-installation tie-break
-		// depends on this being the installation's time, not the version's.
-		const installation = await t.run((ctx) =>
-			ctx.db.get("plugins_workspace_installations", fixture.installationId),
-		);
+		// Pin the exact installation creation time: the files UI orders view tabs by this value,
+		// so it must be the installation's time, not the version's.
+		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
 		expect(listed).toEqual([
 			{
 				pluginName: "gallery",
-				displayName: "Gallery",
 				pluginVersionId: fixture.pluginVersionId,
 				installationCreatedAt: installation?._creationTime,
 				fileViews: [video_file_view],

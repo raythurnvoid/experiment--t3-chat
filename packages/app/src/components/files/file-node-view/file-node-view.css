@@ -298,18 +298,20 @@
 	}
 
 	/* Column filling the content area so the selected tab panel gets all leftover height. The
-	scroll content is height: max-content, so a percentage would collapse; size against the
-	FileNodeView-editor-area container instead, like the folder readme editor does. */
+	   scroll content is height: max-content, so a percentage would collapse; size against the
+	   FileNodeView-editor-area container instead, like the folder readme editor does. Subtract
+	   the sticky toolbar chrome so the whole block fits the scrollport; without it the panel
+	   always overflows by the toolbar height at every scroll position. */
 	.FileNodeViewStoredFile-tabs {
 		display: flex;
 		flex-direction: column;
 
-		height: max(480px, 100cqh);
+		height: max(480px, calc(100cqh - 44px - var(--app-scrollbar-w) - 1px));
 	}
 
 	.FileNodeViewStoredFile-tabs-bar {
 		/* Stick below the sticky editor toolbar so the tabs stay visible while the page scrolls.
-		Same offset as FileNodeViewTopStickyFloatingContainer. */
+		   Same offset as FileNodeViewTopStickyFloatingContainer. */
 		position: sticky;
 		top: calc(44px + var(--app-scrollbar-w) + 1px);
 		z-index: 1;

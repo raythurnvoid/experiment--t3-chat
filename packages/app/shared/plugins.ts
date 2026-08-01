@@ -822,8 +822,8 @@ export function plugins_validate_manifest(input: unknown) {
 			return Result({ _nay: { message: `Plugin manifest has duplicate file view id "${fileView.id}"` } });
 		}
 		pageIds.add(fileView.id);
-		// One manifest must not declare the same content type in two file views: the open-file
-		// resolver could not pick between them.
+		// One manifest must not declare the same content type in two file views: the files UI
+		// shows at most one tab per plugin for a content type, so two would be ambiguous.
 		for (const contentType of fileView.contentTypes) {
 			if (fileViewContentTypes.has(contentType)) {
 				return Result({
@@ -860,7 +860,7 @@ export function plugins_validate_manifest(input: unknown) {
 
 // #endregion manifest
 
-// #region file view selection
+// #region file view matching
 
 /**
  * List every plugin file view that matches a file's content type. The result is ordered by
@@ -886,4 +886,4 @@ export function plugins_list_file_view_matches<
 	return matches;
 }
 
-// #endregion file view selection
+// #endregion file view matching
