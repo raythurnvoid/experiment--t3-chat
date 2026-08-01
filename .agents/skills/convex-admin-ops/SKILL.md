@@ -113,6 +113,21 @@ vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codeg
 
 This idempotent mutation deletes that claim and its publisher secrets only. Do not run it before name-scoped cleanup.
 
+# Bulk File Import (`data_import`)
+
+`packages/app/convex/data_import.ts` is an internal operator module for bulk-importing files into one workspace. Text files go through the public API (`/api/v1/files/write` with a workspace API key, `overwrite: "replace"` for idempotent re-runs). This module covers what the public API cannot do:
+
+- `data_import:create_upload_targets` (action): mints file nodes plus presigned R2 PUT urls for binary files. It inserts assets with `processingWorkId: null`, so the R2 event finalizer records the object without starting conversion or plugin dispatch. Args: `organizationId`, `workspaceId`, `createdBy` (a `users` id), `items` as `[{ path, contentType, size }]`. Re-running a failed path archives and replaces its half-created node.
+- `data_import:verify_run` (query): returns node counts, asset counts, and `pluginEventRuns` for the workspace. Use `assets.unfinalizedActive` (unfinalized assets referenced by an active node) to judge an import: crashed create attempts and archive-and-replace leave unfinalized rows that no active file references, and those are harmless.
+- `data_import:list_unfinalized` (query): for each unfinalized asset, lists the active/archived node paths and snapshot references that point at it. Use it to prove an asset has zero references before deleting it with `files_nodes_content:cleanup_file_node_creation_assets` (args need the computed R2 keys `organizations/<org>/workspaces/<ws>/assets/<assetId>`).
+- `data_import:verify_metadata` (query): for each given path, counts committed frontmatter metadata docs (`null` when no active node exists). Use it to prove frontmatter indexing after a text import.
+
+Two operational gotchas from the first real run (2026-08-01): R2 events can arrive several minutes late through Cloudflare queue retries, so wait on `unfinalizedActive`, not on raw `unfinalized`; and a crashed markdown-create action leaks its two snapshot asset rows forever because no cron sweeps them — clean them manually with the `list_unfinalized` → `cleanup_file_node_creation_assets` flow above.
+
+The import CLI that drives this module lives in the separate private repo `raythurnvoid/bonobo-senate-press-cli`.
+
+Run these functions with the direct-node JSON form from the Windows CLI Invocation section.
+
 # Dev Reset Preserving Clerk Users
 
 For a dev-environment reset where signed-in accounts should keep auth and Polar billing:
