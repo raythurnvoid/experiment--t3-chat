@@ -901,22 +901,6 @@ export const invite_user_to_organization_workspace = mutation({
 				});
 			}
 
-			// A share list can name a role, so the invited role carries every restricted file shared
-			// with it. The permission list above cannot see those, same blind spot `set_user_role` had.
-			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
-				organization,
-				defaultWorkspaceId,
-				workspaceId: defaultWorkspaceId,
-				role: "member",
-				userId: userAuth.id,
-			});
-			if (blockingGrant) {
-				return Result({
-					_nay: {
-						message: `You cannot invite someone as ${access_control_SYSTEM_ROLE_MATRIX.member.label}: that role is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
-					},
-				});
-			}
 		}
 
 		// From here down the caller is a member with the right permission, so looking up the invited
@@ -1029,6 +1013,41 @@ export const invite_user_to_organization_workspace = mutation({
 					return Result({
 						_nay: {
 							message: `You cannot invite this member, because their role grants "${access_control_PERMISSION_CATALOG[missing].label}"`,
+						},
+					});
+				}
+			}
+
+			// A share list can name a role, so a role carries restricted files its permission list says
+			// nothing about, and the check above cannot see them.
+			//
+			// Only `member`, and only when this invite really hands it out. `ensure_role_assignment`
+			// below keeps an assignment that already exists, so an invitee who already has a role never
+			// receives `member` and weighing it here would refuse an invite that gives nothing. The
+			// owner never gets an assignment at all.
+			//
+			// This sits after the "already in this workspace" return above, for the same reason that
+			// one does: an invite that writes nothing can hand out nothing.
+			const assignsMemberRole =
+				userIdToAdd !== organization.ownerUserId &&
+				!(await ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_organization_workspace_user", (q) =>
+						q.eq("organizationId", organization._id).eq("workspaceId", defaultWorkspaceId).eq("userId", userIdToAdd),
+					)
+					.first());
+			if (assignsMemberRole) {
+				const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
+					organization,
+					defaultWorkspaceId,
+					workspaceId: defaultWorkspaceId,
+					role: "member",
+					userId: userAuth.id,
+				});
+				if (blockingGrant) {
+					return Result({
+						_nay: {
+							message: `You cannot invite someone as ${access_control_SYSTEM_ROLE_MATRIX.member.label}: that role is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
 						},
 					});
 				}

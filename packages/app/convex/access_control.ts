@@ -1613,7 +1613,7 @@ export const delete_role = mutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const { defaultWorkspaceId, permissions: callerPermissions } = authorized._yay;
+		const { organization, defaultWorkspaceId, permissions: callerPermissions } = authorized._yay;
 
 		// Same rule as `update_role`: you may only delete a role you could have created yourself.
 		//
@@ -1705,6 +1705,29 @@ export const delete_role = mutation({
 						// The message names the fallback role for the same reason the invite error names
 						// `member`: the caller never chose it and cannot choose another one.
 						message: `You cannot delete this role: its members would fall back to ${access_control_SYSTEM_ROLE_MATRIX.viewer.label}, which grants "${access_control_PERMISSION_CATALOG[missing].label}"`,
+					},
+				});
+			}
+
+			// The other half of what a role carries. The grant query above only asked about the role
+			// being deleted, and `viewer` is a different role: a share list can name it, so `viewer` can
+			// open restricted files that its permission list says nothing about.
+			//
+			// The holders reached here all have an inactive membership, so nothing opens for them today.
+			// It opens later: `users.resolve_user` reactivates the membership on account restore and
+			// keeps whatever role assignment it finds, which by then is this `viewer`. So the caller
+			// would have handed out a file through a role `set_user_role` would never have let them give.
+			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
+				organization,
+				defaultWorkspaceId,
+				workspaceId: defaultWorkspaceId,
+				role: "viewer",
+				userId: userAuth.id,
+			});
+			if (blockingGrant) {
+				return Result({
+					_nay: {
+						message: `You cannot delete this role: its members would fall back to ${access_control_SYSTEM_ROLE_MATRIX.viewer.label}, which is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
 					},
 				});
 			}

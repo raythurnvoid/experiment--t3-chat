@@ -4,6 +4,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { access_control_ENFORCED_PERMISSIONS } from "../../../../../../shared/access-control.ts";
 
 const { tenantContextMock, authMock, useQueryMock, mutationMock, toastMock } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
@@ -319,15 +320,17 @@ describe("RouteRoles", () => {
 		expect(document.getElementById(reasonId ?? "")?.textContent).toContain("only yours");
 	});
 
-	test("the editor offers every enforced permission, grouped, and never the unenforced one", () => {
+	test("the editor offers every enforced permission, grouped", () => {
 		renderRoute();
 		fireEvent.click(screen.getByRole("button", { name: "New role" }));
 
 		const dialog = screen.getByRole("dialog");
-		expect(dialog.querySelectorAll("[data-permission]")).toHaveLength(11);
-		// Nothing checks `content.permissions.manage` yet, so offering it would be a switch that does
-		// nothing and the server refuses it.
-		expect(dialog.querySelector('[data-permission="content.permissions.manage"]')).toBeNull();
+		// Counted from the list the editor filters by, never typed out here. A number written by hand
+		// went stale the moment file sharing made `content.permissions.manage` enforced, and the suite
+		// went red for a change that was correct.
+		expect(dialog.querySelectorAll("[data-permission]")).toHaveLength(access_control_ENFORCED_PERMISSIONS.length);
+		// Two ends of the catalog, so the grouping below cannot pass while a group is silently dropped.
+		expect(dialog.querySelector('[data-permission="content.permissions.manage"]')).not.toBeNull();
 		expect(dialog.querySelector('[data-permission="organization.billing.manage"]')).not.toBeNull();
 
 		const groups = [...dialog.querySelectorAll("legend")].map((legend) => legend.textContent);

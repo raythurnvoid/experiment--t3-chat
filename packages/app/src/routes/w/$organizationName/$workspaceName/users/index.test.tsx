@@ -4,6 +4,7 @@
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { access_control_SYSTEM_ROLE_MATRIX } from "../../../../../../shared/access-control.ts";
 
 const { tenantContextMock, authMock, useQueryMock, useQueriesMock, mutationMock, toastMock } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
@@ -162,19 +163,15 @@ const SELF_USER_ID = "user_self";
 const OWNER_USER_ID = "user_owner";
 const TARGET_USER_ID = "user_target";
 
-/** Everything an admin holds. The one permission missing is billing, which only the owner has. */
-const ADMIN_PERMISSIONS = [
-	"organization.update",
-	"organization.members.manage",
-	"organization.roles.manage",
-	"workspace.create",
-	"workspace.update",
-	"workspace.delete",
-	"workspace.members.manage",
-	"content.read",
-	"content.write",
-	"workspace.plugins.manage",
-];
+/**
+ * Everything an admin holds. The one permission missing is billing, which only the owner has.
+ *
+ * Read from the matrix, never typed out again. A copy of this list went stale when file sharing
+ * made `content.permissions.manage` enforced and gave it to admins: the fake caller was then an
+ * admin missing one admin permission, so the page correctly stopped offering the Admin role and two
+ * tests failed over a change that was right.
+ */
+const ADMIN_PERMISSIONS = [...access_control_SYSTEM_ROLE_MATRIX.admin.permissions];
 
 const BILLING_ROLE = {
 	_id: "role_billing",
