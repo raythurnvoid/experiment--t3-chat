@@ -177,6 +177,65 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
 	return null;
 }
 
+/**
+ * Why the caller may not name this role in a share list, or `null` when they may.
+ *
+ * Naming a role hands the node to everybody holding that role, including everybody who gets it
+ * later. It also works backwards: from then on
+ * `access_control_db_role_file_grant_caller_cannot_give` refuses that role to anybody who cannot open
+ * the node. So putting a role on a share list is a way of handing the role out, and it asks the same
+ * question — you may only share with a role you could assign yourself.
+ *
+ * Without this rule anybody given "Can manage" on one folder can lock every admin out of inviting.
+ * That grant carries `content.permissions.manage` on the node without making them an admin, and one
+ * share with `member` then makes `member` unassignable by anyone who cannot open that folder — which
+ * is every invite, because the invite hands out `member`. The refusal names no node, so there is no
+ * way in the product to find the folder that caused it.
+ */
+export async function access_control_db_caller_cannot_share_with_role(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organization: Doc<"organizations">;
+		defaultWorkspaceId: Id<"organizations_workspaces">;
+		role: access_control_RoleRef;
+		userId: Id<"users">;
+	},
+) {
+	// Read at the default workspace, like `authorize_role_management` does. The question is what the
+	// caller's organization role contains, not what they may do in the workspace holding the node.
+	const callerPermissions = await access_control_db_resolve_effective_permissions(ctx, {
+		organizationId: args.organization._id,
+		workspaceId: args.defaultWorkspaceId,
+		defaultWorkspaceId: args.defaultWorkspaceId,
+		organizationOwnerUserId: args.organization.ownerUserId,
+		userId: args.userId,
+	});
+	if (callerPermissions === "all") {
+		return null;
+	}
+
+	if (!callerPermissions.has("organization.roles.manage")) {
+		return { message: "You cannot share with a role. Share with the people instead." };
+	}
+
+	const rolePermissions = await resolve_role_permissions(ctx, {
+		organizationId: args.organization._id,
+		role: args.role,
+	});
+	if (!rolePermissions) {
+		return { message: "This role does not exist" };
+	}
+
+	const missing = rolePermissions.find((permission) => !callerPermissions.has(permission));
+	if (missing) {
+		return {
+			message: `You cannot share with a role that grants "${access_control_PERMISSION_CATALOG[missing].label}"`,
+		};
+	}
+
+	return null;
+}
+
 function db_get_role_assignment(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -1532,7 +1591,7 @@ export const update_role = mutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const { permissions: callerPermissions } = authorized._yay;
+		const { organization, defaultWorkspaceId, permissions: callerPermissions } = authorized._yay;
 
 		// You may only edit a role you could have created yourself. Without this rule an admin could
 		// rename the owner's billing role to "Read-only auditor" and trick the next person who gives
@@ -1542,6 +1601,29 @@ export const update_role = mutation({
 			if (missing) {
 				return Result({
 					_nay: { message: `You cannot edit a role that grants "${access_control_PERMISSION_CATALOG[missing].label}"` },
+				});
+			}
+
+			// The same rule for the half of a role its permission list cannot show. A share list can name
+			// a role, so a role can open restricted files that `role.permissions` says nothing about, and
+			// the check above cannot see them. Renaming "Payroll" to "Read-only auditor" is the trick the
+			// rule above exists to stop, and it works just as well through the files a role carries.
+			//
+			// The role is organization-wide, so pass `defaultWorkspaceId` to weigh its grants in every
+			// workspace, exactly like `delete_role`.
+			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
+				organization,
+				defaultWorkspaceId,
+				workspaceId: defaultWorkspaceId,
+				role: role._id,
+				userId: userAuth.id,
+			});
+			if (blockingGrant) {
+				// The node is not named, for the same reason `set_user_role` does not name it.
+				return Result({
+					_nay: {
+						message: `You cannot edit this role: it is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
+					},
 				});
 			}
 		}
@@ -1953,11 +2035,33 @@ export const set_user_role = mutation({
 				organizationPermissions === "all" ||
 				bindingPermissions.every((permission) => organizationPermissions.has(permission));
 			if (addsNothing) {
-				return Result({
-					_nay: {
-						message: "This role adds nothing to the member's organization role",
-					},
-				});
+				// The other half of what a role carries, the same half the ceiling above exists for. A
+				// share list can name a role, so a role opens restricted files that its permission list
+				// says nothing about, and the comparison above cannot see them. Refusing here would block
+				// role-based sharing everywhere except the default workspace — even for the owner, and the
+				// default-workspace route is not a way around it, because `db_set_role_assignment`
+				// replaces the target's organization role instead of adding to it.
+				// Read into a local first: TypeScript narrows a `const`, but not `args.role`, inside the
+				// index callback below.
+				const role = args.role;
+				const fileGrant = await ctx.db
+					.query("access_control_permission_grants")
+					.withIndex("by_organization_role_workspace_resource", (q) =>
+						q
+							.eq("organizationId", organization._id)
+							.eq("principalKind", "role")
+							.eq("role", role)
+							.eq("workspaceId", args.workspaceId)
+							.eq("resourceKind", "file"),
+					)
+					.first();
+				if (!fileGrant) {
+					return Result({
+						_nay: {
+							message: "This role adds nothing to the member's organization role",
+						},
+					});
+				}
 			}
 		}
 

@@ -495,10 +495,17 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		)
 		.map((userId) => ({ userId, name: read_display_name(userAnagraphicDict[userId]) }))
 		.sort((a, b) => a.name.localeCompare(b.name));
-	const candidateRoles = [
-		...access_control_SYSTEM_ROLES.map((role) => ({ role: role as access_control_RoleRef })),
-		...(customRoles ?? []).map((role) => ({ role: role._id as access_control_RoleRef })),
-	]
+	// A caller who does not manage roles is refused for every role, so the picker offers people only.
+	// Rows already on the list still show, and they can still be removed: taking a role back off is a
+	// different mutation and asks only about this node.
+	const candidateRoles = (
+		!shareState?.canShareWithRoles
+			? []
+			: [
+					...access_control_SYSTEM_ROLES.map((role) => ({ role: role as access_control_RoleRef })),
+					...(customRoles ?? []).map((role) => ({ role: role._id as access_control_RoleRef })),
+				]
+	)
 		.filter((candidate) => !takenPrincipalValues.has(files_share_principal_value({ kind: "role", ...candidate })))
 		.map((candidate) => ({ role: candidate.role, name: roleName(candidate.role) }))
 		.sort((a, b) => a.name.localeCompare(b.name));

@@ -36,6 +36,7 @@ import { organizations_db_get_membership } from "./organizations.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_authorize_node,
+	access_control_db_can_act_on_file_node,
 	access_control_db_filter_readable_file_nodes,
 } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -795,7 +796,7 @@ async function files_pending_update_upsert_updates(
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		userId: string;
+		userId: Id<"users">;
 		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"];
 		baseYjsSequence?: number;
@@ -811,6 +812,23 @@ async function files_pending_update_upsert_updates(
 	const file = await ctx.db.get("files_nodes", args.nodeId);
 	if (!file || file.organizationId !== args.organizationId || file.workspaceId !== args.workspaceId) {
 		return Result({ _nay: { message: "Not found" } });
+	}
+
+	// The node question, asked in the transaction that writes. `upsert_file_pending_update` asks it in
+	// its action before calling here, but `upsert_file_pending_update_internal_action` — the one the
+	// bash tools and the AI edit tool use — had no counterpart. Without this a read-only sharee could
+	// stage a change on a restricted file and only be refused at accept, in a different transaction,
+	// after their own view of that file had been shadowed by their text for hours.
+	if (
+		!(await access_control_db_can_act_on_file_node(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			fileNode: file,
+			permission: "content.write",
+		}))
+	) {
+		return Result({ _nay: { message: "Permission denied" } });
 	}
 
 	// Every writer of a pending update funnels through here, so this is the one place the content
@@ -1733,22 +1751,28 @@ export const discard_file_pending_structural = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const authorized = await access_control_db_authorize_node(ctx, {
-			userAuth,
-			membership,
-			nodeId: args.nodeId,
-			permission: "content.write",
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
 		const pendingUpdate = await files_db_get_pending_update(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 			nodeId: args.nodeId,
 		});
+
+		// Throwing your own draft away hands nobody anything, so it does not need `content.write`.
+		// Access can be taken away after the draft exists, and refusing then would leave that person
+		// stuck looking at their own text on a file they may no longer edit until it expires hours
+		// later, with no button that works. Only the permission half is waived: a node from another
+		// workspace is still "Not found", and every branch below touches this caller's own doc.
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: args.nodeId,
+			permission: "content.write",
+		});
+		if (authorized._nay && !(pendingUpdate && authorized._nay.message === "Permission denied")) {
+			return authorized;
+		}
+
 		if (!pendingUpdate) {
 			// Already gone (another tab discarded or accepted it): a no-op success.
 			return Result({ _yay: null });

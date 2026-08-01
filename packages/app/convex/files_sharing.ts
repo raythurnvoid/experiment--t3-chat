@@ -18,7 +18,12 @@ import { doc } from "convex-helpers/validators";
 
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
-import { access_control_db_authorize_node, access_control_db_has_permission } from "./access_control.ts";
+import {
+	access_control_db_authorize_node,
+	access_control_db_caller_cannot_share_with_role,
+	access_control_db_has_permission,
+	access_control_db_resolve_effective_permissions,
+} from "./access_control.ts";
 import {
 	files_nodes_db_cascade_restricted_scope,
 	files_nodes_db_resolve_parent_restricted_scope,
@@ -459,6 +464,13 @@ export const get_node_share_state = query({
 			 * `canManage` and fails this, so the dialog must not offer the action.
 			 */
 			canRestrict: v.boolean(),
+			/**
+			 * Whether the dialog may offer roles at all. Naming a role in a share list hands that role
+			 * out, so it asks the same question as assigning one, and somebody who only manages this
+			 * folder cannot. Which particular roles they may name is judged in the mutation, because that
+			 * depends on the role's own permission list.
+			 */
+			canShareWithRoles: v.boolean(),
 			entries: v.array(
 				v.object({
 					principal: share_principal_validator,
@@ -514,6 +526,19 @@ export const get_node_share_state = query({
 				level: "manage",
 			})) === null;
 
+		// Same reason as `canRestrict`: do not offer a choice that always fails. Read at the default
+		// workspace, like the ceiling itself, because the question is what the caller's organization
+		// role contains.
+		const organizationPermissions = await access_control_db_resolve_effective_permissions(ctx, {
+			organizationId: organization._id,
+			workspaceId: defaultWorkspaceId,
+			defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			userId: userAuth.id,
+		});
+		const canShareWithRoles =
+			organizationPermissions === "all" || organizationPermissions.has("organization.roles.manage");
+
 		// A pointer at a node that was deleted, or that is no longer restricted, means this node uses
 		// workspace access again. Reading the scope node here, instead of trusting the pointer, keeps the
 		// dialog saying the same thing the permission check does.
@@ -534,6 +559,7 @@ export const get_node_share_state = query({
 				scope: null,
 				canManage,
 				canRestrict,
+				canShareWithRoles,
 				entries: [],
 				organizationOwnerUserId: organization.ownerUserId,
 			};
@@ -557,6 +583,7 @@ export const get_node_share_state = query({
 			},
 			canManage,
 			canRestrict,
+			canShareWithRoles,
 			entries: group_grants_into_entries(grants),
 			organizationOwnerUserId: organization.ownerUserId,
 		};
@@ -770,6 +797,21 @@ export const set_node_share_grant = mutation({
 		});
 		if (principalResult._nay) {
 			return principalResult;
+		}
+
+		// Sharing with a role is handing the role out, so it needs the same permission as handing it to
+		// one person. `caller_can_hand_out_level` below only asks what the caller holds on this node; it
+		// cannot see that naming a role also changes who may give that role from now on.
+		if (args.principal.kind === "role") {
+			const blocked = await access_control_db_caller_cannot_share_with_role(ctx, {
+				organization,
+				defaultWorkspaceId,
+				role: args.principal.role,
+				userId: userAuth.id,
+			});
+			if (blocked) {
+				return Result({ _nay: blocked });
+			}
 		}
 
 		const missing = await caller_can_hand_out_level(ctx, {

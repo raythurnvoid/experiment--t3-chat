@@ -2113,6 +2113,34 @@ type publish_file_touch_Result =
 		: never;
 
 /**
+ * The node question `publish_file_touch` asks, for the touch route's already-exists shortcut — the
+ * one branch that answers without ever reaching that mutation. Without it touch reports success on a
+ * file the caller may read but not write, while `/api/v1/files/write` on the same path answers 403.
+ */
+export const can_write_file_node = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
+			return false;
+		}
+		return await has_workspace_content_permission(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			permission: "content.write",
+			fileNode,
+		});
+	},
+});
+
+/**
  * Opt the calling plugin run into the workspace activity feed. Activities are strictly opt-in —
  * a plugin that wants to stay hidden simply never calls this — and one per run. Once created,
  * the host owns the lifecycle: touch/write publishes append targets, run terminalization closes
@@ -3274,17 +3302,34 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 									visibilityUserId: public_api_visibility_user_id(principal),
 									path: requestedPath,
 								})) as files_nodes_get_by_path_Result;
-								if (activeNode?.kind === "folder") {
-									return {
-										status: 409,
-										body: await fail({
-											status: 409,
-											message: "A folder already exists at this path",
-											errorCode: "conflict",
-										}),
-									} as const;
-								}
 								if (activeNode) {
+									// This branch answers the touch by itself, so the node question `publish_file_touch`
+									// asks has to be asked here too. `get_by_path` above only filters by what the caller
+									// may read, and a read-only sharee would otherwise be told the file is theirs to
+									// write. Asked before the folder conflict, in the same order as the mutation.
+									if (
+										!(await ctx.runQuery(internal.public_api.can_write_file_node, {
+											organizationId: principal.organizationId,
+											workspaceId: principal.workspaceId,
+											userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
+											nodeId: activeNode._id,
+										}))
+									) {
+										return {
+											status: 403,
+											body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+										} as const;
+									}
+									if (activeNode.kind === "folder") {
+										return {
+											status: 409,
+											body: await fail({
+												status: 409,
+												message: "A folder already exists at this path",
+												errorCode: "conflict",
+											}),
+										} as const;
+									}
 									files.push({ path: requestedPath, nodeId: activeNode._id, created: false });
 									continue;
 								}

@@ -667,6 +667,212 @@ describe("public files API", () => {
 		});
 	});
 
+	test("the public API write routes refuse a file the caller may read but not write", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const owner = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-sharee-owner" });
+
+		// /shared is restricted, so inside it only a grant counts. That is the one shape where the
+		// workspace-level check every write route already makes says yes and the node-level checks
+		// are the only thing left to say no.
+		const sharedId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const folderId = await ctx.db.insert("files_nodes", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				parentId: files_ROOT_ID,
+				name: "shared",
+				path: "/shared",
+				treePath: "/shared/",
+				pathDepth: 1,
+				kind: "folder",
+				lowercaseExtension: null,
+				createdBy: owner.userId,
+				updatedBy: owner.userId,
+				updatedAt: now,
+			});
+			await ctx.db.patch("files_nodes", folderId, { restrictedScopeNodeId: folderId });
+			return folderId;
+		});
+
+		const notesId = await seed_markdown_file({
+			t,
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userId: owner.userId,
+			path: "/shared/notes.md",
+			committedMarkdown: "# Owner only",
+		});
+		// Every node in the subtree carries the scope, the way `restrict_node` stamps it.
+		await t.run(async (ctx) => await ctx.db.patch("files_nodes", notesId, { restrictedScopeNodeId: sharedId }));
+
+		const legacyId = await t.run(async (ctx) => {
+			const now = Date.now();
+			// No Yjs pointers: a stored upload rather than an editable doc, which is what sends /write
+			// down the archive-and-recreate path instead of the fill-in-place one. Restricted on itself
+			// and sitting at the root, so its own check is the only gate — inside a restricted folder
+			// the ancestor walk refuses the write before that check is ever reached.
+			const nodeId = await ctx.db.insert("files_nodes", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				parentId: files_ROOT_ID,
+				name: "legacy.md",
+				path: "/legacy.md",
+				treePath: "/legacy.md",
+				pathDepth: 1,
+				kind: "file",
+				lowercaseExtension: "md",
+				contentType: "text/markdown;charset=utf-8",
+				createdBy: owner.userId,
+				updatedBy: owner.userId,
+				updatedAt: now,
+			});
+			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+			return nodeId;
+		});
+
+		const seed_member_key = async (args: {
+			clerkUserId: string;
+			subject: string;
+			readGrantNodeIds: Array<Id<"files_nodes">>;
+		}) => {
+			const member = await t.run(async (ctx) => {
+				const now = Date.now();
+				const userId = await ctx.db.insert("users", { clerkUserId: args.clerkUserId });
+				const organization = await ctx.db.get("organizations", owner.organizationId);
+				const defaultWorkspaceId = organization!.defaultWorkspaceId!;
+
+				for (const workspaceId of [defaultWorkspaceId, owner.workspaceId]) {
+					await ctx.db.insert("organizations_workspaces_users", {
+						organizationId: owner.organizationId,
+						workspaceId,
+						userId,
+						active: true,
+						updatedAt: now,
+					});
+				}
+				// "member" carries workspace-level content.write, so no refusal below can come from the
+				// route's own workspace check. The organization role lives on the default workspace, the
+				// same way an invite writes it.
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId: owner.organizationId,
+					workspaceId: defaultWorkspaceId,
+					userId,
+					role: "member",
+					now,
+				});
+				for (const nodeId of args.readGrantNodeIds) {
+					await ctx.db.insert("access_control_permission_grants", {
+						organizationId: owner.organizationId,
+						workspaceId: owner.workspaceId,
+						resourceKind: "file",
+						resourceId: String(nodeId),
+						principalKind: "user",
+						userId,
+						permission: "content.read",
+						createdAt: now,
+						updatedAt: now,
+					});
+				}
+				await quotas_db_ensure(ctx, {
+					quotaName: "active_api_credentials",
+					userId,
+					organizationId: owner.organizationId,
+					workspaceId: owner.workspaceId,
+					now,
+				});
+
+				const membershipId = await ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", owner.workspaceId).eq("userId", userId))
+					.first()
+					.then((membership) => membership!._id);
+
+				return { userId, membershipId } as const;
+			});
+
+			const created = await t
+				.withIdentity({ issuer: "https://clerk.test", subject: args.subject, external_id: member.userId })
+				.mutation(api.public_api.api_credential_create, {
+					membershipId: member.membershipId,
+					name: args.subject,
+					scopes: ["files:read", "files:write"],
+				});
+			expect(created._nay).toBeUndefined();
+			return created._yay!.credential;
+		};
+
+		const readerKey = await seed_member_key({
+			clerkUserId: "clerk-public-api-sharee-reader",
+			subject: "public-api-sharee-reader",
+			readGrantNodeIds: [sharedId, legacyId],
+		});
+
+		// Control: outside the restricted folder this same key creates files. Without it every 403
+		// below could just as well be a broken key, a missing scope or a missing membership.
+		const ownFile = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(readerKey),
+			body: JSON.stringify({ paths: ["/reader-notes.md"] }),
+		});
+		expect(ownFile.status).toBe(200);
+
+		// The other half of the control: the reader really can see the restricted file, so the
+		// refusals below are about writing it and not about finding it.
+		const read = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(readerKey),
+			body: JSON.stringify({ path: "/shared/notes.md" }),
+		});
+		expect(read.status).toBe(200);
+
+		// The touch route's already-exists shortcut answers without staging anything, so it has to
+		// ask the node itself. Answering 200 here while /write answers 403 is the contradiction.
+		const touched = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(readerKey),
+			body: JSON.stringify({ paths: ["/shared/notes.md"] }),
+		});
+		expect(touched.status).toBe(403);
+
+		// publish_file_fill re-asks at commit time: an editable file is written in place.
+		const filled = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(readerKey),
+			body: JSON.stringify({ path: "/shared/notes.md", content: "# Mine now\n", overwrite: "replace" }),
+		});
+		expect(filled.status).toBe(403);
+
+		// publish_file_write asks before archiving what is already there.
+		const replaced = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(readerKey),
+			body: JSON.stringify({ path: "/legacy.md", content: "# Mine now\n", overwrite: "replace" }),
+		});
+		expect(replaced.status).toBe(403);
+
+		// Somebody with no grant cannot even see the file, so the route stages a create and
+		// publish_file_touch is the one that finds the node and refuses.
+		const outsiderKey = await seed_member_key({
+			clerkUserId: "clerk-public-api-sharee-outsider",
+			subject: "public-api-sharee-outsider",
+			readGrantNodeIds: [],
+		});
+		const collided = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(outsiderKey),
+			body: JSON.stringify({ paths: ["/shared/notes.md"] }),
+		});
+		expect(collided.status).toBe(403);
+
+		// A refusal must not be a write: both files are untouched and no stage is left behind.
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", notesId).then((node) => node?.archiveOperationId)).toBeUndefined();
+			expect(await ctx.db.get("files_nodes", legacyId).then((node) => node?.archiveOperationId)).toBeUndefined();
+			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
+		});
+	});
+
 	test("touches empty Markdown files and fills them in place", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
