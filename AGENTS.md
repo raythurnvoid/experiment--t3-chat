@@ -1295,6 +1295,18 @@ Before trusting any browser result about Convex code, check that the browser run
 - Load `.agents/skills/troubleshooting/SKILL.md` for service diagnostics, CLI commands, and transcript locations.
 - Remove temporary logs after verification.
 
+# Git push on this machine
+
+The `gh` CLI holds two accounts, and something on this machine keeps switching the active one to `dloreto`. A plain `git push` then fails with `403 ... denied to dloreto`. `gh auth switch --user raythurnvoid` works but does not stick, so do not rely on the ambient credential helper. Push with the command below. It reads the token into an environment variable so the token is never printed; keep it that way.
+
+Run it in PowerShell only (the backtick before `$GH_TOKEN_RV` is a PowerShell escape; in Git Bash the line breaks). Run all lines in the same shell call so the variable reaches git — with a separate call the push silently sends an empty password. Adjust `origin main` when pushing another branch.
+
+```powershell
+$env:GH_TOKEN_RV = (gh auth token --user raythurnvoid)
+git -c credential.helper= -c "credential.helper=!f() { echo username=raythurnvoid; echo password=`$GH_TOKEN_RV; }; f" push origin main
+Remove-Item Env:GH_TOKEN_RV
+```
+
 # Git commit messages
 
 Do not use Conventional Commits. Never start a commit subject with a type prefix such as `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `perf:`, `style:`, `build:`, or `ci:`, and do not add a scope in parentheses.

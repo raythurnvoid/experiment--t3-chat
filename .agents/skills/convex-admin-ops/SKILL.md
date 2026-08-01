@@ -33,6 +33,8 @@ Pop-Location
 
 Do not route JSON args through `pnpm.CMD`, `convex.ps1`, or a nested `powershell -Command`; those paths have stripped JSON quotes on this machine. If Convex reports unquoted keys or values, the function did not run. Fix the direct Node argument and verify it with a read-only function before retrying a write.
 
+The direct-node form is required only for commands that pass JSON arguments (`run`). Commands without JSON args (`data`, `logs`, `function-spec`) may use the troubleshooting skill's `vp env exec pnpm --dir packages/app exec convex ...` form, which works from the repo root. The direct-node form must run from `packages\app` — from the repo root it fails with `MODULE_NOT_FOUND`.
+
 Do not use `npm`, `npx`, Bun, or `bunx`. If a one-off Convex package executable is needed outside an installed workspace binary, use it through Vite Plus: `vp env exec pnpx <package> ...`.
 
 For operational calls that do not depend on local code changes, use:

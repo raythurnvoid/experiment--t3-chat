@@ -163,6 +163,7 @@ hardening this surface.
 
 - Always run pnpm with `--ignore-workspace` inside `plugins/*` and inside `packages/bonobo-plugin-sdk` — installing through the root workspace pollutes the parent lockfile and produces stale git-dep pins.
 - Published plugin versions are immutable — never rewrite one; bump to the first unused patch version.
+- Comments in `src/` reach `dist/`, so even a comment-only source change alters the dist hashes and the manifest. Batch cosmetic source fixes with the next real release instead of shipping a version bump for them.
 - A release must reconcile six touchpoints: SDK remote SHA, Gallery `package.json` SDK pin, Gallery lockfile resolution, Gallery plugin version (`package.json` + `bonobo.plugin.json`), Gallery remote commit = checked-out submodule HEAD, and the parent gitlink (staged only by the user, never by agents).
 - Run the Gallery build twice before releasing; the second build must produce no tracked diff.
 

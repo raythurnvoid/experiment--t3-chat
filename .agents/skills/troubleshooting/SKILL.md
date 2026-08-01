@@ -40,6 +40,8 @@ Run the repo-pinned Convex CLI with an explicit app package directory:
 vp env exec pnpm --dir packages/app exec convex data files_r2_assets --limit 20 --order desc --format json
 ```
 
+`--format json` is fine for exploratory reads; use `--format jsonArray` when the admin-ops skill's exact-readback rule applies. This pnpm form works from the repo root for commands without JSON args (`data`, `logs`); commands that pass JSON args must use the admin-ops direct-node form from `packages/app`.
+
 Fetch recent logs:
 
 ```powershell

@@ -14,6 +14,8 @@ Use Playwriter directly, add only reusable primitives to the installed harness, 
 
 # Start
 
+Run this section again after a context compaction or when resuming an old conversation. Previous session ids are dead, every new session starts with an empty `state` (`{}`), and leftover runners from the old context may target tabs, accounts, or org routes that no longer exist. Read `references/known-hazards.md` before the first Playwriter command — it answers most first failures (empty `state`, bare `context` global, the 10s default `--timeout`, the sandbox filesystem, always-mounted dialogs).
+
 1. Read the installed `playwriter` skill. Before the first Playwriter command in this session, run the CLI documentation through Vite Plus and read its full output. Do not truncate it:
 
 ```powershell
@@ -30,16 +32,18 @@ $session = ($sessionOutput | Select-String -Pattern "Session (\d+) created").Mat
 if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() }
 ```
 
-3. Install the helper namespace in that session:
+If several browsers are listed, no command lists tabs per browser before a session exists. Create a session on the most likely key and probe `context.pages().map((p) => p.url())`; if the target tab is not there, create a session on the next key and delete the wrong one with `session delete <id>`. If your shell does not keep variables between calls, inline the printed session id into later commands.
+
+3. Install the helper namespace in that session. Pass the script with `-f` and an absolute path — the CLI reads the file from the real disk before the sandbox starts. Do not use `-e` with `fs.readFileSync`: the sandbox filesystem cannot read repo files reliably (see `references/known-hazards.md`):
 
 ```powershell
-vp env exec pnpx playwriter -s $session --% -e "const fs = require('node:fs'); const code = fs.readFileSync('.agents/skills/app-playwriter-harness/scripts/install-harness.js', 'utf8'); await eval(code);"
+vp env exec pnpx playwriter -s $session -f "C:/Users/rt0/Documents/workspace/rt0/t3-chat/.agents/skills/app-playwriter-harness/scripts/install-harness.js"
 ```
 
-4. Bind to the target app tab before acting:
+4. Bind to the target app tab before acting. Use PowerShell single quotes around `-e` with double quotes inside the JavaScript — the `--%` stop-parsing token does not survive `vp env exec`, and the CLI then misreads the JavaScript as a command name:
 
 ```powershell
-vp env exec pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' });"
+vp env exec pnpx playwriter -s $session -e 'await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/w/personal/home/files" });'
 ```
 
 # Workflow
@@ -95,6 +99,7 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 - Read `references/agent-panel.md` for AI chat / agent panel selectors, the ProseMirror composer recipe, doneness polling, and backgrounded-tab recovery (`scripts/agent-chat-helpers.js` installs `state.qa`).
 - Read `references/files.md` for `/files` route and file/sidebar basics.
 - Read `references/plugin-gallery.md` for driving the Gallery plugin page inside its sandboxed iframe.
+- Read `references/plugin-marketplace.md` for installing, updating, and uninstalling plugins from the catalog and detail pages, and for embedding upload fixtures in runners.
 - Read `references/plugin-configuration.md` for saving upload-folder YAML and proving matched and unmatched automatic runs.
 - Read `references/file-node-view.md` for selected-file editor surfaces, comments, diff, and right-sidebar workflows.
 - Read `references/collab-yjs-comments-regression.md` before changing the integrated collaboration code (`files-yjs-*.ts`, `file-editor-rich-text-*.ts`) or upgrading `@liveblocks/core`.
