@@ -787,6 +787,16 @@ export const finalize_uploaded_markdown_file = internalAction({
 			throw should_never_happen(errorMessage, errorData);
 		}
 
+		if (asset.size !== undefined && asset.size > files_MAX_TEXT_CONTENT_BYTES) {
+			// Treat over-limit Markdown uploads as processed stored files without downloading them;
+			// retrying cannot make the content smaller.
+			await ctx.runMutation(internal.r2.patch_asset, {
+				assetId: asset._id,
+				processingWorkId: null,
+			});
+			return null;
+		}
+
 		const response = await r2_fetch_object_from_bucket({ key: asset.r2Key });
 		const markdownContent = await response.text();
 		if (files_get_utf8_byte_size(markdownContent) > files_MAX_TEXT_CONTENT_BYTES) {

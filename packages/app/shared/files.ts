@@ -114,11 +114,12 @@ export function files_normalize_ai_edit_content(content: string, baselineContent
 }
 
 /**
- * 50 MiB.
+ * 500 MiB. Raw uploads are stored in R2 as-is.
  *
- * Keep this aligned with the Modal file converter `maxBytes` contract.
+ * The Modal file converter `maxBytes` contract stays at 50 MiB, so consumers
+ * that route uploads to the converter must enforce their own smaller cap.
  **/
-export const files_MAX_UPLOADS_BYTES = 50 * 1024 * 1024;
+export const files_MAX_UPLOADS_BYTES = 500 * 1024 * 1024;
 
 export function files_create_tree_items_list_from_nodes(nodes: files_VisibleTreeNode[]) {
 	return [files_SYNTHETIC_ROOT_FOLDER, ...nodes];
