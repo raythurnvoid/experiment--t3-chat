@@ -83,6 +83,14 @@ const rate_limiter_CONFIG = {
 	plugins_manage: STRICT_AUTH_OR_BILLING,
 	// Initial mint plus occasional refresh per open plugin page; token TTL is 30 minutes.
 	plugins_ui_session_mint: STRICT_WRITE,
+	// File views mint on every file switch and every details/view toggle, so browsing a few videos
+	// in quick succession must not read as a broken page. Refresh stays on the stricter page bucket.
+	plugins_ui_file_view_session_mint: {
+		kind: "token bucket",
+		rate: 30,
+		period: MINUTE,
+		capacity: 8,
+	},
 	// Each fresh plugin artifact review is a system-billed model call; cached artifact hashes bypass this.
 	plugins_publish_review: {
 		kind: "token bucket",

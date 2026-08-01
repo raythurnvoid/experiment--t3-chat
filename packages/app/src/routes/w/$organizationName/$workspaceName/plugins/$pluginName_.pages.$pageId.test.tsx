@@ -41,8 +41,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		plugins_ui: {
 			list_ui_pages: "plugins_ui.list_ui_pages",
 			mint_page_session: "plugins_ui.mint_page_session",
-			refresh_page_session: "plugins_ui.refresh_page_session",
-			revoke_page_session: "plugins_ui.revoke_page_session",
+			refresh_ui_session: "plugins_ui.refresh_ui_session",
+			revoke_ui_session: "plugins_ui.revoke_ui_session",
 		},
 	},
 }));
@@ -250,7 +250,7 @@ describe("RoutePluginsPluginPage", () => {
 		});
 
 		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
-		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_page_session", {
+		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_ui_session", {
 			membershipId: "membership_1",
 			sessionId: "session_late",
 		});
@@ -284,7 +284,7 @@ describe("RoutePluginsPluginPage", () => {
 		});
 
 		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
-		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_page_session", {
+		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_ui_session", {
 			membershipId: "membership_1",
 			sessionId: "session_after_unmount",
 		});
@@ -368,7 +368,7 @@ describe("RoutePluginsPluginPage", () => {
 					},
 				});
 			}
-			if (reference === "plugins_ui.refresh_page_session") {
+			if (reference === "plugins_ui.refresh_ui_session") {
 				return refreshPromise;
 			}
 			return Promise.resolve({ _yay: {} });
@@ -412,7 +412,7 @@ describe("RoutePluginsPluginPage", () => {
 		});
 
 		expect(
-			mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.refresh_page_session"),
+			mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.refresh_ui_session"),
 		).toHaveLength(1);
 		expect(postMessageMock).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "bonobo:token", requestId: "refresh_1", token: "plu_2" }),
@@ -436,7 +436,7 @@ describe("RoutePluginsPluginPage", () => {
 					},
 				});
 			}
-			if (reference === "plugins_ui.refresh_page_session") {
+			if (reference === "plugins_ui.refresh_ui_session") {
 				return refreshPromise;
 			}
 			return Promise.resolve({ _yay: {} });
@@ -496,7 +496,7 @@ describe("RoutePluginsPluginPage", () => {
 		});
 
 		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
-		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_page_session", {
+		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_ui_session", {
 			membershipId: "membership_1",
 			sessionId: "session_late",
 		});

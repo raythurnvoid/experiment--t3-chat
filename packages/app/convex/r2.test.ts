@@ -326,6 +326,7 @@ async function install_upload_plugin(
 			},
 		],
 		pages: [],
+		fileViews: [],
 		capabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: [],
 		files: [

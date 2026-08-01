@@ -138,6 +138,7 @@ async function register_media_plugin(
 			},
 		],
 		pages: [],
+		fileViews: [],
 		capabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: args.outboundOrigins ?? [],
 		files: [
@@ -4612,6 +4613,7 @@ describe("plugins publish_version", () => {
 			artifactHash?: string;
 			manifestR2Key?: string;
 			pages?: Array<{ id: string; title: string; entry: string; navItem: null }>;
+			fileViews?: Array<{ id: string; title: string; entry: string; contentTypes: string[] }>;
 			files?: Array<{
 				path: string;
 				sha256: string;
@@ -4648,6 +4650,7 @@ describe("plugins publish_version", () => {
 				configuration: null,
 				events: [{ type: "files.upload.completed", contentTypes: ["image/png"], filters: [] }],
 				pages: args.pages ?? [],
+				fileViews: args.fileViews ?? [],
 				capabilities: ["plugin.secrets.read"],
 				outboundOrigins: [],
 				files: args.files ?? [],
@@ -4793,6 +4796,7 @@ describe("plugins publish_version", () => {
 	async function mock_publish_github_fetch_files(args: {
 		files: Array<{ path: string; content: string | Uint8Array<ArrayBuffer>; contentType: string }>;
 		pages?: Array<{ id: string; title: string; entry: string }>;
+		fileViews?: Array<{ id: string; title: string; entry: string; contentTypes: string[] }>;
 		backendEntry?: string;
 		delayMs?: number;
 	}) {
@@ -4816,6 +4820,7 @@ describe("plugins publish_version", () => {
 				: {}),
 			events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 			pages: args.pages ?? [],
+			...(args.fileViews ? { fileViews: args.fileViews } : {}),
 			capabilities: ["plugin.secrets.read"],
 			outboundOrigins: [],
 			files: await Promise.all(
@@ -4901,6 +4906,7 @@ describe("plugins publish_version", () => {
 			configuration: null,
 			events: [],
 			pages: [],
+			fileViews: [],
 			capabilities: [],
 			outboundOrigins: [],
 			files: [],
@@ -5026,6 +5032,57 @@ describe("plugins publish_version", () => {
 		expect(prompt).toContain('<main class="page-marker">Gallery</main>');
 		expect(prompt.indexOf("dist/ui/index.html")).toBeLessThan(prompt.indexOf("dist/ui/z.css"));
 		expect(prompt).not.toContain("schemaVersion");
+	});
+
+	test("publishes a file-view-only artifact through AI review and stores the declared file views", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		await mock_publish_github_fetch_files({
+			files: [
+				{
+					path: "dist/ui/player.html",
+					content: '<video class="player-marker" controls></video>',
+					contentType: "text/html",
+				},
+			],
+			fileViews: [{ id: "player", title: "Video player", entry: "dist/ui/player.html", contentTypes: ["video/mp4"] }],
+		});
+		const aiReview = mock_ai_review();
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		if (published._nay) throw new Error(published._nay.message);
+
+		// A file view entry is always reviewable text/html, so the artifact must reach the AI review
+		// instead of the empty-review auto-pass path.
+		expect(aiReview).toHaveBeenCalledTimes(1);
+		expect(aiReview.mock.calls[0]?.[0].prompt ?? "").toContain('<video class="player-marker" controls></video>');
+
+		const version = await t.run((ctx) => ctx.db.get("plugins_versions", published._yay.pluginVersionId));
+		expect(version?.fileViews).toEqual([
+			{ id: "player", title: "Video player", entry: "dist/ui/player.html", contentTypes: ["video/mp4"] },
+		]);
+	});
+
+	test("rejects a publish whose file view entry is not a listed file", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const github = await mock_publish_github_fetch_files({
+			files: [{ path: "dist/ui/player.html", content: "<main>Player</main>", contentType: "text/html" }],
+			fileViews: [{ id: "player", title: "Video player", entry: "dist/ui/missing.html", contentTypes: ["video/mp4"] }],
+		});
+		const aiReview = mock_ai_review();
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+
+		expect(published).toEqual({ _nay: { message: 'Plugin file view "player" entry must be a listed file' } });
+		expect(aiReview).not.toHaveBeenCalled();
+		expect(github.uploadUrls).toEqual([]);
+		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
+		expect(versions).toEqual([]);
 	});
 
 	test("rejects an executable extension and content-type mismatch before AI review", async () => {
@@ -7394,6 +7451,7 @@ describe("plugins admin hard delete", () => {
 				configuration: null,
 				events: [],
 				pages: [],
+				fileViews: [],
 				capabilities: [],
 				outboundOrigins: [],
 				files: [
@@ -7472,6 +7530,7 @@ describe("plugins admin hard delete", () => {
 				configuration: null,
 				events: [],
 				pages: [],
+				fileViews: [],
 				capabilities: [],
 				outboundOrigins: [],
 				files: [
@@ -7525,6 +7584,7 @@ describe("plugins admin hard delete", () => {
 						configuration: null,
 						events: [],
 						pages: [],
+						fileViews: [],
 						capabilities: [],
 						outboundOrigins: [],
 						files: [],

@@ -123,10 +123,16 @@ async function resolve_role_permissions(
  * only manages members could hand out a payroll folder they cannot open themselves, just by
  * assigning the role it was shared with.
  *
- * A role given on the default workspace is the organization role and works in every workspace, so
- * that case has to weigh grants from every workspace, not only the one being written. Each grant is
- * judged in the workspace it lives in, and the caller must be a member there: nobody hands out
- * access where they have none.
+ * `reach` says where this role will really reach the target, and the scan covers exactly that.
+ * Pass `"organization"` when the role is written on the default workspace and so becomes the
+ * organization role: it works in every workspace the target already belongs to, so grants from every
+ * workspace count. Pass the workspace list when the write only makes them a member of those
+ * workspaces. An invite is the case that matters. A grant living in a workspace the invite does not
+ * join can never reach the invitee through it, so weighing that grant refuses the invite for a
+ * reason the caller cannot act on, and the refusal names no node to go and look at.
+ *
+ * Each grant is judged in the workspace it lives in, and the caller must be a member there: nobody
+ * hands out access where they have none.
  *
  * Membership is asked here by hand. Everywhere else a handler proves it before anything looks at a
  * node, and `has_restricted_file_permission` leans on that — it answers yes to a role grant without
@@ -139,7 +145,7 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
 	args: {
 		organization: Doc<"organizations">;
 		defaultWorkspaceId: Id<"organizations_workspaces">;
-		workspaceId: Id<"organizations_workspaces">;
+		reach: "organization" | Id<"organizations_workspaces">[];
 		role: access_control_RoleRef;
 		userId: Id<"users">;
 	},
@@ -153,14 +159,31 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
 		return null;
 	}
 
-	const isDefaultWorkspace = args.workspaceId === args.defaultWorkspaceId;
-	const grants = await ctx.db
-		.query("access_control_permission_grants")
-		.withIndex("by_organization_role_workspace_resource", (q) => {
-			const byRole = q.eq("organizationId", args.organization._id).eq("principalKind", "role").eq("role", args.role);
-			return isDefaultWorkspace ? byRole : byRole.eq("workspaceId", args.workspaceId);
-		})
-		.collect();
+	// `null` means "do not filter by workspace", which is how the organization-wide scan is spelled.
+	const scannedWorkspaceIds = args.reach === "organization" ? [null] : args.reach;
+	const grants = (
+		await Promise.all(
+			scannedWorkspaceIds.map((workspaceId) =>
+				ctx.db
+					.query("access_control_permission_grants")
+					.withIndex("by_organization_role_workspace_resource", (q) => {
+						const byRole = q
+							.eq("organizationId", args.organization._id)
+							.eq("principalKind", "role")
+							.eq("role", args.role);
+						return workspaceId === null ? byRole : byRole.eq("workspaceId", workspaceId);
+					})
+					.collect(),
+			),
+		)
+	).flat();
+
+	// One membership read per workspace, not per grant. A node shared at `manage` writes three grant
+	// docs in the same workspace, so the same lookup would otherwise run three times.
+	const membershipByWorkspaceId = new Map<
+		Id<"organizations_workspaces">,
+		Doc<"organizations_workspaces_users"> | null
+	>();
 
 	for (const grant of grants) {
 		if (grant.resourceKind !== "file") {
@@ -175,11 +198,15 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
 			continue;
 		}
 
-		const callerMembership = await db_get_active_membership(ctx, {
-			userId: args.userId,
-			organizationId: args.organization._id,
-			workspaceId: grant.workspaceId,
-		});
+		let callerMembership = membershipByWorkspaceId.get(grant.workspaceId);
+		if (callerMembership === undefined) {
+			callerMembership = await db_get_active_membership(ctx, {
+				userId: args.userId,
+				organizationId: args.organization._id,
+				workspaceId: grant.workspaceId,
+			});
+			membershipByWorkspaceId.set(grant.workspaceId, callerMembership);
+		}
 		if (!callerMembership) {
 			return grant;
 		}
@@ -210,11 +237,15 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
  * the node. So putting a role on a share list is a way of handing the role out, and it asks the same
  * question — you may only share with a role you could assign yourself.
  *
- * Without this rule anybody given "Can manage" on one folder can lock every admin out of inviting.
- * That grant carries `content.permissions.manage` on the node without making them an admin, and one
- * share with `member` then makes `member` unassignable by anyone who cannot open that folder — which
- * is every invite, because the invite hands out `member`. The refusal names no node, so there is no
- * way in the product to find the folder that caused it.
+ * This rule only reaches a caller without `organization.roles.manage`. An admin who holds it, and
+ * the owner, may still put `member` on a share list, so it does not prevent the state below.
+ *
+ * That state used to lock every admin out of inviting. An invite hands out `member`, so one share
+ * with `member` made `member` unassignable by anybody without a grant on that folder, and the
+ * refusal named no node to go and fix. What prevents it now is `reach` on
+ * `access_control_db_role_file_grant_caller_cannot_give`: an invite weighs only the workspaces it
+ * really joins the invitee to, so a share sitting in a workspace the invite does not touch cannot
+ * refuse it.
  */
 export async function access_control_db_caller_cannot_share_with_role(
 	ctx: QueryCtx | MutationCtx,
@@ -695,10 +726,16 @@ async function db_resolve_live_restricted_scope(
 /**
  * Keep only the file nodes the user may read.
  *
- * By default every caller has already proved workspace-wide `content.read`, so a node with no
- * restricted scope passes without a single extra read. Only restricted nodes cost anything, and the
- * answer is worked out once per scope instead of once per node: a restricted folder with 500 files
- * inside is one check, not 500.
+ * By default the caller is taken to hold workspace-wide `content.read`, so a node with no restricted
+ * scope passes without a single extra read. Only restricted nodes cost anything, and the answer is
+ * worked out once per scope instead of once per node: a restricted folder with 500 files inside is
+ * one check, not 500.
+ *
+ * Every list surface proves that read first — except the public API's `plugin_run` principal, which
+ * `public_api.ts` deliberately exempts from the permission check so a run can fetch its own source
+ * file. That default therefore lets a run read an unrestricted node even after the actor who started
+ * it lost workspace read. It stays bounded: a run may only ask for its own `sourceFileNodeId`, which
+ * the actor uploaded, and the token expires. Do not lean on the default as proof of anything.
  *
  * Use this on every surface that returns more than one node. Without it a restricted file keeps its
  * name and path visible in the tree, in search, and in the activity list, which tells everyone in
@@ -1638,7 +1675,7 @@ export const update_role = mutation({
 			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
 				organization,
 				defaultWorkspaceId,
-				workspaceId: defaultWorkspaceId,
+				reach: "organization",
 				role: role._id,
 				userId: userAuth.id,
 			});
@@ -1781,9 +1818,10 @@ export const delete_role = mutation({
 			return Result({ _nay: { message: "Give this role's members another role first" } });
 		}
 		if (grant) {
-			// Cannot happen until file sharing writes the first role grant. When that lands, it must
-			// also ship a way to remove such a grant. Otherwise this error has no way out and the role
-			// can never be deleted by anyone, not even the owner.
+			// Reachable: `db_set_principal_level` writes `principalKind: "role"` grants from the share
+			// dialog. The way out is `files_sharing.remove_node_share_grant` — take the role off every
+			// share list, then delete it. Without that the role could never be deleted by anyone, not
+			// even the owner.
 			return Result({ _nay: { message: "This role is still used to share a file or folder" } });
 		}
 
@@ -1826,7 +1864,7 @@ export const delete_role = mutation({
 			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
 				organization,
 				defaultWorkspaceId,
-				workspaceId: defaultWorkspaceId,
+				reach: "organization",
 				role: "viewer",
 				userId: userAuth.id,
 			});
@@ -2021,7 +2059,9 @@ export const set_user_role = mutation({
 			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
 				organization,
 				defaultWorkspaceId,
-				workspaceId: args.workspaceId,
+				// A role written on the default workspace is the organization role and reaches every
+				// workspace the target is already in; anywhere else it reaches only that workspace.
+				reach: args.workspaceId === defaultWorkspaceId ? "organization" : [args.workspaceId],
 				role: args.role,
 				userId: userAuth.id,
 			});

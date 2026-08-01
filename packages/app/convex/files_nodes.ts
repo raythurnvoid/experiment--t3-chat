@@ -1976,8 +1976,11 @@ async function db_apply_node_move(
 	// is restricted itself keeps its own scope, and carries its whole subtree with it, so nothing
 	// below it changes either.
 	//
-	// Moving a file out of a restricted folder does open it to the workspace. That is on purpose: only
-	// somebody who may already edit that file can move it, and they could copy its text out anyway.
+	// Moving a file out of a restricted folder does open it to the whole workspace. That is on purpose,
+	// but be clear about how much it gives away: a `write` grant is enough to do it, not `manage`, and
+	// moving a folder does it to every file under it in one action. So anybody the share list lets edit
+	// can hand the workspace read access to the whole subtree. "They could copy the text out anyway" is
+	// not the same thing — copying gives one person a copy, this gives everyone the real file.
 	// `args.node` was read before the patch above, so it still holds the scope from before the move.
 	if (args.node.restrictedScopeNodeId !== args.node._id) {
 		const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {

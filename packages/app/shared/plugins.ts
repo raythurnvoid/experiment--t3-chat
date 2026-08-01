@@ -544,6 +544,7 @@ const COMPATIBILITY_DATE_REGEX = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
 const MAX_FILES = 64;
 const MAX_PAGES = 16;
 const MAX_NAV_ITEMS = 8;
+const MAX_FILE_VIEWS = 8;
 const MAX_EVENTS = 8;
 const MAX_EVENT_FILTERS = 8;
 const MAX_CONFIGURATION_PATH_SEGMENTS = 16;
@@ -551,6 +552,8 @@ const MAX_CONFIGURATION_PATH_SEGMENT_LENGTH = 128;
 const MAX_CONFIGURATION_DESCRIPTION_LENGTH = 500;
 const MAX_CONTENT_TYPES_PER_EVENT = 32;
 const MAX_EXPANDED_EVENT_CONTENT_TYPES = 64;
+const MAX_CONTENT_TYPES_PER_FILE_VIEW = 32;
+const MAX_EXPANDED_FILE_VIEW_CONTENT_TYPES = 64;
 const MAX_OUTBOUND_ORIGINS = 16;
 const MAX_FILE_PATH_LENGTH = 512;
 const MAX_CONTENT_TYPE_LENGTH = 255;
@@ -653,6 +656,31 @@ const page_schema = z
 	})
 	.strict();
 
+const file_view_schema = z
+	.object({
+		id: z.string().regex(PAGE_ID_REGEX),
+		title: z.string().min(1).max(80),
+		/** Must match a files[] entry with contentType "text/html"; served into a sandboxed iframe. */
+		entry: module_path_schema,
+		/** Exact stored file content types this view opens for; matched against `files_nodes.contentType`. */
+		contentTypes: z
+			.array(
+				z
+					.string()
+					.min(1)
+					.max(
+						MAX_CONTENT_TYPE_LENGTH,
+						`File view content types must be at most ${MAX_CONTENT_TYPE_LENGTH} characters`,
+					),
+			)
+			.min(1)
+			.max(
+				MAX_CONTENT_TYPES_PER_FILE_VIEW,
+				`Plugin file views can declare at most ${MAX_CONTENT_TYPES_PER_FILE_VIEW} content types`,
+			),
+	})
+	.strict();
+
 const manifest_schema = z
 	.object({
 		schemaVersion: z.literal(MANIFEST_SCHEMA_VERSION),
@@ -677,6 +705,10 @@ const manifest_schema = z
 		configuration: plugin_configuration_schema.nullable().default(null),
 		events: z.array(event_schema).max(MAX_EVENTS, `Plugin manifests can declare at most ${MAX_EVENTS} events`),
 		pages: z.array(page_schema).max(MAX_PAGES).optional(),
+		fileViews: z
+			.array(file_view_schema)
+			.max(MAX_FILE_VIEWS, `Plugin manifests can declare at most ${MAX_FILE_VIEWS} file views`)
+			.optional(),
 		capabilities: z.array(z.enum(CAPABILITIES)),
 		outboundOrigins: z
 			.array(z.string())
@@ -782,6 +814,40 @@ export function plugins_validate_manifest(input: unknown) {
 			return Result({ _nay: { message: `Plugin page "${page.id}" entry must be a text/html file` } });
 		}
 	}
+	// File view ids share the pages id namespace: both address one sandboxed iframe entry per id.
+	const fileViewContentTypes = new Set<string>();
+	let expandedFileViewContentTypeCount = 0;
+	for (const fileView of parsed.data.fileViews ?? []) {
+		if (pageIds.has(fileView.id)) {
+			return Result({ _nay: { message: `Plugin manifest has duplicate file view id "${fileView.id}"` } });
+		}
+		pageIds.add(fileView.id);
+		// One manifest must not declare the same content type in two file views: the open-file
+		// resolver could not pick between them.
+		for (const contentType of fileView.contentTypes) {
+			if (fileViewContentTypes.has(contentType)) {
+				return Result({
+					_nay: { message: `Plugin manifest has duplicate file view content type "${contentType}"` },
+				});
+			}
+			fileViewContentTypes.add(contentType);
+			expandedFileViewContentTypeCount += 1;
+			if (expandedFileViewContentTypeCount > MAX_EXPANDED_FILE_VIEW_CONTENT_TYPES) {
+				return Result({
+					_nay: {
+						message: `Plugin manifest declares more than ${MAX_EXPANDED_FILE_VIEW_CONTENT_TYPES} file view content types`,
+					},
+				});
+			}
+		}
+		const entryFile = parsed.data.files.find((file) => file.path === fileView.entry);
+		if (!entryFile) {
+			return Result({ _nay: { message: `Plugin file view "${fileView.id}" entry must be a listed file` } });
+		}
+		if (entryFile.contentType !== "text/html") {
+			return Result({ _nay: { message: `Plugin file view "${fileView.id}" entry must be a text/html file` } });
+		}
+	}
 	const capabilities = new Set<string>();
 	for (const capability of parsed.data.capabilities) {
 		if (capabilities.has(capability)) {
@@ -793,3 +859,28 @@ export function plugins_validate_manifest(input: unknown) {
 }
 
 // #endregion manifest
+
+// #region file view selection
+
+/**
+ * Pick the plugin file view to open for a file's content type. When several installed plugins
+ * declare a matching view, the earliest installation wins so the chosen view stays stable.
+ */
+export function plugins_pick_file_view<
+	Plugin extends { installationCreatedAt: number; fileViews: { contentTypes: string[] }[] },
+>(plugins: Plugin[] | undefined, contentType: string | undefined) {
+	if (!plugins || !contentType) {
+		return null;
+	}
+
+	let match: { plugin: Plugin; fileView: Plugin["fileViews"][number]; contentType: string } | null = null;
+	for (const plugin of plugins) {
+		const fileView = plugin.fileViews.find((item) => item.contentTypes.includes(contentType));
+		if (fileView && (!match || plugin.installationCreatedAt < match.plugin.installationCreatedAt)) {
+			match = { plugin, fileView, contentType };
+		}
+	}
+	return match;
+}
+
+// #endregion file view selection

@@ -1072,6 +1072,34 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 
 			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
 				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
+					File views
+				</h3>
+				{plugin.fileViews.length === 0 ? (
+					<div className={"RoutePluginsPluginAccess-empty" satisfies RoutePluginsPluginAccess_ClassNames}>
+						No file views.
+					</div>
+				) : (
+					<>
+						<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+							{plugin.fileViews.map((fileView) => (
+								<li
+									key={fileView.id}
+									className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+								>
+									{fileView.title} — {fileView.contentTypes.join(", ")}
+								</li>
+							))}
+						</ul>
+						<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
+							A file view opens instead of the file details card when a member opens a file with one of
+							these content types.
+						</p>
+					</>
+				)}
+			</section>
+
+			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
+				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
 					Backend network access
 				</h3>
 				{plugin.outboundOrigins.length === 0 ? (

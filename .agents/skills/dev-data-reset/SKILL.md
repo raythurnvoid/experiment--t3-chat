@@ -1,6 +1,6 @@
 ---
 name: dev-data-reset
-description: Wipe the dev Convex deployment back to a from-scratch state (preserving Clerk-backed users and their auth/billing) and reseed the first-party plugins (gallery, image, video, pdf) by republishing and reinstalling them. Use when Ray asks to reset dev data, start from scratch, clean up the database, or erase data ahead of a schema change instead of writing compatibility or migration code.
+description: Wipe the dev Convex deployment back to a from-scratch state (preserving Clerk-backed users and their auth/billing) and reseed the first-party plugins (gallery, image, video, pdf, video-player) by republishing and reinstalling them. Use when Ray asks to reset dev data, start from scratch, clean up the database, or erase data ahead of a schema change instead of writing compatibility or migration code.
 ---
 
 # Preserve Accounts And Shared Tenants
@@ -70,6 +70,7 @@ First-party plugin repositories (git submodules under `plugins/`):
 - `https://github.com/raythurnvoid/bonobo-plugin-image`
 - `https://github.com/raythurnvoid/bonobo-plugin-video`
 - `https://github.com/raythurnvoid/bonobo-plugin-pdf`
+- `https://github.com/raythurnvoid/bonobo-plugin-video-player`
 
 For each plugin, in order:
 
@@ -79,11 +80,12 @@ For each plugin, in order:
    - `image`: `OPENAI_API_KEY` — origins `https://api.openai.com`
    - `video`: `MISTRAL_API_KEY` (`https://api.mistral.ai`), `OPENAI_API_KEY` (`https://api.openai.com`), `MODAL_MEDIA_AUDIO_URL` and `MODAL_TOKEN` (origin = the Modal extractor origin)
    - `pdf`: `MODAL_FILE_CONVERTER_URL` and `MODAL_TOKEN` (origin = the file-converter origin)
+   - `video-player`: no publisher secrets
 3. **Install.** On the same detail page, click `Install` and accept the consent modal (capabilities + outbound origins). The button reads `Update`/`Reinstall` if an installation already exists.
 
 # Verification
 
-- `plugins_versions` has all four plugins with `reviewStatus: "passed"`; `plugins_workspace_installations` has one installation doc per plugin for the workspace; the seven expected publisher-secret docs show `valuePreview: "configured"` (1 image + 4 video + 2 pdf; Gallery has none).
+- `plugins_versions` has all five plugins with `reviewStatus: "passed"`; `plugins_workspace_installations` has one installation doc per plugin for the workspace; the seven expected publisher-secret docs show `valuePreview: "configured"` (1 image + 4 video + 2 pdf; Gallery and Video Player have none).
 - Open the Gallery page once and confirm its iframe reaches the grid or empty state. This checks the published frontend asset, SDK handshake, session mint, and installation together.
 - Functional smoke: upload a small image into a files workspace and poll for the `.description.md` sibling (~2 min). For deep QA use the playbooks in `.agents/skills/app-playwriter-harness/references/`: `image-plugin-description.md` and `video-plugin-transcription.md`.
 - Report which deployment was reset, every user id and purge mode used, and any skipped step with its real blocker.

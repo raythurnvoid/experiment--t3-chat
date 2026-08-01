@@ -195,6 +195,7 @@ async function access_control_test_seed_activity(
 			configuration: null,
 			events: [],
 			pages: [],
+			fileViews: [],
 			capabilities: [],
 			outboundOrigins: [],
 			files: [],
@@ -4612,6 +4613,97 @@ describe("file sharing", () => {
 			},
 		);
 		expect(invitedAfterShare._nay).toBeUndefined();
+	});
+
+	test("a share in a workspace the invite does not join does not refuse the invite", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "invite-reach-org",
+			suffix: "invite-reach",
+		});
+
+		const bobId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-invite-reach-bob" });
+
+		// A side workspace the inviter is never put into. That is the whole test.
+		const sideWorkspaceId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const workspace = await organizations_db_create_workspace(ctx, {
+				userId: fixture.ownerId,
+				organizationId: fixture.organizationId,
+				name: "payroll-side",
+				description: "",
+				now,
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return workspace._yay.workspaceId;
+		});
+
+		const ownerSideMembershipId = await access_control_test_read_membership_id(t, {
+			organizationId: fixture.organizationId,
+			workspaceId: sideWorkspaceId,
+			userId: fixture.ownerId,
+		});
+
+		const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: ownerSideMembershipId,
+			parentId: files_ROOT_ID,
+			path: "payroll",
+		});
+		expect(folder._nay).toBeUndefined();
+		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: ownerSideMembershipId,
+			nodeId: folder._yay!.nodeId,
+		});
+		expect(restricted._nay).toBeUndefined();
+
+		// Shared with `member`, the role every invite of a new person hands out. Weighed organization-wide
+		// this one grant would make `member` unassignable by anybody without access to this folder, which
+		// is every admin — and the refusal names no node to go and fix.
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: ownerSideMembershipId,
+			nodeId: folder._yay!.nodeId,
+			principal: { kind: "role", role: "member" },
+			level: "read",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		// An ordinary admin, which is who this used to lock out. `admin` holds everything `member` holds,
+		// so the permission-list ceiling passes and only the file-grant ceiling can refuse.
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const inviterAssigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: fixture.memberId,
+			role: "admin",
+		});
+		expect(inviterAssigned._nay).toBeUndefined();
+
+		// Bob is new, so this invite really does hand out `member`. It joins the default workspace only,
+		// where nothing is shared, so the folder above can never reach him through it.
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const invited = await fixture.asMember.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userIdToAdd: bobId,
+		});
+		expect(invited._nay).toBeUndefined();
+
+		// Positive control: the same share still refuses an invite that does join that workspace.
+		// Without this the test would pass against a ceiling that had stopped refusing anything.
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const invitedIntoSide = await fixture.asMember.mutation(
+			api.organizations.invite_user_to_organization_workspace,
+			{
+				organizationId: fixture.organizationId,
+				workspaceId: sideWorkspaceId,
+				userIdToAdd: bobId,
+			},
+		);
+		expect(invitedIntoSide._nay?.message).toContain("shared on a file");
 	});
 
 	test("someone given Can manage on a folder cannot share it with a role", async () => {

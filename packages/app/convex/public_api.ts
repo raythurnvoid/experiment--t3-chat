@@ -1238,6 +1238,18 @@ function has_same_download_authority(
 	}
 }
 
+/**
+ * Builds an `inline` Content-Disposition value with the file name encoded per RFC 5987, so any
+ * Unicode name survives the header without breaking it.
+ */
+function content_disposition_inline(fileName: string) {
+	const encoded = encodeURIComponent(fileName).replace(
+		/['()*]/g,
+		(char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+	);
+	return `inline; filename*=UTF-8''${encoded}`;
+}
+
 async function authorize_request<K extends PrincipalKind>(
 	ctx: ActionCtx,
 	request: Request,
@@ -3712,7 +3724,17 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 									}
 									return {
 										fileNodeId,
-										url: await r2_get_download_url({ key: signKey, options: { expiresIn } }),
+										// Upload content types are client-supplied. Pin the stored type and an inline
+										// disposition into the signed request, so spoofed bytes can never be served as
+										// another type (for example text/html) from the shared R2 origin.
+										url: await r2_get_download_url({
+											key: signKey,
+											options: {
+												expiresIn,
+												responseContentType: data.fileNode.contentType,
+												responseContentDisposition: content_disposition_inline(data.fileNode.name),
+											},
+										}),
 									};
 								}),
 							);

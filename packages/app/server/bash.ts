@@ -8261,6 +8261,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						configuration: null,
 						events: [{ type: "files.upload.completed", contentTypes: ["image/png"], filters: [] }],
 						pages: [],
+						fileViews: [],
 						capabilities: [],
 						outboundOrigins: [],
 						files: [],

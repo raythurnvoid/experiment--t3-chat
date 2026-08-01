@@ -1,6 +1,6 @@
 ---
 name: plugin-system
-description: Plugin publishing limits, artifact cleanup, plugin UI pages, the Gallery plugin, and SDK/Gallery release mechanics. Use when changing plugin manifest validation (`packages/app/shared/plugins.ts`), the publish pipeline or artifact cleanup (`packages/app/convex/plugins.ts`), plugin UI assets/sessions (`packages/app/convex/plugins_ui.ts`), the plugin page host route, the Gallery plugin (`plugins/bonobo-plugin-gallery`), or the `bonobo-plugin-sdk` package.
+description: Plugin publishing limits, artifact cleanup, plugin UI pages and file views, the Gallery and Video Player plugins, and SDK/plugin release mechanics. Use when changing plugin manifest validation (`packages/app/shared/plugins.ts`), the publish pipeline or artifact cleanup (`packages/app/convex/plugins.ts`), plugin UI assets/sessions (`packages/app/convex/plugins_ui.ts`), the plugin page host route, the file-open plugin view (`file-node-view.tsx`), the Gallery plugin (`plugins/bonobo-plugin-gallery`), the Video Player plugin (`plugins/bonobo-plugin-video-player`), or the `bonobo-plugin-sdk` package.
 ---
 
 # Required Companion Rules
@@ -16,6 +16,9 @@ Validation lives in `plugins_validate_manifest` (`packages/app/shared/plugins.ts
 | Listed files                                             | 64       | `manifest_schema.files`                                 |
 | Pages                                                    | 16       | `manifest_schema.pages`                                 |
 | Navigation items (pages with `navItem`)                  | 8        | `plugins_validate_manifest` loop                        |
+| File views                                               | 8        | `manifest_schema.fileViews`                             |
+| Content types per file view                              | 32       | `file_view_schema.contentTypes`                         |
+| Expanded file-view content types per manifest            | 64       | `plugins_validate_manifest` loop                        |
 | Events                                                   | 8        | `manifest_schema.events`                                |
 | Filters per event                                        | 8        | `event_schema.filters`                                  |
 | Configuration path segments                              | 16       | `event_filter_schema.configurationPath`                 |
@@ -33,6 +36,8 @@ Validation lives in `plugins_validate_manifest` (`packages/app/shared/plugins.ts
 | Aggregate artifact bytes (declared and downloaded)       | 16 MiB   | `plugins_MAX_ARTIFACT_BYTES`                            |
 | Manifest + text source files passed between actions      | 900,000  | `sourceFiles` assembly in `publish_version_from_github` |
 | Duplicate capabilities / origins / file paths / page ids | rejected | duplicate loops in `plugins_validate_manifest`          |
+
+File view ids share the page-id namespace (both address one sandboxed iframe entry per id), so a duplicate across `pages` and `fileViews` is rejected. One manifest may not declare the same content type in two file views — the open-file resolver could not pick between them. Each file view's `entry` must be a listed `text/html` file; content types are exact strings, no wildcards.
 
 Publishing behavior in `publish_version_from_github` (`packages/app/convex/plugins.ts`):
 
@@ -69,8 +74,8 @@ Admin registry deletion is name-scoped and requires publishing to be quiescent. 
 - Each review generates a fresh boundary sentinel that is absent from every current and previous untrusted value. Current and previous records use the same sentinel before the host creates the diff, so source text cannot forge a record boundary.
 - Sorted `{ path, contentType, source }` records form the deterministic full-artifact input. The formatted current artifact plus any optional previous-version diff stays within the 900,000-byte review-input cap. The OpenAI input-token count endpoint then counts the exact developer message, user message, and JSON schema; input above 240,000 tokens is rejected before the model call, and count failure rejects the publish.
 - The first terminal review result is cached by artifact hash, including `passed`, `rejected`, and `flagged`. An exact artifact never resamples; changing one byte creates a new artifact hash. Previous-version baseline R2 reads are bounded and verify stored size and SHA-256; a missing baseline omits the optional diff rather than blocking the complete current-artifact review.
-- A binary-only artifact with no page or backend may auto-pass because it has no executable/renderable text. A page-bearing artifact never auto-passes for lacking a backend.
-- Install/update, `list_ui_pages`, `mint_page_session`, and `get_ui_asset` require `reviewStatus: "passed"` for page-bearing versions.
+- A binary-only artifact with no page, file view, or backend may auto-pass because it has no executable/renderable text. A page-bearing or file-view-bearing artifact never auto-passes for lacking a backend.
+- Install/update, `list_ui_pages`, `list_file_views`, `mint_page_session`, `mint_file_view_session`, and `get_ui_asset` require `reviewStatus: "passed"` for page-bearing and file-view-bearing versions.
 - There is no review-policy generation or re-review migration path. This pre-production system deletes disposable plugin registry data and republishes current artifacts when the review implementation changes.
 
 Repository claims intentionally remain normalized URL reservations without proof of repository control. This is an accepted provenance/name-reservation risk; do not describe the claim as verified ownership.
@@ -90,9 +95,20 @@ Publisher secrets remain bound to the immutable version creator. Runtime resolut
 - The host startup deadline is 15 seconds and clears once `bonobo:init` posts. Failure replaces the iframe with a `role="alert"` and focused Retry button; Retry creates a fresh frame, nonce, and session. The immutable asset path stays canonical, and the query stays empty. Only the fragment carries `parentOrigin` and `bridgeNonce`, so neither value is sent in the asset request, cache key, or referrer.
 - A page that already received its read-only token can self-navigate before the host observes the next load. The host disables the bridge and revokes on that load, while per-call liveness and TTL remain the backstop; do not claim already-authorized in-flight work can be recalled.
 
+# Plugin file views
+
+A manifest may declare `fileViews` — frames the host opens instead of the stored-file details card when a member opens a matching file. They reuse the page machinery: same sandboxed iframe, same asset route, same `plugins_ui_sessions` table, same bridge protocol through the shared `PluginsUiFrame` component (`packages/app/src/components/plugins-ui-frame.tsx`).
+
+- `bonobo:init` `context` is a union on `kind` since SDK 0.6.0: `"page"` keeps the page fields; `"file_view"` carries `fileViewId`, `fileViewTitle`, and a `file` object (`fileNodeId`, `name`, `path`, `contentType`). Hosts always send `kind`; the SDK validator requires it.
+- `list_file_views` (`plugins_ui.ts`) lists enabled installations whose ready+passed version declares file views, with `installationCreatedAt` for conflict resolution. `plugins_pick_file_view` (`packages/app/shared/plugins.ts`) picks the view whose `contentTypes` include the node's exact stored content type; when several installed plugins match, the earliest installation wins so the choice stays stable.
+- The chooser lives in `FileNodeViewStoredFile` (`file-node-view.tsx`): it opens the view only when a view matches, the upload pipeline is complete, and the user has not toggled "File details". The card keeps an "Open in <title>" button; the toggle is component state reset by keying on the node id.
+- `mint_file_view_session` re-checks, in order: user auth, membership, its own rate bucket, node existence, live `content.read` on that node (`access_control_db_authorize_membership` with the file node — restricted nodes answer only from scope-node grants), enabled installation, ready+passed version, declared view id, and content-type match. The session stores `fileNodeId`; `refresh_ui_session` re-loads the node and re-checks `content.read` on it, so a restriction applied mid-session stops the next refresh.
+- File-view mints use their own `plugins_ui_file_view_session_mint` rate bucket (token bucket, 30/min, capacity 8) because browsing several files in quick succession must not read as a broken page; page mints stay on the stricter `plugins_ui_session_mint` bucket.
+- Signed download URLs pin response headers at signing time: `public_api.ts` passes `responseContentType` (the node's stored content type) and an RFC 5987 `inline` `responseContentDisposition` into the signed `GetObjectCommand` (vendored `r2` change). Response-header overrides must be part of the signed command — appending `response-content-*` query params to an already-signed URL breaks the SigV4 signature.
+
 # Clean-slate changes and recovery
 
-This plugin system is pre-production. Change the manifest, SDK, host, schema, and current plugins together; do not add legacy protocol handling, dual database shapes, redirect routes, or review-policy migrations. Stored plugin pages are always a required array; an omitted manifest `pages` field is normalized once to `[]` during registration. The stored `runtimeVersion` field and the UI message protocol version are gone. Manifests still require `compatibility.bonoboPluginRuntime: "1"` as the single current runtime stamp; there is no fallback or multi-version runtime path. If persisted plugin data conflicts with the current contract, use `../dev-data-reset/SKILL.md` to remove the registry and republish the current source commits. Preserve Clerk-backed user docs and their Polar state during that reset.
+This plugin system is pre-production. Change the manifest, SDK, host, schema, and current plugins together; do not add legacy protocol handling, dual database shapes, redirect routes, or review-policy migrations. Stored plugin pages and file views are always required arrays; omitted manifest `pages`/`fileViews` fields are normalized once to `[]` during registration. The stored `runtimeVersion` field and the UI message protocol version are gone. Manifests still require `compatibility.bonoboPluginRuntime: "1"` as the single current runtime stamp; there is no fallback or multi-version runtime path. If persisted plugin data conflicts with the current contract, use `../dev-data-reset/SKILL.md` to remove the registry and republish the current source commits. Preserve Clerk-backed user docs and their Polar state during that reset.
 
 Recovery uses trusted sources only: current Git submodules/remotes for plugin artifacts, Convex deployment environment variables for known publisher values, and provider-supported credential creation or explicit user input for a missing value. Never use Playwriter or other browser automation to extract tokens from provider pages, and never print secret values in logs or reports.
 
@@ -143,7 +159,7 @@ capabilities. So a plugin run does not respect a user's file permissions, and re
 not hold against one until that changes. See `../access-control/SKILL.md` "Not enforced yet" before
 hardening this surface.
 
-`packages/bonobo-plugin-sdk` is a root-repo folder mirrored to the standalone `raythurnvoid/bonobo-plugin-sdk` repo (release = fresh clone of the mirror, copy files, commit, push). The Gallery pins the SDK by commit SHA in `package.json` + `pnpm-lock.yaml`.
+`packages/bonobo-plugin-sdk` is a root-repo folder mirrored to the standalone `raythurnvoid/bonobo-plugin-sdk` repo (release = fresh clone of the mirror, copy files, commit, push). The Gallery and Video Player plugins pin the SDK by commit SHA in `package.json` + `pnpm-lock.yaml`. The Video Player (`plugins/bonobo-plugin-video-player`, repo `raythurnvoid/bonobo-plugin-video-player`) is scaffolded from the Gallery — same build pipeline and release rules; it declares one file view for `video/mp4`, `video/webm`, and `video/ogg` and needs no publisher secrets.
 
 - Always run pnpm with `--ignore-workspace` inside `plugins/*` and inside `packages/bonobo-plugin-sdk` — installing through the root workspace pollutes the parent lockfile and produces stale git-dep pins.
 - Published plugin versions are immutable — never rewrite one; bump to the first unused patch version.
@@ -156,9 +172,10 @@ hardening this surface.
 - Manifest caps, duplicates, zero-fetch-on-declared-over-limit, streaming bounds, 4-wide concurrency, and the cleanup-attempt lifecycle: `packages/app/convex/plugins.test.ts`.
 - Bounded session deletion on all three paths: `packages/app/convex/data_deletion.test.ts`.
 - Full-artifact review, artifact-hash cache, bounded stored reads, and backend/page classification: `packages/app/convex/plugins.test.ts` plus `packages/app/shared/plugins.test.ts`.
-- Direct asset routes, passed-review gates, rotation/revocation, stable rate identity, expiry cleanup, and session behavior: `packages/app/convex/plugins_ui.test.ts`.
+- Direct asset routes, passed-review gates, rotation/revocation, stable rate identity, expiry cleanup, and session behavior: `packages/app/convex/plugins_ui.test.ts`. File-view session mints (content-type match, restricted-node refusal, refresh re-check, own rate bucket) live in its "plugin ui file view sessions" describe.
+- File-view selection (`plugins_pick_file_view`): `packages/app/shared/plugins.test.ts`.
 - Host protocol fields, deadline/Retry/focus, refresh serialization, and stale-generation cancellation: `packages/app/src/routes/w/$organizationName/$workspaceName/plugins/$pluginName_.pages.$pageId.test.tsx`. Real WindowProxy/load ordering still requires Chromium/Playwriter.
-- Gallery scan/media/a11y behavior: `plugins/bonobo-plugin-gallery/src/*.test.ts(x)`; SDK handshake/fetchJson: `packages/bonobo-plugin-sdk/frontend.test.ts`.
+- Gallery scan/media/a11y behavior: `plugins/bonobo-plugin-gallery/src/*.test.ts(x)`; Video Player URL renewal and app states: `plugins/bonobo-plugin-video-player/src/*.test.ts(x)`; SDK handshake/fetchJson and both context kinds: `packages/bonobo-plugin-sdk/frontend.test.ts`.
 
 Use the app workspace for app tests:
 

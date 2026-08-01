@@ -1297,6 +1297,11 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	// answer above is already the whole answer — so asking per row would open one subscription, and
 	// about seven document reads, to learn what we just learned once. The synthetic root is the same
 	// case: `authorize_file_write` sends it straight to the workspace check.
+	//
+	// This holds only while nothing writes a `resourceKind: "workspace"` grant. The node check ignores
+	// such a grant for a file, the workspace check honours it, so the day one is written this would
+	// report writable on unrestricted rows that the server then refuses. No production code writes one
+	// today — only a test fixture does — so if you add one, go back to asking per node.
 	const restrictedScopeNodeId = files_is_node(itemData) ? itemData.restrictedScopeNodeId : undefined;
 	const nodeWritePermission = useQuery(
 		app_convex_api.files_nodes.get_current_user_file_write_permission,

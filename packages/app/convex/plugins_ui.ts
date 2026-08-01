@@ -1,6 +1,7 @@
 /**
- * Plugin UI pages: manifest-declared HTML entries rendered in sandboxed iframes
- * (`sandbox="allow-scripts"`, opaque origin).
+ * Plugin UI pages and file views: manifest-declared HTML entries rendered in sandboxed iframes
+ * (`sandbox="allow-scripts"`, opaque origin). Pages open from the plugins nav; file views open
+ * from `/files` when a file's stored content type matches a view's declared content types.
  *
  * Security model:
  * - The host app mints a short-lived `plu_` session token per (user, installation) and hands it
@@ -157,15 +158,116 @@ export const mint_page_session = mutation({
 	},
 });
 
+export const mint_file_view_session = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		pluginName: v.string(),
+		fileViewId: v.string(),
+		fileNodeId: v.id("files_nodes"),
+	},
+	returns: v_result({
+		_yay: v.object({
+			token: v.string(),
+			expiresAt: v.number(),
+			pluginVersionId: v.id("plugins_versions"),
+			sessionId: v.id("plugins_ui_sessions"),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		// File views mint on every file switch and every details/view toggle, so they get their own
+		// browsing-sized bucket instead of the strict page bucket.
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "plugins_ui_file_view_session_mint",
+			key: userAuth.id,
+		});
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
+		if (!fileNode) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		// The token minted here follows the same content.read rule as `mint_page_session`, but the
+		// permission is checked against the node, not the workspace, so a file inside a restricted
+		// folder is refused even for somebody the workspace lets read everything else.
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+			fileNode,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
+		const installation = await ctx.db
+			.query("plugins_workspace_installations")
+			.withIndex("by_organization_workspace_status_pluginName", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("status", "enabled")
+					.eq("pluginName", args.pluginName),
+			)
+			.first();
+		if (!installation) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+		if (!version || version.sourceStatus !== "ready" || version.reviewStatus !== "passed") {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		// The view must both exist and declare the node's stored content type, so a plugin cannot
+		// open itself for types it never passed review with.
+		const fileView = version.fileViews.find((fileView) => fileView.id === args.fileViewId);
+		if (!fileView || !fileNode.contentType || !fileView.contentTypes.includes(fileNode.contentType)) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const now = Date.now();
+		const expiresAt = now + SESSION_TTL_MS;
+		const token = `plu_${crypto_random_hex(32)}`;
+		const sessionId = await ctx.db.insert("plugins_ui_sessions", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			installationId: installation._id,
+			pluginVersionId: installation.pluginVersionId,
+			userId: userAuth.id,
+			fileNodeId: fileNode._id,
+			tokenHash: await crypto_sha256_hex(token),
+			createdAt: now,
+			expiresAt,
+		});
+
+		// The plaintext token is returned exactly once; only its hash is stored.
+		return Result({ _yay: { token, expiresAt, pluginVersionId: installation.pluginVersionId, sessionId } });
+	},
+});
+
 /**
- * Rotates the bearer token for an open plugin page so the page can keep working past the
- * 30-minute token lifetime. The SDK calls this shortly before expiry or after a 401 response.
+ * Rotates the bearer token for an open plugin page or file view so the frame can keep working past
+ * the 30-minute token lifetime. The SDK calls this shortly before expiry or after a 401 response.
  *
  * The existing session doc is updated instead of creating another session. This keeps one session
  * to revoke and makes the previous token stop working immediately. Refresh succeeds only while the
  * current user still owns the session and the same plugin version remains enabled in the workspace.
+ * A file-view session also re-checks that the user can still read its file node.
  */
-export const refresh_page_session = mutation({
+export const refresh_ui_session = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		sessionId: v.id("plugins_ui_sessions"),
@@ -217,11 +319,18 @@ export const refresh_page_session = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		// Rotating a token creates a new one, so it follows the same rule as `mint_page_session`.
+		// Rotating a token creates a new one, so it follows the same rule as the mint that created the
+		// session. A file-view session checks against its file node, so a restriction added after the
+		// mint stops the refresh.
+		const fileNode = session.fileNodeId ? await ctx.db.get("files_nodes", session.fileNodeId) : null;
+		if (session.fileNodeId && !fileNode) {
+			return Result({ _nay: { message: "Not found" } });
+		}
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
 			permission: "content.read",
+			fileNode: fileNode ?? undefined,
 		});
 		if (authorized._nay) {
 			return authorized;
@@ -241,7 +350,7 @@ export const refresh_page_session = mutation({
 	},
 });
 
-export const revoke_page_session = mutation({
+export const revoke_ui_session = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		sessionId: v.id("plugins_ui_sessions"),
@@ -347,6 +456,87 @@ export const list_ui_pages = query({
 					displayName: version.displayName,
 					pluginVersionId: version._id,
 					pages: version.pages,
+				};
+			}),
+		);
+
+		return entries.filter((entry) => entry !== null);
+	},
+});
+
+export const list_file_views = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+	},
+	returns: v.array(
+		v.object({
+			pluginName: v.string(),
+			displayName: v.string(),
+			pluginVersionId: v.id("plugins_versions"),
+			installationCreatedAt: v.number(),
+			fileViews: v.array(
+				v.object({
+					id: v.string(),
+					title: v.string(),
+					entry: v.string(),
+					contentTypes: v.array(v.string()),
+				}),
+			),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return [];
+		}
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return [];
+		}
+
+		// Which plugins a workspace runs counts as workspace content, like the activity feed.
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
+			return [];
+		}
+
+		// The status+pluginName index yields enabled installations already in plugin-name order.
+		const installations = await ctx.db
+			.query("plugins_workspace_installations")
+			.withIndex("by_organization_workspace_status_pluginName", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("status", "enabled"),
+			)
+			.collect();
+
+		const entries = await Promise.all(
+			installations.map(async (installation) => {
+				const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+				if (
+					!version ||
+					version.sourceStatus !== "ready" ||
+					version.reviewStatus !== "passed" ||
+					version.fileViews.length === 0
+				) {
+					return null;
+				}
+				return {
+					pluginName: installation.pluginName,
+					displayName: version.displayName,
+					pluginVersionId: version._id,
+					// When two plugins declare a view for the same content type, the consumer picks the
+					// earliest installation, so which view opens does not depend on query order.
+					installationCreatedAt: installation._creationTime,
+					fileViews: version.fileViews,
 				};
 			}),
 		);

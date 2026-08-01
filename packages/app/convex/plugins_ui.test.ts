@@ -4,6 +4,7 @@ import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_db_yjs_push_update, files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
 import { r2_get_bucket } from "./r2_client.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -97,6 +98,7 @@ async function register_gallery_plugin(
 		version?: string;
 		capabilities?: plugins_Capability[];
 		pages?: { id: string; title: string; entry: string; navItem: { label: string; icon: string } | null }[];
+		fileViews?: { id: string; title: string; entry: string; contentTypes: string[] }[];
 	} = {},
 ) {
 	const version = args.version ?? "0.1.0";
@@ -140,6 +142,7 @@ async function register_gallery_plugin(
 				navItem: { label: "Gallery", icon: "images" },
 			},
 		],
+		fileViews: args.fileViews ?? [],
 		capabilities: args.capabilities ?? ["workspace.files.read"],
 		outboundOrigins: [],
 		files: [
@@ -169,10 +172,16 @@ async function register_gallery_plugin(
 
 async function install_gallery_plugin(
 	t: ReturnType<typeof test_convex>,
-	args: { capabilities?: plugins_Capability[] } = {},
+	args: {
+		capabilities?: plugins_Capability[];
+		fileViews?: { id: string; title: string; entry: string; contentTypes: string[] }[];
+	} = {},
 ) {
 	const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-	const registered = await register_gallery_plugin(t, membership.userId, { capabilities: args.capabilities });
+	const registered = await register_gallery_plugin(t, membership.userId, {
+		capabilities: args.capabilities,
+		fileViews: args.fileViews,
+	});
 	const asOwner = t.withIdentity(user_identity(membership.userId));
 	const installed = await asOwner.mutation(api.plugins.install_version, {
 		membershipId: membership.membershipId,
@@ -202,11 +211,13 @@ async function mint_session_token(fixture: Awaited<ReturnType<typeof install_gal
 	return minted._yay;
 }
 
-async function mint_reader_session(
+// A second member with workspace-wide content.read only, so restricted-node checks have someone
+// the workspace grant does not cover.
+async function seed_reader_member(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
 ) {
-	const reader = await t.run(async (ctx) => {
+	return await t.run(async (ctx) => {
 		const now = Date.now();
 		const userId = await ctx.db.insert("users", { clerkUserId: "clerk-plugin-ui-reader" });
 		const membershipId = await ctx.db.insert("organizations_workspaces_users", {
@@ -228,6 +239,13 @@ async function mint_reader_session(
 		});
 		return { userId, membershipId, grantId };
 	});
+}
+
+async function mint_reader_session(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
+) {
+	const reader = await seed_reader_member(t, fixture);
 	const asReader = t.withIdentity(user_identity(reader.userId));
 	const minted = await asReader.mutation(api.plugins_ui.mint_page_session, {
 		membershipId: reader.membershipId,
@@ -461,6 +479,89 @@ describe("plugin ui manifest pages", () => {
 	});
 });
 
+describe("plugin ui manifest file views", () => {
+	test("accepts a frontend-only manifest with file views", () => {
+		const manifest = {
+			...gallery_manifest_base,
+			fileViews: [
+				{
+					id: "player",
+					title: "Video player",
+					entry: "dist/frontend/index.html",
+					contentTypes: ["video/mp4", "video/webm"],
+				},
+			],
+		};
+
+		expect(plugins_validate_manifest(manifest)).toMatchObject({ _yay: expect.any(Object) });
+	});
+
+	test("accepts an empty file views array", () => {
+		expect(plugins_validate_manifest({ ...gallery_manifest_base, fileViews: [] })).toMatchObject({
+			_yay: expect.any(Object),
+		});
+	});
+
+	test("rejects duplicate file view ids", () => {
+		const manifest = {
+			...gallery_manifest_base,
+			fileViews: [
+				{ id: "player", title: "Video player", entry: "dist/frontend/index.html", contentTypes: ["video/mp4"] },
+				{ id: "player", title: "Player again", entry: "dist/frontend/index.html", contentTypes: ["video/webm"] },
+			],
+		};
+
+		expect(plugins_validate_manifest(manifest)).toMatchObject({
+			_nay: { message: 'Plugin manifest has duplicate file view id "player"' },
+		});
+	});
+
+	test("rejects a file view id that collides with a page id", () => {
+		const manifest = {
+			...gallery_manifest_base,
+			pages: [{ id: "player", title: "Player page", entry: "dist/frontend/index.html" }],
+			fileViews: [
+				{ id: "player", title: "Video player", entry: "dist/frontend/index.html", contentTypes: ["video/mp4"] },
+			],
+		};
+
+		expect(plugins_validate_manifest(manifest)).toMatchObject({
+			_nay: { message: 'Plugin manifest has duplicate file view id "player"' },
+		});
+	});
+
+	test("rejects a file view entry that is not a listed file", () => {
+		const manifest = {
+			...gallery_manifest_base,
+			fileViews: [
+				{ id: "player", title: "Video player", entry: "dist/frontend/missing.html", contentTypes: ["video/mp4"] },
+			],
+		};
+
+		expect(plugins_validate_manifest(manifest)).toMatchObject({
+			_nay: { message: 'Plugin file view "player" entry must be a listed file' },
+		});
+	});
+
+	test("rejects a file view entry that is not text/html", () => {
+		const manifest = {
+			...gallery_manifest_base,
+			fileViews: [
+				{
+					id: "player",
+					title: "Video player",
+					entry: "dist/frontend/assets/index.js",
+					contentTypes: ["video/mp4"],
+				},
+			],
+		};
+
+		expect(plugins_validate_manifest(manifest)).toMatchObject({
+			_nay: { message: 'Plugin file view "player" entry must be a text/html file' },
+		});
+	});
+});
+
 describe("plugin ui sessions", () => {
 	test("registers a frontend-only version with pages persisted", async () => {
 		const t = test_convex();
@@ -594,7 +695,7 @@ describe("plugin ui sessions", () => {
 				body: JSON.stringify({ recursive: true }),
 			});
 
-		const refreshed = await fixture.asOwner.mutation(api.plugins_ui.refresh_page_session, {
+		const refreshed = await fixture.asOwner.mutation(api.plugins_ui.refresh_ui_session, {
 			membershipId: fixture.membership.membershipId,
 			sessionId: initial.sessionId,
 		});
@@ -610,7 +711,7 @@ describe("plugin ui sessions", () => {
 		expect(sessionsAfterRefresh).toHaveLength(1);
 		expect(sessionsAfterRefresh[0]?._id).toBe(initial.sessionId);
 
-		const revoked = await fixture.asOwner.mutation(api.plugins_ui.revoke_page_session, {
+		const revoked = await fixture.asOwner.mutation(api.plugins_ui.revoke_ui_session, {
 			membershipId: fixture.membership.membershipId,
 			sessionId: initial.sessionId,
 		});
@@ -801,6 +902,37 @@ describe("plugin ui sessions", () => {
 		const expiresAt = body.items[0].expiresAt;
 		expect(expiresAt).toBeLessThanOrEqual(now + 1_000);
 		expect(expiresAt).toBeLessThanOrEqual(authorityExpiresAt);
+	});
+
+	test("pins the stored content type and an inline filename into signed download urls", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const seeded = await seed_upload_node(t, fixture, { filename: "it's clip video.mp4", contentType: "video/mp4" });
+		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/clip.mp4" }));
+		const session = await mint_session_token(fixture);
+		const signerCalls: Array<{ key: string; options: Record<string, unknown> | undefined }> = [];
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+			async (key: string, options?: Record<string, unknown>) => {
+				signerCalls.push({ key, options });
+				return `https://r2.test/object?key=${encodeURIComponent(key)}`;
+			},
+		);
+
+		const response = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(session.token),
+			body: JSON.stringify({ fileNodeIds: [seeded.nodeId] }),
+		});
+		expect(response.status).toBe(200);
+
+		// Upload content types are client-supplied, so the response headers must be part of the
+		// signed request. The space proves the RFC 5987 encoding runs, and the apostrophe proves the
+		// extra escaping runs: encodeURIComponent leaves ' raw, which would corrupt the header.
+		const call = signerCalls.find(({ key }) => key === "test/clip.mp4");
+		expect(call?.options).toMatchObject({
+			responseContentType: "video/mp4",
+			responseContentDisposition: "inline; filename*=UTF-8''it%27s%20clip%20video.mp4",
+		});
 	});
 
 	test("mints batch download URLs with per-id errors", async () => {
@@ -1172,6 +1304,262 @@ describe("plugin ui sessions", () => {
 			pluginName: "gallery",
 		});
 		expect(minted).toMatchObject({ _nay: { message: "Not found" } });
+	});
+});
+
+describe("plugin ui file view sessions", () => {
+	const video_file_view = {
+		id: "player",
+		title: "Video player",
+		entry: "dist/frontend/index.html",
+		contentTypes: ["video/mp4", "video/webm"],
+	};
+
+	// A member-role reader: the role covers unrestricted files, while a restricted node answers only
+	// from grants on its scope node, so restricting a node cuts this reader out.
+	async function seed_member_reader(
+		t: ReturnType<typeof test_convex>,
+		fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
+	) {
+		return await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-plugin-ui-member" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId,
+				active: true,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			return { userId, membershipId };
+		});
+	}
+
+	async function mint_file_view(
+		fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
+		args: { fileViewId?: string; fileNodeId: Id<"files_nodes"> },
+	) {
+		return await fixture.asOwner.mutation(api.plugins_ui.mint_file_view_session, {
+			membershipId: fixture.membership.membershipId,
+			pluginName: "gallery",
+			fileViewId: args.fileViewId ?? "player",
+			fileNodeId: args.fileNodeId,
+		});
+	}
+
+	test("lists file views with the installation creation time and mints a working session", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
+		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+
+		const listed = await fixture.asOwner.query(api.plugins_ui.list_file_views, {
+			membershipId: fixture.membership.membershipId,
+		});
+		// Pin the exact installation creation time: the chooser's earliest-installation tie-break
+		// depends on this being the installation's time, not the version's.
+		const installation = await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", fixture.installationId),
+		);
+		expect(listed).toEqual([
+			{
+				pluginName: "gallery",
+				displayName: "Gallery",
+				pluginVersionId: fixture.pluginVersionId,
+				installationCreatedAt: installation?._creationTime,
+				fileViews: [video_file_view],
+			},
+		]);
+
+		const minted = await mint_file_view(fixture, { fileNodeId: seeded.nodeId });
+		if (minted._nay) {
+			throw new Error(minted._nay.message);
+		}
+		expect(minted._yay.token).toMatch(/^plu_[0-9a-f]{64}$/u);
+		expect(minted._yay.pluginVersionId).toBe(fixture.pluginVersionId);
+
+		const session = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", minted._yay.sessionId));
+		expect(session?.fileNodeId).toBe(seeded.nodeId);
+
+		// The token is a full plugin_ui principal, so the plugin frame can read workspace files.
+		const listResponse = await t.fetch("/api/v1/files/list", {
+			method: "POST",
+			headers: auth_headers(minted._yay.token),
+			body: JSON.stringify({ recursive: true }),
+		});
+		expect(listResponse.status).toBe(200);
+	});
+
+	test("excludes file-view-less versions from list_file_views and refuses their mint", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+
+		const listed = await fixture.asOwner.query(api.plugins_ui.list_file_views, {
+			membershipId: fixture.membership.membershipId,
+		});
+		expect(listed).toEqual([]);
+
+		const minted = await mint_file_view(fixture, { fileNodeId: seeded.nodeId });
+		expect(minted).toMatchObject({ _nay: { message: "Not found" } });
+	});
+
+	test("refuses mint for an unknown view id and for a content-type mismatch", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
+		const video = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const image = await seed_upload_node(t, fixture, { filename: "photo.png", contentType: "image/png" });
+
+		expect(await mint_file_view(fixture, { fileNodeId: video.nodeId })).toMatchObject({
+			_yay: expect.any(Object),
+		});
+		expect(await mint_file_view(fixture, { fileViewId: "other", fileNodeId: video.nodeId })).toMatchObject({
+			_nay: { message: "Not found" },
+		});
+		expect(await mint_file_view(fixture, { fileNodeId: image.nodeId })).toMatchObject({
+			_nay: { message: "Not found" },
+		});
+	});
+
+	test("excludes non-passed and non-ready versions from file view listing and minting", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
+		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+
+		expect(await mint_file_view(fixture, { fileNodeId: seeded.nodeId })).toMatchObject({
+			_yay: expect.any(Object),
+		});
+
+		for (const patch of [{ reviewStatus: "pending" as const }, { sourceStatus: "preparing" as const }]) {
+			await t.run((ctx) => ctx.db.patch("plugins_versions", fixture.pluginVersionId, patch));
+			expect(
+				await fixture.asOwner.query(api.plugins_ui.list_file_views, {
+					membershipId: fixture.membership.membershipId,
+				}),
+			).toEqual([]);
+			expect(await mint_file_view(fixture, { fileNodeId: seeded.nodeId })).toMatchObject({
+				_nay: { message: "Not found" },
+			});
+			await t.run((ctx) =>
+				ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+					reviewStatus: "passed",
+					sourceStatus: "ready",
+				}),
+			);
+		}
+	});
+
+	test("refuses to mint for a disabled installation", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
+		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" }),
+		);
+
+		expect(await mint_file_view(fixture, { fileNodeId: seeded.nodeId })).toMatchObject({
+			_nay: { message: "Not found" },
+		});
+	});
+
+	test("refuses to mint for a restricted file the user cannot read", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
+		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const reader = await seed_member_reader(t, fixture);
+		const asReader = t.withIdentity(user_identity(reader.userId));
+		const mint_as_reader = () =>
+			asReader.mutation(api.plugins_ui.mint_file_view_session, {
+				membershipId: reader.membershipId,
+				pluginName: "gallery",
+				fileViewId: "player",
+				fileNodeId: seeded.nodeId,
+			});
+
+		expect(await mint_as_reader()).toMatchObject({ _yay: expect.any(Object) });
+
+		// Restricting the node cuts the reader's workspace-wide content.read out of the decision.
+		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { restrictedScopeNodeId: seeded.nodeId }));
+		expect(await mint_as_reader()).toMatchObject({ _nay: { message: "Permission denied" } });
+	});
+
+	test("refreshes a file-view session only while the file stays readable", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
+		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const reader = await seed_member_reader(t, fixture);
+		const asReader = t.withIdentity(user_identity(reader.userId));
+		const minted = await asReader.mutation(api.plugins_ui.mint_file_view_session, {
+			membershipId: reader.membershipId,
+			pluginName: "gallery",
+			fileViewId: "player",
+			fileNodeId: seeded.nodeId,
+		});
+		if (minted._nay) {
+			throw new Error(minted._nay.message);
+		}
+		const refresh = () =>
+			asReader.mutation(api.plugins_ui.refresh_ui_session, {
+				membershipId: reader.membershipId,
+				sessionId: minted._yay.sessionId,
+			});
+
+		expect(await refresh()).toMatchObject({ _yay: expect.any(Object) });
+
+		// A restriction added after the mint must stop the rotation, because the session carries the
+		// node it was opened for.
+		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { restrictedScopeNodeId: seeded.nodeId }));
+		expect(await refresh()).toMatchObject({ _nay: { message: "Permission denied" } });
+	});
+
+	test("refuses to refresh a file-view session after its file node is deleted", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
+		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const minted = await mint_file_view(fixture, { fileNodeId: seeded.nodeId });
+		if (minted._nay) {
+			throw new Error(minted._nay.message);
+		}
+		const refresh = () =>
+			fixture.asOwner.mutation(api.plugins_ui.refresh_ui_session, {
+				membershipId: fixture.membership.membershipId,
+				sessionId: minted._yay.sessionId,
+			});
+
+		expect(await refresh()).toMatchObject({ _yay: expect.any(Object) });
+
+		// Without the deleted-node guard the check would degrade to the workspace-level question, so
+		// the session could keep rotating for a purged file.
+		await t.run((ctx) => ctx.db.delete("files_nodes", seeded.nodeId));
+		expect(await refresh()).toMatchObject({ _nay: { message: "Not found" } });
+	});
+
+	test("rate limits file view mints on their own bucket", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
+		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+
+		// Bucket capacity is 8: browsing a handful of files in a row must work, the ninth burst mint hits the limit.
+		for (let mint = 0; mint < 8; mint += 1) {
+			expect(await mint_file_view(fixture, { fileNodeId: seeded.nodeId })).toMatchObject({
+				_yay: expect.any(Object),
+			});
+		}
+		expect(await mint_file_view(fixture, { fileNodeId: seeded.nodeId })).toMatchObject({
+			_nay: { message: "Rate limit exceeded" },
+		});
+
+		// Page mints stay on their own bucket, so the file-view burst does not break opening a page.
+		const pageMint = await fixture.asOwner.mutation(api.plugins_ui.mint_page_session, {
+			membershipId: fixture.membership.membershipId,
+			pluginName: "gallery",
+		});
+		expect(pageMint).toMatchObject({ _yay: expect.any(Object) });
 	});
 });
 

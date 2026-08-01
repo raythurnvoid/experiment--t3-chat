@@ -971,6 +971,15 @@ const app_convex_schema = defineSchema({
 				navItem: v.union(v.object({ label: v.string(), icon: v.union(v.string(), v.null()) }), v.null()),
 			}),
 		),
+		/** File views declared in the manifest; an empty array means this version opens no file content types. */
+		fileViews: v.array(
+			v.object({
+				id: v.string(),
+				title: v.string(),
+				entry: v.string(),
+				contentTypes: v.array(v.string()),
+			}),
+		),
 		capabilities: v.array(plugins_capability_validator),
 		/**
 		 * Exact https origins the plugin's code declares it calls; consented at install.
@@ -1175,6 +1184,8 @@ const app_convex_schema = defineSchema({
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		userId: v.id("users"),
+		/** Set only for file-view sessions: the file node the view was opened for. Page sessions leave it unset. */
+		fileNodeId: v.optional(v.id("files_nodes")),
 		tokenHash: v.string(),
 		createdAt: v.number(),
 		expiresAt: v.number(),
@@ -1275,6 +1286,14 @@ const app_convex_schema = defineSchema({
 	 *
 	 * Any message can also be the root of a descendant thread by using that message id as
 	 * the thread id for future children.
+	 *
+	 * KNOWN GAP: a chat message doc has no file node field, so a comment thread on a file cannot be asked the
+	 * per-node permission question. `chat_messages_list`, `chat_messages_threads_list` and
+	 * `chat_messages_get` all ask the workspace question instead, which means comments on a restricted
+	 * file stay readable by the whole workspace. Reaching them needs the thread id, which is not
+	 * enumerable — it lives in the file's Tiptap marks — so in practice this is somebody who read the
+	 * file before it was restricted, or a grantee who was removed from the share list. Closing it needs
+	 * a file node field here plus the node check at those three read sites.
 	 */
 	chat_messages: defineTable({
 		/** Organization ID for multi-tenant scoping */

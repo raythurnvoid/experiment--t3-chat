@@ -10,6 +10,7 @@ import {
 	plugins_parse_env_text,
 	plugins_parse_github_repository_url,
 	plugins_parse_installation_configuration_yaml,
+	plugins_pick_file_view,
 	plugins_validate_manifest,
 	plugins_validate_origin,
 } from "./plugins.ts";
@@ -565,6 +566,94 @@ describe("plugins_validate_manifest", () => {
 			_nay: { message: "Line 1: Secret names must be at most 128 characters" },
 		});
 	});
+
+	test("rejects duplicate file view content types within and across views", () => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				fileViews: [
+					{
+						id: "player",
+						title: "Video player",
+						entry: "dist/ui/index.html",
+						contentTypes: ["video/mp4", "video/mp4"],
+					},
+				],
+			}),
+		).toEqual({
+			_nay: { message: 'Plugin manifest has duplicate file view content type "video/mp4"' },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				fileViews: [
+					{ id: "player", title: "Video player", entry: "dist/ui/index.html", contentTypes: ["video/mp4"] },
+					{ id: "other", title: "Other player", entry: "dist/ui/index.html", contentTypes: ["video/mp4"] },
+				],
+			}),
+		).toEqual({
+			_nay: { message: 'Plugin manifest has duplicate file view content type "video/mp4"' },
+		});
+	});
+
+	test("bounds file view fan-out", () => {
+		const contentTypes = Array.from({ length: 32 }, (_, index) => `video/x-test-${index}`);
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				fileViews: [
+					{ id: "first", title: "First", entry: "dist/ui/index.html", contentTypes },
+					{
+						id: "second",
+						title: "Second",
+						entry: "dist/ui/index.html",
+						contentTypes: contentTypes.map((type) => `${type}-other`),
+					},
+				],
+			}),
+		).toMatchObject({ _yay: expect.any(Object) });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				fileViews: [
+					{ id: "first", title: "First", entry: "dist/ui/index.html", contentTypes },
+					{
+						id: "second",
+						title: "Second",
+						entry: "dist/ui/index.html",
+						contentTypes: contentTypes.map((type) => `${type}-other`),
+					},
+					{ id: "third", title: "Third", entry: "dist/ui/index.html", contentTypes: ["video/x-over-limit"] },
+				],
+			}),
+		).toEqual({
+			_nay: { message: "Plugin manifest declares more than 64 file view content types" },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				fileViews: [
+					{
+						id: "player",
+						title: "Video player",
+						entry: "dist/ui/index.html",
+						contentTypes: [...contentTypes, "video/x-over-limit"],
+					},
+				],
+			}),
+		).toEqual({ _nay: { message: "Plugin file views can declare at most 32 content types" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				fileViews: Array.from({ length: 9 }, (_, index) => ({
+					id: `view-${index}`,
+					title: `View ${index}`,
+					entry: "dist/ui/index.html",
+					contentTypes: [`video/x-view-${index}`],
+				})),
+			}),
+		).toEqual({ _nay: { message: "Plugin manifests can declare at most 8 file views" } });
+	});
 });
 
 describe("plugins_consent_diff", () => {
@@ -655,5 +744,72 @@ describe("plugins_dist_review_mechanical_findings", () => {
 				javaScript: false,
 			}),
 		).toEqual([]);
+	});
+});
+
+describe("plugins_pick_file_view", () => {
+	function file_view_plugin(args: {
+		pluginName: string;
+		installationCreatedAt: number;
+		fileViews: { id: string; contentTypes: string[] }[];
+	}) {
+		return {
+			pluginName: args.pluginName,
+			installationCreatedAt: args.installationCreatedAt,
+			fileViews: args.fileViews.map((fileView) => ({
+				id: fileView.id,
+				title: fileView.id,
+				entry: "dist/frontend/index.html",
+				contentTypes: fileView.contentTypes,
+			})),
+		};
+	}
+
+	test("picks the view whose declared content types include the file's content type", () => {
+		const plugins = [
+			file_view_plugin({
+				pluginName: "player",
+				installationCreatedAt: 100,
+				fileViews: [
+					{ id: "audio", contentTypes: ["audio/mpeg"] },
+					{ id: "video", contentTypes: ["video/mp4", "video/webm"] },
+				],
+			}),
+		];
+
+		const match = plugins_pick_file_view(plugins, "video/mp4");
+		expect(match?.plugin.pluginName).toBe("player");
+		expect(match?.fileView.id).toBe("video");
+		expect(match?.contentType).toBe("video/mp4");
+	});
+
+	test("returns null without a matching view, without a content type, or while plugins load", () => {
+		const plugins = [
+			file_view_plugin({
+				pluginName: "player",
+				installationCreatedAt: 100,
+				fileViews: [{ id: "video", contentTypes: ["video/mp4"] }],
+			}),
+		];
+
+		expect(plugins_pick_file_view(plugins, "application/zip")).toBeNull();
+		expect(plugins_pick_file_view(plugins, undefined)).toBeNull();
+		expect(plugins_pick_file_view(undefined, "video/mp4")).toBeNull();
+	});
+
+	test("picks the earliest installation when several plugins match, regardless of list order", () => {
+		const newer = file_view_plugin({
+			pluginName: "newer",
+			installationCreatedAt: 200,
+			fileViews: [{ id: "video", contentTypes: ["video/mp4"] }],
+		});
+		const older = file_view_plugin({
+			pluginName: "older",
+			installationCreatedAt: 100,
+			fileViews: [{ id: "video", contentTypes: ["video/mp4"] }],
+		});
+
+		expect(plugins_pick_file_view([newer, older], "video/mp4")?.plugin.pluginName).toBe("older");
+		expect(plugins_pick_file_view([older, newer], "video/mp4")?.plugin.pluginName).toBe("older");
 	});
 });

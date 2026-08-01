@@ -23,7 +23,11 @@ import {
 	access_control_db_resolve_role_refs,
 	access_control_db_role_file_grant_caller_cannot_give,
 } from "./access_control.ts";
-import { access_control_PERMISSION_CATALOG, access_control_SYSTEM_ROLE_MATRIX } from "../shared/access-control.ts";
+import {
+	access_control_PERMISSION_CATALOG,
+	access_control_SYSTEM_ROLE_MATRIX,
+	type access_control_RoleRef,
+} from "../shared/access-control.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
@@ -1010,6 +1014,13 @@ export const invite_user_to_organization_workspace = mutation({
 			//
 			// This sits after the "already in this workspace" return above, for the same reason that
 			// one does: an invite that writes nothing can hand out nothing.
+			// Every workspace this invite really joins them to, and the only place a role can hand the
+			// invitee anything: a file grant works only for an active member of the workspace it lives
+			// in. The default workspace counts only when its membership is new too, because an invite
+			// that writes nothing there switches nothing on there.
+			const joinedWorkspaceIds =
+				isDefaultWorkspace || existingHomeMembership ? [workspace._id] : [workspace._id, defaultWorkspaceId];
+
 			const assignsMemberRole =
 				userIdToAdd !== organization.ownerUserId &&
 				!(await ctx.db
@@ -1040,7 +1051,7 @@ export const invite_user_to_organization_workspace = mutation({
 				const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
 					organization,
 					defaultWorkspaceId,
-					workspaceId: defaultWorkspaceId,
+					reach: joinedWorkspaceIds,
 					role: "member",
 					userId: userAuth.id,
 				});
@@ -1058,45 +1069,40 @@ export const invite_user_to_organization_workspace = mutation({
 			// is what switches on every grant naming a role they already have. The permission comparison
 			// above cannot see those: a role carries files its permission list says nothing about.
 			//
-			// Weighed per workspace this invite really joins them to. The default workspace is checked
-			// only when its membership is new too, because an invite that writes nothing there switches
-			// nothing on there. For that one the helper widens to every workspace, the same way the
-			// `member` check above does: a role held on the default workspace is the organization role.
-			const joinedWorkspaceIds =
-				isDefaultWorkspace || existingHomeMembership ? [workspace._id] : [defaultWorkspaceId, workspace._id];
-			// Each role weighed once. The helper scans every grant naming a role with no limit, so asking
-			// the same role twice doubles the most expensive read in this mutation for no new answer. The
-			// default workspace goes first because a question asked there already weighs grants from every
-			// workspace — it subsumes the same role asked at the target one. `member` was asked at that
-			// same widest scope just above.
-			const weighedRoles = new Set<string>(assignsMemberRole ? ["member"] : []);
+			// Each distinct role is weighed once, over every workspace this invite joins. The scan is the
+			// most expensive read in this mutation, and asking the same role a second time cannot return
+			// a different answer.
+			const heldRoles = new Set<access_control_RoleRef>();
 			for (const joinedWorkspaceId of joinedWorkspaceIds) {
-				const heldRoles = await access_control_db_resolve_role_refs(ctx, {
+				for (const heldRole of await access_control_db_resolve_role_refs(ctx, {
 					organizationId: organization._id,
 					workspaceId: joinedWorkspaceId,
 					defaultWorkspaceId,
 					userId: userIdToAdd,
-				});
-				for (const heldRole of heldRoles) {
-					if (weighedRoles.has(heldRole)) {
-						continue;
-					}
-					weighedRoles.add(heldRole);
+				})) {
+					heldRoles.add(heldRole);
+				}
+			}
 
-					const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
-						organization,
-						defaultWorkspaceId,
-						workspaceId: joinedWorkspaceId,
-						role: heldRole,
-						userId: userAuth.id,
+			// Already weighed just above, over these same workspaces.
+			if (assignsMemberRole) {
+				heldRoles.delete("member");
+			}
+
+			for (const heldRole of heldRoles) {
+				const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
+					organization,
+					defaultWorkspaceId,
+					reach: joinedWorkspaceIds,
+					role: heldRole,
+					userId: userAuth.id,
+				});
+				if (blockingGrant) {
+					return Result({
+						_nay: {
+							message: `You cannot invite this member: a role they already have is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
+						},
 					});
-					if (blockingGrant) {
-						return Result({
-							_nay: {
-								message: `You cannot invite this member: a role they already have is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
-							},
-						});
-					}
 				}
 			}
 		}

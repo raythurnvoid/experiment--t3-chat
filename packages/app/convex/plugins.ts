@@ -249,6 +249,7 @@ export const register_plugin_version = internalAction({
 		configuration: doc(app_convex_schema, "plugins_versions").fields.configuration,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
+		fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 		files: doc(app_convex_schema, "plugins_versions").fields.files,
@@ -326,6 +327,7 @@ export const upsert_plugin = internalMutation({
 		configuration: doc(app_convex_schema, "plugins_versions").fields.configuration,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
+		fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 		files: doc(app_convex_schema, "plugins_versions").fields.files,
@@ -628,7 +630,7 @@ function compare_review_file_paths(left: ReviewFile, right: ReviewFile) {
  */
 function prepare_review_files(
 	files: Array<{ path: string; contentType: string; body: ArrayBuffer | string }>,
-	requiredEntries: Array<{ path: string; kind: "page" | "backend" }>,
+	requiredEntries: Array<{ path: string; kind: "page" | "file_view" | "backend" }>,
 ) {
 	const reviewFiles: ReviewFile[] = [];
 	const findings: string[] = [];
@@ -668,6 +670,8 @@ function prepare_review_files(
 			findings.push(`Plugin backend entry "${requiredEntry.path}" must be a reviewable JavaScript file`);
 		} else if (requiredEntry.kind === "page" && !reviewablePaths.has(requiredEntry.path)) {
 			findings.push(`Plugin page entry "${requiredEntry.path}" must be a reviewable text file`);
+		} else if (requiredEntry.kind === "file_view" && !reviewablePaths.has(requiredEntry.path)) {
+			findings.push(`Plugin file view entry "${requiredEntry.path}" must be a reviewable text file`);
 		}
 	}
 
@@ -844,6 +848,7 @@ export const get_ai_review_inputs = internalQuery({
 				manifestR2Key: doc(app_convex_schema, "plugins_versions").fields.manifestR2Key,
 				files: doc(app_convex_schema, "plugins_versions").fields.files,
 				pages: doc(app_convex_schema, "plugins_versions").fields.pages,
+				fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
 				backendEntrypointEntry: v.union(v.string(), v.null()),
 			}),
 			v.null(),
@@ -875,6 +880,7 @@ export const get_ai_review_inputs = internalQuery({
 						manifestR2Key: previousPassed.manifestR2Key,
 						files: previousPassed.files,
 						pages: previousPassed.pages,
+						fileViews: previousPassed.fileViews,
 						backendEntrypointEntry: previousPassed.backendEntrypointFile?.entry ?? null,
 					}
 				: null,
@@ -945,7 +951,7 @@ async function fetch_stored_review_files(args: {
 	manifestR2Key: string;
 	artifactHash: string;
 	files: Array<{ path: string; contentType: string; r2Key: string; bytes: number; sha256: string }>;
-	requiredEntries: Array<{ path: string; kind: "page" | "backend" }>;
+	requiredEntries: Array<{ path: string; kind: "page" | "file_view" | "backend" }>;
 }): Promise<PluginResult<ReturnType<typeof prepare_review_files>>> {
 	const storedFiles = [
 		{
@@ -1104,6 +1110,10 @@ export const run_version_review = internalAction({
 					files: context.previousPassed.files,
 					requiredEntries: [
 						...context.previousPassed.pages.map((page) => ({ path: page.entry, kind: "page" as const })),
+						...context.previousPassed.fileViews.map((fileView) => ({
+							path: fileView.entry,
+							kind: "file_view" as const,
+						})),
 						...(context.previousPassed.backendEntrypointEntry
 							? [{ path: context.previousPassed.backendEntrypointEntry, kind: "backend" as const }]
 							: []),
@@ -1581,6 +1591,7 @@ async function publish_version_from_github(
 
 	const preparedReview = prepare_review_files(files, [
 		...(manifest._yay.pages ?? []).map((page) => ({ path: page.entry, kind: "page" as const })),
+		...(manifest._yay.fileViews ?? []).map((fileView) => ({ path: fileView.entry, kind: "file_view" as const })),
 		...(manifest._yay.backend ? [{ path: manifest._yay.backend.entry, kind: "backend" as const }] : []),
 	]);
 	const sourceFiles = [
@@ -1685,6 +1696,12 @@ async function publish_version_from_github(
 			title: page.title,
 			entry: page.entry,
 			navItem: page.navItem ? { label: page.navItem.label, icon: page.navItem.icon ?? null } : null,
+		})),
+		fileViews: (manifest._yay.fileViews ?? []).map((fileView) => ({
+			id: fileView.id,
+			title: fileView.title,
+			entry: fileView.entry,
+			contentTypes: fileView.contentTypes,
 		})),
 		capabilities: manifest._yay.capabilities,
 		outboundOrigins: manifest._yay.outboundOrigins,
@@ -2680,6 +2697,7 @@ export const list_published_plugins = query({
 					navItem: v.union(v.object({ label: v.string(), icon: v.union(v.string(), v.null()) }), v.null()),
 				}),
 			),
+			fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -2718,6 +2736,7 @@ export const list_published_plugins = query({
 					capabilities: version.capabilities,
 					outboundOrigins: version.outboundOrigins,
 					pages: version.pages,
+					fileViews: version.fileViews,
 				};
 			}),
 		);
