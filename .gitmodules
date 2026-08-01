@@ -160,3 +160,12 @@
 [submodule "plugins/bonobo-plugin-video-player"]
 	path = plugins/bonobo-plugin-video-player
 	url = https://github.com/raythurnvoid/bonobo-plugin-video-player.git
+[submodule "references-submodules/zero"]
+	path = references-submodules/zero
+	url = https://github.com/Mail-0/Zero.git
+[submodule "references-submodules/realtimekit-web-examples"]
+	path = references-submodules/realtimekit-web-examples
+	url = https://github.com/cloudflare/realtimekit-web-examples.git
+[submodule "references-submodules/realtimekit-ui"]
+	path = references-submodules/realtimekit-ui
+	url = https://github.com/cloudflare/realtimekit-ui.git
