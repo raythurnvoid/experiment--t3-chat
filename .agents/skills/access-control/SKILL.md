@@ -558,6 +558,17 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   there. `files_nodes_db_create_node_recursively_at_path` answers `"This file already exists."`, and
   the public write route answers `"Permission denied"`. Neither hands over the name, the content or
   the author, and hiding it would need two nodes on one path. Accepted, not overlooked.
+- **The folder import widens that oracle's budget, on purpose.** `files_nodes.create_upload_nodes`
+  reports per-item skips, and a skip is the same class of probe. The payload never says why: a
+  permission refusal and a user-chosen skip both answer the one literal `"conflict"`. Each item is
+  charged one `files_bulk_import` token (rate 100/min, capacity 300, per user), so the burst budget
+  is 6× the single-file create oracle and sustained is 2×. The companion query
+  `files_nodes.get_upload_conflicts` cannot be rate-limited (queries cannot charge the limiter), so
+  it filters by per-node `content.read` and answers "no conflict" for anything the caller cannot
+  read — it must never reveal more than `list_tree` does. The other skip reason, `"path_blocked"`,
+  says what kind of node blocks the path, so the mutation only answers it when the caller can
+  `content.read` the blocking node; a hidden folder at the target and a hidden file at an ancestor
+  both fall back to `"conflict"`.
 - **Nothing proves a shared tenant before naming a user.** `users.get_anagraphic` requires an
   identity and hides other people's email, but any signed-in caller still turns any `users` id into a
   display name and avatar. Closing that needs a relationship check the query has no argument for

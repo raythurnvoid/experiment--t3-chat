@@ -156,6 +156,33 @@
 	}
 	/* #endregion upload conflict modal */
 
+	/* #region import conflict modal */
+	.FilesSidebarImportConflictModal {
+		width: min(560px, calc(100vw - 32px));
+	}
+
+	.FilesSidebarImportConflictModal-list {
+		margin: 0;
+		padding: 12px 20px;
+		max-height: 240px;
+
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+
+		overflow-y: auto;
+		list-style: none;
+	}
+
+	.FilesSidebarImportConflictModal-list-item {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		color: var(--color-fg-07);
+	}
+	/* #endregion import conflict modal */
+
 	/* #region header */
 	.FilesSidebarHeader {
 		/* Align this row with the editor toolbar and the sidebar tabs row so the three

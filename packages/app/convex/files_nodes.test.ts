@@ -1,5 +1,6 @@
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
+import { RateLimiter } from "@convex-dev/rate-limiter";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
@@ -2778,6 +2779,816 @@ describe("files_nodes.create_upload_node", () => {
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
 			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${replacement._yay.assetId}`,
 		);
+	});
+});
+
+describe("files_nodes.create_upload_nodes", () => {
+	test("creates nested files with presigned urls and reuses folders across calls", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [
+				{ relativePath: "docs/report.pdf", contentType: "application/pdf", size: 1234 },
+				{ relativePath: "docs/img/logo.png", contentType: "image/png", size: 10 },
+				{ relativePath: "docs/raw.bin", size: 5 },
+			],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+
+		expect(imported._yay.skipped).toEqual([]);
+		expect(imported._yay.created).toHaveLength(3);
+		expect(imported._yay.created[0]).toMatchObject({
+			relativePath: "docs/report.pdf",
+			url: "https://r2.test/upload",
+			headers: { "Content-Type": "application/pdf" },
+		});
+		expect(imported._yay.created[2]!.headers).toEqual({});
+
+		const docs = await t.run(async (ctx) => {
+			const report = await ctx.db.get("files_nodes", imported._yay.created[0]!.nodeId);
+			const reportAsset = await ctx.db.get("files_r2_assets", imported._yay.created[0]!.assetId);
+			const docsFolder = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("path", "/docs")
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			const imgFolder = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("path", "/docs/img")
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			return { report, reportAsset, docsFolder, imgFolder };
+		});
+		expect(docs.report).toMatchObject({
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			path: "/docs/report.pdf",
+			kind: "file",
+			contentType: "application/pdf",
+			assetId: imported._yay.created[0]!.assetId,
+			createdBy: db.userId,
+		});
+		expect(docs.reportAsset).toMatchObject({
+			kind: "upload",
+			size: 1234,
+			createdBy: db.userId,
+		});
+		// Unlike `data_import`, a browser import must run the standard R2 event pipeline, so
+		// `processingWorkId` stays unset instead of being settled to null up front.
+		expect(docs.reportAsset?.processingWorkId).toBeUndefined();
+		expect(docs.docsFolder).toMatchObject({ kind: "folder" });
+		expect(docs.imgFolder).toMatchObject({ kind: "folder" });
+		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${imported._yay.created[0]!.assetId}`,
+		);
+
+		const second = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "docs/img/second.png", contentType: "image/png", size: 20 }],
+		});
+		if (second._nay) {
+			throw new Error(second._nay.message);
+		}
+		expect(second._yay.created).toHaveLength(1);
+
+		const docsFolders = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("path", "/docs")
+						.eq("archiveOperationId", undefined),
+				)
+				.collect(),
+		);
+		expect(docsFolders).toHaveLength(1);
+	});
+
+	test("imports into a selected folder and prefixes every path with the parent's", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		// The first import creates the destination folder as an intermediate.
+		const seeded = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "dest/seed.pdf", contentType: "application/pdf", size: 1 }],
+		});
+		if (seeded._nay) {
+			throw new Error(seeded._nay.message);
+		}
+		const destFolder = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("path", "/dest")
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+		if (!destFolder) {
+			throw new Error("dest folder missing");
+		}
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: destFolder._id,
+			onConflict: "skip",
+			items: [{ relativePath: "sub/child.pdf", contentType: "application/pdf", size: 2 }],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+		expect(imported._yay.skipped).toEqual([]);
+		const child = await t.run(async (ctx) => ctx.db.get("files_nodes", imported._yay.created[0]!.nodeId));
+		expect(child).toMatchObject({ path: "/dest/sub/child.pdf", parentId: expect.anything() });
+
+		// The conflict pre-check resolves paths against the same parent.
+		const conflicts = await asUser.query(api.files_nodes.get_upload_conflicts, {
+			membershipId: db.membershipId,
+			parentId: destFolder._id,
+			relativePaths: ["sub/child.pdf", "missing.pdf"],
+		});
+		expect(conflicts).toEqual([{ relativePath: "sub/child.pdf", kind: "file" }]);
+	});
+
+	test("accepts boundary sizes of zero and the exact upload cap", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [
+				{ relativePath: "empty.pdf", contentType: "application/pdf", size: 0 },
+				{ relativePath: "max.pdf", contentType: "application/pdf", size: files_MAX_UPLOADS_BYTES },
+			],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+		expect(imported._yay.created).toHaveLength(2);
+	});
+
+	test("rejects a markdown leaf the markdown normalizer would rename, and accepts the normalized one", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		// `readme` is special-cased to uppercase, so the lowercase name is not a fixed point of
+		// the normalizer and must fail the whole call. The client sends normalizer output, so a
+		// real import carries `README.md` already.
+		const lowercase = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "docs/readme.md", contentType: "text/markdown", size: 1 }],
+		});
+		expect(lowercase._nay).toMatchObject({
+			message: "Path ends in an invalid file name",
+			data: { path: "docs/readme.md" },
+		});
+
+		const normalized = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "docs/README.md", contentType: "text/markdown", size: 1 }],
+		});
+		if (normalized._nay) {
+			throw new Error(normalized._nay.message);
+		}
+		expect(normalized._yay.created).toHaveLength(1);
+	});
+
+	test("rejects a malformed path and creates nothing, including the valid items", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const cases = [
+			{ relativePath: "/abs.pdf", message: "Path must be relative and normalized" },
+			{ relativePath: "a//b.pdf", message: "Path must be relative and normalized" },
+			{ relativePath: "a.pdf/", message: "Path must be relative and normalized" },
+			{ relativePath: "../up.pdf", message: "Path contains an invalid folder name" },
+			{ relativePath: "a\\b.pdf", message: "Path ends in an invalid file name" },
+		];
+		for (const badCase of cases) {
+			const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				onConflict: "skip",
+				items: [
+					{ relativePath: "fine.pdf", contentType: "application/pdf", size: 1 },
+					{ relativePath: badCase.relativePath, contentType: "application/pdf", size: 1 },
+				],
+			});
+			expect(imported._nay).toMatchObject({ message: badCase.message, data: { path: badCase.relativePath } });
+		}
+
+		// The valid item in each batch must not survive the refused call.
+		const docs = await t.run(async (ctx) => {
+			const uploadedSources = await ctx.db
+				.query("files_nodes")
+				.collect()
+				.then((fileNodes) =>
+					fileNodes.filter(
+						(fileNode) =>
+							fileNode.organizationId === db.organizationId && fileNode.workspaceId === db.workspaceId && fileNode.assetId,
+					),
+				);
+			const uploadAssets = await ctx.db
+				.query("files_r2_assets")
+				.collect()
+				.then((assets) =>
+					assets.filter(
+						(asset) =>
+							asset.organizationId === db.organizationId && asset.workspaceId === db.workspaceId && asset.kind === "upload",
+					),
+				);
+			return { uploadedSources, uploadAssets };
+		});
+		expect(docs.uploadedSources).toHaveLength(0);
+		expect(docs.uploadAssets).toHaveLength(0);
+	});
+
+	test("skip mode reports an existing file as a conflict and keeps it", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const first = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "dup.pdf", contentType: "application/pdf", size: 1 }],
+		});
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
+
+		const again = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [
+				{ relativePath: "dup.pdf", contentType: "application/pdf", size: 1 },
+				{ relativePath: "fresh.pdf", contentType: "application/pdf", size: 1 },
+			],
+		});
+		if (again._nay) {
+			throw new Error(again._nay.message);
+		}
+
+		expect(again._yay.skipped).toEqual([{ relativePath: "dup.pdf", reason: "conflict" }]);
+		expect(again._yay.created).toHaveLength(1);
+		expect(again._yay.created[0]).toMatchObject({ relativePath: "fresh.pdf" });
+
+		const original = await t.run(async (ctx) => await ctx.db.get("files_nodes", first._yay.created[0]!.nodeId));
+		expect(original?.archiveOperationId).toBeUndefined();
+	});
+
+	test("replace mode archives the existing file and creates a new node", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const first = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "dup.pdf", contentType: "application/pdf", size: 1 }],
+		});
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
+
+		const replaced = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "replace",
+			items: [{ relativePath: "dup.pdf", contentType: "application/pdf", size: 2 }],
+		});
+		if (replaced._nay) {
+			throw new Error(replaced._nay.message);
+		}
+
+		expect(replaced._yay.skipped).toEqual([]);
+		expect(replaced._yay.created).toHaveLength(1);
+		expect(replaced._yay.created[0]!.assetId).not.toBe(first._yay.created[0]!.assetId);
+
+		const docs = await t.run(async (ctx) => {
+			const oldSource = await ctx.db.get("files_nodes", first._yay.created[0]!.nodeId);
+			const newSource = await ctx.db.get("files_nodes", replaced._yay.created[0]!.nodeId);
+			return { oldSource, newSource };
+		});
+		expect(docs.oldSource?.archiveOperationId).toEqual(expect.any(String));
+		expect(docs.newSource).toMatchObject({
+			path: "/dup.pdf",
+			assetId: replaced._yay.created[0]!.assetId,
+		});
+		expect(docs.newSource?.archiveOperationId).toBeUndefined();
+	});
+
+	test("skips paths blocked by a folder at the target or a file on the way", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "blocked.pdf",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+		const ancestorFile = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "ancestor.pdf", contentType: "application/pdf", size: 1 }],
+		});
+		if (ancestorFile._nay) {
+			throw new Error(ancestorFile._nay.message);
+		}
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "replace",
+			items: [
+				{ relativePath: "blocked.pdf", contentType: "application/pdf", size: 1 },
+				{ relativePath: "ancestor.pdf/child.pdf", contentType: "application/pdf", size: 1 },
+			],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+
+		// Both shapes are skips even in replace mode: a folder is never archived by an import, and
+		// a file on the way can never become a folder.
+		expect(imported._yay.created).toEqual([]);
+		expect(imported._yay.skipped).toEqual([
+			{ relativePath: "blocked.pdf", reason: "path_blocked" },
+			{ relativePath: "ancestor.pdf/child.pdf", reason: "path_blocked" },
+		]);
+	});
+
+	test("a file and a folder chain on the same batch path resolve to one file and one skip", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [
+				{ relativePath: "x.pdf", contentType: "application/pdf", size: 1 },
+				{ relativePath: "x.pdf/y.pdf", contentType: "application/pdf", size: 1 },
+			],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+
+		expect(imported._yay.created).toHaveLength(1);
+		expect(imported._yay.created[0]).toMatchObject({ relativePath: "x.pdf" });
+		expect(imported._yay.skipped).toEqual([{ relativePath: "x.pdf/y.pdf", reason: "path_blocked" }]);
+
+		// The skipped item must not leave an orphan asset doc behind.
+		const uploadAssets = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_r2_assets")
+				.collect()
+				.then((assets) =>
+					assets.filter(
+						(asset) =>
+							asset.organizationId === db.organizationId && asset.workspaceId === db.workspaceId && asset.kind === "upload",
+					),
+				),
+		);
+		expect(uploadAssets).toHaveLength(1);
+	});
+
+	test("duplicates, empty batches, oversize items, and oversized batches fail the whole call", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const empty = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [],
+		});
+		expect(empty._nay).toMatchObject({ message: "No files to import" });
+
+		const tooMany = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: Array.from({ length: 51 }, (_, index) => ({ relativePath: `f${index}.pdf`, size: 1 })),
+		});
+		expect(tooMany._nay).toMatchObject({ message: "Too many files" });
+
+		const duplicated = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [
+				{ relativePath: "a.pdf", contentType: "application/pdf", size: 1 },
+				{ relativePath: "a.pdf", contentType: "application/pdf", size: 2 },
+			],
+		});
+		expect(duplicated._nay).toMatchObject({ message: "Duplicate path in batch", data: { path: "a.pdf" } });
+
+		const oversized = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "big.pdf", contentType: "application/pdf", size: files_MAX_UPLOADS_BYTES + 1 }],
+		});
+		expect(oversized._nay).toMatchObject({ message: "File too large", data: { path: "big.pdf" } });
+
+		// `v.number()` accepts NaN, so the size guard must catch it along with negatives.
+		const nanSize = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "nan.pdf", contentType: "application/pdf", size: Number.NaN }],
+		});
+		expect(nanSize._nay).toMatchObject({ message: "Invalid file size", data: { path: "nan.pdf" } });
+
+		const negativeSize = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "negative.pdf", contentType: "application/pdf", size: -1 }],
+		});
+		expect(negativeSize._nay).toMatchObject({ message: "Invalid file size", data: { path: "negative.pdf" } });
+
+		const uploadedSources = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.collect()
+				.then((fileNodes) =>
+					fileNodes.filter(
+						(fileNode) =>
+							fileNode.organizationId === db.organizationId && fileNode.workspaceId === db.workspaceId && fileNode.assetId,
+					),
+				),
+		);
+		expect(uploadedSources).toHaveLength(0);
+	});
+
+	test("charges the bulk import bucket one token per file", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+		const checkSpy = vi.spyOn(RateLimiter.prototype, "check");
+		const limitSpy = vi.spyOn(RateLimiter.prototype, "limit");
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [
+				{ relativePath: "a.pdf", contentType: "application/pdf", size: 1 },
+				{ relativePath: "b.pdf", contentType: "application/pdf", size: 1 },
+				{ relativePath: "c.pdf", contentType: "application/pdf", size: 1 },
+			],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+
+		expect(checkSpy).toHaveBeenCalledWith(expect.anything(), "files_bulk_import", expect.objectContaining({ count: 3 }));
+		expect(limitSpy).toHaveBeenCalledWith(expect.anything(), "files_bulk_import", expect.objectContaining({ count: 3 }));
+		expect(limitSpy).toHaveBeenCalledWith(expect.anything(), "files_tree_write", expect.objectContaining({ key: db.userId }));
+		// Charge tree-write before the bulk bucket: swapped, a tree-write refusal after a
+		// successful bulk charge would burn bulk tokens on every retry.
+		expect(limitSpy.mock.calls.map((call) => call[1])).toEqual(["files_tree_write", "files_bulk_import"]);
+	});
+
+	test("a refused bulk bucket check burns no tree-write token", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+		vi.spyOn(RateLimiter.prototype, "check").mockResolvedValue({ ok: false, retryAfter: 1234 } as never);
+		const limitSpy = vi.spyOn(RateLimiter.prototype, "limit");
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "a.pdf", contentType: "application/pdf", size: 1 }],
+		});
+
+		expect(imported._nay).toMatchObject({ message: "Rate limit exceeded", data: { retryAfterMs: 1234 } });
+		expect(limitSpy).not.toHaveBeenCalled();
+	});
+
+	test("a Markdown upload finalizes through the standard R2 event and starts processing", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "notes/plan.md", contentType: "text/markdown;charset=utf-8", size: 64 }],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+
+		const assetId = imported._yay.created[0]!.assetId;
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId));
+		expect(asset?.processingWorkId).toBeUndefined();
+		const assetR2Key = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${assetId}`;
+
+		enqueueActionSpy.mockClear();
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "browser_import_event_1",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: asset!.r2Bucket,
+					object: {
+						key: assetR2Key,
+						size: 64,
+						eTag: "etag_browser_import_1",
+					},
+					eventTime: "2026-08-01T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+
+		const finalized = await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId));
+		expect(finalized?.r2Key).toBe(assetR2Key);
+		// Unlike `data_import`, the finalizer must treat this like a single-file upload and enqueue
+		// the Markdown conversion work.
+		expect(enqueueActionSpy).toHaveBeenCalled();
+	});
+});
+
+describe("files_nodes.get_upload_conflicts", () => {
+	test("reports nodes on the target paths with their kind", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const uploaded = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "dup.pdf", contentType: "application/pdf", size: 1 }],
+		});
+		if (uploaded._nay) {
+			throw new Error(uploaded._nay.message);
+		}
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "docs",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+
+		const conflicts = await asUser.query(api.files_nodes.get_upload_conflicts, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			relativePaths: ["dup.pdf", "docs", "missing.pdf"],
+		});
+		expect(conflicts).toEqual([
+			{ relativePath: "dup.pdf", kind: "file" },
+			{ relativePath: "docs", kind: "folder" },
+		]);
+	});
+
+	test("throws on more paths than one import call accepts", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		await expect(
+			asUser.query(api.files_nodes.get_upload_conflicts, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				relativePaths: Array.from({ length: 51 }, (_, index) => `f${index}.pdf`),
+			}),
+		).rejects.toThrow("Too many paths");
+	});
+});
+
+describe("files_nodes.discard_failed_upload_node", () => {
+	test("removes an unfinalized upload node and deletes the R2 object", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "temp.pdf", contentType: "application/pdf", size: 1 }],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+		const nodeId = imported._yay.created[0]!.nodeId;
+		const assetId = imported._yay.created[0]!.assetId;
+
+		const discarded = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+		expect(discarded._yay.removed).toBe(true);
+
+		const docs = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", nodeId),
+			asset: await ctx.db.get("files_r2_assets", assetId),
+		}));
+		expect(docs.node).toBeNull();
+		expect(docs.asset).toBeNull();
+		// R2 may hold bytes from a PUT the browser saw fail, so the object is deleted either way.
+		expect(deleteObjectSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${assetId}`,
+		);
+	});
+
+	test("keeps the node once the R2 event recorded the object", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "temp.pdf", contentType: "application/pdf", size: 1 }],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+		const nodeId = imported._yay.created[0]!.nodeId;
+		const assetId = imported._yay.created[0]!.assetId;
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_r2_assets", assetId, {
+				r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${assetId}`,
+			});
+		});
+
+		const discarded = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+		expect(discarded._yay.removed).toBe(false);
+
+		const node = await t.run(async (ctx) => await ctx.db.get("files_nodes", nodeId));
+		expect(node).not.toBeNull();
+		expect(deleteObjectSpy).not.toHaveBeenCalled();
+	});
+
+	test("answers Not found for a folder node", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "keep",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+
+		const discarded = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
+			membershipId: db.membershipId,
+			nodeId: folder._yay.nodeId,
+		});
+		expect(discarded._nay).toMatchObject({ message: "Not found" });
 	});
 });
 

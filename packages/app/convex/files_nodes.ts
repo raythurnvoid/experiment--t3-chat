@@ -38,6 +38,7 @@ import {
 } from "../shared/date.ts";
 import {
 	files_ROOT_ID,
+	files_IMPORT_MAX_ITEMS_PER_CALL,
 	files_MAX_UPLOADS_BYTES,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
@@ -70,7 +71,12 @@ import {
 } from "./access_control.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
-import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import {
+	files_normalize_markdown_name,
+	files_normalize_name,
+	files_normalize_upload_file_name,
+} from "../shared/files.ts";
 import { files_metadata_db_patch_file_scope } from "./files_metadata.ts";
 import {
 	r2_get_download_url,
@@ -1760,6 +1766,588 @@ export const create_upload_node = mutation({
 				headers,
 			},
 		});
+	},
+});
+
+/**
+ * Create upload nodes and presigned R2 PUT urls for a folder import from the browser.
+ *
+ * The batch contract: after validation, one file's problem never fails the whole call. Every
+ * item ends as created or as skipped with a reason. A malformed item (bad path shape, bad
+ * name, bad size, duplicate target) still fails the whole call, because the client
+ * pre-normalizes and only a buggy or hostile caller sends one.
+ *
+ * Unlike `data_import.create_upload_targets`, assets keep `processingWorkId` unset, so the R2
+ * event finalizer runs Markdown conversion and plugin dispatch like any single-file upload.
+ */
+export const create_upload_nodes = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+		/**
+		 * What to do when a file already sits on an item's target path. "replace" archives it
+		 * like `create_upload_node`; "skip" leaves it and reports the item as skipped. The
+		 * client sends "skip" unless the user explicitly confirmed replacing.
+		 */
+		onConflict: v.union(v.literal("replace"), v.literal("skip")),
+		items: v.array(
+			v.object({
+				relativePath: v.string(),
+				contentType: v.optional(v.string()),
+				size: v.number(),
+			}),
+		),
+	},
+	returns: v_result({
+		_yay: v.object({
+			created: v.array(
+				v.object({
+					relativePath: v.string(),
+					assetId: v.id("files_r2_assets"),
+					nodeId: v.id("files_nodes"),
+					url: v.string(),
+					headers: v.record(v.string(), v.string()),
+				}),
+			),
+			// "conflict" covers every refusal about the target file itself, including permission
+			// refusals, so the payload never says which paths are restricted. "path_blocked" means
+			// the path cannot hold a file at all: a folder owns it, or a file owns an ancestor.
+			skipped: v.array(
+				v.object({
+					relativePath: v.string(),
+					reason: v.union(v.literal("conflict"), v.literal("path_blocked")),
+				}),
+			),
+		}),
+		_nay: {
+			data: v.object({
+				retryAfterMs: v.optional(v.number()),
+				path: v.optional(v.string()),
+			}),
+		},
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		if (args.items.length === 0) {
+			return Result({ _nay: { message: "No files to import" } });
+		}
+		if (args.items.length > files_IMPORT_MAX_ITEMS_PER_CALL) {
+			return Result({ _nay: { message: "Too many files" } });
+		}
+
+		// Two buckets: `files_tree_write` for call parity with the other tree mutations, and the
+		// per-item import bucket so one call cannot mint 50 nodes for a single tree-write token.
+		// Ask the item bucket first without consuming: a successful charge commits even when the
+		// mutation then returns `_nay`, so charging tree-write before knowing the item bucket
+		// would pass would burn a token on every refused retry.
+		const bulkCheck = await rate_limiter_check_by_key(ctx, {
+			name: "files_bulk_import",
+			key: userAuth.id,
+			count: args.items.length,
+		});
+		if (bulkCheck) {
+			return Result({ _nay: { message: bulkCheck.message, data: { retryAfterMs: bulkCheck.retryAfterMs } } });
+		}
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message, data: { retryAfterMs: rateLimit.retryAfterMs } } });
+		}
+		const bulkLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "files_bulk_import",
+			key: userAuth.id,
+			count: args.items.length,
+		});
+		if (bulkLimit) {
+			return Result({ _nay: { message: bulkLimit.message, data: { retryAfterMs: bulkLimit.retryAfterMs } } });
+		}
+
+		const authorized = await authorize_file_write(ctx, {
+			userAuth,
+			membership,
+			nodeId: args.parentId,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
+		let parentPath = "/";
+		if (args.parentId !== files_ROOT_ID) {
+			const parent = await ctx.db.get("files_nodes", args.parentId);
+			if (
+				!parent ||
+				parent.organizationId !== membership.organizationId ||
+				parent.workspaceId !== membership.workspaceId ||
+				parent.kind !== "folder" ||
+				parent.archiveOperationId !== undefined
+			) {
+				return Result({ _nay: { message: "Not found" } });
+			}
+			parentPath = parent.path;
+		}
+
+		// Structural validation for the whole batch, before any write. The client pre-normalizes,
+		// so a failure here is a caller bug and fails the whole call with the path attached.
+		const targetPaths = new Set<string>();
+		const validated: Array<{
+			relativePath: string;
+			segments: string[];
+			targetPath: string;
+			contentType: string | undefined;
+			size: number;
+		}> = [];
+		for (const item of args.items) {
+			const segments = path_extract_segments_from(item.relativePath);
+
+			// The splitter drops empty segments, so without this reconstruction check `a//b`, a
+			// leading `/`, or a trailing `/` would be silently accepted instead of rejected.
+			if (segments.length === 0 || segments.join("/") !== item.relativePath) {
+				return Result({
+					_nay: { message: "Path must be relative and normalized", data: { path: item.relativePath } },
+				});
+			}
+
+			for (const segment of segments.slice(0, -1)) {
+				const normalizedSegment = files_normalize_name("folder", segment);
+				if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
+					return Result({
+						_nay: { message: "Path contains an invalid folder name", data: { path: item.relativePath } },
+					});
+				}
+			}
+
+			// Same leaf split as the single-file flow: Markdown names go through the Markdown
+			// normalizer (only `.md` is storable), everything else keeps its real extension.
+			const leafName = segments[segments.length - 1];
+			if (item.contentType?.startsWith("text/markdown")) {
+				const normalizedLeaf = files_normalize_markdown_name(leafName);
+				if (normalizedLeaf._nay || normalizedLeaf._yay !== leafName) {
+					return Result({
+						_nay: { message: "Path ends in an invalid file name", data: { path: item.relativePath } },
+					});
+				}
+			} else if (files_normalize_upload_file_name(leafName) !== leafName) {
+				return Result({
+					_nay: { message: "Path ends in an invalid file name", data: { path: item.relativePath } },
+				});
+			}
+
+			// `v.number()` lets `NaN` through, and `NaN >= 0` is false, so this double-negative
+			// form rejects `NaN` along with negative sizes.
+			if (!(item.size >= 0)) {
+				return Result({ _nay: { message: "Invalid file size", data: { path: item.relativePath } } });
+			}
+			if (item.size > files_MAX_UPLOADS_BYTES) {
+				return Result({ _nay: { message: "File too large", data: { path: item.relativePath } } });
+			}
+
+			const targetPath = path_join(parentPath, item.relativePath);
+			if (targetPaths.has(targetPath)) {
+				return Result({ _nay: { message: "Duplicate path in batch", data: { path: item.relativePath } } });
+			}
+			targetPaths.add(targetPath);
+
+			validated.push({
+				relativePath: item.relativePath,
+				segments,
+				targetPath,
+				contentType: item.contentType,
+				size: item.size,
+			});
+		}
+
+		const now = Date.now();
+		const skipped: Array<{ relativePath: string; reason: "conflict" | "path_blocked" }> = [];
+		const runnable: typeof validated = [];
+
+		// Conflicts with nodes that already exist in the workspace are per-item skips, never call
+		// failures. The walk below also asks `content.write` about every folder that already
+		// exists on the item's way, before anything is archived: a leaf can be writable while an
+		// outer restricted folder is not, and archiving first would keep the archive when the
+		// create then refuses (a normal return commits every prior write). The permission refusal
+		// reports the same generic "conflict" as a skipped replace, so the response never says
+		// which paths are restricted.
+		for (const item of validated) {
+			let itemSkipReason: "conflict" | "path_blocked" | null = null;
+			let walkParentId: Doc<"files_nodes">["parentId"] | null = args.parentId;
+			for (const [depth, name] of item.segments.slice(0, -1).entries()) {
+				// Another item in this batch wants a file where this item needs a folder.
+				const ancestorTargetPath = path_join(parentPath, item.segments.slice(0, depth + 1).join("/"));
+				if (targetPaths.has(ancestorTargetPath)) {
+					itemSkipReason = "path_blocked";
+					break;
+				}
+
+				// Once one segment is missing, the deeper ones cannot exist either; only the
+				// batch-internal check above still applies below this depth.
+				if (walkParentId === null) {
+					continue;
+				}
+				// The annotation breaks a TypeScript inference cycle: the narrowed type of
+				// `walkParentId` depends on `intermediate`, whose query depends on this constant.
+				const currentWalkParentId: Doc<"files_nodes">["parentId"] = walkParentId;
+
+				const intermediate = await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("parentId", currentWalkParentId)
+							.eq("name", name)
+							.eq("archiveOperationId", undefined),
+					)
+					.first();
+				if (!intermediate) {
+					walkParentId = null;
+					continue;
+				}
+				// "path_blocked" says a file sits on this path. Report it only when the caller can
+				// read that node; otherwise the reason would reveal the kind of a hidden node, which
+				// the conflict pre-check and `list_tree` both hide.
+				if (intermediate.kind !== "folder") {
+					itemSkipReason = (await access_control_db_can_act_on_file_node(ctx, {
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						userId: userAuth.id,
+						fileNode: intermediate,
+						permission: "content.read",
+					}))
+						? "path_blocked"
+						: "conflict";
+					break;
+				}
+				if (
+					!(await access_control_db_can_act_on_file_node(ctx, {
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						userId: userAuth.id,
+						fileNode: intermediate,
+						permission: "content.write",
+					}))
+				) {
+					itemSkipReason = "conflict";
+					break;
+				}
+				walkParentId = intermediate._id;
+			}
+			if (itemSkipReason) {
+				skipped.push({ relativePath: item.relativePath, reason: itemSkipReason });
+				continue;
+			}
+
+			const existingNode = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("path", item.targetPath)
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			if (existingNode) {
+				// Same rule as the walk above: only a readable folder may report "path_blocked",
+				// a hidden one must stay indistinguishable from a plain conflict.
+				if (existingNode.kind !== "file") {
+					const canReadBlockingNode = await access_control_db_can_act_on_file_node(ctx, {
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						userId: userAuth.id,
+						fileNode: existingNode,
+						permission: "content.read",
+					});
+					skipped.push({
+						relativePath: item.relativePath,
+						reason: canReadBlockingNode ? "path_blocked" : "conflict",
+					});
+					continue;
+				}
+				if (args.onConflict === "skip") {
+					skipped.push({ relativePath: item.relativePath, reason: "conflict" });
+					continue;
+				}
+				if (
+					!(await access_control_db_can_act_on_file_node(ctx, {
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						userId: userAuth.id,
+						fileNode: existingNode,
+						permission: "content.write",
+					}))
+				) {
+					skipped.push({ relativePath: item.relativePath, reason: "conflict" });
+					continue;
+				}
+
+				// Safe to archive now: every folder on the way passed the walk above, so the create
+				// below cannot refuse this item after the old file is already gone.
+				await files_nodes_db_archive_nodes(ctx, {
+					nodeIds: [existingNode._id],
+					updatedBy: userAuth.id,
+					now,
+				});
+			}
+
+			runnable.push(item);
+		}
+
+		const created: Array<{
+			relativePath: string;
+			assetId: Id<"files_r2_assets">;
+			nodeId: Id<"files_nodes">;
+			url: string;
+			headers: Record<string, string>;
+		}> = [];
+		for (const item of runnable) {
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				kind: "upload",
+				r2Bucket: r2_get_bucket(),
+				size: item.size,
+				createdBy: membership.userId,
+				updatedAt: now,
+			});
+
+			const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				parentId: args.parentId,
+				path: item.relativePath,
+				kind: "file",
+				contentType: item.contentType,
+				assetId,
+				now,
+			});
+			// Defense in depth: the skip pass above already refuses every shape that would make
+			// this create fail, so this branch should be unreachable today. Keep it so a future
+			// change to that pass cannot orphan the asset doc or leak the refusal reason.
+			if (nodeIdResult._nay) {
+				await ctx.db.delete("files_r2_assets", assetId);
+				skipped.push({
+					relativePath: item.relativePath,
+					reason: nodeIdResult._nay.message === "Permission denied" ? "conflict" : "path_blocked",
+				});
+				continue;
+			}
+
+			const assetR2Key = r2_create_asset_key({
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetId,
+			});
+			const signedUpload = await r2_generate_upload_url(assetR2Key);
+			created.push({
+				relativePath: item.relativePath,
+				assetId,
+				nodeId: nodeIdResult._yay,
+				url: signedUpload.url,
+				headers: item.contentType ? { "Content-Type": item.contentType } : {},
+			});
+		}
+
+		return Result({ _yay: { created, skipped } });
+	},
+});
+
+/**
+ * Which of these target paths already hold a node the caller can read. The folder-import
+ * confirm modal asks this once before any write.
+ *
+ * A batch query for one UI is normally avoided, but a pre-check for up to 1,000 paths cannot
+ * be 1,000 single queries; `data_import.verify_metadata` is the same shape. Queries cannot
+ * charge the rate limiter, so this must never reveal more than `list_tree` does: a node the
+ * caller cannot read is reported as no conflict, and the (rate-limited) import mutation later
+ * reports it as a generic skip.
+ */
+export const get_upload_conflicts = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+		relativePaths: v.array(v.string()),
+	},
+	returns: v.array(
+		v.object({
+			relativePath: v.string(),
+			kind: doc(app_convex_schema, "files_nodes").fields.kind,
+		}),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+
+		// The import caps mutation calls at this size too; a bigger path list here is a caller
+		// bug, and silently answering only part of it would make missing conflicts look like none.
+		if (args.relativePaths.length > files_IMPORT_MAX_ITEMS_PER_CALL) {
+			throw convex_error({ message: "Too many paths" });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return [];
+		}
+
+		let parentPath = "/";
+		if (args.parentId !== files_ROOT_ID) {
+			const parent = await ctx.db.get("files_nodes", args.parentId);
+			if (
+				!parent ||
+				parent.organizationId !== membership.organizationId ||
+				parent.workspaceId !== membership.workspaceId ||
+				parent.kind !== "folder" ||
+				parent.archiveOperationId !== undefined
+			) {
+				return [];
+			}
+			parentPath = parent.path;
+		}
+
+		const conflicts = await Promise.all(
+			args.relativePaths.map(async (relativePath) => {
+				const fileNode = await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("path", path_join(parentPath, relativePath))
+							.eq("archiveOperationId", undefined),
+					)
+					.first();
+				if (!fileNode) {
+					return null;
+				}
+
+				// Same per-node check as `get_authorized_by_path`: a restricted node the caller
+				// cannot read must look exactly like no conflict.
+				const authorized = await access_control_db_authorize_membership(ctx, {
+					userAuth,
+					membership,
+					permission: "content.read",
+					fileNode,
+				});
+				if (authorized._nay) {
+					return null;
+				}
+
+				return { relativePath, kind: fileNode.kind };
+			}),
+		);
+
+		return conflicts.filter((conflict) => conflict !== null);
+	},
+});
+
+/**
+ * Delete a node whose upload never reached R2, so a failed or cancelled PUT does not leave a
+ * permanent "waiting for upload" file in the tree. Only the creator's own unfinalized upload
+ * qualifies; when the R2 event already recorded the object (`r2Key` set, or the Markdown
+ * finalizer already re-pointed the node), the node stays and `removed: false` tells the
+ * client to count the file as imported after all.
+ */
+export const discard_failed_upload_node = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v_result({
+		_yay: v.object({ removed: v.boolean() }),
+		_nay: { data: v.object({ retryAfterMs: v.optional(v.number()) }) },
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		// Metered on the import bucket: cleanup after a failed chunk can be dozens of calls and
+		// must not starve the shared tree-write bucket the rest of the sidebar runs on.
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_bulk_import", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message, data: { retryAfterMs: rateLimit.retryAfterMs } } });
+		}
+
+		const node = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!node ||
+			node.organizationId !== membership.organizationId ||
+			node.workspaceId !== membership.workspaceId ||
+			node.kind !== "file" ||
+			node.archiveOperationId !== undefined
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		// Only the creator may discard: this is cleanup of their own failed upload, not a
+		// delete feature, so nobody else's `content.write` grant applies here.
+		if (node.createdBy !== userAuth.id) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		if (!node.assetId) {
+			return Result({ _yay: { removed: false } });
+		}
+		const asset = await ctx.db.get("files_r2_assets", node.assetId);
+		if (!asset) {
+			const errorMessage = "fileNode.assetId points to a missing files_r2_assets doc";
+			const errorData = { nodeId: node._id, assetId: node.assetId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+
+		// `r2Key` set means the R2 event won the race and the upload actually finished; a
+		// non-upload asset kind means the Markdown finalizer already made the node editable.
+		// Either way the file is real now, so keep it.
+		if (asset.kind !== "upload" || asset.r2Key !== undefined) {
+			return Result({ _yay: { removed: false } });
+		}
+
+		await files_nodes_db_hard_delete_node(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: node._id,
+		});
+
+		// The asset doc had no `r2Key`, but R2 may still hold the bytes: a PUT the browser saw
+		// fail can have been stored, with the object-create event still on its way. The event
+		// for a deleted asset is answered with 404 and acknowledged, so without this delete the
+		// bytes would stay in the bucket with no doc pointing at them.
+		await r2_delete_object(
+			ctx,
+			r2_create_asset_key({
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetId: asset._id,
+			}),
+		);
+
+		return Result({ _yay: { removed: true } });
 	},
 });
 

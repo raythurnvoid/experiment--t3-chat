@@ -67,6 +67,17 @@ const rate_limiter_CONFIG = {
 	},
 	billing_action: STRICT_AUTH_OR_BILLING,
 	comments_write: STRICT_WRITE,
+	// Folder import charges one token per file, so one mutation call can consume many tokens at
+	// once. Capacity covers one typical import in a single burst; a bigger import drains the
+	// refill and the client waits `retryAfterMs` between chunks. Keep the burst modest: every
+	// skipped item doubles as a bounded existence probe for restricted paths, so raising the
+	// capacity widens that probe budget too (see the access-control skill).
+	files_bulk_import: {
+		kind: "token bucket",
+		rate: 100,
+		period: MINUTE,
+		capacity: 300,
+	},
 	files_pending_update_write: BULK_FILES_WRITE,
 	// Sharing is bursty in the same way as `roles_write`: somebody restricts a folder and then adds
 	// three people to it in a few seconds. It gets its own bucket so that sharing several files does
@@ -163,6 +174,37 @@ export async function rate_limiter_limit_by_key(
 		retryAfterMs: limit.retryAfter,
 	});
 
+	return {
+		message: rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE,
+		retryAfterMs: limit.retryAfter,
+	} as const;
+}
+
+/**
+ * Ask whether a charge would pass, without consuming tokens. A mutation that charges two
+ * buckets uses this on the second bucket first: a successful first charge commits even when
+ * the mutation then returns a normal `_nay`, so checking before consuming keeps a refused
+ * call from burning tokens in the other bucket.
+ */
+export async function rate_limiter_check_by_key(
+	ctx: MutationCtx | ActionCtx,
+	args: {
+		name: keyof typeof rate_limiter_CONFIG;
+		key: string;
+		count?: number;
+	},
+) {
+	const limit = await rate_limiter.check(ctx, args.name, {
+		key: args.key,
+		count: args.count,
+	});
+
+	if (limit.ok) {
+		return null;
+	}
+
+	// No refusal log here, unlike `rate_limiter_limit_by_key`. A refused check means the caller
+	// waits and retries the same charge, and that later `limit` call logs when it really refuses.
 	return {
 		message: rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE,
 		retryAfterMs: limit.retryAfter,

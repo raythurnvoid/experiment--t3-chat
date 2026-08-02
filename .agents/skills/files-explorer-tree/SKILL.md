@@ -56,7 +56,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Source/conversion metadata stays in DB/R2 metadata, not visible generated Markdown.
 - `files_get_upload_pipeline_state` returns `waiting_for_upload`, `pending_processing`, `processing`, or `terminal` for the source asset. Plugin-run progress is separate and is not represented by the source `processingWorkId`.
 - R2 asset keys use `organizations/<organizationId>/workspaces/<workspaceId>/assets/<assetId>` for every asset kind. Convex uses `files_r2_assets.kind` to decide upload finalization behavior.
-- Upload max is 50 MiB; converted Markdown max is 900,000 bytes.
+- Upload max is 500 MiB (`files_MAX_UPLOADS_BYTES`); converted Markdown max is 900,000 bytes.
 
 # Uploaded Source And Plugin-Generated Files
 
@@ -183,17 +183,17 @@ Tree-item components:
 - `canDrop` guards target kind, self-drop, and descendant-drop.
 - Root and folders can receive drops.
 - Files cannot receive drops.
-- External OS file drops use headless-tree foreign DnD for tree targeting and `file-selector` for browser file extraction, then reuse the existing Upload file pipeline.
+- External OS file drops use headless-tree foreign DnD for tree targeting and `file-selector` for browser file extraction.
 - External drops over file rows resolve to the file's containing folder. Root, folder rows, empty-folder placeholders, and file-row parent resolution are accepted targets.
-- Dropped browser `File` objects are uploaded through `files_nodes.create_upload_node`, PUT to the signed R2 URL, then processed by the R2 event flow. Current frontend classification treats a file as Markdown only when `File.type` starts with `text/markdown`; a `.md` filename alone does not make it a Markdown upload.
-- Keep external upload acceptance file-type neutral. Do not add MIME or extension allowlists beyond the existing non-Markdown uploaded-source requirement that a filename has a real extension.
-- Reject multi-file and directory drops in the UI; v1 uploads one file at a time.
+- A single bare-file drop keeps the per-file flow: `files_nodes.create_upload_node`, PUT to the signed R2 URL, then the R2 event flow, with the rename/conflict modals. Frontend classification treats a file as Markdown only when `File.type` starts with `text/markdown`; `file-selector` fills that type in for `.md`/`.markdown` files when the browser leaves it empty.
+- Multi-file and folder drops run the folder import flow (see "Folder Import" below). The "Import folder" menu action feeds the same flow through a hidden `webkitdirectory` input.
+- Keep external upload acceptance file-type neutral. Do not add MIME or extension allowlists beyond the existing non-Markdown uploaded-source requirement that a filename has a real extension. `.DS_Store` and `Thumbs.db` are the only always-filtered junk names.
 
 ## Upload Lifecycle
 
-1. The upload menu or external drop receives one file. Directory and multi-file drops are rejected.
-2. The client prepares static images, classifies Markdown from MIME type, normalizes the path, and opens the draft/conflict modal when needed.
-3. `files_nodes.create_upload_node` validates the request and creates the upload asset plus visible source node.
+1. The Upload file menu action and a single bare-file drop receive one file. Folder drops, multi-file drops, and the Import folder picker run the folder import flow, which ends in the same per-file lifecycle below.
+2. The client prepares static images, classifies Markdown from MIME type, normalizes the path, and opens the draft/conflict modal when needed (single file) or the import conflict modal once for the whole batch (folder import).
+3. `files_nodes.create_upload_node` (single) or `files_nodes.create_upload_nodes` (batch) validates the request and creates the upload asset plus visible source node. After batch validation, per-item problems are reported as skips, never whole-call failures.
 4. The browser uploads the binary through the signed R2 PUT URL.
 5. The R2 event patches the source asset's key, size, and optional ETag.
 6. Markdown MIME uploads run the host Markdown finalizer, which creates Yjs, chunks, and a content snapshot on the uploaded node. Oversized Markdown stays a stored file.
@@ -201,6 +201,20 @@ Tree-item components:
 8. Installed first-party plugins own PDF, image, video, and audio-derived outputs plus their external provider calls.
 9. Plugin-created outputs are ordinary Markdown files. No host-owned output placeholder exists before the plugin writes or touches the path.
 10. Rich-text image upload still uses the legacy `/api/upload` route rather than this Files-sidebar flow.
+
+## Folder Import
+
+- Entry points: dropping multiple files or a folder onto root or a folder row, and the "Import folder" menu action (hidden `<input webkitdirectory>`; the attribute is spread raw because React's input typings omit it).
+- The import runs in `run_folder_import` (`files-sidebar.tsx`) with progress in the module-level `useFilesImportStore`, so a sidebar remount re-attaches to a running import. Only one import runs at a time, and a workspace switch mid-import requests a cancel.
+- While an import runs, the upload/import entry points and external file drops are disabled, but moving existing nodes in the tree stays enabled — an import can take minutes and node moves conflict with nothing in it. Only the short single-file upload blocks node moves.
+- Client-side prepare: junk filter, image compression, segment normalization with the shared name normalizers, `.markdown` → `.md` rename for Markdown MIME files, and first-wins dedupe of fully normalized target paths. Client skip reasons: `invalid_name`, `missing_extension`, `too_large`, `too_deep`, `duplicate_after_normalization`.
+- Caps: 1,000 files per import; 50 items and 1 GiB declared bytes per `create_upload_nodes` call; path depth 32; path length 1,024 characters.
+- `create_upload_nodes` charges `files_tree_write` once per call and the `files_bulk_import` bucket once per item; the client waits `_nay.data.retryAfterMs` and retries the chunk on "Rate limit exceeded".
+- Server-side per-item skip reasons are only `conflict` (an existing file was kept, or a permission check refused — deliberately indistinguishable so the payload does not reveal restricted paths) and `path_blocked` (a folder holds the target path, a file holds an ancestor segment, or another batch item collided). `path_blocked` names the blocking node's kind, so it is only used when the caller can `content.read` that node; a hidden blocker answers `conflict` instead.
+- Before any write, the client asks `files_nodes.get_upload_conflicts` which target paths already exist and confirms replace/skip once in `FilesSidebarImportConflictModal`. The query filters by per-node `content.read`, so it reveals nothing `list_tree` would not show.
+- Replace mode archives an existing file only after every existing folder on the item's path passed `content.write` (the pre-walk), so a refused item can never archive a file without importing its replacement.
+- A failed or cancelled PUT calls `files_nodes.discard_failed_upload_node`, which removes the placeholder node and deletes the R2 object. `removed: false` means the R2 event recorded the object first, and the client counts the file as imported.
+- Import assets keep `processingWorkId` unset, so the standard R2 event finalizer runs Markdown conversion and plugin dispatch exactly like single-file uploads. `data_import` differs: it suppresses processing with `processingWorkId: null`.
 
 # Headless-Tree Configuration Highlights
 
@@ -252,6 +266,6 @@ Tree-item components:
 - Video and audio uploads remain visible as source nodes even when a plugin run fails.
 - Markdown external file drops onto root/folders use the same signed R2 upload path, then finalize into ordinary Markdown file nodes.
 - External file drops over a file row upload into that file's containing folder.
-- Multi-file and directory external drops are rejected without creating nodes.
+- A folder drop or Import folder pick recreates the nested structure; existing files surface once in the import conflict modal; cancelling mid-import leaves no `waiting_for_upload` phantom rows behind.
 - Placeholder nodes are never sent to mutations.
 - Normal tree/list/glob results expose uploaded sources and generated outputs as ordinary visible nodes.

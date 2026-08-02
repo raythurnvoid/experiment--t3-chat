@@ -121,6 +121,13 @@ export function files_normalize_ai_edit_content(content: string, baselineContent
  **/
 export const files_MAX_UPLOADS_BYTES = 500 * 1024 * 1024;
 
+/**
+ * How many files one bulk-import mutation or conflict pre-check call accepts.
+ * The client chunks to this size and the server rejects bigger calls, so both
+ * sides must read the same number.
+ */
+export const files_IMPORT_MAX_ITEMS_PER_CALL = 50;
+
 export function files_create_tree_items_list_from_nodes(nodes: files_VisibleTreeNode[]) {
 	return [files_SYNTHETIC_ROOT_FOLDER, ...nodes];
 }

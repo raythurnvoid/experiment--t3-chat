@@ -10,6 +10,7 @@ import React, {
 	type ComponentProps,
 } from "react";
 import { toast } from "sonner";
+import { create } from "zustand";
 import { fromEvent, type FileWithPath } from "file-selector";
 import {
 	Archive,
@@ -24,6 +25,7 @@ import {
 	FileUser,
 	Folder,
 	FolderPlus,
+	FolderUp,
 	Hash,
 	Link2,
 	Search,
@@ -34,7 +36,8 @@ import {
 	CopyMinus,
 	CopyPlus,
 } from "lucide-react";
-import { useConvex, useQueries, useQuery } from "convex/react";
+import { useConvex, useQueries, useQuery, type ConvexReactClient } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import {
 	dragAndDropFeature,
 	expandAllFeature,
@@ -126,7 +129,9 @@ import {
 	files_create_tree_items_list_from_nodes,
 	files_get_default_node_name,
 	files_get_node_path_validation,
+	files_IMPORT_MAX_ITEMS_PER_CALL,
 	files_is_node,
+	files_MAX_UPLOADS_BYTES,
 	files_name_input_select_stem,
 	files_normalize_name,
 	files_normalize_markdown_name,
@@ -137,6 +142,7 @@ import {
 	type files_VisibleTreeNode,
 } from "@/lib/files.ts";
 import { format_relative_time } from "@/lib/date.ts";
+import { async_all_settled_with_limit } from "@/lib/async.ts";
 
 type FilesSidebarTree_Shared = () => TreeInstance<files_TreeItem>;
 type FilesSidebarTreeItem_Instance = ReturnType<TreeInstance<files_TreeItem>["getItemInstance"]>;
@@ -262,6 +268,508 @@ async function prepare_image_upload_file(file: File) {
 		imageBitmap?.close();
 	}
 }
+
+// #region folder import
+const FILES_IMPORT_MAX_FILES = 1000;
+const FILES_IMPORT_MAX_CHUNK_BYTES = 1024 * 1024 * 1024;
+const FILES_IMPORT_MAX_PATH_DEPTH = 32;
+const FILES_IMPORT_MAX_PATH_LENGTH = 1024;
+const FILES_IMPORT_PREPARE_CONCURRENCY = 4;
+const FILES_IMPORT_PUT_CONCURRENCY = 4;
+const FILES_IMPORT_PROGRESS_TOAST_ID = "files-sidebar-import-progress";
+
+// `fromEvent` filters these junk files for drops but not for folder picker files, so the shared
+// entry builder filters both entry points the same way.
+const FILES_IMPORT_JUNK_FILE_NAMES = new Set([".DS_Store", "Thumbs.db"]);
+
+type FilesImportSkipReason =
+	| "invalid_name"
+	| "missing_extension"
+	| "too_large"
+	| "too_deep"
+	| "duplicate_after_normalization"
+	| "conflict"
+	| "path_blocked";
+
+type FilesImportConflict = {
+	relativePath: string;
+	kind: files_TreeItem["kind"];
+};
+
+type FilesImportStoreState = {
+	phase: "idle" | "preparing" | "confirming" | "uploading";
+	/**
+	 * The membership the import started under. A workspace switch mid-import requests a cancel.
+	 */
+	membershipId: app_convex_Id<"organizations_workspaces_users"> | null;
+	/** How many files entered the upload phase. */
+	total: number;
+	/** How many files finished uploading. */
+	done: number;
+	/** Client-side and server-side skips, merged for the final report. */
+	skipped: Array<{ relativePath: string; reason: FilesImportSkipReason }>;
+	failed: Array<{ relativePath: string }>;
+	/**
+	 * Non-empty exactly while the confirm modal is open.
+	 */
+	conflicts: FilesImportConflict[];
+	cancelRequested: boolean;
+	confirmResolver: ((choice: "replace" | "skip" | "cancel") => void) | null;
+};
+
+const FILES_IMPORT_INITIAL_STATE: FilesImportStoreState = {
+	phase: "idle",
+	membershipId: null,
+	total: 0,
+	done: 0,
+	skipped: [],
+	failed: [],
+	conflicts: [],
+	cancelRequested: false,
+	confirmResolver: null,
+};
+
+// Module-level so a sidebar unmount/remount re-attaches to a running import instead of losing it.
+const useFilesImportStore = create<FilesImportStoreState>(() => ({ ...FILES_IMPORT_INITIAL_STATE }));
+
+type FilesImportEntry = {
+	file: FileWithPath;
+	/** Raw browser path relative to the dropped or picked folder, before normalization. */
+	relativePath: string;
+};
+
+/**
+ * Build the folder-relative path for each dropped or picked file. Drops carry `path` like
+ * `/folder/file.txt`, the folder picker carries `webkitRelativePath` like `folder/file.txt`,
+ * and a bare file carries `./file.txt`. All three shapes become `folder/file.txt` or
+ * `file.txt` here, so both entry points behave the same.
+ */
+function get_import_file_entries(files: FileWithPath[]) {
+	const entries: FilesImportEntry[] = [];
+	for (const file of files) {
+		const rawPath = file.path ?? file.relativePath ?? file.name;
+		const segments = rawPath.split("/").filter((segment) => segment !== "" && segment !== ".");
+		if (segments.length === 0) {
+			continue;
+		}
+		if (FILES_IMPORT_JUNK_FILE_NAMES.has(segments[segments.length - 1]!)) {
+			continue;
+		}
+
+		entries.push({ file, relativePath: segments.join("/") });
+	}
+	return entries;
+}
+
+type FilesImportPlanItem = {
+	file: File;
+	/** Original browser path, used in skip and failure reports. */
+	relativePath: string;
+	/** Fully normalized path sent to the server, which requires already-normalized segments. */
+	normalizedPath: string;
+	contentType: string | undefined;
+};
+
+/**
+ * Normalize every path, pre-filter the files the server would reject, and dedupe target paths.
+ * The server treats a non-normalized path as a caller bug and fails the whole call, so this
+ * step is what turns messy real folder names into an importable batch.
+ */
+function build_import_plan(entries: FilesImportEntry[]) {
+	const items: FilesImportPlanItem[] = [];
+	const skipped: Array<{ relativePath: string; reason: FilesImportSkipReason }> = [];
+	const seenPaths = new Set<string>();
+
+	for (const entry of entries) {
+		const segments = entry.relativePath.split("/");
+		const contentType = entry.file.type || undefined;
+		const isMarkdown = contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
+
+		const normalizedSegments: string[] = [];
+		let skipReason: FilesImportSkipReason | null = null;
+		for (const [index, segment] of segments.entries()) {
+			if (index < segments.length - 1) {
+				const normalizedFolder = files_normalize_name("folder", segment);
+				if (normalizedFolder._nay) {
+					skipReason = "invalid_name";
+					break;
+				}
+				normalizedSegments.push(normalizedFolder._yay);
+				continue;
+			}
+
+			// Markdown tooling also saves `.markdown`, but only `.md` is storable as an editable file.
+			const leafInput = isMarkdown ? segment.replace(/\.markdown$/i, ".md") : segment;
+			if (isMarkdown) {
+				const normalizedLeaf = files_normalize_markdown_name(leafInput);
+				if (normalizedLeaf._nay) {
+					skipReason = "invalid_name";
+					break;
+				}
+				normalizedSegments.push(normalizedLeaf._yay);
+			} else {
+				const normalizedLeaf = files_normalize_upload_file_name(leafInput);
+				if (!upload_filename_has_real_extension(normalizedLeaf)) {
+					skipReason = "missing_extension";
+					break;
+				}
+				normalizedSegments.push(normalizedLeaf);
+			}
+		}
+		if (skipReason) {
+			skipped.push({ relativePath: entry.relativePath, reason: skipReason });
+			continue;
+		}
+
+		const normalizedPath = normalizedSegments.join("/");
+		if (normalizedSegments.length > FILES_IMPORT_MAX_PATH_DEPTH || normalizedPath.length > FILES_IMPORT_MAX_PATH_LENGTH) {
+			skipped.push({ relativePath: entry.relativePath, reason: "too_deep" });
+			continue;
+		}
+
+		// Different browser names can normalize to one app path ("My File.PNG" and "my-file.png").
+		// The first file in traversal order wins; without this dedupe a later chunk would see the
+		// earlier chunk's node as a conflict and, in replace mode, archive a file imported seconds
+		// before.
+		if (seenPaths.has(normalizedPath)) {
+			skipped.push({ relativePath: entry.relativePath, reason: "duplicate_after_normalization" });
+			continue;
+		}
+		seenPaths.add(normalizedPath);
+
+		items.push({ file: entry.file, relativePath: entry.relativePath, normalizedPath, contentType });
+	}
+
+	return { items, skipped };
+}
+
+function chunk_array<T>(items: T[], size: number) {
+	const chunks: T[][] = [];
+	for (let index = 0; index < items.length; index += size) {
+		chunks.push(items.slice(index, index + size));
+	}
+	return chunks;
+}
+
+/**
+ * Chunk by item count and by declared bytes. Presigned URLs are minted per chunk right before
+ * their PUTs, so a byte-bounded chunk keeps a URL from sitting longer than one chunk's upload.
+ */
+function chunk_import_items(items: FilesImportPlanItem[]) {
+	const chunks: FilesImportPlanItem[][] = [];
+	let currentChunk: FilesImportPlanItem[] = [];
+	let currentChunkBytes = 0;
+	for (const item of items) {
+		if (
+			currentChunk.length >= files_IMPORT_MAX_ITEMS_PER_CALL ||
+			(currentChunk.length > 0 && currentChunkBytes + item.file.size > FILES_IMPORT_MAX_CHUNK_BYTES)
+		) {
+			chunks.push(currentChunk);
+			currentChunk = [];
+			currentChunkBytes = 0;
+		}
+		currentChunk.push(item);
+		currentChunkBytes += item.file.size;
+	}
+	if (currentChunk.length > 0) {
+		chunks.push(currentChunk);
+	}
+	return chunks;
+}
+
+function show_import_progress_toast() {
+	const state = useFilesImportStore.getState();
+	const message =
+		state.phase === "preparing"
+			? "Preparing files to import..."
+			: state.phase === "confirming"
+				? "Waiting for a choice about existing files..."
+				: `Uploading ${Math.min(state.done + 1, state.total)} of ${state.total} files...`;
+
+	toast(message, {
+		id: FILES_IMPORT_PROGRESS_TOAST_ID,
+		duration: Infinity,
+		action: {
+			label: "Cancel",
+			onClick: (event) => {
+				// Keep the toast visible; the import loop dismisses it when the run really stops.
+				event.preventDefault();
+				useFilesImportStore.setState({ cancelRequested: true });
+			},
+		},
+	});
+}
+
+function finish_import_run() {
+	const state = useFilesImportStore.getState();
+	toast.dismiss(FILES_IMPORT_PROGRESS_TOAST_ID);
+
+	if (state.skipped.length > 0) {
+		console.info("[FilesSidebar.runFolderImport] Skipped files", { skipped: state.skipped });
+	}
+	if (state.failed.length > 0) {
+		console.error("[FilesSidebar.runFolderImport] Failed uploads", { failed: state.failed });
+	}
+
+	const summaryParts = [`${state.done} imported`];
+	if (state.skipped.length > 0) {
+		summaryParts.push(`${state.skipped.length} skipped`);
+	}
+	if (state.failed.length > 0) {
+		summaryParts.push(`${state.failed.length} failed`);
+	}
+	const summary = summaryParts.join(", ");
+
+	if (state.cancelRequested) {
+		toast.info(`Import cancelled: ${summary}.`);
+	} else if (state.failed.length > 0) {
+		toast.error(`Import finished: ${summary}.`);
+	} else {
+		toast.success(`Import finished: ${summary}.`);
+	}
+
+	useFilesImportStore.setState({ ...FILES_IMPORT_INITIAL_STATE });
+}
+
+type FilesImportCreatedItem = {
+	relativePath: string;
+	nodeId: app_convex_Id<"files_nodes">;
+	url: string;
+	headers: Record<string, string>;
+};
+
+/**
+ * Run one whole folder import: normalize and pre-filter the files, ask about conflicts once,
+ * then create nodes and upload bytes chunk by chunk. Progress, cancellation, and the confirm
+ * modal all go through `useFilesImportStore`.
+ *
+ * Module-level on purpose: the run must survive a sidebar remount, and outside a component the
+ * React Compiler's try/catch constraints do not apply.
+ */
+async function run_folder_import(args: {
+	convex: ConvexReactClient;
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
+	entries: FilesImportEntry[];
+}) {
+	const plan = build_import_plan(args.entries);
+	useFilesImportStore.setState({
+		...FILES_IMPORT_INITIAL_STATE,
+		phase: "preparing",
+		membershipId: args.membershipId,
+		skipped: plan.skipped,
+	});
+	show_import_progress_toast();
+
+	try {
+		// Compress images first so the declared sizes match the bytes that actually upload.
+		// `prepare_image_upload_file` returns the original file on any decode error, so a
+		// rejected slot here is unexpected; fall back to the original file for it too.
+		const preparedResults = await async_all_settled_with_limit(plan.items, FILES_IMPORT_PREPARE_CONCURRENCY, (item) =>
+			prepare_image_upload_file(item.file),
+		);
+
+		const uploadItems: FilesImportPlanItem[] = [];
+		for (const [index, item] of plan.items.entries()) {
+			const preparedResult = preparedResults[index]!;
+			const preparedFile = preparedResult.status === "fulfilled" ? preparedResult.value : item.file;
+			if (preparedFile.size > files_MAX_UPLOADS_BYTES) {
+				useFilesImportStore.setState((state) => ({
+					skipped: [...state.skipped, { relativePath: item.relativePath, reason: "too_large" as const }],
+				}));
+				continue;
+			}
+			uploadItems.push({ ...item, file: preparedFile });
+		}
+
+		if (uploadItems.length === 0 || useFilesImportStore.getState().cancelRequested) {
+			finish_import_run();
+			return;
+		}
+
+		// Ask once which target paths already exist, so the user decides before any write.
+		const conflicts: FilesImportConflict[] = [];
+		for (const itemChunk of chunk_array(uploadItems, files_IMPORT_MAX_ITEMS_PER_CALL)) {
+			const chunkConflicts = await args.convex.query(app_convex_api.files_nodes.get_upload_conflicts, {
+				membershipId: args.membershipId,
+				parentId: args.parentId,
+				relativePaths: itemChunk.map((item) => item.normalizedPath),
+			});
+			conflicts.push(...chunkConflicts);
+		}
+
+		let onConflict: "replace" | "skip" = "skip";
+		if (conflicts.length > 0) {
+			const choice = await new Promise<"replace" | "skip" | "cancel">((resolve) => {
+				useFilesImportStore.setState({ phase: "confirming", conflicts, confirmResolver: resolve });
+			});
+			useFilesImportStore.setState({ conflicts: [], confirmResolver: null });
+			if (choice === "cancel") {
+				useFilesImportStore.setState({ cancelRequested: true });
+				finish_import_run();
+				return;
+			}
+			onConflict = choice;
+		}
+
+		useFilesImportStore.setState({ phase: "uploading", total: uploadItems.length });
+		show_import_progress_toast();
+
+		const discard_unuploaded_node = async (
+			created: Pick<FilesImportCreatedItem, "nodeId" | "relativePath">,
+			opts: { reportFailed: boolean },
+		) => {
+			// The discard charges the same bulk bucket as the create calls, which a cancel right
+			// after a chunk has just drained. Wait the bucket out like `process_chunk` does, or the
+			// node this discard should remove would stay in the tree as a phantom row forever.
+			let discarded: FunctionReturnType<typeof app_convex_api.files_nodes.discard_failed_upload_node> | null = null;
+			while (discarded === null) {
+				discarded = await args.convex
+					.mutation(app_convex_api.files_nodes.discard_failed_upload_node, {
+						membershipId: args.membershipId,
+						nodeId: created.nodeId,
+					})
+					.catch((error: unknown) => {
+						console.error("[FilesSidebar.runFolderImport] Unexpected discard error", { error, nodeId: created.nodeId });
+						return null;
+					});
+				if (discarded === null) {
+					break;
+				}
+				// "Rate limit exceeded" is the literal from `rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE`.
+				if (discarded._nay && discarded._nay.message === "Rate limit exceeded") {
+					const retryAfterMs = discarded._nay.data?.retryAfterMs ?? 5000;
+					await new Promise((resolve) => setTimeout(resolve, retryAfterMs));
+					discarded = null;
+				}
+			}
+
+			// `removed: false` means the R2 event recorded the object first, so the upload landed
+			// after all and the file must count as imported.
+			if (discarded && !discarded._nay && !discarded._yay.removed) {
+				useFilesImportStore.setState((state) => ({ done: state.done + 1 }));
+				return;
+			}
+
+			if (discarded?._nay) {
+				console.error("[FilesSidebar.runFolderImport] Failed to discard upload node", {
+					error: discarded._nay,
+					nodeId: created.nodeId,
+				});
+			}
+			if (opts.reportFailed) {
+				useFilesImportStore.setState((state) => ({
+					failed: [...state.failed, { relativePath: created.relativePath }],
+				}));
+			}
+		};
+
+		const process_chunk = async (chunk: FilesImportPlanItem[]): Promise<"continue" | "stop"> => {
+			// Create the chunk's nodes, waiting out rate limits instead of failing the run. The
+			// bulk bucket refills at a fixed rate, so big imports pause between chunks by design.
+			let createdItems: FilesImportCreatedItem[] | null = null;
+			while (createdItems === null) {
+				if (useFilesImportStore.getState().cancelRequested) {
+					return "stop";
+				}
+
+				const result = await args.convex.mutation(app_convex_api.files_nodes.create_upload_nodes, {
+					membershipId: args.membershipId,
+					parentId: args.parentId,
+					onConflict,
+					items: chunk.map((item) => ({
+						relativePath: item.normalizedPath,
+						contentType: item.contentType,
+						size: item.file.size,
+					})),
+				});
+				if (result._nay) {
+					// "Rate limit exceeded" is the literal from `rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE`.
+					if (result._nay.message === "Rate limit exceeded") {
+						const retryAfterMs = result._nay.data?.retryAfterMs ?? 5000;
+						await new Promise((resolve) => setTimeout(resolve, retryAfterMs));
+						continue;
+					}
+
+					console.error("[FilesSidebar.runFolderImport] Failed to create upload nodes", { error: result._nay });
+					useFilesImportStore.setState((state) => ({
+						failed: [...state.failed, ...chunk.map((item) => ({ relativePath: item.relativePath }))],
+					}));
+					return "stop";
+				}
+
+				useFilesImportStore.setState((state) => ({ skipped: [...state.skipped, ...result._yay.skipped] }));
+				createdItems = result._yay.created;
+			}
+
+			const itemByPath = new Map(chunk.map((item) => [item.normalizedPath, item]));
+			// Each task reports its own failure and never rejects, so the settled results are unused.
+			await async_all_settled_with_limit(createdItems, FILES_IMPORT_PUT_CONCURRENCY, async (created) => {
+				const item = itemByPath.get(created.relativePath);
+				if (!item) {
+					console.error(
+						should_never_happen("[FilesSidebar.runFolderImport] created item without a matching plan item", {
+							relativePath: created.relativePath,
+						}),
+					);
+					return;
+				}
+
+				// Cancelling removes the nodes whose bytes were never sent, so no "waiting for
+				// upload" phantom rows stay in the tree.
+				if (useFilesImportStore.getState().cancelRequested) {
+					await discard_unuploaded_node(created, { reportFailed: false });
+					return;
+				}
+
+				try {
+					const response = await fetch(created.url, { method: "PUT", headers: created.headers, body: item.file });
+					if (!response.ok) {
+						throw new Error(`R2 upload failed with status ${response.status}`);
+					}
+					useFilesImportStore.setState((state) => ({ done: state.done + 1 }));
+					show_import_progress_toast();
+				} catch (error) {
+					// A non-ok response and a rejected fetch (a file changed on disk mid-read)
+					// both end here: report the file and remove its placeholder node.
+					console.error("[FilesSidebar.runFolderImport] Failed to upload file", {
+						error,
+						relativePath: created.relativePath,
+					});
+					await discard_unuploaded_node(created, { reportFailed: true });
+				}
+			});
+
+			return "continue";
+		};
+
+		const chunks = chunk_import_items(uploadItems);
+		for (const [chunkIndex, chunk] of chunks.entries()) {
+			if (useFilesImportStore.getState().cancelRequested) {
+				break;
+			}
+			if ((await process_chunk(chunk)) === "stop") {
+				// The chunks after a failed call were never attempted; report their files too, so
+				// the summary accounts for every file. A cancel is not a failure.
+				const remainingItems = chunks.slice(chunkIndex + 1).flat();
+				if (remainingItems.length > 0 && !useFilesImportStore.getState().cancelRequested) {
+					useFilesImportStore.setState((state) => ({
+						failed: [...state.failed, ...remainingItems.map((item) => ({ relativePath: item.relativePath }))],
+					}));
+				}
+				break;
+			}
+		}
+
+		finish_import_run();
+	} catch (error) {
+		console.error("[FilesSidebar.runFolderImport] Unexpected import error", { error });
+		toast.dismiss(FILES_IMPORT_PROGRESS_TOAST_ID);
+		toast.error("Import failed.");
+		useFilesImportStore.setState({ ...FILES_IMPORT_INITIAL_STATE });
+	}
+}
+// #endregion folder import
 
 // #region tree item icon
 type FilesSidebarTreeItemIcon_ClassNames =
@@ -2193,6 +2701,7 @@ type FilesSidebarTopSectionMoreAction_Props = {
 	onArchiveToggleClick: () => void;
 	onArchiveSelectionClick: () => void;
 	onUploadFileClick: () => void;
+	onImportFolderClick: () => void;
 };
 
 const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMoreAction(
@@ -2209,6 +2718,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 		onArchiveToggleClick,
 		onArchiveSelectionClick,
 		onUploadFileClick,
+		onImportFolderClick,
 	} = props;
 
 	const archivedItemsLabel = `${showArchived ? "Hide" : "Show"} ${archivedCount} ${
@@ -2280,6 +2790,14 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 									<MyMenuItemContentPrimary>Upload file</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuItem>
+							<MyMenuItem disabled={isBusy || isUploadingFile} onClick={onImportFolderClick}>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<FolderUp />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Import folder</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
 						</>
 					)}
 				</MyMenuPopoverContent>
@@ -2319,6 +2837,7 @@ type FilesSidebarTopSection_Props = {
 	onArchiveToggleClick: () => void;
 	onArchiveSelectionClick: () => void;
 	onUploadFileClick: () => void;
+	onImportFolderClick: () => void;
 };
 
 const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: FilesSidebarTopSection_Props) {
@@ -2343,6 +2862,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		onArchiveToggleClick,
 		onArchiveSelectionClick,
 		onUploadFileClick,
+		onImportFolderClick,
 	} = props;
 
 	const archivedCount =
@@ -2455,6 +2975,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 						onArchiveToggleClick={onArchiveToggleClick}
 						onArchiveSelectionClick={onArchiveSelectionClick}
 						onUploadFileClick={onUploadFileClick}
+						onImportFolderClick={onImportFolderClick}
 					/>
 				</div>
 			</div>
@@ -2678,6 +3199,75 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 });
 // #endregion upload conflict modal
 
+// #region import conflict modal
+type FilesSidebarImportConflictModal_ClassNames =
+	| "FilesSidebarImportConflictModal"
+	| "FilesSidebarImportConflictModal-list"
+	| "FilesSidebarImportConflictModal-list-item";
+
+type FilesSidebarImportConflictModal_Props = {
+	/** The import pauses while this list is non-empty; an empty list renders nothing. */
+	conflicts: FilesImportConflict[];
+	onReplace: () => void;
+	onSkipExisting: () => void;
+	onCancel: () => void;
+};
+
+const FilesSidebarImportConflictModal = memo(function FilesSidebarImportConflictModal(
+	props: FilesSidebarImportConflictModal_Props,
+) {
+	const { conflicts, onReplace, onSkipExisting, onCancel } = props;
+
+	const handleOpenChange = useFn((open: boolean) => {
+		if (!open) {
+			onCancel();
+		}
+	});
+
+	if (conflicts.length === 0) {
+		return null;
+	}
+
+	return (
+		<MyModal open setOpen={handleOpenChange}>
+			<MyModalPopover className={"FilesSidebarImportConflictModal" satisfies FilesSidebarImportConflictModal_ClassNames}>
+				<MyModalHeader>
+					<MyModalHeading>Some files already exist</MyModalHeading>
+					<MyModalDescription>
+						{conflicts.length === 1
+							? "1 path in this import already exists in the destination folder."
+							: `${conflicts.length} paths in this import already exist in the destination folder.`}{" "}
+						Replacing archives the current files; skipping keeps them and imports the rest.
+					</MyModalDescription>
+				</MyModalHeader>
+				<ul className={"FilesSidebarImportConflictModal-list" satisfies FilesSidebarImportConflictModal_ClassNames}>
+					{conflicts.map((conflict) => (
+						<li
+							key={conflict.relativePath}
+							className={"FilesSidebarImportConflictModal-list-item" satisfies FilesSidebarImportConflictModal_ClassNames}
+						>
+							{conflict.kind === "folder" ? `${conflict.relativePath}/` : conflict.relativePath}
+						</li>
+					))}
+				</ul>
+				<MyModalFooter>
+					<MyButton type="button" variant="outline" onClick={onCancel}>
+						Cancel import
+					</MyButton>
+					<MyButton type="button" variant="outline" onClick={onSkipExisting}>
+						Skip existing
+					</MyButton>
+					<MyButton type="button" variant="destructive" onClick={onReplace}>
+						Replace existing
+					</MyButton>
+				</MyModalFooter>
+				<MyModalCloseTrigger />
+			</MyModalPopover>
+		</MyModal>
+	);
+});
+// #endregion import conflict modal
+
 // #region root
 function has_file_node_drop(dataTransfer: DataTransfer) {
 	return Array.from(dataTransfer.types).includes(files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE);
@@ -2691,7 +3281,7 @@ function get_file_node_drop_ids(dataTransfer: DataTransfer) {
 		.filter(Boolean);
 }
 
-async function get_single_dropped_file(dataTransfer: DataTransfer) {
+async function get_dropped_files(dataTransfer: DataTransfer) {
 	if (!has_file_drop(dataTransfer)) {
 		return Result({ _nay: { name: "nay", message: "Drop a file to upload." } });
 	}
@@ -2701,31 +3291,15 @@ async function get_single_dropped_file(dataTransfer: DataTransfer) {
 		const droppedItems = await fromEvent({ dataTransfer, type: "drop" });
 		files = droppedItems.filter((item): item is FileWithPath => item instanceof File);
 	} catch (error) {
-		console.error("[FilesSidebar.getSingleDroppedFile] Failed to read dropped file", { error });
-		return Result({ _nay: { name: "nay", message: "Failed to read dropped file.", cause: error } });
+		console.error("[FilesSidebar.getDroppedFiles] Failed to read dropped files", { error });
+		return Result({ _nay: { name: "nay", message: "Failed to read dropped files.", cause: error } });
 	}
 
-	if (
-		files.some((file) => {
-			const plainFilePath = `./${file.name}`;
-
-			// Treat any file-selector path beyond the bare file name as a nested directory drop.
-			return (
-				(file.path !== undefined && file.path !== plainFilePath) ||
-				(file.relativePath !== undefined && file.relativePath !== plainFilePath)
-			);
-		})
-	) {
-		return Result({ _nay: { name: "nay", message: "Folder uploads are not supported yet." } });
-	}
 	if (files.length === 0) {
 		return Result({ _nay: { name: "nay", message: "Drop a file to upload." } });
 	}
-	if (files.length > 1) {
-		return Result({ _nay: { name: "nay", message: "Drop one file at a time." } });
-	}
 
-	return Result({ _yay: files[0] });
+	return Result({ _yay: files });
 }
 
 function can_receive_file_drop(args: {
@@ -3064,15 +3638,20 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const [isCreatingFile, setIsCreatingFile] = useState(false);
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
-	const [isUploadingFile, setIsUploadingFile] = useState(false);
+	const [isUploadingSingleFile, setIsUploadingSingleFile] = useState(false);
 	const [uploadDraft, setUploadDraft] = useState<FilesSidebarUploadDraft | null>(null);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState<Set<string>>(new Set());
 	const [renamingItem, setRenamingItem] = useState<string | null | undefined>(undefined);
 	const [renameErrorByNodeId, setRenameErrorByNodeId] = useState<Map<string, string>>(new Map());
 	/** The node whose share dialog is open, or `null` when it is closed. */
 	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	const isImportingFiles = useFilesImportStore((state) => state.phase !== "idle");
+	const importConflicts = useFilesImportStore((state) => state.conflicts);
+	// One gate for every upload affordance: the single-file PUT or a running folder import.
+	const isUploadingFile = isUploadingSingleFile || isImportingFiles;
 	const isBusy = isCreatingFile || isArchivingSelection;
 	const uploadInputRef = useRef<HTMLInputElement | null>(null);
+	const importFolderInputRef = useRef<HTMLInputElement | null>(null);
 
 	const [expandedItems, setExpandedItems] = useState<string[]>([]);
 	const canCollapseAll = expandedItems.length > 1;
@@ -3336,7 +3915,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			filename: string;
 			contentType?: string;
 		}) => {
-			setIsUploadingFile(true);
+			setIsUploadingSingleFile(true);
 			convex
 				.mutation(app_convex_api.files_nodes.create_upload_node, {
 					membershipId,
@@ -3376,7 +3955,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					toast.error(error instanceof Error ? error.message : "Failed to upload file");
 				})
 				.finally(() => {
-					setIsUploadingFile(false);
+					setIsUploadingSingleFile(false);
 				});
 		},
 	);
@@ -3474,6 +4053,40 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		},
 	);
 
+	const importBrowserFiles = useFn(
+		(args: { entries: FilesImportEntry[]; parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID }) => {
+			if (useFilesImportStore.getState().phase !== "idle") {
+				toast.error("Another import is already running.");
+				return;
+			}
+			if (args.entries.length > FILES_IMPORT_MAX_FILES) {
+				toast.error(`Imports are limited to ${FILES_IMPORT_MAX_FILES} files.`);
+				return;
+			}
+
+			run_folder_import({
+				convex,
+				membershipId,
+				parentId: args.parentId,
+				entries: args.entries,
+			}).catch((error: unknown) => {
+				console.error("[FilesSidebar.importBrowserFiles] Unexpected import run error", { error });
+			});
+		},
+	);
+
+	const handleImportConflictReplace = useFn(() => {
+		useFilesImportStore.getState().confirmResolver?.("replace");
+	});
+
+	const handleImportConflictSkip = useFn(() => {
+		useFilesImportStore.getState().confirmResolver?.("skip");
+	});
+
+	const handleImportConflictCancel = useFn(() => {
+		useFilesImportStore.getState().confirmResolver?.("cancel");
+	});
+
 	const canDragForeignDragObjectOver = useFn<
 		NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDragForeignDragObjectOver"]>
 	>((dataTransfer, target) => {
@@ -3492,7 +4105,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				dataTransfer,
 				target: effectiveTarget,
 				isBusy,
-				isUploadingFile,
+				// A folder import can run for minutes; moving existing nodes conflicts with nothing
+				// in it, so only the short single-file upload blocks node moves.
+				isUploadingFile: isUploadingSingleFile,
 			})
 		);
 	});
@@ -3511,7 +4126,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				dataTransfer,
 				target,
 				isBusy,
-				isUploadingFile,
+				isUploadingFile: isUploadingSingleFile,
 			})
 		);
 	});
@@ -3524,7 +4139,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				dataTransfer,
 				target,
 				isBusy,
-				isUploadingFile,
+				isUploadingFile: isUploadingSingleFile,
 			})
 		) {
 			if (!treeItems) {
@@ -3585,17 +4200,27 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return;
 		}
 
-		const uploadFileDrop = await get_single_dropped_file(dataTransfer);
-		if (uploadFileDrop._nay) {
-			toast.error(uploadFileDrop._nay.message ?? "Failed to read dropped file.");
+		const droppedFiles = await get_dropped_files(dataTransfer);
+		if (droppedFiles._nay) {
+			toast.error(droppedFiles._nay.message ?? "Failed to read dropped files.");
 			return;
 		}
 
 		const targetParentId = target.item.getId();
-		uploadBrowserFile({
-			file: uploadFileDrop._yay,
-			parentId: targetParentId === files_ROOT_ID ? files_ROOT_ID : (targetParentId as app_convex_Id<"files_nodes">),
-		});
+		const parentId = targetParentId === files_ROOT_ID ? files_ROOT_ID : (targetParentId as app_convex_Id<"files_nodes">);
+		const entries = get_import_file_entries(droppedFiles._yay);
+		if (entries.length === 0) {
+			toast.error("Drop a file to upload.");
+			return;
+		}
+
+		// A single bare file keeps the existing per-file flow with its rename and replace modal.
+		if (entries.length === 1 && entries[0]!.relativePath === entries[0]!.file.name) {
+			uploadBrowserFile({ file: entries[0]!.file, parentId });
+			return;
+		}
+
+		importBrowserFiles({ entries, parentId });
 	});
 
 	const canRename = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canRename"]>>((item) => {
@@ -4426,6 +5051,17 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		uploadInputRef.current?.click();
 	});
 
+	// Picked uploads land in the selected folder when one is selected, otherwise in the root.
+	const resolveSelectedFolderParentId = () => {
+		const selectedItem = selectedNodeId && treeItems ? treeItems.itemById.get(selectedNodeId) : null;
+		return selectedItem &&
+			selectedItem._id !== files_ROOT_ID &&
+			selectedItem.kind === "folder" &&
+			selectedItem.archiveOperationId === undefined
+			? (selectedItem._id as app_convex_Id<"files_nodes">)
+			: files_ROOT_ID;
+	};
+
 	const handleUploadFileChange = useFn<React.ComponentProps<"input">["onChange"]>((event) => {
 		const file = event.currentTarget.files?.[0];
 		event.currentTarget.value = "";
@@ -4433,19 +5069,35 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return;
 		}
 
-		const selectedItem = selectedNodeId ? treeItems.itemById.get(selectedNodeId) : null;
-		const parentId =
-			selectedItem &&
-			selectedItem._id !== files_ROOT_ID &&
-			selectedItem.kind === "folder" &&
-			selectedItem.archiveOperationId === undefined
-				? selectedItem._id
-				: files_ROOT_ID;
-
 		uploadBrowserFile({
 			file,
-			parentId: parentId === files_ROOT_ID ? files_ROOT_ID : (parentId as app_convex_Id<"files_nodes">),
+			parentId: resolveSelectedFolderParentId(),
 		});
+	});
+
+	const handleImportFolderClick = useFn(() => {
+		importFolderInputRef.current?.click();
+	});
+
+	const handleImportFolderChange = useFn<React.ComponentProps<"input">["onChange"]>((event) => {
+		const inputElement = event.currentTarget;
+		// `fromEvent` reads the files from the event target, so reset the input only after it resolves.
+		fromEvent(event.nativeEvent)
+			.then((pickedItems) => {
+				inputElement.value = "";
+				const files = pickedItems.filter((item): item is FileWithPath => item instanceof File);
+				const entries = get_import_file_entries(files);
+				if (entries.length === 0) {
+					return;
+				}
+
+				importBrowserFiles({ entries, parentId: resolveSelectedFolderParentId() });
+			})
+			.catch((error: unknown) => {
+				inputElement.value = "";
+				console.error("[FilesSidebar.handleImportFolderChange] Failed to read picked folder", { error });
+				toast.error("Failed to read the selected folder.");
+			});
 	});
 
 	const handleUploadDraftClose = useFn(() => {
@@ -4478,6 +5130,16 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			contentType: uploadDraft.contentType,
 		});
 	});
+
+	// A workspace switch must not keep writing into the old workspace: cancel a running import
+	// that was started under another membership. The import loop checks `cancelRequested`
+	// between chunks and cleans up its un-uploaded nodes.
+	useEffect(() => {
+		const importState = useFilesImportStore.getState();
+		if (importState.phase !== "idle" && importState.membershipId && importState.membershipId !== membershipId) {
+			useFilesImportStore.setState({ cancelRequested: true });
+		}
+	}, [membershipId]);
 
 	// Rebuild tree when visible files or controlled expansion state changes.
 	useLayoutEffect(() => {
@@ -4596,12 +5258,29 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				style={{ display: "none" }}
 				onChange={handleUploadFileChange}
 			/>
+			<input
+				ref={importFolderInputRef}
+				type="file"
+				aria-hidden="true"
+				tabIndex={-1}
+				style={{ display: "none" }}
+				// `webkitdirectory` makes the picker select a folder; React's input typings omit it,
+				// so spread it as a raw attribute.
+				{...{ webkitdirectory: "" }}
+				onChange={handleImportFolderChange}
+			/>
 			<FilesSidebarUploadConflictModal
 				draft={uploadDraft}
 				isUploading={isUploadingFile}
 				onClose={handleUploadDraftClose}
 				onRename={handleUploadDraftRename}
 				onReplace={handleUploadDraftReplace}
+			/>
+			<FilesSidebarImportConflictModal
+				conflicts={importConflicts}
+				onReplace={handleImportConflictReplace}
+				onSkipExisting={handleImportConflictSkip}
+				onCancel={handleImportConflictCancel}
 			/>
 			<FilesSidebarTopSection
 				view={view}
@@ -4624,6 +5303,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onArchiveToggleClick={handleArchiveToggleClick}
 				onArchiveSelectionClick={handleArchiveSelectionClick}
 				onUploadFileClick={handleUploadFileClick}
+				onImportFolderClick={handleImportFolderClick}
 			/>
 
 			<div className={cn("FilesSidebar-content" satisfies FilesSidebar_ClassNames)}>
@@ -4659,8 +5339,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 // #endregion root
 
 // #region tests
-if (import.meta.vitest) {
-	const { describe, test, expect } = import.meta.vitest;
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, test, expect, vi } = import.meta.vitest;
 
 	const test_node = (args: {
 		id: string;
@@ -4735,6 +5415,12 @@ if (import.meta.vitest) {
 		return file;
 	};
 
+	const test_file_with_path = (name: string, path: string, type = "application/pdf") => {
+		const file = new File(["content"], name, { type }) as FileWithPath;
+		Object.defineProperty(file, "path", { value: path, configurable: true });
+		return file;
+	};
+
 	const test_data_transfer = (args: { types?: string[]; files?: File[]; items?: DataTransferItem[] }) => {
 		return {
 			types: args.types ?? ["Files"],
@@ -4802,40 +5488,23 @@ if (import.meta.vitest) {
 			expect(has_file_node_drop(test_data_transfer({ types: ["Files"] }))).toBe(false);
 		});
 
-		test("accepts exactly one dropped file", async () => {
+		test("returns every dropped file, including files from folders", async () => {
 			const file = test_file();
-			const result = await get_single_dropped_file(
+			const nested = test_file_from_directory("nested.pdf");
+			const result = await get_dropped_files(
 				test_data_transfer({
-					files: [file],
+					files: [file, nested],
 				}),
 			);
 
 			expect(result).toEqual({
-				_yay: file,
+				_yay: [file, nested],
 			});
 		});
 
-		test("rejects missing files, multiple files, and folders", async () => {
-			await expect(get_single_dropped_file(test_data_transfer({ files: [] }))).resolves.toMatchObject({
+		test("rejects empty drops", async () => {
+			await expect(get_dropped_files(test_data_transfer({ files: [] }))).resolves.toMatchObject({
 				_nay: { message: "Drop a file to upload." },
-			});
-			await expect(
-				get_single_dropped_file(
-					test_data_transfer({
-						files: [test_file("one.pdf"), test_file("two.pdf")],
-					}),
-				),
-			).resolves.toMatchObject({
-				_nay: { message: "Drop one file at a time." },
-			});
-			await expect(
-				get_single_dropped_file(
-					test_data_transfer({
-						files: [test_file_from_directory()],
-					}),
-				),
-			).resolves.toMatchObject({
-				_nay: { message: "Folder uploads are not supported yet." },
 			});
 		});
 
@@ -4935,6 +5604,150 @@ if (import.meta.vitest) {
 					isUploadingFile: true,
 				}),
 			).toBe(false);
+		});
+	});
+
+	describe("folder import helpers", () => {
+		test("get_import_file_entries strips path prefixes and filters junk files", () => {
+			const bare = test_file_with_path("bare.pdf", "./bare.pdf");
+			const dropped = test_file_with_path("photo.png", "/folder/photo.png");
+			const picked = test_file_with_path("notes.md", "folder/sub/notes.md");
+			const junk = test_file_with_path(".DS_Store", "/folder/.DS_Store");
+			const windowsJunk = test_file_with_path("Thumbs.db", "folder/Thumbs.db");
+			const relativePathOnly = new File(["content"], "legacy.pdf", { type: "application/pdf" }) as FileWithPath;
+			Object.defineProperty(relativePathOnly, "relativePath", { value: "folder/legacy.pdf", configurable: true });
+
+			expect(get_import_file_entries([bare, dropped, picked, junk, windowsJunk, relativePathOnly])).toEqual([
+				{ file: bare, relativePath: "bare.pdf" },
+				{ file: dropped, relativePath: "folder/photo.png" },
+				{ file: picked, relativePath: "folder/sub/notes.md" },
+				{ file: relativePathOnly, relativePath: "folder/legacy.pdf" },
+			]);
+		});
+
+		test("build_import_plan normalizes paths and dedupes targets first-wins", () => {
+			const first = test_file_with_path("A.PDF", "/docs/A.PDF");
+			const duplicate = test_file_with_path("a.pdf", "/docs/a.pdf");
+			const markdown = test_file_with_path("notes.markdown", "/docs/notes.markdown", "text/markdown");
+			const missingExtension = test_file_with_path("no-extension", "/docs/no-extension");
+			const invalidFolder = test_file_with_path("up.pdf", "../up.pdf");
+
+			const plan = build_import_plan(
+				get_import_file_entries([first, duplicate, markdown, missingExtension, invalidFolder]),
+			);
+
+			expect(plan.items.map((item) => item.normalizedPath)).toEqual(["docs/a.pdf", "docs/notes.md"]);
+			expect(plan.items[0]!.file).toBe(first);
+			expect(plan.skipped).toEqual([
+				{ relativePath: "docs/a.pdf", reason: "duplicate_after_normalization" },
+				{ relativePath: "docs/no-extension", reason: "missing_extension" },
+				{ relativePath: "../up.pdf", reason: "invalid_name" },
+			]);
+		});
+
+		test("build_import_plan keeps special-cased markdown names server-acceptable", () => {
+			// The server re-runs the markdown normalizer and rejects any leaf it would change, and
+			// `readme` is special-cased to uppercase, so the plan must already carry `README.md`.
+			const readme = test_file_with_path("readme.md", "/docs/readme.md", "text/markdown");
+
+			const plan = build_import_plan(get_import_file_entries([readme]));
+
+			expect(plan.items.map((item) => item.normalizedPath)).toEqual(["docs/README.md"]);
+			expect(plan.skipped).toEqual([]);
+		});
+
+		test("build_import_plan skips too-deep paths", () => {
+			const deepPath = `${Array.from({ length: 33 }, (_, index) => `d${index}`).join("/")}/leaf.pdf`;
+			const deep = test_file_with_path("leaf.pdf", `/${deepPath}`);
+
+			const plan = build_import_plan(get_import_file_entries([deep]));
+
+			expect(plan.items).toEqual([]);
+			expect(plan.skipped).toEqual([{ relativePath: deepPath, reason: "too_deep" }]);
+		});
+
+		test("build_import_plan skips over-long paths", () => {
+			const longPath = `${Array.from({ length: 20 }, () => "d".repeat(60)).join("/")}/leaf.pdf`;
+			const long = test_file_with_path("leaf.pdf", `/${longPath}`);
+
+			const plan = build_import_plan(get_import_file_entries([long]));
+
+			expect(plan.items).toEqual([]);
+			expect(plan.skipped).toEqual([{ relativePath: longPath, reason: "too_deep" }]);
+		});
+
+		test("chunk_import_items bounds chunks by count and by declared bytes", () => {
+			const item = (size: number, name: string): FilesImportPlanItem => ({
+				file: { size } as unknown as File,
+				relativePath: name,
+				normalizedPath: name,
+				contentType: undefined,
+			});
+
+			const manyItems = Array.from({ length: 51 }, (_, index) => item(1, `f${index}.pdf`));
+			expect(chunk_import_items(manyItems).map((chunk) => chunk.length)).toEqual([50, 1]);
+
+			const bigItems = [
+				item(800 * 1024 * 1024, "a.bin"),
+				item(800 * 1024 * 1024, "b.bin"),
+				item(1, "c.bin"),
+			];
+			expect(chunk_import_items(bigItems).map((chunk) => chunk.map((chunkItem) => chunkItem.relativePath))).toEqual([
+				["a.bin"],
+				["b.bin", "c.bin"],
+			]);
+		});
+
+		test("run_folder_import waits out a rate-limited chunk and counts kept nodes as imported", async () => {
+			// First create call is rate-limited, second succeeds. The PUT then fails, but the
+			// discard answers `removed: false` (the upload landed after all), so the file must
+			// count as imported and not as failed.
+			let createCalls = 0;
+			const convexStub = {
+				query: async () => [],
+				mutation: async (_fn: unknown, mutationArgs: Record<string, unknown>) => {
+					if ("items" in mutationArgs) {
+						createCalls += 1;
+						if (createCalls === 1) {
+							return { _nay: { name: "nay", message: "Rate limit exceeded", data: { retryAfterMs: 5 } } };
+						}
+						return {
+							_yay: {
+								created: [{ relativePath: "a.pdf", nodeId: "node1", url: "https://r2.test/a", headers: {} }],
+								skipped: [],
+							},
+						};
+					}
+					return { _yay: { removed: false } };
+				},
+			} as unknown as ConvexReactClient;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response(null, { status: 500 })),
+			);
+
+			let maxDone = 0;
+			let maxFailed = 0;
+			const unsubscribe = useFilesImportStore.subscribe((state) => {
+				maxDone = Math.max(maxDone, state.done);
+				maxFailed = Math.max(maxFailed, state.failed.length);
+			});
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					entries: get_import_file_entries([test_file_with_path("a.pdf", "./a.pdf")]),
+				});
+			} finally {
+				unsubscribe();
+				vi.unstubAllGlobals();
+			}
+
+			expect(createCalls).toBe(2);
+			expect(maxDone).toBe(1);
+			expect(maxFailed).toBe(0);
+			expect(useFilesImportStore.getState().phase).toBe("idle");
 		});
 	});
 

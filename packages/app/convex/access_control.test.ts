@@ -7293,6 +7293,214 @@ describe("file sharing", () => {
 		expect(note?.archiveOperationId).toBeUndefined();
 	});
 
+	test("a batch import skips a restricted folder on the way and still creates the rest", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "bulk-walk-org",
+			suffix: "bulk-walk",
+		});
+		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		const assetsBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
+
+		const imported = await fixture.asMember.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: fixture.memberMembershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [
+				{ relativePath: "closed/note.pdf", contentType: "application/pdf", size: 8 },
+				{ relativePath: "open/note.pdf", contentType: "application/pdf", size: 8 },
+			],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+
+		// The refusal reads as a generic conflict, so the reply does not say `/closed` is restricted.
+		// The other item still lands: one blocked file must not fail the whole batch.
+		expect(imported._yay.skipped).toEqual([{ relativePath: "closed/note.pdf", reason: "conflict" }]);
+		expect(imported._yay.created).toHaveLength(1);
+		expect(imported._yay.created[0]).toMatchObject({ relativePath: "open/note.pdf" });
+
+		const after = await t.run(async (ctx) => {
+			const assets = await ctx.db.query("files_r2_assets").collect();
+			const note = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.defaultWorkspaceId)
+						.eq("parentId", folderId)
+						.eq("name", "note.pdf"),
+				)
+				.first();
+			return { assetCount: assets.length, note };
+		});
+		expect(after.assetCount).toBe(assetsBefore + 1);
+		expect(after.note).toBeNull();
+	});
+
+	test("a batch replace refuses before archiving a file whose folder the member cannot write", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "bulk-replace-org",
+			suffix: "bulk-replace",
+		});
+		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		// Same shape as the single-file test above: the member may write the file, not the folder
+		// holding it.
+		const noteId = await t.run(async (ctx) => {
+			return await ctx.db.insert("files_nodes", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				createdBy: fixture.ownerId,
+				updatedBy: fixture.ownerId,
+				updatedAt: Date.now(),
+				parentId: folderId,
+				name: "note.md",
+				kind: "file",
+				path: "/closed/note.md",
+				treePath: "/closed/note.md",
+				pathDepth: 2,
+				lowercaseExtension: "md",
+				restrictedScopeNodeId: folderId,
+				archiveOperationId: undefined,
+			});
+		});
+
+		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: noteId,
+		});
+		expect(restricted._nay).toBeUndefined();
+
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: noteId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "write",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		const imported = await fixture.asMember.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: fixture.memberMembershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "replace",
+			items: [{ relativePath: "closed/note.md", contentType: "text/markdown", size: 8 }],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+
+		// The batch contract turns the single-file "Permission denied" into a per-item skip, but the
+		// timing rule is the same: the walk refuses before the old file is archived.
+		expect(imported._yay.created).toEqual([]);
+		expect(imported._yay.skipped).toEqual([{ relativePath: "closed/note.md", reason: "conflict" }]);
+
+		const note = await t.run(async (ctx) => await ctx.db.get("files_nodes", noteId));
+		expect(note?.archiveOperationId).toBeUndefined();
+	});
+
+	test("the upload conflict pre-check hides nodes the caller cannot read", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "bulk-conflict-org",
+			suffix: "bulk-conflict",
+		});
+		await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		// A restricted node must look exactly like no conflict, or the (rate-limit-free) query
+		// becomes an existence oracle for paths the caller cannot see.
+		const asMember = await fixture.asMember.query(api.files_nodes.get_upload_conflicts, {
+			membershipId: fixture.memberMembershipId,
+			parentId: files_ROOT_ID,
+			relativePaths: ["closed", "closed/inside"],
+		});
+		expect(asMember).toEqual([]);
+
+		// The owner sees both, which proves the empty answer above is the read check and not a bad path.
+		const asOwner = await fixture.asOwner.query(api.files_nodes.get_upload_conflicts, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: files_ROOT_ID,
+			relativePaths: ["closed", "closed/inside"],
+		});
+		expect(asOwner).toEqual([
+			{ relativePath: "closed", kind: "folder" },
+			{ relativePath: "closed/inside", kind: "folder" },
+		]);
+	});
+
+	test("a hidden folder at the target path reads as a plain conflict, not as path_blocked", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "bulk-kind-oracle-org",
+			suffix: "bulk-kind-oracle",
+		});
+		await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		// Create a folder the member can read, as the contrast case.
+		const seeded = await fixture.asMember.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: fixture.memberMembershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "open-folder/seed.pdf", contentType: "application/pdf", size: 1 }],
+		});
+		if (seeded._nay) {
+			throw new Error(seeded._nay.message);
+		}
+
+		// "path_blocked" would tell the member a folder sits at `/closed`, which the tree and the
+		// conflict pre-check both hide from them. A readable blocking folder may say so.
+		const imported = await fixture.asMember.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: fixture.memberMembershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [
+				{ relativePath: "closed", size: 8 },
+				{ relativePath: "open-folder", size: 8 },
+			],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+		expect(imported._yay.created).toEqual([]);
+		expect(imported._yay.skipped).toEqual([
+			{ relativePath: "closed", reason: "conflict" },
+			{ relativePath: "open-folder", reason: "path_blocked" },
+		]);
+	});
+
+	test("a member cannot discard another member's unfinalized upload", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "discard-oracle-org",
+			suffix: "discard-oracle",
+		});
+
+		const imported = await fixture.asOwner.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "mine.pdf", contentType: "application/pdf", size: 8 }],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+		const nodeId = imported._yay.created[0]!.nodeId;
+
+		// Discard is cleanup of your own failed upload, so another member's `content.write` on the
+		// file does not apply.
+		const discarded = await fixture.asMember.mutation(api.files_nodes.discard_failed_upload_node, {
+			membershipId: fixture.memberMembershipId,
+			nodeId,
+		});
+		expect(discarded._nay?.message).toBe("Permission denied");
+
+		const node = await t.run(async (ctx) => await ctx.db.get("files_nodes", nodeId));
+		expect(node).not.toBeNull();
+	});
+
 	test("the agent cannot propose deleting a file the user may only read", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
