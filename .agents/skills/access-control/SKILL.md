@@ -349,6 +349,22 @@ product decision, so record the answer here before changing the behaviour. An en
   re-resolves the principal before signing. The re-resolve is a workspace question, and only the nodes
   that were materialized are read again. A per-file grant revoked during a slow materialization is
   therefore still signed for the other files in the same batch.
+- **A `plugin_ui` file-view token is not scoped to its file.** `mint_file_view_session` stores
+  `fileNodeId` on the session (`plugins_ui.ts`), but `resolve_principal` never carries it into the
+  principal (`public_api.ts`), so the token reaches files list/read/download for everything the
+  minting user may read, gated only by the install-time `workspace.files.read` capability. Confirmed
+  in the browser on 2026-08-02: a token minted for `/speakers.mp4` returned 404 for that file and
+  **200 with full content** for `/README.md`. This is bounded by the minting user's own authority, so
+  it is not a privilege leak — but `plugin_run` **is** pinned to its `sourceFileNodeId`, and that
+  asymmetry plus the stored-but-ignored field is undecided. Do not "fix" it silently either way.
+- **`github_mounts` never checks that a mounted repo is public.** `github_fetch_repo_head` parses only
+  `default_branch` and never `private`/`visibility`, while `github_headers` attaches
+  `GITHUB_TOKEN_IMPORT` to every request including codeload. Mount content lands in the reserved
+  `GLOBAL`/`GITHUB` scope, which every user with the bash tool reads at `/.mounts/<name>` with no
+  per-user check, so the only thing keeping private source out of a world-readable scope is how that
+  token happens to be scoped. `upsert_mount` is an internal mutation reached by `convex run`, so no
+  user can trigger it and this is not a user-reachable hole. Whether to refuse a `private` repo
+  outright is undecided.
 
 # Endpoints
 

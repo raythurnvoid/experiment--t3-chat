@@ -31,6 +31,7 @@ Validation lives in `plugins_validate_manifest` (`packages/app/shared/plugins.ts
 | Normalized file path length                              | 512      | `module_path_schema`                                    |
 | Content type length                                      | 255      | `manifest_file_schema.contentType`                      |
 | Secret name length                                       | 128      | `plugins_validate_secret_name`                          |
+| Secret value bytes                                       | 16 KiB   | `plugins_validate_secret_value`                         |
 | Publisher secrets per repository                         | 64       | publisher-secret mutations                              |
 | Declared and actual bytes per file                       | 900,000  | schema + streaming reader                               |
 | Aggregate artifact bytes (declared and downloaded)       | 16 MiB   | `plugins_MAX_ARTIFACT_BYTES`                            |
@@ -81,6 +82,8 @@ Admin registry deletion is name-scoped and requires publishing to be quiescent. 
 Repository claims intentionally remain normalized URL reservations without proof of repository control. This is an accepted provenance/name-reservation risk; do not describe the claim as verified ownership.
 
 Publisher secrets remain bound to the immutable version creator. Runtime resolution and publisher-only management queries require the current repository claim owner to equal `plugins_versions.createdBy`; a different user who later claims the same URL cannot supply secrets or inherit the historical publisher panel.
+
+The batch secret mutations (`upsert_publisher_repository_secrets`, `upsert_installation_secrets`) validate every name **and** value before the first write, and let an unexpected write failure throw. Both rules exist for the same reason: the batch writes run together in one transaction, and a Convex mutation that returns a value commits. Catching a write failure and returning `_nay` therefore kept whichever secrets had already been written while telling the caller the batch failed — observed in the browser before the fix, where a batch of one small and one oversized secret saved the small one and still reported an error. Do not reintroduce a `try`/`catch` around those writes, and keep any new per-item validation above the write loop rather than inside it.
 
 # Plugin UI pages
 

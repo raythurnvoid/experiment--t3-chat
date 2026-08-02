@@ -35,6 +35,59 @@ Read install state from the page text: the detail page shows `Installed` plus a 
 
 After a successful publish, the publisher card turns into a link to the plugin detail page. The `Publish` button for a republish lives on the detail page, not on the card.
 
+## Manage secrets dialog
+
+Reachable only for an **installed** plugin that declares `plugin.secrets.read` (`video` does,
+`video-player` does not). The panel is `.RoutePluginsPluginSecrets`; open the dialog with the
+`Manage secrets` button.
+
+Inside the dialog the Name field is `input[placeholder=OPENAI_API_KEY]` — the placeholder is a
+literal example, not the stored secret. Buttons are `Save`, `Close`, and one
+`Delete workspace secret <NAME>` per stored secret. Scope with
+`locator("[role=dialog]").filter({ hasText: "Manage secrets" })`; many dialogs stay mounted while
+closed on this route.
+
+To drive the **batch** (`.env`) import path, write the KEY=value text to the clipboard and paste into
+the **Name** field — pasting multi-line text there is what triggers the batch mutation. A paste into
+Value refuses multi-line input by design:
+
+```js
+await state.page.evaluate(() => navigator.clipboard.writeText("A=1\nB=2"));
+await dialog.locator("input[placeholder=OPENAI_API_KEY]").click();
+await state.page.keyboard.press("Control+v");
+```
+
+Read `[data-sonner-toast]` in the **same** execute call as the paste; the batch result is reported
+only as a toast, and sonner auto-dismisses it.
+
+## Minting a plugin_ui token for API checks
+
+A file view's `plu_` token never appears in main-frame network traffic — `page.on("request")` on the
+host page captures nothing, because the host mints the token over the Convex websocket and hands it
+to the sandboxed iframe. To exercise the token directly, mint one through the app's own authenticated
+client (this runs as the signed-in user, so it is a user path, not a bypass):
+
+```js
+const { app_convex, app_convex_api } = await import("/src/lib/app-convex-client.ts");
+const { app_fetch_main_api_url } = await import("/src/lib/fetch.ts");
+const membership = await app_convex.query(
+	app_convex_api.organizations.get_membership_by_organization_workspace_name,
+	{ organizationName: "personal", workspaceName: "home" },
+);
+const views = await app_convex.query(app_convex_api.plugins_ui.list_file_views, {
+	membershipId: membership._id,
+});
+const minted = await app_convex.mutation(app_convex_api.plugins_ui.mint_file_view_session, {
+	membershipId: membership._id,
+	pluginName: views[0].pluginName,
+	fileViewId: views[0].fileViews[0].id,
+	fileNodeId: "<a node whose contentType the view declares>",
+});
+```
+
+`membershipId` is not readable from the DOM; this query is the way to get it. `/api/v1/files/read`
+takes a **path**, not a node id, so a cross-file check is `body: { path: "/README.md" }`.
+
 ## Upload fixtures for file-view QA
 
 The sandbox cannot read repo or personal-folder files, so an upload runner must embed its payload. Generate the runner from a fixture with PowerShell, then run it with `-f`:

@@ -224,10 +224,11 @@ function autofix_and_validate_name(raw: string) {
 	return organizations_name_autofix_and_validate(raw);
 }
 
-// #region secret names
+// #region secrets
 
 const SECRET_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const MAX_SECRET_NAME_LENGTH = 128;
+const MAX_SECRET_VALUE_BYTES = 16 * 1024;
 
 export function plugins_validate_secret_name(raw: string) {
 	const name = raw.trim();
@@ -242,7 +243,23 @@ export function plugins_validate_secret_name(raw: string) {
 	return Result({ _yay: name });
 }
 
-// #endregion secret names
+/**
+ * Keep a secret value small enough that its encrypted document stays far below the 1 MiB Convex
+ * document limit. Without this cap a large value makes `ctx.db.insert` throw, and in a batch
+ * upsert that throw lands after sibling secrets in the same batch have already been written.
+ *
+ * Do not trim the value. Whitespace can be part of a real secret, and `plugins_parse_env_text`
+ * already handles env quoting.
+ */
+export function plugins_validate_secret_value(raw: string) {
+	if (files_get_utf8_byte_size(raw) > MAX_SECRET_VALUE_BYTES) {
+		return Result({ _nay: { message: `Secret values must be at most ${MAX_SECRET_VALUE_BYTES / 1024} KiB` } });
+	}
+
+	return Result({ _yay: raw });
+}
+
+// #endregion secrets
 
 const MAX_OUTBOUND_ORIGIN_LENGTH = 255;
 

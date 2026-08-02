@@ -30,6 +30,7 @@ import {
 	plugins_parse_installation_configuration_yaml,
 	plugins_validate_manifest,
 	plugins_validate_secret_name,
+	plugins_validate_secret_value,
 } from "../shared/plugins.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -2183,6 +2184,8 @@ export const upsert_publisher_repository_secrets = mutation({
 		}
 
 		// Dedupe by name (last one wins) so the parallel upserts below never race on the same doc.
+		// Validate every value here too, before the first write: the writes below run together, so a
+		// value rejected at write time would commit its siblings while the caller is told the batch failed.
 		const secrets = new Map<string, string>();
 		for (const input of args.secrets) {
 			const name = plugins_validate_secret_name(input.name);
@@ -2190,7 +2193,12 @@ export const upsert_publisher_repository_secrets = mutation({
 				return name;
 			}
 
-			secrets.set(name._yay, input.value);
+			const value = plugins_validate_secret_value(input.value);
+			if (value._nay) {
+				return value;
+			}
+
+			secrets.set(name._yay, value._yay);
 		}
 		const existingSecrets = await ctx.db
 			.query("plugins_publisher_repository_secrets")
@@ -2206,21 +2214,19 @@ export const upsert_publisher_repository_secrets = mutation({
 			});
 		}
 
+		// Let an unexpected write failure throw. A mutation that returns a value commits, so catching
+		// here and returning `_nay` would keep whichever secrets had already been written.
 		const now = Date.now();
-		try {
-			await Promise.all(
-				[...secrets].map(([name, value]) =>
-					db_upsert_publisher_repository_secret(ctx, {
-						repository,
-						name,
-						value,
-						now,
-					}),
-				),
-			);
-		} catch (error) {
-			return Result({ _nay: { message: error instanceof Error ? error.message : String(error) } });
-		}
+		await Promise.all(
+			[...secrets].map(([name, value]) =>
+				db_upsert_publisher_repository_secret(ctx, {
+					repository,
+					name,
+					value,
+					now,
+				}),
+			),
+		);
 
 		return Result({ _yay: { count: secrets.size } });
 	},
@@ -2941,6 +2947,8 @@ export const upsert_installation_secrets = mutation({
 		}
 
 		// Dedupe by name (last one wins) so repeated names collapse to a single upsert.
+		// Validate every value here too, before the first write: the writes below run together, so a
+		// value rejected at write time would commit its siblings while the caller is told the batch failed.
 		const secrets = new Map<string, string>();
 		for (const input of args.secrets) {
 			const name = plugins_validate_secret_name(input.name);
@@ -2948,25 +2956,28 @@ export const upsert_installation_secrets = mutation({
 				return name;
 			}
 
-			secrets.set(name._yay, input.value);
+			const value = plugins_validate_secret_value(input.value);
+			if (value._nay) {
+				return value;
+			}
+
+			secrets.set(name._yay, value._yay);
 		}
 
+		// Let an unexpected write failure throw. A mutation that returns a value commits, so catching
+		// here and returning `_nay` would keep whichever secrets had already been written.
 		const now = Date.now();
-		try {
-			await Promise.all(
-				[...secrets].map(([name, value]) =>
-					db_upsert_installation_secret(ctx, {
-						installation,
-						name,
-						value,
-						userId: userAuth.id,
-						now,
-					}),
-				),
-			);
-		} catch (error) {
-			return Result({ _nay: { message: error instanceof Error ? error.message : String(error) } });
-		}
+		await Promise.all(
+			[...secrets].map(([name, value]) =>
+				db_upsert_installation_secret(ctx, {
+					installation,
+					name,
+					value,
+					userId: userAuth.id,
+					now,
+				}),
+			),
+		);
 
 		return Result({ _yay: { count: secrets.size } });
 	},

@@ -648,6 +648,39 @@ describe("plugins Phase 0", () => {
 		expect(JSON.stringify(listed)).not.toContain("sk-batch-secret");
 	});
 
+	test("refuses an oversized value in a .env secret batch and writes none of the batch", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId);
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+
+		const rejected = await asOwner.mutation(api.plugins.upsert_installation_secrets, {
+			membershipId: membership.membershipId,
+			installationId: installed._yay.installationId,
+			secrets: [
+				{ name: "QA_SMALL", value: "small-ok" },
+				{ name: "QA_BIG", value: "x".repeat(16 * 1024 + 1) },
+			],
+		});
+
+		// The whole batch shares one transaction, so a refused batch must leave no sibling behind.
+		expect(
+			await asOwner.query(api.plugins.list_installation_secrets, {
+				membershipId: membership.membershipId,
+				installationId: installed._yay.installationId,
+			}),
+		).toEqual([]);
+		expect(rejected).toEqual({ _nay: { message: "Secret values must be at most 16 KiB" } });
+	});
+
 	test("serves installation secrets through the host secret endpoint with a running plugin token", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -3634,6 +3667,25 @@ describe("plugins publisher secrets", () => {
 			resolved: { tier: "publisher", secret },
 		});
 		expect(decrypted).toEqual({ _yay: "sk-new-secret" });
+	});
+
+	test("refuses an oversized value in a publisher .env batch and writes none of the batch", async () => {
+		const t = test_convex();
+		const ownerUserId = await create_publisher_user(t);
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
+		const asOwner = t.withIdentity(user_identity(ownerUserId));
+
+		const rejected = await asOwner.mutation(api.plugins.upsert_publisher_repository_secrets, {
+			repositoryId,
+			secrets: [
+				{ name: "QA_SMALL", value: "small-ok" },
+				{ name: "QA_BIG", value: "x".repeat(16 * 1024 + 1) },
+			],
+		});
+
+		// The whole batch shares one transaction, so a refused batch must leave no sibling behind.
+		expect(await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId })).toEqual([]);
+		expect(rejected).toEqual({ _nay: { message: "Secret values must be at most 16 KiB" } });
 	});
 
 	test("caps the total publisher secrets across repeated writes", async () => {
