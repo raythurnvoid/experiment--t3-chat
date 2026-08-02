@@ -381,12 +381,8 @@ function useAutoScroll(props: useAutoScroll_Props) {
 // #endregion auto scroll hook
 
 // #region thread
-export type AiChatThread_Variant = "default" | "sidebar";
-
 export type AiChatThread_ClassNames =
 	| "AiChatThread"
-	| "AiChatThread-variant-default"
-	| "AiChatThread-variant-sidebar"
 	| "AiChatThread-content"
 	| "AiChatThread-scroll-to-bottom"
 	| "AiChatThread-scroll-to-bottom-card"
@@ -395,7 +391,6 @@ export type AiChatThread_ClassNames =
 	| "AiChatThread-composer-stack";
 
 export type AiChatThread_Props = {
-	variant?: AiChatThread_Variant;
 	controller: AiChatThreadRuntime;
 	scrollableContainer: HTMLElement | null;
 	/**
@@ -411,7 +406,7 @@ export type AiChatThread_CustomAttributes = {
 };
 
 export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props) {
-	const { variant = "default", controller, scrollableContainer, composerTopSlot } = props;
+	const { controller, scrollableContainer, composerTopSlot } = props;
 
 	const selectedThreadId = controller.selectedThreadId;
 	const selectedModelId = controller.selectedModelId;
@@ -896,11 +891,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 
 	return (
 		<div
-			className={cn(
-				"AiChatThread" satisfies AiChatThread_ClassNames,
-				variant === "default" && ("AiChatThread-variant-default" satisfies AiChatThread_ClassNames),
-				variant === "sidebar" && ("AiChatThread-variant-sidebar" satisfies AiChatThread_ClassNames),
-			)}
+			className={"AiChatThread" satisfies AiChatThread_ClassNames}
 			{...({
 				...(selectedThreadId ? { "data-thread-id": selectedThreadId } : {}),
 				"data-ai-chat-state": aiChatState,

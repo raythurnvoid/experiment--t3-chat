@@ -154,6 +154,7 @@ const AiChatThreadsSearch = memo(function AiChatThreadsSearch(props: AiChatThrea
 				</MyInputIcon>
 				<MyInputControl
 					type="search"
+					aria-label="Search chats"
 					placeholder="Search chats"
 					value={searchQuery}
 					autoComplete={ui_create_auto_complete_off_value()}

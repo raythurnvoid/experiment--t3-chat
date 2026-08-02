@@ -835,7 +835,6 @@ const FileEditorSidebarAgentChatThread = memo(function FileEditorSidebarAgentCha
 
 	return (
 		<AiChatThread
-			variant="sidebar"
 			controller={controller}
 			scrollableContainer={scrollableContainer}
 			composerTopSlot={<FileEditorSidebarPendingStrip threadId={controller.selectedThreadId} />}

@@ -119,6 +119,9 @@
 		position: sticky;
 		bottom: 0;
 
+		/* Match the chat surface so the sticky strip blends with the messages behind it. */
+		background: var(--color-base-1-02);
+
 		/* The stack owns the centered column so the pending strip and queued-messages tray
 		   share the exact same width as the composer. */
 		> .AiChatThread-composer-stack {
@@ -134,13 +137,6 @@
 		}
 	}
 
-	.AiChatThread-variant-default > .AiChatThread-composer {
-		background: var(--color-base-1-02);
-	}
-
-	.AiChatThread-variant-sidebar > .AiChatThread-composer {
-		background: var(--color-base-1-03);
-	}
 	/* #endregion thread */
 
 	/* #region skeleton */
