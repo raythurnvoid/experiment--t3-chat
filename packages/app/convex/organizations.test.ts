@@ -2783,6 +2783,38 @@ describe("remove_user_from_organization", () => {
 });
 
 describe("access_control.transfer_organization_ownership", () => {
+	test("refuses a finalized recipient before reading their missing quota", async () => {
+		const t = test_convex();
+		const [ownerId, deletedUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-transfer-invalid-owner" }),
+				ctx.db.insert("users", {
+					clerkUserId: null,
+					deletedAt: Date.now(),
+				}),
+			]),
+		);
+		await organizations_test_bootstrap_user(t, { userId: ownerId });
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "transfer-invalid-owner@test.local",
+		});
+		const created = await owner.mutation(api.organizations.create_organization, {
+			description: "",
+			name: "transfer-invalid",
+		});
+		expect(created._yay).toBeTruthy();
+
+		const result = await owner.mutation(api.access_control.transfer_organization_ownership, {
+			organizationId: created._yay!.organizationId,
+			newOwnerUserId: deletedUserId,
+		});
+
+		expect(result._nay?.message).toBe("New owner must be an active organization member");
+	});
+
 	test("moves ownership to the organization doc and updates extra-organization quota usage", async () => {
 		const t = test_convex();
 		const [ownerId, newOwnerId] = await t.run(async (ctx) =>
@@ -3573,6 +3605,92 @@ describe("edit_organization", () => {
 		expect(result._yay?.name).toBe("extra-renamed");
 	});
 
+	test("requires organization.update from a non-owner", async () => {
+		const t = test_convex();
+		const [ownerId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-edit-org-permission-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-edit-org-permission-member" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "edit-org-permission-owner@test.local",
+		});
+		const member = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "edit-org-permission-member@test.local",
+		});
+		const created = await owner.mutation(api.organizations.create_organization, {
+			description: "",
+			name: "edit-org-permission",
+		});
+		expect(created._yay).toBeTruthy();
+
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				userId: memberId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				userId: memberId,
+				role: "member",
+				now,
+			});
+		});
+
+		const denied = await member.mutation(api.organizations.edit_organization, {
+			organizationId: created._yay!.organizationId,
+			defaultWorkspaceId: created._yay!.defaultWorkspaceId,
+			name: "edit-org-denied",
+			description: "",
+		});
+		expect(denied._nay?.message).toBe("Permission denied");
+
+		const role = await owner.mutation(api.access_control.create_role, {
+			organizationId: created._yay!.organizationId,
+			name: "Organization editor",
+			description: "",
+			permissions: ["organization.update"],
+		});
+		expect(role._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			const assignment = await ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", created._yay!.organizationId)
+						.eq("workspaceId", created._yay!.defaultWorkspaceId)
+						.eq("userId", memberId),
+				)
+				.first();
+			await ctx.db.patch("access_control_role_assignments", assignment!._id, { role: role._yay!.roleId });
+			await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
+				name: "organizations_write",
+				key: memberId,
+			});
+		});
+
+		const allowed = await member.mutation(api.organizations.edit_organization, {
+			organizationId: created._yay!.organizationId,
+			defaultWorkspaceId: created._yay!.defaultWorkspaceId,
+			name: "edit-org-allowed",
+			description: "",
+		});
+		expect(allowed._yay?.name).toBe("edit-org-allowed");
+	});
+
 	test("leaves description unchanged when renaming organization", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -3945,6 +4063,135 @@ describe("edit_workspace", () => {
 		});
 
 		expect(result._yay?.name).toBe("sidecar-renamed");
+	});
+
+	test("accepts either workspace.update or organization.update from a non-owner", async () => {
+		const t = test_convex();
+		const [ownerId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-edit-workspace-permission-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-edit-workspace-permission-member" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "edit-workspace-permission-owner@test.local",
+		});
+		const member = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "edit-workspace-permission-member@test.local",
+		});
+		const created = await owner.mutation(api.organizations.create_organization, {
+			description: "",
+			name: "edit-workspace-perm",
+		});
+		expect(created._yay).toBeTruthy();
+		const workspace = await t.run((ctx) =>
+			organizations_db_create_workspace(ctx, {
+				userId: ownerId,
+				organizationId: created._yay!.organizationId,
+				name: "edit-target",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		expect(workspace._yay).toBeTruthy();
+
+		const workspaceRole = await owner.mutation(api.access_control.create_role, {
+			organizationId: created._yay!.organizationId,
+			name: "Workspace editor",
+			description: "",
+			permissions: ["workspace.update"],
+		});
+		const organizationRole = await owner.mutation(api.access_control.create_role, {
+			organizationId: created._yay!.organizationId,
+			name: "Organization editor",
+			description: "",
+			permissions: ["organization.update"],
+		});
+		const readerRole = await owner.mutation(api.access_control.create_role, {
+			organizationId: created._yay!.organizationId,
+			name: "Reader only",
+			description: "",
+			permissions: ["content.read"],
+		});
+		expect(workspaceRole._nay).toBeUndefined();
+		expect(organizationRole._nay).toBeUndefined();
+		expect(readerRole._nay).toBeUndefined();
+
+		const assignmentId = await t.run(async (ctx) => {
+			const now = Date.now();
+			await Promise.all([
+				ctx.db.insert("organizations_workspaces_users", {
+					organizationId: created._yay!.organizationId,
+					workspaceId: created._yay!.defaultWorkspaceId,
+					userId: memberId,
+					active: true,
+					updatedAt: now,
+				}),
+				ctx.db.insert("organizations_workspaces_users", {
+					organizationId: created._yay!.organizationId,
+					workspaceId: workspace._yay!.workspaceId,
+					userId: memberId,
+					active: true,
+					updatedAt: now,
+				}),
+			]);
+			return await ctx.db.insert("access_control_role_assignments", {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				userId: memberId,
+				role: workspaceRole._yay!.roleId,
+				createdAt: now,
+				updatedAt: now,
+			});
+		});
+
+		const workspaceAllowed = await member.mutation(api.organizations.edit_workspace, {
+			organizationId: created._yay!.organizationId,
+			defaultWorkspaceId: created._yay!.defaultWorkspaceId,
+			workspaceId: workspace._yay!.workspaceId,
+			name: "workspace-arm",
+			description: "",
+		});
+		expect(workspaceAllowed._yay?.name).toBe("workspace-arm");
+
+		await t.run(async (ctx) => {
+			await ctx.db.patch("access_control_role_assignments", assignmentId, { role: organizationRole._yay!.roleId });
+			await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
+				name: "organizations_write",
+				key: memberId,
+			});
+		});
+		const organizationAllowed = await member.mutation(api.organizations.edit_workspace, {
+			organizationId: created._yay!.organizationId,
+			defaultWorkspaceId: created._yay!.defaultWorkspaceId,
+			workspaceId: workspace._yay!.workspaceId,
+			name: "organization-arm",
+			description: "",
+		});
+		expect(organizationAllowed._yay?.name).toBe("organization-arm");
+
+		await t.run(async (ctx) => {
+			await ctx.db.patch("access_control_role_assignments", assignmentId, { role: readerRole._yay!.roleId });
+			await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
+				name: "organizations_write",
+				key: memberId,
+			});
+		});
+		const denied = await member.mutation(api.organizations.edit_workspace, {
+			organizationId: created._yay!.organizationId,
+			defaultWorkspaceId: created._yay!.defaultWorkspaceId,
+			workspaceId: workspace._yay!.workspaceId,
+			name: "neither-arm",
+			description: "",
+		});
+		expect(denied._nay?.message).toBe("Permission denied");
 	});
 
 	test("the organization owner can rename a workspace they never joined", async () => {
@@ -4414,7 +4661,7 @@ describe("delete_workspace", () => {
 		expect(purgeRequestsAfter).toHaveLength(0);
 	});
 
-	test("a member cannot delete a workspace, not even one it created", async () => {
+	test("requires workspace.delete from a non-owner", async () => {
 		const t = test_convex();
 		const [ownerId, memberId] = await t.run(async (ctx) =>
 			Promise.all([
@@ -4479,8 +4726,31 @@ describe("delete_workspace", () => {
 		});
 		expect(denied._nay?.message).toBe("Permission denied");
 
-		// The owner deletes it instead.
-		const allowed = await owner.mutation(api.organizations.delete_workspace, {
+		const role = await owner.mutation(api.access_control.create_role, {
+			organizationId: organization.organizationId,
+			name: "Workspace remover",
+			description: "",
+			permissions: ["workspace.delete"],
+		});
+		expect(role._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			const assignment = await ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", organization.organizationId)
+						.eq("workspaceId", organization.defaultWorkspaceId)
+						.eq("userId", memberId),
+				)
+				.first();
+			await ctx.db.patch("access_control_role_assignments", assignment!._id, { role: role._yay!.roleId });
+			await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
+				name: "organizations_write",
+				key: memberId,
+			});
+		});
+
+		const allowed = await member.mutation(api.organizations.delete_workspace, {
 			workspaceId: workspace._yay!.workspaceId,
 		});
 		expect(allowed._nay).toBeUndefined();

@@ -1235,41 +1235,69 @@ export const upsert_file_pending_move_in_db = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		// mv back to the committed source path cancels the pending move instead of failing
-		// the "Source and destination are the same" validation.
 		const sourceNode = await ctx.db.get("files_nodes", args.nodeId);
 		if (
-			sourceNode &&
-			sourceNode.organizationId === args.organizationId &&
-			sourceNode.workspaceId === args.workspaceId &&
-			sourceNode.archiveOperationId === undefined
+			!sourceNode ||
+			sourceNode.organizationId !== args.organizationId ||
+			sourceNode.workspaceId !== args.workspaceId ||
+			sourceNode.archiveOperationId !== undefined
 		) {
-			let destParentPath: string | null = "/";
-			if (args.destParentId !== files_ROOT_ID) {
-				const destParent = await ctx.db.get("files_nodes", args.destParentId);
-				destParentPath =
-					destParent && destParent.organizationId === args.organizationId && destParent.workspaceId === args.workspaceId
-						? destParent.path
-						: null;
-			}
-			if (destParentPath != null && path_join(destParentPath, args.destName) === sourceNode.path) {
-				const pendingUpdateToCancel = await files_db_get_pending_update(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					userId: args.userId,
-					nodeId: args.nodeId,
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		// The caller proved workspace write. Ask the restricted source node in this transaction before
+		// cancelling, inserting, or patching a pending move.
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!membership) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			nodeId: args.nodeId,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// mv back to the committed source path cancels the pending move instead of failing
+		// the "Source and destination are the same" validation.
+		let destParentPath: string | null = "/";
+		if (args.destParentId !== files_ROOT_ID) {
+			const destParent = await ctx.db.get("files_nodes", args.destParentId);
+			destParentPath =
+				destParent && destParent.organizationId === args.organizationId && destParent.workspaceId === args.workspaceId
+					? destParent.path
+					: null;
+		}
+		if (destParentPath != null && path_join(destParentPath, args.destName) === sourceNode.path) {
+			const pendingUpdateToCancel = await files_db_get_pending_update(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				nodeId: args.nodeId,
+			});
+			if (pendingUpdateToCancel?.pendingMove) {
+				await files_pending_update_db_settle_move_row(ctx, { pendingUpdate: pendingUpdateToCancel });
+				return Result({
+					_yay: {
+						fromPath: sourceNode.path,
+						destPath: sourceNode.path,
+						replacesExistingOccupant: false,
+						cancelledExistingMove: true,
+					},
 				});
-				if (pendingUpdateToCancel?.pendingMove) {
-					await files_pending_update_db_settle_move_row(ctx, { pendingUpdate: pendingUpdateToCancel });
-					return Result({
-						_yay: {
-							fromPath: sourceNode.path,
-							destPath: sourceNode.path,
-							replacesExistingOccupant: false,
-							cancelledExistingMove: true,
-						},
-					});
-				}
 			}
 		}
 

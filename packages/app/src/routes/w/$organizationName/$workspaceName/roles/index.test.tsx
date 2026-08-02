@@ -102,7 +102,8 @@ vi.mock("@/components/my-tooltip.tsx", () => ({
 import { Route } from "./index.tsx";
 
 const ORGANIZATION_ID = "organization_1";
-const WORKSPACE_ID = "workspace_1";
+const DEFAULT_WORKSPACE_ID = "workspace_default";
+const WORKSPACE_ID = "workspace_current";
 
 type TestRole = {
 	_id: string;
@@ -135,6 +136,7 @@ function setQueries(args: {
 	rolesManagePermission?: unknown;
 	organizationIsPersonal?: boolean;
 	callerPermissions?: string[] | "all";
+	currentWorkspacePermissions?: string[] | "all";
 }) {
 	const organizationList =
 		args.organizationList === undefined
@@ -144,12 +146,18 @@ function setQueries(args: {
 							_id: ORGANIZATION_ID,
 							name: "qa-perm",
 							default: args.organizationIsPersonal ?? false,
-							defaultWorkspaceId: WORKSPACE_ID,
+							defaultWorkspaceId: DEFAULT_WORKSPACE_ID,
 						},
 					],
-					organizationIdsWorkspacesDict: {},
+					organizationIdsWorkspacesDict: {
+						[ORGANIZATION_ID]: [
+							{ _id: DEFAULT_WORKSPACE_ID, name: "home", default: true },
+							{ _id: WORKSPACE_ID, name: "team", default: false },
+						],
+					},
 					workspaceIdsPermissionsDict: {
-						[WORKSPACE_ID]: args.callerPermissions ?? "all",
+						[DEFAULT_WORKSPACE_ID]: args.callerPermissions ?? "all",
+						[WORKSPACE_ID]: args.currentWorkspacePermissions ?? "all",
 					},
 				}
 			: args.organizationList;
@@ -181,7 +189,7 @@ describe("RouteRoles", () => {
 			organizationId: ORGANIZATION_ID,
 			organizationName: "qa-perm",
 			workspaceId: WORKSPACE_ID,
-			workspaceName: "home",
+			workspaceName: "team",
 		});
 		authMock.mockReturnValue({ userId: "user_1" });
 		mutationMock.mockResolvedValue({ _yay: null });
@@ -248,6 +256,7 @@ describe("RouteRoles", () => {
 		setQueries({
 			roles: [createRole({ name: "billing", permissions: ["organization.billing.manage"] })],
 			callerPermissions: ["organization.roles.manage", "content.read"],
+			currentWorkspacePermissions: "all",
 		});
 		renderRoute();
 
@@ -297,10 +306,13 @@ describe("RouteRoles", () => {
 					? [createRole()]
 					: {
 							organizations: [
-								{ _id: ORGANIZATION_ID, name: "qa-perm", default: false, defaultWorkspaceId: WORKSPACE_ID },
+								{ _id: ORGANIZATION_ID, name: "qa-perm", default: false, defaultWorkspaceId: DEFAULT_WORKSPACE_ID },
 							],
 							organizationIdsWorkspacesDict: {},
-							workspaceIdsPermissionsDict: { [WORKSPACE_ID]: "all" },
+							workspaceIdsPermissionsDict: {
+								[DEFAULT_WORKSPACE_ID]: "all",
+								[WORKSPACE_ID]: "all",
+							},
 						},
 		);
 		renderRoute();

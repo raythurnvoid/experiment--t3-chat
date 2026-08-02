@@ -2204,7 +2204,7 @@ export const transfer_organization_ownership = mutation({
 			throw should_never_happen(errorMessage, errorData);
 		}
 
-		const [newOwnerAssignments, newOwnerUser, newOwnerDefaultWorkspaceMembership, currentOwnerQuota, newOwnerQuota] =
+		const [newOwnerAssignments, newOwnerUser, newOwnerDefaultWorkspaceMembership, currentOwnerQuota] =
 			await Promise.all([
 				// We delete the new owner's role docs in every workspace, not only the default one. While
 				// they own the organization those docs do nothing, and they would quietly start working
@@ -2225,15 +2225,16 @@ export const transfer_organization_ownership = mutation({
 					quotaName: "extra_organizations",
 					userId: user._id,
 				}),
-				quotas_db_get(ctx, {
-					quotaName: "extra_organizations",
-					userId: args.newOwnerUserId,
-				}),
 			]);
 
 		if (!newOwnerUser || newOwnerUser.deletedAt != null || !newOwnerDefaultWorkspaceMembership) {
 			return Result({ _nay: { message: "New owner must be an active organization member" } });
 		}
+
+		const newOwnerQuota = await quotas_db_get(ctx, {
+			quotaName: "extra_organizations",
+			userId: args.newOwnerUserId,
+		});
 
 		const newOwnerRemainingCount = Math.max(0, newOwnerQuota.maxCount - newOwnerQuota.usedCount);
 		if (newOwnerRemainingCount <= 0) {

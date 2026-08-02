@@ -4847,9 +4847,8 @@ async function db_resolve_committed_chunk_source(
 	if (fileNode == null) return null;
 	if (fileNode.kind !== "file") return null;
 
-	// The third door onto a file, next to `read_file_content_from_chunks` and the markdown one. It
-	// hands out no text, but `wc` reports exact line, word and byte counts, which is plenty to learn
-	// from a file somebody was not given.
+	// This reader hands out no text, but `wc` reports exact line, word and byte counts, which is
+	// plenty to learn from a file somebody was not given.
 	const readable = await access_control_db_can_act_on_file_node(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -5968,6 +5967,14 @@ export const match_markdown_file_lines = internalQuery({
 		) {
 			return null;
 		}
+		const readable = await access_control_db_can_act_on_file_node(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			fileNode,
+			permission: "content.read",
+		});
+		if (!readable) return null;
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
 			!organizations_is_reserved_workspace_id(args.workspaceId) &&
@@ -6187,6 +6194,14 @@ export const match_plain_text_file_lines = internalQuery({
 		) {
 			return null;
 		}
+		const readable = await access_control_db_can_act_on_file_node(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			fileNode,
+			permission: "content.read",
+		});
+		if (!readable) return null;
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
 			!organizations_is_reserved_workspace_id(args.workspaceId) &&

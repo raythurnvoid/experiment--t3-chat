@@ -3,10 +3,10 @@ import "./app-notifications.css";
 import { useQueries, useQuery } from "convex/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Bell, CircleAlert, CircleCheck, FileText, LoaderCircle, X } from "lucide-react";
-import { memo, useMemo, useState } from "react";
+import { memo, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { MyButton } from "@/components/my-button.tsx";
+import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyPopover, MyPopoverContent, MyPopoverTrigger } from "@/components/my-popover.tsx";
@@ -112,6 +112,8 @@ type AppNotificationsList_Props = {
 	}) => void;
 	onOpenFile: (fileNodeId: app_convex_Id<"files_nodes">) => void;
 	onArchiveActivity: (activityId: app_convex_Id<"activities">) => void;
+	canArchiveActivities: boolean;
+	activityArchiveReasonId: string | undefined;
 };
 
 const AppNotificationsList = memo(function AppNotificationsList(props: AppNotificationsList_Props) {
@@ -123,6 +125,8 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 		onOpenWorkspace,
 		onOpenFile,
 		onArchiveActivity,
+		canArchiveActivities,
+		activityArchiveReasonId,
 	} = props;
 
 	const notificationItems = notifications ?? [];
@@ -178,6 +182,8 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 								activity={item.activity}
 								onOpenFile={onOpenFile}
 								onArchive={onArchiveActivity}
+								canArchive={canArchiveActivities}
+								archiveReasonId={activityArchiveReasonId}
 							/>
 						);
 					}
@@ -252,12 +258,14 @@ type AppNotificationsActivityItem_Props = {
 	activity: app_convex_FunctionReturnType<typeof app_convex_api.activities.list_recent>[number];
 	onOpenFile: (fileNodeId: app_convex_Id<"files_nodes">) => void;
 	onArchive: (activityId: app_convex_Id<"activities">) => void;
+	canArchive: boolean;
+	archiveReasonId: string | undefined;
 };
 
 const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 	props: AppNotificationsActivityItem_Props,
 ) {
-	const { activity, onOpenFile, onArchive } = props;
+	const { activity, onOpenFile, onArchive, canArchive, archiveReasonId } = props;
 
 	const statusLabel =
 		activity.status === "running"
@@ -296,8 +304,15 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 						variant="ghost-highlightable"
 						tooltip="Dismiss"
 						aria-label={`Dismiss ${activity.title}`}
-						className={"AppNotificationsActivityItem-dismiss" satisfies AppNotificationsActivityItem_ClassNames}
-						onClick={() => onArchive(activity._id)}
+						aria-disabled={canArchive ? undefined : true}
+						aria-describedby={canArchive ? undefined : archiveReasonId}
+						className={cn(
+							"AppNotificationsActivityItem-dismiss" satisfies AppNotificationsActivityItem_ClassNames,
+							!canArchive && ("MyButton-state-disabled" satisfies MyButton_ClassNames),
+						)}
+						onClick={() => {
+							if (canArchive) onArchive(activity._id);
+						}}
 					>
 						<MyIconButtonIcon>
 							<X />
@@ -355,10 +370,23 @@ export const AppNotifications = memo(function AppNotifications() {
 	const notifications = useQuery(app_convex_api.notifications.list_current_notifications);
 	const activities = useQuery(app_convex_api.activities.list_recent, { membershipId });
 	const organizationList = useQuery(app_convex_api.organizations.list);
+	const activityArchivePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
+		membershipId,
+		permission: "content.write",
+	});
 
 	const [open, setOpen] = useState(false);
+	const activityArchiveReasonId = `AppNotifications-activity-archive-${useId()}-description`;
 
 	const notificationItems = notifications ?? [];
+	// Only unarchived notifications are fetched, so every listed one counts toward the badge.
+	const notificationCount = notificationItems.length;
+	const dismissableActivityCount = (activities ?? []).filter((activity) => activity.status !== "running").length;
+	const canArchiveActivities = activityArchivePermission === true;
+	const activityArchiveReason =
+		dismissableActivityCount > 0 && activityArchivePermission === false
+			? "You need the Edit workspace content permission to dismiss workspace activity."
+			: null;
 
 	const onArchiveNotification = useFn((notificationId: app_convex_Id<"notifications">) => {
 		app_convex
@@ -375,6 +403,8 @@ export const AppNotifications = memo(function AppNotifications() {
 	});
 
 	const dismissAll = useFn(() => {
+		if (dismissableActivityCount > 0 && !canArchiveActivities) return;
+
 		app_convex
 			.mutation(app_convex_api.notifications.archive_all_notifications, {})
 			.then((result) => {
@@ -386,17 +416,19 @@ export const AppNotifications = memo(function AppNotifications() {
 			.catch((error) => {
 				console.error("[AppNotifications.dismissAll] Unexpected archive-all-notifications error", { error });
 			});
-		app_convex
-			.mutation(app_convex_api.activities.archive_all_activities, { membershipId })
-			.then((result) => {
-				if (result._nay) {
-					console.error("[AppNotifications.dismissAll] Failed to archive activities", { result });
-					toast.error(result._nay.message);
-				}
-			})
-			.catch((error) => {
-				console.error("[AppNotifications.dismissAll] Unexpected archive-all-activities error", { error });
-			});
+		if (dismissableActivityCount > 0) {
+			app_convex
+				.mutation(app_convex_api.activities.archive_all_activities, { membershipId })
+				.then((result) => {
+					if (result._nay) {
+						console.error("[AppNotifications.dismissAll] Failed to archive activities", { result });
+						toast.error(result._nay.message);
+					}
+				})
+				.catch((error) => {
+					console.error("[AppNotifications.dismissAll] Unexpected archive-all-activities error", { error });
+				});
+		}
 	});
 
 	const handleOpenWorkspace = useFn(
@@ -429,6 +461,8 @@ export const AppNotifications = memo(function AppNotifications() {
 	);
 
 	const onArchiveActivity = useFn((activityId: app_convex_Id<"activities">) => {
+		if (!canArchiveActivities) return;
+
 		app_convex
 			.mutation(app_convex_api.activities.archive_activity, { membershipId, activityId })
 			.then((result) => {
@@ -456,10 +490,6 @@ export const AppNotifications = memo(function AppNotifications() {
 		});
 	});
 
-	// Only unarchived notifications are fetched, so every listed one counts toward the badge.
-	const notificationCount = notificationItems.length;
-	const dismissableActivityCount = (activities ?? []).filter((activity) => activity.status !== "running").length;
-
 	return (
 		<MyPopover open={open} setOpen={setOpen}>
 			<MyPopoverTrigger>
@@ -481,9 +511,27 @@ export const AppNotifications = memo(function AppNotifications() {
 			<MyPopoverContent unmountOnHide className={"AppNotifications-popover" satisfies AppNotifications_ClassNames}>
 				<header className={"AppNotifications-header" satisfies AppNotifications_ClassNames}>
 					<h2 className={"AppNotifications-title" satisfies AppNotifications_ClassNames}>Notifications</h2>
-					<MyButton variant="ghost" disabled={!notificationCount && !dismissableActivityCount} onClick={dismissAll}>
+					<MyButton
+						variant="ghost"
+						className={cn(
+							dismissableActivityCount > 0 &&
+								!canArchiveActivities &&
+								("MyButton-state-disabled" satisfies MyButton_ClassNames),
+						)}
+						disabled={!notificationCount && !dismissableActivityCount}
+						aria-disabled={dismissableActivityCount > 0 && !canArchiveActivities ? true : undefined}
+						aria-describedby={
+							dismissableActivityCount > 0 && activityArchiveReason ? activityArchiveReasonId : undefined
+						}
+						onClick={dismissAll}
+					>
 						Dismiss all
 					</MyButton>
+					{activityArchiveReason ? (
+						<span id={activityArchiveReasonId} className="sr-only">
+							{activityArchiveReason}
+						</span>
+					) : null}
 				</header>
 
 				<AppNotificationsList
@@ -494,6 +542,8 @@ export const AppNotifications = memo(function AppNotifications() {
 					onOpenWorkspace={handleOpenWorkspace}
 					onOpenFile={handleOpenFile}
 					onArchiveActivity={onArchiveActivity}
+					canArchiveActivities={canArchiveActivities}
+					activityArchiveReasonId={activityArchiveReason ? activityArchiveReasonId : undefined}
 				/>
 			</MyPopoverContent>
 		</MyPopover>

@@ -195,14 +195,14 @@ Rules that are easy to miss, all of which were real holes:
   there left a file with no committed text, or content published and billed with the pending doc still
   showing unsaved changes.
 
-For listings, use `access_control_db_filter_readable_file_nodes`. For **file bytes**, the check lives
-inside the three readers that resolve a node and then hand back its content:
-`read_file_content_from_chunks`, `get_file_markdown_content_db_state_by_path`, and
-`db_resolve_committed_chunk_source` (the one behind `wc` and the stats — it returns no text, but exact
-line, word and byte counts say plenty about a file you were not given). Every bash command, AI tool
-and public API read route goes through one of the three, so a check in each of those callers would be
-a check waiting to be forgotten. Count the readers before you trust this list: a fourth one added
-later is a fourth door.
+For listings, use `access_control_db_filter_readable_file_nodes`. For **file content and exact
+statistics**, the check lives inside the five readers that resolve a node and then answer from it:
+`read_file_content_from_chunks`, `get_file_markdown_content_db_state_by_path`,
+`db_resolve_committed_chunk_source`, `match_markdown_file_lines`, and
+`match_plain_text_file_lines`. The stats reader returns no text, but exact line, word and byte counts
+still reveal a file. Every bash command, AI tool and public API read route goes through one of these
+readers, so a check in each caller would be a check waiting to be forgotten. Count the readers before
+you trust this list: a sixth one added later is a sixth door.
 
 **Activities answer to the files they name.** `db_filter_visible_activities` in `convex/activities.ts`
 is the one rule, used by `list_recent`, `archive_activity` and `archive_all_activities`. One
@@ -528,10 +528,12 @@ docs.
 Be explicit about this when planning work; do not assume the subsystem is complete.
 
 - **AI tools and the bash shell** reach files through internal functions that take `userId` as an
-  argument and mostly check nothing. **File content is the exception**: the two content readers now
-  check that `userId` against the node, so `cat`, `head`, `tail`, `wc`, `sed` and the AI edit tool all
-  refuse a restricted file. Everything else on that surface — creating, moving, listing through
-  internal helpers — is still unguarded and any new caller has to check for itself.
+  argument and mostly check nothing. **File content and pending writes are the exceptions**: the five
+  readers listed above check that `userId` against the node, so `cat`, `head`, `tail`, `wc`, `grep`,
+  `textgrep`, `sed` and the AI edit tool refuse a restricted file. Pending content writes already ask
+  the node for `content.write`, and the pending `mv` and `rm` mutations now do the same for their
+  source node before writing a proposal. Other internal helpers on this surface, including create and
+  listing helpers, still rely on their caller to check access.
   `/api/chat` is the entry point for the tool-bearing agent, and it asks
   two questions: `content.read` in both modes, plus `content.write` for agent mode. Two questions and
   not one, because the catalog lets an owner compose write-without-read. That role never actually

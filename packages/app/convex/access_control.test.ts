@@ -23,6 +23,7 @@ import {
 import { files_nodes_db_remove_created_ancestor_folders_if_safe } from "./files_nodes.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
+import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 type TestConvex = ReturnType<typeof test_convex>;
@@ -6038,48 +6039,162 @@ describe("file sharing", () => {
 		});
 		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
 
+		const markdown = "# Private notes\nsecretneedle\n";
+		const chunks = await files_chunk_markdown(markdown);
+		if (chunks._nay) {
+			throw new Error(chunks._nay.message);
+		}
+
 		// Written straight into the database: `create_markdown_node` uploads to R2, which these tests do
-		// not have. A plain-text node needs none of that and reaches the same reader.
-		await t.run(async (ctx) => {
+		// not have. The matching queries need a current materialized Yjs snapshot and both chunk kinds.
+		const nodeId = await t.run(async (ctx) => {
 			const now = Date.now();
-			await ctx.db.insert("files_nodes", {
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				kind: "content",
+				r2Bucket: "test-bucket",
+				size: 0,
+				createdBy: fixture.ownerId,
+				updatedAt: now,
+			});
+			const yjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				kind: "yjs_snapshot",
+				r2Bucket: "test-bucket",
+				size: 0,
+				createdBy: fixture.ownerId,
+				updatedAt: now,
+			});
+			const fileNodeId = await ctx.db.insert("files_nodes", {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.defaultWorkspaceId,
 				createdBy: fixture.ownerId,
 				updatedBy: fixture.ownerId,
 				updatedAt: now,
 				parentId: folderId,
-				name: "notes.txt",
+				name: "notes.md",
 				kind: "file",
-				contentType: "text/plain;charset=utf-8",
-				path: "/closed/notes.txt",
-				treePath: "/closed/notes.txt",
+				contentType: "text/markdown;charset=utf-8",
+				assetId,
+				path: "/closed/notes.md",
+				treePath: "/closed/notes.md",
 				pathDepth: 2,
-				lowercaseExtension: "txt",
+				lowercaseExtension: "md",
 				restrictedScopeNodeId: folderId,
 			});
+			const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				fileNodeId,
+				sequence: 0,
+				assetId: yjsSnapshotAssetId,
+				createdBy: fixture.ownerId,
+				updatedBy: fixture.ownerId,
+				updatedAt: now,
+			});
+			const yjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				fileNodeId,
+				lastSequence: 0,
+			});
+			await ctx.db.patch("files_nodes", fileNodeId, { yjsSnapshotId, yjsLastSequenceId });
+
+			const markdownChunkIds = await Promise.all(
+				chunks._yay.map((chunk) =>
+					ctx.db.insert("files_markdown_chunks", {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.defaultWorkspaceId,
+						fileNodeId,
+						sourceKind: "committed",
+						yjsSequence: 0,
+						chunkIndex: chunk.chunkIndex,
+						markdownChunk: chunk.markdownChunk,
+						startIndex: chunk.startIndex,
+						endIndex: chunk.endIndex,
+						lineStart: chunk.lineStart,
+						lineEnd: chunk.lineEnd,
+						chunkFlags: chunk.chunkFlags,
+					}),
+				),
+			);
+			await Promise.all(
+				chunks._yay.map((chunk, index) =>
+					ctx.db.insert("files_plain_text_chunks", {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.defaultWorkspaceId,
+						fileNodeId,
+						sourceKind: "committed",
+						yjsSequence: 0,
+						markdownChunkId: markdownChunkIds[index]!,
+						chunkIndex: chunk.chunkIndex,
+						path: "/closed/notes.md",
+						plainTextChunk: chunk.plainTextChunk,
+						markdownChunk: chunk.markdownChunk,
+						startIndex: chunk.startIndex,
+						endIndex: chunk.endIndex,
+						lineStart: chunk.lineStart,
+						lineEnd: chunk.lineEnd,
+						chunkFlags: chunk.chunkFlags,
+						hasChunkAbove: index > 0,
+						hasChunkBelow: index < chunks._yay.length - 1,
+					}),
+				),
+			);
+
+			return fileNodeId;
 		});
 
-		// This internal query is the door onto file bytes for bash `cat`, `head`, `tail` and `sed`, for
-		// the AI edit tool, and for the public API read routes. It takes the acting user, so one check
-		// here covers all of them. `wc` and the stats have their own door,
-		// `db_resolve_committed_chunk_source`, which asks `access_control_db_can_act_on_file_node` about
-		// the same node in the same way; reaching it from a test needs a fully materialized Yjs file.
 		const readArgs = {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
-			path: "/closed/notes.txt",
+			path: "/closed/notes.md",
 			mode: { kind: "full", maxBytes: 1_000_000 },
 		} as const;
-		const [ownerRead, memberRead] = await Promise.all([
-			t.query(internal.files_nodes.read_file_content_from_chunks, { ...readArgs, userId: fixture.ownerId }),
-			t.query(internal.files_nodes.read_file_content_from_chunks, { ...readArgs, userId: fixture.memberId }),
+		const memberRead = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			...readArgs,
+			userId: fixture.memberId,
+		});
+		expect(memberRead).toBeNull();
+
+		const matchArgs = {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			fileNodeId: nodeId,
+			pattern: "secretneedle",
+			ignoreCase: false,
+			fixedStrings: true,
+			invert: false,
+		} as const;
+		const [ownerMarkdownMatch, memberMarkdownMatch, ownerPlainTextMatch, memberPlainTextMatch] = await Promise.all([
+			t.query(internal.files_nodes.match_markdown_file_lines, {
+				...matchArgs,
+				userId: fixture.ownerId,
+				before: 0,
+				after: 0,
+			}),
+			t.query(internal.files_nodes.match_markdown_file_lines, {
+				...matchArgs,
+				userId: fixture.memberId,
+				before: 0,
+				after: 0,
+			}),
+			t.query(internal.files_nodes.match_plain_text_file_lines, {
+				...matchArgs,
+				userId: fixture.ownerId,
+			}),
+			t.query(internal.files_nodes.match_plain_text_file_lines, {
+				...matchArgs,
+				userId: fixture.memberId,
+			}),
 		]);
 
-		// The owner reads it, so the null below is the permission check and not a missing file.
-		expect(ownerRead).not.toBeNull();
-		// `null` is the same answer a missing file gives, which every caller already handles.
-		expect(memberRead).toBeNull();
+		expect(ownerMarkdownMatch?.selectedCount).toBe(1);
+		expect(memberMarkdownMatch).toBeNull();
+		expect(ownerPlainTextMatch?.selectedCount).toBe(1);
+		expect(memberPlainTextMatch).toBeNull();
 	});
 
 	test("archiving a folder does not sweep up a restricted folder inside it", async () => {
@@ -7613,6 +7728,36 @@ describe("file sharing", () => {
 			workspaceId: fixture.defaultWorkspaceId,
 			userId: fixture.memberId,
 			nodeId: childId,
+		});
+		expect(proposed._nay?.message).toBe("Permission denied");
+
+		const pendingUpdates = await t.run(async (ctx) => await ctx.db.query("files_pending_updates").collect());
+		expect(pendingUpdates).toHaveLength(0);
+	});
+
+	test("the agent cannot propose moving a file the user may only read", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "pending-mv-org",
+			suffix: "pending-mv",
+		});
+		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "read",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		const proposed = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: fixture.memberId,
+			nodeId: childId,
+			destParentId: files_ROOT_ID,
+			destName: "moved-inside",
 		});
 		expect(proposed._nay?.message).toBe("Permission denied");
 

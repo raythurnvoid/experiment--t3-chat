@@ -19,7 +19,13 @@ Hand the work back to the user only when a check needs a **real** account: the u
 
 ## 1. Isolated browser for the second identity
 
-The signed-in Clerk session lives in the user's own browser profile, so the second identity needs a profile of its own. `session new --browser headless` does not work here (the relay cannot resolve the browser inside its sandbox), so launch the installed Chrome for Testing yourself and attach over direct CDP:
+The signed-in Clerk session lives in the user's own browser profile, so the second identity needs a profile of its own. The current Playwriter install can start an isolated headless browser directly:
+
+```powershell
+vp env exec pnpx playwriter session new --browser headless
+```
+
+If headless startup is unavailable on the machine, launch the installed Chrome for Testing yourself and attach over direct CDP:
 
 ```powershell
 $prof = Join-Path $env:TEMP "qa-anon-profile"
@@ -78,6 +84,6 @@ Owner-side fixture calls:
 ## 5. Clean up
 
 - Delete the fixture organization with `organizations.delete_organization({ organizationId })` as its owner.
-- Delete the throwaway identity from its own session with `users.delete_current_user_account({})` — that is the app's supported flow and it works for anonymous users, whose only owned org is their default one.
+- Delete the throwaway identity from its own session with `app_convex.action(app_convex_api.users.delete_current_user_account, {})` — it is a Convex action, not a mutation. This is the app's supported flow and it works for anonymous users, whose only owned org is their default one.
 - Close the scratch Chrome and remove its `--user-data-dir` folder.
 - Close only the tab you opened in the user's browser. Snapshot `context.pages()` URLs before opening it and compare after closing.

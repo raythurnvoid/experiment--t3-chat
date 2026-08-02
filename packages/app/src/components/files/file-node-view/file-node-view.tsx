@@ -18,7 +18,7 @@ import { FilesShareModal } from "../files-share-modal.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
-import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import { MyButton, MyButtonIcon, type MyButton_ClassNames } from "@/components/my-button.tsx";
 import { MyButtonGroup, MyButtonGroupItem } from "@/components/my-button-group.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { MyGridTable, MyGridTableBody, MyGridTableCell, MyGridTableRow } from "@/components/my-grid-table.tsx";
@@ -106,7 +106,7 @@ import {
 	Lock,
 	Users,
 } from "lucide-react";
-import React, { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
@@ -422,6 +422,16 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 	const { nodeId, contentTooLargeByteSize, pendingSlot } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const convex = useConvex();
+	const activityArchivePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
+		membershipId,
+		permission: "content.write",
+	});
+	const activityArchiveReasonId = `FileNodeViewTopFloating-activity-archive-${useId()}-description`;
+	const canArchiveActivity = activityArchivePermission === true;
+	const activityArchiveReason =
+		activityArchivePermission === false
+			? "You need the Edit workspace content permission to dismiss workspace activity."
+			: null;
 
 	const activities = useFileNodeActivities({ membershipId, nodeId });
 	// Slices come newest first; a rerun in progress wins over an older failure.
@@ -431,6 +441,8 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 		null;
 
 	const handleDismiss = useFn((activityId: app_convex_Id<"activities">) => {
+		if (!canArchiveActivity) return;
+
 		convex
 			.mutation(app_convex_api.activities.archive_activity, { membershipId, activityId })
 			.then((result) => {
@@ -500,9 +512,20 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 						{message}
 					</span>
 					{activity.status !== "running" ? (
-						<MyButton variant="ghost" onClick={() => handleDismiss(activity._id)}>
+						<MyButton
+							variant="ghost"
+							className={cn(!canArchiveActivity && ("MyButton-state-disabled" satisfies MyButton_ClassNames))}
+							aria-disabled={canArchiveActivity ? undefined : true}
+							aria-describedby={activityArchiveReason ? activityArchiveReasonId : undefined}
+							onClick={() => handleDismiss(activity._id)}
+						>
 							Dismiss
 						</MyButton>
+					) : null}
+					{activity.status !== "running" && activityArchiveReason ? (
+						<span id={activityArchiveReasonId} className="sr-only">
+							{activityArchiveReason}
+						</span>
 					) : null}
 				</div>
 			) : null}
