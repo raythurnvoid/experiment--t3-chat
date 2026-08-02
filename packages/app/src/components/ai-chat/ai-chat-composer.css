@@ -34,7 +34,8 @@
 	.AiChatComposer-editor-area {
 		display: grid;
 		grid-template-columns: subgrid;
-		/* Row 1 is the always-visible attachments bar; row 2 is the text editor. */
+		/* Row 1 is the attachments bar, rendered only while attachments exist;
+		   row 2 is the text editor. */
 		grid-template-rows: auto auto;
 		grid-area: inherit;
 		gap: 0px;
@@ -45,28 +46,30 @@
 		contain: content;
 	}
 
+	/* Chromium leaves the attachments row out when it measures this subgrid
+	   composer's intrinsic height. The message-edit bubble sizes itself from
+	   that measurement, so with an auto row the bar overflowed the bubble and
+	   the rows painted over each other. Give the bar row its known fixed
+	   height instead: the chip row (36px plus the scrollbar gutter) plus the
+	   bar's 8px bottom padding. */
+	.AiChatComposer-editor-area:has(> .AiChatComposer-attachments) {
+		grid-template-rows: calc(36px + var(--app-scrollbar-w) + 8px) auto;
+	}
+
+	/* The bar mounts only while attachments exist, so attaching the first image
+	   grows the composer by this row and removing the last one shrinks it back.
+	   The chip row inside reserves its own scrollbar gutter, so the scrollbar
+	   itself never shifts the layout. */
 	.AiChatComposer-attachments {
 		grid-area: 1 / 1 / 2 / -1;
 
 		display: flex;
-		/* Top-align so the add button lines up with the chips: the chip row is
-		   taller than the button by its reserved scrollbar gutter. */
-		align-items: start;
-		gap: 6px;
 
 		padding: 0 10px 8px;
-		/* Reserve the chip row's scrollbar gutter even before any chip exists,
-		   so attaching the first image never grows the composer. */
-		min-height: calc(44px + var(--app-scrollbar-w));
 
 		/* Without this the bar refuses to shrink below the chips' total width
 		   and overflows the input instead of letting the row scroll. */
 		min-width: 0;
-	}
-
-	/* Keep the add button visible when the chip row overflows and scrolls. */
-	.AiChatComposer-attachments-add {
-		flex-shrink: 0;
 	}
 
 	.AiChatComposer-editor-content-container {
@@ -127,6 +130,13 @@
 
 		overflow: hidden;
 		text-overflow: ellipsis;
+	}
+
+	/* The attach icon button must keep its 36px hit target while the mode and
+	   model selects shrink. Chain the classes to tie the shared shrink rule
+	   above in the same layer, so source order decides. */
+	.AiChatComposer-configurations .AiChatComposer-configurations-attach.MyButton {
+		flex-shrink: 0;
 	}
 
 	.AiChatComposer-actions {

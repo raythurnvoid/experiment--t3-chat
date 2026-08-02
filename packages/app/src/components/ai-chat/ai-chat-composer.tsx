@@ -83,10 +83,10 @@ export type AiChatComposer_ClassNames =
 	| "AiChatComposer-editor-content-container"
 	| "AiChatComposer-editor-content"
 	| "AiChatComposer-attachments"
-	| "AiChatComposer-attachments-add"
-	| "AiChatComposer-attachments-add-icon"
 	| "AiChatComposer-actions"
 	| "AiChatComposer-configurations"
+	| "AiChatComposer-configurations-attach"
+	| "AiChatComposer-configurations-attach-icon"
 	| "AiChatComposer-send-icon"
 	| "AiChatComposer-save-icon"
 	| "AiChatComposer-cancel-icon";
@@ -813,16 +813,8 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 					focusForwarding
 					onFocusForward={handleFocusForward}
 				>
-					<div className={"AiChatComposer-attachments" satisfies AiChatComposer_ClassNames}>
-						<MyIconButton
-							className={"AiChatComposer-attachments-add" satisfies AiChatComposer_ClassNames}
-							variant="ghost-highlightable"
-							tooltip="Attach images"
-							onClick={handleAttachmentsAddClick}
-						>
-							<Plus className={"AiChatComposer-attachments-add-icon" satisfies AiChatComposer_ClassNames} />
-						</MyIconButton>
-						{hasAttachments && (
+					{hasAttachments && (
+						<div className={"AiChatComposer-attachments" satisfies AiChatComposer_ClassNames}>
 							<MyChipRow aria-label="Image attachments" onFocusExit={handleAttachmentsFocusExit}>
 								{attachments.map((item) => {
 									const attachmentName = item.part.filename ?? "Image";
@@ -846,8 +838,8 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 									);
 								})}
 							</MyChipRow>
-						)}
-					</div>
+						</div>
+					)}
 					<EditorContent
 						editor={editor}
 						className={"AiChatComposer-editor-content-container" satisfies AiChatComposer_ClassNames}
@@ -857,6 +849,14 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			</MyInput>
 
 			<div className={"AiChatComposer-configurations" satisfies AiChatComposer_ClassNames}>
+				<MyIconButton
+					className={"AiChatComposer-configurations-attach" satisfies AiChatComposer_ClassNames}
+					variant="ghost-highlightable"
+					tooltip="Attach images"
+					onClick={handleAttachmentsAddClick}
+				>
+					<Plus className={"AiChatComposer-configurations-attach-icon" satisfies AiChatComposer_ClassNames} />
+				</MyIconButton>
 				<MySelect
 					value={selectedModeId}
 					setValue={(value) => {
