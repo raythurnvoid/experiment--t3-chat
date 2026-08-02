@@ -1970,7 +1970,7 @@ describe("files upload-urls", () => {
 				body.files.map((file) => ctx.db.get("files_nodes", file.nodeId as Id<"files_nodes">)),
 			);
 			return await Promise.all(
-				nodes.map((node) => (node?.assetId ? ctx.db.get("files_r2_assets", node.assetId) : null)),
+				nodes.map((node) => (node?.assetId ? ctx.db.get("files_r2_assets", node.assetId) : Promise.resolve(null))),
 			);
 		});
 		for (const asset of assets) {
