@@ -24,6 +24,10 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyChip, MyChipLabel, MyChipMedia, MyChipRemove, MyChipRow } from "@/components/my-chip.tsx";
 import {
+	ai_chat_composer_file_mention_create_extension,
+	ai_chat_composer_file_mention_PLUGIN_KEY,
+} from "@/components/ai-chat/ai-chat-composer-file-mention.tsx";
+import {
 	MySelect,
 	MySelectItem,
 	MySelectItemIndicator,
@@ -314,6 +318,14 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	const attachmentsFileInputRef = useRef<HTMLInputElement | null>(null);
 	const hasAttachments = attachments.length > 0;
 
+	/**
+	 * The "@" mention popup element while it is open. Held in state so the
+	 * outside-interaction hook below re-reads `allowedAreas` with the popup
+	 * included; the popup mounts through a portal without re-rendering the
+	 * composer, so a ref would go stale.
+	 */
+	const [mentionPopupElement, setMentionPopupElement] = useState<HTMLElement | null>(null);
+
 	const [modelFilter, setModelFilter] = useState("");
 	const [enableInteractedOutside, setEnableInteractedOutside] = useState(false);
 	const modelFilterValue = modelFilter.trim().toLowerCase();
@@ -426,6 +438,9 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			Placeholder.configure({
 				placeholder,
 			}),
+			// `setMentionPopupElement` has a stable identity, so capturing it in
+			// this one-time config is safe.
+			ai_chat_composer_file_mention_create_extension({ onPopupElementChange: setMentionPopupElement }),
 		];
 
 		return {
@@ -478,6 +493,19 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 					if (event.isComposing) {
 						return false;
 					}
+
+					// While the "@" mention popup is open, its suggestion plugin owns
+					// Enter, Escape, and the arrow keys. These view props run before
+					// plugin handlers, so yield here and let the plugin forward the
+					// key to the popup. The popup's renderer stops the native Escape
+					// so it only closes the popup and never reaches outer handlers.
+					if (
+						(event.key === "Enter" || event.key === "Escape" || event.key === "ArrowUp" || event.key === "ArrowDown") &&
+						Boolean(ai_chat_composer_file_mention_PLUGIN_KEY.getState(view.state)?.active)
+					) {
+						return false;
+					}
+
 					if (event.key === "Escape") {
 						event.preventDefault();
 						onCloseRef.current?.();
@@ -704,7 +732,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	}, [onInteractedOutside]);
 
 	useUiInteractedOutside(rootRef, onInteractedOutside, {
-		allowedAreas: [editor?.view.dom],
+		allowedAreas: [editor?.view.dom, mentionPopupElement],
 		enable: Boolean(onInteractedOutside) && enableInteractedOutside,
 	});
 

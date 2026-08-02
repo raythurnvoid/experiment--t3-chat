@@ -1,0 +1,59 @@
+@layer components {
+	/* #region chip */
+	.AiChatComposerFileMention {
+		display: inline-block;
+		max-width: 100%;
+		padding: 0 6px;
+		border-radius: 9999px;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		vertical-align: bottom;
+
+		background: var(--color-base-1-05);
+		color: var(--color-fg-08);
+	}
+	/* #endregion chip */
+
+	/* #region list */
+	.AiChatComposerFileMentionList {
+		overflow-y: auto;
+		max-width: 380px;
+	}
+
+	.AiChatComposerFileMentionList-status {
+		padding: 6px 12px;
+		color: var(--color-fg-02);
+	}
+
+	.AiChatComposerFileMentionList-item-icon {
+		display: flex;
+		align-items: center;
+
+		color: var(--color-fg-05);
+
+		& > svg {
+			width: 16px;
+			height: 16px;
+		}
+	}
+
+	.AiChatComposerFileMentionList-item-content {
+		display: grid;
+		min-width: 0;
+	}
+
+	.AiChatComposerFileMentionList-item-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.AiChatComposerFileMentionList-item-path {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* #endregion list */
+}

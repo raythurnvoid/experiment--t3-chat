@@ -136,6 +136,7 @@ function ai_chat_system_prompt(args: { organizationName: string; workspaceName: 
 		"You are the app chat agent for the user's organization.",
 		"Use the available tools as the working interface for the organization.",
 		`Bash starts in the current workspace path at \`~/w/${args.organizationName}/${args.workspaceName}\` (\`${currentWorkspacePath}\`). \`~\` is \`${HOME}\`, the app mount is \`${appMountPath}\`, and \`/tmp\` is durable scratch scoped to this chat thread.`,
+		`User messages may reference app files with mentions written as \`@/path/to/file.md\`; a trailing slash like \`@/docs/\` means a folder. Resolve them under the current workspace path (\`@/docs/api.md\` is \`${currentWorkspacePath}/docs/api.md\`) before using Bash or \`edit_file\`.`,
 		"The Bash tool description is the authority on its command surface, its flags, and how the db-backed app mount differs from `/tmp`. Follow it instead of assuming POSIX/GNU behavior, and never describe an app-mount limitation as a global Bash limitation.",
 		"Run the exact printed `Next page:` command to continue a listing, and when the user asks for one continuation, run only the first one and then stop.",
 		"If a failed Bash command prints a `Try:` command that directly matches the user's request, run that `Try:` command next instead of only reporting the failure.",

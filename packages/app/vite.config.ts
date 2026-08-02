@@ -106,6 +106,7 @@ export default defineConfig({
 			"@tiptap/extension-drag-handle",
 			"@tiptap/extension-highlight",
 			"@tiptap/extension-horizontal-rule",
+			"@tiptap/extension-mention",
 			"@tiptap/extension-paragraph",
 			"@tiptap/extension-placeholder",
 			"@tiptap/extension-task-item",
@@ -125,6 +126,7 @@ export default defineConfig({
 			"@tiptap/extension-table-cell",
 			"@tiptap/extension-table-header",
 			"@tiptap/extension-table-row",
+			"@tiptap/suggestion",
 		],
 	},
 });

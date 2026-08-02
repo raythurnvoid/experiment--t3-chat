@@ -1,11 +1,57 @@
+import type { ReactElement } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { AiChatComposer } from "./ai-chat-composer.tsx";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { useAppGlobalStore } from "@/lib/app-global-store.ts";
+
+// The mention popup reads the workspace tree through a Convex subscription;
+// serve a small fixed tree instead of a live client. Tests can override the
+// mock per test (for example to render the loading state).
+const { mentionTreeNodes, useQueryMock } = vi.hoisted(() => {
+	const mentionTreeNodes = [
+		{ name: "docs", path: "/docs", kind: "folder", archiveOperationId: undefined },
+		{ name: "api.md", path: "/docs/api.md", kind: "file", archiveOperationId: undefined },
+	];
+	return { mentionTreeNodes, useQueryMock: vi.fn((): typeof mentionTreeNodes | undefined => mentionTreeNodes) };
+});
+
+vi.mock("convex/react", async (importOriginal) => {
+	const original = await importOriginal<typeof import("convex/react")>();
+	return {
+		...original,
+		useQuery: useQueryMock,
+	};
+});
+
+// jsdom does not implement scrollIntoView; the popup calls it on the active row.
+Element.prototype.scrollIntoView = vi.fn();
+
+/**
+ * Wrap the composer in the tenant context the mention popup reads.
+ */
+function render_with_tenant(ui: ReactElement) {
+	return render(
+		<AppTenantProvider
+			membershipId={"membership-1" as app_convex_Id<"organizations_workspaces_users">}
+			workspaceId={"workspace-1" as app_convex_Id<"organizations_workspaces">}
+			workspaceName="home"
+			organizationId={"organization-1" as app_convex_Id<"organizations">}
+			organizationName="personal"
+		>
+			{ui}
+		</AppTenantProvider>,
+	);
+}
 
 describe("AiChatComposer", () => {
 	afterEach(() => {
 		cleanup();
+		// Drop per-test overrides (like the loading state) and restore the tree.
+		useQueryMock.mockReset();
+		useQueryMock.mockImplementation(() => mentionTreeNodes);
 	});
 
 	test("names the composer textbox and configuration comboboxes", () => {
@@ -203,11 +249,13 @@ describe("AiChatComposer", () => {
 		await waitFor(() => {
 			expect(screen.queryByRole("button", { name: "Remove shot.png" })).toBeNull();
 		});
+		// Removing the last chip unmounts the whole attachments bar.
+		expect(screen.queryByLabelText("Image attachments")).toBeNull();
 		expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send message" }).disabled).toBe(true);
 		expect(onSubmit).not.toHaveBeenCalled();
 	});
 
-	test("attaches an image picked through the attachments-bar file input", async () => {
+	test("attaches an image picked through the file input", async () => {
 		const result = render(
 			<AiChatComposer
 				canCancel={false}
@@ -224,8 +272,10 @@ describe("AiChatComposer", () => {
 			/>,
 		);
 
-		// The bar and its add button are visible even with no attachments.
+		// With no attachments the attach button sits in the configurations row and
+		// the chip bar is not rendered at all.
 		expect(screen.getByRole("button", { name: "Attach images" })).not.toBeNull();
+		expect(screen.queryByLabelText("Image attachments")).toBeNull();
 
 		const fileInput = result.container.querySelector<HTMLInputElement>('input[type="file"]');
 		expect(fileInput).not.toBeNull();
@@ -497,6 +547,392 @@ describe("AiChatComposer", () => {
 
 		fireEvent.keyDown(textbox, { key: "Escape" });
 		expect(onClose).toHaveBeenCalledOnce();
+	});
+
+	test("opens the mention popup on @ and submits the picked file as a path token", async () => {
+		const onSubmit = vi.fn();
+		render_with_tenant(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [],
+				getData: () => "@",
+				types: ["text/plain"],
+			},
+		});
+
+		// The popup lists the workspace tree; ArrowDown moves the highlight from
+		// the folder row to the file row, Enter picks it without submitting.
+		const listbox = await screen.findByRole("listbox", { name: "Files and folders" });
+		expect(useQueryMock).toHaveBeenCalledWith(app_convex_api.files_nodes.list_tree, {
+			membershipId: "membership-1",
+		});
+
+		// The editor keeps DOM focus, so the popup is exposed through the
+		// textbox's aria-controls and aria-activedescendant.
+		expect(textbox.getAttribute("aria-controls")).toBe(listbox.id);
+		const [folderOption, fileOption] = screen.getAllByRole("option");
+		expect(textbox.getAttribute("aria-activedescendant")).toBe(folderOption!.id);
+
+		fireEvent.keyDown(textbox, { key: "ArrowDown" });
+		expect(textbox.getAttribute("aria-activedescendant")).toBe(fileOption!.id);
+		// The popup owns ArrowDown, so the composer's caret-at-end scroll flag
+		// must not be set while it is open.
+		expect(useAppGlobalStore.getState().ai_chat_composer_selection_collapsed_and_at_end).not.toBe(true);
+
+		fireEvent.keyDown(textbox, { key: "Enter", code: "Enter" });
+		expect(onSubmit).not.toHaveBeenCalled();
+
+		await waitFor(() => {
+			expect(screen.queryByRole("listbox", { name: "Files and folders" })).toBeNull();
+		});
+		expect(textbox.getAttribute("aria-controls")).toBeNull();
+		expect(textbox.getAttribute("aria-activedescendant")).toBeNull();
+		expect(textbox.querySelector(".AiChatComposerFileMention")?.textContent).toBe("@api.md");
+
+		// The next Enter submits; the chip serializes to the full path token.
+		fireEvent.keyDown(textbox, { key: "Enter", code: "Enter" });
+		expect(onSubmit).toHaveBeenCalledWith("@/docs/api.md ", []);
+	});
+
+	test("closes only the mention popup on Escape, keeping the composer open", async () => {
+		const onClose = vi.fn();
+		const outerKeyDown = vi.fn();
+		render_with_tenant(
+			<div onKeyDown={outerKeyDown}>
+				<AiChatComposer
+					canCancel={false}
+					canQueue
+					canSend
+					isQueueing={false}
+					isRunning={false}
+					initialValue=""
+					selectedModelId="gpt-5.4-nano"
+					selectedModeId="agent"
+					onSelectedModelIdChange={vi.fn()}
+					onSelectedModeIdChange={vi.fn()}
+					onSubmit={vi.fn()}
+					onClose={onClose}
+				/>
+			</div>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [],
+				getData: () => "@",
+				types: ["text/plain"],
+			},
+		});
+		await screen.findByRole("listbox", { name: "Files and folders" });
+
+		// The popup Escape must not reach ancestors: the chat-level keydown
+		// handler cancels a message edit on Escape even when defaultPrevented.
+		fireEvent.keyDown(textbox, { key: "Escape" });
+		await waitFor(() => {
+			expect(screen.queryByRole("listbox", { name: "Files and folders" })).toBeNull();
+		});
+		expect(onClose).not.toHaveBeenCalled();
+		expect(outerKeyDown).not.toHaveBeenCalled();
+
+		// With the popup closed, Escape closes the composer and still bubbles,
+		// which proves the wrapper receives keydown events at all.
+		fireEvent.keyDown(textbox, { key: "Escape" });
+		expect(onClose).toHaveBeenCalledOnce();
+		expect(outerKeyDown).toHaveBeenCalledOnce();
+	});
+
+	test("inserts a folder mention with a trailing slash on row click", async () => {
+		const onSubmit = vi.fn();
+		render_with_tenant(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [],
+				getData: () => "@",
+				types: ["text/plain"],
+			},
+		});
+
+		const [folderOption] = await screen.findAllByRole("option");
+		expect(folderOption).not.toBeUndefined();
+		fireEvent.mouseDown(folderOption!);
+		fireEvent.click(folderOption!);
+
+		await waitFor(() => {
+			expect(screen.queryByRole("listbox", { name: "Files and folders" })).toBeNull();
+		});
+		expect(textbox.querySelector(".AiChatComposerFileMention")?.textContent).toBe("@docs/");
+
+		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+		expect(onSubmit).toHaveBeenCalledWith("@/docs/ ", []);
+	});
+
+	test("does not pick a mention row while IME composition is active", async () => {
+		const onSubmit = vi.fn();
+		render_with_tenant(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [],
+				getData: () => "@",
+				types: ["text/plain"],
+			},
+		});
+		await screen.findByRole("listbox", { name: "Files and folders" });
+
+		// Enter during composition must commit the IME text, not the highlighted
+		// row, and must not send the message.
+		fireEvent.keyDown(textbox, { key: "Enter", code: "Enter", isComposing: true });
+		expect(onSubmit).not.toHaveBeenCalled();
+		expect(textbox.querySelector(".AiChatComposerFileMention")).toBeNull();
+	});
+
+	test("treats mention popup clicks as inside the composer for the outside-interaction check", async () => {
+		const onInteractedOutside = vi.fn();
+		render_with_tenant(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={vi.fn()}
+				onInteractedOutside={onInteractedOutside}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [],
+				getData: () => "@",
+				types: ["text/plain"],
+			},
+		});
+		await screen.findByRole("listbox", { name: "Files and folders" });
+
+		// The outside-interaction hook arms one frame after mount; prove it is
+		// armed with a real outside pointerdown first, as the control.
+		await waitFor(() => {
+			fireEvent.pointerDown(document.body);
+			expect(onInteractedOutside).toHaveBeenCalled();
+		});
+		onInteractedOutside.mockClear();
+
+		const [popupRow] = screen.getAllByRole("option");
+		fireEvent.pointerDown(popupRow!);
+		expect(onInteractedOutside).not.toHaveBeenCalled();
+	});
+
+	test("swallows Enter while the mention popup shows no results", async () => {
+		const onSubmit = vi.fn();
+		render_with_tenant(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [],
+				getData: () => "@zzz",
+				types: ["text/plain"],
+			},
+		});
+		await screen.findByText("No results");
+
+		// Letting ProseMirror handle Enter here would split the paragraph and
+		// break the one-paragraph message invariant.
+		fireEvent.keyDown(textbox, { key: "Enter", code: "Enter" });
+		expect(onSubmit).not.toHaveBeenCalled();
+		expect(textbox.querySelectorAll("p")).toHaveLength(1);
+	});
+
+	test("shows a loading row while the workspace tree has not arrived", async () => {
+		const onSubmit = vi.fn();
+		useQueryMock.mockReturnValue(undefined);
+		render_with_tenant(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [],
+				getData: () => "@",
+				types: ["text/plain"],
+			},
+		});
+		await screen.findByText("Loading…");
+
+		fireEvent.keyDown(textbox, { key: "Enter", code: "Enter" });
+		expect(onSubmit).not.toHaveBeenCalled();
+		expect(textbox.querySelector(".AiChatComposerFileMention")).toBeNull();
+	});
+
+	test("closes the mention popup when the editor loses focus", async () => {
+		render_with_tenant(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={vi.fn()}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [],
+				getData: () => "@",
+				types: ["text/plain"],
+			},
+		});
+		await screen.findByRole("listbox", { name: "Files and folders" });
+
+		fireEvent.blur(textbox);
+		await waitFor(() => {
+			expect(screen.queryByRole("listbox", { name: "Files and folders" })).toBeNull();
+		});
+	});
+
+	test("does not open the mention popup for an @ inside a word", async () => {
+		render_with_tenant(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={vi.fn()}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [],
+				getData: () => "user@example",
+				types: ["text/plain"],
+			},
+		});
+		await expect(screen.findByRole("listbox", { name: "Files and folders" }, { timeout: 150 })).rejects.toThrow();
+
+		// The "@" really is in the doc right before the caret, so the popup
+		// stayed closed because of the word prefix, not a failed paste.
+		expect(textbox.textContent).toBe("user@example");
+	});
+
+	test("reloads a stored mention token as plain text without opening the popup", () => {
+		const onSubmit = vi.fn();
+		render_with_tenant(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue="see @/docs/api.md please"
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+			/>,
+		);
+
+		expect(screen.queryByRole("listbox", { name: "Files and folders" })).toBeNull();
+
+		// The token round-trips as plain text and sends unchanged.
+		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+		expect(onSubmit).toHaveBeenCalledWith("see @/docs/api.md please", []);
 	});
 
 	test("does not save a queued edit when Enter confirms IME text", () => {
