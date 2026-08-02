@@ -11,7 +11,7 @@ import { MyPopover, MyPopoverTrigger, MyPopoverContent } from "@/components/my-p
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import {
 	FileEditorCommentsComposer,
@@ -68,6 +68,7 @@ export type FileEditorRichTextToolsComment_ClassNames =
 
 export type FileEditorRichTextToolsComment_Props = {
 	editor: Editor;
+	fileNodeId: app_convex_Id<"files_nodes">;
 	buttonVariant?: MyButton_Props["variant"];
 };
 
@@ -78,7 +79,7 @@ type FileEditorRichTextToolsCommentInner_Props = FileEditorRichTextToolsComment_
 const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextToolsCommentInner(
 	props: FileEditorRichTextToolsCommentInner_Props,
 ) {
-	const { editor, buttonVariant = "ghost-highlightable", isSelectionEmpty } = props;
+	const { editor, fileNodeId, buttonVariant = "ghost-highlightable", isSelectionEmpty } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -141,6 +142,7 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 
 		createCommentsThread({
 			membershipId,
+			fileNodeId,
 			content: markdownContent.trim(),
 		})
 			.then((result) => {
@@ -225,7 +227,7 @@ export const FileEditorRichTextToolsComment = memo(function FileEditorRichTextTo
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, buttonVariant = "ghost-highlightable" } = props;
+	const { editor, fileNodeId, buttonVariant = "ghost-highlightable" } = props;
 
 	const editorState = useEditorState({
 		editor,
@@ -239,6 +241,7 @@ export const FileEditorRichTextToolsComment = memo(function FileEditorRichTextTo
 	return (
 		<FileEditorRichTextToolsCommentInner
 			editor={editor}
+			fileNodeId={fileNodeId}
 			buttonVariant={buttonVariant}
 			isSelectionEmpty={editorState.isSelectionEmpty}
 		/>

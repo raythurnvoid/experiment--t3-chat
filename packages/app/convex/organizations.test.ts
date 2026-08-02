@@ -259,6 +259,7 @@ async function organizations_test_seed_workspace_scoped_rows(
 	await ctx.db.insert("chat_messages", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
+		fileNodeId: nodeId,
 		threadId: null,
 		parentId: null,
 		isArchived: false,
@@ -3944,6 +3945,74 @@ describe("edit_workspace", () => {
 		});
 
 		expect(result._yay?.name).toBe("sidecar-renamed");
+	});
+
+	test("the organization owner can rename a workspace they never joined", async () => {
+		const t = test_convex();
+		const [ownerId, memberId] = await t.run(async (ctx) => [
+			await ctx.db.insert("users", { clerkUserId: "clerk-owner-rename-unjoined-ws" }),
+			await ctx.db.insert("users", { clerkUserId: "clerk-member-rename-unjoined-ws" }),
+		]);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "organizations-test-owner@test.local",
+		});
+
+		const organization = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "owner-unjoined-ws",
+				now: Date.now(),
+			}),
+		);
+		if (organization._nay) {
+			throw new Error(organization._nay.message);
+		}
+
+		// The member joins the default workspace and makes their own workspace there. Creating one writes
+		// a membership for the creator only, so the owner never becomes a member of it.
+		const extra = await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: organization._yay!.organizationId,
+				workspaceId: organization._yay!.defaultWorkspaceId,
+				userId: memberId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: organization._yay!.organizationId,
+				workspaceId: organization._yay!.defaultWorkspaceId,
+				userId: memberId,
+				role: "member",
+				now,
+			});
+			return await organizations_db_create_workspace(ctx, {
+				userId: memberId,
+				description: "",
+				organizationId: organization._yay!.organizationId,
+				name: "member-made",
+				now,
+			});
+		});
+		if (extra._nay) {
+			throw new Error(extra._nay.message);
+		}
+
+		// `delete_workspace` already lets the owner through without a membership. Renaming has to agree,
+		// or the owner can throw the workspace away but cannot fix its name.
+		const renamed = await asOwner.mutation(api.organizations.edit_workspace, {
+			organizationId: organization._yay!.organizationId,
+			defaultWorkspaceId: organization._yay!.defaultWorkspaceId,
+			workspaceId: extra._yay!.workspaceId,
+			name: "owner-renamed",
+			description: "",
+		});
+		expect(renamed._yay?.name).toBe("owner-renamed");
 	});
 
 	test("leaves description unchanged when renaming workspace", async () => {

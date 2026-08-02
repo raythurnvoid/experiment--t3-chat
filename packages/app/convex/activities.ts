@@ -8,8 +8,8 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import type { ExcludeStrict } from "type-fest";
-import type { Doc } from "./_generated/dataModel.js";
-import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
+import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { organizations_db_get_membership } from "./organizations.ts";
 import {
 	access_control_db_authorize_membership,
@@ -118,6 +118,64 @@ export async function activities_db_add_target(
 /** The feed stays short-lived (producers delete activities on retention), so a flat cap is enough. */
 const ACTIVITIES_LIST_MAX = 50;
 
+/**
+ * Keep only the activities the user may see.
+ *
+ * A target carries the file's path, and the activity title usually carries its name, so an activity
+ * about a restricted file would say it exists and what it is called. An activity that names no file
+ * is about the whole workspace, so workspace-wide read decides that one.
+ *
+ * Every surface that reads or dismisses activities uses this, so the feed and the dismiss buttons
+ * always agree on what exists. Without it "Dismiss all" would archive an activity the caller cannot
+ * see, and `archivedAt` is one field on the doc rather than one per user, so the people who can see
+ * the file would lose it from their feed and never learn why.
+ */
+async function db_filter_visible_activities(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Doc<"activities">["organizationId"];
+		workspaceId: Doc<"activities">["workspaceId"];
+		userId: Id<"users">;
+		activities: readonly Doc<"activities">[];
+		/** Whether the caller holds workspace-wide `content.read`, proved by the caller. */
+		hasWorkspaceRead: boolean;
+	},
+) {
+	// Each node named on the page is looked up once, and the filter answers once per restricted scope.
+	const targetNodeIds = [
+		...new Set(args.activities.flatMap((activity) => activity.targets.map((target) => target.id))),
+	];
+	if (targetNodeIds.length === 0) {
+		return args.hasWorkspaceRead ? [...args.activities] : [];
+	}
+
+	const targetNodes = (await Promise.all(targetNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
+		(fileNode) => fileNode !== null,
+	);
+	const readableNodeIds = new Set(
+		(
+			await access_control_db_filter_readable_file_nodes(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				nodes: targetNodes,
+				hasWorkspaceRead: args.hasWorkspaceRead,
+			})
+		).map((fileNode) => fileNode._id),
+	);
+
+	return args.activities.filter((activity) => {
+		// Only docs written before the target above became mandatory can be empty here.
+		if (activity.targets.length === 0) {
+			return args.hasWorkspaceRead;
+		}
+
+		// One hidden file is enough to drop the whole activity. Keeping it with the readable targets
+		// only would still show the title, and the title usually carries the hidden file's name.
+		return activity.targets.every((target) => readableNodeIds.has(target.id));
+	});
+}
+
 export const list_recent = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -156,38 +214,12 @@ export const list_recent = query({
 			.order("desc")
 			.take(ACTIVITIES_LIST_MAX);
 
-		// A target carries the file's path, and the activity title usually carries its name, so an activity
-		// about a restricted file would say it exists and what it is called. Each node named on the page
-		// is looked up once, and the filter answers once per restricted scope.
-		const targetNodeIds = [...new Set(activities.flatMap((activity) => activity.targets.map((target) => target.id)))];
-		if (targetNodeIds.length === 0) {
-			return hasWorkspaceRead ? activities : [];
-		}
-
-		const targetNodes = (await Promise.all(targetNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
-			(fileNode) => fileNode !== null,
-		);
-		const readableNodeIds = new Set(
-			(
-				await access_control_db_filter_readable_file_nodes(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					userId: userAuth.id,
-					nodes: targetNodes,
-					hasWorkspaceRead,
-				})
-			).map((fileNode) => fileNode._id),
-		);
-
-		return activities.flatMap((activity) => {
-			// Only docs written before the target above became mandatory can be empty here.
-			if (activity.targets.length === 0) {
-				return hasWorkspaceRead ? [activity] : [];
-			}
-
-			// One hidden file is enough to drop the whole activity. Keeping it with the readable targets
-			// only would still show the title, and the title usually carries the hidden file's name.
-			return activity.targets.every((target) => readableNodeIds.has(target.id)) ? [activity] : [];
+		return await db_filter_visible_activities(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			activities,
+			hasWorkspaceRead,
 		});
 	},
 });
@@ -230,6 +262,26 @@ export const archive_activity = mutation({
 		) {
 			return Result({ _nay: { message: "Activity not found" } });
 		}
+
+		// Writing in the workspace is not the same as being allowed to see this activity, so ask the
+		// same question `list_recent` asks. An activity the caller cannot see must answer like one that
+		// is not there, otherwise the refusal itself says a hidden file was worked on.
+		const readAuthorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		const [visible] = await db_filter_visible_activities(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			activities: [activity],
+			hasWorkspaceRead: !readAuthorized._nay,
+		});
+		if (!visible) {
+			return Result({ _nay: { message: "Activity not found" } });
+		}
+
 		// Only finished work can be dismissed; a running activity still needs to be visible.
 		if (activity.status === "running") {
 			return Result({ _nay: { message: "Activity is still running" } });
@@ -283,13 +335,29 @@ export const archive_all_activities = mutation({
 			.collect();
 		// Running activities still need to be visible, so bulk dismiss only covers finished ones.
 		const finished = active.filter((activity) => activity.status !== "running");
+
+		// Dismiss only what the caller can see. `archivedAt` is one field on the doc and not one per
+		// user, so archiving an activity about a restricted file would take it away from the people who
+		// do hold that file, and they would never learn why it went.
+		const readAuthorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		const visible = await db_filter_visible_activities(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			activities: finished,
+			hasWorkspaceRead: !readAuthorized._nay,
+		});
 		const now = Date.now();
 
 		await Promise.all(
-			finished.map((activity) => ctx.db.patch("activities", activity._id, { archivedAt: now, updatedAt: now })),
+			visible.map((activity) => ctx.db.patch("activities", activity._id, { archivedAt: now, updatedAt: now })),
 		);
 
-		return Result({ _yay: { count: finished.length } });
+		return Result({ _yay: { count: visible.length } });
 	},
 });
 

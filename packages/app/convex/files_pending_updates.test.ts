@@ -9790,8 +9790,27 @@ describe("apply_file_pending_archive", () => {
 		if (childDelete._nay) {
 			throw new Error(childDelete._nay.message);
 		}
-		// Another user's doc on the child must survive the accept untouched.
-		const otherUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "clerk_apply_archive_other" }));
+		// Another user's doc on the child must survive the accept untouched. They are a real member with a
+		// real role, because proposing a delete asks the node whether this user may write it.
+		const otherUserId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_apply_archive_other" });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			return userId;
+		});
 		const otherDoc = await upsert_file_pending_archive_for_test({
 			t,
 			organizationId: seeded.organizationId,

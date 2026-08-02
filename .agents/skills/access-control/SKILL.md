@@ -154,15 +154,42 @@ handler should copy whichever fits:
   destination. `files_ROOT_ID` falls back to the workspace. An action cannot read the database, so
   actions ask the same question through the `get_current_user_file_write_permission` query.
 
-Two rules that are easy to miss, both of which were real holes:
+Rules that are easy to miss, all of which were real holes:
 
-- **A write has two legs when it moves something.** `move_nodes` and `apply_file_pending_move` check
-  the destination *and* the node. Checking only one lets a grant on a single folder push files into,
-  or out of, a restricted folder.
+- **A write has three legs when it moves something.** `move_nodes` and `apply_file_pending_move`
+  check the destination *and* the node. Checking only one lets a grant on a single folder push files
+  into a restricted folder. The third leg is `authorize_leaving_restricted_scope` in `files_nodes.ts`:
+  taking a node out of the restricted folder it sits in changes who can read it, so it takes
+  `content.permissions.manage` on that folder, not `content.write`. A folder that is the restricted
+  scope itself carries its scope along and is not asked. `rename_node` needs no such check: its path
+  walk starts at the node's own parent and only ever goes deeper, so it cannot leave a scope.
+  `unarchive_nodes` skips the destination check for the same reason, and that skip is deliberate —
+  reviewers keep reporting it. When a node's parent is still archived this code, not the caller,
+  picks the root as the destination; a node that is its own restricted scope stays closed there, so
+  the move opens it to nobody, and refusing would strand the folder where only its share list can see
+  it. A node that only *inherits* a restriction does lose it at the root, so that one is asked. Both
+  cases have a test in `access_control.test.ts`.
+- **A mutation an action calls proves its own permission.** Only a check inside the writing mutation
+  runs in the same transaction as the write; a check in the action is advisory, because a role taken
+  away in between still lands the write. So an internal mutation reached from an action asks again,
+  in itself — `create_file_node` and `create_folder_node_by_path` both do. A mutation called by
+  another mutation does not: it already runs inside the caller's transaction. Watch the brand-new
+  path in particular: the node walk only checks nodes that already exist, so when nothing is there
+  yet the workspace is the only thing left to ask.
 - **A cascade is not covered by the node you named.** `archive_nodes` expands to every descendant by
   path prefix, so it checks each distinct restricted scope it meets on the way down (once per scope,
   not once per node). `rename_node` accepts a path and can re-parent, so it carries
   `restrictedScopeNodeId` over exactly like `move_nodes`.
+- **Every refusal comes before the first write.** A Convex mutation that returns normally commits, so
+  a `Result({ _nay })` after a write keeps that write and reports failure at the same time. Ask every
+  question first. `create_upload_node` shows the shape: a filename may carry path segments, so it
+  walks the folders between `parentId` and the file before it archives the old file or inserts the
+  asset doc, because the create below it would otherwise refuse after both writes landed. When the
+  failing step is an internal invariant rather than a question the caller can answer — Markdown that
+  will not chunk, a Yjs doc that will not serialize — `throw should_never_happen(...)` instead, so the
+  transaction rolls back. `restore_snapshot` and `apply_file_pending_save` both do this; returning
+  there left a file with no committed text, or content published and billed with the pending doc still
+  showing unsaved changes.
 
 For listings, use `access_control_db_filter_readable_file_nodes`. For **file bytes**, the check lives
 inside the three readers that resolve a node and then hand back its content:
@@ -172,6 +199,21 @@ line, word and byte counts say plenty about a file you were not given). Every ba
 and public API read route goes through one of the three, so a check in each of those callers would be
 a check waiting to be forgotten. Count the readers before you trust this list: a fourth one added
 later is a fourth door.
+
+**Activities answer to the files they name.** `db_filter_visible_activities` in `convex/activities.ts`
+is the one rule, used by `list_recent`, `archive_activity` and `archive_all_activities`. One
+unreadable target hides the whole activity, because the title usually carries the file's name. The
+two archive mutations use it as well as the feed, and not only because a refusal should match what
+the user sees: `archivedAt` is one field on the doc rather than one per user, so "Dismiss all" run by
+somebody who cannot see a restricted file would take that activity away from the people who can.
+
+**Comments answer to their file.** Every `chat_messages` row carries a required `fileNodeId`, and all
+six handlers in `convex/chat_messages.ts` check that node instead of the workspace: `content.write`
+to start a thread, reply, or resolve, `content.read` to list or get. A comment quotes the document, so
+somebody who may not open a restricted file may not read what was said about it either. Children copy
+`fileNodeId` from their root, so one thread always answers to one file. `chat_messages_threads_list`
+asks per thread, because the caller passes ids from a file's Tiptap marks and nothing stops them
+passing ids from another file.
 
 ## The raw checker
 
@@ -259,6 +301,39 @@ of a restricted folder has to be able to share what the grant gave them and noth
   shared thread, so the unread badge is a workspace-wide signal that anyone who may read the thread
   may clear, and gating it would leave a read-only role with badges it can never clear.
 
+## Known gaps
+
+These are real and confirmed against the code. None is an oversight to patch quietly: each needs a
+product decision, so record the answer here before changing the behaviour.
+
+- **A chat thread can carry restricted bytes to the whole workspace.** Threads are workspace-wide (see
+  above), and an agent tool result is stored in the thread. So a user who may read a restricted file
+  can `cat` it, and every workspace member with `content.read` then sees those bytes in the shared
+  thread. Comments solved the same problem by putting one `fileNodeId` on the row, but a thread can
+  touch many files, so the fix is either per-tool-result filtering at read time or private threads.
+- **The public API refuses a grant-only user.** Route access is decided by
+  `requiredUserPermission`, which `has_workspace_content_permission` answers about the *workspace*.
+  Somebody whose only access is a direct grant on one restricted file gets 403 before any per-file
+  check, so their API key cannot use the grant the UI honours. This is under-permission, not a leak.
+- **An outgoing owner keeps nothing.** The owner holds no grant docs anywhere — `restrict_node` skips
+  the self-grant for them on purpose — and `transfer_organization_ownership` gives them the `member`
+  role. A role gives nothing inside a restricted scope, so the moment they hand the organization over
+  they lose every folder they restricted, and only the new owner can let them back in.
+- **A workspace can outlive its only member.** `organizations_db_create_workspace` writes a membership
+  for the creator alone, and `organizations.list` enumerates workspaces through the caller's
+  memberships. When that creator leaves the organization the workspace appears in nobody's list, while
+  still holding its `extra_workspaces` quota slot. The owner may delete it — `delete_workspace` exempts
+  them — but no screen offers them the id.
+- **Removing a member deletes their grants in one mutation.** `remove_organization_member` collects
+  every `access_control_permission_grants` doc for the user and deletes them together, with no page
+  limit, exactly like the role assignments above it. Somebody on thousands of share lists would exceed
+  the mutation write limit and become impossible to remove.
+- **A batch download re-checks the bearer, not every file.** `/api/v1/files/download-urls` reads each
+  node through `get_data_for_public_download_url`, which filters per node, then materializes, then
+  re-resolves the principal before signing. The re-resolve is a workspace question, and only the nodes
+  that were materialized are read again. A per-file grant revoked during a slow materialization is
+  therefore still signed for the other files in the same batch.
+
 # Endpoints
 
 ## Roles
@@ -335,7 +410,7 @@ The model:
 - Three levels — `read`, `write`, `manage` — each a superset of the last, saved as one grant doc per
   permission. `access_control_FILE_SHARE_LEVELS` is the source of truth.
 
-Four rules that look like details and are not:
+Five rules that look like details and are not:
 
 - **The owner holds no grant doc** and never appears in the list. They pass every check anyway, so a
   row for them would be a switch that changes nothing. `set_node_share_grant` refuses them as a
@@ -348,6 +423,13 @@ Four rules that look like details and are not:
   normal, and is what an owner-restricted folder looks like. The owner is exempt: they are the repair.
 - **Deleting a role is blocked while it is shared.** `delete_role` refuses when any grant names the
   role. Remove the role from the share list, or unrestrict the node, first.
+- **A role may be on at most `MAX_FILE_SHARES_PER_ROLE` (50) share lists.** Giving somebody a role,
+  or inviting them, has to walk every share that names it, because the role hands its shares out
+  along with itself. That walk has no page limit and does not need one: `set_node_share_grant`
+  refuses the share that would go past 50. The bound sits where the count grows, so the refusal
+  reaches somebody who can act on it — share with the people instead — rather than an inviter who
+  can fix nothing. Changing a level the role already has on a node writes no new share and is not
+  counted.
 
 # Write paths that create an assignment
 

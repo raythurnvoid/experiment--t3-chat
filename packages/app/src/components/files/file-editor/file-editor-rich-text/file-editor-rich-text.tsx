@@ -279,13 +279,14 @@ export type FileEditorRichTextBubbleContentActions_ClassNames =
 
 type FileEditorRichTextBubbleContentActions_Props = {
 	editor: Editor;
+	nodeId: app_convex_Id<"files_nodes">;
 	onClickAi: MyButton_Props["onClick"];
 };
 
 const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextBubbleContentActions(
 	props: FileEditorRichTextBubbleContentActions_Props,
 ) {
-	const { editor, onClickAi } = props;
+	const { editor, nodeId, onClickAi } = props;
 
 	const handleActionMouseDown = useFn<MyButton_Props["onMouseDown"]>((event) => {
 		// Keep the editor selection alive while the bubble action handles the click.
@@ -326,7 +327,7 @@ const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextB
 			<FileEditorRichTextToolsMathToggle editor={editor} buttonVariant="floating" />
 			<FileEditorRichTextToolsTextStyles editor={editor} buttonVariant="floating" />
 			<FileEditorRichTextToolsColorSelector editor={editor} buttonVariant="floating" />
-			<FileEditorRichTextToolsComment editor={editor} buttonVariant="floating" />
+			<FileEditorRichTextToolsComment editor={editor} fileNodeId={nodeId} buttonVariant="floating" />
 		</div>
 	);
 });
@@ -337,6 +338,7 @@ export type FileEditorRichTextBubbleContent_ClassNames = "FileEditorRichTextBubb
 
 type FileEditorRichTextBubbleContent_Props = {
 	editor: Editor;
+	nodeId: app_convex_Id<"files_nodes">;
 	openAi: boolean;
 	portalElement: HTMLElement | null;
 	onPortalRef: (inst: HTMLDivElement | null) => void;
@@ -347,7 +349,7 @@ type FileEditorRichTextBubbleContent_Props = {
 const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleContent(
 	props: FileEditorRichTextBubbleContent_Props,
 ) {
-	const { editor, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } = props;
+	const { editor, nodeId, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } = props;
 
 	return (
 		<MyFloatingSurface
@@ -356,7 +358,7 @@ const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleCo
 		>
 			{openAi && <FileEditorRichTextToolsInlineAi editor={editor} onDiscard={onDiscardAi} />}
 			{!openAi && portalElement ? (
-				<FileEditorRichTextBubbleContentActions editor={editor} onClickAi={onClickAi} />
+				<FileEditorRichTextBubbleContentActions editor={editor} nodeId={nodeId} onClickAi={onClickAi} />
 			) : null}
 		</MyFloatingSurface>
 	);
@@ -372,6 +374,7 @@ export type FileEditorRichTextBubble_ClassNames = "FileEditorRichTextBubble" | "
 
 export type FileEditorRichTextBubble_Props = {
 	editor: Editor;
+	nodeId: app_convex_Id<"files_nodes">;
 };
 
 /**
@@ -390,7 +393,7 @@ export type FileEditorRichTextBubble_Props = {
  * - The user presses Escape to close a popover in the bubble (popover closes, bubble stays visible)
  */
 export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: FileEditorRichTextBubble_Props) {
-	const { editor } = props;
+	const { editor, nodeId } = props;
 
 	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);
 	const isShownRef = useRef(false);
@@ -663,6 +666,7 @@ export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(p
 		>
 			<FileEditorRichTextBubbleContent
 				editor={editor}
+				nodeId={nodeId}
 				openAi={openAi}
 				portalElement={portalElement}
 				onPortalRef={handlePortalElementRef}
@@ -900,7 +904,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 								<ImageResizer />
 								<FileEditorRichTextToolsSlashCommand />
 								<FileEditorRichTextDragHandle editor={editor} />
-								<FileEditorRichTextBubble editor={editor} />
+								<FileEditorRichTextBubble editor={editor} nodeId={nodeId} />
 							</>
 						)
 					}

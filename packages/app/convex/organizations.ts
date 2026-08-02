@@ -1051,7 +1051,7 @@ export const invite_user_to_organization_workspace = mutation({
 				const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
 					organization,
 					defaultWorkspaceId,
-					reach: joinedWorkspaceIds,
+					reach: { kind: "workspaces", joinedWorkspaceIds },
 					role: "member",
 					userId: userAuth.id,
 				});
@@ -1093,7 +1093,7 @@ export const invite_user_to_organization_workspace = mutation({
 				const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
 					organization,
 					defaultWorkspaceId,
-					reach: joinedWorkspaceIds,
+					reach: { kind: "workspaces", joinedWorkspaceIds },
 					role: heldRole,
 					userId: userAuth.id,
 				});
@@ -1594,9 +1594,20 @@ export const edit_workspace = mutation({
 			// Same rule as `edit_organization`: the default workspace comes from the organization doc,
 			// not from a workspace that says it is the default one.
 			organization.defaultWorkspaceId !== defaultWorkspace._id ||
-			!defaultWorkspaceMembership ||
-			!workspaceMembership
+			!defaultWorkspaceMembership
 		) {
+			return Result({
+				_nay: {
+					message: "Not found",
+				},
+			});
+		}
+
+		// An organization role works in a workspace only while the caller is a member of it, so a
+		// non-member gets "Not found". The owner is the exception: they own every workspace in the
+		// organization, joined or not, and `delete_workspace` already lets them through the same way.
+		// Without this the owner could delete a workspace another member made but could not rename it.
+		if (!workspaceMembership && organization.ownerUserId !== userAuth.id) {
 			return Result({
 				_nay: {
 					message: "Not found",

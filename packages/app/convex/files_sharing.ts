@@ -67,6 +67,28 @@ const MAX_FILE_SHARE_PRINCIPALS = 50;
  */
 const MAX_FILE_SHARE_GRANT_DOCS = MAX_FILE_SHARE_PRINCIPALS * 3 + 1;
 
+/**
+ * Most restricted files and folders that one role may be named on.
+ *
+ * Giving somebody a role, or inviting them, has to walk every share that names that role, because
+ * a role hands out its shares along with itself. Without a limit that walk grows forever and one
+ * day a mutation runs out of reads, and the person who then cannot invite anyone has no way to see
+ * why or to fix it.
+ *
+ * So the limit lives here, at share time. This is where the count grows, and the refusal reaches
+ * somebody who can act on it: share with the people instead of the role.
+ */
+const MAX_FILE_SHARES_PER_ROLE = 50;
+
+/**
+ * How many grant docs we load to count the shares that name one role.
+ *
+ * A share costs up to three docs, one per permission of the `manage` level. Reading one more than
+ * the worst case is enough to tell "already at the limit" from "still below it", whatever mix of
+ * levels those shares use.
+ */
+const MAX_ROLE_SHARE_GRANT_DOCS = MAX_FILE_SHARES_PER_ROLE * 3 + 1;
+
 // #region validators
 
 /** Written by hand: when you add a level to `access_control_FILE_SHARE_LEVELS`, add it here too. */
@@ -855,6 +877,29 @@ export const set_node_share_grant = mutation({
 			return Result({
 				_nay: { message: `One file or folder can be shared with at most ${MAX_FILE_SHARE_PRINCIPALS} people and roles` },
 			});
+		}
+
+		// Only a new role entry grows the count the role ceiling has to walk. Changing a level this role
+		// already has here writes no new share, so it is not asked about.
+		if (args.principal.kind === "role" && !existingEntry) {
+			// `args.principal` does not narrow inside the index-builder closure below.
+			const role = args.principal.role;
+			const roleGrants = await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_role_workspace_resource", (q) =>
+					q.eq("organizationId", membership.organizationId).eq("principalKind", "role").eq("role", role),
+				)
+				.take(MAX_ROLE_SHARE_GRANT_DOCS);
+
+			// Count shares, not docs: one share writes up to three docs for the same node.
+			const sharedNodeIds = new Set(roleGrants.map((grant) => grant.resourceId));
+			if (sharedNodeIds.size >= MAX_FILE_SHARES_PER_ROLE) {
+				return Result({
+					_nay: {
+						message: `This role is already on ${MAX_FILE_SHARES_PER_ROLE} share lists, which is the most it can be on. Share with the people instead of the role.`,
+					},
+				});
+			}
 		}
 
 		if (

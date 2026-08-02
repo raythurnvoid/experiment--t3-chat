@@ -8,7 +8,7 @@ import { server_convex_get_user_fallback_to_anonymous } from "../server/server-u
 import type { Doc } from "./_generated/dataModel.js";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
-import { access_control_db_authorize_membership } from "./access_control.ts";
+import { access_control_db_authorize_node } from "./access_control.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -29,6 +29,7 @@ function chat_messages_has_membership_scope(
 export const chat_messages_threads_create = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		fileNodeId: v.id("files_nodes"),
 		content: v.string(),
 	},
 	returns: v_result({ _yay: v.object({ threadId: v.id("chat_messages") }) }),
@@ -51,9 +52,12 @@ export const chat_messages_threads_create = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		// Against the file, not the workspace: commenting on a restricted file is for the people its
+		// share list lets write it, and for nobody else.
+		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
+			nodeId: args.fileNodeId,
 			permission: "content.write",
 		});
 		if (authorized._nay) {
@@ -63,6 +67,7 @@ export const chat_messages_threads_create = mutation({
 		const threadId = await ctx.db.insert("chat_messages", {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
+			fileNodeId: args.fileNodeId,
 			threadId: null,
 			parentId: null,
 			isArchived: false,
@@ -105,15 +110,6 @@ export const chat_messages_add = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.write",
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
 		const root = await ctx.db.get("chat_messages", args.rootId);
 		if (!root) {
 			return Result({ _nay: { message: "Root message not found" } });
@@ -123,9 +119,21 @@ export const chat_messages_add = mutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
+		// The thread's file decides, so a reply is only for the people who may write that file.
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: root.fileNodeId,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		const messageId = await ctx.db.insert("chat_messages", {
 			organizationId: root.organizationId,
 			workspaceId: root.workspaceId,
+			fileNodeId: root.fileNodeId,
 			threadId: args.rootId,
 			parentId: args.rootId,
 			isArchived: false,
@@ -163,17 +171,20 @@ export const chat_messages_list = query({
 			return { messages: [] };
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-		});
-		if (authorized._nay) {
+		const root = await ctx.db.get("chat_messages", args.threadId);
+		if (!root || root.isArchived || !chat_messages_has_membership_scope(root, membership)) {
 			return { messages: [] };
 		}
 
-		const root = await ctx.db.get("chat_messages", args.threadId);
-		if (!root || root.isArchived || !chat_messages_has_membership_scope(root, membership)) {
+		// A comment quotes the document, so the file it is about decides who may read it. Somebody who
+		// lost access to a restricted file loses the discussion of it too.
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: root.fileNodeId,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return { messages: [] };
 		}
 
@@ -221,15 +232,6 @@ export const chat_messages_archive = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.write",
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
 		const message = await ctx.db.get("chat_messages", args.messageId);
 		if (!message) {
 			return Result({ _nay: { message: "Message not found" } });
@@ -237,6 +239,17 @@ export const chat_messages_archive = mutation({
 
 		if (!chat_messages_has_membership_scope(message, membership)) {
 			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// Resolving a comment is a write to it, so the file it is about decides, same as replying.
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: message.fileNodeId,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
 		}
 
 		await ctx.db.patch("chat_messages", args.messageId, {
@@ -270,17 +283,19 @@ export const chat_messages_get = query({
 			return null;
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-		});
-		if (authorized._nay) {
+		const message = await ctx.db.get("chat_messages", args.messageId);
+		if (!message || !chat_messages_has_membership_scope(message, membership)) {
 			return null;
 		}
 
-		const message = await ctx.db.get("chat_messages", args.messageId);
-		if (!message || !chat_messages_has_membership_scope(message, membership)) {
+		// Same rule as the list: the file the comment is about decides who may read it.
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: message.fileNodeId,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
 			return null;
 		}
 
@@ -323,15 +338,6 @@ export const chat_messages_threads_list = query({
 			return { threads: [] };
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-		});
-		if (authorized._nay) {
-			return { threads: [] };
-		}
-
 		const threadIds = args.threadIds
 			.map((threadId) => ctx.db.normalizeId("chat_messages", threadId))
 			.filter((threadId) => threadId != null);
@@ -344,6 +350,19 @@ export const chat_messages_threads_list = query({
 					}
 
 					if (!chat_messages_has_membership_scope(message, membership)) {
+						return null;
+					}
+
+					// Asked per thread, because the caller passes ids from one file's marks but nothing
+					// stops them passing ids from another file. An unreadable one drops out silently, the
+					// same way an unreadable file drops out of the tree.
+					const authorized = await access_control_db_authorize_node(ctx, {
+						userAuth,
+						membership,
+						nodeId: message.fileNodeId,
+						permission: "content.read",
+					});
+					if (authorized._nay) {
 						return null;
 					}
 

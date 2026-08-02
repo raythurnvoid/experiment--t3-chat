@@ -569,6 +569,58 @@ export async function authorize_file_write(
 }
 
 /**
+ * Check the third permission leg of a move: leaving a restricted folder.
+ *
+ * A move already asks two questions. May the caller write this node, and may they write where it
+ * lands. There is a third. When a node sits inside a restricted folder and lands somewhere that
+ * folder does not cover, everybody who can read the destination can now read the file, its history
+ * and its comments. That is a change to who can see it, so it needs the permission that owns
+ * sharing. `content.write` means "change what is inside", never "change who can see it".
+ *
+ * Moving a folder does this to every file under it in one action, so the cost of getting it wrong
+ * is a whole subtree, not one file. "They could copy the text out anyway" is a different thing:
+ * copying gives one person a copy, this hands everyone the real file.
+ *
+ * A folder that is the restricted scope itself carries that scope wherever it goes, so it changes
+ * nobody's access and is not asked about.
+ */
+export async function authorize_leaving_restricted_scope(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		fileNode: Doc<"files_nodes">;
+		destParentId: Doc<"files_nodes">["parentId"];
+	},
+) {
+	if (!args.fileNode.restrictedScopeNodeId || args.fileNode.restrictedScopeNodeId === args.fileNode._id) {
+		return Result({ _yay: null });
+	}
+
+	const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
+		parentId: args.destParentId,
+	});
+	if (destScopeNodeId === args.fileNode.restrictedScopeNodeId) {
+		return Result({ _yay: null });
+	}
+
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth: args.userAuth,
+		membership: args.membership,
+		permission: "content.permissions.manage",
+		fileNode: args.fileNode,
+	});
+	if (authorized._nay) {
+		// Name the level the Share dialog shows, so the message says what to ask a manager for.
+		return Result({
+			_nay: { name: "nay", message: "You need Can manage on the shared folder to move this out of it." },
+		});
+	}
+
+	return Result({ _yay: null });
+}
+
+/**
  * Whether the caller may write a file here. `nodeId` is the node that decides, the same one
  * `authorize_file_write` takes.
  *
@@ -946,6 +998,34 @@ export const create_folder_node_by_path = internalMutation({
 		}
 		if (activeNode?.kind === "file") {
 			return Result({ _nay: { message: "A file already exists at this path." } });
+		}
+
+		// Nothing is at this path, so no existing node answered the permission question, and the walk
+		// below will not ask one either: it only checks nodes that already exist. The caller is an
+		// action, which proves nothing before calling, so the workspace has to answer here, in the
+		// transaction that writes. `create_file_node` asks the same question for the same reason, so
+		// `mkdir` and `touch` refuse the same people.
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!membership) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		const authorized = await authorize_file_write(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			nodeId: files_ROOT_ID,
+		});
+		if (authorized._nay) {
+			return Result({ _nay: { message: "Permission denied" } });
 		}
 
 		const nodeId = await files_nodes_db_create_node_recursively_at_path(ctx, {
@@ -1394,8 +1474,18 @@ export async function files_nodes_db_remove_created_ancestor_folders_if_safe(
 			ancestorsLeft = args.createdAncestorIds.length - i;
 			break;
 		}
-		// Folder creation writes only the files_nodes doc (db_insert_node returns before
-		// any side docs for folders), so one delete removes the whole folder.
+		// Somebody restricted this folder and shared it, which is a deliberate act on a folder the
+		// agent only happened to create on the way. Keep it. Deleting it would also strand its share
+		// grants: they point at this node id, nothing here removes them, and a leftover grant naming a
+		// custom role makes that role impossible to delete for good, because `delete_role` refuses
+		// while any grant names it.
+		if (ancestor.restrictedScopeNodeId === ancestor._id) {
+			ancestorsLeft = args.createdAncestorIds.length - i;
+			break;
+		}
+		// Folder creation writes only the files_nodes doc (db_insert_node returns before any side docs
+		// for folders), and the check above ruled out the one other doc a folder can own, so one delete
+		// removes the whole folder.
 		await ctx.db.delete("files_nodes", ancestor._id);
 	}
 	return { ancestorsLeft };
@@ -1558,6 +1648,47 @@ export const create_upload_node = mutation({
 			)
 			.first();
 		const now = Date.now();
+
+		// The check at the top of the handler asked about `parentId`. A filename may carry path
+		// segments, so between `parentId` and the file there can be folders nobody has asked about, and
+		// one of them can be a restricted folder this caller may not write. The create below walks them
+		// and does refuse — but by then this mutation has archived the old file and written an asset
+		// doc, and a Convex mutation that returns normally commits both. So ask about them here, while
+		// nothing has been written yet. Only folders that already exist can carry a restriction, which
+		// is the same set the create walk checks.
+		const nameSegments = path_extract_segments_from(args.filename);
+		let intermediateParentId = args.parentId;
+		for (const name of nameSegments.slice(0, -1)) {
+			const intermediate = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("parentId", intermediateParentId)
+						.eq("name", name)
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			if (!intermediate) {
+				break;
+			}
+
+			if (
+				!(await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					fileNode: intermediate,
+					permission: "content.write",
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+
+			intermediateParentId = intermediate._id;
+		}
+
 		if (existingNode) {
 			if (existingNode.kind !== "file") {
 				return Result({
@@ -1977,11 +2108,9 @@ async function db_apply_node_move(
 	// below it changes either.
 	//
 	// Moving a file out of a restricted folder does open it to the whole workspace. That is on purpose,
-	// but be clear about how much it gives away: a `write` grant is enough to do it, not `manage`, and
-	// moving a folder does it to every file under it in one action. So anybody the share list lets edit
-	// can hand the workspace read access to the whole subtree. "They could copy the text out anyway" is
-	// not the same thing — copying gives one person a copy, this gives everyone the real file.
-	// `args.node` was read before the patch above, so it still holds the scope from before the move.
+	// and it is why the callers ask `authorize_leaving_restricted_scope` first: this helper only writes
+	// the result. `args.node` was read before the patch above, so it still holds the scope from before
+	// the move.
 	if (args.node.restrictedScopeNodeId !== args.node._id) {
 		const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
 			parentId: args.destParentId,
@@ -2575,6 +2704,16 @@ export const move_nodes = mutation({
 			});
 			if (authorizedNode._nay) {
 				return authorizedNode;
+			}
+
+			const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
+				userAuth,
+				membership,
+				fileNode,
+				destParentId: args.targetParentId,
+			});
+			if (authorizedLeaving._nay) {
+				return authorizedLeaving;
 			}
 
 			const movedPath = path_join(targetParentPath, fileNode.name);
@@ -3197,7 +3336,9 @@ export const unarchive_nodes = mutation({
 		// A plan that lands somewhere new is a move, and dropping into a folder writes into that folder.
 		// Asked before the conflict loop, like `move_nodes`, so a refused caller is not told which path is
 		// taken. Same skip as the scope loop below, because a node that carries its own restriction keeps
-		// it wherever it lands, so moving that one opens nothing.
+		// it wherever it lands, so moving that one opens nothing. Refusing it would also strand the
+		// folder: the destination is picked by this code, not by the caller, and the only people who can
+		// see the folder are the ones its share list names.
 		for (const plan of plans) {
 			if (plan.targetParentId === plan.fileNode.parentId || plan.fileNode.restrictedScopeNodeId === plan.fileNode._id) {
 				continue;

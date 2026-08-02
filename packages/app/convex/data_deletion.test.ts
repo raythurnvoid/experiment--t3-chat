@@ -515,6 +515,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			ctx.db.insert("chat_messages", {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
+				fileNodeId,
 				threadId: null,
 				parentId: null,
 				isArchived: false,

@@ -6,6 +6,7 @@ import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_has_permission,
 	access_control_db_resolve_effective_permissions,
+	access_control_db_role_file_grant_caller_cannot_give,
 } from "./access_control.ts";
 import {
 	organizations_db_create,
@@ -19,6 +20,7 @@ import {
 	access_control_SYSTEM_ROLE_MATRIX,
 	access_control_SYSTEM_ROLES,
 } from "../shared/access-control.ts";
+import { files_nodes_db_remove_created_ancestor_folders_if_safe } from "./files_nodes.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
@@ -276,6 +278,20 @@ async function access_control_test_demote_to_viewer(
 	expect(demoted._nay).toBeUndefined();
 }
 
+/** A folder nothing restricts, so a comment on it answers to the workspace and not to a share list. */
+async function access_control_test_seed_open_folder(
+	fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
+	args: { name: string },
+) {
+	const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+		membershipId: fixture.ownerMembershipId,
+		parentId: files_ROOT_ID,
+		path: args.name,
+	});
+	expect(folder._nay).toBeUndefined();
+	return folder._yay!.nodeId;
+}
+
 describe("enforcement", () => {
 	test("a viewer can read the tree but cannot change it", async () => {
 		const t = test_convex();
@@ -431,6 +447,7 @@ describe("enforcement", () => {
 			}),
 			fixture.asMember.mutation(api.chat_messages.chat_messages_threads_create, {
 				membershipId: fixture.memberMembershipId,
+				fileNodeId: folder._yay!.nodeId,
 				content: "Looks good to me",
 			}),
 		]);
@@ -552,6 +569,10 @@ describe("enforcement", () => {
 			name: "chat-gate-org",
 			suffix: "chat-gate",
 		});
+
+		// Created before the demotion, because the viewer below may not create anything.
+		const commentFolderId = await access_control_test_seed_open_folder(fixture, { name: "comments-on" });
+
 		await access_control_test_demote_to_viewer(fixture);
 
 		const [thread, comment, activities] = await Promise.all([
@@ -563,6 +584,7 @@ describe("enforcement", () => {
 			}),
 			fixture.asMember.mutation(api.chat_messages.chat_messages_threads_create, {
 				membershipId: fixture.memberMembershipId,
+				fileNodeId: commentFolderId,
 				content: "A comment is content",
 			}),
 			fixture.asMember.mutation(api.activities.archive_all_activities, {
@@ -638,8 +660,11 @@ describe("enforcement", () => {
 			suffix: "comment-read",
 		});
 
+		const commentFolderId = await access_control_test_seed_open_folder(fixture, { name: "comments-on" });
+
 		const thread = await fixture.asOwner.mutation(api.chat_messages.chat_messages_threads_create, {
 			membershipId: fixture.ownerMembershipId,
+			fileNodeId: commentFolderId,
 			content: "A comment nobody without read may see",
 		});
 		expect(thread._nay).toBeUndefined();
@@ -715,8 +740,11 @@ describe("enforcement", () => {
 			suffix: "comment-write",
 		});
 
+		const commentFolderId = await access_control_test_seed_open_folder(fixture, { name: "comments-on" });
+
 		const thread = await fixture.asOwner.mutation(api.chat_messages.chat_messages_threads_create, {
 			membershipId: fixture.ownerMembershipId,
+			fileNodeId: commentFolderId,
 			content: "Owner comment",
 		});
 		expect(thread._nay).toBeUndefined();
@@ -4615,6 +4643,79 @@ describe("file sharing", () => {
 		expect(invitedAfterShare._nay).toBeUndefined();
 	});
 
+	// Called directly, because no handler can reach this branch: every call site already excluded the
+	// owner. Without this test the owner short-circuit is unexercised, and deleting it would break
+	// nothing here while breaking the owner in production — the membership check it stands in front of
+	// is not owner-aware.
+	test("the role file-grant ceiling lets the owner through a workspace they are not a member of", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "owner-ceiling-org",
+			suffix: "owner-ceiling",
+		});
+
+		const sideWorkspaceId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const workspace = await organizations_db_create_workspace(ctx, {
+				userId: fixture.ownerId,
+				organizationId: fixture.organizationId,
+				name: "payroll-side",
+				description: "",
+				now,
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return workspace._yay.workspaceId;
+		});
+
+		const ownerSideMembershipId = await access_control_test_read_membership_id(t, {
+			organizationId: fixture.organizationId,
+			workspaceId: sideWorkspaceId,
+			userId: fixture.ownerId,
+		});
+
+		const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: ownerSideMembershipId,
+			parentId: files_ROOT_ID,
+			path: "payroll",
+		});
+		expect(folder._nay).toBeUndefined();
+		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: ownerSideMembershipId,
+			nodeId: folder._yay!.nodeId,
+		});
+		expect(restricted._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: ownerSideMembershipId,
+			nodeId: folder._yay!.nodeId,
+			principal: { kind: "role", role: "member" },
+			level: "read",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		// The owner leaves that workspace. Owners never need a membership to own the organization, and
+		// this is the state the guard exists for.
+		await t.run(async (ctx) => {
+			await ctx.db.delete("organizations_workspaces_users", ownerSideMembershipId);
+		});
+
+		const blockingGrant = await t.run(async (ctx) => {
+			const organization = await ctx.db.get("organizations", fixture.organizationId);
+			return await access_control_db_role_file_grant_caller_cannot_give(ctx, {
+				organization: organization!,
+				defaultWorkspaceId: fixture.defaultWorkspaceId,
+				reach: { kind: "organization" },
+				role: "member",
+				userId: fixture.ownerId,
+			});
+		});
+		expect(blockingGrant).toBeNull();
+	});
+
 	test("a share in a workspace the invite does not join does not refuse the invite", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -6098,6 +6199,200 @@ describe("file sharing", () => {
 		expect(visible?._id).toBe(loose._yay!.nodeId);
 	});
 
+	test("comments on a restricted folder follow the folder, not the workspace", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "comment-scope-org",
+			suffix: "comment-scope",
+		});
+		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		const thread = await fixture.asOwner.mutation(api.chat_messages.chat_messages_threads_create, {
+			membershipId: fixture.ownerMembershipId,
+			fileNodeId: folderId,
+			content: "The payroll numbers are wrong",
+		});
+		expect(thread._nay).toBeUndefined();
+		const threadId = thread._yay!.threadId;
+
+		// The member holds workspace read and write, which used to be the whole question. It is not the
+		// question any more: the folder is, and they are not on its share list.
+		const [listed, got, heads] = await Promise.all([
+			fixture.asMember.query(api.chat_messages.chat_messages_list, {
+				membershipId: fixture.memberMembershipId,
+				threadId,
+				limit: 10,
+			}),
+			fixture.asMember.query(api.chat_messages.chat_messages_get, {
+				membershipId: fixture.memberMembershipId,
+				messageId: threadId,
+			}),
+			fixture.asMember.query(api.chat_messages.chat_messages_threads_list, {
+				membershipId: fixture.memberMembershipId,
+				threadIds: [String(threadId)],
+			}),
+		]);
+		expect(listed).toEqual({ messages: [] });
+		expect(got).toBeNull();
+		expect(heads).toEqual({ threads: [] });
+
+		const replied = await fixture.asMember.mutation(api.chat_messages.chat_messages_add, {
+			membershipId: fixture.memberMembershipId,
+			rootId: threadId,
+			content: "Let me look",
+		});
+		expect(replied._nay?.message).toBe("Permission denied");
+
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+
+		// A read share is enough to follow the discussion, and not enough to join it.
+		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "read",
+		});
+		expect(granted._nay).toBeUndefined();
+
+		const [readerListed, readerReplied] = await Promise.all([
+			fixture.asMember.query(api.chat_messages.chat_messages_list, {
+				membershipId: fixture.memberMembershipId,
+				threadId,
+				limit: 10,
+			}),
+			fixture.asMember.mutation(api.chat_messages.chat_messages_add, {
+				membershipId: fixture.memberMembershipId,
+				rootId: threadId,
+				content: "Let me look",
+			}),
+		]);
+		expect(readerListed.messages).toHaveLength(1);
+		expect(readerReplied._nay?.message).toBe("Permission denied");
+	});
+
+	test("a role can only be on so many share lists", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "role-share-cap-org",
+			suffix: "role-share-cap",
+		});
+		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		// Fill the role's quota by hand. Going through the mutation 50 times would spend the whole
+		// sharing rate limit and prove nothing extra: the check counts grant docs, and these are the
+		// same docs `set_node_share_grant` writes. Three permissions on one node, like a `manage` share,
+		// so a check counting docs instead of nodes would let 150 shares through and fail here.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let index = 0; index < 50; index++) {
+				for (const permission of ["content.read", "content.write", "content.permissions.manage"] as const) {
+					await ctx.db.insert("access_control_permission_grants", {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.defaultWorkspaceId,
+						resourceKind: "file",
+						resourceId: `filled-share-${index}`,
+						principalKind: "role",
+						role: "member",
+						permission,
+						createdAt: now,
+						updatedAt: now,
+					});
+				}
+			}
+		});
+
+		const capped = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "role", role: "member" },
+			level: "read",
+		});
+		expect(capped._nay?.message).toBe(
+			"This role is already on 50 share lists, which is the most it can be on. Share with the people instead of the role.",
+		);
+
+		// Another role is not affected, so the refusal is about this role's count and not about the node
+		// having run out of room.
+		const otherRole = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "role", role: "admin" },
+			level: "read",
+		});
+		expect(otherRole._nay).toBeUndefined();
+
+		// A person is not a role, so the cap does not touch user shares.
+		const person = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "read",
+		});
+		expect(person._nay).toBeUndefined();
+	});
+
+	test("moving a node out of a restricted folder needs manage, not write", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "move-out-org",
+			suffix: "move-out",
+		});
+		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "write",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		// Editing inside the folder is exactly what "Can edit" buys, so the refusal below is about
+		// leaving the folder and not about the member being unable to touch this node at all.
+		const renamed = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: childId,
+			path: "still-inside",
+		});
+		expect(renamed._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+
+		const movedByWriter = await fixture.asMember.mutation(api.files_nodes.move_nodes, {
+			membershipId: fixture.memberMembershipId,
+			itemIds: [childId],
+			targetParentId: files_ROOT_ID,
+		});
+		expect(movedByWriter._nay?.message).toBe("You need Can manage on the shared folder to move this out of it.");
+
+		// The refusal came before the patch, so the node is still inside and still hidden.
+		const afterRefusal = await t.run(async (ctx) => await ctx.db.get("files_nodes", childId));
+		expect(afterRefusal?.parentId).toBe(folderId);
+		expect(afterRefusal?.restrictedScopeNodeId).toBe(folderId);
+
+		const upgraded = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "manage",
+		});
+		expect(upgraded._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+
+		// "Can manage" owns the share list, so the same person may now declassify the node.
+		const movedByManager = await fixture.asMember.mutation(api.files_nodes.move_nodes, {
+			membershipId: fixture.memberMembershipId,
+			itemIds: [childId],
+			targetParentId: files_ROOT_ID,
+		});
+		expect(movedByManager._nay).toBeUndefined();
+
+		const afterMove = await t.run(async (ctx) => await ctx.db.get("files_nodes", childId));
+		expect(afterMove?.parentId).toBe(files_ROOT_ID);
+		expect(afterMove?.restrictedScopeNodeId).toBeUndefined();
+	});
+
 	test("creating a path through a hidden folder is refused", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -6308,6 +6603,54 @@ describe("file sharing", () => {
 		expect(asWriter._yay).toEqual({ nodeId: folderId, exists: true });
 	});
 
+	test("mkdir on a brand new path asks the workspace, because no node is there to ask", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "mkdir-new-org",
+			suffix: "mkdir-new",
+		});
+
+		const mkdirArgs = {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			path: "/fresh",
+		} as const;
+
+		// A viewer may read the workspace but not write in it. Nothing sits at `/fresh`, so the node walk
+		// inside the mutation checks nothing: the workspace question is the only one left.
+		await access_control_test_demote_to_viewer(fixture);
+		const asViewer = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			...mkdirArgs,
+			userId: fixture.memberId,
+		});
+		expect(asViewer._yay).toBeUndefined();
+		expect(asViewer._nay?.message).toBe("Permission denied");
+
+		// Nothing was written, so the refusal came before the create and not after it.
+		const afterRefusal = await t.run(
+			async (ctx) =>
+				await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", fixture.organizationId)
+							.eq("workspaceId", fixture.defaultWorkspaceId)
+							.eq("path", "/fresh")
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+		);
+		expect(afterRefusal).toBeNull();
+
+		// The owner creates the same path, so the refusal above is the check and not a path that is taken.
+		const asOwner = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			...mkdirArgs,
+			userId: fixture.ownerId,
+		});
+		expect(asOwner._nay).toBeUndefined();
+		expect(asOwner._yay?.exists).toBe(false);
+	});
+
 	test("the path search behind bash does not match a restricted folder", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -6392,6 +6735,65 @@ describe("file sharing", () => {
 		expect(ownerListed).toHaveLength(3);
 		expect(memberListed).toHaveLength(1);
 		expect(memberListed[0]?.targets.map((target) => target.id)).toEqual([openId]);
+	});
+
+	test("dismissing activities leaves the ones about a restricted file alone", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "activity-archive-org",
+			suffix: "activity-archive",
+		});
+		const { childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const hiddenActivityId = await access_control_test_seed_activity(t, fixture, {
+			fileNodeId: childId,
+			targets: [{ type: "file_node", id: childId, path: "/closed/inside", message: "" }],
+		});
+
+		// An activity about an open file, so a count of zero below cannot pass for the wrong reason:
+		// without it, a filter that dropped everything would look exactly like the fix.
+		const open = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: files_ROOT_ID,
+			path: "open",
+		});
+		expect(open._nay).toBeUndefined();
+		const openActivityId = await access_control_test_seed_activity(t, fixture, {
+			fileNodeId: open._yay!.nodeId,
+			targets: [{ type: "file_node", id: open._yay!.nodeId, path: "/open", message: "" }],
+		});
+
+		// The member sees only the open one, which is the rule the two mutations below have to match.
+		const listed = await fixture.asMember.query(api.activities.list_recent, {
+			membershipId: fixture.memberMembershipId,
+		});
+		expect(listed.map((activity) => activity._id)).toEqual([openActivityId]);
+
+		// Naming the hidden activity directly must answer like one that is not there. Anything else
+		// tells the member a file they cannot open was worked on.
+		const archivedOne = await fixture.asMember.mutation(api.activities.archive_activity, {
+			membershipId: fixture.memberMembershipId,
+			activityId: hiddenActivityId,
+		});
+		expect(archivedOne._nay?.message).toBe("Activity not found");
+
+		// "Dismiss all" clears the open one and leaves the hidden one for the people who hold that folder.
+		const archivedAll = await fixture.asMember.mutation(api.activities.archive_all_activities, {
+			membershipId: fixture.memberMembershipId,
+		});
+		expect(archivedAll._yay?.count).toBe(1);
+
+		const [hidden, opened] = await t.run(
+			async (ctx) =>
+				await Promise.all([ctx.db.get("activities", hiddenActivityId), ctx.db.get("activities", openActivityId)]),
+		);
+		expect(hidden?.archivedAt).toBe(0);
+		expect(opened?.archivedAt).toBeGreaterThan(0);
+
+		// The owner still has it, which is what the member was stopped from taking away.
+		const ownerListed = await fixture.asOwner.query(api.activities.list_recent, {
+			membershipId: fixture.ownerMembershipId,
+		});
+		expect(ownerListed.map((activity) => activity._id)).toEqual([hiddenActivityId]);
 	});
 
 	test("a folder given to somebody with no workspace read shows its activity, and none about the workspace", async () => {
@@ -6791,5 +7193,188 @@ describe("file sharing", () => {
 		expect(treeIds).toContain(folderId);
 		expect(treeIds).toContain(childId);
 		expect(treeIds).not.toContain(open._yay!.nodeId);
+	});
+
+	test("an upload refused for a folder on the way writes nothing", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "upload-walk-org",
+			suffix: "upload-walk",
+		});
+		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		const assetsBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
+
+		// The member may write the root, so the upload gets past the first check. `/closed` is on the way
+		// and was never theirs. What this test is about is *when* the refusal lands: a Convex mutation
+		// that returns normally commits, so anything written before the refusal is kept.
+		const upload = await fixture.asMember.mutation(api.files_nodes.create_upload_node, {
+			membershipId: fixture.memberMembershipId,
+			parentId: files_ROOT_ID,
+			filename: "closed/note.md",
+			contentType: "text/markdown",
+			size: 8,
+		});
+		expect(upload._nay?.message).toBe("Permission denied");
+
+		const after = await t.run(async (ctx) => {
+			const assets = await ctx.db.query("files_r2_assets").collect();
+			const note = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.defaultWorkspaceId)
+						.eq("parentId", folderId)
+						.eq("name", "note.md"),
+				)
+				.first();
+			return { assetCount: assets.length, note };
+		});
+		expect(after.assetCount).toBe(assetsBefore);
+		expect(after.note).toBeNull();
+	});
+
+	test("a refused upload does not archive the file it was replacing", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "upload-replace-org",
+			suffix: "upload-replace",
+		});
+		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		// A file inside `/closed` that gets its own share list. The member ends up able to write this
+		// file and unable to write the folder holding it, which is the shape the bug needs.
+		const noteId = await t.run(async (ctx) => {
+			return await ctx.db.insert("files_nodes", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				createdBy: fixture.ownerId,
+				updatedBy: fixture.ownerId,
+				updatedAt: Date.now(),
+				parentId: folderId,
+				name: "note.md",
+				kind: "file",
+				path: "/closed/note.md",
+				treePath: "/closed/note.md",
+				pathDepth: 2,
+				lowercaseExtension: "md",
+				restrictedScopeNodeId: folderId,
+				archiveOperationId: undefined,
+			});
+		});
+
+		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: noteId,
+		});
+		expect(restricted._nay).toBeUndefined();
+
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: noteId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "write",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		const upload = await fixture.asMember.mutation(api.files_nodes.create_upload_node, {
+			membershipId: fixture.memberMembershipId,
+			parentId: files_ROOT_ID,
+			filename: "closed/note.md",
+			contentType: "text/markdown",
+			size: 8,
+		});
+		expect(upload._nay?.message).toBe("Permission denied");
+
+		// Uploading over a name archives whatever holds it. The refusal has to come first, or asking for
+		// something they are not allowed to do is how the member deletes the file.
+		const note = await t.run(async (ctx) => await ctx.db.get("files_nodes", noteId));
+		expect(note?.archiveOperationId).toBeUndefined();
+	});
+
+	test("the agent cannot propose deleting a file the user may only read", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "pending-rm-org",
+			suffix: "pending-rm",
+		});
+		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "read",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		// The agent's `rm` runs in an action, and the action only proved workspace write. This internal
+		// mutation is the transaction that writes, so it has to ask the node itself. "Can view" must not
+		// be enough to queue somebody else's file for deletion.
+		const proposed = await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: fixture.memberId,
+			nodeId: childId,
+		});
+		expect(proposed._nay?.message).toBe("Permission denied");
+
+		const pendingUpdates = await t.run(async (ctx) => await ctx.db.query("files_pending_updates").collect());
+		expect(pendingUpdates).toHaveLength(0);
+	});
+
+	test("eager-create cleanup keeps a folder somebody restricted and shared", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "eager-keep-org",
+			suffix: "eager-keep",
+		});
+
+		const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: files_ROOT_ID,
+			path: "drafts",
+		});
+		expect(folder._nay).toBeUndefined();
+
+		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folder._yay!.nodeId,
+		});
+		expect(restricted._nay).toBeUndefined();
+
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folder._yay!.nodeId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "read",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		// The agent created this folder on the way to a file, and the file is now gone. The folder is
+		// empty and still stamped by its creator, so every other rule in the cleanup says "delete it".
+		// Restricting and sharing it is a deliberate act on the folder, so it stays.
+		const removal = await t.run(async (ctx) =>
+			files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				userId: fixture.ownerId,
+				createdAncestorIds: [folder._yay!.nodeId],
+			}),
+		);
+		expect(removal.ancestorsLeft).toBe(1);
+
+		const after = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", folder._yay!.nodeId);
+			const grants = await ctx.db
+				.query("access_control_permission_grants")
+				.filter((q) => q.eq(q.field("resourceId"), folder._yay!.nodeId))
+				.collect();
+			return { node, grantCount: grants.length };
+		});
+		expect(after.node).not.toBeNull();
+		// A grant left pointing at a deleted node is what makes its role undeletable forever.
+		expect(after.grantCount).toBeGreaterThan(0);
 	});
 });

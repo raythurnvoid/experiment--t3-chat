@@ -26,6 +26,7 @@ import {
 	files_nodes_db_is_eager_node_safe_to_hard_delete,
 	files_nodes_db_remove_created_ancestor_folders_if_safe,
 	files_nodes_db_validate_pending_move_target_for_proposal,
+	authorize_leaving_restricted_scope,
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
 import { billing_event } from "../server/billing.ts";
@@ -1366,6 +1367,34 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
+		// The caller is an action, and the only thing it proved was workspace write at the chat
+		// boundary. That says nothing about a restricted file: a read grant would be enough to reach
+		// here and propose deleting somebody's file. Ask the node itself, in the transaction that
+		// writes, the same way `create_file_node` and `create_folder_node_by_path` do.
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!membership) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			nodeId: args.nodeId,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
 		const existingPendingUpdate = await files_db_get_pending_update(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -1525,6 +1554,18 @@ export const apply_file_pending_move = mutation({
 			return authorizedDestination;
 		}
 
+		// The third leg: a move that takes the node out of its restricted folder changes who can read
+		// it, so it needs `manage` on that folder and not just write.
+		const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
+			userAuth,
+			membership,
+			fileNode: authorized._yay.fileNode,
+			destParentId,
+		});
+		if (authorizedLeaving._nay) {
+			return authorizedLeaving;
+		}
+
 		const applied = await files_nodes_db_apply_pending_move(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1559,7 +1600,19 @@ export const apply_file_pending_move = mutation({
 								nodeId: memberDestParentId,
 								permission: "content.write",
 							});
-				return !authorizedMemberDestination._nay;
+				if (authorizedMemberDestination._nay) {
+					return false;
+				}
+
+				// A cycle member leaves its restricted folder the same way the clicked node can, and it was
+				// never named by the user, so it has to pass the same third leg.
+				const authorizedMemberLeaving = await authorize_leaving_restricted_scope(ctx, {
+					userAuth,
+					membership,
+					fileNode: node,
+					destParentId: memberDestParentId,
+				});
+				return !authorizedMemberLeaving._nay;
 			},
 		});
 		if (applied._nay) {
@@ -2726,13 +2779,23 @@ export const save_file_pending_update_in_db = internalMutation({
 			leftYjsDoc: liveFileYjsDocAfterSave,
 			rightYjsDoc: unstagedBranchYjsDoc,
 		});
+		// Throw, do not return `_nay`. A Convex mutation that returns normally commits, and the push
+		// above already published the content and billed the save, while the doc writes that record it
+		// are still below. Returning would leave the user's file saved and paid for, the pending doc
+		// still showing unsaved changes on a stale base, and an error message on screen. This only fails
+		// when turning a Yjs doc this mutation just built into Markdown fails, which the caller cannot
+		// answer, so rolling the whole save back and letting them retry is the honest outcome.
 		if (unstagedMatchesSavedBase._nay) {
-			return Result({
-				_nay: {
-					message: "Failed to compare unstaged pending branch with saved file content",
-					cause: unstagedMatchesSavedBase._nay,
-				},
-			});
+			const errorMessage = "Failed to compare unstaged pending branch with saved file content";
+			const errorData = {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				nodeId: args.nodeId,
+				pendingUpdateId: args.pendingUpdateId,
+				nay: unstagedMatchesSavedBase._nay,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
 		}
 
 		const now = Date.now();
@@ -2820,13 +2883,19 @@ export const save_file_pending_update_in_db = internalMutation({
 		const unstagedMarkdownAfterRemoteDrift = remoteUpdateFromBase
 			? files_yjs_doc_get_markdown({ yjsDoc: unstagedBranchYjsDoc })
 			: null;
+		// Throw for the same reason as the comparison above: the content is already published and billed,
+		// and the patch that records it is still below.
 		if (unstagedMarkdownAfterRemoteDrift?._nay) {
-			return Result({
-				_nay: {
-					message: "Failed to serialize unstaged branch after partial save",
-					cause: unstagedMarkdownAfterRemoteDrift._nay,
-				},
-			});
+			const errorMessage = "Failed to serialize unstaged branch after partial save";
+			const errorData = {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				nodeId: args.nodeId,
+				pendingUpdateId: args.pendingUpdateId,
+				nay: unstagedMarkdownAfterRemoteDrift._nay,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
 		}
 
 		await Promise.all([

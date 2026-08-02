@@ -2332,11 +2332,6 @@ export const restore_snapshot = internalMutation({
 		restoredSnapshotAssetId: v.id("files_r2_assets"),
 		restoredSnapshotSize: v.number(),
 		skipRateLimit: v.optional(v.boolean()),
-		_errors: v.optional(
-			v.object({
-				message: v.literal("Failed to restore file"),
-			}),
-		),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
@@ -2534,17 +2529,24 @@ export const restore_snapshot = internalMutation({
 			]),
 		);
 
+		// Throw, do not return `_nay`. A Convex mutation that returns normally commits, and by this line
+		// the writes above already pointed the node at the restored snapshot, while
+		// `db_replace_file_chunks` deleted the committed chunks before failing to write the new ones.
+		// Returning would keep the file with no committed text. Only chunking the Markdown can fail here,
+		// and this Markdown is a snapshot the app itself wrote and chunked once already, so a failure is
+		// a broken invariant and not something the caller can answer. The action still reports
+		// "Failed to restore file" for the failures it can see before any write.
 		if (restoreFileResult._nay) {
-			const errorMessage = "Failed to restore file" satisfies NonNullable<(typeof args)["_errors"]>["message"];
-			console.error(errorMessage, {
-				restoreFileResult,
-			});
-			return Result({
-				_nay: {
-					name: "nay",
-					message: errorMessage,
-				},
-			});
+			const errorMessage = "Failed to replace the file chunks while restoring a snapshot";
+			const errorData = {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				nodeId: args.nodeId,
+				snapshotId: args.snapshotId,
+				nay: restoreFileResult._nay,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
 		}
 
 		if (restoredYjsSequence !== null) {
@@ -2727,13 +2729,20 @@ export const restore_snapshot_r2 = action({
 		const currentContent = await files_nodes_reconstruct_latest_file_content_from_materialization_state({
 			state: materializationState,
 		});
+		// Nothing is written yet here, so this could return `_nay`. It throws instead because there is
+		// nothing for the caller to do: the file's own committed content will not rebuild, retrying does
+		// the same thing again, and a "Failed to restore file" message would hide a broken invariant
+		// behind something that reads like a normal refusal. The restore mutation throws for the same
+		// reason.
 		if (currentContent._nay) {
-			console.error("Failed to reconstruct current file content", {
-				nay: currentContent._nay,
+			const errorMessage = "Failed to reconstruct current file content before restoring a snapshot";
+			const errorData = {
 				nodeId: args.nodeId,
 				snapshotId: args.snapshotId,
-			});
-			return Result({ _nay: { name: "nay", message: "Failed to restore file" } });
+				nay: currentContent._nay,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
 		}
 		const yjsBeforeStateVector = encodeStateVector(currentContent._yay.yjsDoc);
 		const restoredYjsDocProjection = files_yjs_doc_update_from_markdown({
@@ -2741,12 +2750,14 @@ export const restore_snapshot_r2 = action({
 			markdown: snapshotMarkdownContent,
 		});
 		if (restoredYjsDocProjection._nay) {
-			console.error("Failed to workspace restored snapshot Markdown", {
-				nay: restoredYjsDocProjection._nay,
+			const errorMessage = "Failed to apply the restored snapshot Markdown to the file's Yjs doc";
+			const errorData = {
 				nodeId: args.nodeId,
 				snapshotId: args.snapshotId,
-			});
-			return Result({ _nay: { name: "nay", message: "Failed to restore file" } });
+				nay: restoredYjsDocProjection._nay,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
 		}
 		const restoreUpdate = files_yjs_compute_diff_update_from_state_vector({
 			yjsDoc: restoredYjsDocProjection._yay,

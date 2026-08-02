@@ -1287,19 +1287,22 @@ const app_convex_schema = defineSchema({
 	 * Any message can also be the root of a descendant thread by using that message id as
 	 * the thread id for future children.
 	 *
-	 * KNOWN GAP: a chat message doc has no file node field, so a comment thread on a file cannot be asked the
-	 * per-node permission question. `chat_messages_list`, `chat_messages_threads_list` and
-	 * `chat_messages_get` all ask the workspace question instead, which means comments on a restricted
-	 * file stay readable by the whole workspace. Reaching them needs the thread id, which is not
-	 * enumerable — it lives in the file's Tiptap marks — so in practice this is somebody who read the
-	 * file before it was restricted, or a grantee who was removed from the share list. Closing it needs
-	 * a file node field here plus the node check at those three read sites.
+	 * Every row is a comment on one file. `fileNodeId` says which one, and that file answers the
+	 * permission question for reading and writing the comment: a comment quotes the document, so
+	 * somebody who may not open the file may not read what was said about it either.
 	 */
 	chat_messages: defineTable({
 		/** Organization ID for multi-tenant scoping */
 		organizationId: v.string(),
 		/** Workspace ID for multi-tenant scoping */
 		workspaceId: v.string(),
+		/**
+		 * The file this comment is about, and the thing every read and write of it is checked against.
+		 *
+		 * Required, so a row can never exist without a permission subject. Children copy it from their
+		 * root, so a whole thread always answers to one file.
+		 */
+		fileNodeId: v.id("files_nodes"),
 		/**
 		 * null → this row is a top-level root message.
 		 * non-null → this row is a child message belonging to the message whose id is threadId.

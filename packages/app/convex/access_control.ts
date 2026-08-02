@@ -123,12 +123,15 @@ async function resolve_role_permissions(
  * only manages members could hand out a payroll folder they cannot open themselves, just by
  * assigning the role it was shared with.
  *
- * `reach` says where this role will really reach the target, and the scan covers exactly that.
- * Pass `"organization"` when the role is written on the default workspace and so becomes the
- * organization role: it works in every workspace the target already belongs to, so grants from every
- * workspace count. Pass the workspace list when the write only makes them a member of those
- * workspaces. An invite is the case that matters. A grant living in a workspace the invite does not
- * join can never reach the invitee through it, so weighing that grant refuses the invite for a
+ * `reach` says where this role will really reach the target, and the scan covers exactly that. Both
+ * spellings are words on purpose: the narrow one fails open if it is used where the wide one belongs,
+ * so neither may be the value you get by writing the shorter thing.
+ *
+ * Pass `{ kind: "organization" }` when the role is written on the default workspace and so becomes
+ * the organization role: it works in every workspace the target already belongs to, so grants from
+ * every workspace count. Pass `{ kind: "workspaces" }` when the write only makes them a member of
+ * those workspaces. An invite is the case that matters. A grant living in a workspace the invite does
+ * not join can never reach the invitee through it, so weighing that grant refuses the invite for a
  * reason the caller cannot act on, and the refusal names no node to go and look at.
  *
  * Each grant is judged in the workspace it lives in, and the caller must be a member there: nobody
@@ -139,28 +142,36 @@ async function resolve_role_permissions(
  * asking. This function calls the permission check directly, so without the membership question a
  * caller whose own role is on the share list would be judged able to open a file in a workspace they
  * cannot enter, and would then be allowed to hand it to somebody who can.
+ *
+ * The scan below has no page limit, and it does not need one: `files_sharing.set_node_share_grant`
+ * refuses the share that would put a role on more than `MAX_FILE_SHARES_PER_ROLE` lists, and it is
+ * the only place that writes these grants. The bound is kept where the count grows, so the refusal
+ * reaches somebody who can act on it instead of an inviter who can fix nothing.
  */
 export async function access_control_db_role_file_grant_caller_cannot_give(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		organization: Doc<"organizations">;
 		defaultWorkspaceId: Id<"organizations_workspaces">;
-		reach: "organization" | Id<"organizations_workspaces">[];
+		reach: { kind: "organization" } | { kind: "workspaces"; joinedWorkspaceIds: Id<"organizations_workspaces">[] };
 		role: access_control_RoleRef;
 		userId: Id<"users">;
 	},
 ) {
-	// Unreachable from today's callers — every one of them is already inside a
-	// `callerPermissions !== "all"` branch, and only the owner reads `"all"`. Kept because the
-	// membership question in the loop below is not owner-aware the way `access_control_db_has_permission`
-	// is: it would refuse an owner who is simply not a member of the workspace a grant lives in, which
-	// they need never be. Delete it only together with that check.
+	// "The owner bypasses every check" is a system invariant, so this function has to answer correctly
+	// for the owner over its whole input domain. No handler reaches this line today — each one already
+	// excluded the owner — but that is a fact about today's call sites, not about this function, and
+	// deleting it would make correctness depend on every future caller remembering to pre-filter.
+	// It is also load-bearing right now: the membership question in the loop below is not owner-aware
+	// the way `access_control_db_has_permission` is, so without this line an owner who is simply not a
+	// member of the workspace a grant lives in — which they need never be — gets refused. A unit test
+	// calls this function as the owner, so deleting the line breaks a test instead of production.
 	if (args.userId === args.organization.ownerUserId) {
 		return null;
 	}
 
 	// `null` means "do not filter by workspace", which is how the organization-wide scan is spelled.
-	const scannedWorkspaceIds = args.reach === "organization" ? [null] : args.reach;
+	const scannedWorkspaceIds = args.reach.kind === "organization" ? [null] : args.reach.joinedWorkspaceIds;
 	const grants = (
 		await Promise.all(
 			scannedWorkspaceIds.map((workspaceId) =>
@@ -1675,7 +1686,7 @@ export const update_role = mutation({
 			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
 				organization,
 				defaultWorkspaceId,
-				reach: "organization",
+				reach: { kind: "organization" },
 				role: role._id,
 				userId: userAuth.id,
 			});
@@ -1864,7 +1875,7 @@ export const delete_role = mutation({
 			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
 				organization,
 				defaultWorkspaceId,
-				reach: "organization",
+				reach: { kind: "organization" },
 				role: "viewer",
 				userId: userAuth.id,
 			});
@@ -2061,7 +2072,10 @@ export const set_user_role = mutation({
 				defaultWorkspaceId,
 				// A role written on the default workspace is the organization role and reaches every
 				// workspace the target is already in; anywhere else it reaches only that workspace.
-				reach: args.workspaceId === defaultWorkspaceId ? "organization" : [args.workspaceId],
+				reach:
+					args.workspaceId === defaultWorkspaceId
+						? { kind: "organization" }
+						: { kind: "workspaces", joinedWorkspaceIds: [args.workspaceId] },
 				role: args.role,
 				userId: userAuth.id,
 			});
