@@ -77,6 +77,8 @@ Before coding, finish the planning workflow. A goal requested for the whole task
 - uniformity passes;
 - completion criteria.
 
+When you create the implementation plan or todo list, copy closing steps 6–10 below into it as literal items, including what the final report must contain. Remembered obligations do not survive context compaction; todo items do.
+
 Execute iteratively:
 
 1. Implement the smallest coherent slice.
@@ -88,7 +90,9 @@ Execute iteratively:
 7. Verify in the running app when the repo has one and the change reaches it, per the verification standard's running-app and deployment rules below. Not only for UI work: backend changes the app can reach deserve the same check. When nothing runnable exists or the change does not reach the app, skip this step and say so.
 8. Run the uniformity pass below, including its vocabulary audit on broad or multi-file diffs.
 9. Re-read the final diff.
-10. Report what changed, what passed, what was not verified, docs updated, and security/accessibility considerations.
+10. Report what changed, what passed, what was not verified, docs updated, and security/accessibility considerations. The report must also settle every open question the plan listed: each one resolved, or deferred with a reason — an open question nobody noticed surviving to the end is a report defect.
+
+For work that uses review lanes or spans more than a couple of slices, create `execution-log.md` in the task's scratch folder at kickoff and append one line at each boundary the loop already has: a slice verified, a finding kept or dropped with the reason, a break-on-purpose proof run. The log is not a diary; it is the state a resumed or compacted session needs to continue without re-deriving decisions.
 
 Recommended implementation subagent lanes:
 
@@ -105,6 +109,8 @@ Do not accept subagent output just because it is confident. Read its diff or fin
 Concretely: open the cited `file:line` before you act on a finding or repeat it to the user. Subagents misread code, read files while another agent is mid-edit, and sometimes produce whole reviews of code that does not exist, with plausible line numbers attached. When the file does not say what the report says, drop the finding and say you dropped it. Require every finding to carry a citation and a concrete path — which caller, which input, which entry point, in what order — because an uncited finding cannot be checked, and unchecked findings reach the user as fact. Ask each reviewer to state its confidence and what it did not check.
 
 Give writing subagents disjoint file ownership, or their own worktree. When they share a tree, one agent's half-finished experiment gets read by another as if it were the real code.
+
+Reviewers need the mirror-image protection: pin the diff before spawning review lanes (a commit, `git stash create`, or a worktree) and name that revision in each reviewer prompt. Otherwise they read files you are still editing, and their citations go stale before you can check them.
 
 # Verification Standard
 
