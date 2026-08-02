@@ -154,6 +154,10 @@ axe targets the code-fence label through its `[data-streamdown="list-item"]` anc
 
 `.go1561890071` (`TanStack Router` devtools badge, 1.03:1) shows up on every route. It is the dev-tools overlay, not app code — exclude it. axe classifies it inconsistently: it lands in `violations` on some runs and in `incomplete` on others, which alone moves the `/files` distinct-violation count between 3 and 2. **Do not regression-test on the violation count** — compare rule ids and node targets (`aria-required-children` on `.FilesSidebarTree` + `.FileEditorSidebarAgentHeaderTabs`, `region` on `.FileNodeView > .MyPanelResizeHandle`), and resolve the contrast question separately with the canvas recipe.
 
+## axe findings that are by design — do not report
+
+- `autocomplete-valid` (WCAG 1.3.5) on the Search-chats input (`ai-chat-threads.tsx`): the input sets `autocomplete="off=<timestamp>"` from `ui_create_auto_complete_off_value()` (`src/lib/utils.ts`) because Chromium ignores a plain `off` and would autofill the field. The invalid token is deliberate and the axe failure is a user-accepted trade-off — skip it in audits and do not "fix" it.
+
 ## A control can look named in the DOM and still reach a screen reader with no name
 
 `combobox`, `listbox`, `textbox`, `searchbox`, `spinbutton`, `slider` and `progressbar` never take their accessible name from their own content. An Ariakit select trigger rendering `<span>home</span>` therefore computes `name=""`, even though the DOM plainly shows text.
@@ -173,6 +177,7 @@ const { nodes } = await client.send("Accessibility.queryAXTree", { nodeId });
 
 - Right after `goto`, routes render a bootstrap shell first — `Preparing organization` / `Redirecting to organization` with an otherwise empty page. A DOM probe at that moment sees 0 treeitems or no buttons and looks like access denied or missing data. Wait for route-specific content instead of a fixed timeout: `waitForFunction` on `document.body.innerText.includes("Version")` for plugin detail pages, or a non-zero `[role="treeitem"]` count for `/files`.
 - An `Organization access denied` alert on `/w/<org>/...` usually means the signed-in user changed, not that the route broke. The browser profile's signed-in account can change between sessions (a human uses the same Edge). Read the sidebar account button (`Account: <name>`) before debugging the route, and re-plan QA around the account that is actually signed in.
+- Theme QA: the app stamps `.light`/`.dark` on `<html>` from a `matchMedia` listener whenever the stored mode (localStorage `ai-chat-theme-mode`) is `system`. `page.emulateMedia({ colorScheme })` therefore makes the app re-stamp the class asynchronously, silently overwriting a manual `classList` flip made in the same runner call. To probe a class+media combination the app would never produce itself (for example `.dark` class with light media), emulate the media first, let the effect settle, then flip the class in a later call. Restore by clearing the emulation (`emulateMedia({ colorScheme: null })`) — the app re-stamps the correct class on its own. Class flips and media emulation are per-tab; localStorage is shared across tabs, so never write the theme key during probes.
 - Viewport and sidebar state may persist between sessions through browser storage.
 - Main sidebar open/collapsed state is persisted in localStorage keys documented in `app-map.md`.
 - Agent `New chat` creates a client-only `ai_thread-*` tab before Convex persists the real thread. If cleanup removes that optimistic tab too early, sends land in an older chat or the tab appears to vanish. If reload restores it, verify the tab still has an optimistic session and the first `/api/chat` request uses `clientGeneratedThreadId`.

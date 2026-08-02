@@ -340,7 +340,7 @@ product decision, so record the answer here before changing the behaviour. An en
   "Show N items archived" toggle whose rows carry a Restore action. Known property, not a bug: while
   the folder sits in the archive nobody can open its share dialog, so restore it first to manage
   sharing.
-- **Removing a member deletes their grants in one mutation.** `remove_organization_member` collects
+- **Removing a member deletes their grants in one mutation.** `remove_user_from_organization` collects
   every `access_control_permission_grants` doc for the user and deletes them together, with no page
   limit, exactly like the role assignments above it. Somebody on thousands of share lists would exceed
   the mutation write limit and become impossible to remove.
@@ -513,8 +513,8 @@ Cleanup belongs to the lifecycle mutation that removes the user, workspace, or o
 - `organizations.delete_workspace` — memberships, assignments, and grants scoped to the workspace. It
   requires `workspace.delete`, and it refuses the **default** workspace. That refusal is what protects
   the every-member-needs-an-organization-role invariant: deleting the default workspace would delete
-  every member's organization-wide assignment at once. It keys off the workspace's own `default` flag,
-  a second source of truth next to `organization.defaultWorkspaceId`.
+  every member's organization-wide assignment at once. It keys off `organization.defaultWorkspaceId`,
+  not the workspace's own `default` flag.
 - `organizations.delete_organization` — all access-control docs for the organization, plus the quota
   release.
 - `data_deletion.init_user_deletion`, `process_organization_deletion_request`,

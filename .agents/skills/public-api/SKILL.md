@@ -26,7 +26,7 @@ All routes are POST and return JSON. Batch caps are tied to rate-bucket capaciti
 | Route                        | Scope            | Notes                                                                              |
 | ---------------------------- | ---------------- | ---------------------------------------------------------------------------------- |
 | `/api/v1/files/list`         | `files:list`     | File items carry `status` (`pending` until the R2 object is confirmed, then `ready`; `null` for folders) and `size` |
-| `/api/v1/files/read`         | `files:read`     | Committed Markdown only; pending changes are never returned                        |
+| `/api/v1/files/read`         | `files:read`     | User API keys read committed Markdown only; `public_api_grant` reads (and `read-many`) include the grant user's pending overlay |
 | `/api/v1/files/read-many`    | `files:read`     | Up to 50 paths, per-item errors                                                    |
 | `/api/v1/files/write`        | `files:write`    | One Markdown file; `overwrite: "replace" \| "fail"`, `skipIfUnchanged`             |
 | `/api/v1/files/write-many`   | `files:write`    | Up to 20 files, 8 MB request cap, batch semantics below                            |
@@ -54,6 +54,7 @@ Buckets live in `packages/app/convex/rate_limiter.ts`:
 - `overwrite: "fail"` returns 409 `A file already exists at this path`; a folder at the path is always 409.
 - `skipIfUnchanged: true`: when projecting the incoming Markdown into the current doc is a semantic no-op (`fillUpdate === null`), the route returns 200 with `unchanged: true` before staging — no stage, no asset docs, no uploads, no new version snapshot. The skip first asks the same node-level write check the publish would ask; a caller the publish would refuse falls through to the normal write path and gets the same refusal, so the unchanged marker cannot confirm content to someone who cannot write the node. Only the fill path can be unchanged; comparison is Yjs-level, not byte-level, because materialized Markdown is not byte-stable. `null` never lies, but the reverse is not guaranteed: some semantically identical rewrites still publish.
 - Failure vocabulary (per-item `errorCode` in `write-many`, plugin settle codes in `write`): `unauthenticated` (401), `permission_denied` (403), `conflict` (409), `storage_failure` (500).
+- Frontmatter field cap: markdown whose frontmatter extracts more than 128 distinct fields (`files_metadata_MAX_FRONTMATTER_FIELDS` in `packages/app/shared/files-metadata.ts`) is refused by the metadata insert helpers with a thrown `Too many frontmatter fields` ConvexError. The publish mutation rolls back, but the pipeline does not map that throw, so the API caller sees a generic error instead of a clean 400; the orphaned stage is swept by the hourly stage cleanup cron.
 
 `write-many` batch semantics:
 

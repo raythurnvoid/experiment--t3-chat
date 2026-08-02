@@ -283,17 +283,18 @@ Important: “public write” means anyone who knows the asset id can write (sha
 Canonical access-control details live in `../access-control/SKILL.md`.
 
 Role authority is **code**, not data: system roles live in `access_control_SYSTEM_ROLE_MATRIX`.
-`access_control_permission_grants` is allow-only and reserved for per-file sharing — it can target a
+`access_control_permission_grants` is allow-only and used for per-file sharing — the schema can target a
 role, a specific user, or public access for `organization`, `workspace`, `file` and `thread` resources,
-but **nothing writes one today**. The file-sharing milestone is its first writer.
+but today the only writer is `files_sharing.ts`, and it writes only user and role grants on `file`
+resources (the restricted scope node).
 
 System roles are `admin`, `member`, `viewer`. Ownership is `organizations.ownerUserId` and carries no
-doc; there is no `owner` role. Direct user and public grants will allow file-level access without
-changing anyone's role.
+doc; there is no `owner` role. Direct user grants allow file-level access without changing anyone's
+role. The checker also honors public grants, but nothing writes one yet.
 
-The intended per-file sharing capabilities, once that milestone lands — handing any of these out will
-require `content.permissions.manage`, which is declared with `enforcedBy: "file-sharing"` and is not
-enforced yet:
+Per-file sharing ships user and role share grants today. Handing them out requires
+`content.permissions.manage`, which file sharing enforces on every share change (no `enforcedBy` mark
+remains in the catalog). The public/anonymous arm is still future work:
 
 - allow anonymous users to write on a public file (edit-by-link)
 - allow anonymous users to read only
@@ -320,7 +321,7 @@ The owner can later re-publicize assets explicitly.
 
 - The canonical app identity is the Convex `users` document id.
 - Clerk `external_id` is used as a pointer to that Convex user id in tokens.
-- Trust Clerk session invalidation after delete. Do not add extra app-side session-state checks or deleted-user guards just to defend against a supposedly still-valid Clerk session.
+- Do not assume Clerk session invalidation always completes after account deletion. Clerk cleanup is best effort after the Convex tombstone, so a provider failure can leave the old identity valid. Account-level provider writes must load the app user and reject a missing or tombstoned doc.
 
 # Current app user resolution
 
@@ -330,11 +331,11 @@ When a public Convex handler needs the current app user, resolve auth with `serv
 - Convex auth returns a user id, but that id does not resolve to a row in the `users` table.
 - The caller is anonymous and the resolved row has `deletedAt`.
 
-`access_control_db_authorize_membership` applies the `deletedAt` rejection to **every** caller, anonymous or signed in, at all of its call sites. That is deliberate, and it is safe because recovery clears the tombstone before any workspace handler runs: `users.resolve_user` patches `deletedAt: undefined` at sign-in, the `/api/auth/resolve-user` route refuses a tombstoned user the read-only fast path so it must fall through to that patch, and `delete_current_user_account` deletes the Clerk account outright, so the old session is gone anyway. An earlier version of this file told you *not* to guard Clerk callers generically; that advice was wrong and contradicted `access-control/SKILL.md`.
+`access_control_db_authorize_membership` applies the `deletedAt` rejection to **every** caller, anonymous or signed in, at all of its call sites. The four public Polar actions do the same before any provider call. Recovery clears the tombstone before normal access resumes: `users.resolve_user` patches `deletedAt: undefined`, and `/api/auth/resolve-user` refuses a tombstoned user on the read-only fast path so it must fall through to that patch. Keep these checks even though account deletion asks Clerk to delete the identity, because that best-effort request can fail.
 
 Reserve `Unauthorized` for a resolved app user who lacks permission for a resource. Use `Not found`, `User not found`, or a more specific message for target resources or target users, not for the current caller principal.
 
-`server_convex_get_user_fallback_to_anonymous` intentionally does not load the `users` table; see [server-utils.ts](../../../packages/app/server/server-utils.ts). Handlers that require the current app account own the doc-existence check. Current examples include [users.delete_current_user_account](../../../packages/app/convex/users.ts) and [organizations.get_membership_by_organization_workspace_name](../../../packages/app/convex/organizations.ts).
+`server_convex_get_user_fallback_to_anonymous` intentionally does not load the `users` table; see [server-utils.ts](../../../packages/app/server/server-utils.ts). Handlers that require the current app account own the doc-existence check. Current examples include [users.delete_current_user_account](../../../packages/app/convex/users.ts), the public Polar actions in [billing.ts](../../../packages/app/convex/billing.ts), and [organizations.get_membership_by_organization_workspace_name](../../../packages/app/convex/organizations.ts).
 
 For `Result`-returning handlers:
 

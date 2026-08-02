@@ -28,7 +28,7 @@ description: Organizations, workspaces, default personal/home tenant, membership
 # Default tenant (per user)
 
 - On **user bootstrap** (anonymous create, Clerk resolve/link), the app ensures a **default organization + default workspace** for that user via `organizations_db_ensure_default_organization_and_workspace_for_user` in `packages/app/convex/organizations.ts` (called from `packages/app/convex/users.ts`).
-- **Stored names** (normalized slugs): organization `personal`, workspace `home` (see `DEFAULT_ORGANIZATION_NAME` / `DEFAULT_WORKSPACE_NAME` in `packages/app/convex/organizations.ts`). UI may display title case; API/storage uses these slugs.
+- **Stored names** (normalized slugs): organization `personal`, workspace `home` (see `organizations_DEFAULT_ORGANIZATION_NAME` / `organizations_DEFAULT_WORKSPACE_NAME` in `packages/app/shared/organizations.ts`). UI may display title case; API/storage uses these slugs.
 - **User doc cache:** `users.defaultOrganizationId` and `users.defaultWorkspaceId` point at that default tenant. If the organization pointer is absent or points to a missing organization doc, `organizations_db_ensure_default_organization_and_workspace_for_user` creates a new `personal`/`home` tenant and rewrites both pointers. If the pointed organization exists, the helper returns without validating or repairing the workspace pointer or membership docs.
 - **Exactly one default tenant per user** in normal flows: the UI does not create a second default organization; internal `organizations_db_create(..., default: true)` is for provisioning that tenant. Non-default organizations are created with `default: false`.
 - Default organizations use `billingMode: "user"` and do not expose organization billing management.
@@ -54,7 +54,7 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 
 - System roles are `admin`, `member`, `viewer`, defined in code in `access_control_SYSTEM_ROLE_MATRIX`. Custom roles are `access_control_roles` docs. There is **no** `owner` role — the schema validator rejects `"owner"`.
 - `organizations.ownerUserId` is the only source of ownership, and owners hold **no** assignment doc. `get_current_user_role` answers `{ kind: "owner" }` from `ownerUserId` before reading any assignment, so the owner never renders as Member.
-- System-role authority lives in code in that matrix, never in the database. Tightening a role is a matrix edit with no data migration. **Nothing in production writes `access_control_permission_grants`** — the table is reserved for per-file sharing, and the file-sharing milestone is its first writer.
+- System-role authority lives in code in that matrix, never in the database. Tightening a role is a matrix edit with no data migration. `packages/app/convex/files_sharing.ts` writes `access_control_permission_grants` docs today: per-file grants with `user` and `role` principals. Nothing writes organization, workspace, thread, or `public` grants.
 - An assignment on `organization.defaultWorkspaceId` is the organization role. An assignment on any other workspace is allow-only workspace role there. How far a permission reaches is decided by its `scope` in the catalog: `organization`-scoped permissions bind **only** from the default-workspace assignment, so that is the only binding site rather than a fallback.
 - ACL grants support `principalKind: "role"`, `"user"`, and `"public"` for resource kinds `organization`, `workspace`, and `file`. The schema also accepts `thread`, but nothing writes or reads a thread grant and `access_control_Resource` cannot build one; threads are checked with `content.read`/`content.write` on their workspace. `resourceId` is stored as a stringified Convex id; owning mutations/actions load the resource first and derive the access-control scope from that doc. For a file grant `resourceId` is always the restricted scope node, never the opened file.
 - Permission check order: owner; **restricted-file branch** (for a `file` resource with a live restricted scope, which never falls through to workspace access); direct user grant; public grant when explicitly allowed; role at the target workspace; role from the default workspace. The restricted branch is the one the file-sharing milestone turns on — see `../access-control/SKILL.md` "The raw checker" for the full rule.
@@ -129,6 +129,18 @@ This purge includes pending-update state; AI files, threads, messages, and threa
 **Not present in Convex schema:** there is no `human_thread_messages` table; comments/human threads are not a separate purge target in this codebase today.
 
 **Scale note:** Workspace content purge must use indexed limited reads (`take(batchSize)`) or one-parent-at-a-time child deletion. Do not reintroduce tenant-sized `.collect()` reads in purge paths.
+
+**Known scale gaps (recorded, not fixed — a fix here is a batching redesign, not a quiet patch):**
+
+- **Phase 1 of `delete_organization` and `delete_workspace` is one unbounded mutation.** Both collect
+  and delete every membership, role assignment, permission grant, and invite notification of the
+  organization or workspace in the same transaction. Nothing caps those sets: invites have no member
+  quota, and one user can be on the share list of any number of nodes. A large enough organization
+  makes the mutation exceed Convex's per-transaction read/write limits, and then the owner can never
+  delete it. The same mutation also runs the default-tenant ensure per affected user, and each user
+  who loses their last organization gets a new default tenant plus one scheduled `create_home_file`,
+  so the 1,000-scheduled-functions limit is in reach too. Same class as the
+  "Removing a member deletes their grants in one mutation" entry in the access-control skill.
 
 ## Queue table (summary)
 

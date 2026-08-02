@@ -105,6 +105,8 @@ Unified Markdown frontmatter metadata docs:
   - one value column matching `valueKind`: `stringValue`, `numberValue`, or `booleanValue`
   - committed replacement, pending replacement, scope patching, field-existence search, string prefix/equality, numeric range/equality, and boolean equality indexes
 
+Frontmatter field cap: a save whose markdown extracts more than `files_metadata_MAX_FRONTMATTER_FIELDS` (128, in `packages/app/shared/files-metadata.ts`) distinct frontmatter fields is refused. Both metadata insert helpers in `packages/app/convex/files_metadata.ts` (committed and pending) throw the stable `Too many frontmatter fields` ConvexError, which rolls back the whole save mutation. The cap exists because each field becomes one or two metadata doc inserts in the same transaction, and the 900 KB content cap alone would allow thousands.
+
 Saved-sequence marker table:
 
 - `files_pending_updates_last_sequence_saved`
@@ -136,7 +138,7 @@ Pending updates attach to Markdown-backed `files_nodes` docs.
 
 # End-To-End Flow
 
-1. AI tools in `packages/app/server/server-ai-tools.ts` translate visible paths to committed paths through the current user's pending structural overlay, then read file content through `internal.files_nodes.get_file_last_available_markdown_content_by_path`, an internal action that can fetch committed Markdown from R2.
+1. AI tools in `packages/app/server/server-ai-tools.ts` translate visible paths to committed paths through the current user's pending structural overlay, then read file content through `internal.files_nodes_content.get_file_last_available_markdown_content_by_path`, an internal action that can fetch committed Markdown from R2.
 2. That read path overlays the current user's pending `unstaged` branch when content exists. Pending destinations are visible, vacated or replaced paths are hidden, and descendants follow a pending folder move.
 3. `edit_file` and Agent-mode bash shell writes (`bash_DbFilesFs.writeFile`/`appendFile` in `packages/app/server/bash-utils.ts`, reached by `>`/`>>` redirects, heredocs, `tee`, and `touch` on a new path — `touch` on an existing app file is a no-op) normalize CRLF line endings to LF (bash writes are otherwise byte-faithful, like a real shell) and call `internal.files_pending_updates.upsert_file_pending_update_internal_action` so the base Yjs state can be fetched from R2 before the mutation writes.
 4. Agent calls omit `stagedMarkdown`, so the backend preserves the current `staged` branch and updates only `unstaged`.
@@ -159,7 +161,7 @@ Pending updates attach to Markdown-backed `files_nodes` docs.
 Structural review follows a parallel path:
 
 1. Agent-mode Bash `mv` stores `pendingMove` instead of moving the committed node immediately.
-2. Agent-mode app-to-app `cp` and replace-moves may create or update a doc with `copiedFrom`, `eagerCreated`, or both.
+2. Agent-mode app-to-app `cp` and replace-moves may create or update a doc with `copiedFrom`, `eagerCreated`, or both. `cp -n` and `cp --no-clobber` create no pending replacement when the final destination already exists, including when it appears during eager creation.
 3. Agent-mode Bash `rm` stores `pendingArchive` (per operand, builtin flag semantics: `-r` for folders, `-f` silences missing paths, folder without `-r` fails with `Is a directory`). Accepting archives; nothing is ever hard-deleted except the own-Added-file cancel path.
 4. Bash and legacy file reads/listings/searches apply the proposing user's pending path overlay. A pending-deleted node reads as gone (a deleted folder hides its whole subtree). Other users continue to see the committed tree, and the sidebar file tree shows no delete indicator until accept.
 5. The Pending changes tab renders content-only, move-only, copy, content-plus-move, and delete rows. It applies moves through `apply_file_pending_move`, deletes through `apply_file_pending_archive`, saves content through the normal save path, and discards structural state through `discard_file_pending_structural`.
@@ -217,6 +219,7 @@ Important behavior:
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.
 - Content-bearing doc lifecycle paths maintain pending `files_markdown_chunks`, pending `files_plain_text_chunks`, and pending `files_metadata_docs` in the same mutation. Insert chunks the `unstaged` Markdown and extracts YAML frontmatter. Replacing the `unstaged` Markdown rebuilds those docs; a staged-only change reuses them. Doc deletion removes them. Structural-only docs own no pending indexed docs. If content collapses while `pendingMove` remains, remove the pending indexed docs and retain the structural doc.
 - Committed materialization writes committed `files_markdown_chunks`, committed `files_plain_text_chunks`, and committed metadata docs; committed replacement deletes the old committed Markdown chunks, plain-text chunks, and metadata docs for that file before inserting new docs.
+- If committed chunk replacement fails, the materialization finalizer throws so Convex rolls back the node, snapshot, update, job, and chunk writes together. Returning `_nay` from that branch would commit a partial materialization.
 - Rename, move, archive, and unarchive patch denormalized `path` and `archiveOperationId` on `files_plain_text_chunks`, and `path`, `treePath`, and `archiveOperationId` on `files_metadata_docs`, so full-text and metadata search can filter scope before native pagination.
 - Pending update doc writes also store `size` from the same current `unstaged` Markdown whenever the unstaged branch is created or replaced. Staged-only changes preserve the existing size.
 - A chunking failure never fails the pending update doc write: the stale pending Markdown/plain-text chunk docs are already deleted, the failure is logged, and search just misses that file until the next upsert (its committed chunks stay hidden for that user).
