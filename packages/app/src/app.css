@@ -246,6 +246,14 @@
 	--color-red-11: oklch(0.783 0.135 29.2);
 	--color-red-12: oklch(0.85 0.085 29.2);
 
+	/* Scrollbar standard: every app scrollbar is dim until its scroll container is hovered
+	   or holds focus. The dim thumb is close to the surface color but still findable. The
+	   rules live in the app-scrollable block in @layer base.
+	   Keep the referenced scale entries in sync with the Monaco scrollbarSlider colors in
+	   src/lib/app-monaco-config.ts, which cannot read these var() tokens. */
+	--app-scrollbar-thumb: var(--color-base-1-07);
+	--app-scrollbar-thumb-active: var(--color-base-1-10);
+
 	/* FileEditorRichText text colors */
 	--FileEditorRichText-text-color-fg-default: inherit;
 	--FileEditorRichText-text-color-fg-purple: #9333ea;
@@ -416,6 +424,33 @@
 
 	.app-font-monospace {
 		font-family: monospace;
+	}
+
+	/* Scrollbar standard. scrollbar-color inherits, so this dims every scrollbar in the
+	   app, including untagged scroll containers such as textareas, toolbars, and one-off
+	   lists. An untagged scroll container inside a tagged one follows that container's
+	   current color, bright included. Pin one with the dim token when it must stay quiet
+	   even then (see FileNodeViewToolbar). */
+	:root {
+		scrollbar-color: var(--app-scrollbar-thumb) transparent;
+	}
+
+	/* Each tagged scroll container owns its color explicitly. Without this rule, a hovered
+	   ancestor's bright value would inherit into descendant scrollbars and brighten them too. */
+	.app-scrollable {
+		scrollbar-color: var(--app-scrollbar-thumb) transparent;
+	}
+
+	/* The innermost tagged scroll container wins. Keep the hover rule and the focus rule
+	   separate. If one rule guarded against both states, focus resting inside a nested
+	   tagged scroll container (for example the agent chat panel while typing in its
+	   composer) would permanently stop hover from brightening the page scrollbar. */
+	.app-scrollable:hover:not(:has(.app-scrollable:hover)) {
+		scrollbar-color: var(--app-scrollbar-thumb-active) transparent;
+	}
+
+	.app-scrollable:focus-within:not(:has(.app-scrollable:focus-within)) {
+		scrollbar-color: var(--app-scrollbar-thumb-active) transparent;
 	}
 
 	/* App-specific utility styles */

@@ -78,7 +78,14 @@ function AiChatMarkdownPre(props: ComponentPropsWithoutRef<"pre"> & { node?: unk
 					tooltipCopy="Copy code"
 				/>
 			</div>
-			<pre className={cn("AiChatMarkdown-pre" satisfies AiChatMarkdownPre_ClassNames, className)} {...rest}>
+			<pre
+				className={cn(
+					"AiChatMarkdown-pre" satisfies AiChatMarkdownPre_ClassNames,
+					"app-scrollable" satisfies AppClassName,
+					className,
+				)}
+				{...rest}
+			>
 				<code className={cn("AiChatMarkdown-code" satisfies AiChatMarkdownPre_ClassNames, codeClassName)}>
 					{displayCode}
 				</code>

@@ -220,3 +220,7 @@ Observed 2026-07-26: every route rendered `Something went wrong`, with `Too many
 ## Closed main sidebar must actually leave layout
 
 If the main sidebar looks visible but its links are not clickable, inspect `.MainAppSidebar` and `.MySidebar-state-closed` together. A component-layer display rule can override the shared closed-state display: none, leaving visible inert links whose hit-test target is RootLayout instead of the link.
+
+## Clicking the rich-text editor on a long document
+
+`locator.click()` on `.FileEditorRichText-editor-content .ProseMirror` can burn the whole CLI timeout on a long document: the element is thousands of pixels tall, and Playwright's scroll-into-view plus actionability check on it stalls. To focus the editor, `mouse.click(x, y)` on a visible point inside the document column instead (compute the point from `.FileNodeView-editor-area` and the agent panel rects). Verified 2026-08-02. Related: the chat thread's auto-scroll can revert `scrollIntoView()` on a message element right after it runs — set `thread.scrollTop` directly and re-read the rect before hovering.

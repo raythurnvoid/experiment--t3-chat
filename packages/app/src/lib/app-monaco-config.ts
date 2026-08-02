@@ -115,9 +115,12 @@ try {
 			"editorWidget.background": app_monaco_get_color_hex("color-base-1-05", "#252526"),
 			"editorWidget.border": app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"),
 
-			"scrollbarSlider.background": hex_with_alpha(app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"), 0.45),
-			"scrollbarSlider.hoverBackground": hex_with_alpha(app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"), 0.65),
-			"scrollbarSlider.activeBackground": hex_with_alpha(app_monaco_get_color_hex("color-fg-07", "#858585"), 0.55),
+			// Keep in sync with --app-scrollbar-thumb (color-base-1-07) and
+			// --app-scrollbar-thumb-active (color-base-1-10) in app.css. This static theme
+			// cannot read those var() tokens, so the scale entries are repeated here.
+			"scrollbarSlider.background": hex_with_alpha(app_monaco_get_color_hex("color-base-1-07", "#2a2a2a"), 0.85),
+			"scrollbarSlider.hoverBackground": hex_with_alpha(app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"), 0.85),
+			"scrollbarSlider.activeBackground": app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"),
 
 			"editorWhitespace.foreground": hex_with_alpha(app_monaco_get_color_hex("color-fg-07", "#858585"), 0.35),
 		},

@@ -969,6 +969,14 @@ The custom numbered palette is dark-oriented and is not swapped by the theme pro
 - Use low-specificity semantic child selectors. Prefer owned slot classes when the child has a stable role.
 - Respect reduced-motion expectations for non-essential animation.
 
+### Scrollbars
+
+The app has one scrollbar standard: every scrollbar is dim by default, and a tagged scroll container's scrollbar brightens while the pointer hovers the container or focus is inside it. The tokens are `--app-scrollbar-thumb` and `--app-scrollbar-thumb-active`, and the shared rules live in `@layer base`, both in `packages/app/src/app.css`. Keep the referenced scale entries in sync with the Monaco `scrollbarSlider.*` colors in `packages/app/src/lib/app-monaco-config.ts`; that static theme cannot read the `var()` tokens.
+
+- Tag a primary scroll container with `"app-scrollable" satisfies AppClassName` inside `cn(...)` (the union lives in `packages/app/src/lib/dom-utils.ts`).
+- Do not tag small scroll containers (composer inputs, small transient lists) or toolbars and tab strips. The innermost tagged scroll container wins, so tagging a small one inside a chat panel or page would keep the scrollbar the user actually cares about dim, and a tagged toolbar that never overflows brightens nothing on hover.
+- An untagged scroll container follows the current color of its nearest tagged ancestor: dim by default, bright while that ancestor is highlighted. This is intended — the chat composer's own scrollbar brightens together with the chat panel while typing there. Pin a bar with `scrollbar-color: var(--app-scrollbar-thumb) transparent` when it must stay dim even then (see `.FileNodeViewToolbar`). Do not write any other per-component `scrollbar-color` value; `scrollbar-width: none` stays the opt-out for a surface that must hide its scrollbar.
+
 ### Component CSS variables
 
 Model component-owned custom properties with `<ComponentName>_CssVars`. Merge defaults before the caller's `style` so the caller can override them. Match the custom-property spelling already used by the component.

@@ -70,6 +70,7 @@ import {
 } from "@/components/my-radio-card.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipInfoTrigger, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import {
 	organizations_DESCRIPTION_MAX_LENGTH,
@@ -596,6 +597,7 @@ export const MainAppHeaderOrganizationSwitcherModalSelectList = memo(
 				ref={setList}
 				className={cn(
 					"MainAppHeaderOrganizationSwitcherModalSelectList" satisfies MainAppHeaderOrganizationSwitcherModalSelectList_ClassNames,
+					"app-scrollable" satisfies AppClassName,
 					"MyFocus-container" satisfies MyFocus_ClassNames,
 				)}
 				aria-label={ariaLabel}

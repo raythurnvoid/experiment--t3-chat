@@ -7,6 +7,7 @@ import { memo, type ComponentPropsWithRef } from "react";
 import { MyPrimaryAction, MyPrimaryActionLink } from "@/components/my-action.tsx";
 import { MyHovercardAction, type MyHovercardAction_Props } from "@/components/my-hovercard.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 
 // #region list item
@@ -241,7 +242,11 @@ export const MySidebarScrollableArea = memo(function MySidebarScrollableArea(pro
 		<div
 			ref={ref}
 			id={id}
-			className={cn("MySidebarScrollableArea" satisfies MySidebarScrollableArea_ClassNames, className)}
+			className={cn(
+				"MySidebarScrollableArea" satisfies MySidebarScrollableArea_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+				className,
+			)}
 			{...rest}
 		>
 			{children}

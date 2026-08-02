@@ -64,7 +64,7 @@ import { useFileNodeActivities } from "@/lib/activities.ts";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
-import type { AppElementId } from "@/lib/dom-utils.ts";
+import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { file_editor_get_content_too_large_message } from "@/lib/file-editor.ts";
 import {
 	files_ROOT_ID,
@@ -890,7 +890,10 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 						</div>
 						<MyTabsPanels className={"FileNodeViewStoredFile-tabs-panels" satisfies FileNodeViewStoredFile_ClassNames}>
 							<MyTabsPanel
-								className={"FileNodeViewStoredFile-tabs-panel" satisfies FileNodeViewStoredFile_ClassNames}
+								className={cn(
+									"FileNodeViewStoredFile-tabs-panel" satisfies FileNodeViewStoredFile_ClassNames,
+									"app-scrollable" satisfies AppClassName,
+								)}
 								tabId={STORED_FILE_DETAILS_TAB_ID}
 							>
 								{detailsSection}
@@ -898,7 +901,10 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 							{fileViewMatches.map((match) => (
 								<MyTabsPanel
 									key={stored_file_view_tab_id(match)}
-									className={"FileNodeViewStoredFile-tabs-panel" satisfies FileNodeViewStoredFile_ClassNames}
+									className={cn(
+										"FileNodeViewStoredFile-tabs-panel" satisfies FileNodeViewStoredFile_ClassNames,
+										"app-scrollable" satisfies AppClassName,
+									)}
 									tabId={stored_file_view_tab_id(match)}
 									// Unmount a hidden view so its frame tears down and revokes its session.
 									unmountOnHide
@@ -2869,7 +2875,12 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				{/* The editor area is this route's main content, and the files sidebar next to it is not.
 				    The api-keys, plugins and users routes each render their own; without one here the
 			    layout wraps `<Outlet />` in nothing and `/files` had no main landmark at all. */}
-				<main className={"FileNodeView-editor-area" satisfies FileNodeView_ClassNames}>
+				<main
+					className={cn(
+						"FileNodeView-editor-area" satisfies FileNodeView_ClassNames,
+						"app-scrollable" satisfies AppClassName,
+					)}
+				>
 					<MyPanelGroup
 						className={"FileNodeView-content-group" satisfies FileNodeView_ClassNames}
 						defaultLayout={DEFAULT_EDITOR_PANEL_LAYOUT}

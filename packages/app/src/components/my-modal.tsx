@@ -1,7 +1,7 @@
 import "./my-modal.css";
 import * as Ariakit from "@ariakit/react";
 import { memo, type ComponentPropsWithRef } from "react";
-import type { AppElementId } from "@/lib/dom-utils.ts";
+import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import { MyIconButton } from "./my-icon-button.tsx";
 import { X } from "lucide-react";
@@ -103,7 +103,11 @@ export const MyModalScrollableArea = memo(function MyModalScrollableArea(props: 
 		<div
 			id={id}
 			ref={ref}
-			className={cn("MyModalScrollableArea" satisfies MyModalScrollableArea_ClassNames, className)}
+			className={cn(
+				"MyModalScrollableArea" satisfies MyModalScrollableArea_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+				className,
+			)}
 			{...rest}
 		>
 			{children}

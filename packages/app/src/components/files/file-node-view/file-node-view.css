@@ -462,8 +462,10 @@
 		/* Use the assembled toolbar as the scroll container because folder/file actions and editor actions portal in separately. */
 		overflow: auto hidden;
 		scrollbar-width: initial;
-		/* Keep this structural scrollbar quieter than the controls sitting above it. */
-		scrollbar-color: var(--color-base-1-07) transparent;
+		/* Pin this structural bar dim. scrollbar-color inherits, so without this rule the
+		   bar would turn bright together with the page scroller whenever the editor area
+		   is hovered or focused. */
+		scrollbar-color: var(--app-scrollbar-thumb) transparent;
 	}
 
 	.FileNodeViewToolbar-surface {

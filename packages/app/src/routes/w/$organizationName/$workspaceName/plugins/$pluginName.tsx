@@ -64,7 +64,7 @@ import {
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import { format_datetime } from "@/lib/date.ts";
-import type { AppElementId } from "@/lib/dom-utils.ts";
+import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import {
 	plugins_consent_diff,
@@ -1483,7 +1483,14 @@ function RoutePluginsPlugin() {
 
 	if (plugins === undefined || installations === undefined) {
 		return (
-			<main className={"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames} role="status" aria-live="polite">
+			<main
+				className={cn(
+					"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames,
+					"app-scrollable" satisfies AppClassName,
+				)}
+				role="status"
+				aria-live="polite"
+			>
 				<div className={"RoutePluginsPlugin-content" satisfies RoutePluginsPlugin_ClassNames}>
 					{breadcrumb}
 					<div className={"RoutePluginsPlugin-loading" satisfies RoutePluginsPlugin_ClassNames}>
@@ -1498,7 +1505,12 @@ function RoutePluginsPlugin() {
 	const plugin = plugins.find((item) => item.name === pluginName) ?? null;
 	if (plugin === null) {
 		return (
-			<main className={"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames}>
+			<main
+				className={cn(
+					"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames,
+					"app-scrollable" satisfies AppClassName,
+				)}
+			>
 				<div className={"RoutePluginsPlugin-content" satisfies RoutePluginsPlugin_ClassNames}>
 					{breadcrumb}
 					<div className={"RoutePluginsPlugin-missing" satisfies RoutePluginsPlugin_ClassNames}>
@@ -1529,7 +1541,12 @@ function RoutePluginsPlugin() {
 	const pluginConfiguration = installedVersion?.configuration ?? null;
 
 	return (
-		<main className={"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames}>
+		<main
+			className={cn(
+				"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+			)}
+		>
 			<div className={"RoutePluginsPlugin-content" satisfies RoutePluginsPlugin_ClassNames}>
 				{breadcrumb}
 

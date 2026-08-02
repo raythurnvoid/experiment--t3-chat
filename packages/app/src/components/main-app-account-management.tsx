@@ -41,7 +41,8 @@ import {
 } from "@/lib/app-convex-client.ts";
 import { users_create_anonymouse_user_display_name } from "../../shared/users.ts";
 import { format_relative_time } from "@/lib/date.ts";
-import { compute_fallback_user_name } from "@/lib/utils.ts";
+import type { AppClassName } from "@/lib/dom-utils.ts";
+import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 
 function get_display_name(user: NonNullable<ReturnType<typeof useUser>["user"]>) {
 	if (user.fullName?.trim()) {
@@ -1058,7 +1059,10 @@ const MainAppAccountManagementContent = memo(function MainAppAccountManagementCo
 								</MyTabsList>
 
 								<MyTabsPanels
-									className={"MainAppAccountManagement-panels" satisfies MainAppAccountManagement_ClassNames}
+									className={cn(
+										"MainAppAccountManagement-panels" satisfies MainAppAccountManagement_ClassNames,
+										"app-scrollable" satisfies AppClassName,
+									)}
 								>
 									<MyTabsPanel
 										tabId="profile"

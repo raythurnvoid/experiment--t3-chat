@@ -107,6 +107,9 @@ export const TextMonospaceBlock = memo(function TextMonospaceBlock(props: TextMo
 			tabIndex={tabIndex ?? 0}
 			className={cn(
 				"TextMonospaceBlock" satisfies TextMonospaceBlock_ClassNames,
+				// Not app-scrollable on purpose: pre-wrap means most samples never overflow, and a
+				// tagged bar-less block would suppress the page scrollbar's hover highlight while
+				// the pointer rests on it.
 				"app-font-monospace" satisfies AppClassName,
 				className,
 			)}

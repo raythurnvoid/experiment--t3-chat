@@ -2,7 +2,7 @@ import "./my-combobox.css";
 import "./my-input.css";
 import { memo, type ComponentPropsWithRef, type PointerEvent, type ReactNode } from "react";
 import * as Ariakit from "@ariakit/react";
-import type { AppElementId } from "@/lib/dom-utils.ts";
+import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import type {
@@ -213,7 +213,14 @@ export const MyComboboxList = memo(function MyComboboxList(props: MyComboboxList
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.ComboboxList className={cn("MyComboboxList" satisfies MyComboboxList_ClassNames, className)} {...rest}>
+		<Ariakit.ComboboxList
+			className={cn(
+				"MyComboboxList" satisfies MyComboboxList_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+				className,
+			)}
+			{...rest}
+		>
 			{children}
 		</Ariakit.ComboboxList>
 	);
@@ -256,7 +263,11 @@ export const MyComboboxPopoverScrollableArea = memo(function MyComboboxPopoverSc
 
 	return (
 		<div
-			className={cn("MyComboboxPopoverScrollableArea" satisfies MyComboboxPopoverScrollableArea_ClassNames, className)}
+			className={cn(
+				"MyComboboxPopoverScrollableArea" satisfies MyComboboxPopoverScrollableArea_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+				className,
+			)}
 			{...rest}
 		>
 			{children}

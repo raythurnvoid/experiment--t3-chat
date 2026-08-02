@@ -117,7 +117,7 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { url_parse_file_link, url_path_file_by_node_id } from "@/lib/urls.ts";
-import { dom_clear_text_selection, type AppElementId } from "@/lib/dom-utils.ts";
+import { dom_clear_text_selection, type AppClassName, type AppElementId } from "@/lib/dom-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { useGlobalEventList } from "@/lib/global-event.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
@@ -3240,7 +3240,12 @@ const FilesSidebarImportConflictModal = memo(function FilesSidebarImportConflict
 						Replacing archives the current files; skipping keeps them and imports the rest.
 					</MyModalDescription>
 				</MyModalHeader>
-				<ul className={"FilesSidebarImportConflictModal-list" satisfies FilesSidebarImportConflictModal_ClassNames}>
+				<ul
+					className={cn(
+						"FilesSidebarImportConflictModal-list" satisfies FilesSidebarImportConflictModal_ClassNames,
+						"app-scrollable" satisfies AppClassName,
+					)}
+				>
 					{conflicts.map((conflict) => (
 						<li
 							key={conflict.relativePath}
@@ -5306,7 +5311,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onImportFolderClick={handleImportFolderClick}
 			/>
 
-			<div className={cn("FilesSidebar-content" satisfies FilesSidebar_ClassNames)}>
+			<div
+				className={cn(
+					"FilesSidebar-content" satisfies FilesSidebar_ClassNames,
+					"app-scrollable" satisfies AppClassName,
+				)}
+			>
 				<FilesSidebarTree
 					tree={tree}
 					isTreeLoading={treeItemsList === undefined}

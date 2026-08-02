@@ -272,6 +272,7 @@ const AiChatMessagePartToolTextAreaSection = memo(function AiChatMessagePartTool
 			aria-labelledby={headingId}
 			className={cn(
 				"AiChatMessagePartToolTextAreaSection" satisfies AiChatMessagePartToolTextAreaSection_ClassNames,
+				"app-scrollable" satisfies AppClassName,
 				"app-font-monospace" satisfies AppClassName,
 				state === "error" &&
 					("AiChatMessagePartToolTextAreaSection-state-error" satisfies AiChatMessagePartToolTextAreaSection_ClassNames),
@@ -632,7 +633,10 @@ const AiChatMessagePartThinking = memo(function AiChatMessagePartThinking(props:
 				isChatRunning={isStreaming}
 			/>
 			<AiChatMessagePartToolBody
-				className={"AiChatMessagePartThinking-body" satisfies AiChatMessagePartThinking_ClassNames}
+				className={cn(
+					"AiChatMessagePartThinking-body" satisfies AiChatMessagePartThinking_ClassNames,
+					"app-scrollable" satisfies AppClassName,
+				)}
 			>
 				<AiChatMarkdown markdown={deferredText} />
 			</AiChatMessagePartToolBody>

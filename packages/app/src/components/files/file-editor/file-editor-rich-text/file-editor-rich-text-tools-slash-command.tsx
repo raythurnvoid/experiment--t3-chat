@@ -24,6 +24,7 @@ import {
 	EditorCommandItem,
 	EditorCommandList,
 } from "novel";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { MyPopoverContent_ClassNames } from "../../../my-popover.tsx";
 import type {
@@ -226,6 +227,7 @@ export function FileEditorRichTextToolsSlashCommand() {
 		<EditorCommand
 			className={cn(
 				"FileEditorRichTextToolsSlashCommand" satisfies FileEditorRichTextToolsSlashCommand_ClassNames,
+				"app-scrollable" satisfies AppClassName,
 				"MyPopoverContent" satisfies MyPopoverContent_ClassNames,
 			)}
 		>

@@ -60,6 +60,7 @@ import {
 	type app_convex_FunctionReturnType,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { app_fetch_main_api_url } from "@/lib/fetch.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -1096,7 +1097,7 @@ function RouteApiKeysMembership(props: {
 	});
 
 	return (
-		<main className={"RouteApiKeys" satisfies RouteApiKeys_ClassNames}>
+		<main className={cn("RouteApiKeys" satisfies RouteApiKeys_ClassNames, "app-scrollable" satisfies AppClassName)}>
 			<div className={"RouteApiKeys-content" satisfies RouteApiKeys_ClassNames}>
 				<RouteApiKeysHeader workspaceName={workspaceName} onCreate={handleCreateOpen} />
 				<RouteApiKeysSecurity />

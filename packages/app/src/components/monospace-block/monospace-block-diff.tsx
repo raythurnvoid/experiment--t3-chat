@@ -112,6 +112,7 @@ export const DiffMonospaceBlock = memo(function DiffMonospaceBlock(props: DiffMo
 			tabIndex={tabIndex ?? 0}
 			className={cn(
 				"DiffMonospaceBlock" satisfies DiffMonospaceBlock_ClassNames,
+				"app-scrollable" satisfies AppClassName,
 				"app-font-monospace" satisfies AppClassName,
 				className,
 			)}

@@ -13,7 +13,11 @@ import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import { AiChatThreads } from "@/components/ai-chat/ai-chat-threads.tsx";
-import { dom_find_first_element_overflowing_element, dom_TypedAttributeAccessor } from "@/lib/dom-utils.ts";
+import {
+	dom_find_first_element_overflowing_element,
+	dom_TypedAttributeAccessor,
+	type AppClassName,
+} from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { GeneratedIdPrefix } from "../../../shared/generated-ids.ts";
 import { useUiStickToBottom } from "@/lib/ui.tsx";
@@ -1202,7 +1206,10 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 							</MyIconButton>
 						</div>
 					)}
-					<div ref={setScrollableContainer} className={"AiChat-thread-content" satisfies AiChat_ClassNames}>
+					<div
+						ref={setScrollableContainer}
+						className={cn("AiChat-thread-content" satisfies AiChat_ClassNames, "app-scrollable" satisfies AppClassName)}
+					>
 						<AiChatThreadRuntimePanel scrollableContainer={scrollableContainer} />
 					</div>
 				</div>

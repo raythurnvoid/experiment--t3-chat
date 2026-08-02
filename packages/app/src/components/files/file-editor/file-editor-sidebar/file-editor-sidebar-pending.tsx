@@ -27,6 +27,7 @@ import {
 } from "@/components/my-select.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
 import { format_datetime } from "@/lib/date.ts";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
 import {
 	files_ROOT_ID,
@@ -1419,7 +1420,10 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		<>
 			{statusElement}
 			<div
-				className={cn("FileEditorSidebarPending" satisfies FileEditorSidebarPending_ClassNames)}
+				className={cn(
+					"FileEditorSidebarPending" satisfies FileEditorSidebarPending_ClassNames,
+					"app-scrollable" satisfies AppClassName,
+				)}
 				role="region"
 				aria-label="Pending changes"
 			>

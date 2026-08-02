@@ -2,7 +2,7 @@ import "./my-floating-surface.css";
 import "./my-menu.css";
 import * as Ariakit from "@ariakit/react";
 import { memo } from "react";
-import type { AppElementId } from "@/lib/dom-utils.ts";
+import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import { Check, ChevronRight } from "lucide-react";
@@ -256,7 +256,11 @@ export const MyMenuPopoverScrollableArea = memo(function MyMenuPopoverScrollable
 
 	return (
 		<div
-			className={cn("MyMenuPopoverScrollableArea" satisfies MyMenuPopoverScrollableArea_ClassNames, className)}
+			className={cn(
+				"MyMenuPopoverScrollableArea" satisfies MyMenuPopoverScrollableArea_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+				className,
+			)}
 			{...rest}
 		>
 			{children}

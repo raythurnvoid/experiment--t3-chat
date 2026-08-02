@@ -2,7 +2,7 @@ import "./my-floating-surface.css";
 import "./my-select.css";
 import * as Ariakit from "@ariakit/react";
 import { memo } from "react";
-import type { AppElementId } from "@/lib/dom-utils.ts";
+import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import { MyIcon, type MyIcon_Props } from "./my-icon.tsx";
@@ -189,7 +189,11 @@ export const MySelectPopoverScrollableArea = memo(function MySelectPopoverScroll
 
 	return (
 		<div
-			className={cn("MySelectPopoverScrollableArea" satisfies MySelectPopoverScrollableArea_ClassNames, className)}
+			className={cn(
+				"MySelectPopoverScrollableArea" satisfies MySelectPopoverScrollableArea_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+				className,
+			)}
 			{...rest}
 		>
 			{children}

@@ -46,6 +46,7 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { app_tenant_primary_workspace_for_organization } from "@/lib/urls.ts";
 import {
@@ -1013,7 +1014,7 @@ function RouteUsers() {
 			Loading users...
 		</main>
 	) : (
-		<main className={"RouteUsers" satisfies RouteUsers_ClassNames}>
+		<main className={cn("RouteUsers" satisfies RouteUsers_ClassNames, "app-scrollable" satisfies AppClassName)}>
 			<RouteUsersHeader
 				description={
 					defaultWorkspace._id === workspaceId

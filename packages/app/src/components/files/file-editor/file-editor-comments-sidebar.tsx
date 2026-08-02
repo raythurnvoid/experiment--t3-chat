@@ -2,7 +2,9 @@ import { useRef, useState } from "react";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useGlobalEvent, useGlobalEventList } from "@/lib/global-event.tsx";
+import { cn } from "@/lib/utils.ts";
 import {
 	FileEditorCommentsFilterInput,
 	FileEditorCommentsThread,
@@ -86,7 +88,12 @@ export function FileEditorCommentsSidebar(props: FileEditorCommentsSidebar_Props
 	})();
 
 	return (
-		<aside className={"FileEditorPlainTextCommentsSidebar" satisfies FileEditorPlainTextCommentsSidebar_ClassNames}>
+		<aside
+			className={cn(
+				"FileEditorPlainTextCommentsSidebar" satisfies FileEditorPlainTextCommentsSidebar_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+			)}
+		>
 			<FileEditorCommentsFilterInput value={query} onValueChange={setFilterValue} />
 
 			<div

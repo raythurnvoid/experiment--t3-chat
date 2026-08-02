@@ -19,6 +19,7 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { format_relative_time } from "@/lib/date.ts";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import { path_name_of } from "@/lib/paths.ts";
 import { app_tenant_primary_workspace_for_organization } from "@/lib/urls.ts";
@@ -158,7 +159,12 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 	});
 
 	return (
-		<div className={"AppNotificationsList" satisfies AppNotificationsList_ClassNames}>
+		<div
+			className={cn(
+				"AppNotificationsList" satisfies AppNotificationsList_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+			)}
+		>
 			{notifications === undefined && activities === undefined ? (
 				<div className={"AppNotificationsList-empty" satisfies AppNotificationsList_ClassNames}>Loading...</div>
 			) : feedItems.length === 0 ? (

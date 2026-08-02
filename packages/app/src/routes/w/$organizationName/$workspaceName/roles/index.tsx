@@ -32,6 +32,7 @@ import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-t
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import {
 	access_control_ENFORCED_PERMISSIONS,
@@ -761,7 +762,7 @@ function RouteRoles() {
 			Organization roles unavailable.
 		</main>
 	) : (
-		<main className={"RouteRoles" satisfies RouteRoles_ClassNames}>
+		<main className={cn("RouteRoles" satisfies RouteRoles_ClassNames, "app-scrollable" satisfies AppClassName)}>
 			<RouteRolesHeader
 				description={
 					organizationIsPersonal

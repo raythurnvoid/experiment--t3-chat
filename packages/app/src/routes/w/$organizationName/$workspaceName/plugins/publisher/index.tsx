@@ -23,6 +23,8 @@ import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 import { format_datetime } from "@/lib/date.ts";
+import type { AppClassName } from "@/lib/dom-utils.ts";
+import { cn } from "@/lib/utils.ts";
 
 type Repositories = app_convex_FunctionReturnType<typeof app_convex_api.plugins.list_user_published_repositories>;
 
@@ -331,7 +333,10 @@ function RoutePluginsPublisher() {
 	if (!auth.isAnonymous && repositories === undefined) {
 		return (
 			<main
-				className={"RoutePluginsPublisher" satisfies RoutePluginsPublisher_ClassNames}
+				className={cn(
+					"RoutePluginsPublisher" satisfies RoutePluginsPublisher_ClassNames,
+					"app-scrollable" satisfies AppClassName,
+				)}
 				role="status"
 				aria-live="polite"
 			>
@@ -347,7 +352,12 @@ function RoutePluginsPublisher() {
 	}
 
 	return (
-		<main className={"RoutePluginsPublisher" satisfies RoutePluginsPublisher_ClassNames}>
+		<main
+			className={cn(
+				"RoutePluginsPublisher" satisfies RoutePluginsPublisher_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+			)}
+		>
 			<div className={"RoutePluginsPublisher-content" satisfies RoutePluginsPublisher_ClassNames}>
 				{breadcrumb}
 

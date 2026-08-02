@@ -60,7 +60,7 @@ import {
 } from "@/hooks/ai-chat-controller.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { ai_chat_is_optimistic_thread, ai_chat_thread_is_unread, ai_chat_get_unread_dot_delay_ms } from "@/lib/ai-chat.ts";
-import type { AppElementId } from "@/lib/dom-utils.ts";
+import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_local_storage_set_value, type storage_local_ValueByKey, useAppLocalStorageValue } from "@/lib/storage.ts";
 import { cn, copy_to_clipboard } from "@/lib/utils.ts";
@@ -1091,7 +1091,10 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 					<MyTabsPanel
 						ref={setScrollableContainer}
 						key={selectedChatTabId}
-						className={"FileEditorSidebarAgent-chat-area-panel" satisfies FileEditorSidebarAgent_ClassNames}
+						className={cn(
+							"FileEditorSidebarAgent-chat-area-panel" satisfies FileEditorSidebarAgent_ClassNames,
+							"app-scrollable" satisfies AppClassName,
+						)}
 						tabId={selectedChatTabId}
 					>
 						<FileEditorSidebarAgentChatThread scrollableContainer={scrollableContainer} />

@@ -18,6 +18,8 @@ import { PluginsGalleryCard } from "@/components/plugins-gallery-card.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
 import { app_convex_api, type app_convex_FunctionReturnType, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import type { AppClassName } from "@/lib/dom-utils.ts";
+import { cn } from "@/lib/utils.ts";
 
 type RoutePlugins_Installation = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins.list_installations
@@ -118,7 +120,11 @@ function RoutePlugins() {
 
 	if (installations === undefined) {
 		return (
-			<main className={"RoutePlugins" satisfies RoutePlugins_ClassNames} role="status" aria-live="polite">
+			<main
+				className={cn("RoutePlugins" satisfies RoutePlugins_ClassNames, "app-scrollable" satisfies AppClassName)}
+				role="status"
+				aria-live="polite"
+			>
 				<div className={"RoutePlugins-content" satisfies RoutePlugins_ClassNames}>
 					{breadcrumb}
 					<div className={"RoutePlugins-loading" satisfies RoutePlugins_ClassNames}>
@@ -131,7 +137,7 @@ function RoutePlugins() {
 	}
 
 	return (
-		<main className={"RoutePlugins" satisfies RoutePlugins_ClassNames}>
+		<main className={cn("RoutePlugins" satisfies RoutePlugins_ClassNames, "app-scrollable" satisfies AppClassName)}>
 			<div className={"RoutePlugins-content" satisfies RoutePlugins_ClassNames}>
 				{breadcrumb}
 
