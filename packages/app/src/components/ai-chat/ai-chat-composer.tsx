@@ -849,14 +849,6 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			</MyInput>
 
 			<div className={"AiChatComposer-configurations" satisfies AiChatComposer_ClassNames}>
-				<MyIconButton
-					className={"AiChatComposer-configurations-attach" satisfies AiChatComposer_ClassNames}
-					variant="ghost-highlightable"
-					tooltip="Attach images"
-					onClick={handleAttachmentsAddClick}
-				>
-					<Plus className={"AiChatComposer-configurations-attach-icon" satisfies AiChatComposer_ClassNames} />
-				</MyIconButton>
 				<MySelect
 					value={selectedModeId}
 					setValue={(value) => {
@@ -925,6 +917,15 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 						</MySearchSelectPopoverScrollableArea>
 					</MySearchSelectPopover>
 				</MySearchSelect>
+
+				<MyIconButton
+					className={"AiChatComposer-configurations-attach" satisfies AiChatComposer_ClassNames}
+					variant="ghost-highlightable"
+					tooltip="Attach images"
+					onClick={handleAttachmentsAddClick}
+				>
+					<Plus className={"AiChatComposer-configurations-attach-icon" satisfies AiChatComposer_ClassNames} />
+				</MyIconButton>
 			</div>
 
 			<div className={"AiChatComposer-actions" satisfies AiChatComposer_ClassNames}>
