@@ -112,6 +112,7 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 - Read `references/app-map.md` for stable app routes, landmarks, and selectors.
 - Read `references/agent-panel.md` for AI chat / agent panel selectors, the ProseMirror composer recipe, doneness polling, and backgrounded-tab recovery (`scripts/agent-chat-helpers.js` installs `state.qa`).
 - Read `references/files.md` for `/files` route and file/sidebar basics.
+- Read `references/second-user-fixtures.md` before testing any permission refusal, share grant, or other flow the org owner would bypass. It shows how to get a second identity in the browser without signing anything in.
 - Read `references/plugin-gallery.md` for driving the Gallery plugin page inside its sandboxed iframe.
 - Read `references/plugin-marketplace.md` for installing, updating, and uninstalling plugins from the catalog and detail pages, and for embedding upload fixtures in runners.
 - Read `references/plugin-configuration.md` for saving upload-folder YAML and proving matched and unmatched automatic runs.
