@@ -1,0 +1,163 @@
+@layer common_components {
+	/* #region root */
+	.MyChip {
+		display: inline-flex;
+		align-items: center;
+
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 6px;
+
+		background: var(--color-base-1-04);
+
+		transition:
+			background-color 0.15s ease,
+			border-color 0.15s ease,
+			opacity 0.15s ease,
+			box-shadow 0.15s ease;
+	}
+
+	/* The remove button fills the whole right end, so the chip only pads the
+	   media/label side; the slots center vertically through align-items. */
+	.MyChip-size-default {
+		height: 36px;
+		gap: 8px;
+		padding: 0 0 0 8px;
+	}
+
+	.MyChip-size-compact {
+		height: 28px;
+		gap: 6px;
+		padding: 0 0 0 6px;
+	}
+	/* #endregion root */
+
+	/* #region media */
+	.MyChipMedia {
+		flex-shrink: 0;
+
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+
+		border-radius: 4px;
+		overflow: hidden;
+
+		& > img {
+			width: 100%;
+			height: 100%;
+			object-fit: cover;
+		}
+	}
+
+	.MyChip-size-default .MyChipMedia {
+		width: 20px;
+		height: 20px;
+	}
+
+	.MyChip-size-compact .MyChipMedia {
+		width: 16px;
+		height: 16px;
+	}
+	/* #endregion media */
+
+	/* #region label */
+	.MyChipLabel {
+		/* The width cap plus min-width: 0 is what lets a long label show an
+		   ellipsis instead of making an arbitrarily wide chip. */
+		min-width: 0;
+		max-width: 140px;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		color: var(--color-fg-10);
+		font-weight: 500;
+	}
+
+	.MyChip-size-default .MyChipLabel {
+		font-size: 0.875rem;
+	}
+
+	.MyChip-size-compact .MyChipLabel {
+		font-size: 0.8125rem;
+	}
+	/* #endregion label */
+
+	/* #region remove */
+	/* Full-bleed close target: fill the chip's whole right end. The negative
+	   margin makes the button cover the chip border too, so its outer edge
+	   lines up with the chip edge. The chained .MyButton keeps these rules
+	   above `.MyIconButton.MyButton` (same layer, so a 0-2-0 selector here
+	   would be decided by bundle order). */
+	.MyChipRemove.MyIconButton.MyButton {
+		margin: -1px -1px -1px 0;
+		border-radius: 0 6px 6px 0;
+	}
+
+	/* A 36x36 button cannot fit a 28px chip; the compact button fills the full
+	   compact chip end instead. */
+	.MyChip-size-compact .MyChipRemove.MyIconButton {
+		width: 28px;
+		height: 28px;
+	}
+	/* #endregion remove */
+
+	/* #region row */
+	.MyChipRow {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+
+		/* Only the wrap variant needs this: a flex parent could refuse to
+		   shrink the row below its widest chip. The scroll variant already
+		   shrinks because its overflow zeroes the automatic minimum size. */
+		min-width: 0;
+
+		& > li {
+			display: flex;
+		}
+	}
+
+	/* One chip-tall line; overflowing chips scroll sideways. The horizontal
+	   scrollbar gutter is reserved up front with the measured --app-scrollbar-w
+	   (same approach as .FileNodeViewToolbar), so the scrollbar appears in the
+	   reserved space below the chips instead of shifting the layout. The gutter
+	   is 0 on overlay-scrollbar systems. */
+	.MyChipRow-overflow-scroll {
+		overflow: auto hidden;
+
+		/* Pin chips to the top edge. Centered chips would sit lower while no
+		   scrollbar is shown and jump up the moment it appears. */
+		align-items: start;
+
+		& > li {
+			flex-shrink: 0;
+		}
+
+		&.MyChipRow-size-default {
+			height: calc(36px + var(--app-scrollbar-w));
+		}
+
+		&.MyChipRow-size-compact {
+			height: calc(28px + var(--app-scrollbar-w));
+		}
+	}
+
+	.MyChipRow-overflow-wrap {
+		flex-wrap: wrap;
+		row-gap: 6px;
+
+		/* Wrap rows can squeeze chips; keep media + some label + the remove
+		   button visible instead of collapsing to just the button. */
+		& .MyChip {
+			min-width: 96px;
+		}
+	}
+	/* #endregion row */
+}

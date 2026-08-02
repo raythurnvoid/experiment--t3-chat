@@ -17,11 +17,12 @@ import { HardBreak } from "@tiptap/extension-hard-break";
 import Placeholder from "@tiptap/extension-placeholder";
 import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
-import { ArrowUp, Check, Square, X } from "lucide-react";
+import { ArrowUp, Check, Plus, Square, X } from "lucide-react";
 import { toast } from "sonner";
 import { Result } from "common/errors-as-values-utils.ts";
 
 import { MyButton } from "@/components/my-button.tsx";
+import { MyChip, MyChipLabel, MyChipMedia, MyChipRemove, MyChipRow } from "@/components/my-chip.tsx";
 import {
 	MySelect,
 	MySelectItem,
@@ -60,6 +61,7 @@ import { useLiveRef } from "@/hooks/utils-hooks.ts";
 import {
 	ai_chat_MESSAGE_IMAGE_MAX_COUNT,
 	ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS,
+	ai_chat_MESSAGE_IMAGE_MEDIA_TYPES,
 	ai_chat_MODEL_IDS,
 	ai_chat_MODELS,
 	ai_chat_MODE_IDS,
@@ -77,11 +79,8 @@ export type AiChatComposer_ClassNames =
 	| "AiChatComposer-editor-content-container"
 	| "AiChatComposer-editor-content"
 	| "AiChatComposer-attachments"
-	| "AiChatComposer-attachment"
-	| "AiChatComposer-attachment-preview"
-	| "AiChatComposer-attachment-name"
-	| "AiChatComposer-attachment-remove"
-	| "AiChatComposer-attachment-remove-icon"
+	| "AiChatComposer-attachments-add"
+	| "AiChatComposer-attachments-add-icon"
 	| "AiChatComposer-actions"
 	| "AiChatComposer-configurations"
 	| "AiChatComposer-send-icon"
@@ -311,6 +310,8 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	const [isDropTarget, setIsDropTarget] = useState(false);
 	/** Drag enter/leave fire for every child element; count them to know when the drag really left. */
 	const dragDepthRef = useRef(0);
+	/** Hidden file input behind the attachments-bar plus button. */
+	const attachmentsFileInputRef = useRef<HTMLInputElement | null>(null);
 	const hasAttachments = attachments.length > 0;
 
 	const [modelFilter, setModelFilter] = useState("");
@@ -385,9 +386,31 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	};
 	const addAttachmentFilesRef = useLiveRef(addAttachmentFiles);
 
-	const removeAttachment = (key: string) => {
+	const removeAttachment = (key: string, focusEditor: boolean) => {
 		syncAttachments(attachmentsRef.current.filter((item) => item.key !== key));
+		// A pointer removal returns to typing. A keyboard removal keeps focus in
+		// the chip row (MyChipRow moves it to a neighbor chip and falls back to
+		// handleAttachmentsFocusExit).
+		if (focusEditor) {
+			editorRef.current?.commands.focus();
+		}
+	};
+
+	const handleAttachmentsFocusExit = () => {
 		editorRef.current?.commands.focus();
+	};
+
+	const handleAttachmentsAddClick = () => {
+		attachmentsFileInputRef.current?.click();
+	};
+
+	const handleAttachmentsFileInputChange: ComponentPropsWithRef<"input">["onChange"] = (event) => {
+		const files = Array.from(event.currentTarget.files ?? []);
+		// Clear the value so picking the same file again still fires `change`.
+		event.currentTarget.value = "";
+		if (files.length > 0) {
+			addAttachmentFiles(files);
+		}
 	};
 
 	/**
@@ -436,32 +459,32 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 						}
 					}
 					return Slice.maxOpen(Fragment.fromArray([schema.nodes.paragraph.createChecked(null, inline)]));
-			},
-			// Attach pasted images (e.g. screenshots). When the clipboard carries
-			// real text too (spreadsheet cells copy as text plus an image render),
-			// prefer the text and let the normal text paste run. Some apps put only
-			// whitespace in text/plain when copying an image, so trim before deciding.
-			handlePaste: (_view, event) => {
-				const clipboardData = event.clipboardData;
-				if (!clipboardData || clipboardData.files.length === 0 || clipboardData.getData("text/plain").trim()) {
-					return false;
-				}
+				},
+				// Attach pasted images (e.g. screenshots). When the clipboard carries
+				// real text too (spreadsheet cells copy as text plus an image render),
+				// prefer the text and let the normal text paste run. Some apps put only
+				// whitespace in text/plain when copying an image, so trim before deciding.
+				handlePaste: (_view, event) => {
+					const clipboardData = event.clipboardData;
+					if (!clipboardData || clipboardData.files.length === 0 || clipboardData.getData("text/plain").trim()) {
+						return false;
+					}
 
-				event.preventDefault();
-				addAttachmentFilesRef.current(Array.from(clipboardData.files));
-				return true;
-			},
-			handleKeyDown: (view, event) => {
-				if (event.isComposing) {
-					return false;
-				}
-				if (event.key === "Escape") {
 					event.preventDefault();
-					onCloseRef.current?.();
+					addAttachmentFilesRef.current(Array.from(clipboardData.files));
 					return true;
-				}
+				},
+				handleKeyDown: (view, event) => {
+					if (event.isComposing) {
+						return false;
+					}
+					if (event.key === "Escape") {
+						event.preventDefault();
+						onCloseRef.current?.();
+						return true;
+					}
 
-				// Mark a state to indicate the selection is either at the start or end of the document.
+					// Mark a state to indicate the selection is either at the start or end of the document.
 					// when pressing arrow up or down.
 					if (event.key === "ArrowUp") {
 						const selection = view.state.selection;
@@ -745,6 +768,16 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			onDropCapture={handleDropCapture}
 			{...rest}
 		>
+			<input
+				ref={attachmentsFileInputRef}
+				type="file"
+				accept={ai_chat_MESSAGE_IMAGE_MEDIA_TYPES.join(",")}
+				multiple
+				aria-hidden="true"
+				tabIndex={-1}
+				style={{ display: "none" }}
+				onChange={handleAttachmentsFileInputChange}
+			/>
 			<MyInput className={"AiChatComposer-editor" satisfies AiChatComposer_ClassNames}>
 				<MyInputBackground />
 				<MyInputArea
@@ -752,36 +785,41 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 					focusForwarding
 					onFocusForward={handleFocusForward}
 				>
-					{hasAttachments && (
-						<ul
-							className={"AiChatComposer-attachments" satisfies AiChatComposer_ClassNames}
-							aria-label="Image attachments"
+					<div className={"AiChatComposer-attachments" satisfies AiChatComposer_ClassNames}>
+						<MyIconButton
+							className={"AiChatComposer-attachments-add" satisfies AiChatComposer_ClassNames}
+							variant="ghost-highlightable"
+							tooltip="Attach images"
+							onClick={handleAttachmentsAddClick}
 						>
-							{attachments.map((item) => {
-								const attachmentName = item.part.filename ?? "Image";
-								return (
-									<li key={item.key} className={"AiChatComposer-attachment" satisfies AiChatComposer_ClassNames}>
-										<img
-											className={"AiChatComposer-attachment-preview" satisfies AiChatComposer_ClassNames}
-											src={item.part.url}
-											alt=""
-										/>
-										<span className={"AiChatComposer-attachment-name" satisfies AiChatComposer_ClassNames}>
-											{attachmentName}
-										</span>
-										<MyIconButton
-											className={"AiChatComposer-attachment-remove" satisfies AiChatComposer_ClassNames}
-											variant="ghost-highlightable"
-											tooltip={`Remove ${attachmentName}`}
-											onClick={() => removeAttachment(item.key)}
-										>
-											<X className={"AiChatComposer-attachment-remove-icon" satisfies AiChatComposer_ClassNames} />
-										</MyIconButton>
-									</li>
-								);
-							})}
-						</ul>
-					)}
+							<Plus className={"AiChatComposer-attachments-add-icon" satisfies AiChatComposer_ClassNames} />
+						</MyIconButton>
+						{hasAttachments && (
+							<MyChipRow aria-label="Image attachments" onFocusExit={handleAttachmentsFocusExit}>
+								{attachments.map((item) => {
+									const attachmentName = item.part.filename ?? "Image";
+									return (
+										<li key={item.key}>
+											<MyChip>
+												<MyChipMedia>
+													<img src={item.part.url} alt="" />
+												</MyChipMedia>
+												<MyChipLabel>{attachmentName}</MyChipLabel>
+												<MyChipRemove
+													tooltip={`Remove ${attachmentName}`}
+													// event.detail is 0 for keyboard and programmatic
+													// clicks, and 1+ for real pointer clicks.
+													onClick={(event) => removeAttachment(item.key, event.detail > 0)}
+												>
+													<X />
+												</MyChipRemove>
+											</MyChip>
+										</li>
+									);
+								})}
+							</MyChipRow>
+						)}
+					</div>
 					<EditorContent
 						editor={editor}
 						className={"AiChatComposer-editor-content-container" satisfies AiChatComposer_ClassNames}

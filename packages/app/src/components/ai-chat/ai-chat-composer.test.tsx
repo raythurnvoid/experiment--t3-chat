@@ -125,7 +125,7 @@ describe("AiChatComposer", () => {
 		expect(onCancel).toHaveBeenCalledOnce();
 	});
 
-	test("attaches a pasted image as a removable badge and submits it as a file part", async () => {
+	test("attaches a pasted image as a removable chip and submits it as a file part", async () => {
 		const onSubmit = vi.fn();
 		render(
 			<AiChatComposer
@@ -153,7 +153,7 @@ describe("AiChatComposer", () => {
 			},
 		});
 
-		// Image processing is async; the badge appears when the data URL is ready.
+		// Image processing is async; the chip appears when the data URL is ready.
 		await screen.findByRole("button", { name: "Remove shot.png" });
 		expect(screen.getByRole("textbox", { name: "Send a message..." }).textContent).toBe("");
 
@@ -169,7 +169,7 @@ describe("AiChatComposer", () => {
 		expect(submittedAttachments[0].url.startsWith("data:image/png;base64,")).toBe(true);
 	});
 
-	test("removing the attachment badge disables an image-only send again", async () => {
+	test("removing the attachment chip disables an image-only send again", async () => {
 		const onSubmit = vi.fn();
 		render(
 			<AiChatComposer
@@ -205,6 +205,34 @@ describe("AiChatComposer", () => {
 		});
 		expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send message" }).disabled).toBe(true);
 		expect(onSubmit).not.toHaveBeenCalled();
+	});
+
+	test("attaches an image picked through the attachments-bar file input", async () => {
+		const result = render(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={vi.fn()}
+			/>,
+		);
+
+		// The bar and its add button are visible even with no attachments.
+		expect(screen.getByRole("button", { name: "Attach images" })).not.toBeNull();
+
+		const fileInput = result.container.querySelector<HTMLInputElement>('input[type="file"]');
+		expect(fileInput).not.toBeNull();
+		const imageFile = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+		fireEvent.change(fileInput!, { target: { files: [imageFile] } });
+
+		await screen.findByRole("button", { name: "Remove shot.png" });
 	});
 
 	test("ignores pasted files when the clipboard also carries text", () => {
@@ -329,9 +357,7 @@ describe("AiChatComposer", () => {
 			/>,
 		);
 
-		expect(screen.getByRole("textbox", { name: "Edit queued message" }).textContent).toBe(
-			"Edit this queued message",
-		);
+		expect(screen.getByRole("textbox", { name: "Edit queued message" }).textContent).toBe("Edit this queued message");
 		expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save queued message" }).disabled).toBe(false);
 		expect(screen.queryByRole("button", { name: "Cancel editing queued message" })).toBeNull();
 		expect(screen.queryByRole("button", { name: "Stop generating" })).toBeNull();
@@ -398,6 +424,47 @@ describe("AiChatComposer", () => {
 		fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit queued message" }), {
 			key: "Escape",
 		});
+
+		expect(onClose).toHaveBeenCalledOnce();
+	});
+
+	test("forwards Escape from a chip remove button to the queue edit close handler", async () => {
+		const onClose = vi.fn();
+		render(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend={false}
+				isQueueing
+				isQueueEditing
+				isRunning={false}
+				initialValue="Edit this queued message"
+				inputLabel="Edit queued message"
+				submitLabel="Save queued message"
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={vi.fn()}
+				onClose={onClose}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Edit queued message" });
+		const imageFile = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [imageFile],
+				getData: () => "",
+				types: ["Files"],
+			},
+		});
+
+		// The chip row's keydown interception must not swallow Escape: it has to
+		// keep bubbling to the form so the edit still closes from a chip.
+		const removeButton = await screen.findByRole("button", { name: "Remove shot.png" });
+		removeButton.focus();
+		fireEvent.keyDown(removeButton, { key: "Escape" });
 
 		expect(onClose).toHaveBeenCalledOnce();
 	});

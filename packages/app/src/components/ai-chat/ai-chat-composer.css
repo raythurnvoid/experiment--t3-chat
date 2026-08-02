@@ -34,7 +34,7 @@
 	.AiChatComposer-editor-area {
 		display: grid;
 		grid-template-columns: subgrid;
-		/* Row 1 holds the attachment badges and collapses to zero without them. */
+		/* Row 1 is the always-visible attachments bar; row 2 is the text editor. */
 		grid-template-rows: auto auto;
 		grid-area: inherit;
 		gap: 0px;
@@ -49,50 +49,24 @@
 		grid-area: 1 / 1 / 2 / -1;
 
 		display: flex;
-		flex-wrap: wrap;
+		/* Top-align so the add button lines up with the chips: the chip row is
+		   taller than the button by its reserved scrollbar gutter. */
+		align-items: start;
 		gap: 6px;
 
-		margin: 0;
 		padding: 0 10px 8px;
+		/* Reserve the chip row's scrollbar gutter even before any chip exists,
+		   so attaching the first image never grows the composer. */
+		min-height: calc(44px + var(--app-scrollbar-w));
 
-		list-style: none;
+		/* Without this the bar refuses to shrink below the chips' total width
+		   and overflows the input instead of letting the row scroll. */
+		min-width: 0;
 	}
 
-	.AiChatComposer-attachment {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-
-		padding: 3px 3px 3px 4px;
-		border: 1px solid var(--color-base-1-07);
-		border-radius: 6px;
-
-		background: var(--color-base-1-04);
-	}
-
-	.AiChatComposer-attachment-preview {
-		width: 28px;
-		height: 28px;
-		border-radius: 4px;
-
-		object-fit: cover;
-	}
-
-	.AiChatComposer-attachment-name {
-		max-width: 140px;
-
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-
-		color: var(--color-fg-10);
-		font-size: 0.8125rem;
-		line-height: 1.35;
-	}
-
-	.AiChatComposer-attachment-remove-icon {
-		width: 14px;
-		height: 14px;
+	/* Keep the add button visible when the chip row overflows and scrolls. */
+	.AiChatComposer-attachments-add {
+		flex-shrink: 0;
 	}
 
 	.AiChatComposer-editor-content-container {
