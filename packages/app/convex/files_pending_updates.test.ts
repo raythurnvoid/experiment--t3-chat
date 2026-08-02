@@ -26,7 +26,26 @@ import {
 } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_markdown, files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
 import { files_MAX_TEXT_CONTENT_BYTES, files_get_utf8_byte_size } from "../shared/files.ts";
+import { files_metadata_MAX_FRONTMATTER_FIELDS } from "../shared/files-metadata.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
+
+// Wrap the shared markdown serializer in a delegating mock so focused tests can make one call
+// fail with the real producer's cause-carrying `_nay` shape. A crafted Y.Doc cannot force that
+// failure: y-prosemirror drops elements it cannot convert instead of throwing.
+const { filesYjsDocGetMarkdownMock } = vi.hoisted(() => {
+	return {
+		filesYjsDocGetMarkdownMock: vi.fn(),
+	};
+});
+
+vi.mock("../shared/files-tiptap.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../shared/files-tiptap.ts")>();
+	filesYjsDocGetMarkdownMock.mockImplementation(actual.files_yjs_doc_get_markdown);
+	return {
+		...actual,
+		files_yjs_doc_get_markdown: filesYjsDocGetMarkdownMock,
+	};
+});
 
 let enqueueActionSpy: MockInstance;
 const r2Objects = new Map<string, string | ArrayBuffer>();
@@ -763,6 +782,57 @@ describe("upsert_file_pending_update", () => {
 			}),
 		);
 		expect(row).toBeNull();
+	});
+
+	test("upsert_file_pending_update rejects markdown over the frontmatter field cap", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/pending-edits-frontmatter-cap",
+				name: "pending-edits-frontmatter-cap",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		const frontmatterMarkdown = (fieldCount: number) =>
+			`---\n${Array.from({ length: fieldCount }, (_, index) => `field_${index}: ${index}`).join("\n")}\n---\n\n# Body`;
+
+		// The cap check throws from the metadata insert helper, so the whole pending save mutation
+		// rolls back instead of returning a `_nay`.
+		await expect(
+			asUser.action(api.ai_chat.upsert_file_pending_update, {
+				membershipId: seeded.membershipId,
+				nodeId: seeded.nodeId,
+				unstagedMarkdown: frontmatterMarkdown(files_metadata_MAX_FRONTMATTER_FIELDS + 1),
+			}),
+		).rejects.toThrow("Too many frontmatter fields");
+
+		// The rollback must also erase the pending update doc written before the metadata inserts.
+		const row = await t.run(async (ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		expect(row).toBeNull();
+
+		// Exactly at the cap the save is allowed.
+		const atCap = await asUser.action(api.ai_chat.upsert_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: frontmatterMarkdown(files_metadata_MAX_FRONTMATTER_FIELDS),
+		});
+		expect(atCap._nay).toBeUndefined();
 	});
 
 	test("upsert_file_pending_update replaces updates deterministically", async () => {
@@ -1923,6 +1993,47 @@ describe("upsert_file_pending_update", () => {
 			}),
 		);
 		expect(rowAfterRevert).toBeNull();
+	});
+
+	test("upsert_file_pending_update_in_db returns a message-only nay when the markdown projection fails", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-edits-upsert-serializer-failure",
+				name: "pending-edits-upsert-serializer-failure",
+				markdown: "# Upsert serializer failure",
+			}),
+		);
+
+		const baseDoc = new YDoc();
+		const baseYjsUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(baseDoc));
+		baseDoc.destroy();
+
+		// Fail the mutation's first markdown read with the real producer's cause-carrying shape.
+		filesYjsDocGetMarkdownMock.mockReturnValueOnce({
+			_nay: {
+				name: "nay",
+				message: "Error while extracting markdown from Y.Doc",
+				cause: new Error("serializer exploded"),
+			},
+		});
+
+		const upserted = await t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			baseYjsSequence: 0,
+			baseYjsUpdate,
+			unstagedMarkdown: "Fresh pending content",
+		});
+
+		// The `_nay` must stay message-only: an extra `cause` field would fail the mutation's
+		// strict `v_result` returns validator in a real deployment.
+		expect(upserted).toEqual({
+			_nay: { message: "Failed to workspace unstaged markdown into pending branch" },
+		});
 	});
 });
 
@@ -5577,6 +5688,80 @@ describe("persist_file_pending_update_rebased_state", () => {
 		expect(secondCleanupTasks).toHaveLength(1);
 		expect(secondCleanupTasks[0]!.expectedUpdatedAt).toBe(secondRow.updatedAt);
 		expect(secondCleanupTasks[0]!.scheduledFunctionId).not.toBe(firstCleanupTasks[0]!.scheduledFunctionId);
+	});
+
+	test("persist_file_pending_update_rebased_state_in_db returns a message-only nay when branch comparison fails", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-edits-persist-poisoned-branch",
+				name: "pending-edits-persist-poisoned-branch",
+				markdown: "# Persist poisoned branch",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		const upserted = await asUser.action(api.ai_chat.upsert_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nPending chunk`,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (
+			pendingRow?.baseYjsSequence === undefined ||
+			!pendingRow.baseYjsUpdate ||
+			!pendingRow.stagedBranchYjsUpdate ||
+			!pendingRow.unstagedBranchYjsUpdate
+		) {
+			throw new Error("Missing pending row content before the failing persist");
+		}
+
+		// Fail the mutation's first markdown read with the real producer's cause-carrying shape.
+		filesYjsDocGetMarkdownMock.mockReturnValueOnce({
+			_nay: {
+				name: "nay",
+				message: "Error while extracting markdown from Y.Doc",
+				cause: new Error("serializer exploded"),
+			},
+		});
+
+		const persisted = await asUser.mutation(
+			internal.files_pending_updates.persist_file_pending_update_rebased_state_in_db,
+			{
+				membershipId: seeded.membershipId,
+				nodeId: seeded.nodeId,
+				pendingUpdateId: pendingRow._id,
+				baseYjsSequence: pendingRow.baseYjsSequence,
+				baseYjsUpdate: pendingRow.baseYjsUpdate,
+				latestBaseYjsSequence: pendingRow.baseYjsSequence,
+				latestBaseYjsUpdate: pendingRow.baseYjsUpdate,
+				stagedBranchYjsUpdate: pendingRow.stagedBranchYjsUpdate,
+				unstagedBranchYjsUpdate: pendingRow.unstagedBranchYjsUpdate,
+			},
+		);
+
+		// The `_nay` must stay message-only: an extra `cause` field would fail the mutation's
+		// strict `v_result` returns validator in a real deployment.
+		expect(persisted).toEqual({
+			_nay: { message: "Failed to compare rebased pending update branches with base" },
+		});
 	});
 });
 

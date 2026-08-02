@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
@@ -282,5 +282,40 @@ describe("cleanup_extra_notifications", () => {
 		expect(rows.userNotifications).toHaveLength(500);
 		expect(rows.deletedNotifications).toEqual([null, null]);
 		expect(rows.otherNotifications).toHaveLength(1);
+	});
+
+	test("drains every user's overflow through scheduled continuations when users span multiple batches", async () => {
+		vi.useFakeTimers();
+		try {
+			const t = test_convex();
+			const target = await t.run(notifications_test_seed_target);
+			const thirdUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "clerk-user-notifications-third" }));
+			await t.run(async (ctx) => {
+				for (const userId of [target.userId, target.otherUserId, thirdUserId]) {
+					for (let index = 0; index < 502; index++) {
+						await notifications_test_insert(ctx, { ...target, userId });
+					}
+				}
+			});
+
+			// A batch of one user forces the sweep to cover the other users through continuations.
+			const firstBatch = await t.mutation(internal.notifications.cleanup_extra_notifications, { batchSize: 1 });
+			expect(firstBatch.done).toBe(false);
+			expect(firstBatch.userCount).toBe(1);
+			await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+			const remainingCounts = await t.run(async (ctx) => {
+				const [first, second, third] = await Promise.all([
+					notifications_test_collect_for_user(ctx, { userId: target.userId }),
+					notifications_test_collect_for_user(ctx, { userId: target.otherUserId }),
+					notifications_test_collect_for_user(ctx, { userId: thirdUserId }),
+				]);
+
+				return [first.length, second.length, third.length];
+			});
+			expect(remainingCounts).toEqual([500, 500, 500]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

@@ -581,10 +581,15 @@ async function files_pending_update_upsert_branch_docs(
 		unstagedBranchYjsDoc: args.unstagedBranchYjsDoc,
 	});
 	if (branchDocsHaveChanges._nay) {
+		// Log the cause and return a message-only `_nay`. This Result crosses `v_result` returns
+		// validators, and a `cause` field (holding a non-Convex Error value) would fail them.
+		console.error("Failed to compare pending update branches with base", {
+			error: branchDocsHaveChanges._nay,
+			nodeId: args.nodeId,
+		});
 		return Result({
 			_nay: {
 				message: "Failed to compare pending update branches with base",
-				cause: branchDocsHaveChanges._nay,
 			},
 		});
 	}
@@ -886,10 +891,15 @@ async function files_pending_update_upsert_updates(
 			markdown: args.stagedMarkdown,
 		});
 		if (stagedBranchProjection._nay) {
+			// Log the cause and return a message-only `_nay`; a `cause` field would fail the
+			// `v_result` returns validators this Result crosses.
+			console.error("Failed to workspace staged markdown into pending branch", {
+				error: stagedBranchProjection._nay,
+				nodeId: file._id,
+			});
 			return Result({
 				_nay: {
 					message: "Failed to workspace staged markdown into pending branch",
-					cause: stagedBranchProjection._nay,
 				},
 			});
 		}
@@ -900,10 +910,15 @@ async function files_pending_update_upsert_updates(
 		markdown: args.unstagedMarkdown,
 	});
 	if (unstagedBranchProjection._nay) {
+		// Log the cause and return a message-only `_nay`; a `cause` field would fail the
+		// `v_result` returns validators this Result crosses.
+		console.error("Failed to workspace unstaged markdown into pending branch", {
+			error: unstagedBranchProjection._nay,
+			nodeId: file._id,
+		});
 		return Result({
 			_nay: {
 				message: "Failed to workspace unstaged markdown into pending branch",
-				cause: unstagedBranchProjection._nay.cause,
 			},
 		});
 	}
@@ -2021,10 +2036,16 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 			unstagedBranchYjsDoc,
 		});
 		if (branchDocsHaveChanges._nay) {
+			// Log the cause and return a message-only `_nay`; a `cause` field would fail the
+			// `v_result` returns validators this Result crosses.
+			console.error("Failed to compare rebased pending update branches with base", {
+				error: branchDocsHaveChanges._nay,
+				nodeId: args.nodeId,
+				pendingUpdateId: existingPendingUpdate._id,
+			});
 			return Result({
 				_nay: {
 					message: "Failed to compare rebased pending update branches with base",
-					cause: branchDocsHaveChanges._nay,
 				},
 			});
 		}
@@ -2116,10 +2137,16 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 
 		const unstagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: unstagedBranchYjsDoc });
 		if (unstagedMarkdown._nay) {
+			// Log the cause and return a message-only `_nay`; a `cause` field would fail the
+			// `v_result` returns validators this Result crosses.
+			console.error("Failed to serialize rebased unstaged branch for pending update", {
+				error: unstagedMarkdown._nay,
+				nodeId: args.nodeId,
+				pendingUpdateId: existingPendingUpdate._id,
+			});
 			return Result({
 				_nay: {
 					message: "Failed to serialize rebased unstaged branch for pending update",
-					cause: unstagedMarkdown._nay,
 				},
 			});
 		}
@@ -2130,10 +2157,16 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 		// too: it is the branch a save publishes.
 		const stagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: stagedBranchYjsDoc });
 		if (stagedMarkdown._nay) {
+			// Log the cause and return a message-only `_nay`; a `cause` field would fail the
+			// `v_result` returns validators this Result crosses.
+			console.error("Failed to serialize rebased staged branch for pending update", {
+				error: stagedMarkdown._nay,
+				nodeId: args.nodeId,
+				pendingUpdateId: existingPendingUpdate._id,
+			});
 			return Result({
 				_nay: {
 					message: "Failed to serialize rebased staged branch for pending update",
-					cause: stagedMarkdown._nay,
 				},
 			});
 		}

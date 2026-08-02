@@ -2118,6 +2118,13 @@ export const upsert_publisher_repository_secret = mutation({
 			return name;
 		}
 
+		// Cap the value before the write, like the batch mutation: an oversized value refused at
+		// write time would surface a raw Convex error text in the caller's toast.
+		const value = plugins_validate_secret_value(args.value);
+		if (value._nay) {
+			return value;
+		}
+
 		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
 		if (!repository) {
 			return Result({ _nay: { message: "Not found" } });
@@ -2138,17 +2145,14 @@ export const upsert_publisher_repository_secret = mutation({
 			});
 		}
 
-		let secretId: Id<"plugins_publisher_repository_secrets">;
-		try {
-			secretId = await db_upsert_publisher_repository_secret(ctx, {
-				repository,
-				name: name._yay,
-				value: args.value,
-				now: Date.now(),
-			});
-		} catch (error) {
-			return Result({ _nay: { message: error instanceof Error ? error.message : String(error) } });
-		}
+		// Let an unexpected write failure throw. This mutation writes once, so a throw commits
+		// nothing, and the raw error text stays out of the user-facing `_nay.message`.
+		const secretId = await db_upsert_publisher_repository_secret(ctx, {
+			repository,
+			name: name._yay,
+			value: value._yay,
+			now: Date.now(),
+		});
 
 		return Result({ _yay: { secretId } });
 	},
@@ -2888,18 +2892,22 @@ export const upsert_installation_secret = mutation({
 			return name;
 		}
 
-		let secretId: Id<"plugins_workspace_installation_secrets">;
-		try {
-			secretId = await db_upsert_installation_secret(ctx, {
-				installation,
-				name: name._yay,
-				value: args.value,
-				userId: userAuth.id,
-				now: Date.now(),
-			});
-		} catch (error) {
-			return Result({ _nay: { message: error instanceof Error ? error.message : String(error) } });
+		// Cap the value before the write, like the batch mutation: an oversized value refused at
+		// write time would surface a raw Convex error text in the caller's toast.
+		const value = plugins_validate_secret_value(args.value);
+		if (value._nay) {
+			return value;
 		}
+
+		// Let an unexpected write failure throw. This mutation writes once, so a throw commits
+		// nothing, and the raw error text stays out of the user-facing `_nay.message`.
+		const secretId = await db_upsert_installation_secret(ctx, {
+			installation,
+			name: name._yay,
+			value: value._yay,
+			userId: userAuth.id,
+			now: Date.now(),
+		});
 
 		return Result({ _yay: { secretId } });
 	},

@@ -7311,9 +7311,13 @@ export const yjs_get_incremental_updates = query({
 
 // #region snapshots
 
+const SNAPSHOT_CLEANUP_BATCH_SIZE = 200;
+
 /**
  * Internal mutation to cleanup old snapshots based on retention rules.
- * Runs daily at 5AM UTC via cron job.
+ * Runs daily at 5AM UTC via cron job. Each run scans one bounded newest-first page of the 60-day
+ * window and reschedules itself with the page cursor until the window is covered, so the mutation
+ * stays inside Convex transaction limits no matter how many snapshots exist.
  *
  * Retention rules:
  * - Older than 30 days: keep only the last snapshot for each week
@@ -7323,13 +7327,35 @@ export const yjs_get_incremental_updates = query({
  */
 export const cleanup_old_snapshots = internalMutation({
 	args: {
-		_test_now: v.optional(v.number()),
+		/**
+		 * Sweep wall time (ms). The first run leaves it unset and uses `Date.now()`. Continuation
+		 * runs pass the first run's value along so the 60-day scan bound stays identical across
+		 * batches and the pagination cursor stays valid. Tests may set it to pin the window.
+		 */
+		now: v.optional(v.number()),
+		batchSize: v.optional(v.number()),
+		cursor: v.optional(v.string()),
 	},
-	returns: v.null(),
+	returns: v.object({
+		deletedCount: v.number(),
+		done: v.boolean(),
+	}),
 	handler: async (ctx, args) => {
-		const now = args._test_now ?? Date.now();
+		const now = args.now ?? Date.now();
+		const batchSize = Math.min(Math.max(args.batchSize ?? SNAPSHOT_CLEANUP_BATCH_SIZE, 1), 1000);
 		const timestamp60DaysAgo = now - 60 * date_MS_DAY;
 
+		const page = await ctx.db
+			.query("files_snapshots")
+			.withIndex("by_creation_time", (q) => q.gte("_creationTime", timestamp60DaysAgo))
+			.order("desc")
+			.paginate({ numItems: batchSize, cursor: args.cursor ?? null });
+
+		// The per-slot dedup set restarts empty on every batch. When a slot's newest snapshot
+		// landed in an earlier batch, the first same-slot snapshot of this batch is kept as if it
+		// were the newest, so a page boundary can only over-retain: deleting still requires a newer
+		// same-slot snapshot inside this same batch. The next daily sweep prunes those leftovers
+		// once page boundaries move.
 		const latestSnapshotNodeIdWithTimeSlot = new Set<string>();
 		const snapshotsToDelete: Array<{
 			snapshotId: Id<"files_snapshots">;
@@ -7337,11 +7363,7 @@ export const cleanup_old_snapshots = internalMutation({
 			r2Key: string;
 		}> = [];
 
-		for await (const snapshot of ctx.db.query("files_snapshots").order("desc")) {
-			if (snapshot._creationTime < timestamp60DaysAgo) {
-				break;
-			}
-
+		for (const snapshot of page.page) {
 			const age = now - snapshot._creationTime;
 			let keepSnapshot = false;
 
@@ -7417,7 +7439,15 @@ export const cleanup_old_snapshots = internalMutation({
 		await Promise.all(snapshotsToDelete.map((snapshot) => ctx.db.delete("files_snapshots", snapshot.snapshotId)));
 		await Promise.all(snapshotsToDelete.map((snapshot) => ctx.db.delete("files_r2_assets", snapshot.assetId)));
 
-		return null;
+		if (!page.isDone) {
+			await ctx.scheduler.runAfter(0, internal.files_nodes.cleanup_old_snapshots, {
+				now,
+				batchSize: args.batchSize,
+				cursor: page.continueCursor,
+			});
+		}
+
+		return { deletedCount: snapshotsToDelete.length, done: page.isDone };
 	},
 });
 

@@ -4,6 +4,14 @@ const FRONTMATTER_START = "---\n";
 const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---(?:\n|$)/u;
 const FIELD_SEGMENT_REGEX = /^[A-Za-z0-9_-]+$/u;
 
+/**
+ * Product cap on distinct frontmatter fields per file. Each field becomes one or two
+ * `files_metadata_docs` inserts inside the same save transaction, so an unbounded field count
+ * (the 900 KB content cap alone allows thousands) would exceed Convex's per-transaction doc-write
+ * limit. Saves that extract more fields than this are refused.
+ */
+export const files_metadata_MAX_FRONTMATTER_FIELDS = 128;
+
 export type files_metadata_Value =
 	| { qualifiedField: string; valueKind: "string"; value: string }
 	| { qualifiedField: string; valueKind: "number"; value: number }

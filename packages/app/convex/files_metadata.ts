@@ -7,8 +7,10 @@ import { internalQuery } from "./_generated/server.js";
 import app_convex_schema from "./schema.ts";
 import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { convex_error } from "../server/convex-utils.ts";
 import {
 	files_metadata_extract_frontmatter,
+	files_metadata_MAX_FRONTMATTER_FIELDS,
 	type files_metadata_SearchPlan,
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
@@ -105,6 +107,13 @@ export async function files_metadata_db_insert_committed(
 	}
 
 	const metadata = files_metadata_extract_frontmatter(args.markdownContent);
+	// Refuse over-cap saves: each field becomes one or two metadata doc inserts in this same
+	// transaction, so an unbounded field count would exceed Convex's per-transaction doc-write
+	// limit. The throw rolls back the whole save mutation.
+	if (metadata.fields.length > files_metadata_MAX_FRONTMATTER_FIELDS) {
+		throw convex_error({ message: "Too many frontmatter fields" });
+	}
+
 	const scope = {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -159,6 +168,12 @@ export async function files_metadata_db_replace_pending(
 	}
 
 	const metadata = files_metadata_extract_frontmatter(args.unstagedMarkdown);
+	// Refuse over-cap saves on the pending path too: the throw rolls back the whole pending save
+	// mutation, including the pending update doc write that ran before this helper.
+	if (metadata.fields.length > files_metadata_MAX_FRONTMATTER_FIELDS) {
+		throw convex_error({ message: "Too many frontmatter fields" });
+	}
+
 	const scope = {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,

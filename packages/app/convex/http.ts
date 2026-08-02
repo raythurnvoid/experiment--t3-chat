@@ -21,7 +21,7 @@ const http = httpRouter();
 billing_polar.registerRoutes(http, {
 	events: {
 		"customer.state_changed": async (ctx, event, rawPayload) => {
-			console.info("[billing-credits] http webhook customer.state_changed received", {
+			console.info("http webhook customer.state_changed received", {
 				externalId: event.data.externalId,
 				polarCustomerId: event.data.id,
 				activeSubscriptionsCount: event.data.activeSubscriptions.length,

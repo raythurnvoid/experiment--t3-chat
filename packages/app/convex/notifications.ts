@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
+import { internal } from "./_generated/api.js";
 import { internalMutation, mutation, query } from "./_generated/server.js";
 import app_convex_schema from "./schema.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
@@ -95,19 +96,28 @@ export const archive_all_notifications = mutation({
 	},
 });
 
+const CLEANUP_USER_BATCH_SIZE = 100;
+
 export const cleanup_extra_notifications = internalMutation({
-	args: {},
+	args: {
+		batchSize: v.optional(v.number()),
+		cursor: v.optional(v.string()),
+	},
 	returns: v.object({
 		deletedCount: v.number(),
 		userCount: v.number(),
+		done: v.boolean(),
 	}),
-	handler: async (ctx) => {
-		const users = await ctx.db.query("users").collect();
+	handler: async (ctx, args) => {
+		// Users grow with every anonymous visitor, so the sweep reads one bounded user page per
+		// mutation and reschedules itself with the cursor until the whole table is covered.
+		const batchSize = Math.min(Math.max(args.batchSize ?? CLEANUP_USER_BATCH_SIZE, 1), 1000);
+		const userPage = await ctx.db.query("users").paginate({ numItems: batchSize, cursor: args.cursor ?? null });
 
 		// Keep notification storage bounded so the public list query can remain a
 		// simple capped lookup instead of a paginated UI-specific flow.
 		const deletedCounts = await Promise.all(
-			users.map(async (user) => {
+			userPage.page.map(async (user) => {
 				// Convex orders equal-index rows by `_creationTime`, so descending keeps the newest rows first.
 				const notifications = await ctx.db
 					.query("notifications")
@@ -124,9 +134,17 @@ export const cleanup_extra_notifications = internalMutation({
 			}),
 		);
 
+		if (!userPage.isDone) {
+			await ctx.scheduler.runAfter(0, internal.notifications.cleanup_extra_notifications, {
+				batchSize: args.batchSize,
+				cursor: userPage.continueCursor,
+			});
+		}
+
 		return {
 			deletedCount: deletedCounts.reduce((sum, count) => sum + count, 0),
-			userCount: users.length,
+			userCount: userPage.page.length,
+			done: userPage.isDone,
 		};
 	},
 });
