@@ -1,5 +1,12 @@
 import { composite_id, omit_properties, should_never_happen } from "../shared/shared-utils.ts";
-import { ai_chat_MODEL_IDS, ai_chat_MODE_IDS, type ai_chat_AiSdk5UiMessage } from "../shared/ai-chat.ts";
+import {
+	ai_chat_MESSAGE_IMAGE_MAX_COUNT,
+	ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS,
+	ai_chat_MODEL_IDS,
+	ai_chat_MODE_IDS,
+	ai_chat_is_message_image_media_type,
+	type ai_chat_AiSdk5UiMessage,
+} from "../shared/ai-chat.ts";
 import { math_clamp } from "../src/lib/utils.ts";
 import { get_id_generator } from "../shared/generated-ids.ts";
 import {
@@ -1173,6 +1180,40 @@ export const thread_messages_add = mutation({
 			return threadAuthorized;
 		}
 
+		// The `content` validator is loose (`v.any()` fields), but stored file parts
+		// are forwarded to the model provider on later turns. Enforce the same image
+		// contract as the chat route, so a direct call to this public mutation cannot
+		// store a remote URL or an oversized image.
+		for (const message of args.messages) {
+			const parts: unknown[] = Array.isArray(message.content.parts) ? message.content.parts : [];
+			let filePartCount = 0;
+			let totalUrlChars = 0;
+			for (const part of parts) {
+				if (!part || typeof part !== "object" || (part as { type?: unknown }).type !== "file") {
+					continue;
+				}
+
+				filePartCount += 1;
+				const filePart = part as { mediaType?: unknown; url?: unknown };
+				if (
+					typeof filePart.mediaType !== "string" ||
+					typeof filePart.url !== "string" ||
+					!ai_chat_is_message_image_media_type(filePart.mediaType) ||
+					!filePart.url.startsWith(`data:${filePart.mediaType};base64,`)
+				) {
+					return Result({ _nay: { message: "Invalid image attachments" } });
+				}
+				totalUrlChars += filePart.url.length;
+			}
+
+			if (
+				filePartCount > ai_chat_MESSAGE_IMAGE_MAX_COUNT ||
+				totalUrlChars > ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS
+			) {
+				return Result({ _nay: { message: "Invalid image attachments" } });
+			}
+		}
+
 		const parentId = args.parentId ? ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.parentId) : null;
 
 		const existingIdsByClientGeneratedMessageId = new Map<string, Id<"ai_chat_threads_messages_aisdk_5">>();
@@ -1469,6 +1510,34 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								}
 
 								const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
+
+								// Enforce the image-attachment contract on incoming messages. The
+								// client compresses images to fit, but the caps must hold here too:
+								// a file part must be a small base64 data-URL image, because the
+								// whole message is stored as one Convex document (~1 MiB limit) and
+								// a remote URL must never be forwarded to the model provider.
+								for (const requestMessage of requestMessages) {
+									const fileParts = requestMessage.parts.filter((part) => part.type === "file");
+									const totalUrlChars = fileParts.reduce((total, part) => total + part.url.length, 0);
+									const hasInvalidFilePart = fileParts.some(
+										(part) =>
+											!ai_chat_is_message_image_media_type(part.mediaType) ||
+											!part.url.startsWith(`data:${part.mediaType};base64,`),
+									);
+									if (
+										hasInvalidFilePart ||
+										fileParts.length > ai_chat_MESSAGE_IMAGE_MAX_COUNT ||
+										totalUrlChars > ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS
+									) {
+										return {
+											status: 400,
+											body: {
+												message: "Invalid image attachments",
+											},
+										} as const;
+									}
+								}
+
 								const uiMessages: ai_chat_AiSdk5UiMessage[] = [];
 
 								if (body.threadId) {
@@ -1650,6 +1719,22 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								const modelMessages = convertToModelMessages(uiMessages, {
 									ignoreIncompleteToolCalls: true,
 								});
+
+								// The AI SDK routes every URL-shaped file part through its download
+								// step, and Convex `fetch` cannot request data: URLs, so the model
+								// call would fail with "Failed to download data:...". Decode the
+								// image data URLs to bytes here so the provider receives them directly.
+								for (const modelMessage of modelMessages) {
+									if (modelMessage.role !== "user" || !Array.isArray(modelMessage.content)) {
+										continue;
+									}
+									for (const part of modelMessage.content) {
+										if (part.type === "file" && typeof part.data === "string" && part.data.startsWith("data:")) {
+											const base64Content = part.data.slice(part.data.indexOf(",") + 1);
+											part.data = Uint8Array.from(atob(base64Content), (char) => char.charCodeAt(0));
+										}
+									}
+								}
 
 								let didStreamError = false;
 								// Captured by `streamText.onFinish` below so `createUIMessageStream.onFinish`

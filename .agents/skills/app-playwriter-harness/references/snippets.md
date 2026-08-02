@@ -2,6 +2,38 @@
 
 Use these snippets from the repo root.
 
+## Call An App HTTP Route As The Signed-In User, From The Sandbox
+
+Use this when the check is about the route's own answer (status code, error body) rather than the UI. Running the request from the sandbox means an app reload cannot destroy it — see the navigation hazard in `known-hazards.md`.
+
+```js
+// Call 1: lift the credentials out of the page and park them on `state`.
+state.craft = await state.page.evaluate(async () => {
+	const { app_convex } = await import("/src/lib/app-convex-client.ts");
+	const { api } = await import("/convex/_generated/api.js");
+	const { app_fetch_main_api_url } = await import("/src/lib/fetch.ts");
+	const membership = await app_convex.query(api.organizations.get_membership_by_organization_workspace_name, {
+		organizationName: "<org>",
+		workspaceName: "<workspace>",
+	});
+	return {
+		membershipId: membership?._id ?? null,
+		token: await window.Clerk.session.getToken({ template: "convex" }),
+		url: app_fetch_main_api_url("/api/chat"),
+	};
+});
+
+// Call 2 (and later): one request per run, from the sandbox.
+const response = await fetch(state.craft.url, {
+	method: "POST",
+	headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.craft.token}` },
+	body: JSON.stringify({ /* ... */ membershipId: state.craft.membershipId }),
+});
+console.log(JSON.stringify({ status: response.status, body: (await response.text()).slice(0, 160) }));
+```
+
+The Convex client is exported as `app_convex`, not `app_convex_client`. `/api/chat` allows about one request per 15s (`ai_chat_http`, capacity 1), so send one request per run and do other work in between instead of sleeping inside the runner; a `429` answers with `retryAfterMs`.
+
 ## Create Session
 
 ```powershell

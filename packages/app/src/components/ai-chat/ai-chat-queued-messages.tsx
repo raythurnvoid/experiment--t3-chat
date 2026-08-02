@@ -3,7 +3,7 @@ import "./ai-chat-queued-messages.css";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DragDropContext, Draggable, Droppable, type DragUpdate, type DropResult } from "@hello-pangea/dnd";
-import { X } from "lucide-react";
+import { Image as ImageIcon, X } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
@@ -22,6 +22,8 @@ type AiChatQueuedMessages_ClassNames =
 	| "AiChatQueuedMessages-item-drop-before"
 	| "AiChatQueuedMessages-item-drop-after"
 	| "AiChatQueuedMessages-edit"
+	| "AiChatQueuedMessages-attachments"
+	| "AiChatQueuedMessages-attachments-icon"
 	| "AiChatQueuedMessages-text"
 	| "AiChatQueuedMessages-remove"
 	| "AiChatQueuedMessages-remove-icon"
@@ -211,6 +213,10 @@ export const AiChatQueuedMessages = memo(function AiChatQueuedMessages(props: Ai
 							{messages.map((message, index) => {
 								const isEditing = message.id === editingMessageId;
 								const dropEdge = dropIndicator?.messageId === message.id ? dropIndicator.edge : null;
+								const attachmentsCount = message.attachments.length;
+								// An image-only queued message has empty text; label it by its images instead.
+								const messageLabel =
+									message.text || `${attachmentsCount} ${attachmentsCount === 1 ? "image" : "images"}`;
 
 								return (
 									<Draggable
@@ -250,7 +256,7 @@ export const AiChatQueuedMessages = memo(function AiChatQueuedMessages(props: Ai
 														{...dragHandleProps}
 														className={"AiChatQueuedMessages-edit" satisfies AiChatQueuedMessages_ClassNames}
 														variant="ghost"
-														aria-label={`${isEditing ? "Editing" : "Edit"} queued message: ${message.text}`}
+														aria-label={`${isEditing ? "Editing" : "Edit"} queued message: ${messageLabel}`}
 														data-testid="ai-chat-queued-message-edit"
 														onFocus={() => {
 															focusedMessageIdRef.current = message.id;
@@ -260,6 +266,19 @@ export const AiChatQueuedMessages = memo(function AiChatQueuedMessages(props: Ai
 															onEdit(message.id);
 														}}
 													>
+														{attachmentsCount > 0 && (
+															<span
+																className={"AiChatQueuedMessages-attachments" satisfies AiChatQueuedMessages_ClassNames}
+															>
+																<ImageIcon
+																	aria-hidden="true"
+																	className={
+																		"AiChatQueuedMessages-attachments-icon" satisfies AiChatQueuedMessages_ClassNames
+																	}
+																/>
+																{attachmentsCount}
+															</span>
+														)}
 														<span
 															className={"AiChatQueuedMessages-text" satisfies AiChatQueuedMessages_ClassNames}
 														>
@@ -270,7 +289,7 @@ export const AiChatQueuedMessages = memo(function AiChatQueuedMessages(props: Ai
 														className={"AiChatQueuedMessages-remove" satisfies AiChatQueuedMessages_ClassNames}
 														variant="ghost"
 														tooltip="Remove queued message"
-														aria-label={`Remove queued message: ${message.text}`}
+														aria-label={`Remove queued message: ${messageLabel}`}
 														data-testid="ai-chat-queued-message-remove"
 														onFocus={() => {
 															focusedMessageIdRef.current = message.id;

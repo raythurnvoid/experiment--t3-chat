@@ -9,18 +9,21 @@ const messages = [
 	{
 		id: "ai_message-first",
 		text: "First line\nSecond line",
+		attachments: [],
 		selectedModelId: "gpt-5.4-nano",
 		selectedModeId: "agent",
 	},
 	{
 		id: "ai_message-second",
 		text: "Second queued message",
+		attachments: [],
 		selectedModelId: "gpt-5.4-mini",
 		selectedModeId: "ask",
 	},
 	{
 		id: "ai_message-third",
 		text: "Third queued message",
+		attachments: [],
 		selectedModelId: "gpt-5.4-nano",
 		selectedModeId: "ask",
 	},

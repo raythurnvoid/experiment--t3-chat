@@ -421,6 +421,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 	);
 	const queuedUserMessageEdit = controller.queuedUserMessageEdit;
 	const initialComposerValue = queuedUserMessageEdit?.text ?? controller.session?.draftComposerText ?? "";
+	const initialComposerAttachments = queuedUserMessageEdit?.attachments ?? controller.session?.draftComposerAttachments;
 	const composerSelectedModelId = queuedUserMessageEdit?.selectedModelId ?? selectedModelId;
 	const composerSelectedModeId = queuedUserMessageEdit?.selectedModeId ?? selectedModeId;
 	const composerChat = controller.session?.chat ?? null;
@@ -526,6 +527,20 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		controller.setQueuedUserMessageEditText(composerChat, queuedUserMessageEdit.id, value);
 	};
 
+	const handleDraftComposerAttachmentsChange: AiChatComposer_Props["onAttachmentsChange"] = (attachments) => {
+		if (!composerChat) {
+			return;
+		}
+		controller.setComposerAttachments(composerChat, attachments);
+	};
+
+	const handleQueuedUserMessageEditAttachmentsChange: AiChatComposer_Props["onAttachmentsChange"] = (attachments) => {
+		if (!composerChat || !queuedUserMessageEdit) {
+			return;
+		}
+		controller.setQueuedUserMessageEditAttachments(composerChat, queuedUserMessageEdit.id, attachments);
+	};
+
 	const handleSelectedModelIdChange = useFn<AiChatComposer_Props["onSelectedModelIdChange"]>((value) => {
 		if (composerChat && queuedUserMessageEdit) {
 			controller.setQueuedUserMessageEditModelId(composerChat, queuedUserMessageEdit.id, value);
@@ -542,12 +557,14 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		controller.setSelectedModeId(value);
 	});
 
-	const handleComposerSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value) => {
-		if (!value.trim()) {
+	const handleComposerSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value, attachments) => {
+		if (!value.trim() && attachments.length === 0) {
 			return;
 		}
 
 		if (queuedUserMessageEdit) {
+			// The edit copy already carries the current attachments through
+			// `setQueuedUserMessageEditAttachments`; save only replaces the text.
 			const didSave = controller.saveQueuedUserMessageEdit(queuedUserMessageEdit.id, value);
 			if (didSave) {
 				focusComposer();
@@ -556,9 +573,9 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		}
 
 		if (selectedThreadId) {
-			return controller.sendUserText(selectedThreadId, value);
+			return controller.sendUserText(selectedThreadId, value, { attachments });
 		}
-		controller.startNewChat(value);
+		controller.startNewChat(value, attachments);
 		return true;
 	});
 
@@ -948,6 +965,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							isQueueEditing={Boolean(queuedUserMessageEdit)}
 							isRunning={controller.isRunning}
 							initialValue={initialComposerValue}
+							initialAttachments={initialComposerAttachments}
 							inputLabel={queuedUserMessageEdit ? "Edit queued message" : undefined}
 							submitLabel={queuedUserMessageEdit ? "Save queued message" : undefined}
 							selectedModelId={composerSelectedModelId}
@@ -956,6 +974,11 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 								queuedUserMessageEdit
 									? handleQueuedUserMessageEditValueChange
 									: handleDraftComposerValueChange
+							}
+							onAttachmentsChange={
+								queuedUserMessageEdit
+									? handleQueuedUserMessageEditAttachmentsChange
+									: handleDraftComposerAttachmentsChange
 							}
 							onSelectedModelIdChange={handleSelectedModelIdChange}
 							onSelectedModeIdChange={handleSelectedModeIdChange}

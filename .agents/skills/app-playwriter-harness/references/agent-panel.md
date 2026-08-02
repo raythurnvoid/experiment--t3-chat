@@ -26,6 +26,8 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | Failed send | `role=alert` containing `Message failed to send.` + a `Retry` button |
 | Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (whole row is a button; clicking switches to the Pending changes tab; counts only docs whose `threadIds` include the open chat, so a fresh chat shows no strip even when the workspace has pending changes) |
 | Pending-changes tab count badge | `.FileEditorSidebarPendingTabBadge` (inside `#app_file_editor_sidebar_tabs_pending`; absent at count 0; always the workspace-wide count) |
+| Composer image attachment badges | `[aria-label="Image attachments"] li` (each has an `<img>` data-URL preview, a name `<span>`, and a `Remove <filename>` button) |
+| Queued-message image count | `.AiChatQueuedMessages-attachments` inside the queued row |
 
 `waitForSelector("[role=option]", { state: "visible" })` is a trap in the agent panel: the thread-picker options stay mounted while hidden, so the wait pins the first match — an invisible `FileEditorSidebarAgentThreadPicker-item` — and times out even when the popover you actually opened (for example the `Chat model:` picker) is showing its options. Read all `[role=option]` matches and filter by bounding rect instead of waiting on the first. Same family as the mounted-closed `[role=dialog]` hazard in `known-hazards.md`.
 
@@ -45,6 +47,19 @@ await state.page.locator('[data-testid="ai-chat-send-button"]').click();
 ```
 
 The composer can briefly unmount during the optimistic→persisted thread swap right after `New chat`; always wait for the selector before typing.
+
+## Attaching images to the composer
+
+Two ways in, both verified 2026-08-02:
+
+- Real clipboard paste. Draw the image in the page, `navigator.clipboard.write([new ClipboardItem({ "image/png": blob })])`, click `.AiChatComposer-editor-content`, then `keyboard.press("Control+v")`. The extension-mode Edge profile allows the clipboard write without `grantPermissions`. The filename comes from the OS clipboard, so the badge reads `image.png`, not a name you chose.
+- Synthetic paste when you need a specific filename or the clipboard already holds text. Build a `DataTransfer` with a `File`, then dispatch `new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true })` on `.AiChatComposer-editor-content`.
+
+The composer prefers real text over files, so a synthetic paste is ignored while `clipboardData.getData("text/plain")` has non-whitespace content. **The OS clipboard is shared with the human using the machine**: a `Control+v` can paste whatever they copied last into the composer. Clear the editor (`Control+a`, `Delete`) before asserting on composer text.
+
+Drag-and-drop is a `DragEvent` sequence with the same `DataTransfer`: `dragenter` (on the form and on the editor, to exercise the depth counter), `dragover`, then `drop`. The form-level capture handler consumes it, so nothing lands in ProseMirror. `form.AiChatComposer` carries `AiChatComposer-state-drop-target` while a file drag is over it — the class only appears after a render, so poll it in a short `setTimeout`, not synchronously after the dispatch.
+
+Image ingest is async (decode + canvas re-encode). Wait for `[aria-label="Image attachments"] li` rather than asserting right after the paste, and read `[data-sonner-toast]` in the **same** execute call as a rejection check (sonner auto-dismisses in ~4s).
 
 ## Doneness: waitIdle pattern
 

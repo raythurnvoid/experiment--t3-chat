@@ -5,9 +5,10 @@
 
 import "./ai-chat-composer.css";
 
-import type { ComponentPropsWithRef, Ref } from "react";
+import type { ComponentPropsWithRef, DragEvent, Ref } from "react";
 import { memo, useEffect, useRef, useState } from "react";
 import type { ExtractStrict } from "type-fest";
+import type { FileUIPart } from "ai";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import type { JSONContent } from "@tiptap/core";
 import { Fragment, Slice } from "@tiptap/pm/model";
@@ -16,7 +17,9 @@ import { HardBreak } from "@tiptap/extension-hard-break";
 import Placeholder from "@tiptap/extension-placeholder";
 import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
-import { ArrowUp, Check, Square } from "lucide-react";
+import { ArrowUp, Check, Square, X } from "lucide-react";
+import { toast } from "sonner";
+import { Result } from "common/errors-as-values-utils.ts";
 
 import { MyButton } from "@/components/my-button.tsx";
 import {
@@ -55,20 +58,30 @@ import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
 import { useLiveRef } from "@/hooks/utils-hooks.ts";
 import {
+	ai_chat_MESSAGE_IMAGE_MAX_COUNT,
+	ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS,
 	ai_chat_MODEL_IDS,
 	ai_chat_MODELS,
 	ai_chat_MODE_IDS,
 	ai_chat_MODE_METADATA,
+	ai_chat_is_message_image_media_type,
 	type ai_chat_ModelId,
 	type ai_chat_ModeId,
 } from "@/lib/ai-chat.ts";
 
 export type AiChatComposer_ClassNames =
 	| "AiChatComposer"
+	| "AiChatComposer-state-drop-target"
 	| "AiChatComposer-editor"
 	| "AiChatComposer-editor-area"
 	| "AiChatComposer-editor-content-container"
 	| "AiChatComposer-editor-content"
+	| "AiChatComposer-attachments"
+	| "AiChatComposer-attachment"
+	| "AiChatComposer-attachment-preview"
+	| "AiChatComposer-attachment-name"
+	| "AiChatComposer-attachment-remove"
+	| "AiChatComposer-attachment-remove-icon"
 	| "AiChatComposer-actions"
 	| "AiChatComposer-configurations"
 	| "AiChatComposer-send-icon"
@@ -110,6 +123,102 @@ function convert_plain_text_to_tiptap_json(text: string): JSONContent {
 	return { type: "doc", content: [{ type: "paragraph", content }] };
 }
 
+type AiChatComposerAttachment = {
+	key: string;
+	part: FileUIPart;
+};
+
+/** Long-edge cap so huge photos and 4K screenshots shrink before encoding. */
+const ATTACHMENT_IMAGE_MAX_DIMENSION_PX = 2048;
+const ATTACHMENT_IMAGE_COMPRESSION_QUALITY = 0.8;
+
+const next_attachment_key = ((/* iife */) => {
+	let currentKey = 0;
+
+	return function next_attachment_key() {
+		currentKey += 1;
+		return `attachment-${currentKey}`;
+	};
+})();
+
+async function canvas_to_blob(canvas: HTMLCanvasElement, type: string) {
+	return await new Promise<Blob | null>((resolve) => {
+		canvas.toBlob(resolve, type, ATTACHMENT_IMAGE_COMPRESSION_QUALITY);
+	});
+}
+
+async function read_blob_as_data_url(blob: Blob) {
+	return await new Promise<string>((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => resolve(reader.result as string);
+		reader.onerror = () => reject(reader.error ?? new Error("Failed to read image data"));
+		reader.readAsDataURL(blob);
+	});
+}
+
+/**
+ * Turn a pasted or dropped image file into a data-URL file part.
+ *
+ * The data URL is stored inside the chat message document, so the image is
+ * downscaled and re-encoded to stay small. GIFs pass through untouched to
+ * keep animation.
+ */
+async function prepare_attachment_file_part(file: File) {
+	if (!ai_chat_is_message_image_media_type(file.type)) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Only PNG, JPEG, WebP, and GIF images can be attached",
+			},
+		});
+	}
+
+	let blob: Blob = file;
+	if (file.type !== "image/gif") {
+		let imageBitmap: ImageBitmap | null = null;
+		try {
+			// Use browser-native decoding/resampling, like the files upload path,
+			// so no client-side encoder dependency is needed.
+			imageBitmap = await createImageBitmap(file);
+			const scale = Math.min(1, ATTACHMENT_IMAGE_MAX_DIMENSION_PX / Math.max(imageBitmap.width, imageBitmap.height));
+
+			const canvas = document.createElement("canvas");
+			canvas.width = Math.max(1, Math.round(imageBitmap.width * scale));
+			canvas.height = Math.max(1, Math.round(imageBitmap.height * scale));
+			const context = canvas.getContext("2d");
+			if (context) {
+				context.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
+				// WebP keeps transparency and compresses screenshots well; JPEG is
+				// the fallback when the browser cannot encode WebP.
+				const compressedBlob =
+					(await canvas_to_blob(canvas, "image/webp")) ?? (await canvas_to_blob(canvas, "image/jpeg"));
+				// Keep the original when it was not downscaled and compression is not a strict win.
+				if (compressedBlob && (scale < 1 || compressedBlob.size < file.size)) {
+					blob = compressedBlob;
+				}
+			}
+		} catch (error) {
+			console.warn("[AiChatComposer.prepare_attachment_file_part] Failed to compress image attachment", { error });
+		} finally {
+			imageBitmap?.close();
+		}
+	}
+
+	const url = await read_blob_as_data_url(blob);
+	return Result({
+		_yay: {
+			type: "file",
+			mediaType: blob.type || file.type,
+			...(file.name ? { filename: file.name } : {}),
+			url,
+		} satisfies FileUIPart,
+	});
+}
+
+function drag_event_has_files(event: DragEvent<HTMLFormElement>) {
+	return Array.from(event.dataTransfer.types).includes("Files");
+}
+
 export type AiChatComposer_Props = Omit<
 	ComponentPropsWithRef<"form">,
 	ExtractStrict<keyof ComponentPropsWithRef<"form">, "onSubmit">
@@ -126,19 +235,22 @@ export type AiChatComposer_Props = Omit<
 	isQueueEditing?: boolean;
 	isRunning: boolean;
 	initialValue: string;
+	/** Image attachments to start with: a saved draft or a message being edited. */
+	initialAttachments?: readonly FileUIPart[];
 	inputLabel?: string;
 	submitLabel?: string;
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
 
 	onValueChange?: (value: string) => void;
+	onAttachmentsChange?: (attachments: FileUIPart[]) => void;
 	onSelectedModelIdChange: (value: ai_chat_ModelId) => void;
 	onSelectedModeIdChange: (value: ai_chat_ModeId) => void;
 	/**
 	 * Return `false` to keep the composer text when the message was rejected,
 	 * for example when another surface filled the queue first.
 	 */
-	onSubmit: (value: string) => boolean | void;
+	onSubmit: (value: string, attachments: FileUIPart[]) => boolean | void;
 	onCancel?: () => void;
 	onInteractedOutside?: (event: FocusEvent | PointerEvent) => void;
 	onClose?: () => void;
@@ -157,11 +269,13 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		isQueueEditing = false,
 		isRunning,
 		initialValue,
+		initialAttachments,
 		inputLabel,
 		submitLabel,
 		selectedModelId,
 		selectedModeId,
 		onValueChange,
+		onAttachmentsChange,
 		onSelectedModelIdChange,
 		onSelectedModeIdChange,
 		onSubmit,
@@ -187,6 +301,18 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	const [composerText, setComposerText] = useState(initialValue);
 	const isEmpty = composerText.trim().length === 0;
 
+	const [attachments, setAttachments] = useState<AiChatComposerAttachment[]>(() =>
+		(initialAttachments ?? []).map((part) => ({ key: next_attachment_key(), part })),
+	);
+	/** Mirror of `attachments` so async image processing can read the latest list. */
+	const attachmentsRef = useRef(attachments);
+	/** Images still being decoded and compressed; they are not in `attachments` yet. */
+	const [pendingAttachmentCount, setPendingAttachmentCount] = useState(0);
+	const [isDropTarget, setIsDropTarget] = useState(false);
+	/** Drag enter/leave fire for every child element; count them to know when the drag really left. */
+	const dragDepthRef = useRef(0);
+	const hasAttachments = attachments.length > 0;
+
 	const [modelFilter, setModelFilter] = useState("");
 	const [enableInteractedOutside, setEnableInteractedOutside] = useState(false);
 	const modelFilterValue = modelFilter.trim().toLowerCase();
@@ -200,14 +326,68 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			})
 		: ai_chat_MODEL_IDS;
 
-	const canSubmit = (isQueueing ? canQueue : canSendProp) && !isEmpty;
-	const isStopAction = isRunning && !isQueueEditing && isEmpty;
+	// An image-only message is a valid send; attachments count as content.
+	// Block submit while an image is still being prepared, so a fast Enter
+	// right after a paste cannot send the message without its image.
+	const canSubmit =
+		(isQueueing ? canQueue : canSendProp) && (!isEmpty || hasAttachments) && pendingAttachmentCount === 0;
+	const isStopAction = isRunning && !isQueueEditing && isEmpty && !hasAttachments;
 
 	/** Store the current text and notify the parent (used for drafts). */
 	const syncComposerText = (value: string) => {
 		composerTextRef.current = value;
 		setComposerText(value);
 		onValueChange?.(value);
+	};
+
+	/** Store the current attachments and notify the parent (used for drafts and queue edits). */
+	const syncAttachments = (next: AiChatComposerAttachment[]) => {
+		attachmentsRef.current = next;
+		setAttachments(next);
+		onAttachmentsChange?.(next.map((item) => item.part));
+	};
+
+	const addAttachmentFiles = (files: File[]) => {
+		setPendingAttachmentCount((count) => count + files.length);
+		for (const file of files) {
+			prepare_attachment_file_part(file)
+				.then((result) => {
+					if (result._nay) {
+						toast.error(result._nay.message);
+						return;
+					}
+
+					const current = attachmentsRef.current;
+					if (current.length >= ai_chat_MESSAGE_IMAGE_MAX_COUNT) {
+						toast.error(`You can attach up to ${ai_chat_MESSAGE_IMAGE_MAX_COUNT} images per message`);
+						return;
+					}
+					const totalUrlChars = current.reduce((total, item) => total + item.part.url.length, 0);
+					if (totalUrlChars + result._yay.url.length > ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS) {
+						toast.error("Image is too large to attach to this message");
+						return;
+					}
+
+					syncAttachments([...current, { key: next_attachment_key(), part: result._yay }]);
+				})
+				.catch((error: unknown) => {
+					console.error("[AiChatComposer.addAttachmentFiles] Unexpected error preparing image attachment", {
+						error,
+						fileName: file.name,
+						fileType: file.type,
+					});
+					toast.error("Failed to attach image");
+				})
+				.finally(() => {
+					setPendingAttachmentCount((count) => count - 1);
+				});
+		}
+	};
+	const addAttachmentFilesRef = useLiveRef(addAttachmentFiles);
+
+	const removeAttachment = (key: string) => {
+		syncAttachments(attachmentsRef.current.filter((item) => item.key !== key));
+		editorRef.current?.commands.focus();
 	};
 
 	/**
@@ -256,6 +436,20 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 						}
 					}
 					return Slice.maxOpen(Fragment.fromArray([schema.nodes.paragraph.createChecked(null, inline)]));
+			},
+			// Attach pasted images (e.g. screenshots). When the clipboard carries
+			// real text too (spreadsheet cells copy as text plus an image render),
+			// prefer the text and let the normal text paste run. Some apps put only
+			// whitespace in text/plain when copying an image, so trim before deciding.
+			handlePaste: (_view, event) => {
+				const clipboardData = event.clipboardData;
+				if (!clipboardData || clipboardData.files.length === 0 || clipboardData.getData("text/plain").trim()) {
+					return false;
+				}
+
+				event.preventDefault();
+				addAttachmentFilesRef.current(Array.from(clipboardData.files));
+				return true;
 			},
 			handleKeyDown: (view, event) => {
 				if (event.isComposing) {
@@ -373,14 +567,20 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			}
 		}
 
-		const wasAccepted = onSubmit(nextComposerText);
+		const wasAccepted = onSubmit(
+			nextComposerText,
+			attachmentsRef.current.map((item) => item.part),
+		);
 		if (wasAccepted === false) {
 			return;
 		}
 
-		// Clear the composer for the next message.
+		// Clear the composer for the next message. Do not notify the parent:
+		// the submit handler owns clearing the stored draft, like it does for text.
 		composerTextRef.current = "";
 		setComposerText("");
+		attachmentsRef.current = [];
+		setAttachments([]);
 
 		if (currentEditor) {
 			currentEditor.commands.setContent(files_tiptap_empty_doc_json(), { emitUpdate: false });
@@ -398,6 +598,51 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	const handleSubmit: ComponentPropsWithRef<"form">["onSubmit"] = (event) => {
 		event.preventDefault();
 		handleSend();
+	};
+
+	const handleDragEnter: ComponentPropsWithRef<"form">["onDragEnter"] = (event) => {
+		if (!drag_event_has_files(event)) {
+			return;
+		}
+		event.preventDefault();
+		dragDepthRef.current += 1;
+		setIsDropTarget(true);
+	};
+
+	const handleDragOver: ComponentPropsWithRef<"form">["onDragOver"] = (event) => {
+		if (!drag_event_has_files(event)) {
+			return;
+		}
+		event.preventDefault();
+		event.dataTransfer.dropEffect = "copy";
+	};
+
+	const handleDragLeave: ComponentPropsWithRef<"form">["onDragLeave"] = (event) => {
+		if (!drag_event_has_files(event)) {
+			return;
+		}
+		dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+		if (dragDepthRef.current === 0) {
+			setIsDropTarget(false);
+		}
+	};
+
+	// Capture phase, so the drop never reaches ProseMirror's own drop handling
+	// (which would try to insert the file into the text document).
+	const handleDropCapture: ComponentPropsWithRef<"form">["onDropCapture"] = (event) => {
+		dragDepthRef.current = 0;
+		setIsDropTarget(false);
+
+		if (!drag_event_has_files(event)) {
+			return;
+		}
+		event.preventDefault();
+		event.stopPropagation();
+
+		const files = Array.from(event.dataTransfer.files);
+		if (files.length > 0) {
+			addAttachmentFiles(files);
+		}
 	};
 
 	const handleKeyDown: ComponentPropsWithRef<"form">["onKeyDown"] = (event) => {
@@ -486,10 +731,18 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 				return forward_ref(node, ref, rootRef);
 			}}
 			id={id}
-			className={cn("AiChatComposer" satisfies AiChatComposer_ClassNames, className)}
+			className={cn(
+				"AiChatComposer" satisfies AiChatComposer_ClassNames,
+				isDropTarget && ("AiChatComposer-state-drop-target" satisfies AiChatComposer_ClassNames),
+				className,
+			)}
 			data-composer-mode={isQueueEditing ? "queue-edit" : "message"}
 			onSubmit={handleSubmit}
 			onKeyDown={handleKeyDown}
+			onDragEnter={handleDragEnter}
+			onDragOver={handleDragOver}
+			onDragLeave={handleDragLeave}
+			onDropCapture={handleDropCapture}
 			{...rest}
 		>
 			<MyInput className={"AiChatComposer-editor" satisfies AiChatComposer_ClassNames}>
@@ -499,6 +752,36 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 					focusForwarding
 					onFocusForward={handleFocusForward}
 				>
+					{hasAttachments && (
+						<ul
+							className={"AiChatComposer-attachments" satisfies AiChatComposer_ClassNames}
+							aria-label="Image attachments"
+						>
+							{attachments.map((item) => {
+								const attachmentName = item.part.filename ?? "Image";
+								return (
+									<li key={item.key} className={"AiChatComposer-attachment" satisfies AiChatComposer_ClassNames}>
+										<img
+											className={"AiChatComposer-attachment-preview" satisfies AiChatComposer_ClassNames}
+											src={item.part.url}
+											alt=""
+										/>
+										<span className={"AiChatComposer-attachment-name" satisfies AiChatComposer_ClassNames}>
+											{attachmentName}
+										</span>
+										<MyIconButton
+											className={"AiChatComposer-attachment-remove" satisfies AiChatComposer_ClassNames}
+											variant="ghost-highlightable"
+											tooltip={`Remove ${attachmentName}`}
+											onClick={() => removeAttachment(item.key)}
+										>
+											<X className={"AiChatComposer-attachment-remove-icon" satisfies AiChatComposer_ClassNames} />
+										</MyIconButton>
+									</li>
+								);
+							})}
+						</ul>
+					)}
 					<EditorContent
 						editor={editor}
 						className={"AiChatComposer-editor-content-container" satisfies AiChatComposer_ClassNames}

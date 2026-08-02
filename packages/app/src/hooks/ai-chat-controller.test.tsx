@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { FileUIPart } from "ai";
 
 import { ai_chat_get_message_text, type ai_chat_AiSdk5UiMessage, type ai_chat_Thread } from "@/lib/ai-chat.ts";
 
@@ -213,6 +214,13 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 
 import { AiChatController, type AiChatControllerStorageKey } from "./ai-chat-controller.tsx";
 import { app_local_storage_get_value, app_local_storage_set_value } from "@/lib/storage.ts";
+
+const QUEUE_IMAGE_FILE_PART = {
+	type: "file",
+	mediaType: "image/png",
+	filename: "queued.png",
+	url: "data:image/png;base64,cXVldWVk",
+} satisfies FileUIPart;
 
 function createThread(args: { id: string; title?: string | null; clientGeneratedId?: string | null; archived?: boolean }) {
 	return {
@@ -507,10 +515,16 @@ function RuntimeQueueProbe() {
 			<div data-testid="queue-selected">{selectedThreadId ?? "null"}</div>
 			<div data-testid="queue-draft">{controller.session?.draftComposerText ?? ""}</div>
 			<div data-testid="queue-texts">{controller.queuedUserMessages.map((message) => message.text).join("|")}</div>
+			<div data-testid="queue-attachments">
+				{controller.queuedUserMessages.map((message) => message.attachments.length).join("|")}
+			</div>
 			<div data-testid="queue-edit">
 				{controller.queuedUserMessageEdit
 					? `${controller.queuedUserMessageEdit.id}:${controller.queuedUserMessageEdit.text}:${controller.queuedUserMessageEdit.selectedModelId}:${controller.queuedUserMessageEdit.selectedModeId}`
 					: "null"}
+			</div>
+			<div data-testid="queue-edit-attachments">
+				{controller.queuedUserMessageEdit ? String(controller.queuedUserMessageEdit.attachments.length) : "null"}
 			</div>
 			<div data-testid="queue-full">{controller.isMessageQueueFull ? "yes" : "no"}</div>
 			<div data-testid="queue-paused">{controller.isMessageQueuePaused ? "yes" : "no"}</div>
@@ -635,6 +649,40 @@ function RuntimeQueueProbe() {
 				}}
 			>
 				save queued edit probe
+			</button>
+			<button
+				type="button"
+				onClick={() => {
+					if (selectedThreadId) {
+						controller.sendUserText(selectedThreadId, "", { attachments: [QUEUE_IMAGE_FILE_PART] });
+						forceRender((current) => current + 1);
+					}
+				}}
+			>
+				send image only queue probe
+			</button>
+			<button
+				type="button"
+				onClick={() => {
+					const chat = controller.session?.chat;
+					const edit = controller.queuedUserMessageEdit;
+					if (chat && edit) {
+						controller.setQueuedUserMessageEditAttachments(chat, edit.id, [QUEUE_IMAGE_FILE_PART]);
+					}
+				}}
+			>
+				attach image to queued edit probe
+			</button>
+			<button
+				type="button"
+				onClick={() => {
+					const edit = controller.queuedUserMessageEdit;
+					if (edit) {
+						controller.saveQueuedUserMessageEdit(edit.id, "");
+					}
+				}}
+			>
+				save queued edit empty probe
 			</button>
 			<button
 				type="button"
@@ -1895,6 +1943,99 @@ describe("AiChatController", () => {
 		const thirdSentMessage = chat.sendMessage.mock.calls[2]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
 		expect(thirdSentMessage?.parts).toContainEqual({ type: "text", text: "Third" });
 		expect(chat.maxActiveRequestCount).toBe(1);
+	});
+
+	test("keeps attachment changes made while editing a queued message", async () => {
+		hookMocks.holdChatRequests = true;
+		render(
+			<FullPageSurface initialSelectedThreadId="thread_queue_edit_attachments">
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("queue-session").textContent).toBe("session");
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
+
+		const chat = hookMocks.chatInstances.find((item) => item.id === "thread_queue_edit_attachments");
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected queue edit attachments chat instance");
+		}
+		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
+		expect(screen.getByTestId("queue-attachments").textContent).toBe("0");
+
+		fireEvent.click(screen.getByRole("button", { name: "edit first queued message probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "attach image to queued edit probe" }));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("queue-edit-attachments").textContent).toBe("1");
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "persist assistant queue probe" }));
+
+		await waitFor(() => {
+			expect(chat.activeRequestCount).toBe(0);
+		});
+		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+
+		fireEvent.click(screen.getByRole("button", { name: "save queued edit probe" }));
+
+		await waitFor(() => {
+			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
+			expect(screen.getByTestId("queue-texts").textContent).toBe("");
+		});
+		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		expect(sentMessage?.parts).toContainEqual(QUEUE_IMAGE_FILE_PART);
+		expect(sentMessage?.parts).toContainEqual({ type: "text", text: "Second" });
+	});
+
+	test("saves an image-only queued message edit with empty text", async () => {
+		hookMocks.holdChatRequests = true;
+		render(
+			<FullPageSurface initialSelectedThreadId="thread_queue_image_only">
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("queue-session").textContent).toBe("session");
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "send image only queue probe" }));
+
+		const chat = hookMocks.chatInstances.find((item) => item.id === "thread_queue_image_only");
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected image only queue chat instance");
+		}
+		expect(screen.getByTestId("queue-texts").textContent).toBe("");
+		expect(screen.getByTestId("queue-attachments").textContent).toBe("1");
+
+		fireEvent.click(screen.getByRole("button", { name: "edit last queued message probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "save queued edit empty probe" }));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("queue-edit").textContent).toBe("null");
+		});
+		expect(screen.getByTestId("queue-attachments").textContent).toBe("1");
+
+		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "persist assistant queue probe" }));
+
+		await waitFor(() => {
+			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
+			expect(screen.getByTestId("queue-texts").textContent).toBe("");
+			expect(screen.getByTestId("queue-attachments").textContent).toBe("");
+		});
+		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		expect(sentMessage?.parts).toContainEqual(QUEUE_IMAGE_FILE_PART);
+		expect(sentMessage?.parts?.some((part) => part.type === "text")).toBe(false);
 	});
 
 	test("keeps one through zero in order while the final queued message is edited", async () => {

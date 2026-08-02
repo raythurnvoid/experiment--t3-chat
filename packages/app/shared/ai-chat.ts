@@ -39,6 +39,23 @@ export const ai_chat_MODELS = {
 	},
 } as const satisfies Record<ai_chat_ModelId, AiChatModelMetadata>;
 
+/**
+ * Media types a chat message image attachment may use. SVG is excluded on
+ * purpose: models do not accept it and it can embed scripts.
+ */
+export const ai_chat_MESSAGE_IMAGE_MEDIA_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+export type ai_chat_MessageImageMediaType = (typeof ai_chat_MESSAGE_IMAGE_MEDIA_TYPES)[number];
+
+export const ai_chat_MESSAGE_IMAGE_MAX_COUNT = 6;
+
+/**
+ * Image attachments travel inside the message as base64 data URLs, and the
+ * whole message is stored as one Convex document with a ~1 MiB limit. The
+ * composer compresses images to fit this budget and the chat route rejects
+ * requests over it.
+ */
+export const ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS = 700 * 1024;
+
 export const ai_chat_MODE_IDS = ["agent", "ask"] as const;
 export type ai_chat_ModeId = (typeof ai_chat_MODE_IDS)[number];
 
@@ -118,6 +135,10 @@ export function ai_chat_is_model_id(value: string): value is ai_chat_ModelId {
 
 export function ai_chat_is_mode_id(value: string): value is ai_chat_ModeId {
 	return ai_chat_MODE_IDS.includes(value as ai_chat_ModeId);
+}
+
+export function ai_chat_is_message_image_media_type(value: string): value is ai_chat_MessageImageMediaType {
+	return ai_chat_MESSAGE_IMAGE_MEDIA_TYPES.includes(value as ai_chat_MessageImageMediaType);
 }
 
 export function ai_chat_is_optimistic_thread(thread?: ai_chat_Thread | null) {

@@ -29,6 +29,7 @@ import {
 	isTextUIPart,
 	isToolOrDynamicToolUIPart,
 	type DynamicToolUIPart,
+	type FileUIPart,
 	type ToolUIPart,
 } from "ai";
 import type { ExtractStrict } from "type-fest";
@@ -1148,7 +1149,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	onSelectedModeIdChange: AiChatComposer_Props["onSelectedModeIdChange"];
 	onEditStart: (args: { messageId: string; parentId: string | null }) => void;
 	onEditCancel: () => void;
-	onEditSubmit: (args: { value: string }) => void;
+	onEditSubmit: (args: { value: string; attachments: FileUIPart[] }) => void;
 	onMessageRetrySend: (args: { threadId: string; messageId: string; value: string }) => void;
 	onSelectBranchAnchor: (threadId: string, anchorId: string) => void;
 };
@@ -1180,8 +1181,9 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 	} = props;
 
 	const text = ai_chat_get_message_text(message);
+	const messageFileParts = message.parts.filter((part) => isFileUIPart(part));
 
-	const canEdit = !isRunning && Boolean(text);
+	const canEdit = !isRunning && (Boolean(text) || messageFileParts.length > 0);
 
 	const branchIndex = branchAnchorIds.indexOf(message.id);
 	const showEditButton = !isEditing && Boolean(selectedThreadId) && canEdit;
@@ -1271,13 +1273,15 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		onEditCancel();
 	});
 
-	const handleEditSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value) => {
-		onEditSubmit({ value });
+	const handleEditSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value, attachments) => {
+		onEditSubmit({ value, attachments });
 	});
 	const handleEditValueChange = useFn<AiChatComposer_Props["onValueChange"]>(() => {});
 
 	const handleRetrySend = useFn(() => {
-		if (!selectedThreadId || !text) {
+		// An image-only message has empty text but is still retryable; the send
+		// path copies the file parts from the failed message itself.
+		if (!selectedThreadId || (!text && messageFileParts.length === 0)) {
 			return;
 		}
 
@@ -1356,6 +1360,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 								isQueueing={false}
 								isRunning={false}
 								initialValue={text ?? ""}
+								initialAttachments={messageFileParts}
 								selectedModelId={selectedModelId}
 								selectedModeId={selectedModeId}
 								onValueChange={handleEditValueChange}
@@ -1744,12 +1749,13 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		actions.setEditingMessageId(selectedThreadId, null);
 	});
 
-	const handleEditSubmit = useFn((args: { value: string }) => {
-		if (!selectedThreadId || !args.value) {
+	const handleEditSubmit = useFn((args: { value: string; attachments: FileUIPart[] }) => {
+		if (!selectedThreadId || (!args.value && args.attachments.length === 0)) {
 			return;
 		}
 
-		actions.sendUserText(selectedThreadId, args.value, { messageId });
+		// Pass the attachments explicitly: the user may have removed images while editing.
+		actions.sendUserText(selectedThreadId, args.value, { messageId, attachments: args.attachments });
 		actions.setEditingMessageId(selectedThreadId, null);
 	});
 

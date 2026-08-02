@@ -256,6 +256,7 @@ describe("AiChatThread", () => {
 						{
 							id: "ai_message-queued",
 							text: "Run this next",
+							attachments: [],
 							selectedModelId: "gpt-5.4-nano",
 							selectedModeId: "agent",
 						},
@@ -289,6 +290,7 @@ describe("AiChatThread", () => {
 		const queuedUserMessageEdit = {
 			id: "ai_message-queued",
 			text: "Edited queued text",
+			attachments: [],
 			selectedModelId: "gpt-5.4-mini",
 			selectedModeId: "ask",
 		} as const;
@@ -354,6 +356,7 @@ describe("AiChatThread", () => {
 		const queuedUserMessageEdit = {
 			id: "ai_message-queued",
 			text: "Leave this queued text alone",
+			attachments: [],
 			selectedModelId: "gpt-5.4-mini",
 			selectedModeId: "ask",
 		} as const;
@@ -402,12 +405,14 @@ describe("AiChatThread", () => {
 		const firstQueuedMessage = {
 			id: "ai_message-first",
 			text: "First queued message",
+			attachments: [],
 			selectedModelId: "gpt-5.4-nano",
 			selectedModeId: "agent",
 		} as const;
 		const secondQueuedMessage = {
 			id: "ai_message-second",
 			text: "Second queued message",
+			attachments: [],
 			selectedModelId: "gpt-5.4-mini",
 			selectedModeId: "ask",
 		} as const;

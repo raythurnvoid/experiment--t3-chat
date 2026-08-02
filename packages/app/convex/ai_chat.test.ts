@@ -181,6 +181,74 @@ describe("ai_chat thread state", () => {
 		expect(messages).toHaveLength(1);
 	});
 
+	test("thread_messages_add rejects file parts that break the image contract", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "personal",
+				workspaceName: "home",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-ai-chat-message-image-contract",
+			external_id: seeded.userId,
+			email: "ai-chat-message-image-contract@test.local",
+		});
+
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_message_image_contract",
+			title: "Message image contract",
+			lastMessageAt: Date.now(),
+		});
+		expect(created._yay).toBeTruthy();
+		const threadId = created._yay!.threadId;
+
+		// A remote URL must never be stored: history is forwarded to the model provider.
+		const remoteUrlRejected = await asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: seeded.membershipId,
+			threadId,
+			parentId: null,
+			messages: [
+				{
+					clientGeneratedMessageId: "client_message_remote_image",
+					content: {
+						id: "client_message_remote_image",
+						role: "user",
+						parts: [{ type: "file", mediaType: "image/png", url: "https://attacker.example/image.png" }],
+						metadata: {
+							convexParentId: null,
+							parentClientGeneratedId: null,
+						},
+					},
+				},
+			],
+		});
+		expect(remoteUrlRejected._nay?.message).toBe("Invalid image attachments");
+
+		const dataUrlAccepted = await asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: seeded.membershipId,
+			threadId,
+			parentId: null,
+			messages: [
+				{
+					clientGeneratedMessageId: "client_message_data_url_image",
+					content: {
+						id: "client_message_data_url_image",
+						role: "user",
+						parts: [{ type: "file", mediaType: "image/png", url: "data:image/png;base64,aW1n" }],
+						metadata: {
+							convexParentId: null,
+							parentClientGeneratedId: null,
+						},
+					},
+				},
+			],
+		});
+		expect(dataUrlAccepted._yay?.ids).toHaveLength(1);
+	});
+
 	test("thread_messages_add returns existing ids when the message write limit is exhausted", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>

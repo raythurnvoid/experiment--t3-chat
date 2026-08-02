@@ -140,6 +140,24 @@
 		color: var(--color-fg-11);
 	}
 
+	.AiChatQueuedMessages-attachments {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+
+		flex: none;
+		margin-right: 6px;
+
+		color: var(--color-fg-08);
+		font-size: 0.75rem;
+		line-height: 1.35;
+	}
+
+	.AiChatQueuedMessages-attachments-icon {
+		width: 12px;
+		height: 12px;
+	}
+
 	.AiChatQueuedMessages-text {
 		min-width: 0;
 		width: 100%;

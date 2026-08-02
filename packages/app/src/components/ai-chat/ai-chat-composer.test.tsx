@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { AiChatComposer } from "./ai-chat-composer.tsx";
@@ -76,7 +76,7 @@ describe("AiChatComposer", () => {
 
 		fireEvent.click(queueButton);
 
-		expect(onSubmit).toHaveBeenCalledWith("keep this draft");
+		expect(onSubmit).toHaveBeenCalledWith("keep this draft", []);
 		expect(screen.getByRole("textbox", { name: "Send a message..." }).textContent).toBe("keep this draft");
 	});
 
@@ -121,8 +121,121 @@ describe("AiChatComposer", () => {
 		expect(queueButton.querySelector(".AiChatComposer-send-icon")).not.toBeNull();
 
 		fireEvent.click(queueButton);
-		expect(onSubmit).toHaveBeenCalledWith("Queue this next");
+		expect(onSubmit).toHaveBeenCalledWith("Queue this next", []);
 		expect(onCancel).toHaveBeenCalledOnce();
+	});
+
+	test("attaches a pasted image as a removable badge and submits it as a file part", async () => {
+		const onSubmit = vi.fn();
+		render(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		const imageFile = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [imageFile],
+				getData: () => "",
+				types: ["Files"],
+			},
+		});
+
+		// Image processing is async; the badge appears when the data URL is ready.
+		await screen.findByRole("button", { name: "Remove shot.png" });
+		expect(screen.getByRole("textbox", { name: "Send a message..." }).textContent).toBe("");
+
+		// An image-only message is sendable even with empty text.
+		const sendButton = screen.getByRole<HTMLButtonElement>("button", { name: "Send message" });
+		expect(sendButton.disabled).toBe(false);
+		fireEvent.click(sendButton);
+
+		expect(onSubmit).toHaveBeenCalledTimes(1);
+		const [submittedText, submittedAttachments] = onSubmit.mock.calls[0];
+		expect(submittedText).toBe("");
+		expect(submittedAttachments).toMatchObject([{ type: "file", mediaType: "image/png", filename: "shot.png" }]);
+		expect(submittedAttachments[0].url.startsWith("data:image/png;base64,")).toBe(true);
+	});
+
+	test("removing the attachment badge disables an image-only send again", async () => {
+		const onSubmit = vi.fn();
+		render(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		const imageFile = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [imageFile],
+				getData: () => "",
+				types: ["Files"],
+			},
+		});
+
+		const removeButton = await screen.findByRole("button", { name: "Remove shot.png" });
+		fireEvent.click(removeButton);
+
+		await waitFor(() => {
+			expect(screen.queryByRole("button", { name: "Remove shot.png" })).toBeNull();
+		});
+		expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send message" }).disabled).toBe(true);
+		expect(onSubmit).not.toHaveBeenCalled();
+	});
+
+	test("ignores pasted files when the clipboard also carries text", () => {
+		render(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue=""
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={vi.fn()}
+			/>,
+		);
+
+		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		const imageFile = new File([new Uint8Array([137, 80, 78, 71])], "cells.png", { type: "image/png" });
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [imageFile],
+				getData: () => "A1 B1",
+				types: ["text/plain", "Files"],
+			},
+		});
+
+		expect(screen.getByRole("textbox", { name: "Send a message..." }).textContent).toBe("A1 B1");
+		expect(screen.queryByRole("button", { name: "Remove cells.png" })).toBeNull();
 	});
 
 	test("flushes a pending draft change before the composer unmounts", () => {
@@ -225,7 +338,7 @@ describe("AiChatComposer", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "Save queued message" }));
 
-		expect(onSubmit).toHaveBeenCalledWith("Edit this queued message");
+		expect(onSubmit).toHaveBeenCalledWith("Edit this queued message", []);
 	});
 
 	test("hides Stop while editing a queued message during an active response", () => {
@@ -256,7 +369,7 @@ describe("AiChatComposer", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "Save queued message" }));
 
-		expect(onSubmit).toHaveBeenCalledWith("Edit this queued message");
+		expect(onSubmit).toHaveBeenCalledWith("Edit this queued message", []);
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 

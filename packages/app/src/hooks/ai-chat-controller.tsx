@@ -1,5 +1,5 @@
 import { Chat, useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, type ChatOnFinishCallback } from "ai";
+import { DefaultChatTransport, isFileUIPart, type ChatOnFinishCallback, type FileUIPart } from "ai";
 import {
 	createContext,
 	useContext,
@@ -46,6 +46,7 @@ type ThreadChatArgs = {
 export type AiChatQueuedUserMessage = {
 	id: ReturnType<typeof generate_id<"ai_message">>;
 	text: string;
+	attachments: readonly FileUIPart[];
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
 };
@@ -53,6 +54,7 @@ export type AiChatQueuedUserMessage = {
 type ThreadSession = {
 	chat: Chat<ai_chat_AiSdk5UiMessage> | null;
 	draftComposerText: string;
+	draftComposerAttachments: readonly FileUIPart[];
 	selectedModelId?: ai_chat_ModelId;
 	selectedModeId?: ai_chat_ModeId;
 	queuedUserMessages: readonly AiChatQueuedUserMessage[];
@@ -180,7 +182,11 @@ export type AiChatRuntimeActions = {
 	stop: () => void;
 	setSelectedModelId: (modelId: ai_chat_ModelId) => void;
 	setSelectedModeId: (modeId: ai_chat_ModeId) => void;
-	sendUserText: (threadId: string, value: string, options?: { messageId?: string }) => boolean;
+	sendUserText: (
+		threadId: string,
+		value: string,
+		options?: { messageId?: string; attachments?: FileUIPart[] },
+	) => boolean;
 	regenerate: (threadId: string, messageId: string) => void;
 	branchChat: (threadId: string, messageId?: string) => void;
 	selectBranchAnchor: (threadId: string, anchorId: string | null) => void;
@@ -427,6 +433,7 @@ const thread_session_create = (args?: {
 	return {
 		chat: args?.chat ?? (args?.chatArgs ? create_chat_instance(args.chatArgs) : null),
 		draftComposerText: "",
+		draftComposerAttachments: [],
 		selectedModelId: args?.selectedModelId,
 		selectedModeId: args?.selectedModeId,
 		queuedUserMessages: [],
@@ -609,6 +616,7 @@ const useStore = ((/* iife */) => {
 						!edit ||
 						edit.id !== message.id ||
 						(edit.text === message.text &&
+							edit.attachments === message.attachments &&
 							edit.selectedModelId === message.selectedModelId &&
 							edit.selectedModeId === message.selectedModeId)
 					) {
@@ -633,7 +641,15 @@ const useStore = ((/* iife */) => {
 					const session = state.threadById.get(threadId);
 					const edit = session?.queuedUserMessageEdit;
 					const messageIndex = session?.queuedUserMessages.findIndex((message) => message.id === messageId) ?? -1;
-					if (!session || !edit || edit.id !== messageId || messageIndex < 0 || !text.trim()) {
+					// An image-only queued message legitimately has empty text, so refuse the
+					// save only when both the text and the edit's attachments are empty.
+					if (
+						!session ||
+						!edit ||
+						edit.id !== messageId ||
+						messageIndex < 0 ||
+						(!text.trim() && edit.attachments.length === 0)
+					) {
 						return state;
 					}
 
@@ -1291,7 +1307,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 		});
 	};
 
-	const startNewChat = useFn((message?: string) => {
+	const startNewChat = useFn((message?: string, attachments?: FileUIPart[]) => {
 		const nextSelectedModelId = selectedModelId;
 		const nextSelectedModeId = selectedModeId;
 		const threadId = generate_id("ai_thread");
@@ -1310,10 +1326,11 @@ const useThreadList = (props?: useThreadList_Props) => {
 		markThreadReadIfUnread(selectedThreadId);
 		setSelectedThreadId(threadId, { persist: false });
 
-		if (message?.trim()) {
+		if (message?.trim() || attachments?.length) {
 			const request = optimisticChat.sendMessage({
 				role: "user",
-				parts: [{ type: "text", text: message }],
+				// Image parts go first so the transcript shows the images above the text.
+				parts: [...(attachments ?? []), ...(message?.trim() ? [{ type: "text" as const, text: message }] : [])],
 				metadata: {
 					convexParentId: null,
 					parentClientGeneratedId: null,
@@ -1543,6 +1560,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 						...persistedSession,
 						chat: session.chat ?? persistedSession.chat,
 						draftComposerText: session.draftComposerText,
+						draftComposerAttachments: session.draftComposerAttachments,
 						selectedModelId: session.selectedModelId ?? persistedSession.selectedModelId,
 						selectedModeId: session.selectedModeId ?? persistedSession.selectedModeId,
 						queuedUserMessages: [...session.queuedUserMessages, ...persistedSession.queuedUserMessages],
@@ -2038,7 +2056,7 @@ const useThreadRuntimeController = () => {
 		return result;
 	})();
 
-	const startNewChat = useFn((message?: string) => {
+	const startNewChat = useFn((message?: string, attachments?: FileUIPart[]) => {
 		const nextSelectedModelId = selectedModelId;
 		const nextSelectedModeId = selectedModeId;
 		const threadId = generate_id("ai_thread");
@@ -2060,10 +2078,11 @@ const useThreadRuntimeController = () => {
 		}));
 		setSelectedThreadId(threadId, { persist: false });
 
-		if (message?.trim()) {
+		if (message?.trim() || attachments?.length) {
 			const request = optimisticChat.sendMessage({
 				role: "user",
-				parts: [{ type: "text", text: message }],
+				// Image parts go first so the transcript shows the images above the text.
+				parts: [...(attachments ?? []), ...(message?.trim() ? [{ type: "text" as const, text: message }] : [])],
 				metadata: {
 					convexParentId: null,
 					parentClientGeneratedId: null,
@@ -2278,6 +2297,21 @@ const useThreadRuntimeController = () => {
 		});
 	});
 
+	const setComposerAttachments = useFn((chat: Chat<ai_chat_AiSdk5UiMessage>, attachments: FileUIPart[]) => {
+		const threadId = threadIdByChat.get(chat);
+		if (!threadId) {
+			return;
+		}
+		useStore.actions.setSession(threadId, (prev) => {
+			const base = prev ?? thread_session_create();
+			// Repeated clears are the common case; keep the session identity stable for them.
+			if (base.draftComposerAttachments.length === 0 && attachments.length === 0) {
+				return base;
+			}
+			return { ...base, draftComposerAttachments: attachments };
+		});
+	});
+
 	const failedSendUserMessage = selectedThreadFailedSendUserMessageId
 		? activeBranchMessages.mapById.get(selectedThreadFailedSendUserMessageId)
 		: undefined;
@@ -2289,9 +2323,16 @@ const useThreadRuntimeController = () => {
 			options?: {
 				messageId?: string;
 				queuedMessage?: AiChatQueuedUserMessage;
+				attachments?: FileUIPart[];
 			},
 		) => {
-			if (!value.trim()) {
+			// An explicit attachments option wins even when empty: it means the user
+			// removed every image while editing. `undefined` falls back to the queued
+			// item's attachments or, for a retry/edit target, to the file parts
+			// already on that message. The empty-content guard runs after that
+			// resolution so an image-only retry with empty text still sends.
+			const explicitAttachments = options?.attachments ?? options?.queuedMessage?.attachments;
+			if (!value.trim() && !explicitAttachments?.length && !options?.messageId) {
 				return false;
 			}
 
@@ -2309,6 +2350,12 @@ const useThreadRuntimeController = () => {
 			const targetMessage = options?.messageId ? activeBranchMessages?.mapById.get(options.messageId) : null;
 			const targetMessageIndex = targetMessage ? activeBranchMessages.list.indexOf(targetMessage) : undefined;
 			const latestMessage = activeBranchMessages.list.at(-1);
+
+			const attachmentParts =
+				explicitAttachments ?? (targetMessage ? targetMessage.parts.filter((part) => isFileUIPart(part)) : []);
+			if (!value.trim() && attachmentParts.length === 0) {
+				return false;
+			}
 
 			const targetMessageIsFailedUserMessage = Boolean(
 				targetMessage?.role === "user" && failedSendUserMessage?.id === targetMessage.id,
@@ -2440,7 +2487,8 @@ const useThreadRuntimeController = () => {
 			const request = chat.sendMessage({
 				...(options?.queuedMessage ? { id: options.queuedMessage.id } : {}),
 				role: "user",
-				parts: [{ type: "text", text: value }],
+				// Image parts go first so the transcript shows the images above the text.
+				parts: [...attachmentParts, ...(value.trim() ? [{ type: "text" as const, text: value }] : [])],
 				metadata: {
 					convexParentId: parentMessageIds.convexParentId,
 					parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
@@ -2470,53 +2518,60 @@ const useThreadRuntimeController = () => {
 		},
 	);
 
-	const sendUserText = useFn((threadId: string, value: string, options?: { messageId?: string }) => {
-		if (!value.trim()) {
-			return false;
-		}
-
-		const session = useStore.actions.getSession(threadId);
-		const chat = session?.chat;
-		if (!session || !chat) {
-			should_never_happen("[AiChatController.useThreadRuntime.sendUserText] Missing deps", {
-				threadId,
-				value,
-			});
-			return false;
-		}
-		if (session.isArchivePending) {
-			return false;
-		}
-
-		// A normal send after Stop starts a new turn without consuming the paused queue.
-		// Resume remains the only action that continues those older queued messages.
-		const shouldQueue =
-			!options?.messageId &&
-			(Boolean(session.activeRequestToken) ||
-				Boolean(session.claimedQueuedUserMessageId) ||
-				(session.queuedUserMessages.length > 0 && session.queuePauseReason !== "stop") ||
-				chat.status === "submitted" ||
-				chat.status === "streaming");
-
-		if (shouldQueue) {
-			const didEnqueue = useStore.actions.enqueueQueuedUserMessage(threadId, {
-				id: generate_id("ai_message"),
-				text: value,
-				selectedModelId: session.selectedModelId ?? selectedModelId,
-				selectedModeId: session.selectedModeId ?? selectedModeId,
-			});
-			if (didEnqueue) {
-				setComposerValue(chat, "");
+	const sendUserText = useFn(
+		(threadId: string, value: string, options?: { messageId?: string; attachments?: FileUIPart[] }) => {
+			// A retry/edit target may be an image-only message with empty text;
+			// `sendUserTextNow` resolves its file parts before deciding.
+			if (!value.trim() && !options?.attachments?.length && !options?.messageId) {
+				return false;
 			}
-			return didEnqueue;
-		}
 
-		const didSend = sendUserTextNow(threadId, value, options);
-		if (didSend) {
-			setComposerValue(chat, "");
-		}
-		return didSend;
-	});
+			const session = useStore.actions.getSession(threadId);
+			const chat = session?.chat;
+			if (!session || !chat) {
+				should_never_happen("[AiChatController.useThreadRuntime.sendUserText] Missing deps", {
+					threadId,
+					value,
+				});
+				return false;
+			}
+			if (session.isArchivePending) {
+				return false;
+			}
+
+			// A normal send after Stop starts a new turn without consuming the paused queue.
+			// Resume remains the only action that continues those older queued messages.
+			const shouldQueue =
+				!options?.messageId &&
+				(Boolean(session.activeRequestToken) ||
+					Boolean(session.claimedQueuedUserMessageId) ||
+					(session.queuedUserMessages.length > 0 && session.queuePauseReason !== "stop") ||
+					chat.status === "submitted" ||
+					chat.status === "streaming");
+
+			if (shouldQueue) {
+				const didEnqueue = useStore.actions.enqueueQueuedUserMessage(threadId, {
+					id: generate_id("ai_message"),
+					text: value,
+					attachments: options?.attachments ?? [],
+					selectedModelId: session.selectedModelId ?? selectedModelId,
+					selectedModeId: session.selectedModeId ?? selectedModeId,
+				});
+				if (didEnqueue) {
+					setComposerValue(chat, "");
+					setComposerAttachments(chat, []);
+				}
+				return didEnqueue;
+			}
+
+			const didSend = sendUserTextNow(threadId, value, options);
+			if (didSend) {
+				setComposerValue(chat, "");
+				setComposerAttachments(chat, []);
+			}
+			return didSend;
+		},
+	);
 
 	const setSelectedModelId = useFn((modelId: ai_chat_ModelId) => {
 		if (!selectedThreadId) {
@@ -2578,6 +2633,20 @@ const useThreadRuntimeController = () => {
 				return;
 			}
 			useStore.actions.updateQueuedUserMessageEdit(threadId, { ...edit, text });
+		},
+	);
+
+	const setQueuedUserMessageEditAttachments = useFn(
+		(chat: Chat<ai_chat_AiSdk5UiMessage>, messageId: AiChatQueuedUserMessage["id"], attachments: FileUIPart[]) => {
+			const threadId = threadIdByChat.get(chat);
+			if (!threadId) {
+				return;
+			}
+			const edit = useStore.actions.getSession(threadId)?.queuedUserMessageEdit;
+			if (!edit || edit.id !== messageId) {
+				return;
+			}
+			useStore.actions.updateQueuedUserMessageEdit(threadId, { ...edit, attachments });
 		},
 	);
 
@@ -2965,11 +3034,13 @@ const useThreadRuntimeController = () => {
 		removeOptimisticThread,
 
 		setComposerValue,
+		setComposerAttachments,
 		setSelectedModelId,
 		setSelectedModeId,
 		setEditingMessageId,
 		startQueuedUserMessageEdit,
 		setQueuedUserMessageEditText,
+		setQueuedUserMessageEditAttachments,
 		setQueuedUserMessageEditModelId,
 		setQueuedUserMessageEditModeId,
 		saveQueuedUserMessageEdit,
