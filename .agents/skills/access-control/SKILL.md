@@ -308,7 +308,8 @@ of a restricted folder has to be able to share what the grant gave them and noth
 ## Known gaps
 
 These are real and confirmed against the code. None is an oversight to patch quietly: each needs a
-product decision, so record the answer here before changing the behaviour.
+product decision, so record the answer here before changing the behaviour. An entry that starts with
+**Decided** already has its answer. Do not report it again as a finding.
 
 - **A chat thread can carry restricted bytes to the whole workspace.** Threads are workspace-wide (see
   above), and an agent tool result is stored in the thread. So a user who may read a restricted file
@@ -328,13 +329,17 @@ product decision, so record the answer here before changing the behaviour.
   memberships. When that creator leaves the organization the workspace appears in nobody's list, while
   still holding its `extra_workspaces` quota slot. The owner may delete it — `delete_workspace` exempts
   them — but no screen offers them the id.
-- **A write grant is enough to archive the shared folder itself.** `archive_nodes` treats archiving as
-  `content.write` on the node, and a `write`-level grant supplies that, so anybody on the share list
-  can take the restricted folder out of everybody's active tree — the owner's included. Moving a node
-  out of a restricted scope asks for `content.permissions.manage` instead, so the two operations
-  answer the same question differently. Archiving is reversible and restoring is now guarded on both
-  legs, which is the argument for leaving it at `write`. The question is whether archiving the node
-  that carries a restriction should take `content.permissions.manage` like moving out of it does.
+- **Decided: archiving a restricted folder stays at `content.write`.** A `write` grantee can archive
+  the restricted folder itself, not only what is inside it, and that is intentional. They could
+  already archive every child one by one — `archive_nodes` checks `content.write` per node on purpose
+  — so refusing them the folder would mean "you may empty the room but not close the door". Archiving
+  discloses nothing and changes nobody's read set. Leaving a restricted scope is the separate
+  question, and `content.permissions.manage` guards that in `move_nodes` and `unarchive_nodes`.
+  Recovery is real, not theoretical: `list_tree` reads the tree with no archive filter,
+  `access_control_db_filter_readable_file_nodes` lets the owner read everything, and the sidebar has a
+  "Show N items archived" toggle whose rows carry a Restore action. Known property, not a bug: while
+  the folder sits in the archive nobody can open its share dialog, so restore it first to manage
+  sharing.
 - **Removing a member deletes their grants in one mutation.** `remove_organization_member` collects
   every `access_control_permission_grants` doc for the user and deletes them together, with no page
   limit, exactly like the role assignments above it. Somebody on thousands of share lists would exceed

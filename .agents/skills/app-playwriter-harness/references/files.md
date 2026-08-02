@@ -132,9 +132,24 @@ Use this when changing tree focus, context menus, selection, or route sync.
 - Active/pressed rows should use the darker pressed surface and inset-only shadow.
 - Secondary action buttons should keep button styling and not inherit row-surface styles.
 
+### Restricted Folder Archive / Restore
+
+Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restricted_scope`, or anything about restricted scopes.
+
+- Build the fixture so the two cases differ: the folder must carry its **own** restriction (`restrictedScopeNodeId === its own _id`, which the restore loop deliberately skips) and the child must **inherit** it (`restrictedScopeNodeId === the folder's _id`). Only the inheriting child exercises the leaving check. Read both from `list_tree` — the sidebar shows neither.
+- Restrict through the row menu `Share` → `Restrict access` (toast `Access restricted`), then `Done`.
+- To make a restore behave as a **move**, archive the parent folder and then restore the child alone: its parent is still archived, so the restore relocates it to root. That is the only in-app route to the leaving check. Ground truth is the child's `path`, `parentId` and `restrictedScopeNodeId` in `list_tree`; a successful owner restore moves it to root and clears the scope pointer.
+- Reveal archived rows with the sidebar `More options` → `Show N items archived` (`menuitemcheckbox`). It does **not** close the menu on click, so press `Escape` after, and it is **not persisted** — any route load resets it to off, so re-read `aria-checked` instead of assuming your earlier toggle survived.
+- Restoring a folder that carries its own restriction must bring it back still restricted (`restrictedScopeNodeId` unchanged, row label keeps ` restricted`).
+- The owner bypasses every permission check, so owner-only runs prove **no over-refusal**, never that the refusal works. The refusal needs a second member holding a `content.write` grant; one browser holds one signed-in user, so cover that side with `convex/access_control.test.ts` instead.
+
 ### Folder Import
 
 Use this after changing the bulk import flow (`run_folder_import` in `files-sidebar.tsx`, `files_nodes.create_upload_nodes`).
+
+- The two upload entry points call **different** mutations: `Import folder` → `files_nodes.create_upload_nodes` (plural), single `Upload file` → `files_nodes.create_upload_node` (singular). Check which one your change touches before designing the browser check.
+- `create_upload_node`'s intermediate-path walk is **not reachable from the sidebar**: `uploadBrowserFile` normalizes the name first (`files_normalize_upload_file_name` keeps only the leaf segment, `files_normalize_markdown_name` turns separators into `-`), so the filename always arrives without slashes and the walk loop never runs. It is a public mutation, so drive it directly through `app_convex.mutation(...)` with a real multi-segment `filename` when you need to exercise that walk.
+- To prove an "answer before anything is written" fix, count the asset docs rather than reading the message — a pre-write and a post-write refusal can return the identical string. `convex data files_r2_assets --limit 400 --order desc --format jsonLines`, filtered to `"kind": "upload"`, is a read-only ground truth; the editor's own `content_snapshot`/`yjs_snapshot` rows churn constantly, so never use "newest row unchanged" without filtering by kind. An orphan asset left by a refused upload is reaped by the hourly `cleanup expired unfinalized assets` cron, so it needs no manual cleanup.
 
 - Entry points: `More options` menu → `Import folder` (hidden `input[type=file][webkitdirectory]`), and multi-file/folder drops. The OS dialog cannot be fed in extension mode — use the constructed-File recipe in `known-hazards.md` ("File uploads cannot go through the OS file dialog"): predefine `path` on each `File`, assign `input.files`, dispatch a bubbling `change` event on the directory input.
 - First import of a nested fixture should recreate the folder structure; `readme.md` (markdown MIME) lands as `README.md`, `*.markdown` lands as `*.md`, `.DS_Store`/`Thumbs.db` and extension-less files never appear. Verify via `app_convex.query(app_convex_api.files_nodes.list_tree, { membershipId })` paths, not the sidebar alone.
