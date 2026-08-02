@@ -569,6 +569,12 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   says what kind of node blocks the path, so the mutation only answers it when the caller can
   `content.read` the blocking node; a hidden folder at the target and a hidden file at an ancestor
   both fall back to `"conflict"`.
+- **The public API batch writes widen it again, faster.** `/api/v1/files/write-many` answers the same
+  literal `"Permission denied"` per item, charged up front on `public_api_files_write_bulk` (rate
+  600/min, capacity 100, per API key), and `/api/v1/files/upload-urls` refuses its whole batch at the
+  first restricted path it hits. The caller already holds workspace `content.write`, and the payload
+  still never says why beyond the literal. Accepted at this speed; if it ever matters, lower the
+  bucket rather than blurring the per-item errors, which importers need.
 - **Nothing proves a shared tenant before naming a user.** `users.get_anagraphic` requires an
   identity and hides other people's email, but any signed-in caller still turns any `users` id into a
   display name and avatar. Closing that needs a relationship check the query has no argument for

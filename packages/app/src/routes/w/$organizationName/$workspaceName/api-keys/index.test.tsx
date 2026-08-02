@@ -125,7 +125,7 @@ type TestCredential = {
 	name: string;
 	keyId: string;
 	obfuscatedValue: string;
-	scopes: Array<"files:list" | "files:read">;
+	scopes: Array<"files:list" | "files:read" | "files:download" | "files:write">;
 	createdAt: number;
 	revokedAt: number | null;
 	lastUsedAt: number | null;
@@ -233,7 +233,7 @@ describe("RouteApiKeys", () => {
 		expect(screen.queryByLabelText("API key")).toBeNull();
 	});
 
-	test("creates, tests, and clears a fixed read-only key", async () => {
+	test("creates, tests, and clears a key with the default read scopes", async () => {
 		const fetchMock = vi.fn().mockResolvedValue({ status: 200 });
 		vi.stubGlobal("fetch", fetchMock);
 		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
@@ -243,9 +243,11 @@ describe("RouteApiKeys", () => {
 		const nameInput = screen.getByRole("textbox", { name: "Name" });
 		expect((nameInput.closest("form") as HTMLFormElement).noValidate).toBe(true);
 		expect(document.getElementById(nameInput.getAttribute("aria-describedby") ?? "")).not.toBeNull();
-		expect(screen.getByText("Read-only file access")).not.toBeNull();
-		expect(screen.getByText("List files")).not.toBeNull();
-		expect(screen.getByText("Read file content")).not.toBeNull();
+		expect(screen.getByText("Permissions")).not.toBeNull();
+		expect((screen.getByRole("checkbox", { name: /List files/ }) as HTMLInputElement).checked).toBe(true);
+		expect((screen.getByRole("checkbox", { name: /Read file content/ }) as HTMLInputElement).checked).toBe(true);
+		expect((screen.getByRole("checkbox", { name: /Download files/ }) as HTMLInputElement).checked).toBe(false);
+		expect((screen.getByRole("checkbox", { name: /Write files/ }) as HTMLInputElement).checked).toBe(false);
 
 		fireEvent.change(nameInput, { target: { value: "  Local script  " } });
 		fireEvent.submit(nameInput.closest("form")!);
@@ -276,6 +278,80 @@ describe("RouteApiKeys", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "I saved the key" }));
 		expect(screen.queryByText(API_KEY)).toBeNull();
+	});
+
+	test("passes exactly the checked scopes to the create mutation", async () => {
+		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
+		renderRoute();
+
+		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
+		fireEvent.click(screen.getByRole("checkbox", { name: /Read file content/ }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /Download files/ }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /Write files/ }));
+
+		const nameInput = screen.getByRole("textbox", { name: "Name" });
+		fireEvent.change(nameInput, { target: { value: "Importer" } });
+		fireEvent.submit(nameInput.closest("form")!);
+
+		await screen.findByRole("heading", { name: "Save your API key" });
+		expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
+			membershipId: "membership_1",
+			name: "Importer",
+			scopes: ["files:list", "files:download", "files:write"],
+		});
+	});
+
+	test("disables submit while zero scopes are selected", () => {
+		renderRoute();
+
+		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
+		const nameInput = screen.getByRole("textbox", { name: "Name" });
+		fireEvent.change(nameInput, { target: { value: "No scopes" } });
+		const form = nameInput.closest("form")!;
+		const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+		expect(submitButton.disabled).toBe(false);
+
+		fireEvent.click(screen.getByRole("checkbox", { name: /List files/ }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /Read file content/ }));
+		expect(submitButton.disabled).toBe(true);
+
+		// A submit that skips the disabled button, like Enter in the name field, must not create a key.
+		fireEvent.submit(form);
+		expect(mutationMock).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByRole("checkbox", { name: /Write files/ }));
+		expect(submitButton.disabled).toBe(false);
+	});
+
+	test("shows the write warning only while files:write is checked", () => {
+		renderRoute();
+
+		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
+		const writeCheckbox = screen.getByRole("checkbox", { name: /Write files/ });
+		expect(screen.queryByText(/Treat it like a password/)).toBeNull();
+		expect(writeCheckbox.getAttribute("aria-describedby")).toBeNull();
+
+		fireEvent.click(writeCheckbox);
+		const warning = screen.getByText(/Treat it like a password/);
+		expect(warning.id).not.toBe("");
+		expect(writeCheckbox.getAttribute("aria-describedby")).toBe(warning.id);
+
+		fireEvent.click(writeCheckbox);
+		expect(screen.queryByText(/Treat it like a password/)).toBeNull();
+		expect(writeCheckbox.getAttribute("aria-describedby")).toBeNull();
+	});
+
+	test("renders badge labels for all four scopes", () => {
+		useQueryMock.mockReturnValue({
+			_yay: [createCredential({ scopes: ["files:list", "files:read", "files:download", "files:write"] })],
+		});
+
+		renderRoute();
+
+		const scopeGroup = screen.getByRole("group", { name: "Permissions" });
+		for (const label of ["List files", "Read file content", "Download files", "Write files"]) {
+			expect(scopeGroup.textContent).toContain(label);
+		}
 	});
 
 	test("validates the trimmed API key name length", async () => {

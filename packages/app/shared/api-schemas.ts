@@ -137,9 +137,13 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/write": ReturnType<typeof public_api_http_routes>["/api/v1/files/write"];
 
+	"/api/v1/files/write-many": ReturnType<typeof public_api_http_routes>["/api/v1/files/write-many"];
+
 	"/api/v1/files/touch": ReturnType<typeof public_api_http_routes>["/api/v1/files/touch"];
 
 	"/api/v1/files/download-urls": ReturnType<typeof public_api_http_routes>["/api/v1/files/download-urls"];
+
+	"/api/v1/files/upload-urls": ReturnType<typeof public_api_http_routes>["/api/v1/files/upload-urls"];
 
 	"/api/v1/activities/start": ReturnType<typeof public_api_http_routes>["/api/v1/activities/start"];
 

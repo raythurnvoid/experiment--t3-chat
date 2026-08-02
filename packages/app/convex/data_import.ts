@@ -15,7 +15,12 @@ import { files_normalize_name, files_normalize_upload_file_name } from "../share
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { server_path_normalize } from "../server/server-utils.ts";
 import { files_nodes_db_archive_nodes, files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
-import { r2_create_asset_key, r2_generate_upload_url, r2_get_bucket } from "./r2_client.ts";
+import {
+	r2_create_asset_key,
+	r2_generate_upload_url,
+	r2_get_bucket,
+	r2_UNFINALIZED_ASSET_TTL_MS,
+} from "./r2_client.ts";
 
 /**
  * Create upload nodes and presigned R2 PUT urls for a batch of binary files.
@@ -189,6 +194,7 @@ export const create_upload_targets = internalMutation({
 				// starting conversion or plugin runs for imported content.
 				processingWorkId: null,
 				createdBy: args.createdBy,
+				unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
 				updatedAt: now,
 			});
 

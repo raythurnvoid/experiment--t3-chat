@@ -11,10 +11,12 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- `userId` plus `quotaName: "extra_organizations"` for user-level organization creation quota
 	- `organizationId` plus `quotaName: "extra_workspaces"` for organization-level workspace creation quota
 	- `userId`, `organizationId`, and `workspaceId` plus `quotaName: "active_api_credentials"` for a user's active API keys in one workspace
+	- `organizationId` plus `workspaceId` plus `quotaName: "public_api_upload_bytes"` for the workspace's declared upload bytes through the public API
 - The product rule is still:
 	- each user gets `personal` plus at most **2** extra organizations (**3** total organizations)
 	- each organization gets `home` plus at most **5** extra workspaces (**6** total workspaces)
 	- each user can have at most **20** active API keys in one workspace
+	- each workspace gets a **50 GB** budget of declared upload bytes through the public API; the counter only grows (deleting files does not give bytes back)
 - Default entities do **not** consume quota usage:
 	- default organization `personal`
 	- default workspace `home`
@@ -30,6 +32,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- recomputes `usedCount` from live docs
 	- substitutes code `maxCount` defaults when a quota doc is missing
 - Missing required quota docs in write flows should fail intentionally via `should_never_happen(...)` so bootstrap bugs stay visible.
+- Exception: `public_api_upload_bytes` has no bootstrap owner, so the first `/api/v1/files/upload-urls` mint seeds it with `quotas_db_ensure` inside `public_api.create_file_upload_targets`. A missing doc means nothing was consumed yet, and the public `quotas.get` arm returns the doc or `null` instead of failing.
 - Public quota queries may return `null` for stale identities or unauthorized quota scopes. Missing quota docs for authorized scopes fail intentionally.
 
 # Schema
@@ -54,6 +57,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- `quotas.extra_organizations`
 	- `quotas.extra_workspaces`
 	- `quotas.active_api_credentials`
+	- `quotas.public_api_upload_bytes`
 
 # Runtime write paths
 
@@ -82,6 +86,11 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 - `public_api.api_credential_rotate` revokes one credential and creates one credential in the same mutation, so the active counter does not change.
 - Do not count active credential docs at create time. The persisted quota is the runtime source of truth.
 
+## Public API upload minting
+
+- `public_api.create_file_upload_targets` (the mutation behind `/api/v1/files/upload-urls`) ensures the workspace `"public_api_upload_bytes"` quota lazily with `quotas_db_ensure`, refuses the whole batch when the declared bytes would cross `maxCount`, and consumes them in the same mutation that creates the nodes and assets.
+- The counter is monotonic on purpose: deleting files does not decrement it. It is a coarse declared-bytes ceiling, not an exact storage meter (the finalizer records the real object size without refunding the difference).
+
 ## Delete flows
 
 - `delete_workspace` reads the organization extra-workspace quota and decrements `usedCount` directly when deleting a non-default workspace.
@@ -105,6 +114,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 - Use `api.quotas.get({ quotaName: "extra_organizations", userId })` for user quotas.
 - Use `api.quotas.get({ quotaName: "extra_workspaces", organizationId })` for organization quotas.
 - Use `api.quotas.get({ quotaName: "active_api_credentials", membershipId })` for the current user's active API credential quota in that membership's workspace.
+- Use `api.quotas.get({ quotaName: "public_api_upload_bytes", membershipId })` for that membership workspace's declared upload-byte budget; it returns `null` until the first mint seeds the doc.
 - Returned objects are the persisted quota docs. Frontend callers derive remaining capacity from `usedCount` and `maxCount`, and use `packages/app/shared/quotas.ts` for quota-specific display copy.
 
 # Tests

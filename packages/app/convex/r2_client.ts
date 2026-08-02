@@ -67,6 +67,13 @@ export function r2_create_asset_key(args: {
 	return `organizations/${args.organizationId}/workspaces/${args.workspaceId}/assets/${args.assetId}`;
 }
 
+/**
+ * How long an asset doc may stay without a confirmed R2 object (`r2Key` unset) before the hourly
+ * sweeper in r2.ts may delete it. Far above the ~15 min presigned-url and write-stage lifetimes,
+ * so no in-flight upload can land on an asset the sweeper already considers expired.
+ */
+export const r2_UNFINALIZED_ASSET_TTL_MS = 24 * 60 * 60 * 1000;
+
 export async function r2_put_object(
 	ctx: ActionCtx,
 	args: {

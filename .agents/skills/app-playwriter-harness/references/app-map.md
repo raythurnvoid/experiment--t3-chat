@@ -98,6 +98,15 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 - Refusals arrive as a sonner toast carrying the **server's** message verbatim; the selection is kept so it can be retried. The two worth recognising: `Somebody has to be able to manage this. Give another person or role Can manage first.` and `You cannot give "<level>" here: you do not have "<permission>" on it`.
 - Escape does not close the dialog while a write is in flight, and the close button is disabled then too.
 
+## API Keys Route
+
+- Route: `/w/:organizationName/:workspaceName/api-keys`.
+- Create dialog root `.RouteApiKeysCreateModal`, reveal dialog `.RouteApiKeysRevealModal`, revoke confirm `.RouteApiKeysConfirmationModal` — all Ariakit modals, filter on visibility.
+- The name field is `input.MyInputControl` (no `type` attribute, so `input[type=text]` matches nothing). Scope checkboxes are `MyCheckboxButton` — click the label, never the 1×1 input, same as the roles route.
+- The dialog opens with `List files` and `Read file content` pre-checked; unchecking everything really disables the submit (`disabled`, not `aria-disabled`). Checking `Write files` shows a warning the checkbox points at via `aria-describedby`.
+- The reveal dialog shows the full key once and has a `Test key` button that calls `/api/v1/files/list` with the new key and reports `Key verified. It can list files in this workspace.` inline — the cheapest end-to-end key check.
+- Row revoke buttons are named `Revoke <key name>`; the confirm dialog's action is `Revoke key` (`exact: true` — the row button name also contains "Revoke").
+
 ## Plugins Routes
 
 - All plugins routes portal a breadcrumb `ol.PluginsHeaderBreadcrumb` into the main app header slot `#app_main_header_content` (same mechanism as the files page header): catalog shows `Plugins`, detail `Plugins / <name>`, publisher `Plugins / Publisher`, publisher repo `Plugins / Publisher / <displayName>`. Linked segments are `.PluginsHeaderBreadcrumb-segment` anchors; the current one is `.PluginsHeaderBreadcrumb-segment-current`. There are no in-page back buttons or in-page breadcrumbs.

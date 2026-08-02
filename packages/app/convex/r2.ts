@@ -22,10 +22,12 @@ import {
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
 	r2_create_asset_key,
+	r2_delete_object,
 	r2_fetch_object_from_bucket,
 	r2_get_bucket,
 	r2_get_download_url,
 	r2_put_object,
+	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -126,6 +128,7 @@ export const insert_asset = internalMutation({
 			r2Bucket: r2_get_bucket(),
 			size: args.size,
 			createdBy: args.createdBy,
+			unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
 			updatedAt: now,
 		});
 	},
@@ -142,7 +145,8 @@ export const patch_asset = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		await ctx.db.patch("files_r2_assets", args.assetId, {
-			...(args.r2Key === undefined ? {} : { r2Key: args.r2Key }),
+			// Setting r2Key finalizes the asset, so the same patch removes the orphan-sweep deadline.
+			...(args.r2Key === undefined ? {} : { r2Key: args.r2Key, unfinalizedExpiresAt: undefined }),
 			...(args.size === undefined ? {} : { size: args.size }),
 			...(args.etag === undefined ? {} : { etag: args.etag }),
 			...(args.processingWorkId === undefined ? {} : { processingWorkId: args.processingWorkId }),
@@ -180,6 +184,41 @@ export const get_asset_by_r2_event_key = internalQuery({
 
 type get_asset_by_r2_event_key_Result =
 	typeof get_asset_by_r2_event_key extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Upload readiness and size for a page of assets, keyed by asset id. Kept separate from the
+ * node-listing query on purpose: finalization patches assets on every upload, and folding this
+ * into the listing would invalidate its cache entry each time.
+ *
+ * Pass only asset ids that already went through tenancy and visibility filtering; this query
+ * does not re-check them.
+ */
+export const get_assets_ready_states = internalQuery({
+	args: {
+		assetIds: v.array(v.id("files_r2_assets")),
+	},
+	returns: v.record(v.id("files_r2_assets"), v.object({ ready: v.boolean(), size: v.number() })),
+	handler: async (ctx, args) => {
+		const assets = await Promise.all(args.assetIds.map((assetId) => ctx.db.get("files_r2_assets", assetId)));
+
+		const states: Record<Id<"files_r2_assets">, { ready: boolean; size: number }> = {};
+		for (const asset of assets) {
+			if (!asset) {
+				continue;
+			}
+			// "Ready" means the R2 object is confirmed at its key. Never derive this from the
+			// processing state: a skipProcessing asset is settled from birth, before its object exists.
+			states[asset._id] = { ready: asset.r2Key !== undefined, size: asset.size };
+		}
+
+		return states;
+	},
+});
+
+export type r2_get_assets_ready_states_Result =
+	typeof get_assets_ready_states extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -652,6 +691,7 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 				assetId: args.yjsSnapshotAssetId,
 			}),
 			size: args.yjsSnapshotSize,
+			unfinalizedExpiresAt: undefined,
 			updatedAt: args.now,
 		}),
 		ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
@@ -661,6 +701,7 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 				assetId: args.versionSnapshotAssetId,
 			}),
 			size: args.versionSnapshotSize,
+			unfinalizedExpiresAt: undefined,
 			updatedAt: args.now,
 		}),
 		...args.processingWorkAssetIds.map((assetId) =>
@@ -928,6 +969,7 @@ export const process_uploaded_asset_event = internalMutation({
 			r2Key: args.r2Key,
 			size: args.size,
 			...(args.etag === undefined ? {} : { etag: args.etag }),
+			unfinalizedExpiresAt: undefined,
 			updatedAt: now,
 		});
 
@@ -996,6 +1038,108 @@ export const process_uploaded_asset_event = internalMutation({
 				cause: error,
 			});
 		}
+	},
+});
+
+const UNFINALIZED_ASSET_CLEANUP_BATCH_SIZE = 50;
+
+/** How long a referenced-but-unfinalized asset is left alone before the sweeper warns about it again. */
+const UNFINALIZED_ASSET_RECHECK_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Cron sweep for asset docs whose R2 object was never confirmed (`r2Key` still unset when
+ * `unfinalizedExpiresAt` passes). These leak when a create action crashes before its cleanup can
+ * run, or when a client mints an upload url and never PUTs. Assets that a node or snapshot doc
+ * still references are broken files, not orphans: deleting them would leave the referencing doc
+ * pointing at nothing, so the sweeper only warns about them and looks again later.
+ */
+export const cleanup_expired_unfinalized_assets = internalMutation({
+	args: {
+		_test_now: v.optional(v.number()),
+		batchSize: v.optional(v.number()),
+		_test_disableReschedule: v.optional(v.boolean()),
+	},
+	returns: v.object({
+		deletedCount: v.number(),
+		done: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const now = args._test_now ?? Date.now();
+		const batchSize = Math.min(Math.max(args.batchSize ?? UNFINALIZED_ASSET_CLEANUP_BATCH_SIZE, 1), 100);
+		// The range must be two-sided. `unfinalizedExpiresAt` is optional, and in the index a
+		// missing value sorts below every number. A one-sided `.lt(now)` would return every
+		// finalized asset (their field was cleared) before any real orphan, so the sweep would
+		// fill each batch with finalized assets and never reach an orphan.
+		const expired = await ctx.db
+			.query("files_r2_assets")
+			.withIndex("by_unfinalizedExpiresAt", (q) => q.gt("unfinalizedExpiresAt", 0).lt("unfinalizedExpiresAt", now))
+			.take(batchSize);
+
+		let deletedCount = 0;
+		for (const asset of expired) {
+			// Heal drift: a finalized asset here means some write site set `r2Key` without clearing
+			// the deadline. The asset is fine, only the field needs to go.
+			if (asset.r2Key !== undefined) {
+				await ctx.db.patch("files_r2_assets", asset._id, {
+					unfinalizedExpiresAt: undefined,
+					updatedAt: now,
+				});
+				continue;
+			}
+
+			const [referencingNode, referencingYjsSnapshot, referencingSnapshot] = await Promise.all([
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_asset", (q) =>
+						q.eq("organizationId", asset.organizationId).eq("workspaceId", asset.workspaceId).eq("assetId", asset._id),
+					)
+					.first(),
+				ctx.db
+					.query("files_yjs_snapshots")
+					.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
+					.first(),
+				ctx.db
+					.query("files_snapshots")
+					.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
+					.first(),
+			]);
+			if (referencingNode || referencingYjsSnapshot || referencingSnapshot) {
+				console.warn("Expired unfinalized asset is still referenced, skipping delete", {
+					assetId: asset._id,
+					kind: asset.kind,
+					organizationId: asset.organizationId,
+					workspaceId: asset.workspaceId,
+				});
+				await ctx.db.patch("files_r2_assets", asset._id, {
+					unfinalizedExpiresAt: now + UNFINALIZED_ASSET_RECHECK_DELAY_MS,
+					updatedAt: now,
+				});
+				continue;
+			}
+
+			// Bytes may exist even without `r2Key`: the PUT can land without its event ever reaching
+			// us. The object key is deterministic and the delete is a no-op when nothing is there.
+			await r2_delete_object(
+				ctx,
+				r2_create_asset_key({
+					organizationId: asset.organizationId,
+					workspaceId: asset.workspaceId,
+					assetId: asset._id,
+				}),
+			);
+			await ctx.db.delete("files_r2_assets", asset._id);
+			deletedCount += 1;
+		}
+
+		const done = expired.length < batchSize;
+		if (!done && !args._test_disableReschedule) {
+			await ctx.scheduler.runAfter(0, internal.r2.cleanup_expired_unfinalized_assets, {
+				batchSize: args.batchSize,
+				_test_now: args._test_now,
+			});
+		}
+
+		return { deletedCount, done };
 	},
 });
 

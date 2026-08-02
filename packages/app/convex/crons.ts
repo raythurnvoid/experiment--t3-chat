@@ -40,6 +40,14 @@ crons.cron(
 	{},
 );
 
+// Once hourly — delete asset docs (and any landed bytes) whose R2 object was never confirmed.
+crons.cron(
+	"cleanup expired unfinalized assets",
+	"45 * * * *",
+	internal.r2.cleanup_expired_unfinalized_assets,
+	{},
+);
+
 // Once daily at 06:30 UTC — delete terminal plugin runs and their call docs past retention.
 crons.cron("cleanup old plugin event runs", "30 6 * * *", internal.plugins_runtime.cleanup_old_event_runs, {});
 

@@ -21,7 +21,7 @@ import {
 	activities_db_get_by_source_id,
 	activities_db_start,
 } from "./activities.ts";
-import { quotas_db_get } from "./quotas.ts";
+import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { rate_limiter_limit_by_key, rate_limiter_http_client_key } from "./rate_limiter.ts";
 import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
@@ -36,9 +36,10 @@ import {
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
-import { files_normalize_name } from "../shared/files.ts";
+import { files_normalize_name, files_normalize_upload_file_name } from "../shared/files.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
+	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
@@ -61,13 +62,15 @@ import {
 	files_nodes_db_insert_file_content_docs,
 	files_nodes_reconstruct_latest_file_content_from_materialization_state,
 } from "./files_nodes_content.ts";
-import type { r2_get_data_for_public_download_url_Result } from "./r2.ts";
+import type { r2_get_assets_ready_states_Result, r2_get_data_for_public_download_url_Result } from "./r2.ts";
 import {
 	r2_create_asset_key,
 	r2_delete_object,
+	r2_generate_upload_url,
 	r2_get_bucket,
 	r2_get_download_url,
 	r2_put_object,
+	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
 import { type plugins_runtime_consume_run_api_call_Result } from "./plugins_runtime.ts";
 
@@ -96,6 +99,12 @@ const FILES_DOWNLOAD_URLS_MAX_ITEMS = 20;
 const FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS = 100;
 const FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES = 32_000;
 const FILES_TOUCH_MAX_PATHS = 8;
+// Must stay <= the public_api_principal bucket capacity: a batch charges one unit per minted URL.
+const FILES_UPLOAD_URLS_MAX_ITEMS = 20;
+// Must stay <= the public_api_files_write_bulk bucket capacity: the batch charges one token per file.
+const FILES_WRITE_MANY_MAX_ITEMS = 20;
+// Whole-request byte cap: 20 files near the per-file content limit plus JSON overhead.
+const FILES_WRITE_MANY_MAX_REQUEST_BYTES = 8_000_000;
 const ACTIVITIES_TITLE_MAX_CHARS = 120;
 
 const TEXT_ENCODER = new TextEncoder();
@@ -111,7 +120,9 @@ const PLUGIN_RUN_TOKEN_REGEX = /^plr_[0-9a-f]{64}$/u;
 const PLUGIN_UI_TOKEN_REGEX = /^plu_[0-9a-f]{64}$/u;
 const PUBLIC_API_GRANT_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_API_GRANT_CLEANUP_BATCH_SIZE = 100;
-// Stages only need to outlive one write action; anything older is a crashed write.
+// Stages only need to outlive one write action; anything older is a crashed write. Keep this far
+// below the 24 h unfinalized-asset TTL: the orphan sweeper in r2.ts does not check stage
+// references, so a stage must always die before its staged asset docs become sweepable.
 const FILE_WRITE_STAGE_TTL_MS = 15 * 60 * 1000;
 const FILE_WRITE_STAGE_CLEANUP_BATCH_SIZE = 25;
 
@@ -1571,6 +1582,7 @@ export const prepare_file_write = internalMutation({
 				r2Bucket: r2_get_bucket(),
 				size,
 				createdBy: args.userId,
+				unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
 				updatedAt: now,
 			});
 		const [yjsSnapshotAssetId, contentSnapshotAssetId] = await Promise.all([
@@ -2219,6 +2231,293 @@ type start_run_activity_Result =
 		: never;
 
 /**
+ * Create upload nodes and presigned R2 PUT urls for a batch of binary files, on behalf of a
+ * user API key. Lifted from the operator-only `data_import.create_upload_targets`, with the
+ * node and ancestor ACL checks an API key needs (the operator flow authorizes as the
+ * organization owner and skips them).
+ *
+ * With `skipProcessing`, created assets get `processingWorkId: null`, so the R2 event finalizer
+ * records the object without starting Markdown conversion or plugin dispatch (it only starts
+ * them while the field is still undefined).
+ */
+export const create_file_upload_targets = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		/** The credential owner. */
+		userId: v.id("users"),
+		principalRef: file_write_principal_ref_validator,
+		items: v.array(
+			v.object({
+				path: v.string(),
+				contentType: v.string(),
+				size: v.number(),
+			}),
+		),
+		skipProcessing: v.boolean(),
+		overwrite: v.union(v.literal("replace"), v.literal("fail")),
+	},
+	returns: v_result({
+		_yay: v.array(
+			v.object({
+				path: v.string(),
+				nodeId: v.id("files_nodes"),
+				uploadUrl: v.string(),
+				headers: v.record(v.string(), v.string()),
+			}),
+		),
+		_nay: {
+			data: v.object({ path: v.string() }),
+		},
+	}),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		// One transactional re-check covers the whole batch. The user_api_key branch never reads
+		// the path (path only matters for the plugin-run sibling constraint, and the route only
+		// admits user keys), so any placeholder path works.
+		const revalidated = await db_revalidate_file_write_principal(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			principalRef: args.principalRef,
+			path: "/",
+			now,
+		});
+		if (revalidated._nay) {
+			return revalidated;
+		}
+
+		// Validate the whole batch before any write. A `_nay` return does not roll back earlier
+		// writes in the same mutation, so every fallible check runs first and the write pass below
+		// only throws for impossible states (throwing does roll back).
+		const leafPaths = new Set<string>();
+		const validated: Array<{
+			path: string;
+			contentType: string;
+			size: number;
+			collidingNodeId: Id<"files_nodes"> | null;
+		}> = [];
+		for (const item of args.items) {
+			// Require already-canonical paths, like the Markdown write route: accepting
+			// near-canonical input here would create nodes the app's own creation flows reject.
+			if (!item.path.startsWith("/") || item.path === "/" || server_path_normalize(item.path) !== item.path) {
+				return Result({ _nay: { message: "Path must be absolute and normalized", data: { path: item.path } } });
+			}
+
+			// Upload names, not Markdown names: files_normalize_name("file", ...) only accepts .md,
+			// while uploaded binaries keep their real extensions like the app's upload flow.
+			const name = path_name_of(item.path);
+			if (files_normalize_upload_file_name(name) !== name) {
+				return Result({ _nay: { message: "Path ends in an invalid file name", data: { path: item.path } } });
+			}
+			for (const segment of path_extract_segments_from(item.path).slice(0, -1)) {
+				const normalizedSegment = files_normalize_name("folder", segment);
+				if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
+					return Result({ _nay: { message: "Path contains an invalid folder name", data: { path: item.path } } });
+				}
+			}
+
+			if (item.size > files_MAX_UPLOADS_BYTES) {
+				return Result({ _nay: { message: "File too large", data: { path: item.path } } });
+			}
+
+			if (leafPaths.has(item.path)) {
+				return Result({ _nay: { message: "Duplicate path in batch", data: { path: item.path } } });
+			}
+			leafPaths.add(item.path);
+
+			const existingNode = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("path", item.path)
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			if (existingNode) {
+				// This lookup is raw on purpose, like publish_file_write: a path holds one active
+				// node, so a restricted file the caller cannot see still has to block the create, or
+				// two nodes would end up on one path. That makes this node-level check the only thing
+				// standing between the caller and somebody else's restricted file, which `replace`
+				// would archive.
+				if (
+					!(await has_workspace_content_permission(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						userId: args.userId,
+						permission: "content.write",
+						fileNode: existingNode,
+					}))
+				) {
+					return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
+				}
+				if (existingNode.kind !== "file") {
+					return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
+				}
+				if (args.overwrite === "fail") {
+					return Result({ _nay: { message: "A file already exists at this path", data: { path: item.path } } });
+				}
+			}
+
+			validated.push({
+				path: item.path,
+				contentType: item.contentType,
+				size: item.size,
+				collidingNodeId: existingNode?._id ?? null,
+			});
+		}
+
+		// Ancestor pass. Structural checks keep the recursive create from failing mid-write, and the
+		// ACL check matters because an API key is not the organization owner: the create helper
+		// itself refuses restricted folders, and by then earlier items are already written. Asking
+		// here turns that case into a clean per-path refusal before anything is written.
+		for (const item of validated) {
+			const segments = path_extract_segments_from(item.path);
+			for (let depth = 1; depth < segments.length; depth++) {
+				const ancestorPath = `/${segments.slice(0, depth).join("/")}`;
+				if (leafPaths.has(ancestorPath)) {
+					return Result({
+						_nay: { message: "Path conflicts with another item in the batch", data: { path: item.path } },
+					});
+				}
+
+				const ancestor = await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("path", ancestorPath)
+							.eq("archiveOperationId", undefined),
+					)
+					.first();
+				if (!ancestor) {
+					continue;
+				}
+				if (ancestor.kind !== "folder") {
+					return Result({
+						_nay: { message: "An intermediate segment is owned by a file", data: { path: item.path } },
+					});
+				}
+				if (
+					!(await access_control_db_can_act_on_file_node(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						userId: args.userId,
+						fileNode: ancestor,
+						permission: "content.write",
+					}))
+				) {
+					return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
+				}
+			}
+		}
+
+		// Consume the declared bytes for the whole batch up front. The counter is monotonic on
+		// purpose: deletes do not refund it, so it is a coarse per-workspace budget, not storage
+		// accounting. Seeded lazily because existing workspaces have no doc for this quota.
+		const totalDeclaredBytes = validated.reduce((sum, item) => sum + item.size, 0);
+		const quotaId = await quotas_db_ensure(ctx, {
+			quotaName: "public_api_upload_bytes",
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			now,
+		});
+		const quota = await ctx.db.get("quotas", quotaId);
+		if (!quota) {
+			// Unreachable: quotas_db_ensure returned this id in the same transaction.
+			throw should_never_happen("quotas_db_ensure returned a missing quota doc", { quotaId });
+		}
+		if (quota.usedCount + totalDeclaredBytes > quota.maxCount) {
+			return Result({ _nay: { message: "Upload quota exceeded" } });
+		}
+		await ctx.db.patch("quotas", quota._id, {
+			usedCount: quota.usedCount + totalDeclaredBytes,
+			updatedAt: now,
+		});
+
+		// Write pass. Items run in order so later items reuse folders created by earlier ones.
+		const targets: Array<{
+			path: string;
+			nodeId: Id<"files_nodes">;
+			uploadUrl: string;
+			headers: Record<string, string>;
+		}> = [];
+		for (const item of validated) {
+			// Uploading over a name archives whatever holds it, like create_upload_node, so re-runs
+			// replace the previous upload instead of failing.
+			if (item.collidingNodeId) {
+				await files_nodes_db_archive_nodes(ctx, {
+					nodeIds: [item.collidingNodeId],
+					updatedBy: args.userId,
+					now,
+				});
+			}
+
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				kind: "upload",
+				r2Bucket: r2_get_bucket(),
+				size: item.size,
+				...(args.skipProcessing ? { processingWorkId: null } : {}),
+				createdBy: args.userId,
+				unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
+				updatedAt: now,
+			});
+
+			const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				parentId: files_ROOT_ID,
+				path: item.path,
+				kind: "file",
+				contentType: item.contentType,
+				assetId,
+				now,
+			});
+			// The validation pass cleared every failure this helper can hit (collisions, ancestor
+			// conflicts, restricted folders). Throw so a surprise failure rolls the whole batch back
+			// instead of leaving earlier items half-created.
+			if (nodeIdResult._nay) {
+				const errorMessage = "create_node_recursively_at_path failed after batch validation";
+				const errorData = { path: item.path, nay: nodeIdResult._nay };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+
+			const signedUpload = await r2_generate_upload_url(
+				r2_create_asset_key({
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					assetId,
+				}),
+			);
+
+			// The header map is the exact set the client must send with the PUT. Content-Type is a
+			// convention, not signature-enforced: it keeps the stored object's metadata matching the
+			// node's contentType.
+			targets.push({
+				path: item.path,
+				nodeId: nodeIdResult._yay,
+				uploadUrl: signedUpload.url,
+				headers: { "Content-Type": item.contentType },
+			});
+		}
+
+		return Result({ _yay: targets });
+	},
+});
+
+type create_file_upload_targets_Result =
+	typeof create_file_upload_targets extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
  * Idempotent unpublished-write cleanup: R2 objects first, then the asset docs, then the stage doc,
  * so a crash mid-cleanup leaves the stage behind for a retry. Publication deletes the stage in its
  * own transaction first, so cleanup can never delete a published output.
@@ -2320,6 +2619,330 @@ export const cleanup_expired_file_write_stages = internalMutation({
 	},
 });
 
+/**
+ * Ask the same node-level write question `publish_file_fill` asks at commit time, for the
+ * skip-if-unchanged path, which never reaches a publish mutation.
+ */
+export const check_file_node_write_permission = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!fileNode ||
+			fileNode.organizationId !== args.organizationId ||
+			fileNode.workspaceId !== args.workspaceId ||
+			fileNode.archiveOperationId !== undefined
+		) {
+			return false;
+		}
+
+		return await has_workspace_content_permission(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			permission: "content.write",
+			fileNode,
+		});
+	},
+});
+
+/**
+ * Write one Markdown file: decide create-vs-fill, stage, PUT the staged objects, publish, and
+ * clean the stage up on failure. Shared by the single write route and write-many. The helper
+ * knows nothing about plugins: the single route maps `_nay` through its own `fail()` closure
+ * (which settles the plugin call), and success-path plugin settlement lives inside the publish
+ * mutations.
+ */
+async function write_one_markdown_file(
+	ctx: ActionCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		/** Authoring user: the credential owner, or the plugin run's actorUserId. */
+		userId: Id<"users">;
+		visibilityUserId: Id<"users">;
+		principalRef: Infer<typeof file_write_principal_ref_validator>;
+		path: string;
+		content: string;
+		contentBytes: number;
+		overwrite: "replace" | "fail";
+		skipIfUnchanged: boolean;
+	},
+) {
+	// Decide create-vs-fill before staging. Writing over an existing editable Markdown
+	// file replaces its content in place so the nodeId stays stable for open editors and
+	// links; only non-editable targets (e.g. stored uploads) keep the archive-and-recreate
+	// path in publish_file_write. The publish mutations re-check the node transactionally.
+	const activeNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		visibilityUserId: args.visibilityUserId,
+		path: args.path,
+	})) as files_nodes_get_by_path_Result;
+	if (activeNode?.kind === "folder") {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "A folder already exists at this path",
+				data: { status: 409, errorCode: "conflict" },
+			},
+		});
+	}
+	if (activeNode && args.overwrite === "fail") {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "A file already exists at this path",
+				data: { status: 409, errorCode: "conflict" },
+			},
+		});
+	}
+	// Fill-in-place branch. A null materialization state means the node was archived or
+	// replaced between the two queries; the create path below then handles the write.
+	if (activeNode && files_node_has_editable_yjs_state(activeNode)) {
+		const materializationState = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: activeNode._id,
+		})) as get_file_content_materialization_state_Result;
+		if (materializationState) {
+			const currentContent = await files_nodes_reconstruct_latest_file_content_from_materialization_state({
+				state: materializationState,
+			});
+			if (currentContent._nay) {
+				console.error("Failed to reconstruct current file content for public file write", {
+					nay: currentContent._nay,
+					path: args.path,
+				});
+				return Result({
+					_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
+				});
+			}
+
+			// Mirror the snapshot-restore recipe: project the new Markdown into the current
+			// doc and diff against the pre-projection state vector, so open editor sessions
+			// converge on the new content instead of being detached by a node swap.
+			const yjsBeforeStateVector = encodeStateVector(currentContent._yay.yjsDoc);
+			const projectedYjsDoc = files_yjs_doc_update_from_markdown({
+				mut_yjsDoc: currentContent._yay.yjsDoc,
+				markdown: args.content,
+			});
+			if (projectedYjsDoc._nay) {
+				console.error("Failed to project public file write content into the Yjs doc", {
+					nay: projectedYjsDoc._nay,
+					path: args.path,
+				});
+				return Result({
+					_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
+				});
+			}
+			const fillUpdate = files_yjs_compute_diff_update_from_state_vector({
+				yjsDoc: projectedYjsDoc._yay,
+				yjsBeforeStateVector,
+			});
+
+			// Re-running an import must not mint new versions for files whose content did not
+			// change. A null diff means projecting the incoming Markdown was a semantic no-op,
+			// so return before staging: no stage, no asset docs, no uploads, no version snapshot.
+			if (args.skipIfUnchanged && fillUpdate === null) {
+				// Skip only when the commit-time write check would also say yes. When it says no,
+				// fall through to the normal write path so the caller gets the same refusal a plain
+				// write gets — a 200 here would let a caller who cannot write the node confirm its
+				// exact content through the unchanged marker.
+				const canWriteNode = (await ctx.runQuery(internal.public_api.check_file_node_write_permission, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					nodeId: activeNode._id,
+				})) as boolean;
+				if (canWriteNode) {
+					return Result({ _yay: { nodeId: activeNode._id, wroteInPlace: true, unchanged: true } });
+				}
+			}
+
+			const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				principalRef: args.principalRef,
+				path: args.path,
+				overwrite: args.overwrite,
+				contentSize: args.contentBytes,
+				// The fill path never uploads a Yjs snapshot object; publish_file_fill drops
+				// the staged asset doc.
+				yjsSnapshotSize: 0,
+			});
+			if (prepared._nay) {
+				if (prepared._nay.message === "Permission denied") {
+					return Result({
+						_nay: {
+							name: "nay",
+							message: prepared._nay.message,
+							data: { status: 403, errorCode: "permission_denied" },
+						},
+					});
+				}
+				return Result({
+					_nay: { name: "nay", message: prepared._nay.message, data: { status: 401, errorCode: "unauthenticated" } },
+				});
+			}
+
+			const contentSnapshotKey = r2_create_asset_key({
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetId: prepared._yay.contentSnapshotAssetId,
+			});
+			try {
+				await r2_put_object(ctx, {
+					key: contentSnapshotKey,
+					body: args.content,
+					contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+				});
+			} catch (error) {
+				console.error("Failed to write staged file object", {
+					error,
+					stageId: prepared._yay.stageId,
+					path: args.path,
+				});
+				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+					stageId: prepared._yay.stageId,
+					orphanedKeys: [contentSnapshotKey],
+				});
+				return Result({
+					_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
+				});
+			}
+
+			const published: publish_file_fill_Result = await ctx.runMutation(internal.public_api.publish_file_fill, {
+				stageId: prepared._yay.stageId,
+				content: args.content,
+				expectedNodeId: activeNode._id,
+				...(fillUpdate ? { fillUpdate: files_u8_to_array_buffer(fillUpdate) } : {}),
+			});
+			if (published._nay) {
+				// Conflict is the fallback: structural 409s pass their specific message through,
+				// while the auth and storage failures use fixed literals.
+				const failure =
+					published._nay.message === "Unauthenticated"
+						? { status: 401 as const, errorCode: "unauthenticated" as const }
+						: published._nay.message === "Permission denied"
+							? { status: 403 as const, errorCode: "permission_denied" as const }
+							: published._nay.message === "Write was not published"
+								? { status: 500 as const, errorCode: "storage_failure" as const }
+								: { status: 409 as const, errorCode: "conflict" as const };
+				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+					stageId: prepared._yay.stageId,
+					orphanedKeys: [contentSnapshotKey],
+				});
+				return Result({
+					_nay: { name: "nay", message: published._nay.message, data: failure },
+				});
+			}
+
+			return Result({ _yay: { nodeId: published._yay.nodeId, wroteInPlace: true, unchanged: false } });
+		}
+	}
+
+	const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown(args.content);
+	if (snapshotUpdate._nay) {
+		console.error("Failed to build Yjs snapshot for public file write", {
+			nay: snapshotUpdate._nay,
+			path: args.path,
+		});
+		return Result({
+			_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
+		});
+	}
+
+	const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		principalRef: args.principalRef,
+		path: args.path,
+		overwrite: args.overwrite,
+		contentSize: args.contentBytes,
+		yjsSnapshotSize: snapshotUpdate._yay.byteLength,
+	});
+	if (prepared._nay) {
+		if (prepared._nay.message === "Permission denied") {
+			return Result({
+				_nay: { name: "nay", message: prepared._nay.message, data: { status: 403, errorCode: "permission_denied" } },
+			});
+		}
+		return Result({
+			_nay: { name: "nay", message: prepared._nay.message, data: { status: 401, errorCode: "unauthenticated" } },
+		});
+	}
+
+	const stageId = prepared._yay.stageId;
+	const stageScope = { organizationId: args.organizationId, workspaceId: args.workspaceId };
+	const yjsSnapshotKey = r2_create_asset_key({ ...stageScope, assetId: prepared._yay.yjsSnapshotAssetId });
+	const contentSnapshotKey = r2_create_asset_key({
+		...stageScope,
+		assetId: prepared._yay.contentSnapshotAssetId,
+	});
+	// Passed to cleanup so objects PUT after run terminalization already swept the
+	// stage (deleting the docs the keys derive from) still get removed from the bucket.
+	const orphanedKeys = [yjsSnapshotKey, contentSnapshotKey];
+	// Every PUT must settle before any cleanup: a fast-failing sibling would otherwise
+	// trigger the key sweep while another PUT is still in flight, and that PUT would
+	// re-create its object after the sweep — an untracked blob no reaper can find.
+	const putResults = await Promise.allSettled([
+		r2_put_object(ctx, {
+			key: yjsSnapshotKey,
+			body: snapshotUpdate._yay,
+			contentType: "application/octet-stream" satisfies files_ContentType,
+		}),
+		r2_put_object(ctx, {
+			key: contentSnapshotKey,
+			body: args.content,
+			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+		}),
+	]);
+	const putFailure = putResults.find((result) => result.status === "rejected");
+	if (putFailure) {
+		console.error("Failed to write staged file objects", {
+			error: putFailure.reason,
+			stageId,
+			path: args.path,
+		});
+		await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
+		return Result({
+			_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
+		});
+	}
+
+	const published: publish_file_write_Result = await ctx.runMutation(internal.public_api.publish_file_write, {
+		stageId,
+		content: args.content,
+	});
+	if (published._nay) {
+		// Conflict is the fallback: structural 409s pass their specific message through,
+		// while the auth and storage failures use fixed literals.
+		const failure =
+			published._nay.message === "Unauthenticated"
+				? { status: 401 as const, errorCode: "unauthenticated" as const }
+				: published._nay.message === "Permission denied"
+					? { status: 403 as const, errorCode: "permission_denied" as const }
+					: published._nay.message === "Write was not published"
+						? { status: 500 as const, errorCode: "storage_failure" as const }
+						: { status: 409 as const, errorCode: "conflict" as const };
+		await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
+		return Result({
+			_nay: { name: "nay", message: published._nay.message, data: failure },
+		});
+	}
+
+	return Result({ _yay: { nodeId: published._yay.nodeId, wroteInPlace: false, unchanged: false } });
+}
+
 // HTTP routes
 
 export function public_api_http_routes(router: RouterForConvexModules) {
@@ -2391,6 +3014,16 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 									})
 								: result.page;
 
+							// One readiness query for the whole page, separate from list_subtree so upload
+							// finalization patches do not invalidate the node-listing cache entry.
+							const pageAssetIds = pageItems.flatMap((item) =>
+								item.kind === "file" && item.assetId ? [item.assetId] : [],
+							);
+							const assetStates: r2_get_assets_ready_states_Result =
+								pageAssetIds.length > 0
+									? await ctx.runQuery(internal.r2.get_assets_ready_states, { assetIds: pageAssetIds })
+									: {};
+
 							console.info("Public API files listed", {
 								principalKind: principal.kind,
 								principalKey: principal.principalKey,
@@ -2401,14 +3034,28 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							return {
 								status: 200,
 								body: {
-									items: pageItems.map((item) => ({
-										path: item.path,
-										name: item.name,
-										kind: item.kind,
-										nodeId: item._id,
-										contentType: item.contentType ?? null,
-										updatedAt: item.updatedAt,
-									})),
+									items: pageItems.map((item) => {
+										const assetState = item.assetId ? assetStates[item.assetId] : undefined;
+										return {
+											path: item.path,
+											name: item.name,
+											kind: item.kind,
+											nodeId: item._id,
+											contentType: item.contentType ?? null,
+											updatedAt: item.updatedAt,
+											// A file is "pending" until its R2 object is confirmed. A file whose
+											// upload crashed before finalize stays "pending" forever — that is
+											// accurate, and it is what makes the breakage visible to an importer.
+											// Files without an asset doc have nothing pending, so they are "ready".
+											status:
+												item.kind === "file"
+													? assetState && !assetState.ready
+														? ("pending" as const)
+														: ("ready" as const)
+													: null,
+											size: assetState ? assetState.size : null,
+										};
+									}),
 									cursor: result.continueCursor,
 									isDone: result.isDone,
 								},
@@ -2672,6 +3319,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							path: z.string(),
 							content: z.string(),
 							overwrite: z.enum(["replace", "fail"]).optional(),
+							skipIfUnchanged: z.boolean().optional(),
 						});
 
 						type SearchParams = never;
@@ -2799,343 +3447,305 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								principalRef = { kind: "user_api_key", credentialId: principal.credentialId };
 							}
 
-							// Decide create-vs-fill before staging. Writing over an existing editable Markdown
-							// file replaces its content in place so the nodeId stays stable for open editors and
-							// links; only non-editable targets (e.g. stored uploads) keep the archive-and-recreate
-							// path in publish_file_write. The publish mutations re-check the node transactionally.
-							const activeNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+							const written = await write_one_markdown_file(ctx, {
 								organizationId: principal.organizationId,
 								workspaceId: principal.workspaceId,
+								userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
 								visibilityUserId: public_api_visibility_user_id(principal),
+								principalRef,
 								path: requestedPath,
-							})) as files_nodes_get_by_path_Result;
-							if (activeNode?.kind === "folder") {
-								return {
-									status: 409,
-									body: await fail({
-										status: 409,
-										message: "A folder already exists at this path",
-										errorCode: "conflict",
-									}),
-								} as const;
-							}
-							if (activeNode && overwrite === "fail") {
-								return {
-									status: 409,
-									body: await fail({
-										status: 409,
-										message: "A file already exists at this path",
-										errorCode: "conflict",
-									}),
-								} as const;
-							}
-							// Fill-in-place branch. A null materialization state means the node was archived or
-							// replaced between the two queries; the create path below then handles the write.
-							if (activeNode && files_node_has_editable_yjs_state(activeNode)) {
-								const materializationState = (await ctx.runQuery(
-									internal.files_nodes.get_file_content_materialization_state,
-									{
-										organizationId: principal.organizationId,
-										workspaceId: principal.workspaceId,
-										nodeId: activeNode._id,
-									},
-								)) as get_file_content_materialization_state_Result;
-								if (materializationState) {
-									const currentContent = await files_nodes_reconstruct_latest_file_content_from_materialization_state({
-										state: materializationState,
-									});
-									if (currentContent._nay) {
-										console.error("Failed to reconstruct current file content for public file write", {
-											nay: currentContent._nay,
-											path: requestedPath,
-										});
-										return {
-											status: 500,
-											body: await fail({ status: 500, message: "Failed to write file", errorCode: "storage_failure" }),
-										} as const;
-									}
-
-									// Mirror the snapshot-restore recipe: project the new Markdown into the current
-									// doc and diff against the pre-projection state vector, so open editor sessions
-									// converge on the new content instead of being detached by a node swap.
-									const yjsBeforeStateVector = encodeStateVector(currentContent._yay.yjsDoc);
-									const projectedYjsDoc = files_yjs_doc_update_from_markdown({
-										mut_yjsDoc: currentContent._yay.yjsDoc,
-										markdown: body._yay.content,
-									});
-									if (projectedYjsDoc._nay) {
-										console.error("Failed to project public file write content into the Yjs doc", {
-											nay: projectedYjsDoc._nay,
-											path: requestedPath,
-										});
-										return {
-											status: 500,
-											body: await fail({ status: 500, message: "Failed to write file", errorCode: "storage_failure" }),
-										} as const;
-									}
-									const fillUpdate = files_yjs_compute_diff_update_from_state_vector({
-										yjsDoc: projectedYjsDoc._yay,
-										yjsBeforeStateVector,
-									});
-
-									const prepared: prepare_file_write_Result = await ctx.runMutation(
-										internal.public_api.prepare_file_write,
-										{
-											organizationId: principal.organizationId,
-											workspaceId: principal.workspaceId,
-											userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
-											principalRef,
-											path: requestedPath,
-											overwrite,
-											contentSize: contentBytes,
-											// The fill path never uploads a Yjs snapshot object; publish_file_fill drops
-											// the staged asset doc.
-											yjsSnapshotSize: 0,
-										},
-									);
-									if (prepared._nay) {
-										if (prepared._nay.message === "Permission denied") {
-											return {
-												status: 403,
-												body: await fail({ status: 403, message: prepared._nay.message, errorCode: "permission_denied" }),
-											} as const;
-										}
-										return {
-											status: 401,
-											body: await fail({ status: 401, message: prepared._nay.message, errorCode: "unauthenticated" }),
-										} as const;
-									}
-
-									const contentSnapshotKey = r2_create_asset_key({
-										organizationId: principal.organizationId,
-										workspaceId: principal.workspaceId,
-										assetId: prepared._yay.contentSnapshotAssetId,
-									});
-									try {
-										await r2_put_object(ctx, {
-											key: contentSnapshotKey,
-											body: body._yay.content,
-											contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-										});
-									} catch (error) {
-										console.error("Failed to write staged file object", {
-											error,
-											stageId: prepared._yay.stageId,
-											path: requestedPath,
-										});
-										const failBody = await fail({
-											status: 500,
-											message: "Failed to write file",
-											errorCode: "storage_failure",
-										});
-										await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
-											stageId: prepared._yay.stageId,
-											orphanedKeys: [contentSnapshotKey],
-										});
-										return { status: 500, body: failBody } as const;
-									}
-
-									const published: publish_file_fill_Result = await ctx.runMutation(
-										internal.public_api.publish_file_fill,
-										{
-											stageId: prepared._yay.stageId,
-											content: body._yay.content,
-											expectedNodeId: activeNode._id,
-											...(fillUpdate ? { fillUpdate: files_u8_to_array_buffer(fillUpdate) } : {}),
-										},
-									);
-									if (published._nay) {
-										// Conflict is the fallback: structural 409s pass their specific message through,
-										// while the auth and storage failures use fixed literals.
-										const failedStatus =
-											published._nay.message === "Unauthenticated"
-												? 401
-												: published._nay.message === "Permission denied"
-													? 403
-													: published._nay.message === "Write was not published"
-														? 500
-														: 409;
-										const failBody = await fail({
-											status: failedStatus,
-											message: published._nay.message,
-											errorCode:
-												failedStatus === 409
-													? "conflict"
-													: failedStatus === 403
-														? "permission_denied"
-														: failedStatus === 401
-															? "unauthenticated"
-															: "storage_failure",
-										});
-										await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
-											stageId: prepared._yay.stageId,
-											orphanedKeys: [contentSnapshotKey],
-										});
-										if (failedStatus === 409) {
-											return { status: 409, body: failBody } as const;
-										}
-										if (failedStatus === 403) {
-											return { status: 403, body: failBody } as const;
-										}
-										if (failedStatus === 401) {
-											return { status: 401, body: failBody } as const;
-										}
-										return { status: 500, body: failBody } as const;
-									}
-
-									console.info("Public API file written in place", {
-										principalKind: principal.kind,
-										principalKey: principal.principalKey,
-										bytes: contentBytes,
-									});
-
-									return {
-										status: 200,
-										body: {
-											path: requestedPath,
-											nodeId: published._yay.nodeId,
-											contentType: "text/markdown;charset=utf-8" as const,
-										},
-										headers: { "Cache-Control": "no-store" },
-									} as const;
-								}
-							}
-
-							const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown(body._yay.content);
-							if (snapshotUpdate._nay) {
-								console.error("Failed to build Yjs snapshot for public file write", {
-									nay: snapshotUpdate._nay,
-									path: requestedPath,
-								});
-								return {
-									status: 500,
-									body: await fail({ status: 500, message: "Failed to write file", errorCode: "storage_failure" }),
-								} as const;
-							}
-
-							const prepared: prepare_file_write_Result = await ctx.runMutation(
-								internal.public_api.prepare_file_write,
-								{
-									organizationId: principal.organizationId,
-									workspaceId: principal.workspaceId,
-									userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
-									principalRef,
-									path: requestedPath,
-									overwrite,
-									contentSize: contentBytes,
-									yjsSnapshotSize: snapshotUpdate._yay.byteLength,
-								},
-							);
-							if (prepared._nay) {
-								if (prepared._nay.message === "Permission denied") {
-									return {
-										status: 403,
-										body: await fail({ status: 403, message: prepared._nay.message, errorCode: "permission_denied" }),
-									} as const;
-								}
-								return {
-									status: 401,
-									body: await fail({ status: 401, message: prepared._nay.message, errorCode: "unauthenticated" }),
-								} as const;
-							}
-
-							const stageId = prepared._yay.stageId;
-							const stageScope = { organizationId: principal.organizationId, workspaceId: principal.workspaceId };
-							const yjsSnapshotKey = r2_create_asset_key({ ...stageScope, assetId: prepared._yay.yjsSnapshotAssetId });
-							const contentSnapshotKey = r2_create_asset_key({
-								...stageScope,
-								assetId: prepared._yay.contentSnapshotAssetId,
+								content: body._yay.content,
+								contentBytes,
+								overwrite,
+								skipIfUnchanged: body._yay.skipIfUnchanged ?? false,
 							});
-							// Passed to cleanup so objects PUT after run terminalization already swept the
-							// stage (deleting the docs the keys derive from) still get removed from the bucket.
-							const orphanedKeys = [yjsSnapshotKey, contentSnapshotKey];
-							// Every PUT must settle before any cleanup: a fast-failing sibling would otherwise
-							// trigger the key sweep while another PUT is still in flight, and that PUT would
-							// re-create its object after the sweep — an untracked blob no reaper can find.
-							const putResults = await Promise.allSettled([
-								r2_put_object(ctx, {
-									key: yjsSnapshotKey,
-									body: snapshotUpdate._yay,
-									contentType: "application/octet-stream" satisfies files_ContentType,
-								}),
-								r2_put_object(ctx, {
-									key: contentSnapshotKey,
-									body: body._yay.content,
-									contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-								}),
-							]);
-							const putFailure = putResults.find((result) => result.status === "rejected");
-							if (putFailure) {
-								console.error("Failed to write staged file objects", {
-									error: putFailure.reason,
-									stageId,
-									path: requestedPath,
-								});
+							if (written._nay) {
 								const failBody = await fail({
-									status: 500,
-									message: "Failed to write file",
-									errorCode: "storage_failure",
+									status: written._nay.data.status,
+									message: written._nay.message,
+									errorCode: written._nay.data.errorCode,
 								});
-								await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
-								return { status: 500, body: failBody } as const;
-							}
-
-							const published: publish_file_write_Result = await ctx.runMutation(
-								internal.public_api.publish_file_write,
-								{
-									stageId,
-									content: body._yay.content,
-								},
-							);
-							if (published._nay) {
-								// Conflict is the fallback: structural 409s pass their specific message through,
-								// while the auth and storage failures use fixed literals.
-								const failedStatus =
-									published._nay.message === "Unauthenticated"
-										? 401
-										: published._nay.message === "Permission denied"
-											? 403
-											: published._nay.message === "Write was not published"
-												? 500
-												: 409;
-								const failBody = await fail({
-									status: failedStatus,
-									message: published._nay.message,
-									errorCode:
-										failedStatus === 409
-											? "conflict"
-											: failedStatus === 403
-												? "permission_denied"
-												: failedStatus === 401
-													? "unauthenticated"
-													: "storage_failure",
-								});
-								await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
-								if (failedStatus === 409) {
+								// Branch per literal so the response union keeps exact status literals.
+								if (written._nay.data.status === 409) {
 									return { status: 409, body: failBody } as const;
 								}
-								if (failedStatus === 403) {
+								if (written._nay.data.status === 403) {
 									return { status: 403, body: failBody } as const;
 								}
-								if (failedStatus === 401) {
+								if (written._nay.data.status === 401) {
 									return { status: 401, body: failBody } as const;
 								}
 								return { status: 500, body: failBody } as const;
 							}
 
-							console.info("Public API file written", {
-								principalKind: principal.kind,
-								principalKey: principal.principalKey,
-								bytes: contentBytes,
-							});
+							// A skipped write is a success for the caller and for a plugin call, but no
+							// publish mutation ran, so settle the plugin call here.
+							if (written._yay.unchanged) {
+								await settle_plugin_call_best_effort(ctx, {
+									callId: pluginCallId,
+									status: "succeeded",
+									responseStatus: 200,
+								});
+								console.info("Public API file write skipped as unchanged", {
+									principalKind: principal.kind,
+									principalKey: principal.principalKey,
+									bytes: contentBytes,
+								});
+								return {
+									status: 200,
+									body: {
+										path: requestedPath,
+										nodeId: written._yay.nodeId,
+										contentType: "text/markdown;charset=utf-8" as const,
+										unchanged: true as const,
+									},
+									headers: { "Cache-Control": "no-store" },
+								} as const;
+							}
+
+							if (written._yay.wroteInPlace) {
+								console.info("Public API file written in place", {
+									principalKind: principal.kind,
+									principalKey: principal.principalKey,
+									bytes: contentBytes,
+								});
+							} else {
+								console.info("Public API file written", {
+									principalKind: principal.kind,
+									principalKey: principal.principalKey,
+									bytes: contentBytes,
+								});
+							}
 
 							return {
 								status: 200,
 								body: {
 									path: requestedPath,
-									nodeId: published._yay.nodeId,
+									nodeId: written._yay.nodeId,
 									contentType: "text/markdown;charset=utf-8" as const,
 								},
+								headers: { "Cache-Control": "no-store" },
+							} as const;
+						};
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const result = await handler(ctx, request);
+								return Response.json(result.body, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+
+		...((/* iife */ path = "/api/v1/files/write-many" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						const bodyValidator = z.object({
+							files: z
+								.array(
+									z.object({
+										path: z.string(),
+										content: z.string(),
+										overwrite: z.enum(["replace", "fail"]).optional(),
+									}),
+								)
+								.min(1)
+								.max(FILES_WRITE_MANY_MAX_ITEMS),
+							skipIfUnchanged: z.boolean().optional(),
+						});
+
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = z.infer<typeof bodyValidator>;
+
+						const handler = async (ctx: ActionCtx, request: Request) => {
+							// Authenticate before buffering: the request cap is large (many files), so only
+							// a valid write credential gets to make the server read that much body.
+							const auth = await authorize_request(ctx, request, {
+								requiredScope: public_api_SCOPE_FILES_WRITE,
+								allowedKinds: ["user_api_key"],
+								requiredUserPermission: "content.write",
+								route: path,
+							});
+							if (auth._nay) {
+								return auth._nay;
+							}
+							const principal = auth._yay.principal;
+
+							const declaredBytes = Number(request.headers.get("content-length"));
+							if (Number.isFinite(declaredBytes) && declaredBytes > FILES_WRITE_MANY_MAX_REQUEST_BYTES) {
+								return { status: 400, body: { message: "Request body is too large" } } as const;
+							}
+							const bodyText = await read_request_text_bounded(request, FILES_WRITE_MANY_MAX_REQUEST_BYTES);
+							if (bodyText === null) {
+								return { status: 400, body: { message: "Request body is too large" } } as const;
+							}
+							let bodyJson: unknown;
+							try {
+								bodyJson = JSON.parse(bodyText);
+							} catch {
+								return { status: 400, body: { message: "Failed to parse request body as JSON" } } as const;
+							}
+							const body = bodyValidator.safeParse(bodyJson);
+							if (!body.success) {
+								return { status: 400, body: { message: "Request body validation failed" } } as const;
+							}
+
+							// Validate every item with the single-route rules before writing anything, so a
+							// bad batch fails whole instead of stopping half-written. Later per-item failures
+							// (permission, conflict, storage) still report per item because they depend on
+							// workspace state, not on the request shape.
+							const validatedFiles: Array<{
+								path: string;
+								content: string;
+								contentBytes: number;
+								overwrite: "replace" | "fail";
+							}> = [];
+							const seenPaths = new Set<string>();
+							for (const file of body.data.files) {
+								if (!file.path.startsWith("/")) {
+									return { status: 400, body: { message: "Path must be absolute.", path: file.path } } as const;
+								}
+								const requestedPath = server_path_normalize(file.path);
+								if (requestedPath === "/") {
+									return { status: 400, body: { message: "Path must point to a file.", path: file.path } } as const;
+								}
+								const name = path_name_of(requestedPath);
+								const normalizedName = files_normalize_name("file", name);
+								if (!name.toLowerCase().endsWith(".md") || normalizedName._nay || normalizedName._yay !== name) {
+									return {
+										status: 400,
+										body: { message: "Path must end in a valid Markdown (.md) file name.", path: file.path },
+									} as const;
+								}
+								// Intermediate folders are created verbatim on publish; require already-canonical
+								// names so a write cannot materialize folders the app's own flows would reject.
+								for (const segment of path_extract_segments_from(requestedPath).slice(0, -1)) {
+									const normalizedSegment = files_normalize_name("folder", segment);
+									if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
+										return {
+											status: 400,
+											body: { message: "Path contains an invalid folder name.", path: file.path },
+										} as const;
+									}
+								}
+								if (file.content.length === 0) {
+									return { status: 400, body: { message: "Content must not be empty.", path: file.path } } as const;
+								}
+								const contentBytes = files_get_utf8_byte_size(file.content);
+								if (contentBytes > files_MAX_TEXT_CONTENT_BYTES) {
+									return {
+										status: 400,
+										body: {
+											message: `Content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte limit.`,
+											path: file.path,
+										},
+									} as const;
+								}
+								// Compare normalized paths so two spellings of one path cannot race each other
+								// inside the same batch.
+								if (seenPaths.has(requestedPath)) {
+									return { status: 400, body: { message: "Duplicate path in batch", path: file.path } } as const;
+								}
+								seenPaths.add(requestedPath);
+								validatedFiles.push({
+									path: requestedPath,
+									content: file.content,
+									contentBytes,
+									overwrite: file.overwrite ?? "replace",
+								});
+							}
+
+							// One up-front charge on the bulk bucket, one token per file, before any write:
+							// an over-budget batch gets a whole-request 429 with zero files staged.
+							const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
+								name: "public_api_files_write_bulk",
+								key: `${principal.kind}:${principal.principalKey}`,
+								count: validatedFiles.length,
+							});
+							if (batchRateLimit) {
+								return {
+									status: 429,
+									body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+								} as const;
+							}
+
+							const principalRef: Infer<typeof file_write_principal_ref_validator> = {
+								kind: "user_api_key",
+								credentialId: principal.credentialId,
+							};
+
+							// Sequential on purpose: writes into one workspace share ancestor folders, and
+							// concurrent publishes would conflict on creating them.
+							const written: Array<{
+								path: string;
+								nodeId: Id<"files_nodes">;
+								contentType: "text/markdown;charset=utf-8";
+								unchanged?: true;
+							}> = [];
+							const errors: Array<{
+								path: string;
+								message: string;
+								errorCode: "permission_denied" | "conflict" | "storage_failure";
+							}> = [];
+							for (const file of validatedFiles) {
+								const result = await write_one_markdown_file(ctx, {
+									organizationId: principal.organizationId,
+									workspaceId: principal.workspaceId,
+									userId: principal.userId,
+									visibilityUserId: public_api_visibility_user_id(principal),
+									principalRef,
+									path: file.path,
+									content: file.content,
+									contentBytes: file.contentBytes,
+									overwrite: file.overwrite,
+									skipIfUnchanged: body.data.skipIfUnchanged ?? false,
+								});
+								if (result._nay) {
+									// The credential died mid-batch (expired or revoked); every remaining item
+									// would fail the same way, so abort the whole request.
+									if (result._nay.data.errorCode === "unauthenticated") {
+										return { status: 401, body: { message: result._nay.message } } as const;
+									}
+									errors.push({
+										path: file.path,
+										message: result._nay.message,
+										errorCode: result._nay.data.errorCode,
+									});
+									continue;
+								}
+								written.push({
+									path: file.path,
+									nodeId: result._yay.nodeId,
+									contentType: "text/markdown;charset=utf-8" as const,
+									...(result._yay.unchanged ? { unchanged: true as const } : {}),
+								});
+							}
+
+							console.info("Public API files written in batch", {
+								principalKind: principal.kind,
+								principalKey: principal.principalKey,
+								writtenCount: written.length,
+								errorCount: errors.length,
+							});
+
+							return {
+								status: 200,
+								body: { written, errors },
 								headers: { "Cache-Control": "no-store" },
 							} as const;
 						};
@@ -3794,6 +4404,135 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							return {
 								status: 200,
 								body: { items, errors, truncated },
+								headers: { "Cache-Control": "no-store" },
+							} as const;
+						};
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const result = await handler(ctx, request);
+								return Response.json(result.body, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+
+		...((/* iife */ path = "/api/v1/files/upload-urls" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						const bodyValidator = z.object({
+							files: z
+								.array(
+									z.object({
+										path: z.string(),
+										contentType: z.string().min(1).max(200),
+										size: z.number().int().min(1),
+									}),
+								)
+								.min(1)
+								.max(FILES_UPLOAD_URLS_MAX_ITEMS),
+							skipProcessing: z.boolean().optional(),
+							overwrite: z.enum(["replace", "fail"]).optional(),
+						});
+
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = z.infer<typeof bodyValidator>;
+
+						const handler = async (ctx: ActionCtx, request: Request) => {
+							// User keys only: plugin runs have their own sibling-write constraints and call
+							// accounting, and grants and UI sessions are read-only by design.
+							const auth = await authorize_request(ctx, request, {
+								requiredScope: public_api_SCOPE_FILES_WRITE,
+								allowedKinds: ["user_api_key"],
+								requiredUserPermission: "content.write",
+								route: path,
+							});
+							if (auth._nay) {
+								return auth._nay;
+							}
+							const principal = auth._yay.principal;
+
+							const body = await server_request_json_parse_and_validate(request, bodyValidator);
+							if (body._nay) {
+								return { status: 400, body: { message: body._nay.message } } as const;
+							}
+
+							// authorize_request charged one slot for the request; the rest of the batch
+							// charges here so N upload URLs cost the same principal budget as N single calls.
+							if (body._yay.files.length > 1) {
+								const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
+									name: "public_api_principal",
+									key: `${principal.kind}:${principal.principalKey}:${path}`,
+									count: body._yay.files.length - 1,
+								});
+								if (batchRateLimit) {
+									return {
+										status: 429,
+										body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+									} as const;
+								}
+							}
+
+							const created = (await ctx.runMutation(internal.public_api.create_file_upload_targets, {
+								organizationId: principal.organizationId,
+								workspaceId: principal.workspaceId,
+								userId: principal.userId,
+								principalRef: { kind: "user_api_key", credentialId: principal.credentialId },
+								items: body._yay.files,
+								skipProcessing: body._yay.skipProcessing ?? false,
+								overwrite: body._yay.overwrite ?? "replace",
+							})) as create_file_upload_targets_Result;
+							if (created._nay) {
+								// Mint failures are all-or-nothing: the mutation validates the whole batch
+								// before writing, so no partial targets exist when it returns `_nay`.
+								const failedPath = created._nay.data?.path;
+								const failedStatus =
+									created._nay.message === "Unauthenticated"
+										? 401
+										: created._nay.message === "Permission denied" ||
+											  created._nay.message === "Upload quota exceeded"
+											? 403
+											: created._nay.message === "A file already exists at this path" ||
+												  created._nay.message === "The path cannot point to a folder" ||
+												  created._nay.message === "An intermediate segment is owned by a file"
+												? 409
+												: 400;
+								if (failedStatus === 401) {
+									return { status: 401, body: { message: created._nay.message } } as const;
+								}
+								if (failedStatus === 403) {
+									return { status: 403, body: { message: created._nay.message, path: failedPath } } as const;
+								}
+								if (failedStatus === 409) {
+									return { status: 409, body: { message: created._nay.message, path: failedPath } } as const;
+								}
+								return { status: 400, body: { message: created._nay.message, path: failedPath } } as const;
+							}
+
+							console.info("Public API upload urls minted", {
+								principalKind: principal.kind,
+								principalKey: principal.principalKey,
+								count: created._yay.length,
+							});
+
+							return {
+								status: 200,
+								body: { files: created._yay },
 								headers: { "Cache-Control": "no-store" },
 							} as const;
 						};

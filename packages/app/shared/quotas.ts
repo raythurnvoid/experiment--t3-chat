@@ -20,6 +20,12 @@ export const quotas = {
 		tooltip_explanation:
 			"Counts your active API keys in this workspace. Revoked keys do not count toward this limit.",
 	},
+	public_api_upload_bytes: {
+		disabledReason: "This workspace has used its 50 GB budget for file uploads through the API",
+		maxCount: 50 * 1024 * 1024 * 1024,
+		tooltip_explanation:
+			"Counts the declared bytes of files uploaded through the public API in this workspace. The counter only grows: deleting files does not give the budget back.",
+	},
 } as const satisfies Record<
 	Doc<"quotas">["quotaName"],
 	{ maxCount: number; disabledReason: string; tooltip_explanation: string }

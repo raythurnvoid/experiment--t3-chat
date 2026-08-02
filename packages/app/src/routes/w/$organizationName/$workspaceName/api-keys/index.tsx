@@ -7,7 +7,6 @@ import {
 	CheckCircle2,
 	Info,
 	KeyRound,
-	ListTree,
 	Plus,
 	RotateCw,
 	ShieldCheck,
@@ -25,6 +24,7 @@ import {
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
+import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -71,9 +71,34 @@ const API_KEY_DATETIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
 	hour: "2-digit",
 	minute: "2-digit",
 });
-const API_KEY_SCOPES = ["files:list", "files:read"] satisfies app_convex_FunctionArgs<
+type RouteApiKeys_Scope = app_convex_FunctionArgs<
 	typeof app_convex_api.public_api.api_credential_create
->["scopes"];
+>["scopes"][number];
+
+// Keyed by the backend mutation's scope union, so a new backend scope becomes a type error
+// here instead of an unlabeled badge or a missing checkbox.
+const API_KEY_SCOPE_LABELS = {
+	"files:list": "List files",
+	"files:read": "Read file content",
+	"files:download": "Download files",
+	"files:write": "Write files",
+} satisfies Record<RouteApiKeys_Scope, string>;
+
+// Create-modal row order: read scopes first, then the opt-in download and write scopes.
+const API_KEY_SCOPE_ROWS: Array<{ scope: RouteApiKeys_Scope; description: string }> = [
+	{ scope: "files:list", description: "View file and folder names, paths, and metadata." },
+	{ scope: "files:read", description: "Read committed Markdown content by path." },
+	{ scope: "files:download", description: "Get temporary download links for files." },
+	{ scope: "files:write", description: "Create and update Markdown files by path." },
+];
+
+// Read scopes start checked; download and write stay opt-in.
+const API_KEY_SCOPE_DEFAULTS: Record<RouteApiKeys_Scope, boolean> = {
+	"files:list": true,
+	"files:read": true,
+	"files:download": false,
+	"files:write": false,
+};
 
 type RouteApiKeys_CredentialListResult = app_convex_FunctionReturnType<
 	typeof app_convex_api.public_api.api_credentials_list
@@ -272,7 +297,8 @@ console.log(file.content);`;
 				</p>
 				<p className={"RouteApiKeysQuickStart-note" satisfies RouteApiKeysQuickStart_ClassNames}>
 					<Info aria-hidden />
-					Binary file upload is planned and is not available through this flow yet.
+					Keys with write access can create and update Markdown files through /api/v1/files/write and
+					/api/v1/files/write-many, and upload binary files through /api/v1/files/upload-urls.
 				</p>
 			</div>
 		</section>
@@ -376,11 +402,7 @@ const RouteApiKeysListItem = memo(function RouteApiKeysListItem(props: RouteApiK
 			>
 				{credential.scopes.map((scope) => (
 					<MyBadge key={scope} variant="outline">
-						{scope === "files:list"
-							? "List files"
-							: scope === "files:read"
-								? "Read file content"
-								: scope}
+						{API_KEY_SCOPE_LABELS[scope]}
 					</MyBadge>
 				))}
 			</div>
@@ -450,7 +472,7 @@ const RouteApiKeysList = memo(function RouteApiKeysList(props: RouteApiKeysList_
 						No active API keys for this workspace
 					</h3>
 					<p className={"RouteApiKeysList-emptyDescription" satisfies RouteApiKeysList_ClassNames}>
-						Create a key to list files and read committed file content from a script.
+						Create a key so a script can list, read, and optionally write files in this workspace.
 					</p>
 					<MyButton onClick={onCreate}>
 						<Plus aria-hidden />
@@ -494,17 +516,20 @@ type RouteApiKeysCreateModal_ClassNames =
 	| "RouteApiKeysCreateModal-fields"
 	| "RouteApiKeysCreateModal-permissions"
 	| "RouteApiKeysCreateModal-permissionsTitle"
+	| "RouteApiKeysCreateModal-permissionsHint"
 	| "RouteApiKeysCreateModal-permissionList"
 	| "RouteApiKeysCreateModal-permission"
 	| "RouteApiKeysCreateModal-permissionText"
 	| "RouteApiKeysCreateModal-permissionTitle"
-	| "RouteApiKeysCreateModal-permissionDescription";
+	| "RouteApiKeysCreateModal-permissionDescription"
+	| "RouteApiKeysCreateModal-writeWarning";
 
 type RouteApiKeysCreateModal_Props = {
 	open: boolean;
 	organizationName: string;
 	workspaceName: string;
 	name: string;
+	scopes: Record<RouteApiKeys_Scope, boolean>;
 	validationMessage?: string;
 	displayValidationMessage?: string;
 	error?: string;
@@ -512,6 +537,7 @@ type RouteApiKeysCreateModal_Props = {
 	onOpenChange: (open: boolean) => void;
 	onNameChange: (name: string) => void;
 	onNameBlur: () => void;
+	onScopeChange: (scope: RouteApiKeys_Scope, checked: boolean) => void;
 	onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 };
 
@@ -521,6 +547,7 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 		organizationName,
 		workspaceName,
 		name,
+		scopes,
 		validationMessage,
 		displayValidationMessage,
 		error,
@@ -528,9 +555,13 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 		onOpenChange,
 		onNameChange,
 		onNameBlur,
+		onScopeChange,
 		onSubmit,
 	} = props;
-	const helperId = `RouteApiKeysCreateModal-${useId()}-helper`;
+	const modalId = `RouteApiKeysCreateModal-${useId()}`;
+	const helperId = `${modalId}-helper`;
+	const writeWarningId = `${modalId}-write-warning`;
+	const hasSelectedScope = API_KEY_SCOPE_ROWS.some((row) => scopes[row.scope]);
 
 	return (
 		<MyModal open={open} setOpen={onOpenChange}>
@@ -580,60 +611,67 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 										"RouteApiKeysCreateModal-permissionsTitle" satisfies RouteApiKeysCreateModal_ClassNames
 									}
 								>
-									Read-only file access
+									Permissions
 								</legend>
+								<p
+									className={
+										"RouteApiKeysCreateModal-permissionsHint" satisfies RouteApiKeysCreateModal_ClassNames
+									}
+								>
+									Choose what this key can do. Select at least one permission.
+								</p>
 								<ul
 									className={
 										"RouteApiKeysCreateModal-permissionList" satisfies RouteApiKeysCreateModal_ClassNames
 									}
 								>
-									<li className={"RouteApiKeysCreateModal-permission" satisfies RouteApiKeysCreateModal_ClassNames}>
-										<ListTree aria-hidden />
-										<span
-											className={
-												"RouteApiKeysCreateModal-permissionText" satisfies RouteApiKeysCreateModal_ClassNames
-											}
-										>
-											<strong
+									{API_KEY_SCOPE_ROWS.map((row) => (
+										<li key={row.scope}>
+											<MyCheckboxButton
 												className={
-													"RouteApiKeysCreateModal-permissionTitle" satisfies RouteApiKeysCreateModal_ClassNames
+													"RouteApiKeysCreateModal-permission" satisfies RouteApiKeysCreateModal_ClassNames
 												}
-											>
-												List files
-											</strong>
-											<span
-												className={
-													"RouteApiKeysCreateModal-permissionDescription" satisfies RouteApiKeysCreateModal_ClassNames
+												variant="outline"
+												checked={scopes[row.scope]}
+												disabled={pending}
+												aria-describedby={
+													row.scope === "files:write" && scopes["files:write"] ? writeWarningId : undefined
 												}
+												onCheckedChange={(checked) => onScopeChange(row.scope, checked)}
 											>
-												View file and folder names, paths, and metadata.
-											</span>
-										</span>
-									</li>
-									<li className={"RouteApiKeysCreateModal-permission" satisfies RouteApiKeysCreateModal_ClassNames}>
-										<KeyRound aria-hidden />
-										<span
-											className={
-												"RouteApiKeysCreateModal-permissionText" satisfies RouteApiKeysCreateModal_ClassNames
-											}
-										>
-											<strong
-												className={
-													"RouteApiKeysCreateModal-permissionTitle" satisfies RouteApiKeysCreateModal_ClassNames
-												}
-											>
-												Read file content
-											</strong>
-											<span
-												className={
-													"RouteApiKeysCreateModal-permissionDescription" satisfies RouteApiKeysCreateModal_ClassNames
-												}
-											>
-												Read committed Markdown content by path.
-											</span>
-										</span>
-									</li>
+												<span
+													className={
+														"RouteApiKeysCreateModal-permissionText" satisfies RouteApiKeysCreateModal_ClassNames
+													}
+												>
+													<strong
+														className={
+															"RouteApiKeysCreateModal-permissionTitle" satisfies RouteApiKeysCreateModal_ClassNames
+														}
+													>
+														{API_KEY_SCOPE_LABELS[row.scope]}
+													</strong>
+													<span
+														className={
+															"RouteApiKeysCreateModal-permissionDescription" satisfies RouteApiKeysCreateModal_ClassNames
+														}
+													>
+														{row.description}
+													</span>
+												</span>
+											</MyCheckboxButton>
+										</li>
+									))}
 								</ul>
+								{scopes["files:write"] ? (
+									<p
+										id={writeWarningId}
+										className={"RouteApiKeysCreateModal-writeWarning" satisfies RouteApiKeysCreateModal_ClassNames}
+									>
+										<AlertTriangle aria-hidden />
+										A write key can create and replace files everywhere you can write. Treat it like a password.
+									</p>
+								) : null}
 							</fieldset>
 
 							{error ? <div role="alert">{error}</div> : null}
@@ -643,7 +681,7 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 						<MyButton variant="ghost" disabled={pending} onClick={() => onOpenChange(false)}>
 							Cancel
 						</MyButton>
-						<MyButton type="submit" disabled={pending} aria-busy={pending}>
+						<MyButton type="submit" disabled={pending || !hasSelectedScope} aria-busy={pending}>
 							{pending ? "Creating..." : "Create API key"}
 						</MyButton>
 					</MyModalFooter>
@@ -811,6 +849,7 @@ const RouteApiKeysSecurity = memo(function RouteApiKeysSecurity() {
 			<div className={"RouteApiKeysSecurity-content" satisfies RouteApiKeysSecurity_ClassNames}>
 				<strong>API keys belong to you and work only in this workspace.</strong>
 				<span>They use your current file access and do not expire until revoked.</span>
+				<span>A key with write access can create and replace files everywhere you can write, so treat it like a password.</span>
 				<span>Keep keys in an environment variable. Do not put them in source code, screenshots, chat, or browser storage.</span>
 			</div>
 		</aside>
@@ -851,6 +890,7 @@ function RouteApiKeysMembership(props: {
 	const verificationRequestRef = useRef(0);
 	const [createOpen, setCreateOpen] = useState(false);
 	const [createName, setCreateName] = useState("");
+	const [createScopes, setCreateScopes] = useState(API_KEY_SCOPE_DEFAULTS);
 	const [createValidationMessage, setCreateValidationMessage] = useState<string>();
 	const [createDisplayValidationMessage, setCreateDisplayValidationMessage] = useState<string>();
 	const [createError, setCreateError] = useState<string>();
@@ -887,6 +927,7 @@ function RouteApiKeysMembership(props: {
 		if (!open) {
 			createNameDirtyRef.current = false;
 			setCreateName("");
+			setCreateScopes(API_KEY_SCOPE_DEFAULTS);
 			setCreateValidationMessage(undefined);
 			setCreateDisplayValidationMessage(undefined);
 			setCreateError(undefined);
@@ -910,6 +951,11 @@ function RouteApiKeysMembership(props: {
 		}
 	});
 
+	const handleCreateScopeChange = useFn((scope: RouteApiKeys_Scope, checked: boolean) => {
+		setCreateScopes((scopes) => ({ ...scopes, [scope]: checked }));
+		setCreateError(undefined);
+	});
+
 	const handleCreate = useFn((event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		if (createPending) return;
@@ -923,6 +969,11 @@ function RouteApiKeysMembership(props: {
 			return;
 		}
 
+		// The submit button is disabled with zero scopes; keep this guard for form submits that
+		// skip the button, like pressing Enter in the name field.
+		const submittedScopes = API_KEY_SCOPE_ROWS.filter((row) => createScopes[row.scope]).map((row) => row.scope);
+		if (submittedScopes.length === 0) return;
+
 		const submittedName = createName.trim();
 		setCreatePending(true);
 		setCreateError(undefined);
@@ -930,7 +981,7 @@ function RouteApiKeysMembership(props: {
 			.mutation(app_convex_api.public_api.api_credential_create, {
 				membershipId,
 				name: submittedName,
-				scopes: API_KEY_SCOPES,
+				scopes: submittedScopes,
 			})
 			.then((result) => {
 				if (!mountedRef.current) return;
@@ -941,6 +992,7 @@ function RouteApiKeysMembership(props: {
 
 				setCreateOpen(false);
 				setCreateName("");
+				setCreateScopes(API_KEY_SCOPE_DEFAULTS);
 				setReveal({
 					credential: result._yay.credential,
 					kind: "created",
@@ -1086,6 +1138,7 @@ function RouteApiKeysMembership(props: {
 				organizationName={organizationName}
 				workspaceName={workspaceName}
 				name={createName}
+				scopes={createScopes}
 				validationMessage={createValidationMessage}
 				displayValidationMessage={createDisplayValidationMessage}
 				error={createError}
@@ -1093,6 +1146,7 @@ function RouteApiKeysMembership(props: {
 				onOpenChange={handleCreateOpenChange}
 				onNameChange={handleCreateNameChange}
 				onNameBlur={handleCreateNameBlur}
+				onScopeChange={handleCreateScopeChange}
 				onSubmit={handleCreate}
 			/>
 			<RouteApiKeysRevealModal

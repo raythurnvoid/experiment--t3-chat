@@ -1,5 +1,6 @@
 import { R2 } from "@convex-dev/r2";
-import { describe, expect, expectTypeOf, test, vi } from "vitest";
+import { Workpool } from "@convex-dev/workpool";
+import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -15,6 +16,7 @@ import {
 } from "../shared/organizations.ts";
 import type { api_schemas_Main } from "../shared/api-schemas.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
+import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 const r2Objects = new Map<string, string | ArrayBuffer>();
@@ -279,6 +281,11 @@ async function seed_markdown_file(args: {
 	return nodeId;
 }
 
+afterEach(() => {
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+});
+
 describe("public files API", () => {
 	test("returns only the public validation message for malformed request bodies", async () => {
 		const t = test_convex();
@@ -528,6 +535,76 @@ describe("public files API", () => {
 		// Every published write consumed its stage; nothing is left for the cleanup cron.
 		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
 		expect(stages).toEqual([]);
+	});
+
+	test("skipIfUnchanged skips staging when the content did not change", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-skip-unchanged" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-skip-unchanged",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Skip writer",
+			scopes: ["files:read", "files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		const credential = created._yay!.credential;
+
+		const content = "# Report\n\nStable content\n";
+		const first = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/skip/report.md", content }),
+		});
+		expect(first.status).toBe(200);
+		const firstBody = (await first.json()) as { nodeId: string };
+
+		const before = await t.run(async (ctx) => ({
+			snapshots: (await ctx.db.query("files_snapshots").collect()).length,
+			assets: (await ctx.db.query("files_r2_assets").collect()).length,
+		}));
+
+		// Same content again with the flag: no new version snapshot, no new asset docs.
+		const unchanged = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/skip/report.md", content, skipIfUnchanged: true }),
+		});
+		expect(unchanged.status).toBe(200);
+		expect(await unchanged.json()).toEqual({
+			path: "/skip/report.md",
+			nodeId: firstBody.nodeId,
+			contentType: "text/markdown;charset=utf-8",
+			unchanged: true,
+		});
+		const after = await t.run(async (ctx) => ({
+			snapshots: (await ctx.db.query("files_snapshots").collect()).length,
+			assets: (await ctx.db.query("files_r2_assets").collect()).length,
+		}));
+		expect(after).toEqual(before);
+
+		// Changed content with the flag writes normally.
+		const changed = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/skip/report.md", content: "# Report\n\nNew content\n", skipIfUnchanged: true }),
+		});
+		expect(changed.status).toBe(200);
+		const changedBody = (await changed.json()) as { nodeId: string };
+		expect(changedBody.nodeId).toBe(firstBody.nodeId);
+		expect(changedBody).not.toHaveProperty("unchanged");
+
+		const readResponse = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/skip/report.md" }),
+		});
+		expect(readResponse.status).toBe(200);
+		expect(((await readResponse.json()) as { content: string }).content).toContain("New content");
 	});
 
 	test("a replace that cannot recreate the file does not archive it", async () => {
@@ -842,6 +919,17 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/shared/notes.md", content: "# Mine now\n", overwrite: "replace" }),
 		});
 		expect(filled.status).toBe(403);
+
+		// The unchanged skip must not answer where the publish would refuse: identical content
+		// with the flag still gets the same 403, so the unchanged marker cannot confirm a
+		// restricted file's exact content to a caller who may read but not write it.
+		const skipped = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(readerKey),
+			body: JSON.stringify({ path: "/shared/notes.md", content: "# Owner only", skipIfUnchanged: true }),
+		});
+		expect(skipped.status).toBe(403);
+		expect(await skipped.json()).toEqual({ message: "Permission denied" });
 
 		// publish_file_write asks before archiving what is already there.
 		const replaced = await t.fetch("/api/v1/files/write", {
@@ -1779,5 +1867,965 @@ describe("public files API", () => {
 			});
 			expect(response.status).toBe(404);
 		}
+	});
+});
+
+describe("files upload-urls", () => {
+	async function seed_write_credential(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof seed_signed_in_membership>>;
+		clerkSubject: string;
+	}) {
+		const asUser = args.t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: args.clerkSubject,
+			external_id: args.db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: args.db.membershipId,
+			name: "Uploader",
+			scopes: ["files:list", "files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		return { asUser, credential: created._yay!.credential };
+	}
+
+	async function post_r2_event_for_asset(args: {
+		t: ReturnType<typeof test_convex>;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		assetId: Id<"files_r2_assets">;
+		bucket: string;
+		size: number;
+	}) {
+		return await args.t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: `message_${args.assetId}`,
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: args.bucket,
+					object: {
+						key: r2_create_asset_key({
+							organizationId: args.organizationId,
+							workspaceId: args.workspaceId,
+							assetId: args.assetId,
+						}),
+						size: args.size,
+						eTag: `etag_${args.assetId}`,
+					},
+					eventTime: "2026-08-02T00:00:00.000Z",
+				},
+			}),
+		});
+	}
+
+	test("mints upload targets, consumes the byte quota, and skipProcessing skips conversion", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_upload_urls_test" as never);
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls" });
+		const { asUser, credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls" });
+
+		const response = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/imports/call-001.md", contentType: "text/markdown;charset=utf-8", size: 64 },
+					{ path: "/imports/media/call-001.mp3", contentType: "audio/mpeg", size: 2048 },
+				],
+				skipProcessing: true,
+			}),
+		});
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as {
+			files: Array<{ path: string; nodeId: string; uploadUrl: string; headers: Record<string, string> }>;
+		};
+		expect(body.files).toEqual([
+			{
+				path: "/imports/call-001.md",
+				nodeId: expect.any(String),
+				uploadUrl: expect.stringContaining("https://r2.test/upload"),
+				headers: { "Content-Type": "text/markdown;charset=utf-8" },
+			},
+			{
+				path: "/imports/media/call-001.mp3",
+				nodeId: expect.any(String),
+				uploadUrl: expect.stringContaining("https://r2.test/upload"),
+				headers: { "Content-Type": "audio/mpeg" },
+			},
+		]);
+
+		// Assets are born settled (processing skipped) and carry the orphan-sweep deadline.
+		const assets = await t.run(async (ctx) => {
+			const nodes = await Promise.all(
+				body.files.map((file) => ctx.db.get("files_nodes", file.nodeId as Id<"files_nodes">)),
+			);
+			return await Promise.all(
+				nodes.map((node) => (node?.assetId ? ctx.db.get("files_r2_assets", node.assetId) : null)),
+			);
+		});
+		for (const asset of assets) {
+			expect(asset?.kind).toBe("upload");
+			expect(asset?.processingWorkId).toBeNull();
+			expect(asset?.r2Key).toBeUndefined();
+			expect(asset?.unfinalizedExpiresAt).toBeGreaterThan(Date.now());
+		}
+
+		// The quota consumed the declared bytes of the whole batch.
+		const quota = await asUser.query(api.quotas.get, {
+			quotaName: "public_api_upload_bytes",
+			membershipId: db.membershipId,
+		});
+		expect(quota?.usedCount).toBe(64 + 2048);
+
+		// The finalizer records the .md object without starting Markdown conversion.
+		const mdAsset = assets[0]!;
+		const eventResponse = await post_r2_event_for_asset({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: mdAsset._id,
+			bucket: mdAsset.r2Bucket,
+			size: 64,
+		});
+		expect(eventResponse.status).toBe(204);
+		const finalized = await t.run(async (ctx) => ctx.db.get("files_r2_assets", mdAsset._id));
+		expect(finalized?.r2Key).toBeDefined();
+		expect(finalized?.unfinalizedExpiresAt).toBeUndefined();
+		expect(finalized?.processingWorkId).toBeNull();
+		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
+			expect.anything(),
+			internal.r2.finalize_uploaded_markdown_file,
+			expect.anything(),
+		);
+	});
+
+	test("without skipProcessing an uploaded Markdown file starts conversion", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_upload_urls_convert" as never);
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-convert" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-convert" });
+
+		const response = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [{ path: "/imports/editable.md", contentType: "text/markdown;charset=utf-8", size: 64 }],
+			}),
+		});
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { files: Array<{ nodeId: string }> };
+		const asset = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", body.files[0]!.nodeId as Id<"files_nodes">);
+			return node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		});
+		// Not settled: the finalizer decides processing when the object lands.
+		expect(asset?.processingWorkId).toBeUndefined();
+
+		const eventResponse = await post_r2_event_for_asset({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: asset!._id,
+			bucket: asset!.r2Bucket,
+			size: 64,
+		});
+		expect(eventResponse.status).toBe(204);
+		expect(enqueueActionSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			internal.r2.finalize_uploaded_markdown_file,
+			expect.objectContaining({ assetId: asset!._id }),
+		);
+	});
+
+	test("refuses read-only keys and grant tokens", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-scope" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "upload-urls-scope",
+			external_id: db.userId,
+		});
+		const readOnly = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Reader",
+			scopes: ["files:list", "files:read"],
+		});
+		expect(readOnly._nay).toBeUndefined();
+
+		const requestBody = JSON.stringify({
+			files: [{ path: "/imports/blocked.png", contentType: "image/png", size: 64 }],
+		});
+		const readOnlyResponse = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(readOnly._yay!.credential),
+			body: requestBody,
+		});
+		expect(readOnlyResponse.status).toBe(403);
+
+		// Grants can never carry write scopes, so the kind gate and the scope check both refuse them.
+		const grantToken = "c".repeat(64);
+		await seed_public_api_grant({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			token: grantToken,
+		});
+		const grantResponse = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(grantToken),
+			body: requestBody,
+		});
+		expect(grantResponse.status).toBe(403);
+	});
+
+	test("rejects invalid batches and conflicting paths with the offending path", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-validation" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-validation" });
+		await seed_markdown_file({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/existing/report.md",
+			committedMarkdown: "# Existing",
+		});
+
+		const post = async (body: unknown) =>
+			await t.fetch("/api/v1/files/upload-urls", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify(body),
+			});
+
+		const nonCanonical = await post({ files: [{ path: "imports/x.png", contentType: "image/png", size: 1 }] });
+		expect(nonCanonical.status).toBe(400);
+		expect(await nonCanonical.json()).toEqual({
+			message: "Path must be absolute and normalized",
+			path: "imports/x.png",
+		});
+
+		const duplicate = await post({
+			files: [
+				{ path: "/imports/x.png", contentType: "image/png", size: 1 },
+				{ path: "/imports/x.png", contentType: "image/png", size: 1 },
+			],
+		});
+		expect(duplicate.status).toBe(400);
+		expect(await duplicate.json()).toEqual({ message: "Duplicate path in batch", path: "/imports/x.png" });
+
+		const conflict = await post({
+			files: [{ path: "/existing/report.md", contentType: "text/markdown;charset=utf-8", size: 1 }],
+			overwrite: "fail",
+		});
+		expect(conflict.status).toBe(409);
+		expect(await conflict.json()).toEqual({
+			message: "A file already exists at this path",
+			path: "/existing/report.md",
+		});
+
+		const folderCollision = await post({ files: [{ path: "/existing", contentType: "image/png", size: 1 }] });
+		expect(folderCollision.status).toBe(409);
+		expect(await folderCollision.json()).toEqual({
+			message: "The path cannot point to a folder",
+			path: "/existing",
+		});
+
+		// All-or-nothing: none of the refused batches minted anything.
+		const quota = await t.run(async (ctx) =>
+			ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("quotaName", "public_api_upload_bytes"),
+				)
+				.first(),
+		);
+		expect(quota).toBeNull();
+	});
+
+	test("refuses minting under a restricted ancestor folder the key owner cannot write", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-restricted-owner" });
+
+		// A normal member, not the organization owner: the owner passes every node check by
+		// definition, so an owner-held key would prove nothing here.
+		const writer = await t.run(async (ctx) => {
+			const now = Date.now();
+			const outerId = await ctx.db.insert("files_nodes", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				parentId: files_ROOT_ID,
+				name: "outer",
+				path: "/outer",
+				treePath: "/outer/",
+				pathDepth: 1,
+				kind: "folder",
+				lowercaseExtension: null,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				updatedAt: now,
+			});
+			await ctx.db.patch("files_nodes", outerId, { restrictedScopeNodeId: outerId });
+
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-upload-urls-restricted-writer" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				now,
+			});
+			return { userId, membershipId };
+		});
+
+		const asWriter = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "upload-urls-restricted-writer",
+			external_id: writer.userId,
+		});
+		const created = await asWriter.mutation(api.public_api.api_credential_create, {
+			membershipId: writer.membershipId,
+			name: "Member uploader",
+			scopes: ["files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		const credential = created._yay!.credential;
+
+		const refused = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [{ path: "/outer/media/photo.png", contentType: "image/png", size: 64 }],
+			}),
+		});
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: "Permission denied", path: "/outer/media/photo.png" });
+
+		// Control: the same key mints outside the restricted folder. Without this, a broken key or
+		// missing membership would give the same 403 and the test would prove nothing.
+		const allowed = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [{ path: "/open/photo.png", contentType: "image/png", size: 64 }],
+			}),
+		});
+		expect(allowed.status).toBe(200);
+	});
+
+	test("files list reports a file as pending until its object is confirmed", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_upload_urls_list" as never);
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-list" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-list" });
+
+		const minted = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [{ path: "/imports/pending.bin", contentType: "application/octet-stream", size: 512 }],
+				skipProcessing: true,
+			}),
+		});
+		expect(minted.status).toBe(200);
+		await seed_markdown_file({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/imports/doc.md",
+			committedMarkdown: "# Ready",
+		});
+
+		const list = async (path: string) => {
+			const response = await t.fetch("/api/v1/files/list", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({ path }),
+			});
+			expect(response.status).toBe(200);
+			return (await response.json()) as {
+				items: Array<{ path: string; kind: string; status: string | null; size: number | null }>;
+			};
+		};
+
+		// Before the PUT lands: the minted file is pending, the seeded file is ready with its
+		// size, and folders carry no status.
+		const before = await list("/imports");
+		expect(before.items).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ path: "/imports/pending.bin", status: "pending", size: 512 }),
+				expect.objectContaining({ path: "/imports/doc.md", status: "ready", size: expect.any(Number) }),
+			]),
+		);
+		const rootList = await list("/");
+		expect(rootList.items).toEqual([
+			expect.objectContaining({ path: "/imports", kind: "folder", status: null, size: null }),
+		]);
+
+		const pendingAsset = await t.run(async (ctx) => {
+			const node = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("path", "/imports/pending.bin")
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			return node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		});
+		const eventResponse = await post_r2_event_for_asset({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: pendingAsset!._id,
+			bucket: pendingAsset!.r2Bucket,
+			size: 512,
+		});
+		expect(eventResponse.status).toBe(204);
+
+		const after = await list("/imports");
+		expect(after.items).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ path: "/imports/pending.bin", status: "ready", size: 512 }),
+			]),
+		);
+	});
+
+	test("refuses a batch that would cross the workspace upload byte budget", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-quota" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-quota" });
+
+		// Push the budget to 10 bytes below the cap, so a 64-byte file crosses it.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			const quotaId = await quotas_db_ensure(ctx, {
+				quotaName: "public_api_upload_bytes",
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				now,
+			});
+			const quota = await ctx.db.get("quotas", quotaId);
+			await ctx.db.patch("quotas", quotaId, { usedCount: quota!.maxCount - 10, updatedAt: now });
+		});
+
+		const refused = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [{ path: "/imports/big.bin", contentType: "application/octet-stream", size: 64 }],
+			}),
+		});
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: "Upload quota exceeded" });
+
+		// The refused batch neither minted a node nor consumed more budget.
+		const after = await t.run(async (ctx) => {
+			const node = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("path", "/imports/big.bin")
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			const quota = await ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("quotaName", "public_api_upload_bytes"),
+				)
+				.first();
+			return { node, quota };
+		});
+		expect(after.node).toBeNull();
+		expect(after.quota!.usedCount).toBe(after.quota!.maxCount - 10);
+	});
+
+	test("refuses a batch over the item cap", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-cap" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-cap" });
+
+		const response = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: Array.from({ length: 21 }, (_, index) => ({
+					path: `/cap/file-${index}.bin`,
+					contentType: "application/octet-stream",
+					size: 8,
+				})),
+			}),
+		});
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ message: "Request body validation failed" });
+	});
+
+	test("a multi-file mint charges one principal unit per minted URL", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-charge" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-charge" });
+
+		const response = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/charge/a.bin", contentType: "application/octet-stream", size: 8 },
+					{ path: "/charge/b.bin", contentType: "application/octet-stream", size: 8 },
+					{ path: "/charge/c.bin", contentType: "application/octet-stream", size: 8 },
+				],
+			}),
+		});
+		expect(response.status).toBe(200);
+
+		// Auth charged 1 and the batch charged 2 more on the same route-scoped key, so of the
+		// bucket's capacity of 20 exactly 17 remain: a 17-token check passes, an 18-token one fails.
+		const chargeKey = `user_api_key:${credential.split(".")[0]}:/api/v1/files/upload-urls`;
+		const canTakeRemaining = await t.run(async (ctx) =>
+			rate_limiter_check_by_key(ctx, { name: "public_api_principal", key: chargeKey, count: 17 }),
+		);
+		expect(canTakeRemaining).toBeNull();
+		const canTakeOneMore = await t.run(async (ctx) =>
+			rate_limiter_check_by_key(ctx, { name: "public_api_principal", key: chargeKey, count: 18 }),
+		);
+		expect(canTakeOneMore).not.toBeNull();
+	});
+});
+
+describe("files write-many", () => {
+	async function seed_bulk_writer_credential(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof seed_signed_in_membership>>;
+		clerkSubject: string;
+	}) {
+		const asUser = args.t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: args.clerkSubject,
+			external_id: args.db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: args.db.membershipId,
+			name: "Bulk writer",
+			scopes: ["files:read", "files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		return { asUser, credential: created._yay!.credential, credentialId: created._yay!.credentialId };
+	}
+
+	async function find_active_node(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof seed_signed_in_membership>>;
+		path: string;
+	}) {
+		return await args.t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.db.organizationId)
+						.eq("workspaceId", args.db.workspaceId)
+						.eq("path", args.path)
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+	}
+
+	test("writes new files and fills existing ones with per-item results", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many" });
+
+		const first = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/bulk/existing.md", content: "# Existing\n\nFirst version\n" }),
+		});
+		expect(first.status).toBe(200);
+		const firstBody = (await first.json()) as { nodeId: string };
+
+		const response = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/bulk/new-1.md", content: "# New one\n" },
+					{ path: "/bulk/nested/new-2.md", content: "# New two\n" },
+					{ path: "/bulk/existing.md", content: "# Existing\n\nReplaced by the batch\n" },
+				],
+			}),
+		});
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as {
+			written: Array<{ path: string; nodeId: string; contentType: string }>;
+			errors: Array<{ path: string; message: string; errorCode: string }>;
+		};
+		expect(body.errors).toEqual([]);
+		expect(body.written).toEqual([
+			{ path: "/bulk/new-1.md", nodeId: expect.any(String), contentType: "text/markdown;charset=utf-8" },
+			{ path: "/bulk/nested/new-2.md", nodeId: expect.any(String), contentType: "text/markdown;charset=utf-8" },
+			// Same fill-in-place behavior as the single route: the nodeId stays stable.
+			{ path: "/bulk/existing.md", nodeId: firstBody.nodeId, contentType: "text/markdown;charset=utf-8" },
+		]);
+
+		const readResponse = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/bulk/existing.md" }),
+		});
+		expect(readResponse.status).toBe(200);
+		expect(((await readResponse.json()) as { content: string }).content).toContain("Replaced by the batch");
+
+		// Every published write consumed its stage; nothing is left for the cleanup cron.
+		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
+		expect(stages).toEqual([]);
+
+		// Publishing also cleared every sweep deadline: no finalized asset is left sweepable.
+		const assets = await t.run(async (ctx) => await ctx.db.query("files_r2_assets").collect());
+		const finalizedAssets = assets.filter((asset) => asset.r2Key !== undefined);
+		expect(finalizedAssets.length).toBeGreaterThan(0);
+		for (const asset of finalizedAssets) {
+			expect(asset.unfinalizedExpiresAt).toBeUndefined();
+		}
+	});
+
+	test("refuses an oversized or overfull batch", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-limits" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-limits" });
+
+		// One item over the 8 MB whole-request cap is refused without being buffered.
+		const oversized = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ files: [{ path: "/big.md", content: "x".repeat(8_500_000) }] }),
+		});
+		expect(oversized.status).toBe(400);
+		expect(await oversized.json()).toEqual({ message: "Request body is too large" });
+
+		// One item over the batch item cap fails shape validation.
+		const overfull = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: Array.from({ length: 21 }, (_, index) => ({ path: `/cap/file-${index}.md`, content: "# Cap\n" })),
+			}),
+		});
+		expect(overfull.status).toBe(400);
+		expect(await overfull.json()).toEqual({ message: "Request body validation failed" });
+
+		for (const path of ["/big.md", "/cap/file-0.md"]) {
+			expect(await find_active_node({ t, db, path })).toBeNull();
+		}
+	});
+
+	test("a credential revoked mid-batch aborts the request with 401", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-revoked" });
+		const { credential, credentialId } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-revoked" });
+
+		// Revoke the credential while the second file's staged objects upload, after the first
+		// file already published. The publish revalidation then refuses every later item.
+		const stubbedFetch = globalThis.fetch;
+		let stagedPutCount = 0;
+		vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlString.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
+				stagedPutCount += 1;
+				// Each created file PUTs two staged objects, so count 3 is the second file's first PUT.
+				if (stagedPutCount === 3) {
+					await t.run(async (ctx) => {
+						await ctx.db.patch("api_credentials", credentialId, { revokedAt: Date.now() });
+					});
+				}
+			}
+			return await stubbedFetch(url, init);
+		});
+
+		const response = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/abort/first.md", content: "# First\n" },
+					{ path: "/abort/second.md", content: "# Second\n" },
+					{ path: "/abort/third.md", content: "# Third\n" },
+				],
+			}),
+		});
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ message: "Unauthenticated" });
+
+		// The first file survived; the aborted items were never published and left no stage.
+		expect(await find_active_node({ t, db, path: "/abort/first.md" })).not.toBeNull();
+		expect(await find_active_node({ t, db, path: "/abort/second.md" })).toBeNull();
+		expect(await find_active_node({ t, db, path: "/abort/third.md" })).toBeNull();
+		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
+		expect(stages).toEqual([]);
+	});
+
+	test("refuses the whole batch when one item fails validation and writes nothing", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-validation" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-validation" });
+
+		const invalid = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/ok/good.md", content: "# Good\n" },
+					{ path: "/bad/report.txt", content: "# Bad\n" },
+				],
+			}),
+		});
+		expect(invalid.status).toBe(400);
+		expect(await invalid.json()).toEqual({
+			message: "Path must end in a valid Markdown (.md) file name.",
+			path: "/bad/report.txt",
+		});
+
+		const duplicate = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/dup/a.md", content: "# A\n" },
+					{ path: "/dup/a.md", content: "# B\n" },
+				],
+			}),
+		});
+		expect(duplicate.status).toBe(400);
+		expect(await duplicate.json()).toEqual({ message: "Duplicate path in batch", path: "/dup/a.md" });
+
+		// The refused batches wrote nothing: not even their valid items exist.
+		for (const path of ["/ok/good.md", "/dup/a.md"]) {
+			expect(await find_active_node({ t, db, path })).toBeNull();
+		}
+		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
+		expect(stages).toEqual([]);
+	});
+
+	test("a per-item conflict leaves the other items written and reported", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-conflict" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-conflict" });
+
+		const first = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/bulk-c/existing.md", content: "# Existing\n" }),
+		});
+		expect(first.status).toBe(200);
+
+		const response = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/bulk-c/new-1.md", content: "# New one\n" },
+					{ path: "/bulk-c/existing.md", content: "# Clobber\n", overwrite: "fail" },
+					{ path: "/bulk-c/new-2.md", content: "# New two\n" },
+				],
+			}),
+		});
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as {
+			written: Array<{ path: string; nodeId: string; contentType: string }>;
+			errors: Array<{ path: string; message: string; errorCode: string }>;
+		};
+		expect(body.written.map((file) => file.path)).toEqual(["/bulk-c/new-1.md", "/bulk-c/new-2.md"]);
+		expect(body.errors).toEqual([
+			{ path: "/bulk-c/existing.md", message: "A file already exists at this path", errorCode: "conflict" },
+		]);
+
+		// The item after the conflict was still written.
+		expect(await find_active_node({ t, db, path: "/bulk-c/new-2.md" })).not.toBeNull();
+	});
+
+	test("refuses read-only keys and public API grants", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-scope" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "write-many-scope",
+			external_id: db.userId,
+		});
+		const readOnly = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Read only",
+			scopes: ["files:list", "files:read"],
+		});
+		expect(readOnly._nay).toBeUndefined();
+
+		const files = [{ path: "/refused/a.md", content: "# A\n" }];
+		const readOnlyResponse = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(readOnly._yay!.credential),
+			body: JSON.stringify({ files }),
+		});
+		expect(readOnlyResponse.status).toBe(403);
+
+		const grantToken = "ab".repeat(32);
+		await seed_public_api_grant({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			token: grantToken,
+		});
+		const grantResponse = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(grantToken),
+			body: JSON.stringify({ files }),
+		});
+		expect(grantResponse.status).toBe(403);
+
+		expect(await find_active_node({ t, db, path: "/refused/a.md" })).toBeNull();
+	});
+
+	test("skipIfUnchanged marks unchanged items and still writes changed ones", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-skip" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-skip" });
+
+		const stable = "# Stable\n\nSame on both runs\n";
+		const firstRun = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/rerun/stable.md", content: stable },
+					{ path: "/rerun/changed.md", content: "# Before\n" },
+				],
+			}),
+		});
+		expect(firstRun.status).toBe(200);
+		const firstBody = (await firstRun.json()) as { written: Array<{ path: string; nodeId: string }> };
+		const stableNodeId = firstBody.written[0]!.nodeId;
+
+		const count_stable_snapshots = async () =>
+			await t.run(
+				async (ctx) =>
+					(await ctx.db.query("files_snapshots").collect()).filter((snapshot) => snapshot.fileNodeId === stableNodeId)
+						.length,
+			);
+		const stableSnapshotsBefore = await count_stable_snapshots();
+
+		const rerun = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/rerun/stable.md", content: stable },
+					{ path: "/rerun/changed.md", content: "# After\n" },
+				],
+				skipIfUnchanged: true,
+			}),
+		});
+		expect(rerun.status).toBe(200);
+		const rerunBody = (await rerun.json()) as {
+			written: Array<{ path: string; nodeId: string; contentType: string; unchanged?: boolean }>;
+			errors: Array<unknown>;
+		};
+		expect(rerunBody.errors).toEqual([]);
+		expect(rerunBody.written).toEqual([
+			{ path: "/rerun/stable.md", nodeId: stableNodeId, contentType: "text/markdown;charset=utf-8", unchanged: true },
+			{
+				path: "/rerun/changed.md",
+				nodeId: firstBody.written[1]!.nodeId,
+				contentType: "text/markdown;charset=utf-8",
+			},
+		]);
+
+		// The unchanged file gained no new version snapshot; the changed one was rewritten.
+		expect(await count_stable_snapshots()).toBe(stableSnapshotsBefore);
+		const readResponse = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/rerun/changed.md" }),
+		});
+		expect(readResponse.status).toBe(200);
+		expect(((await readResponse.json()) as { content: string }).content).toContain("After");
+	});
+
+	test("an exhausted bulk bucket rejects the whole batch before any write", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-rate" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-rate" });
+
+		// Drain the whole bulk bucket for this credential's principal key up front.
+		const drained = await t.run(async (ctx) =>
+			rate_limiter_limit_by_key(ctx, {
+				name: "public_api_files_write_bulk",
+				key: `user_api_key:${credential.split(".")[0]}`,
+				count: 100,
+			}),
+		);
+		expect(drained).toBeNull();
+
+		const blocked = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: Array.from({ length: 20 }, (_, index) => ({
+					path: `/blocked/file-${index}.md`,
+					content: "# Blocked\n",
+				})),
+			}),
+		});
+		expect(blocked.status).toBe(429);
+		const blockedBody = (await blocked.json()) as { message: string; retryAfterMs: number };
+		expect(typeof blockedBody.retryAfterMs).toBe("number");
+
+		// The refused batch staged and wrote nothing.
+		expect(await find_active_node({ t, db, path: "/blocked/file-0.md" })).toBeNull();
+		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
+		expect(stages).toEqual([]);
 	});
 });

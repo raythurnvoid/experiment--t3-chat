@@ -26,6 +26,11 @@ type QuotaScope =
 			userId: Id<"users">;
 			organizationId: Id<"organizations">;
 			workspaceId: Id<"organizations_workspaces">;
+	  }
+	| {
+			quotaName: "public_api_upload_bytes";
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
 	  };
 
 function quota_scope_fields(args: QuotaScope) {
@@ -34,6 +39,9 @@ function quota_scope_fields(args: QuotaScope) {
 	}
 	if (args.quotaName === "extra_workspaces") {
 		return { organizationId: args.organizationId };
+	}
+	if (args.quotaName === "public_api_upload_bytes") {
+		return { organizationId: args.organizationId, workspaceId: args.workspaceId };
 	}
 	return {
 		userId: args.userId,
@@ -54,6 +62,14 @@ async function db_find_quota(ctx: QueryCtx | MutationCtx, args: QuotaScope) {
 			.query("quotas")
 			.withIndex("by_organization_quotaName", (q) =>
 				q.eq("organizationId", args.organizationId).eq("quotaName", args.quotaName),
+			)
+			.first();
+	}
+	if (args.quotaName === "public_api_upload_bytes") {
+		return await ctx.db
+			.query("quotas")
+			.withIndex("by_workspace_quotaName", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("quotaName", args.quotaName),
 			)
 			.first();
 	}
@@ -175,6 +191,16 @@ export const get = query({
 		const membership = await ctx.db.get("organizations_workspaces_users", membershipId);
 		if (!membership || !membership.active || membership.userId !== userAuth.id) {
 			return null;
+		}
+
+		// Seeded lazily at the first public-API upload mint, so a missing doc means nothing was
+		// consumed yet, not quota drift.
+		if (args.quotaName === "public_api_upload_bytes") {
+			return await db_find_quota(ctx, {
+				quotaName: args.quotaName,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+			});
 		}
 
 		return await quotas_db_get(ctx, {

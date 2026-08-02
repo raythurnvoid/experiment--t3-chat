@@ -1701,3 +1701,273 @@ describe("r2 asset content", () => {
 		);
 	});
 });
+
+describe("cleanup_expired_unfinalized_assets", () => {
+	const DAY_MS = 24 * 60 * 60 * 1000;
+
+	async function seed_unfinalized_asset(
+		t: ReturnType<typeof test_convex>,
+		args: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			userId: Id<"users">;
+			unfinalizedExpiresAt?: number;
+			r2Key?: string;
+		},
+	) {
+		return await t.run(async (ctx) =>
+			ctx.db.insert("files_r2_assets", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				kind: "upload",
+				r2Bucket: "test-bucket",
+				r2Key: args.r2Key,
+				size: 128,
+				createdBy: args.userId,
+				unfinalizedExpiresAt: args.unfinalizedExpiresAt,
+				updatedAt: Date.now(),
+			}),
+		);
+	}
+
+	test("deletes expired unreferenced assets with their R2 objects and keeps unexpired ones", async () => {
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const now = Date.now();
+		const expiredAssetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now - 1 });
+		const unexpiredAssetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now + DAY_MS });
+
+		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, { _test_now: now });
+
+		const [expiredAsset, unexpiredAsset] = await t.run(async (ctx) =>
+			Promise.all([ctx.db.get("files_r2_assets", expiredAssetId), ctx.db.get("files_r2_assets", unexpiredAssetId)]),
+		);
+		expect(swept).toEqual({ deletedCount: 1, done: true });
+		expect(expiredAsset).toBeNull();
+		expect(unexpiredAsset?.unfinalizedExpiresAt).toBe(now + DAY_MS);
+		expect(deleteObjectSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			expected_asset_key({ organizationId: db.organizationId, workspaceId: db.workspaceId, assetId: expiredAssetId }),
+		);
+	});
+
+	test("reaches an orphan in the first batch even when finalized assets exist", async () => {
+		// Guards the two-sided index range: `unfinalizedExpiresAt` is missing on finalized assets,
+		// and a missing value sorts below every number. With a one-sided `.lt(now)` range this
+		// batch of one would contain only the finalized asset and the orphan would never be seen.
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const now = Date.now();
+		const finalizedAssetId = await seed_unfinalized_asset(t, { ...db, r2Key: "test/finalized" });
+		const orphanAssetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now - 1 });
+
+		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+			_test_now: now,
+			batchSize: 1,
+			_test_disableReschedule: true,
+		});
+
+		const [finalizedAsset, orphanAsset] = await t.run(async (ctx) =>
+			Promise.all([ctx.db.get("files_r2_assets", finalizedAssetId), ctx.db.get("files_r2_assets", orphanAssetId)]),
+		);
+		expect(swept.deletedCount).toBe(1);
+		expect(orphanAsset).toBeNull();
+		expect(finalizedAsset).not.toBeNull();
+	});
+
+	test("a batched sweep reschedules itself until the backlog is drained", async () => {
+		vi.useFakeTimers();
+		try {
+			const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+			const t = test_convex();
+			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+			const now = Date.now();
+			const firstAssetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now - 2 });
+			const secondAssetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now - 1 });
+
+			const firstBatch = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+				_test_now: now,
+				batchSize: 1,
+			});
+			expect(firstBatch).toEqual({ deletedCount: 1, done: false });
+
+			// The sweep schedules each continuation with runAfter(0). Advance fake timers once per
+			// hop so every continuation in the chain gets to run.
+			for (let i = 0; i < 5; i += 1) {
+				vi.advanceTimersByTime(1000);
+				await t.finishInProgressScheduledFunctions();
+			}
+
+			const [firstAsset, secondAsset] = await t.run(async (ctx) =>
+				Promise.all([ctx.db.get("files_r2_assets", firstAssetId), ctx.db.get("files_r2_assets", secondAssetId)]),
+			);
+			expect(firstAsset).toBeNull();
+			expect(secondAsset).toBeNull();
+			expect(deleteObjectSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("never deletes an asset a node or snapshot doc still references", async () => {
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const now = Date.now();
+		const nodeAssetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now - 1 });
+		const yjsSnapshotAssetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now - 1 });
+		const versionSnapshotAssetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now - 1 });
+		await t.run(async (ctx) => {
+			const nodeId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				parentId: files_ROOT_ID,
+				name: "broken.pdf",
+				kind: "file",
+				path: "/broken.pdf",
+				treePath: "/broken.pdf",
+				assetId: nodeAssetId,
+			});
+			await ctx.db.insert("files_yjs_snapshots", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: nodeId,
+				sequence: 0,
+				assetId: yjsSnapshotAssetId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				updatedAt: now,
+			});
+			await ctx.db.insert("files_snapshots", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: nodeId,
+				assetId: versionSnapshotAssetId,
+				createdBy: db.userId,
+				archivedAt: -1,
+			});
+		});
+
+		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, { _test_now: now });
+
+		const assets = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.get("files_r2_assets", nodeAssetId),
+				ctx.db.get("files_r2_assets", yjsSnapshotAssetId),
+				ctx.db.get("files_r2_assets", versionSnapshotAssetId),
+			]),
+		);
+		expect(swept.deletedCount).toBe(0);
+		for (const asset of assets) {
+			expect(asset).not.toBeNull();
+			// Referenced assets are pushed forward by the exact 7-day recheck delay so the sweep
+			// warns again later instead of looping on them every hour.
+			expect(asset?.unfinalizedExpiresAt).toBe(now + 7 * DAY_MS);
+		}
+		expect(deleteObjectSpy).not.toHaveBeenCalled();
+	});
+
+	test("heals a finalized asset that kept a stale deadline", async () => {
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const now = Date.now();
+		const driftedAssetId = await seed_unfinalized_asset(t, {
+			...db,
+			r2Key: "test/finalized-with-stale-deadline",
+			unfinalizedExpiresAt: now - 1,
+		});
+
+		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, { _test_now: now });
+
+		const driftedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", driftedAssetId));
+		expect(swept.deletedCount).toBe(0);
+		expect(driftedAsset).not.toBeNull();
+		expect(driftedAsset?.unfinalizedExpiresAt).toBeUndefined();
+		expect(deleteObjectSpy).not.toHaveBeenCalled();
+	});
+
+	test("insert_asset sets the deadline and the r2Key patch clears it", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+
+		const assetId = await t.mutation(internal.r2.insert_asset, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			kind: "content_snapshot",
+			size: 64,
+			createdBy: db.userId,
+		});
+		const inserted = await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId));
+		expect(inserted?.unfinalizedExpiresAt).toBeGreaterThan(Date.now());
+
+		// A patch without r2Key must keep the deadline: the asset is still unfinalized.
+		await t.mutation(internal.r2.patch_asset, { assetId, processingWorkId: null });
+		const stillUnfinalized = await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId));
+		expect(stillUnfinalized?.unfinalizedExpiresAt).toBeGreaterThan(Date.now());
+
+		await t.mutation(internal.r2.patch_asset, { assetId, r2Key: "test/confirmed" });
+		const finalized = await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId));
+		expect(finalized?.r2Key).toBe("test/confirmed");
+		expect(finalized?.unfinalizedExpiresAt).toBeUndefined();
+	});
+
+	test("upload finalization through the R2 event clears the deadline", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "sweep-check.png",
+			contentType: "image/png",
+			size: 2048,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const pending = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		expect(pending?.unfinalizedExpiresAt).toBeGreaterThan(Date.now());
+
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_sweep_check",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: pending?.r2Bucket,
+					object: {
+						key: expected_asset_key({
+							organizationId: db.organizationId,
+							workspaceId: db.workspaceId,
+							assetId: upload._yay.assetId,
+						}),
+						size: 2048,
+						eTag: "etag_sweep_check",
+					},
+					eventTime: "2026-05-11T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+
+		const finalized = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		expect(finalized?.r2Key).toBeDefined();
+		expect(finalized?.unfinalizedExpiresAt).toBeUndefined();
+	});
+});

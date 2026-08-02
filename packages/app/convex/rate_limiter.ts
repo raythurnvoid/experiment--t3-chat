@@ -47,6 +47,15 @@ const rate_limiter_CONFIG = {
 		period: MINUTE,
 		capacity: 20,
 	},
+	// Bulk file writes charge one token per file in a single up-front batch charge, so the
+	// capacity must cover a full write-many request (20 files) with room for several back-to-back
+	// batches during an import.
+	public_api_files_write_bulk: {
+		kind: "token bucket",
+		rate: 600,
+		period: MINUTE,
+		capacity: 100,
+	},
 	ai_chat_http: STRICT_AI_HTTP,
 	ai_chat_message_write: {
 		kind: "token bucket",

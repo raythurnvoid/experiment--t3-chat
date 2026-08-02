@@ -732,7 +732,9 @@ const app_convex_schema = defineSchema({
 		createdBy: v.id("users"),
 		updatedBy: v.string(),
 		updatedAt: v.number(),
-	}).index("by_organization_workspace_fileNode_sequence", ["organizationId", "workspaceId", "fileNodeId", "sequence"]),
+	})
+		.index("by_organization_workspace_fileNode_sequence", ["organizationId", "workspaceId", "fileNodeId", "sequence"])
+		.index("by_asset", ["assetId"]),
 
 	files_yjs_updates: defineTable({
 		organizationId: v.id("organizations"),
@@ -789,12 +791,9 @@ const app_convex_schema = defineSchema({
 		 * unarchived, and > 0 for the archive timestamp in milliseconds.
 		 */
 		archivedAt: v.number(),
-	}).index("by_organization_workspace_fileNode_archivedAt", [
-		"organizationId",
-		"workspaceId",
-		"fileNodeId",
-		"archivedAt",
-	]),
+	})
+		.index("by_organization_workspace_fileNode_archivedAt", ["organizationId", "workspaceId", "fileNodeId", "archivedAt"])
+		.index("by_asset", ["assetId"]),
 
 	files_r2_assets: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
@@ -817,10 +816,18 @@ const app_convex_schema = defineSchema({
 		 * flight (cancellable), null = settled with nothing pending.
 		 **/
 		processingWorkId: v.optional(v.union(vWorkId, v.null())),
+		/**
+		 * Orphan-sweep deadline. Every insert site sets it to now + 24h, and the same patch that
+		 * sets `r2Key` clears it, so the field is present exactly while `r2Key` is missing. The
+		 * hourly sweeper in r2.ts deletes expired assets that no node or snapshot doc references.
+		 **/
+		unfinalizedExpiresAt: v.optional(v.number()),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		updatedAt: v.number(),
-	}).index("by_organization_workspace", ["organizationId", "workspaceId"]),
+	})
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_unfinalizedExpiresAt", ["unfinalizedExpiresAt"]),
 
 	/**
 	 * Operational status for read-only external mounts (v1: GitHub repo mirrors). This table's own
@@ -1495,6 +1502,7 @@ const app_convex_schema = defineSchema({
 			v.literal("extra_organizations"),
 			v.literal("extra_workspaces"),
 			v.literal("active_api_credentials"),
+			v.literal("public_api_upload_bytes"),
 		),
 		userId: v.optional(v.id("users")),
 		organizationId: v.optional(v.id("organizations")),

@@ -84,6 +84,7 @@ import {
 	r2_get_bucket,
 	r2_create_asset_key,
 	r2_delete_object,
+	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -1732,6 +1733,7 @@ export const create_upload_node = mutation({
 			r2Bucket: r2_get_bucket(),
 			size: args.size,
 			createdBy: membership.userId,
+			unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
 			updatedAt: now,
 		});
 		const assetR2Key = r2_create_asset_key({
@@ -2118,6 +2120,7 @@ export const create_upload_nodes = mutation({
 				r2Bucket: r2_get_bucket(),
 				size: item.size,
 				createdBy: membership.userId,
+				unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
 				updatedAt: now,
 			});
 

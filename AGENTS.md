@@ -212,6 +212,7 @@ Current spec-style skills include:
 - `.agents/skills/data-deletion/SKILL.md`
 - `.agents/skills/ai-chat-agent/SKILL.md`
 - `.agents/skills/files-agent-pending-updates/SKILL.md`
+- `.agents/skills/public-api/SKILL.md`
 
 When product requirements or business logic change, update the relevant spec skills in the same pass as the implementation so those files stay accurate.
 

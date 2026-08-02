@@ -653,6 +653,7 @@ export async function files_nodes_db_finalize_markdown_node_creation(
 				assetId: args.yjsSnapshotAssetId,
 			}),
 			size: args.yjsSnapshotSize,
+			unfinalizedExpiresAt: undefined,
 			updatedAt: now,
 		}),
 		ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
@@ -662,6 +663,7 @@ export async function files_nodes_db_finalize_markdown_node_creation(
 				assetId: args.versionSnapshotAssetId,
 			}),
 			size: args.versionSnapshotSize,
+			unfinalizedExpiresAt: undefined,
 			updatedAt: now,
 		}),
 		ctx.db.insert("files_snapshots", {
@@ -1954,6 +1956,7 @@ export async function files_nodes_db_fill_markdown_node_content(
 		ctx.db.patch("files_r2_assets", args.contentSnapshotAssetId, {
 			r2Key: r2_create_asset_key({ organizationId, workspaceId, assetId: args.contentSnapshotAssetId }),
 			size: args.contentSize,
+			unfinalizedExpiresAt: undefined,
 			updatedAt: now,
 		}),
 		// Store the new content as a version snapshot and point the node at it: the newest
@@ -2073,6 +2076,7 @@ export const finalize_file_content_materialization = internalMutation({
 						assetId: state.yjsSnapshotAsset._id,
 					}),
 					size: args.yjsSnapshotSize,
+					unfinalizedExpiresAt: undefined,
 					updatedAt: now,
 				}),
 				ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
@@ -2082,6 +2086,7 @@ export const finalize_file_content_materialization = internalMutation({
 						assetId: args.versionSnapshotAssetId,
 					}),
 					size: args.markdownSize,
+					unfinalizedExpiresAt: undefined,
 					updatedAt: now,
 				}),
 				ctx.db.patch("files_yjs_snapshots", state.yjsSnapshotDoc._id, {
@@ -2454,6 +2459,7 @@ export const restore_snapshot = internalMutation({
 					assetId: args.currentSnapshotAssetId,
 				}),
 				size: args.currentSnapshotSize,
+				unfinalizedExpiresAt: undefined,
 				updatedAt: now,
 			}),
 			ctx.db.patch("files_r2_assets", args.restoredSnapshotAssetId, {
@@ -2463,6 +2469,7 @@ export const restore_snapshot = internalMutation({
 					assetId: args.restoredSnapshotAssetId,
 				}),
 				size: args.restoredSnapshotSize,
+				unfinalizedExpiresAt: undefined,
 				updatedAt: now,
 			}),
 			// Store current state as a backup snapshot
