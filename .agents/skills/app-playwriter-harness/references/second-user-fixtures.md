@@ -4,7 +4,18 @@ Use this when a check needs two identities at once: permission refusals, share g
 
 The org owner passes every permission check, so an owner-only run proves **no over-refusal** and never proves a refusal works. Do not report a permission fix as verified from owner flows alone.
 
-You do not need a second Clerk account, and you must never type a credential to get one. The app mints an anonymous user for any visitor with no Clerk session, and `organizations.invite_user_to_organization_workspace` accepts `userIdToAdd` directly, so that anonymous user can be pulled into a workspace as a normal member.
+For most checks you do not need a second Clerk account. The app mints an anonymous user for any visitor with no Clerk session, and `organizations.invite_user_to_organization_workspace` accepts `userIdToAdd` directly, so that anonymous user can be pulled into a workspace as a normal member.
+
+## When a check needs a specific Clerk account
+
+The dev database holds signable `qa.perm.owner` / `admin` / `member` / `viewer` accounts (`+clerk_test` addresses, fixed public test code `424242`). Login and logout with them is a supported autonomous flow — read `clerk-test-accounts.md` for the account list, the sign-in/sign-out recipes, and the hard rules (dev `pk_test_` instance only, `+clerk_test` fixtures only, never a real credential).
+
+Two constraints shape the choice, both checked on 2026-08-02:
+
+- This Clerk instance runs with `singleSessionMode === true` (read it from `Clerk.__unstable__environment.authConfig`). One browser profile holds one signed-in user, and the app has no account switcher (`packages/app/src/components/main-app-sidebar-account-control.tsx` renders only `Manage account` and `Sign out`). So test-account sign-in must happen **only** in the isolated scratch browser from section 1 below — in the user's own profile it would kick the user out of their own session.
+- Prefer the anonymous identity below when the check only needs "some non-owner member": it needs no account and no sign-in, and it produces the same non-owner member with `content.write` that those accounts were created for. Reach for a Clerk test account when the check needs a specific role, a specific configuration, or data already attached to an account.
+
+Hand the work back to the user only when a check needs a **real** account: the user's own data, a real credential, or an invite-by-email flow that needs a real address. That is the single step to ask a human for; everything around it you can still drive yourself.
 
 ## 1. Isolated browser for the second identity
 

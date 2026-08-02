@@ -1300,6 +1300,8 @@ Every browser QA task ends with the harness skill's "Leave The Process Better Th
 
 Run a Playwriter check for every change the running app can reach, not only for UI work. Backend-only changes count: tests run against their own harness, so they cannot show that the real app still reaches the changed code. Drive the flow that the change affects, and follow the verification rules above — walking a happy path is not a check. Say so explicitly when a change genuinely cannot be reached from the app.
 
+A check that needs a second identity — a permission refusal, a share grant, presence — cannot be done from the signed-in account, because the organization owner passes every permission check and an owner-only run proves nothing about a refusal. Never sign in or out in the user's own browser profile: Clerk runs in single-session mode here, so that would sign the user out of their own session. Run second identities in an isolated scratch browser instead. Load `.agents/skills/app-playwriter-harness/references/second-user-fixtures.md` — the app mints an anonymous user for a visitor with no session, and an invite by `userIdToAdd` turns that into a normal non-owner member. When a check needs a specific signed-in role or account configuration, load `.agents/skills/app-playwriter-harness/references/clerk-test-accounts.md` — the dev database holds seeded `+clerk_test` QA accounts whose fixed public test code (`424242`) is fixture data, not a credential, and logging in and out with them in the scratch browser is a supported autonomous flow.
+
 Before trusting any browser result about Convex code, check that the browser runs your working tree. `pnpm run dev` starts Vite only; the app then talks to the deployment already in `packages/app/.env.local`, so edits under `convex/` reach the browser only while `convex dev` is pushing them. Prove it once per session by breaking one check on purpose and watching the app's behaviour change. Without that, a green browser run says nothing about your edits.
 
 # Temporary debug logging
@@ -1321,6 +1323,16 @@ $env:GH_TOKEN_RV = (gh auth token --user raythurnvoid)
 git -c credential.helper= -c "credential.helper=!f() { echo username=raythurnvoid; echo password=`$GH_TOKEN_RV; }; f" push origin main
 Remove-Item Env:GH_TOKEN_RV
 ```
+
+The account flip also affects `gh` write commands (`gh issue create`, `gh pr create`, comments): they run as whatever account is active at that moment. Pin those per invocation too, in one shell call, without printing the token:
+
+```powershell
+$env:GH_TOKEN = (gh auth token --user raythurnvoid)
+gh issue create -R <owner>/<repo> --title "..." --body-file <path>
+Remove-Item Env:GH_TOKEN
+```
+
+`GH_TOKEN` overrides the active `gh` account for that command only. Verified 2026-08-02 (filed remorses/playwriter#107 this way).
 
 # Git commit messages
 
