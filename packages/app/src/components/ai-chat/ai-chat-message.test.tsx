@@ -364,6 +364,80 @@ describe("AiChatMessage", () => {
 		expect(screen.queryByRole("region", { name: "Stdout" })).toBeNull();
 	});
 
+	test("keeps an open tool output open when the streamed message is persisted", () => {
+		const clientGeneratedId = "ai_message-client_1";
+		const bashPart = {
+			type: "tool-bash",
+			toolCallId: "call_bash_persist",
+			state: "output-available",
+			input: { command: "pwd" },
+			output: {
+				title: `exit 0 · ${bashWorkspaceMount}`,
+				output: bashWorkspaceMount,
+				stdout: `${bashWorkspaceMount}\n`,
+				stderr: "",
+				metadata: {
+					command: "pwd",
+					cwd: bashWorkspaceMount,
+					nextCwd: bashWorkspaceMount,
+					exitCode: 0,
+					stdoutTruncated: false,
+					stderrTruncated: false,
+					stdoutLength: bashWorkspaceMount.length + 1,
+					stderrLength: 0,
+					pathIndexTruncated: false,
+				},
+			},
+		} satisfies ai_chat_AiSdk5UiMessage["parts"][number];
+
+		// The controller stamps a live message's own id into metadata.clientGeneratedId.
+		const streamingMessage = {
+			id: clientGeneratedId,
+			role: "assistant",
+			parts: [bashPart],
+			metadata: {
+				convexParentId: "msg_user_failed",
+				parentClientGeneratedId: null,
+				clientGeneratedId,
+			},
+		} satisfies ai_chat_AiSdk5UiMessage;
+		const rendered = renderMessage({ message: streamingMessage, isRunning: true });
+
+		// jsdom does not toggle a details element from a summary click, so set the
+		// user-toggled uncontrolled open state directly.
+		const openedDetails = document.querySelector("details");
+		expect(openedDetails).not.toBeNull();
+		openedDetails!.open = true;
+
+		// When the stream finishes, the persisted row replaces the streamed message: the
+		// message id becomes the Convex id and the client id moves into metadata.
+		const persistedMessage = {
+			...streamingMessage,
+			id: "msg_assistant_persisted",
+			metadata: {
+				...streamingMessage.metadata,
+				convexId: "msg_assistant_persisted",
+				clientGeneratedId,
+			},
+		} satisfies ai_chat_AiSdk5UiMessage;
+		hookMocks.messageById.set(persistedMessage.id, persistedMessage);
+		hookMocks.branchSiblingIdsByMessageId.set(persistedMessage.id, [persistedMessage.id]);
+		rendered.rerender(
+			<AiChatMessage
+				messageId={persistedMessage.id}
+				message={persistedMessage}
+				selectedThreadId="thread_1"
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="ask"
+				isRunning={false}
+				actions={hookMocks.actions}
+			/>,
+		);
+
+		// The same DOM node must survive: a remount would recreate the details closed.
+		expect(document.querySelector("details[open]")).toBe(openedDetails);
+	});
+
 	test("renders execute_code tool output as code, input, and result sections", () => {
 		renderMessage({
 			message: {

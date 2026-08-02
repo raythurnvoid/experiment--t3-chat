@@ -121,6 +121,11 @@ export type ai_chat_AiSdk5UiMessage = UIMessage<
 		status?: "aborted" | "errored" | undefined;
 		convexId?: string | undefined;
 		convexParentId?: string | null | undefined;
+		/**
+		 * The message's own client-generated id. `AiChatController` sets it on every rendered
+		 * message: persisted rows copy `clientGeneratedMessageId`, live messages copy their own id.
+		 */
+		clientGeneratedId?: string | undefined;
 		parentClientGeneratedId: string | null;
 		selectedModelId?: ai_chat_ModelId | undefined;
 		selectedModeId?: ai_chat_ModeId | undefined;

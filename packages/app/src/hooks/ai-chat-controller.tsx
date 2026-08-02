@@ -1673,6 +1673,10 @@ const useThreadRuntimeController = () => {
 					metadata: {
 						...(dbMessageContent.metadata ?? {}),
 						...metadata,
+						// Keep the row's client-generated id on the UI message. The message UI keys
+						// content by it, so an open tool output does not remount and close when this
+						// persisted row replaces the streamed message that used the client id as its id.
+						clientGeneratedId: message.clientGeneratedMessageId,
 					} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
 				} satisfies ai_chat_AiSdk5UiMessage);
 			mutate_message_metadata(uiMessage, metadata);
@@ -1939,6 +1943,14 @@ const useThreadRuntimeController = () => {
 				});
 				continue;
 			}
+
+			// A live message's own id is its client-generated id. Stamp it into metadata so
+			// every rendered message carries the stable id in `metadata.clientGeneratedId`
+			// and the UI can key by that field alone, without a fallback on `message.id`.
+			message.metadata ??= {
+				parentClientGeneratedId: null,
+			} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>;
+			message.metadata.clientGeneratedId = message.id;
 
 			result.list.push(message);
 

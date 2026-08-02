@@ -1190,6 +1190,13 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 	const canEdit = !isRunning && (Boolean(text) || messageFileParts.length > 0);
 
 	const branchIndex = branchAnchorIds.indexOf(message.id);
+
+	/**
+	 * The controller stamps the client-generated id on every rendered message. Keying by it
+	 * keeps content mounted when persistence flips message.id to the Convex id.
+	 */
+	const contentKey = message.metadata?.clientGeneratedId;
+
 	const showEditButton = !isEditing && Boolean(selectedThreadId) && canEdit;
 	const bubbleRef = useRef<HTMLDivElement>(null);
 	const editBubbleLayoutCapturedOnPointerDownRef = useRef(false);
@@ -1346,7 +1353,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 			>
 				<div className={"AiChatMessageUser-content-container" satisfies AiChatMessageUser_ClassNames}>
 					<AiChatMessageContent
-						key={message.id}
+						key={contentKey}
 						message={message}
 						isChatRunning={isRunning}
 						onToolOutput={onToolOutput}
@@ -1355,7 +1362,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 					>
 						{isEditing ? (
 							<AiChatComposer
-								key={message.id}
+								key={contentKey}
 								className={"AiChatMessageUser-content-composer" satisfies AiChatMessageUser_ClassNames}
 								autoFocus
 								canCancel={false}
@@ -1485,6 +1492,12 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 	const streamErrorText = message.metadata?.status === "errored" ? "An error occurred during the generation" : null;
 	const branchIndex = branchAnchorIds.indexOf(message.id);
 
+	/**
+	 * The controller stamps the client-generated id on every rendered message. Keying by it
+	 * keeps content mounted when persistence flips message.id to the Convex id.
+	 */
+	const contentKey = message.metadata?.clientGeneratedId;
+
 	const handleReload = useFn(() => {
 		if (!selectedThreadId) {
 			return;
@@ -1538,7 +1551,7 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 		>
 			<AiChatMessageBubble className={"AiChatMessageAgent-bubble" satisfies AiChatMessageAgent_ClassNames}>
 				<AiChatMessageContent
-					key={message.id}
+					key={contentKey}
 					message={message}
 					isChatRunning={isRunning}
 					onToolOutput={onToolOutput}
@@ -1645,6 +1658,12 @@ type AiChatMessageSystem_Props = ComponentPropsWithRef<"div"> & {
 const AiChatMessageSystem = memo(function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
 	const { ref, id, className, message, isRunning, onToolOutput, onToolResumeStream, onToolStop, ...rest } = props;
 
+	/**
+	 * The controller stamps the client-generated id on every rendered message. Keying by it
+	 * keeps content mounted when persistence flips message.id to the Convex id.
+	 */
+	const contentKey = message.metadata?.clientGeneratedId;
+
 	return (
 		<AiChatMessageContainer
 			ref={ref}
@@ -1654,7 +1673,7 @@ const AiChatMessageSystem = memo(function AiChatMessageSystem(props: AiChatMessa
 		>
 			<AiChatMessageBubble className={"AiChatMessageSystem-bubble" satisfies AiChatMessageSystem_ClassNames}>
 				<AiChatMessageContent
-					key={message.id}
+					key={contentKey}
 					message={message}
 					isChatRunning={isRunning}
 					onToolOutput={onToolOutput}
