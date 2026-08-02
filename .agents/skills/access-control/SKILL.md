@@ -163,12 +163,16 @@ Rules that are easy to miss, all of which were real holes:
   `content.permissions.manage` on that folder, not `content.write`. A folder that is the restricted
   scope itself carries its scope along and is not asked. `rename_node` needs no such check: its path
   walk starts at the node's own parent and only ever goes deeper, so it cannot leave a scope.
-  `unarchive_nodes` skips the destination check for the same reason, and that skip is deliberate —
-  reviewers keep reporting it. When a node's parent is still archived this code, not the caller,
-  picks the root as the destination; a node that is its own restricted scope stays closed there, so
-  the move opens it to nobody, and refusing would strand the folder where only its share list can see
-  it. A node that only *inherits* a restriction does lose it at the root, so that one is asked. Both
-  cases have a test in `access_control.test.ts`.
+  `unarchive_nodes` restores a node to a new parent when its own parent is still archived, so it is a
+  move and asks the same questions. It skips both of them for a node that is its own restricted
+  scope, and that skip is deliberate — reviewers keep reporting it. The destination there is picked
+  by this code, not by the caller, and a node carrying its own scope stays closed wherever it lands,
+  so the move opens it to nobody; refusing would strand the folder where only its share list can see
+  it. A node that only *inherits* a restriction does lose it at the root, so that one is asked both
+  questions: the destination write and the leaving check. Asking only the first was a real hole — a
+  write grant on a folder was enough to archive it and then restore one file out of it, which handed
+  that file to the whole workspace while `move_nodes` refused the identical move. Every case here has
+  a test in `access_control.test.ts`.
 - **A mutation an action calls proves its own permission.** Only a check inside the writing mutation
   runs in the same transaction as the write; a check in the action is advisory, because a role taken
   away in between still lands the write. So an internal mutation reached from an action asks again,
@@ -324,6 +328,13 @@ product decision, so record the answer here before changing the behaviour.
   memberships. When that creator leaves the organization the workspace appears in nobody's list, while
   still holding its `extra_workspaces` quota slot. The owner may delete it — `delete_workspace` exempts
   them — but no screen offers them the id.
+- **A write grant is enough to archive the shared folder itself.** `archive_nodes` treats archiving as
+  `content.write` on the node, and a `write`-level grant supplies that, so anybody on the share list
+  can take the restricted folder out of everybody's active tree — the owner's included. Moving a node
+  out of a restricted scope asks for `content.permissions.manage` instead, so the two operations
+  answer the same question differently. Archiving is reversible and restoring is now guarded on both
+  legs, which is the argument for leaving it at `write`. The question is whether archiving the node
+  that carries a restriction should take `content.permissions.manage` like moving out of it does.
 - **Removing a member deletes their grants in one mutation.** `remove_organization_member` collects
   every `access_control_permission_grants` doc for the user and deletes them together, with no page
   limit, exactly like the role assignments above it. Somebody on thousands of share lists would exceed

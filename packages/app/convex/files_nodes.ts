@@ -1693,6 +1693,13 @@ export const create_upload_node = mutation({
 				return Result({ _nay: { message: "Permission denied" } });
 			}
 
+			// A file cannot hold other files, so this upload can never succeed. The create below says the
+			// same thing, in the same words and only to callers who got past the check above, but it says
+			// it after the asset doc is written. Answer here, while nothing has been written yet.
+			if (intermediate.kind !== "folder") {
+				return Result({ _nay: { message: "This folder already exists." } });
+			}
+
 			intermediateParentId = intermediate._id;
 		}
 
@@ -3942,6 +3949,22 @@ export const unarchive_nodes = mutation({
 			});
 			if (authorizedTarget._nay) {
 				return authorizedTarget;
+			}
+
+			// Landing somewhere new is a move, so it needs the third leg `move_nodes` asks. Leaving a
+			// restricted folder changes who can read the file, and `content.write` never means that.
+			// Without this, a write grant on the folder is enough to archive it and then restore one file
+			// out of it, which hands that file to everybody who can read the workspace. The loop already
+			// skipped nodes that carry their own restriction, so this only ever asks about a node that
+			// inherits its scope from a folder above it.
+			const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
+				userAuth,
+				membership,
+				fileNode: plan.fileNode,
+				destParentId: plan.targetParentId,
+			});
+			if (authorizedLeaving._nay) {
+				return authorizedLeaving;
 			}
 		}
 

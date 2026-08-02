@@ -6955,6 +6955,48 @@ describe("file sharing", () => {
 		expect(closedNode?.restrictedScopeNodeId).toBe(closed._yay!.nodeId);
 	});
 
+	test("a write grant does not let a member restore a file out of the folder it belongs to", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "member-escape-org",
+			suffix: "member-escape",
+		});
+		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "write",
+		});
+		expect(granted._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+
+		// The member could archive the folder themselves, because their grant is a write on it. The owner
+		// does it here so the test stays about the restore.
+		const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: fixture.ownerMembershipId,
+			nodeIds: [String(folderId)],
+		});
+		expect(archived._nay).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+
+		// Unlike the guest two tests above, this member keeps the workspace role, so the write at the root
+		// passes and only the leaving check can refuse. Restoring the child alone lands it at the root and
+		// drops the restriction, which hands a file the share list closed to everybody who can read the
+		// workspace. `move_nodes` refuses the same move, so restoring has to refuse it too.
+		const unarchived = await fixture.asMember.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: fixture.memberMembershipId,
+			nodeIds: [String(childId)],
+		});
+		expect(unarchived._nay?.message).toBe("You need Can manage on the shared folder to move this out of it.");
+
+		const childNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", childId));
+		expect(childNode?.parentId).toBe(folderId);
+		expect(childNode?.restrictedScopeNodeId).toBe(folderId);
+	});
+
 	test("a blocked restore does not name the node in the way when the caller cannot open it", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -7291,6 +7333,52 @@ describe("file sharing", () => {
 		// something they are not allowed to do is how the member deletes the file.
 		const note = await t.run(async (ctx) => await ctx.db.get("files_nodes", noteId));
 		expect(note?.archiveOperationId).toBeUndefined();
+	});
+
+	test("an upload that walks through a file writes nothing", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "upload-thru-file-org",
+			suffix: "upload-thru-file",
+		});
+
+		// A file, not a folder, holding a name the upload has to walk through.
+		await t.run(async (ctx) => {
+			await ctx.db.insert("files_nodes", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				createdBy: fixture.ownerId,
+				updatedBy: fixture.ownerId,
+				updatedAt: Date.now(),
+				parentId: files_ROOT_ID,
+				name: "ancestor.pdf",
+				kind: "file",
+				path: "/ancestor.pdf",
+				treePath: "/ancestor.pdf",
+				pathDepth: 1,
+				lowercaseExtension: "pdf",
+				restrictedScopeNodeId: undefined,
+				archiveOperationId: undefined,
+			});
+		});
+
+		const assetsBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
+
+		// A file can never be a parent, so this upload cannot succeed. The walk before the asset insert
+		// asks whether the member may write each name on the way but never whether it is a folder, so it
+		// lets the file through and the create refuses afterwards. By then the asset doc is written, and a
+		// Convex mutation that returns normally commits it.
+		const upload = await fixture.asMember.mutation(api.files_nodes.create_upload_node, {
+			membershipId: fixture.memberMembershipId,
+			parentId: files_ROOT_ID,
+			filename: "ancestor.pdf/child.pdf",
+			contentType: "application/pdf",
+			size: 8,
+		});
+		expect(upload._nay?.message).toBe("This folder already exists.");
+
+		const assetsAfter = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
+		expect(assetsAfter).toBe(assetsBefore);
 	});
 
 	test("a batch import skips a restricted folder on the way and still creates the rest", async () => {
