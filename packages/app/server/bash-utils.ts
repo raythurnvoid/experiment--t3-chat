@@ -1377,17 +1377,23 @@ export function bash_read_only_mount_error(command: string, shellPath: string) {
 
 // #region shared command helpers
 
-// These constants support the narrow `source`/`.` guard below. They identify
-// simple command boundaries, wrapper builtins, redirections, and dynamic words;
-// they are not a general shell parser.
+// These constants support the narrow shell-code guard below. They identify
+// simple command boundaries, wrapper builtins, nested shells, redirections,
+// and dynamic words; they are not a general shell parser.
 const SOURCE_BUILTIN_PREFIX_COMMANDS = new Set(["builtin", "command", "eval"]);
+const SOURCE_BUILTIN_PREFIX_OPTIONS = new Set(["--", "-p"]);
 const SOURCE_BUILTIN_CONTROL_WORDS = new Set(["!", "do", "elif", "else", "if", "then", "time", "until", "while"]);
+const SHELL_CODE_CONTENT_READER_COMMANDS = new Set(["cat", "grep", "head", "sed", "tail", "textgrep"]);
+const NESTED_SHELL_COMMANDS = new Set(["bash", "sh"]);
+const NESTED_SHELL_SCRIPT_FLAGS = new Set(["-c", "-lc", "-cl"]);
 const SHELL_ASSIGNMENT_WORD_REGEX = /^[A-Za-z_][A-Za-z0-9_]*=/u;
 const SHELL_DYNAMIC_WORD_REGEX = /[$`]/u;
+const SHELL_STATIC_ECHO_COMMAND_SUBSTITUTION_REGEX = /^\$\(\s*echo\s+([A-Za-z0-9_.-]+)\s*\)$/u;
 const SHELL_REDIRECTION_WORD_REGEX = /^(?:\d*(?:<>|>>|>\||>|<|<<|<<<|<&|>&)|&>>?)(?:.+)?$/u;
 const SHELL_REDIRECTION_OPERATOR_REGEX = /^(?:\d*(?:<>|>>|>\||>|<|<<|<<<|<&|>&)|&>>?)$/u;
 
 type ShellWordToken = { kind: "separator" } | { kind: "word"; value: string };
+type ShellCodeGuardOptions = { cwd: string; fs: IFileSystem };
 
 /**
  * Split only enough shell syntax to find simple commands. Quotes and backslashes
@@ -1397,6 +1403,7 @@ function parse_shell_word_tokens(command: string) {
 	const tokens: ShellWordToken[] = [];
 	let word = "";
 	let quote: "'" | '"' | null = null;
+	let commandSubstitutionDepth = 0;
 
 	const pushWord = () => {
 		if (word === "") return;
@@ -1427,6 +1434,21 @@ function parse_shell_word_tokens(command: string) {
 			word += command[i];
 			continue;
 		}
+		if (char === "$" && command[i + 1] === "(") {
+			commandSubstitutionDepth++;
+			word += "$(";
+			i++;
+			continue;
+		}
+		if (commandSubstitutionDepth > 0) {
+			if (char === "(") {
+				commandSubstitutionDepth++;
+			} else if (char === ")") {
+				commandSubstitutionDepth--;
+			}
+			word += char;
+			continue;
+		}
 		if (/\s/u.test(char)) {
 			pushWord();
 			if (char === "\n") {
@@ -1446,6 +1468,70 @@ function parse_shell_word_tokens(command: string) {
 }
 
 /**
+ * Extract command-substitution bodies while balancing nested `$()` groups.
+ */
+function shell_command_substitution_scripts(script: string) {
+	const substitutions: string[] = [];
+
+	for (let index = 0; index < script.length; index++) {
+		if (script[index] === "`") {
+			const start = index + 1;
+			for (index++; index < script.length; index++) {
+				if (script[index] === "\\") {
+					index++;
+					continue;
+				}
+				if (script[index] === "`") {
+					substitutions.push(script.slice(start, index));
+					break;
+				}
+			}
+			continue;
+		}
+		if (script[index] !== "$" || script[index + 1] !== "(") {
+			continue;
+		}
+
+		const start = index + 2;
+		let depth = 1;
+		let quote: "'" | '"' | "`" | null = null;
+		for (index += 2; index < script.length; index++) {
+			const char = script[index];
+			if (quote !== null) {
+				if (char === "\\" && quote !== "'") {
+					index++;
+				} else if (char === quote) {
+					quote = null;
+				}
+				continue;
+			}
+			if (char === "\\") {
+				index++;
+				continue;
+			}
+			if (char === "'" || char === '"' || char === "`") {
+				quote = char;
+				continue;
+			}
+			if (char === "(") {
+				depth++;
+				continue;
+			}
+			if (char !== ")") {
+				continue;
+			}
+			depth--;
+			if (depth === 0) {
+				substitutions.push(script.slice(start, index));
+				break;
+			}
+		}
+	}
+
+	return substitutions;
+}
+
+/**
  * Return whether a shell word starts a redirection.
  *
  * Redirections can be written as a standalone operator like `>` or as a compact
@@ -1456,11 +1542,9 @@ function shell_word_is_redirection_prefix(word: string) {
 }
 
 /**
- * Find the script path for `source`/`.` while ignoring redirection targets.
- * Redirections can appear before or after the sourced path, so the guard must
- * classify the script path, not the stderr/stdout path.
+ * Find the next shell word while ignoring redirection targets and selected wrapper options.
  */
-function source_target_from_words(words: string[], startIndex: number) {
+function next_shell_word_from_words(words: string[], startIndex: number, skippedWords?: ReadonlySet<string>) {
 	let skipRedirectionTarget = false;
 
 	for (let index = startIndex; index < words.length; index++) {
@@ -1473,28 +1557,127 @@ function source_target_from_words(words: string[], startIndex: number) {
 			skipRedirectionTarget = SHELL_REDIRECTION_OPERATOR_REGEX.test(word);
 			continue;
 		}
+		if (skippedWords?.has(word)) {
+			continue;
+		}
 		return word;
 	}
 	return null;
 }
 
 /**
- * Decide whether a `source`/`.` target is disallowed.
+ * Decide whether a shell-code file path is disallowed.
  *
  * `source`/`.` executes inside the current shell, bypassing the explicit
  * `bash <script>` guards for app files and external mounts. Literal targets are
  * resolved against cwd so `/tmp/script.sh` stays allowed. Dynamic targets are
  * blocked because their final path cannot be classified without shell expansion.
  */
-function source_target_is_disallowed(target: string, options: { cwd: string; currentWorkspacePath: string }): boolean {
+function shell_code_path_is_disallowed(target: string, options: { cwd: string }): boolean {
 	if (SHELL_DYNAMIC_WORD_REGEX.test(target)) {
 		return true;
 	}
 	const resolvedPath = bash_resolve_path(options.cwd, target);
-	return (
-		bash_is_path_under_current_workspace_path(options.currentWorkspacePath, resolvedPath) ||
-		bash_is_path_under_read_only_mounts(resolvedPath)
-	);
+	return bash_is_path_under(bash_APP_MOUNT_PATH, resolvedPath) || bash_is_path_under_read_only_mounts(resolvedPath);
+}
+
+/**
+ * Detect a file path inside command substitution that will become nested shell code.
+ * Explicit paths can be classified directly. For bare relative content-reader operands,
+ * check the mounted filesystem so option values and search patterns are not mistaken for files.
+ */
+async function command_substitution_loads_disallowed_shell_code(script: string, options: ShellCodeGuardOptions) {
+	for (const nestedCommand of shell_command_substitution_scripts(script)) {
+		// Check inner substitutions before their output can hide the command that read the file.
+		if (await command_substitution_loads_disallowed_shell_code(nestedCommand, options)) {
+			return true;
+		}
+
+		const tokens = parse_shell_word_tokens(nestedCommand);
+		let commandName: string | null = null;
+		let hasDynamicCommandName = false;
+		let hasCommandWrapper = false;
+
+		for (const token of tokens) {
+			if (token.kind === "separator") {
+				commandName = null;
+				hasDynamicCommandName = false;
+				hasCommandWrapper = false;
+				continue;
+			}
+			const word = token.value;
+			if (commandName == null) {
+				if (SHELL_ASSIGNMENT_WORD_REGEX.test(word) || SOURCE_BUILTIN_CONTROL_WORDS.has(word)) {
+					continue;
+				}
+				if (SOURCE_BUILTIN_PREFIX_COMMANDS.has(word)) {
+					hasCommandWrapper = true;
+					continue;
+				}
+				if (hasCommandWrapper && SOURCE_BUILTIN_PREFIX_OPTIONS.has(word)) {
+					continue;
+				}
+				const staticEchoCommand = word.match(SHELL_STATIC_ECHO_COMMAND_SUBSTITUTION_REGEX)?.[1] ?? null;
+				commandName = staticEchoCommand ?? word;
+				hasDynamicCommandName = staticEchoCommand === null && SHELL_DYNAMIC_WORD_REGEX.test(word);
+				hasCommandWrapper = false;
+				continue;
+			}
+
+			if (
+				(SHELL_CODE_CONTENT_READER_COMMANDS.has(commandName) || hasDynamicCommandName) &&
+				!word.startsWith("-") &&
+				shell_code_path_is_disallowed(word, options)
+			) {
+				if (SHELL_DYNAMIC_WORD_REGEX.test(word)) {
+					return true;
+				}
+				const isExplicitPath = word.startsWith("/") || word.startsWith("./") || word.startsWith("../");
+				if (isExplicitPath) {
+					return true;
+				}
+				try {
+					if ((await options.fs.stat(bash_resolve_path(options.cwd, word))).isFile) {
+						return true;
+					}
+				} catch {
+					// Non-file arguments are normal command options, patterns, or missing paths.
+				}
+			}
+		}
+	}
+
+	return false;
+}
+
+function shell_script_uses_assignment(script: string, assignmentNames: ReadonlySet<string>) {
+	for (const assignmentName of assignmentNames) {
+		if (new RegExp(`\\$(?:${assignmentName}(?![A-Za-z0-9_])|\\{${assignmentName}\\})`, "u").test(script)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+async function update_shell_code_assignments(
+	words: string[],
+	assignmentNames: Set<string>,
+	options: ShellCodeGuardOptions,
+) {
+	for (const word of words) {
+		if (!SHELL_ASSIGNMENT_WORD_REGEX.test(word)) {
+			break;
+		}
+
+		const separatorIndex = word.indexOf("=");
+		const assignmentName = word.slice(0, separatorIndex);
+		const assignmentValue = word.slice(separatorIndex + 1);
+		if (await command_substitution_loads_disallowed_shell_code(assignmentValue, options)) {
+			assignmentNames.add(assignmentName);
+		} else {
+			assignmentNames.delete(assignmentName);
+		}
+	}
 }
 
 /**
@@ -1503,10 +1686,11 @@ function source_target_is_disallowed(target: string, options: { cwd: string; cur
  * Assignment words, redirections, and wrapper builtins can appear before
  * `source`, so skip them before checking the script target.
  */
-function simple_command_has_disallowed_source_target(
+async function simple_command_loads_disallowed_shell_code(
 	words: string[],
-	options: { cwd: string; currentWorkspacePath: string },
-): boolean {
+	options: ShellCodeGuardOptions,
+	assignmentNames: ReadonlySet<string>,
+): Promise<boolean> {
 	let skipRedirectionTarget = false;
 
 	for (let index = 0; index < words.length; index++) {
@@ -1526,27 +1710,52 @@ function simple_command_has_disallowed_source_target(
 		}
 
 		if (word === "source" || word === ".") {
-			const target = source_target_from_words(words, index + 1);
-			return target == null ? false : source_target_is_disallowed(target, options);
+			const target = next_shell_word_from_words(words, index + 1);
+			return target == null ? false : shell_code_path_is_disallowed(target, options);
 		}
 
 		if (word === "eval") {
 			// `eval 'source ...'` builds another command string; scan that string
 			// before Just Bash runs it.
-			return bash_command_has_disallowed_source_target(words.slice(index + 1).join(" "), options);
+			const script = words.slice(index + 1).join(" ");
+			return (
+				shell_script_uses_assignment(script, assignmentNames) ||
+				(await command_substitution_loads_disallowed_shell_code(script, options)) ||
+				(await bash_command_loads_disallowed_shell_code(script, options))
+			);
+		}
+
+		if (NESTED_SHELL_COMMANDS.has(word)) {
+			const flag = next_shell_word_from_words(words, index + 1);
+			if (flag == null || !NESTED_SHELL_SCRIPT_FLAGS.has(flag)) {
+				return false;
+			}
+			const flagIndex = words.indexOf(flag, index + 1);
+			const script = next_shell_word_from_words(words, flagIndex + 1);
+			return (
+				script != null &&
+				(shell_script_uses_assignment(script, assignmentNames) ||
+					(await command_substitution_loads_disallowed_shell_code(script, options)) ||
+					(await bash_command_loads_disallowed_shell_code(script, options)))
+			);
 		}
 
 		if (SOURCE_BUILTIN_PREFIX_COMMANDS.has(word)) {
 			// `command source file` and `builtin . file` still invoke the source builtins.
-			const command = source_target_from_words(words, index + 1);
+			const command = next_shell_word_from_words(words, index + 1, SOURCE_BUILTIN_PREFIX_OPTIONS);
 			if (command === "source" || command === ".") {
 				const sourceIndex = words.indexOf(command, index + 1);
-				const target = source_target_from_words(words, sourceIndex + 1);
-				return target == null ? false : source_target_is_disallowed(target, options);
+				const target = next_shell_word_from_words(words, sourceIndex + 1);
+				return target == null ? false : shell_code_path_is_disallowed(target, options);
 			}
 			if (command === "eval") {
 				const evalIndex = words.indexOf(command, index + 1);
-				return bash_command_has_disallowed_source_target(words.slice(evalIndex + 1).join(" "), options);
+				const script = words.slice(evalIndex + 1).join(" ");
+				return (
+					shell_script_uses_assignment(script, assignmentNames) ||
+					(await command_substitution_loads_disallowed_shell_code(script, options)) ||
+					(await bash_command_loads_disallowed_shell_code(script, options))
+				);
 			}
 		}
 
@@ -1557,22 +1766,24 @@ function simple_command_has_disallowed_source_target(
 }
 
 /**
- * Detect `source`/`.` usage that would execute an app file or external mount.
+ * Detect shell syntax that would load an app file or external mount as code.
  *
  * This stays a shallow shell-word scan, not a second interpreter. It only decides
- * whether a `source`/`.` target is definitely an app file or external mount path;
- * normal `/tmp` source usage should continue through Just Bash.
+ * whether a source target or nested command substitution reads a disallowed path;
+ * normal `/tmp` script usage should continue through Just Bash.
  */
-export function bash_command_has_disallowed_source_target(
+export async function bash_command_loads_disallowed_shell_code(
 	command: string,
-	options: { cwd: string; currentWorkspacePath: string },
-): boolean {
+	options: ShellCodeGuardOptions,
+) {
 	const tokens = parse_shell_word_tokens(command.replace(bash_SHELL_COMMENT_LINE_REGEX, ""));
+	const shellCodeAssignmentNames = new Set<string>();
 	let words: string[] = [];
 
 	for (const token of tokens) {
 		if (token.kind === "separator") {
-			if (simple_command_has_disallowed_source_target(words, options)) {
+			await update_shell_code_assignments(words, shellCodeAssignmentNames, options);
+			if (await simple_command_loads_disallowed_shell_code(words, options, shellCodeAssignmentNames)) {
 				return true;
 			}
 			words = [];
@@ -1581,28 +1792,30 @@ export function bash_command_has_disallowed_source_target(
 		words.push(token.value);
 	}
 
-	return simple_command_has_disallowed_source_target(words, options);
+	await update_shell_code_assignments(words, shellCodeAssignmentNames, options);
+	return await simple_command_loads_disallowed_shell_code(words, options, shellCodeAssignmentNames);
 }
 
 /**
- * Build the message shown when `source`/`.` targets an app file or agent-only external mount.
+ * Build the message shown when shell code comes from an app file or agent-only external mount.
  */
-export function bash_disallowed_source_target_error() {
-	return "bash: source and . cannot load app files or agent-only external mounts; use bash /tmp/<script> for scratch scripts.\n";
+export function bash_disallowed_shell_code_error() {
+	return "bash: source, ., and nested commands cannot load app files or agent-only external mounts as shell code; use bash /tmp/<script> for scratch scripts.\n";
 }
 
 /**
  * Extract `cp`/`mv` path operands for app-path routing.
  *
  * This is intentionally smaller than a full parser: it tracks the supported recursive,
- * force, and no-target-directory flags, including short clusters and `--`, then preserves
- * every following token as a path operand so dash-leading app file names cannot bypass
- * the app-mutation guards.
+ * force, no-clobber, and no-target-directory flags, including short clusters and `--`,
+ * then preserves every following token as a path operand so dash-leading app file names
+ * cannot bypass the app-mutation guards.
  */
 export function bash_parse_cp_mv_operands(args: string[]) {
 	const operands: string[] = [];
 	let recursive = false;
 	let force = false;
+	let noClobber = false;
 	let noTargetDirectory = false;
 	let optionsEnded = false;
 
@@ -1623,6 +1836,10 @@ export function bash_parse_cp_mv_operands(args: string[]) {
 			force = true;
 			continue;
 		}
+		if (arg === "-n" || arg === "--no-clobber") {
+			noClobber = true;
+			continue;
+		}
 		if (arg === "-T" || arg === "--no-target-directory") {
 			noTargetDirectory = true;
 			continue;
@@ -1636,6 +1853,9 @@ export function bash_parse_cp_mv_operands(args: string[]) {
 				if (flags.some((flag) => flag === "f")) {
 					force = true;
 				}
+				if (flags.some((flag) => flag === "n")) {
+					noClobber = true;
+				}
 				if (flags.some((flag) => flag === "T")) {
 					noTargetDirectory = true;
 				}
@@ -1644,7 +1864,7 @@ export function bash_parse_cp_mv_operands(args: string[]) {
 		}
 		operands.push(arg);
 	}
-	return { operands, recursive, force, noTargetDirectory };
+	return { operands, recursive, force, noClobber, noTargetDirectory };
 }
 
 /**

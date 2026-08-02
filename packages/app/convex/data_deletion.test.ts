@@ -18,6 +18,7 @@ import { billing_PRODUCTS } from "../shared/billing.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { files_create_room_id, files_get_utf8_byte_size } from "../shared/files.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -2068,6 +2069,71 @@ describe("process_workspace_deletion_request", () => {
 		}
 	});
 
+	test("deletes the deterministic R2 object for an asset without r2Key", async () => {
+		const t = test_convex();
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject");
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-ws-unfinalized-r2",
+				displayName: "Workspace Unfinalized R2",
+			}),
+		);
+
+		const { assetId, requestId } = await t.run(async (ctx) => {
+			const now = Date.now();
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				kind: "upload",
+				r2Bucket: "test-bucket",
+				size: 12,
+				createdBy: user.userId,
+				unfinalizedExpiresAt: now + 60_000,
+				updatedAt: now,
+			});
+			await ctx.db.insert("files_nodes", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				path: "/unfinished.pdf",
+				treePath: "/unfinished.pdf",
+				pathDepth: 1,
+				name: "unfinished.pdf",
+				kind: "file",
+				lowercaseExtension: "pdf",
+				parentId: "root",
+				createdBy: user.userId,
+				updatedBy: user.userId,
+				updatedAt: now,
+				contentType: "application/pdf",
+				assetId,
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				scope: "workspace",
+			});
+
+			return { assetId, requestId };
+		});
+		deleteObjectSpy.mockClear();
+
+		await data_deletion_test_process_workspace_request_until_done(t, {
+			requestId,
+			batchSize: 5,
+		});
+
+		expect(deleteObjectSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			r2_create_asset_key({
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				assetId,
+			}),
+		);
+		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
+	});
+
 	test("purges plugin installations, secrets, upload event routes, runs, and call docs", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
@@ -3372,6 +3438,109 @@ describe("hard_delete_user_data", () => {
 		expect(after.defaultWorkspace?._id).toBe(user.defaultWorkspaceId);
 	});
 
+	test("purges queued shared-organization workspace content after the workspace doc was already deleted", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-shared-deleted-ws",
+				displayName: "Reset Shared Deleted Workspace",
+			}),
+		);
+		const collaborator = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-shared-deleted-ws-collaborator",
+				displayName: "Reset Shared Deleted Workspace Collaborator",
+			}),
+		);
+
+		const shared = await t.run(async (ctx) => {
+			const now = Date.now();
+			const organization = await organizations_db_create(ctx, {
+				userId: user.userId,
+				name: "reset-q-shared",
+				description: "",
+				now,
+				default: false,
+			});
+			if (organization._nay) {
+				throw new Error(organization._nay.message);
+			}
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: organization._yay.organizationId,
+				workspaceId: organization._yay.defaultWorkspaceId,
+				userId: collaborator.userId,
+				active: true,
+				updatedAt: now,
+			});
+
+			const extraWorkspace = await organizations_db_create_workspace(ctx, {
+				userId: user.userId,
+				organizationId: organization._yay.organizationId,
+				name: "queue-only",
+				description: "",
+				now,
+			});
+			if (extraWorkspace._nay) {
+				throw new Error(extraWorkspace._nay.message);
+			}
+			await data_deletion_test_seed_workspace_content_bulk(ctx, {
+				userId: user.userId,
+				organizationId: organization._yay.organizationId,
+				workspaceId: extraWorkspace._yay.workspaceId,
+				count: 3,
+				tag: "reset-shared-deleted-ws",
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: organization._yay.organizationId,
+				workspaceId: extraWorkspace._yay.workspaceId,
+				scope: "workspace",
+			});
+			const memberships = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_organization_workspace_user", (q) =>
+					q
+						.eq("active", true)
+						.eq("organizationId", organization._yay.organizationId)
+						.eq("workspaceId", extraWorkspace._yay.workspaceId),
+				)
+				.collect();
+			await Promise.all(memberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)));
+			await ctx.db.delete("organizations_workspaces", extraWorkspace._yay.workspaceId);
+
+			return {
+				organizationId: organization._yay.organizationId,
+				defaultWorkspaceId: organization._yay.defaultWorkspaceId,
+				removedWorkspaceId: extraWorkspace._yay.workspaceId,
+				requestId,
+			};
+		});
+
+		await data_deletion_test_hard_delete_user_data_until_done(t, {
+			userId: user.userId,
+			batchSize: 5,
+		});
+
+		const after = await t.run(async (ctx) => {
+			const [request, contentCount, organization, defaultWorkspace] = await Promise.all([
+				ctx.db.get("data_deletion_requests", shared.requestId),
+				data_deletion_test_count_workspace_content(ctx, {
+					organizationId: shared.organizationId,
+					workspaceId: shared.removedWorkspaceId,
+				}),
+				ctx.db.get("organizations", shared.organizationId),
+				ctx.db.get("organizations_workspaces", shared.defaultWorkspaceId),
+			]);
+
+			return { request, contentCount, organization, defaultWorkspace };
+		});
+
+		expect(after.request).toBeNull();
+		expect(after.contentCount).toBe(0);
+		expect(after.organization?._id).toBe(shared.organizationId);
+		expect(after.defaultWorkspace?._id).toBe(shared.defaultWorkspaceId);
+	});
+
 	test("throws when resetting a tombstoned user without a default tenant", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
@@ -4026,6 +4195,154 @@ describe("finalize_user_deletion_data", () => {
 				.collect(),
 		);
 		expect(remainingSessions).toHaveLength(0);
+	});
+
+	test("prepares hard deletion by draining publisher docs in bounded child-first batches", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-publisher-drain",
+				displayName: "Hard Delete Publisher Drain",
+			}),
+		);
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let i = 0; i < 5; i += 1) {
+				const repositoryId = await ctx.db.insert("plugins_publisher_repositories", {
+					ownerUserId: deletedUser.userId,
+					repositoryUrl: `https://github.com/bonobo/delete-${i}`,
+					owner: "bonobo",
+					repo: `delete-${i}`,
+				});
+				await Promise.all([
+					ctx.db.insert("plugins_publisher_repository_secrets", {
+						ownerUserId: deletedUser.userId,
+						repositoryId,
+						name: `SECRET_${i}`,
+						ciphertext: new TextEncoder().encode(`ciphertext-${i}`).buffer,
+						nonce: new TextEncoder().encode(`nonce-${i}`).buffer,
+						valuePreview: "configured",
+						updatedAt: now,
+					}),
+					ctx.db.insert("plugins_version_reviews", {
+						createdBy: deletedUser.userId,
+						artifactHash: `sha256:${i.toString(16).repeat(64)}`,
+						pluginName: `delete-${i}`,
+						version: "0.1.0",
+						status: "passed",
+						mechanicalFindings: [],
+						aiFindings: [],
+						model: "none",
+						updatedAt: now,
+					}),
+				]);
+			}
+		});
+
+		const firstResult = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+				userId: deletedUser.userId,
+				_test_batchSize: 2,
+			}),
+		);
+		const afterFirstBatch = await t.run(async (ctx) => {
+			const [secrets, repositories, reviews] = await Promise.all([
+				ctx.db
+					.query("plugins_publisher_repository_secrets")
+					.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", deletedUser.userId))
+					.collect(),
+				ctx.db
+					.query("plugins_publisher_repositories")
+					.withIndex("by_ownerUser_repositoryUrl", (q) => q.eq("ownerUserId", deletedUser.userId))
+					.collect(),
+				ctx.db
+					.query("plugins_version_reviews")
+					.withIndex("by_createdBy_pluginName", (q) => q.eq("createdBy", deletedUser.userId))
+					.collect(),
+			]);
+			return { secretCount: secrets.length, repositoryCount: repositories.length, reviewCount: reviews.length };
+		});
+
+		expect(firstResult).toBe(false);
+		expect(afterFirstBatch).toEqual({ secretCount: 3, repositoryCount: 5, reviewCount: 5 });
+
+		const remainingResults: boolean[] = [];
+		for (let i = 0; i < 9; i += 1) {
+			remainingResults.push(
+				await t.run((ctx) =>
+					ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+						userId: deletedUser.userId,
+						_test_batchSize: 2,
+					}),
+				),
+			);
+		}
+		expect(remainingResults).toEqual([false, false, false, false, false, false, false, false, true]);
+
+		const afterDone = await t.run(async (ctx) => {
+			const [secrets, repositories, reviews] = await Promise.all([
+				ctx.db
+					.query("plugins_publisher_repository_secrets")
+					.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", deletedUser.userId))
+					.collect(),
+				ctx.db
+					.query("plugins_publisher_repositories")
+					.withIndex("by_ownerUser_repositoryUrl", (q) => q.eq("ownerUserId", deletedUser.userId))
+					.collect(),
+				ctx.db
+					.query("plugins_version_reviews")
+					.withIndex("by_createdBy_pluginName", (q) => q.eq("createdBy", deletedUser.userId))
+					.collect(),
+			]);
+			return { secretCount: secrets.length, repositoryCount: repositories.length, reviewCount: reviews.length };
+		});
+		expect(afterDone).toEqual({ secretCount: 0, repositoryCount: 0, reviewCount: 0 });
+	});
+
+	test("uses the production publisher-doc batch cap", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-publisher-cap",
+				displayName: "Hard Delete Publisher Cap",
+			}),
+		);
+		await t.run(async (ctx) => {
+			const repositoryId = await ctx.db.insert("plugins_publisher_repositories", {
+				ownerUserId: deletedUser.userId,
+				repositoryUrl: "https://github.com/bonobo/delete-cap",
+				owner: "bonobo",
+				repo: "delete-cap",
+			});
+			await Promise.all(
+				Array.from({ length: 101 }, (_, index) =>
+					ctx.db.insert("plugins_publisher_repository_secrets", {
+						ownerUserId: deletedUser.userId,
+						repositoryId,
+						name: `SECRET_${index}`,
+						ciphertext: new TextEncoder().encode(`ciphertext-${index}`).buffer,
+						nonce: new TextEncoder().encode(`nonce-${index}`).buffer,
+						valuePreview: "configured",
+						updatedAt: Date.now(),
+					}),
+				),
+			);
+		});
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+				userId: deletedUser.userId,
+			}),
+		);
+		const remainingSecrets = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_publisher_repository_secrets")
+				.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", deletedUser.userId))
+				.collect(),
+		);
+
+		expect(result).toBe(false);
+		expect(remainingSecrets).toHaveLength(1);
 	});
 
 	test("finishes a user whose scheduled deletion was already initialized and preserves billing snapshots by default", async () => {
@@ -5449,8 +5766,8 @@ describe("resolve_user after tombstone", () => {
 	});
 });
 
-describe("finalize_user_deletion_data plugins publisher", () => {
-	test("purges the deleted user's repository claims, publisher secrets, and version review docs", async () => {
+describe("prepare_user_for_hard_deletion", () => {
+	test("drains the deleted user's repository claims, publisher secrets, and version review docs", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -5530,6 +5847,19 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 			};
 		});
 
+		let prepared = false;
+		for (let i = 0; i < 10; i += 1) {
+			prepared = await t.run((ctx) =>
+				ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+					userId: deletedUser.userId,
+					_test_batchSize: 2,
+				}),
+			);
+			if (prepared) {
+				break;
+			}
+		}
+		expect(prepared).toBe(true);
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
 				userId: deletedUser.userId,

@@ -8,6 +8,7 @@ import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { customersList } from "@polar-sh/sdk/funcs/customersList.js";
+import { customerSessionsCreate } from "@polar-sh/sdk/funcs/customerSessionsCreate.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { subscriptionsCreate } from "@polar-sh/sdk/funcs/subscriptionsCreate.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
@@ -38,6 +39,10 @@ vi.mock("@polar-sh/sdk/funcs/customersList.js", () => ({
 	customersList: vi.fn(),
 }));
 
+vi.mock("@polar-sh/sdk/funcs/customerSessionsCreate.js", () => ({
+	customerSessionsCreate: vi.fn(),
+}));
+
 vi.mock("@polar-sh/sdk/funcs/customersGetState.js", () => ({
 	customersGetState: vi.fn(),
 }));
@@ -56,6 +61,7 @@ vi.mock("@polar-sh/sdk/funcs/subscriptionsUpdate.js", () => ({
 
 const customersCreateMock = vi.mocked(customersCreate);
 const customersListMock = vi.mocked(customersList);
+const customerSessionsCreateMock = vi.mocked(customerSessionsCreate);
 const eventsIngestMock = vi.mocked(eventsIngest);
 const subscriptionsCreateMock = vi.mocked(subscriptionsCreate);
 const subscriptionsRevokeMock = vi.mocked(subscriptionsRevoke);
@@ -259,6 +265,19 @@ async function seed_signed_in_user_id(t: ReturnType<typeof test_convex>) {
 	});
 }
 
+async function seed_public_billing_action_user(t: ReturnType<typeof test_convex>) {
+	const userId = await seed_signed_in_user_id(t);
+	return {
+		userId,
+		asUser: t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Billing Action User",
+			email: "billing-action-user@test.local",
+		}),
+	};
+}
+
 async function seed_signed_in_user_with_anagraphic(
 	t: ReturnType<typeof test_convex>,
 	args: {
@@ -450,6 +469,7 @@ function create_updated_polar_subscription(args: {
 	subscriptionId: string;
 	customerId: string;
 	productId: string;
+	cancelAtPeriodEnd?: boolean;
 	pendingUpdate?: {
 		id: string;
 		appliesAt: string;
@@ -473,10 +493,10 @@ function create_updated_polar_subscription(args: {
 		currentPeriodEnd: new Date("2026-02-01T00:00:00.000Z"),
 		trialStart: null,
 		trialEnd: null,
-		cancelAtPeriodEnd: false,
-		canceledAt: null,
+		cancelAtPeriodEnd: args.cancelAtPeriodEnd ?? false,
+		canceledAt: args.cancelAtPeriodEnd ? new Date("2026-01-15T00:00:00.000Z") : null,
 		startedAt: new Date("2026-01-01T00:00:00.000Z"),
-		endsAt: null,
+		endsAt: args.cancelAtPeriodEnd ? new Date("2026-02-01T00:00:00.000Z") : null,
 		endedAt: null,
 		discountId: null,
 		seats: null,
@@ -569,6 +589,7 @@ beforeEach(() => {
 	customersCreateMock.mockReset();
 	// Most bootstrap tests start without a surviving Polar customer.
 	customersListMock.mockReset().mockResolvedValue({ ok: true, value: { result: { items: [] } } } as never);
+	customerSessionsCreateMock.mockReset();
 	eventsIngestMock.mockReset();
 	subscriptionsCreateMock.mockReset();
 	subscriptionsRevokeMock.mockReset();
@@ -2250,6 +2271,133 @@ describe("billing generate_checkout_link auth", () => {
 			}),
 		).rejects.toThrow("Email required for signed-in users");
 	});
+
+	test("rejects every public Polar action for a tombstoned app user", async () => {
+		const t = test_convex();
+		const userId = await seed_signed_in_user_with_anagraphic(t, {
+			displayName: "Deleted Billing User",
+			email: "deleted-billing-user@test.local",
+			deletedAt: Date.now(),
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Deleted Billing User",
+			email: "deleted-billing-user@test.local",
+		});
+		const listProductsSpy = vi.spyOn(billing_polar, "listProducts");
+		const getCustomerByUserIdSpy = vi.spyOn(billing_polar, "getCustomerByUserId");
+
+		const checkout = await asUser.action(api.billing.generate_checkout_link, {
+			productId: "prod_deleted_user",
+			origin: "https://app.test",
+			successUrl: "https://app.test/ok",
+		});
+		const portal = await asUser.action(api.billing.generate_customer_portal_url, {});
+		const change = await asUser.action(api.billing.change_current_subscription, {
+			productId: "prod_deleted_user",
+		});
+		const cancel = await asUser.action(api.billing.cancel_current_subscription, {});
+
+		expect([checkout, portal, change, cancel].map((result) => result._nay?.message)).toEqual([
+			"A current app account is required for billing",
+			"A current app account is required for billing",
+			"A current app account is required for billing",
+			"A current app account is required for billing",
+		]);
+		expect(subscriptionsUpdateMock).not.toHaveBeenCalled();
+		expect(listProductsSpy).not.toHaveBeenCalled();
+		expect(getCustomerByUserIdSpy).not.toHaveBeenCalled();
+	});
+
+	test("rejects every public Polar action when the app user doc is missing", async () => {
+		const t = test_convex();
+		const userId = await seed_signed_in_user_id(t);
+		await t.run((ctx) => ctx.db.delete("users", userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Missing Billing User",
+			email: "missing-billing-user@test.local",
+		});
+		const listProductsSpy = vi.spyOn(billing_polar, "listProducts");
+		const getCustomerByUserIdSpy = vi.spyOn(billing_polar, "getCustomerByUserId");
+
+		const checkout = await asUser.action(api.billing.generate_checkout_link, {
+			productId: "prod_missing_user",
+			origin: "https://app.test",
+			successUrl: "https://app.test/ok",
+		});
+		const portal = await asUser.action(api.billing.generate_customer_portal_url, {});
+		const change = await asUser.action(api.billing.change_current_subscription, {
+			productId: "prod_missing_user",
+		});
+		const cancel = await asUser.action(api.billing.cancel_current_subscription, {});
+
+		expect([checkout, portal, change, cancel].map((result) => result._nay?.message)).toEqual([
+			"A current app account is required for billing",
+			"A current app account is required for billing",
+			"A current app account is required for billing",
+			"A current app account is required for billing",
+		]);
+		expect(subscriptionsUpdateMock).not.toHaveBeenCalled();
+		expect(listProductsSpy).not.toHaveBeenCalled();
+		expect(getCustomerByUserIdSpy).not.toHaveBeenCalled();
+	});
+
+	test("creates a customer portal session for a live Clerk-linked user", async () => {
+		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_live_portal",
+			userId,
+		});
+		customerSessionsCreateMock.mockResolvedValue({
+			ok: true,
+			value: { customerPortalUrl: "https://polar.test/portal/live" },
+		} as never);
+
+		const result = await asUser.action(api.billing.generate_customer_portal_url, {});
+
+		expect(result).toEqual({ _yay: { url: "https://polar.test/portal/live" } });
+		expect(customerSessionsCreateMock).toHaveBeenCalledWith(expect.anything(), {
+			customerId: "cust_live_portal",
+		});
+	});
+
+	test("rejects every public Polar action when the app user is not Clerk-linked", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Unlinked Billing User",
+			email: "unlinked-billing-user@test.local",
+		});
+		const listProductsSpy = vi.spyOn(billing_polar, "listProducts");
+		const getCustomerByUserIdSpy = vi.spyOn(billing_polar, "getCustomerByUserId");
+
+		const checkout = await asUser.action(api.billing.generate_checkout_link, {
+			productId: "prod_unlinked_user",
+			origin: "https://app.test",
+			successUrl: "https://app.test/ok",
+		});
+		const portal = await asUser.action(api.billing.generate_customer_portal_url, {});
+		const change = await asUser.action(api.billing.change_current_subscription, {
+			productId: "prod_unlinked_user",
+		});
+		const cancel = await asUser.action(api.billing.cancel_current_subscription, {});
+
+		expect([checkout, portal, change, cancel].map((result) => result._nay?.message)).toEqual([
+			"A current app account is required for billing",
+			"A current app account is required for billing",
+			"A current app account is required for billing",
+			"A current app account is required for billing",
+		]);
+		expect(subscriptionsUpdateMock).not.toHaveBeenCalled();
+		expect(listProductsSpy).not.toHaveBeenCalled();
+		expect(getCustomerByUserIdSpy).not.toHaveBeenCalled();
+	});
 });
 
 describe("handle_polar_customer_state_update", () => {
@@ -2376,7 +2524,7 @@ describe("handle_polar_customer_state_update", () => {
 		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 
-	test("logs and skips Free bootstrap when a zero-active customer user row is missing", async () => {
+	test("logs and skips Free bootstrap when a zero-active customer user doc is missing", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		await t.run(async (ctx) => {
@@ -2742,6 +2890,116 @@ describe("handle_polar_customer_state_update", () => {
 		expect(usageSnapshot!.meter?.balance).toBe(877 + proRecurringCents);
 	});
 
+	test("preserves the customer balance when a paid update omits active meters", async () => {
+		const t = test_convex();
+		const userId = await seed_signed_in_user_id(t);
+		const { polarProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_refresh_snapshot_pro_empty_customer_meters",
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId,
+			polarProductId,
+			balanceCents: 777,
+			amountDueCents: 11,
+			lastSyncedAt: Date.parse("2026-01-10T00:00:00.000Z"),
+		});
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-01-11T00:00:00.000Z",
+				data: {
+					id: `cust_${userId}`,
+					external_id: userId,
+					active_subscriptions: [
+						{
+							id: `sub_${userId}`,
+							product_id: polarProductId,
+							currency: "eur",
+							current_period_start: "2026-01-01T00:00:00.000Z",
+							current_period_end: "2026-02-01T00:00:00.000Z",
+							meters: [
+								{
+									meter_id: "meter_press_usage",
+									consumed_units: 123,
+									credited_units: 1000,
+									amount: 123,
+								},
+							],
+						},
+					],
+					active_meters: [],
+				},
+			},
+		});
+
+		const usageSnapshot = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+
+		expect(usageSnapshot?.meter).toEqual({
+			id: "meter_press_usage",
+			consumedUnits: 0,
+			creditedUnits: 777,
+			balance: 777,
+			amountDueCents: 123,
+		});
+		expect(usageSnapshot?.lastSyncedAt).toBe(Date.parse("2026-01-11T00:00:00.000Z"));
+	});
+
+	test("ignores older and equal customer state snapshots", async () => {
+		const t = test_convex();
+		const userId = await seed_signed_in_user_id(t);
+		const { polarProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_refresh_snapshot_stale_product",
+		});
+		const lastSyncedAt = Date.parse("2026-03-10T00:00:00.000Z");
+		await seed_billing_usage_snapshot(t, {
+			userId,
+			polarProductId,
+			balanceCents: 555,
+			amountDueCents: 44,
+			lastSyncedAt,
+		});
+		const before = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_stale_customer_state" as never);
+		const payloadData = {
+			id: `cust_${userId}`,
+			external_id: userId,
+			active_subscriptions: [],
+			active_meters: [],
+		};
+
+		for (const timestamp of ["2026-03-09T00:00:00.000Z", "2026-03-10T00:00:00.000Z"]) {
+			await t.mutation(internal.billing.handle_polar_customer_state_update, {
+				payload: {
+					type: "customer.state_changed",
+					timestamp,
+					data: payloadData,
+				},
+			});
+		}
+
+		const after = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+		expect(after).toEqual(before);
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+	});
+
 	test("writes the subscription snapshot and enqueues credits when no usage meter is resolvable yet", async () => {
 		const t = test_convex();
 		const userId = await seed_signed_in_user_id(t);
@@ -2927,6 +3185,7 @@ describe("refresh_from_polar_customer_state", () => {
 describe("billing generate_checkout_link product id", () => {
 	test("returns nay when productId does not match a synced non-archived Polar product", async () => {
 		const t = test_convex();
+		const { asUser } = await seed_public_billing_action_user(t);
 		const polarProductName = billing_PRODUCTS["Pay As You Go"].name;
 		const polarProductId = "billing_curated_checkout_id";
 
@@ -2948,13 +3207,6 @@ describe("billing generate_checkout_link product id", () => {
 			},
 		});
 
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_curated_checkout" as Id<"users">,
-			name: "Curated Checkout",
-			email: "curated-checkout@test.local",
-		});
-
 		const result = await asUser.action(api.billing.generate_checkout_link, {
 			productId: "some_other_product_id",
 			origin: "https://app.test",
@@ -2972,18 +3224,12 @@ describe("billing generate_checkout_link create session", () => {
 
 	test("returns nay when Polar checkout session creation fails", async () => {
 		const t = test_convex();
+		const { asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_checkout_session_fail",
 		});
 
 		vi.spyOn(billing_polar, "createCheckoutSession").mockRejectedValue(new Error("polar checkout exploded"));
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_checkout_session_fail" as Id<"users">,
-			name: "Checkout Session Fail",
-			email: "checkout-session-fail@test.local",
-		});
 
 		const result = await asUser.action(api.billing.generate_checkout_link, {
 			productId: polarProductId,
@@ -3000,6 +3246,7 @@ describe("billing generate_checkout_link create session", () => {
 
 	test("returns yay with the checkout URL", async () => {
 		const t = test_convex();
+		const { asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_checkout_session_success",
 		});
@@ -3007,13 +3254,6 @@ describe("billing generate_checkout_link create session", () => {
 		vi.spyOn(billing_polar, "createCheckoutSession").mockResolvedValue({
 			url: "https://checkout.test/session",
 		} as never);
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_checkout_session_success" as Id<"users">,
-			name: "Checkout Session Success",
-			email: "checkout-session-success@test.local",
-		});
 
 		const result = await asUser.action(api.billing.generate_checkout_link, {
 			productId: polarProductId,
@@ -3027,6 +3267,7 @@ describe("billing generate_checkout_link create session", () => {
 
 	test("forwards subscriptionId to checkout creation", async () => {
 		const t = test_convex();
+		const { asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId } = await seed_pro_product(t, {
 			polarProductId: "billing_checkout_session_upgrade_from_free",
 		});
@@ -3034,13 +3275,6 @@ describe("billing generate_checkout_link create session", () => {
 		const createCheckoutSessionSpy = vi.spyOn(billing_polar, "createCheckoutSession").mockResolvedValue({
 			url: "https://checkout.test/session",
 		} as never);
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_checkout_session_upgrade_from_free" as Id<"users">,
-			name: "Checkout Session Upgrade From Free",
-			email: "checkout-session-upgrade-from-free@test.local",
-		});
 
 		const result = await asUser.action(api.billing.generate_checkout_link, {
 			productId: polarProductId,
@@ -3069,8 +3303,9 @@ describe("billing change_current_subscription", () => {
 		subscriptionsUpdateMock.mockReset();
 	});
 
-	test("upgrades immediately with invoice proration and waits for the subscription webhook", async () => {
+	test("upgrades immediately with invoice proration and leaves the local mirror for the subscription webhook", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_change_payg_upgrade",
 		});
@@ -3079,7 +3314,7 @@ describe("billing change_current_subscription", () => {
 		});
 
 		await seed_subscription(t, {
-			userId: "user_upgrade_plan",
+			userId,
 			customerId: "cust_upgrade_plan",
 			subscriptionId: "sub_upgrade_plan",
 			polarProductId: polarPaygProductId,
@@ -3092,13 +3327,6 @@ describe("billing change_current_subscription", () => {
 				customerId: "cust_upgrade_plan",
 				productId: polarProProductId,
 			}) as never,
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_upgrade_plan" as Id<"users">,
-			name: "Upgrade Plan",
-			email: "upgrade-plan@test.local",
 		});
 
 		const result = await asUser.action(api.billing.change_current_subscription, {
@@ -3121,8 +3349,9 @@ describe("billing change_current_subscription", () => {
 		expect(storedSubscription?.pendingUpdate).toBeNull();
 	});
 
-	test("schedules downgrades for the next period and waits for the subscription webhook", async () => {
+	test("schedules downgrades for the next period and leaves the local mirror for the subscription webhook", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_change_payg_downgrade",
 		});
@@ -3131,7 +3360,7 @@ describe("billing change_current_subscription", () => {
 		});
 
 		await seed_subscription(t, {
-			userId: "user_downgrade_plan",
+			userId,
 			customerId: "cust_downgrade_plan",
 			subscriptionId: "sub_downgrade_plan",
 			polarProductId: polarProProductId,
@@ -3150,13 +3379,6 @@ describe("billing change_current_subscription", () => {
 					seats: null,
 				},
 			}) as never,
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_downgrade_plan" as Id<"users">,
-			name: "Downgrade Plan",
-			email: "downgrade-plan@test.local",
 		});
 
 		const result = await asUser.action(api.billing.change_current_subscription, {
@@ -3181,6 +3403,7 @@ describe("billing change_current_subscription", () => {
 
 	test("schedules paid to Free downgrades for the next period", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarFreeProductId } = await seed_free_product(t, {
 			polarProductId: "billing_change_free_downgrade",
 		});
@@ -3189,7 +3412,7 @@ describe("billing change_current_subscription", () => {
 		});
 
 		await seed_subscription(t, {
-			userId: "user_downgrade_free_plan",
+			userId,
 			customerId: "cust_downgrade_free_plan",
 			subscriptionId: "sub_downgrade_free_plan",
 			polarProductId: polarProProductId,
@@ -3210,13 +3433,6 @@ describe("billing change_current_subscription", () => {
 			}) as never,
 		});
 
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_downgrade_free_plan" as Id<"users">,
-			name: "Downgrade Free Plan",
-			email: "downgrade-free-plan@test.local",
-		});
-
 		const result = await asUser.action(api.billing.change_current_subscription, {
 			productId: polarFreeProductId,
 		});
@@ -3233,6 +3449,7 @@ describe("billing change_current_subscription", () => {
 
 	test("returns nay when upgrading from Free", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarFreeProductId } = await seed_free_product(t, {
 			polarProductId: "billing_change_current_free",
 		});
@@ -3241,17 +3458,10 @@ describe("billing change_current_subscription", () => {
 		});
 
 		await seed_subscription(t, {
-			userId: "user_current_free",
+			userId,
 			customerId: "cust_current_free",
 			subscriptionId: "sub_current_free",
 			polarProductId: polarFreeProductId,
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_current_free" as Id<"users">,
-			name: "Current Free",
-			email: "current-free@test.local",
 		});
 
 		const result = await asUser.action(api.billing.change_current_subscription, {
@@ -3264,22 +3474,16 @@ describe("billing change_current_subscription", () => {
 
 	test("returns nay when the user selects the current product", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_change_same_plan",
 		});
 
 		await seed_subscription(t, {
-			userId: "user_same_plan",
+			userId,
 			customerId: "cust_same_plan",
 			subscriptionId: "sub_same_plan",
 			polarProductId: polarPaygProductId,
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_same_plan" as Id<"users">,
-			name: "Same Plan",
-			email: "same-plan@test.local",
 		});
 
 		const result = await asUser.action(api.billing.change_current_subscription, {
@@ -3292,22 +3496,16 @@ describe("billing change_current_subscription", () => {
 
 	test("returns nay when the target product is unknown", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_change_unknown_current",
 		});
 
 		await seed_subscription(t, {
-			userId: "user_unknown_target",
+			userId,
 			customerId: "cust_unknown_target",
 			subscriptionId: "sub_unknown_target",
 			polarProductId: polarPaygProductId,
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_unknown_target" as Id<"users">,
-			name: "Unknown Target",
-			email: "unknown-target@test.local",
 		});
 
 		const result = await asUser.action(api.billing.change_current_subscription, {
@@ -3336,12 +3534,7 @@ describe("billing change_current_subscription", () => {
 
 	test("returns nay when the user has no current subscription", async () => {
 		const t = test_convex();
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_without_subscription" as Id<"users">,
-			name: "No Current Subscription",
-			email: "no-current-subscription@test.local",
-		});
+		const { asUser } = await seed_public_billing_action_user(t);
 
 		const result = await asUser.action(api.billing.change_current_subscription, {
 			productId: "any_product",
@@ -3353,6 +3546,7 @@ describe("billing change_current_subscription", () => {
 
 	test("returns a payment failure as a user-safe nay", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_change_payment_failed_current",
 		});
@@ -3361,7 +3555,7 @@ describe("billing change_current_subscription", () => {
 		});
 
 		await seed_subscription(t, {
-			userId: "user_payment_failed",
+			userId,
 			customerId: "cust_payment_failed",
 			subscriptionId: "sub_payment_failed",
 			polarProductId: polarPaygProductId,
@@ -3382,13 +3576,6 @@ describe("billing change_current_subscription", () => {
 			),
 		});
 
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_payment_failed" as Id<"users">,
-			name: "Payment Failed",
-			email: "payment-failed@test.local",
-		});
-
 		const result = await asUser.action(api.billing.change_current_subscription, {
 			productId: polarProProductId,
 		});
@@ -3398,6 +3585,7 @@ describe("billing change_current_subscription", () => {
 
 	test("returns a subscription lock as a user-safe nay", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_change_locked_current",
 		});
@@ -3406,7 +3594,7 @@ describe("billing change_current_subscription", () => {
 		});
 
 		await seed_subscription(t, {
-			userId: "user_subscription_locked",
+			userId,
 			customerId: "cust_subscription_locked",
 			subscriptionId: "sub_subscription_locked",
 			polarProductId: polarPaygProductId,
@@ -3427,13 +3615,6 @@ describe("billing change_current_subscription", () => {
 			),
 		});
 
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_subscription_locked" as Id<"users">,
-			name: "Subscription Locked",
-			email: "subscription-locked@test.local",
-		});
-
 		const result = await asUser.action(api.billing.change_current_subscription, {
 			productId: polarProProductId,
 		});
@@ -3443,6 +3624,7 @@ describe("billing change_current_subscription", () => {
 
 	test("returns a generic nay for unexpected Polar errors", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_change_generic_error_current",
 		});
@@ -3451,7 +3633,7 @@ describe("billing change_current_subscription", () => {
 		});
 
 		await seed_subscription(t, {
-			userId: "user_generic_plan_change_error",
+			userId,
 			customerId: "cust_generic_plan_change_error",
 			subscriptionId: "sub_generic_plan_change_error",
 			polarProductId: polarPaygProductId,
@@ -3462,18 +3644,281 @@ describe("billing change_current_subscription", () => {
 			error: new UnexpectedClientError("polar change exploded"),
 		});
 
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_generic_plan_change_error" as Id<"users">,
-			name: "Generic Plan Change Error",
-			email: "generic-plan-change-error@test.local",
-		});
-
 		const result = await asUser.action(api.billing.change_current_subscription, {
 			productId: polarProProductId,
 		});
 
 		expect(result._nay?.message).toBe("Failed to change the subscription");
+	});
+
+	test("restores period-end cancellation when a plan update fails after uncanceling", async () => {
+		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_restore_cancel_current",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_restore_cancel_target",
+		});
+
+		await seed_subscription(t, {
+			userId,
+			customerId: "cust_change_restore_cancel",
+			subscriptionId: "sub_change_restore_cancel",
+			polarProductId: polarPaygProductId,
+			cancelAtPeriodEnd: true,
+			canceledAt: "2026-01-15T00:00:00.000Z",
+			endsAt: "2026-02-01T00:00:00.000Z",
+		});
+		subscriptionsUpdateMock
+			.mockResolvedValueOnce({
+				ok: true,
+				value: create_updated_polar_subscription({
+					subscriptionId: "sub_change_restore_cancel",
+					customerId: "cust_change_restore_cancel",
+					productId: polarPaygProductId,
+				}) as never,
+			})
+			.mockResolvedValueOnce({
+				ok: false,
+				error: new UnexpectedClientError("polar plan update exploded"),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				value: create_updated_polar_subscription({
+					subscriptionId: "sub_change_restore_cancel",
+					customerId: "cust_change_restore_cancel",
+					productId: polarPaygProductId,
+					cancelAtPeriodEnd: true,
+				}) as never,
+			});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarProProductId,
+		});
+		const storedSubscription = await t.query(components.polar.lib.getSubscription, {
+			id: "sub_change_restore_cancel",
+		});
+
+		expect(result._nay?.message).toBe("Failed to change the subscription");
+		expect(subscriptionsUpdateMock).toHaveBeenNthCalledWith(3, expect.anything(), {
+			id: "sub_change_restore_cancel",
+			subscriptionUpdate: {
+				cancelAtPeriodEnd: true,
+			},
+		});
+		expect(storedSubscription?.cancelAtPeriodEnd).toBe(true);
+		expect(storedSubscription?.canceledAt).toBe("2026-01-15T00:00:00.000Z");
+		expect(storedSubscription?.endsAt).toBe("2026-02-01T00:00:00.000Z");
+	});
+
+	test("restores period-end cancellation when a plan update throws after uncanceling", async () => {
+		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_restore_cancel_throw_current",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_restore_cancel_throw_target",
+		});
+
+		await seed_subscription(t, {
+			userId,
+			customerId: "cust_change_restore_cancel_throw",
+			subscriptionId: "sub_change_restore_cancel_throw",
+			polarProductId: polarPaygProductId,
+			cancelAtPeriodEnd: true,
+			canceledAt: "2026-01-15T00:00:00.000Z",
+			endsAt: "2026-02-01T00:00:00.000Z",
+		});
+		subscriptionsUpdateMock
+			.mockResolvedValueOnce({
+				ok: true,
+				value: create_updated_polar_subscription({
+					subscriptionId: "sub_change_restore_cancel_throw",
+					customerId: "cust_change_restore_cancel_throw",
+					productId: polarPaygProductId,
+				}) as never,
+			})
+			.mockRejectedValueOnce(new Error("polar plan update threw"))
+			.mockResolvedValueOnce({
+				ok: true,
+				value: create_updated_polar_subscription({
+					subscriptionId: "sub_change_restore_cancel_throw",
+					customerId: "cust_change_restore_cancel_throw",
+					productId: polarPaygProductId,
+					cancelAtPeriodEnd: true,
+				}) as never,
+			});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarProProductId,
+		});
+		const storedSubscription = await t.query(components.polar.lib.getSubscription, {
+			id: "sub_change_restore_cancel_throw",
+		});
+
+		expect(result._nay?.message).toBe("Failed to change the subscription");
+		expect(subscriptionsUpdateMock).toHaveBeenNthCalledWith(3, expect.anything(), {
+			id: "sub_change_restore_cancel_throw",
+			subscriptionUpdate: {
+				cancelAtPeriodEnd: true,
+			},
+		});
+		expect(storedSubscription?.cancelAtPeriodEnd).toBe(true);
+	});
+
+	test("reports when cancellation compensation also fails", async () => {
+		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_compensation_fail_current",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_compensation_fail_target",
+		});
+
+		await seed_subscription(t, {
+			userId,
+			customerId: "cust_change_compensation_fail",
+			subscriptionId: "sub_change_compensation_fail",
+			polarProductId: polarPaygProductId,
+			cancelAtPeriodEnd: true,
+			canceledAt: "2026-01-15T00:00:00.000Z",
+			endsAt: "2026-02-01T00:00:00.000Z",
+		});
+		subscriptionsUpdateMock
+			.mockResolvedValueOnce({
+				ok: true,
+				value: create_updated_polar_subscription({
+					subscriptionId: "sub_change_compensation_fail",
+					customerId: "cust_change_compensation_fail",
+					productId: polarPaygProductId,
+				}) as never,
+			})
+			.mockResolvedValueOnce({
+				ok: false,
+				error: new UnexpectedClientError("polar plan update exploded"),
+			})
+			.mockResolvedValueOnce({
+				ok: false,
+				error: new UnexpectedClientError("polar cancellation restore exploded"),
+			});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarProProductId,
+		});
+
+		expect(result._nay?.message).toBe("Failed to change the subscription and restore its cancellation");
+		expect(subscriptionsUpdateMock).toHaveBeenNthCalledWith(3, expect.anything(), {
+			id: "sub_change_compensation_fail",
+			subscriptionUpdate: {
+				cancelAtPeriodEnd: true,
+			},
+		});
+	});
+
+	test("reports when cancellation compensation throws", async () => {
+		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_compensation_throw_current",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_compensation_throw_target",
+		});
+
+		await seed_subscription(t, {
+			userId,
+			customerId: "cust_change_compensation_throw",
+			subscriptionId: "sub_change_compensation_throw",
+			polarProductId: polarPaygProductId,
+			cancelAtPeriodEnd: true,
+			canceledAt: "2026-01-15T00:00:00.000Z",
+			endsAt: "2026-02-01T00:00:00.000Z",
+		});
+		subscriptionsUpdateMock
+			.mockResolvedValueOnce({
+				ok: true,
+				value: create_updated_polar_subscription({
+					subscriptionId: "sub_change_compensation_throw",
+					customerId: "cust_change_compensation_throw",
+					productId: polarPaygProductId,
+				}) as never,
+			})
+			.mockResolvedValueOnce({
+				ok: false,
+				error: new UnexpectedClientError("polar plan update exploded"),
+			})
+			.mockRejectedValueOnce(new Error("polar cancellation restore threw"));
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarProProductId,
+		});
+
+		expect(result._nay?.message).toBe("Failed to change the subscription and restore its cancellation");
+		expect(subscriptionsUpdateMock).toHaveBeenNthCalledWith(3, expect.anything(), {
+			id: "sub_change_compensation_throw",
+			subscriptionUpdate: {
+				cancelAtPeriodEnd: true,
+			},
+		});
+	});
+
+	test("reports when restored cancellation cannot be written to the local mirror", async () => {
+		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_compensation_mirror_current",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_compensation_mirror_target",
+		});
+
+		await seed_subscription(t, {
+			userId,
+			customerId: "cust_change_compensation_mirror",
+			subscriptionId: "sub_change_compensation_mirror",
+			polarProductId: polarPaygProductId,
+			cancelAtPeriodEnd: true,
+			canceledAt: "2026-01-15T00:00:00.000Z",
+			endsAt: "2026-02-01T00:00:00.000Z",
+		});
+		subscriptionsUpdateMock
+			.mockResolvedValueOnce({
+				ok: true,
+				value: create_updated_polar_subscription({
+					subscriptionId: "sub_change_compensation_mirror",
+					customerId: "cust_change_compensation_mirror",
+					productId: polarPaygProductId,
+				}) as never,
+			})
+			.mockResolvedValueOnce({
+				ok: false,
+				error: new UnexpectedClientError("polar plan update exploded"),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				value: {
+					...create_updated_polar_subscription({
+						subscriptionId: "sub_change_compensation_mirror",
+						customerId: "cust_change_compensation_mirror",
+						productId: polarPaygProductId,
+						cancelAtPeriodEnd: true,
+					}),
+					amount: undefined,
+				} as never,
+			});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarProProductId,
+		});
+		const storedSubscription = await t.query(components.polar.lib.getSubscription, {
+			id: "sub_change_compensation_mirror",
+		});
+
+		expect(result._nay?.message).toBe("Failed to change the subscription and restore its cancellation");
+		expect(storedSubscription?.cancelAtPeriodEnd).toBe(false);
 	});
 });
 
@@ -3488,6 +3933,7 @@ describe("billing cancel_current_subscription", () => {
 
 	test("schedules paid subscriptions to Free for the next period", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarFreeProductId } = await seed_free_product(t, {
 			polarProductId: "billing_cancel_to_free_product",
 		});
@@ -3496,7 +3942,7 @@ describe("billing cancel_current_subscription", () => {
 		});
 
 		await seed_subscription(t, {
-			userId: "user_cancel_to_free",
+			userId,
 			customerId: "cust_cancel_to_free",
 			subscriptionId: "sub_cancel_to_free",
 			polarProductId: polarProProductId,
@@ -3516,13 +3962,6 @@ describe("billing cancel_current_subscription", () => {
 			}) as never,
 		});
 
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_cancel_to_free" as Id<"users">,
-			name: "Cancel To Free",
-			email: "cancel-to-free@test.local",
-		});
-
 		const result = await asUser.action(api.billing.cancel_current_subscription, {});
 
 		expect(result).toEqual({ _yay: null });
@@ -3537,6 +3976,7 @@ describe("billing cancel_current_subscription", () => {
 
 	test("uncancels pending-cancel subscriptions before scheduling Free", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarFreeProductId } = await seed_free_product(t, {
 			polarProductId: "billing_cancel_pending_to_free_product",
 		});
@@ -3545,7 +3985,7 @@ describe("billing cancel_current_subscription", () => {
 		});
 
 		await seed_subscription(t, {
-			userId: "user_cancel_pending_to_free",
+			userId,
 			customerId: "cust_cancel_pending_to_free",
 			subscriptionId: "sub_cancel_pending_to_free",
 			polarProductId: polarProProductId,
@@ -3577,13 +4017,6 @@ describe("billing cancel_current_subscription", () => {
 				}) as never,
 			});
 
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_cancel_pending_to_free" as Id<"users">,
-			name: "Cancel Pending To Free",
-			email: "cancel-pending-to-free@test.local",
-		});
-
 		const result = await asUser.action(api.billing.cancel_current_subscription, {});
 		const storedSubscription = await t.query(components.polar.lib.getSubscription, {
 			id: "sub_cancel_pending_to_free",
@@ -3610,22 +4043,16 @@ describe("billing cancel_current_subscription", () => {
 
 	test("does not cancel subscriptions already on Free", async () => {
 		const t = test_convex();
+		const { userId, asUser } = await seed_public_billing_action_user(t);
 		const { polarProductId: polarFreeProductId } = await seed_free_product(t, {
 			polarProductId: "billing_cancel_current_free_product",
 		});
 
 		await seed_subscription(t, {
-			userId: "user_cancel_current_free",
+			userId,
 			customerId: "cust_cancel_current_free",
 			subscriptionId: "sub_cancel_current_free",
 			polarProductId: polarFreeProductId,
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_cancel_current_free" as Id<"users">,
-			name: "Cancel Current Free",
-			email: "cancel-current-free@test.local",
 		});
 
 		const result = await asUser.action(api.billing.cancel_current_subscription, {});
@@ -4516,7 +4943,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 							amountDueCents: 0,
 						}
 					: null,
-				lastSyncedAt: Date.now(),
+				lastSyncedAt: args.subscription ? Date.parse(args.subscription.currentPeriodStart) : 0,
 			});
 		});
 	}

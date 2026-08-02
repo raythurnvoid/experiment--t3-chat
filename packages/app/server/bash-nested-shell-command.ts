@@ -1,10 +1,10 @@
 import { defineCommand, type FsStat } from "just-bash/browser";
 import {
-	bash_command_has_disallowed_source_target,
+	bash_command_loads_disallowed_shell_code,
 	bash_is_path_under_current_workspace_path,
 	bash_is_path_under_read_only_mounts,
 	bash_resolve_path,
-	bash_disallowed_source_target_error,
+	bash_disallowed_shell_code_error,
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_USAGE,
 	bash_COMMAND_EXIT_CANNOT_EXECUTE,
@@ -114,10 +114,10 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentWor
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
-		if (bash_command_has_disallowed_source_target(script, { cwd: commandCtx.cwd, currentWorkspacePath })) {
+		if (await bash_command_loads_disallowed_shell_code(script, { cwd: commandCtx.cwd, fs: commandCtx.fs })) {
 			return {
 				stdout: "",
-				stderr: bash_disallowed_source_target_error(),
+				stderr: bash_disallowed_shell_code_error(),
 				exitCode: bash_COMMAND_EXIT_CANNOT_EXECUTE,
 			};
 		}

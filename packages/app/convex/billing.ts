@@ -67,6 +67,20 @@ export const billing_polar = new Polar<DataModel>(components.polar, {
 	server: POLAR_SERVER,
 });
 
+export const is_live_signed_in_user = internalQuery({
+	args: {
+		userId: v.string(),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const userId = ctx.db.normalizeId("users", args.userId);
+		if (!userId) return false;
+
+		const user = await ctx.db.get("users", userId);
+		return user != null && user.deletedAt == null && user.clerkUserId != null;
+	},
+});
+
 // #region check credits
 
 export const check_credits = internalQuery({
@@ -188,6 +202,8 @@ export async function billing_db_ensure_anonymous_user_usage_snapshot(
 	return null;
 }
 
+const ANONYMOUS_CREDITS_RESET_BATCH_SIZE = 100;
+
 export const reset_due_anonymous_credits = internalMutation({
 	args: {
 		/**
@@ -196,21 +212,29 @@ export const reset_due_anonymous_credits = internalMutation({
 		 * Omit in normal production and cron flows (`Date.now()` is used).
 		 */
 		_test_now: v.optional(v.number()),
+		batchSize: v.optional(v.number()),
 	},
-	returns: v.null(),
+	returns: v.object({
+		resetCount: v.number(),
+		done: v.boolean(),
+	}),
 	handler: async (ctx, args) => {
 		const now = args._test_now ?? Date.now();
+		const batchSize = Math.min(Math.max(args.batchSize ?? ANONYMOUS_CREDITS_RESET_BATCH_SIZE, 1), 1000);
 		const todayPeriodEnd = new Date(date_get_day_start_timestamp(now)).toISOString();
 		const recurringCreditsCents = billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name);
 		const { currentPeriodStart, currentPeriodEnd } = create_anonymous_user_usage_snapshot_period(now);
 
+		// One bounded batch per run keeps the mutation inside Convex transaction limits when many
+		// anonymous snapshots share the same due day.
 		const dueUsageSnapshots = await ctx.db
 			.query("billing_usage_snapshots")
 			.withIndex("by_polarCustomer_currentPeriodEnd", (q) =>
 				q.eq("polarCustomerId", null).eq("subscription.currentPeriodEnd", todayPeriodEnd),
 			)
-			.collect();
+			.take(batchSize);
 
+		let resetCount = 0;
 		await Promise.all(
 			dueUsageSnapshots.map(async (usageSnapshot) => {
 				if (!usageSnapshot.subscription || !usageSnapshot.meter) {
@@ -232,10 +256,23 @@ export const reset_due_anonymous_credits = internalMutation({
 					},
 					lastSyncedAt: now,
 				});
+				resetCount += 1;
 			}),
 		);
 
-		return null;
+		// Each patch moves `subscription.currentPeriodEnd` 30 days forward, so patched docs drop
+		// out of the due index range and the next batch naturally starts at still-due docs. A
+		// skipped malformed doc stays in the range, so a full batch that patched nothing must stop
+		// instead of rescheduling over the same docs forever.
+		const done = dueUsageSnapshots.length < batchSize || resetCount === 0;
+		if (!done) {
+			await ctx.scheduler.runAfter(0, internal.billing.reset_due_anonymous_credits, {
+				_test_now: args._test_now,
+				batchSize: args.batchSize,
+			});
+		}
+
+		return { resetCount, done };
 	},
 });
 
@@ -527,6 +564,7 @@ function build_usage_snapshot(args: {
 	product: BillingProductLike | null;
 	syncedProducts: Array<BillingProductLike>;
 	syncedAt: number;
+	existingMeter: BillingUsageSnapshotRow["meter"];
 }): BillingUsageSnapshotRow {
 	const { state, product, syncedProducts, syncedAt } = args;
 	const userId = state.externalId as Id<"users">;
@@ -564,13 +602,18 @@ function build_usage_snapshot(args: {
 				amountDueCents: subscriptionMeter?.amount ?? 0,
 			}
 		: subscriptionMeter
-			? {
-					id: subscriptionMeter.meterId,
-					consumedUnits: subscriptionMeter.consumedUnits,
-					creditedUnits: subscriptionMeter.creditedUnits,
-					balance: subscriptionMeter.creditedUnits - subscriptionMeter.consumedUnits,
-					amountDueCents: subscriptionMeter.amount,
-				}
+			? args.existingMeter
+				? {
+						...args.existingMeter,
+						amountDueCents: subscriptionMeter.amount,
+					}
+				: {
+						id: subscriptionMeter.meterId,
+						consumedUnits: subscriptionMeter.consumedUnits,
+						creditedUnits: subscriptionMeter.creditedUnits,
+						balance: subscriptionMeter.creditedUnits - subscriptionMeter.consumedUnits,
+						amountDueCents: subscriptionMeter.amount,
+					}
 			: null;
 
 	return {
@@ -632,7 +675,9 @@ async function db_delete_customer_state(
 	});
 
 	const userId = state.externalId ? ctx.db.normalizeId("users", state.externalId) : null;
-	// Fall back to `polarCustomerId` because anonymization can clear `externalId`.
+	// Fall back to `polarCustomerId` because anonymization can clear `externalId`. Use the index
+	// prefix, not `.filter()`: an unindexed filter reads the whole snapshots table, which grows
+	// with every user, so this webhook mutation would hit transaction read limits at scale.
 	const usageSnapshots = userId
 		? await ctx.db
 				.query("billing_usage_snapshots")
@@ -640,7 +685,7 @@ async function db_delete_customer_state(
 				.collect()
 		: await ctx.db
 				.query("billing_usage_snapshots")
-				.filter((q) => q.eq(q.field("polarCustomerId"), state.id))
+				.withIndex("by_polarCustomer_currentPeriodEnd", (q) => q.eq("polarCustomerId", state.id))
 				.collect();
 	for (const usageSnapshot of usageSnapshots) {
 		await ctx.db.delete("billing_usage_snapshots", usageSnapshot._id);
@@ -663,7 +708,7 @@ async function db_apply_polar_customer_state_refresh(
 	if (state.deletedAt) {
 		// Polar anonymization can arrive as a state change with `deletedAt`.
 		await db_delete_customer_state(ctx, state);
-		return;
+		return true;
 	}
 
 	if (state.activeSubscriptions.length > 1) {
@@ -688,6 +733,16 @@ async function db_apply_polar_customer_state_refresh(
 		.query("billing_usage_snapshots")
 		.withIndex("by_user", (q) => q.eq("userId", user._id))
 		.unique();
+	// Polar can retry an older delivery after a newer one has already committed.
+	// Ignore it before it can roll back the snapshot or repeat optimistic credit.
+	if (usageSnapshot && syncedAt <= usageSnapshot.lastSyncedAt) {
+		console.info("skip stale billing_usage_snapshots update", {
+			userId: user._id,
+			existingLastSyncedAt: new Date(usageSnapshot.lastSyncedAt).toISOString(),
+			incomingLastSyncedAt: new Date(syncedAt).toISOString(),
+		});
+		return false;
+	}
 	const previousSubscription = usageSnapshot?.subscription ?? null;
 
 	const subscription = state.activeSubscriptions[0] ?? null;
@@ -699,6 +754,7 @@ async function db_apply_polar_customer_state_refresh(
 		product,
 		syncedProducts,
 		syncedAt,
+		existingMeter: usageSnapshot?.meter ?? null,
 	});
 	await db_upsert_usage_snapshot(ctx, snapshot);
 
@@ -745,6 +801,8 @@ async function db_apply_polar_customer_state_refresh(
 			});
 		}
 	}
+
+	return true;
 }
 
 /**
@@ -858,7 +916,8 @@ export const handle_polar_customer_state_update = internalMutation({
 				});
 				return null;
 			}
-			await db_apply_polar_customer_state_refresh(ctx, { state, syncedAt });
+			const applied = await db_apply_polar_customer_state_refresh(ctx, { state, syncedAt });
+			if (!applied) return null;
 			if (!user.deletedAt && user.clerkUserId != null) {
 				const anagraphic = user.anagraphic ? await ctx.db.get("users_anagraphics", user.anagraphic) : null;
 				if (!anagraphic || !anagraphic.email) {
@@ -949,6 +1008,9 @@ export const generate_checkout_link = action({
 		if (!userAuth || userAuth.kind !== "signed_in") {
 			return Result({ _nay: { message: "A signed-in account is required for checkout" } });
 		}
+		if (!(await ctx.runQuery(internal.billing.is_live_signed_in_user, { userId: userAuth.id }))) {
+			return Result({ _nay: { message: "A current app account is required for billing" } });
+		}
 
 		const product =
 			(await billing_polar.listProducts(ctx)).find((product) => {
@@ -978,7 +1040,23 @@ export const generate_checkout_link = action({
 			}),
 		);
 		if (checkoutSessionResult._nay) {
-			return Result({ _nay: { message: "Failed to create a checkout link", cause: checkoutSessionResult._nay } });
+			// The declared nested-cause validator only allows `{ message, name? }`, and the relayed
+			// error can carry deeper `cause`/`data` details, so keep only those API-safe fields on
+			// the returned cause and put the full error in logs.
+			console.error("Failed to create a checkout link", {
+				error: checkoutSessionResult._nay,
+				productId: product.id,
+				userId: userAuth.id,
+			});
+			return Result({
+				_nay: {
+					message: "Failed to create a checkout link",
+					cause: {
+						message: checkoutSessionResult._nay.message,
+						name: checkoutSessionResult._nay.name,
+					},
+				},
+			});
 		}
 
 		let url = checkoutSessionResult._yay.url;
@@ -1003,6 +1081,9 @@ export const generate_customer_portal_url = action({
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth || userAuth.kind !== "signed_in") {
 			return Result({ _nay: { message: "A signed-in account is required for billing" } });
+		}
+		if (!(await ctx.runQuery(internal.billing.is_live_signed_in_user, { userId: userAuth.id }))) {
+			return Result({ _nay: { message: "A current app account is required for billing" } });
 		}
 
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: userAuth.id });
@@ -1536,47 +1617,99 @@ async function action_change_current_subscription_product(
 		return Result({ _nay: { message: "Plan changes between equivalent tiers are not supported" } });
 	}
 
-	if (currentSubscription.cancelAtPeriodEnd) {
-		// Polar rejects product updates on pending-cancel subscriptions; turn the
-		// cancellation back into a normal subscription before scheduling Free.
-		const uncancelSubscriptionResult = await action_uncancel_polar_subscription({
-			subscriptionId: currentSubscription.id,
-		});
-		if (uncancelSubscriptionResult._nay) {
-			return Result({
-				_nay: {
-					message: "Failed to restore canceled subscription before changing plan",
-					cause: uncancelSubscriptionResult._nay,
-				},
+	let updateResult: Awaited<ReturnType<typeof subscriptionsUpdate>> | null = null;
+	let planChangeError: unknown = null;
+	try {
+		if (currentSubscription.cancelAtPeriodEnd) {
+			// Polar rejects product updates on pending-cancel subscriptions; turn the
+			// cancellation back into a normal subscription before scheduling Free.
+			const uncancelSubscriptionResult = await action_uncancel_polar_subscription({
+				subscriptionId: currentSubscription.id,
+			});
+			if (uncancelSubscriptionResult._nay) {
+				// The public `v_result` boundary validates `_nay` as `{ message, name? }`, so a relayed
+				// `cause` would fail returns validation. Keep the details in logs.
+				console.error("Failed to restore canceled subscription before changing plan", {
+					error: uncancelSubscriptionResult._nay,
+					subscriptionId: currentSubscription.id,
+					targetProductId: args.targetProduct.id,
+				});
+				return Result({
+					_nay: {
+						message: "Failed to restore canceled subscription before changing plan",
+					},
+				});
+			}
+			await ctx.runMutation(components.polar.lib.updateSubscription, {
+				subscription: convertToDatabaseSubscription(uncancelSubscriptionResult._yay),
 			});
 		}
 
-		await ctx.runMutation(components.polar.lib.updateSubscription, {
-			subscription: convertToDatabaseSubscription(uncancelSubscriptionResult._yay),
+		const prorationBehavior = changeKind === "upgrade" ? "invoice" : "next_period";
+		updateResult = await subscriptionsUpdate(billing_polar.polar, {
+			id: currentSubscription.id,
+			subscriptionUpdate: {
+				productId: args.targetProduct.id,
+				prorationBehavior,
+			},
 		});
+		if (!updateResult.ok) {
+			planChangeError = updateResult.error;
+		}
+	} catch (error) {
+		planChangeError = error;
 	}
 
-	const prorationBehavior = changeKind === "upgrade" ? "invoice" : "next_period";
-	const updateResult = await subscriptionsUpdate(billing_polar.polar, {
-		id: currentSubscription.id,
-		subscriptionUpdate: {
-			productId: args.targetProduct.id,
-			prorationBehavior,
-		},
-	});
-	if (!updateResult.ok) {
-		if (updateResult.error instanceof PaymentFailed) {
+	if (!updateResult?.ok) {
+		if (currentSubscription.cancelAtPeriodEnd) {
+			// A later plan-change step failed after Polar accepted the uncancel. Restore the
+			// user's original period-end cancellation before reporting the error.
+			let restoreCancellationResult: Awaited<ReturnType<typeof subscriptionsUpdate>> | null = null;
+			let restoreCancellationError: unknown = null;
+			try {
+				restoreCancellationResult = await subscriptionsUpdate(billing_polar.polar, {
+					id: currentSubscription.id,
+					subscriptionUpdate: {
+						cancelAtPeriodEnd: true,
+					},
+				});
+				if (!restoreCancellationResult.ok) {
+					restoreCancellationError = restoreCancellationResult.error;
+				} else {
+					await ctx.runMutation(components.polar.lib.updateSubscription, {
+						subscription: convertToDatabaseSubscription(restoreCancellationResult.value),
+					});
+				}
+			} catch (error) {
+				restoreCancellationError = error;
+			}
+			if (!restoreCancellationResult?.ok || restoreCancellationError) {
+				console.error("Failed to change the subscription and restore its cancellation", {
+					planChangeError,
+					restoreCancellationError,
+					subscriptionId: currentSubscription.id,
+					targetProductId: args.targetProduct.id,
+				});
+				return Result({
+					_nay: {
+						message: "Failed to change the subscription and restore its cancellation",
+					},
+				});
+			}
+		}
+
+		if (planChangeError instanceof PaymentFailed) {
 			return Result({ _nay: { message: "Payment failed while updating the subscription" } });
 		}
-		if (updateResult.error instanceof SubscriptionLocked) {
+		if (planChangeError instanceof SubscriptionLocked) {
 			return Result({ _nay: { message: "Subscription is locked and cannot be changed right now" } });
 		}
-		if (updateResult.error instanceof ResourceNotFound) {
+		if (planChangeError instanceof ResourceNotFound) {
 			return Result({ _nay: { message: "Subscription not found" } });
 		}
 
 		console.error("Failed to change the subscription", {
-			error: updateResult.error,
+			error: planChangeError,
 			subscriptionId: currentSubscription.id,
 			targetProductId: args.targetProduct.id,
 		});
@@ -1601,6 +1734,9 @@ export const change_current_subscription = action({
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth || userAuth.kind !== "signed_in") {
 			return Result({ _nay: { message: "A signed-in account is required for billing" } });
+		}
+		if (!(await ctx.runQuery(internal.billing.is_live_signed_in_user, { userId: userAuth.id }))) {
+			return Result({ _nay: { message: "A current app account is required for billing" } });
 		}
 
 		const targetProduct =
@@ -1633,6 +1769,9 @@ export const cancel_current_subscription = action({
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth || userAuth.kind !== "signed_in") {
 			return Result({ _nay: { message: "A signed-in account is required for billing" } });
+		}
+		if (!(await ctx.runQuery(internal.billing.is_live_signed_in_user, { userId: userAuth.id }))) {
+			return Result({ _nay: { message: "A current app account is required for billing" } });
 		}
 
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: userAuth.id });

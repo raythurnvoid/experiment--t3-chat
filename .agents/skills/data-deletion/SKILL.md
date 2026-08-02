@@ -36,7 +36,8 @@ Load each companion skill that owns the affected boundary:
 - `data_deletion_db_request`: creates or reuses exactly one queue doc for the requested user, organization, or workspace scope.
 - `db_prepare_user_for_deletion`: phase 1 for a user. It tombstones the user, deactivates memberships, and removes presence.
 - `db_drain_user_plugin_ui_sessions_batch`: deletes one bounded batch of a user's `plugins_ui_sessions` docs via `by_user`. Both user-deletion paths drain these to zero before `db_finalize_deleted_user`, which therefore never reads them.
-- `prepare_user_for_hard_deletion`: tombstones the user and drains one bounded plugin UI session batch before the admin action performs external provider writes. The action reads the current Polar subscription before calling this mutation.
+- `db_drain_user_plugin_publisher_docs_batch`: deletes one bounded user-owned publisher phase in child-first order: repository secrets, repository docs, then version reviews. Both user-deletion paths drain these docs to zero before `db_finalize_deleted_user`.
+- `prepare_user_for_hard_deletion`: tombstones the user and drains bounded plugin UI session and publisher-doc batches before the admin action performs external provider writes. The action reads the current Polar subscription before calling this mutation.
 - `db_finalize_deleted_user`: phase 2 for a tombstoned user. It deletes user-scoped docs and returns organizations that became empty.
 - `db_purge_organization_workspace_content_batch`: deletes tenant content for one `(organizationId, workspaceId)` in bounded batches.
 - `db_delete_workspace_structure_batch`: deletes workspace notifications, memberships, active API credential quota docs, access-control docs, and then the workspace doc after content is gone.
@@ -93,8 +94,8 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - It only owns user-scope request docs.
 - If the user doc is already gone, clear user quota docs and remove the stale request.
 - A non-tombstoned user request should make no destructive progress and should log.
-- Before finalization it drains one bounded `plugins_ui_sessions` batch per pass (`db_drain_user_plugin_ui_sessions_batch`) and returns `done: false` while sessions remain, so the queue doc stays in place and finalization never reads the full session set.
-- `db_finalize_deleted_user` deletes user-scoped memberships, role assignments, direct user grants, API credentials, public API grants, pending-update docs, last-sequence docs, user quota docs, and the user's plugin publishing docs (`plugins_publisher_repositories` by `ownerUserId`, `plugins_publisher_repository_secrets` by `ownerUserId`, `plugins_version_reviews` by `createdBy`). Publishing is user-owned — there is no publisher account table. Normal finalization retains the tombstoned `users` doc and its anagraphic, so kept `plugins_versions.createdBy` still resolves and the marketplace can still show that retained display name. The reference becomes dangling, and the display becomes null, only after `purge_deleted_user_tombstone` removes both retained docs. Whether deleted publishers should remain named is an unresolved privacy rule; do not claim that normal finalization anonymizes them.
+- Before finalization it drains bounded plugin UI session and publisher-doc batches. Publisher secrets are deleted before their repository parents, followed by version reviews. The queued path returns `done: false` after each non-empty batch, so its request doc stays in place. The direct admin preparation returns `false`, so its action schedules another bounded pass. Finalization never reads those growing tables.
+- `db_finalize_deleted_user` deletes the remaining user-scoped memberships, role assignments, direct user grants, API credentials, public API grants, pending-update docs, last-sequence docs, and user quota docs. Publishing is user-owned — there is no publisher account table. Normal finalization retains the tombstoned `users` doc and its anagraphic, so kept `plugins_versions.createdBy` still resolves and the marketplace can still show that retained display name. The reference becomes dangling, and the display becomes null, only after `purge_deleted_user_tombstone` removes both retained docs. Whether deleted publishers should remain named is an unresolved privacy rule; do not claim that normal finalization anonymizes them.
 - Keep `billing_usage_snapshots` whenever the `users` doc is retained. Delete them only when the full user-record purge path passes `deleteBillingState`.
 - Auth pointers and anonymous tokens are removed only when the caller passes `deleteUserAuth`.
 - After finalization, queue now-empty organizations with immediate organization requests.
@@ -159,7 +160,7 @@ Current purge coverage includes:
 - `files_yjs_snapshots`, `files_yjs_updates`, `files_yjs_docs_last_sequences`
 - `files_snapshots`, `file_stats`
 - `files_content_materialization_jobs` with Workpool job cancellation
-- `files_r2_assets` with upload-conversion job cancellation and R2 object deletion
+- `files_r2_assets` with upload-conversion job cancellation and R2 object deletion. When `r2Key` is not set, derive the deterministic asset key because the browser PUT may have landed before its event updated the asset doc.
 - `files_nodes` last
 
 Known implementation gap: `activities` is tenant-scoped and can refer to plugin runs, installations, files, titles, and paths, but this purge does not delete it. Deleting the related run first also prevents the normal run-retention path from finding that activity later. Until the purge drains `activities` by its organization/workspace index, do not claim that workspace or organization deletion removes all tenant content.
@@ -184,11 +185,11 @@ When adding a new purge target:
 
 `users.hard_delete_user_now` has three modes:
 
-- `"data"`: data-only reset. Preserve `users`, auth ids, anonymous auth, anagraphic/profile, billing state, default `personal` organization, and default `home` workspace. Clear the user-scope deletion request. Purge content from the preserved home workspace and reset its active API credential quota counter. Delete extra personal workspaces, and delete non-default organizations/workspaces only when the reset user is the only active participant in that tenant scope.
+- `"data"`: data-only reset. Preserve `users`, auth ids, anonymous auth, anagraphic/profile, billing state, default `personal` organization, and default `home` workspace. Clear the user-scope deletion request. Purge content from the preserved home workspace and reset its active API credential quota counter. Force queue-only workspace purges in every reviewed organization because a phase-1 delete may have already removed the workspace doc. Delete extra personal workspaces, and delete non-default organizations/workspaces only when the reset user is the only active participant in that tenant scope.
 - `"data_and_auth"`: tombstone locally, drain user sessions, schedule period-end subscription cancellation, delete Clerk auth, finalize local user data/auth, keep the tombstone and `billing_usage_snapshots`, then hand queued tenant purge requests to the Workpool.
 - `"data_auth_and_user_record"`: tombstone locally, drain user sessions, revoke the paid subscription, delete the Polar customer, delete Clerk auth, finalize local data/auth/billing state, hand queued tenant purge requests to the Workpool, then purge the local tombstone.
 
-Both auth-removing modes read the current Polar subscription, then call `prepare_user_for_hard_deletion` before any external provider write. The initial Polar lookup can fail before the tombstone exists. After preparation starts, the action repeats bounded session batches and, when needed, schedules the same user and mode to continue. Provider writes, external cleanup, and finalization start only after no user sessions remain, so a later provider failure leaves a local tombstone with the provider ids needed for an idempotent retry.
+Both auth-removing modes read the current Polar subscription, then call `prepare_user_for_hard_deletion` before any external provider write. The initial Polar lookup can fail before the tombstone exists. After preparation starts, the action repeats bounded session and publisher-doc batches and, when needed, schedules the same user and mode to continue. Provider writes, external cleanup, and finalization start only after those batches are empty, so a later provider failure leaves a local tombstone with the provider ids needed for an idempotent retry.
 
 Because this admin path is immediate, finalization removes its user-scope request and makes every existing organization/workspace request created by that user eligible immediately. The ordinary deletion worker then drains those resource requests without waiting for their original retention date. Requests created by other users are not changed.
 
@@ -213,8 +214,9 @@ For data-only reset, treat missing or inconsistent default tenant state as an in
 
 - Workspace content purge, workspace structure deletion, organization deletion, and the Workpool loop are explicitly bounded and retryable.
 - Plugin UI session deletion is bounded on all three paths: per-installation batches in workspace purge, per-pass `by_user` batches in the queued user path, and repeated `prepare_user_for_hard_deletion` batches in the direct admin action.
+- Publisher repository secrets, repository docs, and version reviews are bounded on both user-deletion paths. Delete secrets first, then repository parents, then reviews.
 - `process_workspace_deletion_request` deletes content only; `db_delete_workspace_batch` deletes content and structure.
-- `db_finalize_deleted_user` currently finalizes user-scoped docs in one mutation after loading them with bounded-by-user queries. If user-scoped memberships, grants, pending updates, auth docs, quota docs, or billing snapshots can grow beyond one safe mutation, split user finalization into its own batched phases before relying on it for large accounts.
+- `db_finalize_deleted_user` still finalizes the remaining user-scoped docs in one mutation. If memberships, grants, pending updates, auth docs, quota docs, or billing snapshots can grow beyond one safe mutation, split them into their own batched phases before relying on finalization for large accounts.
 
 # Guardrails
 
@@ -222,7 +224,7 @@ For data-only reset, treat missing or inconsistent default tenant state as an in
 - Do not mask broken invariants with fallback repair code unless the relevant producer path is identified and the product rule explicitly wants repair.
 - Preserve child-before-parent deletion ordering.
 - Cancel Workpool jobs before deleting their tracking docs when a purge owns that job lifecycle.
-- Delete R2 objects when deleting `files_r2_assets` with `r2Key`.
+- Delete R2 objects before deleting `files_r2_assets`. Use `r2Key` when set; otherwise derive the deterministic asset key.
 - Keep queue docs scoped; user restore removes only user-scope requests.
 - Keep billing snapshot deletion tied to full user-record purge, not normal account deletion or data reset.
 - Keep public/user-facing mutations responsible for phase-1 permissions, rate limits, quota release, and immediate access removal.

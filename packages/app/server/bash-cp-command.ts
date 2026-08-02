@@ -49,7 +49,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 	}
 
 	return defineCommand("cp", async (args, commandCtx) => {
-		const { operands, recursive } = bash_parse_cp_mv_operands(args);
+		const { operands, recursive, noClobber } = bash_parse_cp_mv_operands(args);
 
 		// Mounts are read-only: reject any cp whose destination (the last operand) is under /.mounts
 		// or /.plugins, before native delegation could write into the reserved mount tree. Copying a
@@ -220,6 +220,9 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
+				if (occupant && noClobber) {
+					return { stdout: "", stderr: "", exitCode: 0 };
+				}
 				// Copy what the agent sees: the last available markdown, including the calling
 				// user's own pending overlay on the source file.
 				const sourceContent = (await ctx.runAction(
@@ -283,6 +286,9 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 							stderr: `cp: cannot create '${destPath}': ${created._nay.message}\n`,
 							exitCode: bash_COMMAND_EXIT_FAILURE,
 						};
+					}
+					if (!created._yay.created && noClobber) {
+						return { stdout: "", stderr: "", exitCode: 0 };
 					}
 					destNodeId = created._yay.nodeId;
 					// A raced creation reuses the pre-existing node: degrade to a content replacement so
@@ -449,6 +455,14 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				}
 			} catch {
 				// Missing destinations are normal; writeFile creates the scratch file.
+			}
+			if (noClobber) {
+				try {
+					await commandCtx.fs.stat(destShellPath);
+					return { stdout: "", stderr: "", exitCode: 0 };
+				} catch {
+					// Missing destinations are normal; continue with the scratch copy.
+				}
 			}
 			// Read through the mounted fs so app-file readability checks stay centralized,
 			// then write only to the already-validated scratch destination.

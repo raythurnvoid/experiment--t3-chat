@@ -47,6 +47,7 @@ async function files_ingest_inline_ai_usage_event(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		requestId: string;
+		usageEventId: string;
 		inputTokens: number;
 		outputTokens: number;
 	},
@@ -71,7 +72,7 @@ async function files_ingest_inline_ai_usage_event(
 						args.organizationId,
 						args.workspaceId,
 						"inline_ai",
-						args.requestId,
+						args.usageEventId,
 					),
 					metadata: {
 						amount: files_compute_token_usage_cost_cents({
@@ -309,6 +310,7 @@ export function files_http_routes(router: RouterForConvexModules) {
 									}
 								}
 
+								const usageEventId = crypto.randomUUID();
 								if (context) {
 									const result = await generateText({
 										model: openai("gpt-5-mini" satisfies files_InlineAiModelId),
@@ -330,6 +332,7 @@ export function files_http_routes(router: RouterForConvexModules) {
 										organizationId: membership.organizationId,
 										workspaceId: membership.workspaceId,
 										requestId,
+										usageEventId,
 										inputTokens: result.totalUsage.inputTokens ?? 0,
 										outputTokens: result.totalUsage.outputTokens ?? 0,
 									});
@@ -366,6 +369,7 @@ export function files_http_routes(router: RouterForConvexModules) {
 											organizationId: membership.organizationId,
 											workspaceId: membership.workspaceId,
 											requestId,
+											usageEventId,
 											inputTokens: totalUsage.inputTokens ?? 0,
 											outputTokens: totalUsage.outputTokens ?? 0,
 										});

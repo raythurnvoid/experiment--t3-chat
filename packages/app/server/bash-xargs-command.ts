@@ -1,7 +1,10 @@
 import { defineCommand, type CommandContext } from "just-bash/browser";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
+	bash_command_loads_disallowed_shell_code,
+	bash_disallowed_shell_code_error,
 	bash_shell_arg_quote,
+	bash_COMMAND_EXIT_CANNOT_EXECUTE,
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_USAGE,
 	bash_NON_NEGATIVE_INTEGER_REGEX,
@@ -302,6 +305,16 @@ export function bash_xargs_command_create() {
 			}
 			if (verbose) {
 				stderr += `${batch.map(bash_shell_arg_quote).join(" ")}\n`;
+			}
+			if (
+				await bash_command_loads_disallowed_shell_code(batch.map(bash_shell_arg_quote).join(" "), {
+					cwd: commandCtx.cwd,
+					fs: commandCtx.fs,
+				})
+			) {
+				stderr += bash_disallowed_shell_code_error();
+				exitCode = bash_COMMAND_EXIT_CANNOT_EXECUTE;
+				continue;
 			}
 			const result = await commandCtx.exec(bash_shell_arg_quote(batch[0]), {
 				cwd: commandCtx.cwd,

@@ -80,7 +80,7 @@ import {
 	bash_APP_MOUNT_PATH,
 	bash_EXTERNAL_MOUNTS_ROOT,
 	bash_PLUGINS_MOUNT_ROOT,
-	bash_command_has_disallowed_source_target,
+	bash_command_loads_disallowed_shell_code,
 	bash_current_workspace_path_to_db_files_path,
 	bash_db_files_path_to_current_workspace_path,
 	bash_DEV_NULL_PATH,
@@ -95,7 +95,7 @@ import {
 	bash_READ_INLINE_MAX_BYTES,
 	bash_resolve_path,
 	bash_shell_arg_quote,
-	bash_disallowed_source_target_error,
+	bash_disallowed_shell_code_error,
 	bash_TMP_MOUNT,
 	bash_DbFilesFs,
 	bash_COMMAND_EXIT_FAILURE,
@@ -1062,12 +1062,12 @@ async function bash_fs_create(args: {
 		cwd,
 		currentWorkspacePath,
 		run_command: async (command: string) => {
-			// `source` and `.` execute inside the current shell, so block mounted
-			// file targets before Just Bash can load them.
-			if (bash_command_has_disallowed_source_target(command, { cwd, currentWorkspacePath })) {
+			// Block app and read-only mount files before Just Bash can load their
+			// contents as shell code through direct or nested commands.
+			if (await bash_command_loads_disallowed_shell_code(command, { cwd, fs })) {
 				return {
 					stdout: "",
-					stderr: bash_disallowed_source_target_error(),
+					stderr: bash_disallowed_shell_code_error(),
 					exitCode: bash_COMMAND_EXIT_CANNOT_EXECUTE,
 					env: {
 						PWD: cwd,
@@ -5313,6 +5313,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(unreadable.stderr).toContain(`${test_db_files_mount}/source.pdf.md`);
 		});
 
+		test("cp no-clobber keeps an existing scratch destination", async () => {
+			const { run } = await create_bash_runner();
+			await run("printf 'keep me\\n' > /tmp/no-clobber.md");
+
+			const result = await run(
+				`cp -n ${test_db_files_mount}/docs/readme.md /tmp/no-clobber.md && cat /tmp/no-clobber.md`,
+			);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe("keep me\n");
+			expect(result.stderr).toBe("");
+		});
+
 		test("creates a pending move proposal for an app file rename", async () => {
 			const runner = await create_bash_runner();
 			const docsId = await get_seeded_node_id(runner, "/docs");
@@ -6802,6 +6815,76 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(overlayRead.stdout).toContain("unique-token");
 		});
 
+		test("cp no-clobber leaves an existing app destination unchanged", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/docs/no-clobber-target.md", content: "keep me\n", withRealYjsSnapshot: true }],
+			});
+			const targetId = await get_seeded_node_id(runner, "/docs/no-clobber-target.md");
+
+			for (const flag of ["-n", "--no-clobber"]) {
+				const result = await runner.run(
+					`cp ${flag} ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/no-clobber-target.md`,
+				);
+				expect(result.metadata.exitCode).toBe(0);
+				expect(result.stdout).toBe("");
+				expect(result.stderr).toBe("");
+			}
+
+			const rows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+					.collect(),
+			);
+			expect(rows).toHaveLength(0);
+			const readBack = await runner.run(`cat ${test_db_files_mount}/docs/no-clobber-target.md`);
+			expect(readBack.stdout).toBe("keep me\n");
+		});
+
+		test("cp no-clobber leaves a destination created during the command unchanged", async () => {
+			const runner = await create_bash_runner();
+			const baseImpl = runner.runAction.getMockImplementation();
+			if (baseImpl == null) {
+				throw new Error("expected the runner runAction spy to have an implementation");
+			}
+			let raced = false;
+			runner.runAction.mockImplementation(async (ref, actionArgs) => {
+				if (!raced && function_name_of(ref) === "files_nodes_content:create_file_by_path") {
+					raced = true;
+					await runner.t.run((ctx) =>
+						seed_organization_node(
+							ctx,
+							{
+								organizationId: runner.seeded.organizationId,
+								workspaceId: runner.seeded.workspaceId,
+								userId: runner.seeded.userId,
+							},
+							{ path: "/docs/raced-target.md", content: "raced content\n", withRealYjsSnapshot: true },
+							999,
+						),
+					);
+				}
+				return await baseImpl(ref, actionArgs);
+			});
+
+			const result = await runner.run(
+				`cp -n ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/raced-target.md`,
+			);
+			const targetId = await get_seeded_node_id(runner, "/docs/raced-target.md");
+			const pendingUpdates = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+					.collect(),
+			);
+			const readBack = await runner.run(`cat ${test_db_files_mount}/docs/raced-target.md`);
+
+			expect(raced).toBe(true);
+			expect(result).toMatchObject({ stdout: "", stderr: "", metadata: { exitCode: 0 } });
+			expect(pendingUpdates).toHaveLength(0);
+			expect(readBack.stdout).toBe("raced content\n");
+		});
+
 		test("cp onto a path vacated by the user's own pending move is rejected", async () => {
 			const runner = await create_bash_runner();
 
@@ -7841,6 +7924,86 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(unsupportedFlag.stderr).toContain("sh /tmp/script.sh");
 		});
 
+		test("keeps nested command loaders from executing app files", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/loaded-script.sh", content: "echo app-loaded\n" }],
+			});
+
+			for (const command of [
+				`bash -c "$(cat ${test_db_files_mount}/loaded-script.sh)"`,
+				`sh -c "$(cat ${test_db_files_mount}/loaded-script.sh)"`,
+				`eval "$(cat ${test_db_files_mount}/loaded-script.sh)"`,
+				`bash -c "$(command cat ${test_db_files_mount}/loaded-script.sh)"`,
+				`bash -c "$(command -- cat ${test_db_files_mount}/loaded-script.sh)"`,
+				`bash -c "$(command -p cat ${test_db_files_mount}/loaded-script.sh)"`,
+				'bash -c "$(command cat $(pwd)/loaded-script.sh)"',
+				'bash -c "$($(echo cat) loaded-script.sh)"',
+				'bash -c "$(head -n 1 loaded-script.sh)"',
+				'bash -c "$(tail -n 1 loaded-script.sh)"',
+				'bash -c "$(grep app-loaded loaded-script.sh)"',
+				'bash -c "$(sed -n \'1p\' loaded-script.sh)"',
+				'bash -c "$(textgrep app-loaded loaded-script.sh)"',
+				"script='source loaded-script.sh'; bash -c \"$script\"",
+			]) {
+				const result = await runner.run(command);
+				expect(result.metadata.exitCode).not.toBe(0);
+				expect(result.stdout).not.toContain("loaded");
+				expect(result.stderr).toContain("cannot load app files or agent-only external mounts");
+			}
+
+			const tmpScript = await runner.run(
+				'printf \'echo tmp-loaded\\n\' > /tmp/loaded-script.sh && bash -c "$(cat /tmp/loaded-script.sh)"',
+			);
+			expect(tmpScript.metadata.exitCode).toBe(0);
+			expect(tmpScript.stdout).toBe("tmp-loaded\n");
+
+			const appPathAsData = await runner.run(
+				`bash -c "$(echo 'echo app-path' ${test_db_files_mount}/loaded-script.sh)"`,
+			);
+			expect(appPathAsData.metadata.exitCode).toBe(0);
+			expect(appPathAsData.stdout).toBe(`app-path ${test_db_files_mount}/loaded-script.sh\n`);
+
+			const dynamicCommandAsData = await runner.run(`bash -c "$($(echo echo) 'echo dynamic-command')"`);
+			expect(dynamicCommandAsData.metadata.exitCode).toBe(0);
+			expect(dynamicCommandAsData.stdout).toBe("dynamic-command\n");
+		});
+
+		test("rejects app shell code captured in assignments", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/loaded-script.sh", content: "echo app-loaded\n" }],
+			});
+
+			const executed = await runner.run('script="$(cat loaded-script.sh)"; bash -c "$script"');
+			expect(executed.metadata.exitCode).not.toBe(0);
+			expect(executed.stdout).not.toContain("app-loaded");
+			expect(executed.stderr).toContain("cannot load app files or agent-only external mounts");
+
+			const readAsData = await runner.run('script="$(cat loaded-script.sh)"; printf "%s" "$script"');
+			expect(readAsData.metadata.exitCode).toBe(0);
+			expect(readAsData.stdout).toBe("echo app-loaded");
+		});
+
+		test("rejects nested app-file reader command substitutions", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/loaded-script.sh", content: "echo\n" }],
+			});
+
+			const result = await runner.run('eval "$($(cat loaded-script.sh) echo nested-loaded)"');
+			expect(result.metadata.exitCode).not.toBe(0);
+			expect(result.stdout).not.toContain("nested-loaded");
+			expect(result.stderr).toContain("cannot load app files or agent-only external mounts");
+		});
+
+		test("allows resolved echo commands to print app paths without reading them", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/loaded-script.sh", content: "echo app-loaded\n" }],
+			});
+
+			const result = await runner.run('bash -c "$($(echo echo) echo safe loaded-script.sh)"');
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe("safe loaded-script.sh\n");
+		});
+
 		test("rejects xargs -n with a non-positive or non-numeric value instead of silently batching all items", async () => {
 			const { run } = await create_bash_runner();
 
@@ -8195,6 +8358,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					"BONOBO=1 source /.mounts/t3-chat/script.sh",
 					"2>/tmp/source.err source /.mounts/t3-chat/script.sh",
 					"command source /.mounts/t3-chat/script.sh",
+					"command -- source /.mounts/t3-chat/script.sh",
+					"command -p source /.mounts/t3-chat/script.sh",
 					"eval 'source /.mounts/t3-chat/script.sh'",
 					"eval 'BONOBO=1 source /.mounts/t3-chat/script.sh'",
 					"bash -c 'source /.mounts/t3-chat/script.sh'",
@@ -8204,6 +8369,24 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					const result = await runner.run(command);
 					expect(result.metadata.exitCode).not.toBe(0);
 					expect(result.stdout).not.toContain("pwned");
+					expect(result.stderr).toContain("cannot load app files or agent-only external mounts");
+				}
+			});
+
+			test("keeps nested command loaders from executing mount files", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [{ path: "/script.sh", rawText: "echo mount-loaded\n" }]);
+
+				for (const command of [
+					"printf '%s\\n' '/.mounts/t3-chat/script.sh' | xargs source",
+					"printf '%s\\n' '/.mounts/t3-chat/script.sh' | xargs .",
+					'bash -c "$(cat /.mounts/t3-chat/script.sh)"',
+					'sh -c "$(cat /.mounts/t3-chat/script.sh)"',
+					'eval "$(cat /.mounts/t3-chat/script.sh)"',
+				]) {
+					const result = await runner.run(command);
+					expect(result.metadata.exitCode).not.toBe(0);
+					expect(result.stdout).not.toContain("loaded");
 					expect(result.stderr).toContain("cannot load app files or agent-only external mounts");
 				}
 			});

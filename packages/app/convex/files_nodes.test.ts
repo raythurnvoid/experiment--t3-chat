@@ -3,6 +3,7 @@ import { R2 } from "@convex-dev/r2";
 import { RateLimiter } from "@convex-dev/rate-limiter";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { encodeStateAsUpdate, encodeStateVector } from "yjs";
+import { Result } from "common/errors-as-values-utils.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { files_db_yjs_push_update, files_line_range_from_text, files_tail_lines_from_text } from "./files_nodes.ts";
 import { db_insert_file_text_content } from "./files_nodes_content.ts";
@@ -24,11 +25,25 @@ import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import { organizations_GLOBAL_ORGANIZATION_ID, organizations_GLOBAL_GITHUB_WORKSPACE_ID } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
+const generateTextMock = vi.hoisted(() => vi.fn());
+const streamTextMock = vi.hoisted(() => vi.fn());
+
+vi.mock("ai", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("ai")>();
+	return {
+		...actual,
+		generateText: generateTextMock,
+		streamText: streamTextMock,
+	};
+});
+
 let enqueueActionSpy: MockInstance;
 let generateUploadUrlSpy: ReturnType<typeof vi.fn<(customKey?: string) => Promise<{ key: string; url: string }>>>;
 const test = baseTest;
 
 beforeEach(() => {
+	generateTextMock.mockReset();
+	streamTextMock.mockReset();
 	// Keep file tests focused on file behavior; billing event enqueue behavior is
 	// covered in billing tests.
 	enqueueActionSpy = vi
@@ -4869,6 +4884,110 @@ async function test_materialize_markdown_file(
 	return nodeId;
 }
 
+test("materialize_file_content rolls back Convex writes when committed chunking fails", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Chunk Failure User",
+		email: "chunk-failure-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const nodeId = await test_materialize_markdown_file(t, asUser, db, "/chunk-failure.md", "# Last good\n");
+	const nextYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "# Next version\n" });
+	if ("_nay" in nextYjsDoc) {
+		throw new Error(nextYjsDoc._nay.message);
+	}
+	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		membershipId: db.membershipId,
+		nodeId,
+		update: files_u8_to_array_buffer(encodeStateAsUpdate(nextYjsDoc)),
+		sessionId: "chunk-failure-session",
+	});
+	nextYjsDoc.destroy();
+	if (pushResult._nay) {
+		throw new Error(pushResult._nay.message);
+	}
+
+	const before = await t.run(async (ctx) => {
+		const fileNode = await ctx.db.get("files_nodes", nodeId);
+		const yjsSnapshot = fileNode?.yjsSnapshotId
+			? await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId)
+			: null;
+		const markdownChunks = await ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", nodeId),
+			)
+			.collect();
+		return { fileNode, yjsSnapshot, markdownChunks };
+	});
+
+	const chunkMarkdownSpy = vi
+		.spyOn(await import("../server/files-markdown-chunking-mastra.ts"), "files_chunk_markdown")
+		.mockResolvedValueOnce(
+			Result({
+				_nay: {
+					name: "nay",
+					message: "Error while chunking markdown",
+					cause: new Error("Test chunking failure"),
+				},
+			}),
+		);
+
+	await expect(
+		t.action(internal.files_nodes_content.materialize_file_content, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			userId: db.userId,
+			targetSequence: pushResult._yay.newSequence,
+		}),
+	).rejects.toThrow("Failed to materialize file content");
+	expect(chunkMarkdownSpy).toHaveBeenCalled();
+
+	const after = await t.run(async (ctx) => {
+		const fileNode = await ctx.db.get("files_nodes", nodeId);
+		const yjsSnapshot = fileNode?.yjsSnapshotId
+			? await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId)
+			: null;
+		const markdownChunks = await ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", nodeId),
+			)
+			.collect();
+		const yjsUpdates = await ctx.db
+			.query("files_yjs_updates")
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+			)
+			.collect();
+		const jobs = await ctx.db
+			.query("files_content_materialization_jobs")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+			.collect();
+		return { fileNode, yjsSnapshot, markdownChunks, yjsUpdates, jobs };
+	});
+
+	expect(after.fileNode?.assetId).toBe(before.fileNode?.assetId);
+	expect(after.yjsSnapshot?.sequence).toBe(before.yjsSnapshot?.sequence);
+	expect(after.markdownChunks).toEqual(before.markdownChunks);
+	expect(after.yjsUpdates).not.toHaveLength(0);
+	expect(after.jobs).not.toHaveLength(0);
+});
+
 test("materialize_file_content marks over-cap content too large and leaves the node on its last good content", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -7329,6 +7448,129 @@ test("/api/files/contextual-prompt returns 429 before body validation and model 
 	expect(blocked.status).toBe(429);
 	expect(blockedBody.message).toBe("Rate limit exceeded");
 	expect(typeof blockedBody.retryAfterMs).toBe("number");
+});
+
+test("/api/files/contextual-prompt gives every executed model call a server-owned usage id", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => {
+		await ctx.db.patch("users", db.userId, { clerkUserId: "clerk-inline-ai-billing-user" });
+		await seed_billing_snapshot_for_user(ctx, db.userId);
+	});
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Inline AI Billing User",
+		email: "inline-ai-billing-user@example.com",
+	});
+	generateTextMock.mockResolvedValue({
+		text: "Generated text",
+		totalUsage: {
+			inputTokens: 100,
+			outputTokens: 20,
+		},
+	} as never);
+	streamTextMock.mockImplementation(
+		(options: { onFinish?: (event: { totalUsage: { inputTokens: number; outputTokens: number } }) => PromiseLike<void> | void }) =>
+			({
+				toUIMessageStreamResponse: async () => {
+					await options.onFinish?.({
+						totalUsage: {
+							inputTokens: 100,
+							outputTokens: 20,
+						},
+					});
+					return new Response(null, { status: 200 });
+				},
+			}) as never,
+	);
+	vi.spyOn(crypto, "randomUUID")
+		.mockReturnValueOnce("11111111-1111-4111-8111-111111111111")
+		.mockReturnValueOnce("22222222-2222-4222-8222-222222222222")
+		.mockReturnValueOnce("33333333-3333-4333-8333-333333333333")
+		.mockReturnValueOnce("44444444-4444-4444-8444-444444444444");
+	const requestBody = JSON.stringify({
+		prompt: "Improve this text",
+		context: {
+			beforeSelection: "Before",
+			selection: "Selected",
+			afterSelection: "After",
+		},
+		membershipId: db.membershipId,
+		requestId: "client_reused_request_id",
+	});
+	const streamRequestBody = JSON.stringify({
+		prompt: "Continue this text",
+		membershipId: db.membershipId,
+		requestId: "client_reused_request_id",
+	});
+
+	const firstResponse = await asUser.fetch("/api/files/contextual-prompt", {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+		},
+		body: requestBody,
+	});
+	await t.mutation(components.rate_limiter.lib.resetRateLimit, {
+		name: "ai_inline_http",
+		key: db.userId,
+	});
+	const secondResponse = await asUser.fetch("/api/files/contextual-prompt", {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+		},
+		body: requestBody,
+	});
+	await t.mutation(components.rate_limiter.lib.resetRateLimit, {
+		name: "ai_inline_http",
+		key: db.userId,
+	});
+	const thirdResponse = await asUser.fetch("/api/files/contextual-prompt", {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+		},
+		body: streamRequestBody,
+	});
+	await t.mutation(components.rate_limiter.lib.resetRateLimit, {
+		name: "ai_inline_http",
+		key: db.userId,
+	});
+	const fourthResponse = await asUser.fetch("/api/files/contextual-prompt", {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+		},
+		body: streamRequestBody,
+	});
+
+	expect(firstResponse.status).toBe(200);
+	expect(secondResponse.status).toBe(200);
+	expect(thirdResponse.status).toBe(200);
+	expect(fourthResponse.status).toBe(200);
+	const usageEvents = enqueueActionSpy.mock.calls.map((call) => {
+		const args = call[2] as {
+			events: Array<{
+				externalId: string;
+				metadata: { messageId: string };
+			}>;
+		};
+		return args.events[0]!;
+	});
+	expect(usageEvents.map((event) => event.externalId)).toEqual([
+		`ai_usage::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::inline_ai::11111111-1111-4111-8111-111111111111`,
+		`ai_usage::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::inline_ai::22222222-2222-4222-8222-222222222222`,
+		`ai_usage::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::inline_ai::33333333-3333-4333-8333-333333333333`,
+		`ai_usage::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::inline_ai::44444444-4444-4444-8444-444444444444`,
+	]);
+	expect(usageEvents.map((event) => event.metadata.messageId)).toEqual([
+		"client_reused_request_id",
+		"client_reused_request_id",
+		"client_reused_request_id",
+		"client_reused_request_id",
+	]);
 });
 
 test("restore_snapshot emits file_save usage for the restored Yjs sequence", async () => {

@@ -2132,11 +2132,11 @@ export const finalize_file_content_materialization = internalMutation({
 			console.error(errorMessage, {
 				dbWriteResult,
 			});
-			return Result({
-				_nay: {
-					name: "nay",
-					message: errorMessage,
-				},
+			// Throw so Convex rolls back every related write above. Returning `_nay` would commit
+			// the node and snapshot changes after chunk replacement had already failed.
+			throw convex_error({
+				message: errorMessage,
+				cause: dbWriteResult._nay,
 			});
 		}
 

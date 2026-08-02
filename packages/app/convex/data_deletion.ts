@@ -22,6 +22,7 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
 import { files_nodes_db_hard_delete_node, files_nodes_db_is_eager_node_safe_to_hard_delete } from "./files_nodes.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -598,7 +599,21 @@ async function db_purge_organization_workspace_content_batch(
 				asset.processingWorkId ? [files_upload_conversion_workpool.cancel(ctx, asset.processingWorkId)] : [],
 			),
 		);
-		await Promise.all(assets.flatMap((asset) => (asset.r2Key ? [r2.deleteObject(ctx, asset.r2Key)] : [])));
+		// The browser PUT can succeed before its event records `r2Key`. When `r2Key` is still
+		// missing, delete the deterministic key before removing the asset doc that identifies it.
+		await Promise.all(
+			assets.map((asset) =>
+				r2.deleteObject(
+					ctx,
+					asset.r2Key ??
+						r2_create_asset_key({
+							organizationId: asset.organizationId,
+							workspaceId: asset.workspaceId,
+							assetId: asset._id,
+						}),
+				),
+			),
+		);
 		await Promise.all(assets.map((doc) => ctx.db.delete("files_r2_assets", doc._id)));
 		return { done: false, deletedCount: assets.length };
 	}
@@ -1049,6 +1064,40 @@ async function db_drain_user_plugin_ui_sessions_batch(
 }
 
 /**
+ * Deletes one bounded publisher-doc phase. Secrets go first because repository docs are their parents.
+ * Both user-deletion paths repeat this helper until it returns zero before finalization.
+ */
+async function db_drain_user_plugin_publisher_docs_batch(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; batchSize: number },
+) {
+	const secrets = await ctx.db
+		.query("plugins_publisher_repository_secrets")
+		.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", args.userId))
+		.take(args.batchSize);
+	if (secrets.length > 0) {
+		await Promise.all(secrets.map((doc) => ctx.db.delete("plugins_publisher_repository_secrets", doc._id)));
+		return secrets.length;
+	}
+
+	const repositories = await ctx.db
+		.query("plugins_publisher_repositories")
+		.withIndex("by_ownerUser_repositoryUrl", (q) => q.eq("ownerUserId", args.userId))
+		.take(args.batchSize);
+	if (repositories.length > 0) {
+		await Promise.all(repositories.map((doc) => ctx.db.delete("plugins_publisher_repositories", doc._id)));
+		return repositories.length;
+	}
+
+	const reviews = await ctx.db
+		.query("plugins_version_reviews")
+		.withIndex("by_createdBy_pluginName", (q) => q.eq("createdBy", args.userId))
+		.take(args.batchSize);
+	await Promise.all(reviews.map((doc) => ctx.db.delete("plugins_version_reviews", doc._id)));
+	return reviews.length;
+}
+
+/**
  * Phase 2 for a tombstoned user.
  *
  * This removes user-scoped docs that can be deleted after retention. It can also
@@ -1096,9 +1145,6 @@ async function db_finalize_deleted_user(
 		apiCredentials,
 		publicApiGrants,
 		billingUsageSnapshots,
-		publisherRepositories,
-		publisherSecrets,
-		publisherVersionReviews,
 	] = await Promise.all([
 		ctx.db
 			.query("organizations_workspaces_users")
@@ -1183,18 +1229,6 @@ async function db_finalize_deleted_user(
 					.withIndex("by_user", (q) => q.eq("userId", user._id))
 					.collect()
 			: Promise.resolve([] as Array<Doc<"billing_usage_snapshots">>),
-		ctx.db
-			.query("plugins_publisher_repositories")
-			.withIndex("by_ownerUser_repositoryUrl", (q) => q.eq("ownerUserId", user._id))
-			.collect(),
-		ctx.db
-			.query("plugins_publisher_repository_secrets")
-			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", user._id))
-			.collect(),
-		ctx.db
-			.query("plugins_version_reviews")
-			.withIndex("by_createdBy_pluginName", (q) => q.eq("createdBy", user._id))
-			.collect(),
 	]);
 
 	/**
@@ -1227,9 +1261,6 @@ async function db_finalize_deleted_user(
 			...pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)),
 			...pendingMarkdownChunks.map((doc) => ctx.db.delete("files_markdown_chunks", doc._id)),
 			...pendingMetadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)),
-			...publisherRepositories.map((doc) => ctx.db.delete("plugins_publisher_repositories", doc._id)),
-			...publisherSecrets.map((doc) => ctx.db.delete("plugins_publisher_repository_secrets", doc._id)),
-			...publisherVersionReviews.map((doc) => ctx.db.delete("plugins_version_reviews", doc._id)),
 		]),
 	]);
 
@@ -1569,6 +1600,14 @@ export const process_user_deletion_request = internalMutation({
 		});
 		if (drainedSessions > 0) {
 			return { done: false, deletedCount: drainedSessions };
+		}
+
+		const drainedPublisherDocs = await db_drain_user_plugin_publisher_docs_batch(ctx, {
+			userId: user._id,
+			batchSize: batch_size(args),
+		});
+		if (drainedPublisherDocs > 0) {
+			return { done: false, deletedCount: drainedPublisherDocs };
 		}
 
 		// Finalize the user first to delete the remaining user-owned docs and to
@@ -2075,6 +2114,28 @@ export const hard_delete_user_data = internalMutation({
 				continue;
 			}
 
+			// A deleted workspace has no live doc to scan below. Its queue request is the only
+			// pointer left, so force that content purge during the immediate admin reset.
+			const queuedWorkspaceRequest = await ctx.db
+				.query("data_deletion_requests")
+				.withIndex("by_organization_scope", (q) =>
+					q.eq("organizationId", organization._id).eq("scope", "workspace"),
+				)
+				.first();
+			if (queuedWorkspaceRequest?.workspaceId) {
+				const queuedWorkspacePurge = await db_purge_organization_workspace_content_batch(ctx, {
+					organizationId: organization._id,
+					workspaceId: queuedWorkspaceRequest.workspaceId,
+					batchSize: batch_size(args),
+				});
+				if (!queuedWorkspacePurge.done) {
+					return queuedWorkspacePurge;
+				}
+
+				await ctx.db.delete("data_deletion_requests", queuedWorkspaceRequest._id);
+				return { done: false, deletedCount: 1 };
+			}
+
 			// Load workspaces so we can check whether anyone other than the reset user
 			// still actively uses this organization.
 			const workspaces = await ctx.db
@@ -2239,10 +2300,10 @@ export const hard_delete_user_data = internalMutation({
 });
 
 /**
- * Tombstones a user and deletes one batch of their plugin UI sessions.
+ * Tombstones a user and advances bounded plugin UI session and publisher-doc cleanup.
  *
  * The admin action repeats this mutation before calling external providers. This keeps the
- * local account authoritative and ensures no user-owned session is left after hard deletion.
+ * local account authoritative and ensures no user-owned session or publisher doc is left.
  */
 export const prepare_user_for_hard_deletion = internalMutation({
 	args: {
@@ -2264,13 +2325,19 @@ export const prepare_user_for_hard_deletion = internalMutation({
 		}
 
 		const batchSize = batch_size(args);
-		const deletedCount = await db_drain_user_plugin_ui_sessions_batch(ctx, {
+		const deletedSessionCount = await db_drain_user_plugin_ui_sessions_batch(ctx, {
 			userId: args.userId,
 			batchSize,
 		});
+		if (deletedSessionCount >= batchSize) {
+			return false;
+		}
 
-		// A short batch proves that no sessions remain.
-		return deletedCount < batchSize;
+		const deletedPublisherDocCount = await db_drain_user_plugin_publisher_docs_batch(ctx, {
+			userId: args.userId,
+			batchSize,
+		});
+		return deletedPublisherDocCount === 0;
 	},
 });
 
