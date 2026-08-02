@@ -63,7 +63,7 @@ The shared catalog lives in [billing.ts](../../../packages/app/shared/billing.ts
 - `billing_get_recurring_credits_cents` returns the per-plan recurring credit amount for the monthly credits engine and the billing UI.
 - `billing_get_product_order`, `billing_compare_product_order`, and `billing_get_plan_change_kind` derive catalog ordering plus upgrade vs downgrade behavior from the canonical plan order.
 
-Server-side usage-event typing lives in [billing.ts](../../../packages/app/server/billing.ts), while queued ingestion lives in [billing.ts](../../../packages/app/convex/billing.ts).
+Server-side usage-event typing lives in [billing.ts](../../../packages/app/server/billing.ts). The local emission helper `billing_ingest_events` lives in [billing_db.ts](../../../packages/app/convex/billing_db.ts), while the enqueued Polar `ingest_events` action lives in [billing.ts](../../../packages/app/convex/billing.ts).
 
 - `billing_POLAR_METER_EVENT` stores the single Polar meter event name, `press_usage_event`, used for both usage charges and credits.
 - `billing_Event` is inferred from the `ingest_events` action validator and is the source-of-truth discriminated union for app-owned billing usage events keyed by `name`: `manual_credit`, `file_save`, `monthly_credit`, and `ai_usage`.
@@ -126,7 +126,7 @@ Polar webhooks are split by data ownership:
 
 ## Monthly credits engine
 
-The monthly credits engine lives at the `// #region monthly credits` block in [billing.ts](../../../packages/app/convex/billing.ts) and is the only app code path that grants recurring credits for every plan (`Free`, `Pay As You Go`, `Pro`). Polar `meter_credit` benefits are detached from the live products in the Polar dashboard so they never grant credits in parallel.
+The monthly credits engine is the inlined grant branch of `db_apply_polar_customer_state_refresh` in [billing.ts](../../../packages/app/convex/billing.ts) — there is no separate region or exported engine function. It is the only app code path that grants recurring credits for every plan (`Free`, `Pay As You Go`, `Pro`). Polar `meter_credit` benefits are detached from the live products in the Polar dashboard so they never grant credits in parallel.
 
 The Polar `customer.state_changed` webhook is the sole automatic trigger for monthly credits in production; there is no cron-driven reconciliation pass. The admin-only `refresh_from_polar_customer_state` action replays the same helper (`db_apply_polar_customer_state_refresh`) on demand from the Convex dashboard when a webhook was lost or local state looks stale.
 
@@ -139,7 +139,7 @@ See [Glossary — monthly credits](#glossary--monthly-credits).
 
 ## Credit gating
 
-Credit gating is a read-only start-time check. Backend credit checks live in [billing.ts](../../../packages/app/convex/billing.ts). The gate never reserves, debits, settles, releases, or prunes local credits. It reads the current `billing_usage_snapshots.meter.balance` that was synced from Polar and decides whether the operation may start.
+Credit gating is a read-only start-time check. Backend credit checks live in [billing_db.ts](../../../packages/app/convex/billing_db.ts), deliberately split out of `billing.ts` so file mutations that only gate or emit events do not pay the ~100ms Polar SDK module-evaluation cost on cold calls. The gate never reserves, debits, settles, releases, or prunes local credits. It reads the current `billing_usage_snapshots.meter.balance` that was synced from Polar and decides whether the operation may start.
 
 ### Plan policy
 
@@ -156,7 +156,7 @@ There is one DB credit gate plus the action-facing query wrapper:
 
 - `billing_db_check_credits(ctx, { userId, minimumRequiredCents })` — loads the synced Polar product from `snapshot.subscription.productId`, reads `snapshot.meter?.balance ?? 0`, and returns `{ hasCredits }`. Missing billing state, missing products, and insufficient Free-plan balance return `hasCredits: false`; paid plans return `hasCredits: true` even with a negative balance.
 - `internal.billing.check_credits` — `internalQuery` wrapper for action code such as chat routes. Without `organizationId`, it returns `{ hasCredits }`. With `organizationId`, it resolves the organization payer and returns `{ hasCredits, billedUser }` so actions can freeze the billed user before paid work starts. Missing organization or billed-user docs are impossible states from membership-derived inputs and should throw instead of returning `Result` or `null`.
-- DB-capable file mutations resolve `organization` and `billedUser` inline (`billing_pick_billed_user_id` reads only `default`, `billingMode`, `ownerUserId`; no assignment is read) before calling `billing_db_check_credits`. Keep that local instead of reintroducing an organization credit helper.
+- DB-capable file mutations resolve `organization` and `billedUser` inline (`billing_pick_billed_user_id`, also in `billing_db.ts`, reads only `default`, `billingMode`, `ownerUserId`; no assignment is read) before calling `billing_db_check_credits`. Keep that local instead of reintroducing an organization credit helper.
 
 Missing snapshots or subscriptions are treated as `hasCredits: false` in gate helpers. The billing panel waits for the product list and subscription query. It can render an active plan before a Free-plan usage snapshot arrives, but a paid metered plan treats a missing matching snapshot as an impossible state.
 
@@ -172,13 +172,13 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 
 ### Inline editor AI check and usage event
 
-[`/api/files/contextual-prompt`](../../../packages/app/convex/files_nodes.ts) is an authenticated, membership-scoped AI endpoint. Callers must send `membershipId` and a per-request `requestId`; the frontend obtains a Convex auth token from `AppAuthProvider` and sends it in `Authorization`.
+[`/api/files/contextual-prompt`](../../../packages/app/convex/files_nodes_ai.ts) is an authenticated, membership-scoped AI endpoint. Callers must send `membershipId` and a per-request `requestId`; the frontend obtains a Convex auth token from `AppAuthProvider` and sends it in `Authorization`.
 
 - The route rate-limits first, then checks credits with `minimumRequiredCents: 1` before `streamText` for the inline popover path or `generateText` for the Liveblocks contextual resolver JSON path.
 - On rate-limit deny it returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
 - On credit deny it returns `402` with `{ message: "Insufficient funds" }`.
 - On successful finish/completion, it emits one `billing_event("ai_usage")` when AI SDK reports non-zero token usage. The external id is `composite_id("billing", "ai_usage", billedUserId, actorUserId, organizationId, workspaceId, "inline_ai", usageEventId)`, where `usageEventId` is a fresh server-owned UUID created immediately before each model execution. Keep the caller `requestId` only in metadata as `messageId`.
-- Keep the current inline-AI pricing helper local to `files_nodes.ts` while pricing remains hardcoded.
+- Keep the current inline-AI pricing helper (`files_compute_token_usage_cost_cents`) local to `files_nodes_ai.ts` while pricing remains hardcoded.
 
 ### Upload-completed plugin work
 
@@ -206,7 +206,7 @@ Anonymous users participate in credit gating through a **synthetic `billing_usag
 
 - The snapshot keeps the `subscription` and `meter` objects, but marks them as synthetic with null external ids: `polarCustomerId: null`, `subscription.id: null`, `meter.id: null`. `subscription.productId` reuses the real synced Polar Free product id.
 - `billing_db_check_credits` treats anonymous snapshots like regular `Free` snapshots by reading the synced Free `productId` from `subscription.productId` and the current synthetic `meter.balance`. It does not perform any lazy refill on read.
-- `reset_due_anonymous_credits` runs daily from `crons.ts` at `00:00 UTC`. Anonymous snapshots store `currentPeriodStart` and `currentPeriodEnd` at UTC midnight boundaries, and the cron refills any anonymous snapshot whose `currentPeriodEnd` day is today.
+- `reset_due_anonymous_credits` runs daily from `crons.ts` at `00:00 UTC`. Anonymous snapshots store `currentPeriodStart` and `currentPeriodEnd` at UTC midnight boundaries, and the cron refills any anonymous snapshot whose `currentPeriodEnd` day is today. It patches one bounded batch per mutation and reschedules itself while full batches remain, because each patch pushes the doc's period end 30 days forward and out of the due index range.
 - Anonymous local application flows through `billing_ingest_events` and `internal.billing.ingest_anonymous_user_events`. The validator rejects malformed event arguments. The handler logs and skips signed-in user rows, ignores zero amounts, throws when the anonymous snapshot or meter is missing, and otherwise applies the signed `metadata.amount` directly (`positive` usage lowers balance, `negative` credits raise balance). Callers are expected to gate first, and the daily cron owns period rollover.
 - `billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now })` is idempotent and creates the row only if one does not exist. It is called at anonymous-user creation only and returns `null` after ensuring the row.
 - Anonymous usage still does **not** go through Polar `eventsIngest`, but it does go through `billing_ingest_events`, which routes anonymous rows to the local synthetic-snapshot ledger instead of Polar.
@@ -310,6 +310,7 @@ The indicator displays the current user's balance for personal organizations, `"
 
 #### `billing_db_check_credits`
 
+- **Module:** [packages/app/convex/billing_db.ts](../../../packages/app/convex/billing_db.ts) — split out of `billing.ts` so gate callers skip the Polar SDK module-load cost.
 - **Kind:** exported async helper
 - **Args:** `(ctx: QueryCtx | MutationCtx, { userId, minimumRequiredCents })`
 - **Role:** Read-only credit gate for mutations/queries that need to fail before doing paid work. Returns `{ hasCredits: false }` on missing billing state, missing products, or insufficient Free-plan balance; paid plans are allowed even with negative balance.
@@ -329,8 +330,8 @@ The indicator displays the current user's balance for personal organizations, `"
 #### `reset_due_anonymous_credits`
 
 - **Kind:** `internalMutation`
-- **Args:** `{ _test_now?: number }`
-- **Role:** Daily UTC-midnight refill for anonymous synthetic snapshots. When a snapshot's `currentPeriodEnd` day matches the current UTC day, it resets the meter back to the Free recurring credit amount and advances the stored 30-day period to the next UTC-midnight boundary.
+- **Args:** `{ _test_now?: number, batchSize?: number }`
+- **Role:** Daily UTC-midnight refill for anonymous synthetic snapshots. When a snapshot's `currentPeriodEnd` day matches the current UTC day, it resets the meter back to the Free recurring credit amount and advances the stored 30-day period to the next UTC-midnight boundary. It processes one bounded batch per run and self-reschedules while full batches remain; patched docs leave the due index range, so the take-loop converges, and a full batch that patched nothing stops instead of looping over malformed docs.
 
 #### `generate_checkout_link`
 
@@ -393,7 +394,7 @@ The indicator displays the current user's balance for personal organizations, `"
 
 #### `billing_ingest_events`
 
-- **Kind:** exported async helper in [packages/app/convex/billing.ts](../../../packages/app/convex/billing.ts)
+- **Kind:** exported async helper in [packages/app/convex/billing_db.ts](../../../packages/app/convex/billing_db.ts) — split out of `billing.ts` so emitting call sites skip the Polar SDK module-load cost.
 - **Signature:** `(ctx: ActionCtx | MutationCtx, { billedUserEvents: Array<{ event: billing_Event; billedUser: Doc<"users"> }> }) => Promise<void>`
 - **Role:** Mandatory local entrypoint for emitting billing usage events. It routes signed-in billed rows to `billing_workpool_usage_event` and routes anonymous billed rows to `internal.billing.ingest_anonymous_user_events`, so call sites no longer branch on billing transport details or accidentally use the actor as the transport user.
 
@@ -485,7 +486,6 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 
 # TODO / known gaps
 
-- `reset_due_anonymous_credits` collects every anonymous `billing_usage_snapshots` doc whose 30-day period ends that day in one mutation and patches them all. Nothing caps how many anonymous users share one day's period end, so a large signup day makes the reset mutation exceed Convex transaction limits 30 days later, and those users stop receiving daily credits. Rewrite it as a batched self-scheduling mutation (like `plugins_runtime.fail_expired_event_runs`).
 - Remove the unused `cancel_current_subscription.revokeImmediately` public argument unless a separate product flow is defined for it.
 - Add runtime validation for the raw `customer.state_changed` payload fields consumed by `handle_polar_customer_state_update`; `v.any()` plus a TypeScript cast is not an external-boundary check.
 - Decide before GA whether the current hardcoded chat token rates and literal one-cent file-save amount are final product pricing or placeholders.
