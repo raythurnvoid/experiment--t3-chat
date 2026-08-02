@@ -5,7 +5,7 @@ import { check_element_is_in_allowed_areas } from "./utils.ts";
 import { useFn } from "../hooks/utils-hooks.ts";
 
 /**
- * This constant should be kept in sync with the root `font-family` in `src/app.css`.
+ * This constant should be kept in sync with `--app-font-sans` in `src/app.css`.
  * Used in Pretext path measurement imports to avoid calling `getComputedStyle` during resize.
  */
 export const APP_FONT_FAMILY = "system-ui, Avenir, Helvetica, Arial, sans-serif";

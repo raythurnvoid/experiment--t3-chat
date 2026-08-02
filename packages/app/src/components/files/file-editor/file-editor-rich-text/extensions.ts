@@ -15,6 +15,8 @@ import {
 } from "novel";
 import { cx } from "class-variance-authority";
 import { common, createLowlight } from "lowlight";
+import { Plugin } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { files_get_tiptap_shared_extensions } from "../../../../../shared/files-tiptap.ts";
 
 //TODO I am using cx here to get tailwind autocomplete working, idk if someone else can write a regex to just capture the class key in objects
@@ -83,6 +85,59 @@ const mathematics = Mathematics.configure({
 
 const characterCount = CharacterCount.configure();
 
+type FileEditorRichTextFrontmatter_ClassNames = "FileEditorRichTextFrontmatter-key" | "FileEditorRichTextFrontmatter-focused";
+
+// Browser-only polish for the shared frontmatter node: tint YAML keys and brighten the
+// block border while the caret is inside it. Decorations never change the document, so
+// the markdown round-trip in `shared/files-tiptap.ts` stays byte-exact.
+const frontmatter = sharedExtensions.frontmatter.extend({
+	addProseMirrorPlugins() {
+		const frontmatterTypeName = this.name;
+
+		return [
+			new Plugin({
+				props: {
+					decorations(state) {
+						// Frontmatter is only recognized at the document start, so only the first
+						// block can be one. A block moved elsewhere just loses this polish.
+						const firstNode = state.doc.firstChild;
+						if (!firstNode || firstNode.type.name !== frontmatterTypeName) {
+							return null;
+						}
+
+						const decorations: Decoration[] = [];
+
+						// The node holds one text run with literal newlines; positions inside it
+						// start at 1 (position 0 is the node boundary).
+						const text = firstNode.textContent;
+						const keyLineRegex = /^([ \t]*(?:- )?)([A-Za-z0-9_-]+:)(?=[ \t]|$)/gm;
+						let match;
+						while ((match = keyLineRegex.exec(text)) !== null) {
+							const keyFrom = 1 + match.index + match[1].length;
+							decorations.push(
+								Decoration.inline(keyFrom, keyFrom + match[2].length, {
+									class: "FileEditorRichTextFrontmatter-key" satisfies FileEditorRichTextFrontmatter_ClassNames,
+								}),
+							);
+						}
+
+						// Selection positions past the node end belong to the document body.
+						if (state.selection.to <= firstNode.nodeSize) {
+							decorations.push(
+								Decoration.node(0, firstNode.nodeSize, {
+									class: "FileEditorRichTextFrontmatter-focused" satisfies FileEditorRichTextFrontmatter_ClassNames,
+								}),
+							);
+						}
+
+						return DecorationSet.create(state.doc, decorations);
+					},
+				},
+			}),
+		];
+	},
+});
+
 export const defaultExtensions = [
 	starterKit,
 	placeholder,
@@ -105,5 +160,5 @@ export const defaultExtensions = [
 	sharedExtensions.textAlign,
 	sharedExtensions.typography,
 	sharedExtensions.horizontalRule,
-	sharedExtensions.frontmatter,
+	frontmatter,
 ];

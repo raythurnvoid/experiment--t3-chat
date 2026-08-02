@@ -276,10 +276,16 @@
 	--FileEditorRichText-text-color-bg-pink: #faf1f5;
 	--FileEditorRichText-text-color-bg-gray: #f1f1ef;
 
+	/* Font family tokens. Component CSS should use these instead of writing its own
+	   font stacks. TSX-owned elements can use the `.app-font-monospace` utility class,
+	   which reads the monospace token. */
+	/* Keep the sans stack in sync with `APP_FONT_FAMILY` in `src/lib/ui.tsx`; Pretext
+	   path measurement imports that duplicate to avoid `getComputedStyle` during resize. */
+	--app-font-sans: system-ui, Avenir, Helvetica, Arial, sans-serif;
+	--app-font-monospace: monospace;
+
 	/* App-specific styles */
-	/* Keep in sync with `APP_FONT_FAMILY` in `src/lib/ui.tsx`; Pretext path
-	   measurement imports that duplicate to avoid `getComputedStyle` during resize. */
-	font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+	font-family: var(--app-font-sans);
 	line-height: 1.5;
 	font-weight: 400;
 	font-synthesis: none;
@@ -423,7 +429,7 @@
 	}
 
 	.app-font-monospace {
-		font-family: monospace;
+		font-family: var(--app-font-monospace);
 	}
 
 	/* Scrollbar standard. scrollbar-color inherits, so this dims every scrollbar in the

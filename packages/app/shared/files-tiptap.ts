@@ -257,30 +257,24 @@ export const files_frontmatter_node = Node.create({
 	// picked up by this node instead of being parsed as a generic code block.
 	priority: 1000,
 	group: "block",
-	atom: true,
-	selectable: true,
+	// Keep the YAML as plain editable text, like a code block. Users edit the
+	// front matter directly in place, so there is no structured UI or separate
+	// edit mode, and bulk edits work like normal document text.
+	content: "text*",
+	marks: "",
+	code: true,
 	defining: true,
 
-	addAttributes() {
-		return {
-			text: {
-				default: "",
-				parseHTML: (element) => element.textContent ?? "",
-				renderHTML: () => ({}),
-			},
-		};
-	},
-
 	parseHTML() {
-		return [{ tag: "pre[data-frontmatter]" }];
+		return [{ tag: "pre[data-frontmatter]", preserveWhitespace: "full" }];
 	},
 
-	renderHTML({ node }) {
-		return ["pre", { "data-frontmatter": "" }, node.attrs.text];
+	renderHTML() {
+		return ["pre", { "data-frontmatter": "" }, 0];
 	},
 
 	renderMarkdown(node) {
-		const text = typeof node.attrs?.text === "string" ? node.attrs.text : "";
+		const text = (node.content ?? []).map((child) => child.text ?? "").join("");
 		// The doc renderer joins block-level siblings with "\n\n",
 		// so frontmatter must not emit its own trailing newlines.
 		return `---\n${text}\n---`;
