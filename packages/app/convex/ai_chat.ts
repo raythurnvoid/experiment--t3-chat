@@ -212,6 +212,10 @@ function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: nu
 		case "gpt-5.4-nano":
 		case "gpt-4.1-nano":
 			return args.inputTokens * 0.00001 + args.outputTokens * 0.00004;
+		case "gpt-5.6-luna":
+			return args.inputTokens * 0.00002 + args.outputTokens * 0.00012;
+		case "gpt-5.6-terra":
+			return args.inputTokens * 0.0002 + args.outputTokens * 0.0012;
 		case "gpt-5.4-mini":
 		default:
 			return args.inputTokens * 0.00003 + args.outputTokens * 0.00015;

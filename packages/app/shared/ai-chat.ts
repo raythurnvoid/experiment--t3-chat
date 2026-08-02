@@ -15,7 +15,7 @@ export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
 
 export type ai_chat_Thread = Doc<"ai_chat_threads">;
 
-export const ai_chat_MODEL_IDS = ["gpt-5.4-nano", "gpt-5.4-mini"] as const;
+export const ai_chat_MODEL_IDS = ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.6-luna", "gpt-5.6-terra"] as const;
 export type ai_chat_ModelId = (typeof ai_chat_MODEL_IDS)[number];
 
 type AiChatModelMetadata = {
@@ -30,6 +30,12 @@ export const ai_chat_MODELS = {
 	},
 	"gpt-5.4-mini": {
 		label: "GPT-5.4 Mini",
+	},
+	"gpt-5.6-luna": {
+		label: "GPT-5.6 Luna",
+	},
+	"gpt-5.6-terra": {
+		label: "GPT-5.6 Terra",
 	},
 } as const satisfies Record<ai_chat_ModelId, AiChatModelMetadata>;
 

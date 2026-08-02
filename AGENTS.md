@@ -716,7 +716,7 @@ Match the file's established names first. Use these defaults only when local cod
 const cache_by_storage_key = new Map<string, unknown>();
 type OpenTabRecord = { id: string; title: string };
 
-export const ai_chat_MODEL_IDS = ["gpt-5.4-nano", "gpt-5.4-mini"] as const;
+export const ai_chat_MODEL_IDS = ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.6-luna", "gpt-5.6-terra"] as const;
 export type ai_chat_ModelId = (typeof ai_chat_MODEL_IDS)[number];
 
 type FileEditorDiff_Props = { fileId: string };
