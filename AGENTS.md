@@ -2,7 +2,9 @@
 
 - Package manager: this repository uses `pnpm`; do not use `npm`.
 - VERY IMPORTANT Node runtime rule: run every command that executes Node.js through Vite Plus so commands use the repo-pinned Node version from `.node-version` instead of Cursor's bundled Node. Do not run bare `node`, `pnpm`, `pnpx`, `tsx`, `vite`, `vitest`, `convex`, or package scripts directly from the Cursor shell.
-- Use `vp env exec ...` for Node-backed commands. Examples: `vp env exec node -v`, `vp env exec pnpm --dir packages/app run test:once`, `vp env exec pnpm --dir packages/app exec vitest run --project src path/to/test.ts`, `vp env exec pnpx wrangler ...`.
+- Use `vp env exec ...` for Node-backed commands. Examples: `vp env exec node -v`, `vp env exec pnpm --dir packages/app run test:once`, `vp env exec pnpm --dir packages/app exec vitest run --project src src/path/to/test.tsx`, `vp env exec pnpx wrangler ...`.
+- A targeted vitest path must be relative to `packages/app`, because `--dir packages/app` makes that the vitest root. Write `convex/foo.test.ts`, not `packages/app/convex/foo.test.ts`. A repo-root path matches no file, and vitest then prints `No test files found, exiting with code 0`. That looks exactly like a passing run, so read the reported test count before believing a targeted run.
+- Do not rewrite a whole source file through PowerShell. `Get-Content` without `-Raw` returns an array of lines, and `Set-Content` rejoins them with CRLF, so the file silently changes every line ending. Git normalizes it back on commit, which hides the damage from the diff, but until then the file no longer matches the rest of the repo. Use the agent's targeted edit tool for source edits.
 - Dev server: do not run `pnpm run dev`; let the user run it manually.
 - Full app lint: run `vp env exec pnpm --dir packages/app run lint`. The root package does not have a `lint` script, and `pnpm --dir packages/app lint:tsc` is only the TypeScript check, not the full ESLint/React Compiler lint.
 - Full app tests: run `vp env exec pnpm --dir packages/app run test:once` for a one-shot test run.
@@ -1275,7 +1277,9 @@ The `SearchProvider` example above is the canonical attached-hook pattern.
 A flow that runs without an error only proves the code did not crash. It does not prove the reported problem is gone. Never report a fix as verified on that basis.
 
 - Prove the problem is real before fixing it. Read the claim against the actual code, and say plainly when a claim is wrong or bigger than the code supports. Show the code that settles it.
+- Before you change a check, find the tests that assert the behaviour it has today. A guard with a passing test and a comment next to it is a decision somebody made, not something they forgot. Argue with the reason before you change the code, and if you still think it is wrong, say why the existing test is wrong too. Reading the code only proves the report describes it correctly; it does not prove the behaviour is a mistake.
 - Prove the fix works by making the check fail on purpose. Turn the fix off, watch the check fail, turn it back on, watch it pass. A check that stays green with the fix removed proves nothing.
+- Name the assertion that should fail before you break the fix, then check that it was the one that failed. A test that goes red on a fixture error, a setup throw, or a different assertion never ran the code you are testing, so it proved nothing either.
 - Check the exact thing the report describes, in the place it describes. A nearby check that looks similar is not the same check.
 - Say which checks ran, which passed, and what you could not verify.
 

@@ -429,6 +429,25 @@ const lines: string[] = condition ? [path] : ["0 matches."];
    boundary is needed. Prefer local annotations over annotating command factory returns or callback
    parameters.
 
+## Narrowing is lost inside index and filter closures
+
+`withIndex`, `withSearchIndex`, and `.filter()` take a callback, and TypeScript throws away the narrowing of a property read when that read happens inside a callback. It keeps narrowing for a `const` local. So a guard above the query does not help the value you pass to `q.eq(...)`:
+
+```ts
+if (args.principal.role === null) {
+	return;
+}
+
+// Error: `args.principal.role` is `string | null` again inside the callback.
+.withIndex("by_role", (q) => q.eq("role", args.principal.role))
+
+// Works: the local keeps the narrowed type.
+const role = args.principal.role;
+.withIndex("by_role", (q) => q.eq("role", role))
+```
+
+Assign the narrowed value to a local before the query. Do not widen the validator or add a non-null assertion to silence it.
+
 ## Derived `_Result` types for `internal.*` call casts
 
 When a Convex function calls another function in the same module (or across a module import cycle) via `ctx.runQuery` / `ctx.runMutation` / `ctx.runAction`, the generated types collapse and the result needs a cast. Never write the result shape inline (`as { _yay?: ...; _nay?: { message: string } }`) — inline shapes silently go stale when the callee's return changes. Derive the type from the callee instead, placed right below the callee's definition:
