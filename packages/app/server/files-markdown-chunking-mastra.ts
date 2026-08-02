@@ -114,7 +114,7 @@ function create_markdown_line_classification_maps(markdownContent: string): {
 			segmentEndIndex = nextLineIndex;
 		}
 
-		const segmentHasSeparator = (() => {
+		const segmentHasSeparator = ((/* iife */) => {
 			for (let index = segmentStartIndex; index <= segmentEndIndex; index++) {
 				if (MARKDOWN_TABLE_SEPARATOR_REGEX.test(lines[index] ?? "")) {
 					return true;

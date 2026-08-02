@@ -53,7 +53,7 @@ export function useSingleFlight<F extends (...args: any[]) => Promise<any>>(fn: 
 			}
 			flightStatus.current.inFlight = true;
 			const firstReq = fn(...args) as ReturnType<F>;
-			void (async () => {
+			void (async (/* iife */) => {
 				await firstReq.finally(() => {
 					// continue
 				});

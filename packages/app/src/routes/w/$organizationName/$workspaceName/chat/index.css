@@ -1,0 +1,7 @@
+@layer components {
+	/* Fill the content area (viewport minus header) so the chat panel gets the full height. */
+	.RouteChat {
+		width: 100%;
+		height: 100%;
+	}
+}

@@ -74,7 +74,8 @@
 
 	.MyBadge-variant-outline {
 		background: transparent;
-		color: var(--color-fg-06);
+		/* fg-07 is the dimmest fg that still clears 4.5:1 AA on these dark surfaces; fg-06 fails. */
+		color: var(--color-fg-07);
 		border-color: var(--color-fg-04);
 
 		&[href]:hover {

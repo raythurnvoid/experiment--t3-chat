@@ -621,11 +621,9 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		};
 	}, [composerChat, setQueuedUserMessagesReordering]);
 
-	const handleQueuedUserMessagesReorder = useFn(
-		(orderedMessageIds: readonly AiChatQueuedUserMessage["id"][]) => {
-			controller.reorderQueuedUserMessages(orderedMessageIds);
-		},
-	);
+	const handleQueuedUserMessagesReorder = useFn((orderedMessageIds: readonly AiChatQueuedUserMessage["id"][]) => {
+		controller.reorderQueuedUserMessages(orderedMessageIds);
+	});
 
 	const handleClickSuggestion = useFn<AiChatMessagesList_Props["onClickSuggestion"]>((action) => {
 		if (!action.trim()) {
@@ -876,7 +874,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 				isToolOrDynamicToolUIPart(part) && (part.state === "input-streaming" || part.state === "input-available"),
 		);
 	const aiChatState = isToolRunning ? "tool-running" : controller.isRunning ? "streaming" : "idle";
-	const queuedUserMessageStatus = (() => {
+	const queuedUserMessageStatus = ((/* iife */) => {
 		const count = queuedUserMessages.length;
 		if (count === 0) {
 			return "";
@@ -966,9 +964,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							selectedModelId={composerSelectedModelId}
 							selectedModeId={composerSelectedModeId}
 							onValueChange={
-								queuedUserMessageEdit
-									? handleQueuedUserMessageEditValueChange
-									: handleDraftComposerValueChange
+								queuedUserMessageEdit ? handleQueuedUserMessageEditValueChange : handleDraftComposerValueChange
 							}
 							onAttachmentsChange={
 								queuedUserMessageEdit

@@ -18,12 +18,9 @@
 	.MyComboboxInput:has(.MyInputControl[aria-invalid="true"]) .MyInputBox {
 		border-color: var(--destructive);
 		box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.2);
-	}
 
-	/* Dark mode invalid state */
-	@media (prefers-color-scheme: dark) {
-		.MyComboboxInput.userInvalid .MyInputBox,
-		.MyComboboxInput:has(.MyInputControl[aria-invalid="true"]) .MyInputBox {
+		/* Dark theme invalid state */
+		.dark & {
 			box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.4);
 		}
 	}
@@ -38,7 +35,7 @@
 		font-weight: 500;
 		color: var(--color-fg-07);
 
-		@media (prefers-color-scheme: dark) {
+		.dark & {
 			color: var(--color-fg-05);
 		}
 	}

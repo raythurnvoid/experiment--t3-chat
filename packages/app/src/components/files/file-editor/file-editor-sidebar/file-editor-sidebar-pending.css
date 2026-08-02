@@ -17,7 +17,7 @@
 		align-items: center;
 		justify-content: center;
 
-		color: var(--color-fg-06);
+		color: var(--color-fg-07);
 	}
 
 	.FileEditorSidebarPending-header {
@@ -264,7 +264,7 @@
 		min-width: 0;
 
 		font-size: 12px;
-		color: var(--color-fg-06);
+		color: var(--color-fg-07);
 
 		overflow: hidden;
 		text-overflow: ellipsis;

@@ -299,7 +299,13 @@ const FileEditorRichTextDragHandleColorSubMenuTextItem = memo(function FileEdito
 				</MyMenuItemContentIcon>
 				<MyMenuItemContentPrimary>{item.name}</MyMenuItemContentPrimary>
 			</MyMenuItemContent>
-			{isSelected && <Check className="FileEditorRichTextDragHandleMenuPopover-check" />}
+			{isSelected && (
+				<Check
+					className={
+						"FileEditorRichTextDragHandleMenuPopover-check" satisfies FileEditorRichTextDragHandleMenuPopover_ClassNames
+					}
+				/>
+			)}
 		</MyMenuItem>
 	);
 });
@@ -337,7 +343,13 @@ const FileEditorRichTextDragHandleColorSubMenuHighlightItem = memo(
 					</MyMenuItemContentIcon>
 					<MyMenuItemContentPrimary>{item.name}</MyMenuItemContentPrimary>
 				</MyMenuItemContent>
-				{isSelected && <Check className="FileEditorRichTextDragHandleMenuPopover-check" />}
+				{isSelected && (
+					<Check
+						className={
+							"FileEditorRichTextDragHandleMenuPopover-check" satisfies FileEditorRichTextDragHandleMenuPopover_ClassNames
+						}
+					/>
+				)}
 			</MyMenuItem>
 		);
 	},
@@ -478,8 +490,7 @@ const FileEditorRichTextDragHandleColorSubMenu = memo(function FileEditorRichTex
 		editor,
 		selector: ({ editor }: { editor: Editor }) => {
 			return {
-				activeColor:
-					TEXT_COLORS.find((item) => editor.isActive("textStyle", { color: item.color }))?.color ?? null,
+				activeColor: TEXT_COLORS.find((item) => editor.isActive("textStyle", { color: item.color }))?.color ?? null,
 				activeBackground:
 					HIGHLIGHT_COLORS.find((item) => editor.isActive("highlight", { color: item.color }))?.color ?? null,
 			};
@@ -537,7 +548,13 @@ const FileEditorRichTextDragHandleTurnIntoItem = memo(function FileEditorRichTex
 				</MyMenuItemContentIcon>
 				<MyMenuItemContentPrimary>{item.name}</MyMenuItemContentPrimary>
 			</MyMenuItemContent>
-			{isActive && <Check className="FileEditorRichTextDragHandleMenuPopover-check" />}
+			{isActive && (
+				<Check
+					className={
+						"FileEditorRichTextDragHandleMenuPopover-check" satisfies FileEditorRichTextDragHandleMenuPopover_ClassNames
+					}
+				/>
+			)}
 		</MyMenuItem>
 	);
 });

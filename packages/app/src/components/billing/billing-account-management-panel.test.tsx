@@ -1,13 +1,14 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 
-const { actionMock, useQueryMock } = vi.hoisted(() => {
+const { actionMock, useQueryMock, toastErrorMock } = vi.hoisted(() => {
 	return {
 		actionMock: vi.fn(),
 		useQueryMock: vi.fn(),
+		toastErrorMock: vi.fn(),
 	};
 });
 
@@ -27,6 +28,12 @@ vi.mock("convex/react", async (importOriginal) => {
 
 vi.mock("@/hooks/utils-hooks.ts", () => ({
 	useFn: <T extends (...args: never[]) => unknown>(handler: T) => handler,
+}));
+
+vi.mock("sonner", () => ({
+	toast: {
+		error: toastErrorMock,
+	},
 }));
 
 vi.mock("@/components/billing/billing-active-plan.tsx", () => ({
@@ -148,6 +155,7 @@ describe("BillingAccountManagementPanel", () => {
 	beforeEach(() => {
 		actionMock.mockReset();
 		useQueryMock.mockReset();
+		toastErrorMock.mockReset();
 	});
 
 	afterEach(() => {
@@ -202,6 +210,32 @@ describe("BillingAccountManagementPanel", () => {
 		expect(screen.getByRole("button", { name: "change:prod_pro:Upgrade" })).not.toBeNull();
 		expect(screen.getByRole("button", { name: "change:prod_free:Downgrade at renewal" })).not.toBeNull();
 		expect(screen.queryByRole("button", { name: "checkout:prod_pro:none" })).toBeNull();
+	});
+
+	test("shows a stable toast when opening the customer portal rejects unexpectedly", async () => {
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		mockBillingQueries({
+			products: [createProduct("Pay As You Go", "prod_payg"), createProduct("Free", "prod_free")],
+			subscription: createSubscription({
+				id: "sub_payg",
+				productId: "prod_payg",
+			}),
+			billingUsageSnapshot: createUsageSnapshot({
+				subscriptionId: "sub_payg",
+				productId: "prod_payg",
+			}),
+		});
+		actionMock.mockRejectedValue(new Error("[Request ID: abc] Server Error"));
+
+		render(<BillingAccountManagementPanel isAnonymous={false} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Manage subscription" }));
+
+		// A rejection is unexpected, so the raw error text must never reach the toast.
+		await waitFor(() => {
+			expect(toastErrorMock).toHaveBeenCalledWith("Could not open subscription management");
+		});
+		expect(consoleErrorSpy).toHaveBeenCalled();
 	});
 
 	test("shows checkout upgrades with the active Free subscription id", () => {

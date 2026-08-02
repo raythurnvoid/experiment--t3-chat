@@ -1088,7 +1088,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 		if (isSaving || isSyncing || !isDirtyNow) return;
 
-		// Keeps the over-cap content out of `flushPendingUpdateUpsertIfNeeded` further down.
+		// Keep the over-cap content out of `flushPendingUpdateUpsertIfNeeded` further down.
 		if (!check_markdown_fits_size_cap(currentStagedMarkdown)) return;
 
 		onSave({ flushPendingUpdateUpsertIfNeeded });

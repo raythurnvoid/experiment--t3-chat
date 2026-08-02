@@ -80,4 +80,19 @@ describe("BillingChangePlanButton", () => {
 			expect(toastErrorMock).toHaveBeenCalledWith("Subscription is locked and cannot be changed right now");
 		});
 	});
+
+	test("shows a stable toast when the action rejects unexpectedly", async () => {
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		actionMock.mockRejectedValue(new Error("[Request ID: abc] Server Error"));
+
+		render(<BillingChangePlanButton productId="prod_change">Upgrade</BillingChangePlanButton>);
+
+		fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
+
+		// A rejection is unexpected, so the raw error text must never reach the toast.
+		await waitFor(() => {
+			expect(toastErrorMock).toHaveBeenCalledWith("Could not change the plan");
+		});
+		expect(consoleErrorSpy).toHaveBeenCalled();
+	});
 });

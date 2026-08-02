@@ -1102,6 +1102,8 @@ const useThreadList = (props?: useThreadList_Props) => {
 		return result;
 	}, [threads.results]);
 
+	// The react compiler cannot memoize a value built from a hook result (`threadById` comes from the
+	// store hook), so this one is by hand.
 	const optimisticThreads = useMemo(() => {
 		const result: Array<ai_chat_Thread> = [];
 
@@ -1134,6 +1136,8 @@ const useThreadList = (props?: useThreadList_Props) => {
 		} as const;
 	})();
 
+	// The react compiler cannot memoize a value built from a hook result (`threadById` comes from the
+	// store hook), so this one is by hand. Sidebar tab-sync effects also depend on this identity.
 	const streamingTitleByThreadId = useMemo(() => {
 		const result: Record<string, string | undefined> = {};
 		for (const [threadId, session] of threadById.entries()) {

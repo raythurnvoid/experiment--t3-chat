@@ -422,7 +422,10 @@ function build_import_plan(entries: FilesImportEntry[]) {
 		}
 
 		const normalizedPath = normalizedSegments.join("/");
-		if (normalizedSegments.length > FILES_IMPORT_MAX_PATH_DEPTH || normalizedPath.length > FILES_IMPORT_MAX_PATH_LENGTH) {
+		if (
+			normalizedSegments.length > FILES_IMPORT_MAX_PATH_DEPTH ||
+			normalizedPath.length > FILES_IMPORT_MAX_PATH_LENGTH
+		) {
 			skipped.push({ relativePath: entry.relativePath, reason: "too_deep" });
 			continue;
 		}
@@ -3230,7 +3233,9 @@ const FilesSidebarImportConflictModal = memo(function FilesSidebarImportConflict
 
 	return (
 		<MyModal open setOpen={handleOpenChange}>
-			<MyModalPopover className={"FilesSidebarImportConflictModal" satisfies FilesSidebarImportConflictModal_ClassNames}>
+			<MyModalPopover
+				className={"FilesSidebarImportConflictModal" satisfies FilesSidebarImportConflictModal_ClassNames}
+			>
 				<MyModalHeader>
 					<MyModalHeading>Some files already exist</MyModalHeading>
 					<MyModalDescription>
@@ -3249,7 +3254,9 @@ const FilesSidebarImportConflictModal = memo(function FilesSidebarImportConflict
 					{conflicts.map((conflict) => (
 						<li
 							key={conflict.relativePath}
-							className={"FilesSidebarImportConflictModal-list-item" satisfies FilesSidebarImportConflictModal_ClassNames}
+							className={
+								"FilesSidebarImportConflictModal-list-item" satisfies FilesSidebarImportConflictModal_ClassNames
+							}
 						>
 							{conflict.kind === "folder" ? `${conflict.relativePath}/` : conflict.relativePath}
 						</li>
@@ -4212,7 +4219,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 
 		const targetParentId = target.item.getId();
-		const parentId = targetParentId === files_ROOT_ID ? files_ROOT_ID : (targetParentId as app_convex_Id<"files_nodes">);
+		const parentId =
+			targetParentId === files_ROOT_ID ? files_ROOT_ID : (targetParentId as app_convex_Id<"files_nodes">);
 		const entries = get_import_file_entries(droppedFiles._yay);
 		if (entries.length === 0) {
 			toast.error("Drop a file to upload.");
@@ -5191,7 +5199,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 
 		// Build a stable selected-file path key so each selected path auto-expands once, even after nested create/rename moves.
-		const selectedFilePathAutoExpanded = (() => {
+		const selectedFilePathAutoExpanded = ((/* iife */) => {
 			if (!selectedNodeId || !hasSelectedFileInTree) {
 				return null;
 			}
@@ -5697,11 +5705,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const manyItems = Array.from({ length: 51 }, (_, index) => item(1, `f${index}.pdf`));
 			expect(chunk_import_items(manyItems).map((chunk) => chunk.length)).toEqual([50, 1]);
 
-			const bigItems = [
-				item(800 * 1024 * 1024, "a.bin"),
-				item(800 * 1024 * 1024, "b.bin"),
-				item(1, "c.bin"),
-			];
+			const bigItems = [item(800 * 1024 * 1024, "a.bin"), item(800 * 1024 * 1024, "b.bin"), item(1, "c.bin")];
 			expect(chunk_import_items(bigItems).map((chunk) => chunk.map((chunkItem) => chunkItem.relativePath))).toEqual([
 				["a.bin"],
 				["b.bin", "c.bin"],

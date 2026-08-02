@@ -40,8 +40,8 @@ export const BillingChangePlanButton = memo(function BillingChangePlanButton(pro
 			})
 			.catch((error: unknown) => {
 				console.error("[BillingChangePlanButton] Failed to change subscription", { error, productId });
-				const message = error instanceof Error ? error.message : "Could not change the plan";
-				toast.error(message);
+				// A rejection here is unexpected, so its message is not user-facing text.
+				toast.error("Could not change the plan");
 			})
 			.finally(() => {
 				setIsLoading(false);

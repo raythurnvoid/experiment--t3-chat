@@ -81,10 +81,6 @@
 		background: var(--color-base-1-05);
 		animation: skeleton-pulse 2s ease-in infinite;
 
-		@media (prefers-color-scheme: dark) {
-			background: var(--color-base-1-05);
-		}
-
 		.FileEditorSkeleton-toolbar & {
 			height: 30px;
 

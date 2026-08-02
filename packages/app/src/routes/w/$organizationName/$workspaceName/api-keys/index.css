@@ -319,7 +319,7 @@
 	.RouteApiKeysListItem-metaLabel {
 		font-size: 11px;
 		line-height: 1.2;
-		color: var(--color-fg-06);
+		color: var(--color-fg-07);
 	}
 
 	.RouteApiKeysListItem-metaValue {
@@ -424,7 +424,7 @@
 	.RouteApiKeysCodeBlock-language {
 		font-family: monospace;
 		font-size: 12px;
-		color: var(--color-fg-06);
+		color: var(--color-fg-07);
 	}
 
 	.RouteApiKeysCodeBlock > .TextMonospaceBlock {

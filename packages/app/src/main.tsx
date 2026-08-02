@@ -10,6 +10,7 @@ import { AppToaster } from "./components/app-toaster.tsx";
 import { ConvexProviderWithAuth } from "convex/react";
 import { AppAuthProvider } from "./components/app-auth.tsx";
 import { AppHotkeysProvider } from "./components/app-hotkeys.tsx";
+import type { AppElementId } from "./lib/dom-utils.ts";
 
 // Import your Publishable Key
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -24,7 +25,7 @@ declare module "@tanstack/react-router" {
 		router: ReturnType<typeof app_router>;
 	}
 }
-createRoot(document.getElementById("root")!).render(
+createRoot(document.getElementById("root" satisfies AppElementId)!).render(
 	<StrictMode>
 		<ThemeProvider>
 			<AppHotkeysProvider>

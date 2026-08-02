@@ -106,4 +106,20 @@ describe("BillingCheckoutButton", () => {
 		});
 		expect(windowOpenSpy).not.toHaveBeenCalled();
 	});
+
+	test("shows a stable toast when the action rejects unexpectedly", async () => {
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		actionMock.mockRejectedValue(new Error("[Request ID: abc] Server Error"));
+
+		render(<BillingCheckoutButton productId="prod_checkout" />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Select plan" }));
+
+		// A rejection is unexpected, so the raw error text must never reach the toast.
+		await waitFor(() => {
+			expect(toastErrorMock).toHaveBeenCalledWith("Could not start checkout");
+		});
+		expect(windowOpenSpy).not.toHaveBeenCalled();
+		expect(consoleErrorSpy).toHaveBeenCalled();
+	});
 });

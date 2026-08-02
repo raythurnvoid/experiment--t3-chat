@@ -44,8 +44,8 @@ export const BillingCheckoutButton = memo(function BillingCheckoutButton(props: 
 			})
 			.catch((error: unknown) => {
 				console.error("[BillingCheckoutButton] Failed to generate checkout link", { error, productId });
-				const message = error instanceof Error ? error.message : "Could not start checkout";
-				toast.error(message);
+				// A rejection here is unexpected, so its message is not user-facing text.
+				toast.error("Could not start checkout");
 			})
 			.finally(() => {
 				setIsLoading(false);

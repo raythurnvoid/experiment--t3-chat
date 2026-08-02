@@ -50,7 +50,7 @@ const secret_crypto_key = ((/* iife */) => {
 	let keyPromise: Promise<CryptoKey> | undefined;
 
 	return function secret_crypto_key() {
-		keyPromise ??= (async () => {
+		keyPromise ??= (async (/* iife */) => {
 			const digest = await crypto.subtle.digest("SHA-256", text_encoder.encode(PLUGIN_SECRETS_ENCRYPTION_KEY));
 			return await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
 		})();

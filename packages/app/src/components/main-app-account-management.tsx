@@ -410,7 +410,7 @@ const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManage
 		}
 
 		setIsResolvingOrganizations(true);
-		await (async () => {
+		await (async (/* iife */) => {
 			for (const blockingOrganization of blockingOrganizations) {
 				if (deleteConfirmationsByOrganizationId[blockingOrganization.organization._id] !== true) {
 					return;

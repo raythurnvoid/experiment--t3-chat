@@ -204,10 +204,12 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 
 				window.open(result._yay.url, "_blank", "noopener,noreferrer");
 			})
-			.catch((e) => {
-				const error = e as Error;
-				console.error(error);
-				toast.error(error.message);
+			.catch((error: unknown) => {
+				console.error("[BillingAccountManagementPanel.handleManageSubscription] Failed to open the customer portal", {
+					error,
+				});
+				// A rejection here is unexpected, so its message is not user-facing text.
+				toast.error("Could not open subscription management");
 			});
 	});
 

@@ -65,8 +65,14 @@ const PluginsHeaderBreadcrumb = memo(function PluginsHeaderBreadcrumb(props: Plu
 							</MyLink>
 						)}
 					</li>
+					{/* Separators must be li: an ol allows only li children, and aria-hidden keeps the slash unannounced (same pattern as the files breadcrumb). */}
 					{index < trail.length - 1 || current ? (
-						<span className={"PluginsHeaderBreadcrumb-separator" satisfies PluginsHeaderBreadcrumb_ClassNames}>/</span>
+						<li
+							aria-hidden="true"
+							className={"PluginsHeaderBreadcrumb-separator" satisfies PluginsHeaderBreadcrumb_ClassNames}
+						>
+							/
+						</li>
 					) : null}
 				</Fragment>
 			))}

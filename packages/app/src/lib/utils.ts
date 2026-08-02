@@ -141,6 +141,10 @@ export function tuple<T extends (Primitive | {})[]>(...args: [...T]): [...T] {
 /**
  * Chromium do not adhere to the standard and does not support `autocomplete="off"` forcing developers to resort to workarounds.
  *
+ * Keep the invalid `off=<timestamp>` token: Chromium ignores a plain "off", so the invalid
+ * value is the only thing that stops its autofill. It fails axe `autocomplete-valid`
+ * (WCAG 1.3.5), and that failure is an accepted product decision. Do not "fix" it.
+ *
  * @link https://stackoverflow.com/questions/12374442
  * @link https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes/autocomplete
  */
