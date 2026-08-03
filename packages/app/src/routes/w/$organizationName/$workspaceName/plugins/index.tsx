@@ -108,6 +108,7 @@ type RoutePlugins_ClassNames =
 	| "RoutePlugins"
 	| "RoutePlugins-content"
 	| "RoutePlugins-loading"
+	| "RoutePlugins-blocked"
 	| "RoutePluginsHeader"
 	| "RoutePluginsHeader-title"
 	| "RoutePluginsHeader-description";
@@ -153,11 +154,12 @@ function RoutePlugins() {
 				<header className={"RoutePluginsHeader" satisfies RoutePlugins_ClassNames}>
 					<div>
 						<h1 className={"RoutePluginsHeader-title" satisfies RoutePlugins_ClassNames}>Plugins</h1>
-						<p className={"RoutePluginsHeader-description" satisfies RoutePlugins_ClassNames}>
-							{canManagePlugins
-								? "Browse published plugins and open a plugin page to install and manage it."
-								: "You don't have permission to manage plugins in this workspace."}
-						</p>
+						{/* The blocked state explains itself in the alert below, so skip the description there. */}
+						{canManagePlugins && (
+							<p className={"RoutePluginsHeader-description" satisfies RoutePlugins_ClassNames}>
+								Browse published plugins and open a plugin page to install and manage it.
+							</p>
+						)}
 					</div>
 					<MyLink
 						variant="button-outline"
@@ -174,9 +176,9 @@ function RoutePlugins() {
 				{canManagePlugins && installations ? (
 					<RoutePluginsGallery membershipId={membershipId} installations={installations} />
 				) : (
-					<div className={"RoutePlugins-loading" satisfies RoutePlugins_ClassNames} role="alert">
+					<div className={"RoutePlugins-blocked" satisfies RoutePlugins_ClassNames} role="alert">
 						<Puzzle aria-hidden />
-						Plugin management is unavailable.
+						{"You don't have permission to manage plugins in this workspace."}
 					</div>
 				)}
 			</div>

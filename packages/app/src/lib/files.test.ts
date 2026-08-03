@@ -29,7 +29,9 @@ const createTreeItem = (args: {
 	const id = args.id as Id<"files_nodes">;
 	const path = args.path ?? `/${args.name}`;
 	const lowercaseExtension =
-		args.kind === "file" && args.name.includes(".") ? args.name.slice(args.name.lastIndexOf(".") + 1).toLowerCase() : null;
+		args.kind === "file" && args.name.includes(".")
+			? args.name.slice(args.name.lastIndexOf(".") + 1).toLowerCase()
+			: null;
 	return {
 		_id: id,
 		_creationTime: 0,
@@ -422,6 +424,55 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 		expect(mergedMarkdown).toContain("Local draft");
 		expect(mergedMarkdown).toContain("Remote change");
 		expect(mergedMarkdown).not.toBe(readMarkdown(nextRemoteYjsDoc));
+	});
+
+	test("converges on the next remote branch when a discard replaces it with the staged sibling doc", () => {
+		// Build the docs the way the backend builds them: base from the live file, staged as a
+		// clone of base, and the previous unstaged branch as a clone of base with the draft
+		// markdown projected onto it.
+		const baseYjsDoc = createYjsDocFromMarkdown("# Welcome\n\nYou can start editing your document here.\n");
+		const stagedYjsDoc = files_yjs_doc_clone({ yjsDoc: baseYjsDoc });
+		const previousUnstagedYjsDoc = files_yjs_doc_clone({ yjsDoc: baseYjsDoc });
+		const draftProjectionResult = files_yjs_doc_update_from_markdown({
+			mut_yjsDoc: previousUnstagedYjsDoc,
+			markdown: [
+				"FIXCHECK-ALPHA: first pending marker.",
+				"",
+				"# Welcome",
+				"",
+				"FIXCHECK-BETA: second pending marker.",
+				"",
+				"You can start editing your document here.",
+				"",
+				"FIXCHECK-OMEGA: third pending marker.",
+				"",
+			].join("\n"),
+		});
+		if (draftProjectionResult._nay) {
+			throw new Error("Expected draft Yjs doc projection to succeed", {
+				cause: draftProjectionResult._nay,
+			});
+		}
+
+		// `discard_file_pending_content` replaces the unstaged branch with a clone of the staged
+		// doc. That doc shares the base items but never received the unstaged branch's history.
+		const nextUnstagedYjsDoc = files_yjs_doc_clone({ yjsDoc: stagedYjsDoc });
+
+		// The local Monaco pane holds the previous unstaged branch unchanged, so the reconcile
+		// must adopt the next remote branch byte-for-byte instead of leaking phantom edits.
+		const reconcileResult = files_yjs_reconcile_branch_with_local_markdown({
+			previousRemoteYjsDoc: previousUnstagedYjsDoc,
+			nextRemoteYjsDoc: nextUnstagedYjsDoc,
+			localMarkdown: readMarkdown(previousUnstagedYjsDoc),
+		});
+		if (reconcileResult._nay) {
+			throw new Error("Expected Yjs branch reconcile to succeed", {
+				cause: reconcileResult._nay,
+			});
+		}
+
+		expect(reconcileResult._yay.mergedMarkdown).toBe(readMarkdown(nextUnstagedYjsDoc));
+		expect(readMarkdown(reconcileResult._yay.mergedYjsDoc)).toBe(readMarkdown(stagedYjsDoc));
 	});
 });
 

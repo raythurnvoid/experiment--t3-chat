@@ -1112,12 +1112,15 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		nodeId: folderItemId,
 	});
 	// Moving a child out of a restricted folder needs Can manage on its source scope.
+	// Keep manual `useMemo` in this group. Convex `useQueries` re-subscribes with a
+	// render-phase setState whenever the queries object identity changes, and the React
+	// Compiler leaves these hook arguments unmemoized (checked in the served compiled
+	// output), so an inline object loops the render until React throws.
+	// `restrictedScopeNodeIds` is memoized too because the query objects depend on its identity.
 	const restrictedScopeNodeIds = useMemo(
 		() => [
 			...new Set(
-				(fileNodesList ?? []).flatMap((node) =>
-					node.restrictedScopeNodeId ? [node.restrictedScopeNodeId] : [],
-				),
+				(fileNodesList ?? []).flatMap((node) => (node.restrictedScopeNodeId ? [node.restrictedScopeNodeId] : [])),
 			),
 		],
 		[fileNodesList],

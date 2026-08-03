@@ -368,7 +368,7 @@ When saving screenshots, recordings, or any file output from Playwriter work:
 - Create the directory if it does not exist.
 - Organize outputs in subfolders as needed (for example by date, task, or run ID).
 - Prefer stable, descriptive filenames so artifacts are easy to review later.
-- `page.screenshot({ path })` never reaches the real disk, whatever path you pass — the sandbox is a virtual POSIX filesystem. Read the screenshot entry in `.agents/skills/app-playwriter-harness/references/known-hazards.md` BEFORE improvising a way out; it names the current working route. Do not reinvent a base64-over-console route: one call's console output is capped near 10000 characters and a single long string is truncated silently, so a naive dump decodes to a corrupt file.
+- Whether `page.screenshot({ path })` reaches the real disk depends on which process owns the relay: sandbox paths resolve inside the relay server process, so a WSL-owned relay never writes to the Windows disk. Read the relay-topology and screenshot entries in `.agents/skills/app-playwriter-harness/references/known-hazards.md` BEFORE improvising a way out; they name the current working route. Do not reinvent a base64-over-console route: one call's console output is capped near 10000 characters and a single long string is truncated silently, so a naive dump decodes to a corrupt file.
 
 # Debug instrumentation and simulation
 

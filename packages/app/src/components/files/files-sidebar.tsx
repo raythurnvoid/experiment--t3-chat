@@ -3708,6 +3708,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		membershipId,
 		permission: "content.write",
 	});
+	// Keep manual `useMemo` in this group. Convex `useQueries` re-subscribes with a
+	// render-phase setState whenever the queries object identity changes, and the React
+	// Compiler leaves these hook arguments unmemoized (checked in the served compiled
+	// output), so an inline object loops the render until React throws.
+	// `restrictedScopeNodeIds` is memoized too because the query objects depend on its identity.
 	const restrictedScopeNodeIds = useMemo(
 		() => [
 			...new Set(

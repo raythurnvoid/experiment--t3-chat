@@ -2185,7 +2185,12 @@ export const start_run_activity = internalMutation({
 		const now = Date.now();
 		const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
 		// Same liveness bar as the staged-write mutations: only a live, unexpired run may act.
-		if (!pluginRun || pluginRun.status !== "running" || !pluginRun.apiTokenExpiresAt || pluginRun.apiTokenExpiresAt <= now) {
+		if (
+			!pluginRun ||
+			pluginRun.status !== "running" ||
+			!pluginRun.apiTokenExpiresAt ||
+			pluginRun.apiTokenExpiresAt <= now
+		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const [installation, version, fileNode, actorMembership] = await Promise.all([
@@ -2214,10 +2219,15 @@ export const start_run_activity = internalMutation({
 			!fileNode ||
 			fileNode.archiveOperationId !== undefined ||
 			fileNode.organizationId !== pluginRun.organizationId ||
-			fileNode.workspaceId !== pluginRun.workspaceId ||
-			!actorMembership
+			fileNode.workspaceId !== pluginRun.workspaceId
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		// Match the write sink's vocabulary (`db_revalidate_file_write_principal`): a dead plugin-run
+		// bearer is "Unauthenticated", while a live run whose actor lost membership is "Permission
+		// denied" and settles as 403 at the route.
+		if (!actorMembership) {
+			return Result({ _nay: { message: "Permission denied" } });
 		}
 		if (!version) {
 			// The enabled installation points to a `plugins_versions` doc, so a missing one breaks an invariant.
@@ -3251,14 +3261,17 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const contents = await Promise.all(
 								requestedPaths.map(async (filePath) => ({
 									path: filePath,
-									content: await ctx.runAction(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
-										organizationId: principal.organizationId,
-										workspaceId: principal.workspaceId,
-										userId: principal.userId,
-										path: filePath,
-										includePending: principal.kind === "public_api_grant",
-										maxBytes,
-									}),
+									content: await ctx.runAction(
+										internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
+										{
+											organizationId: principal.organizationId,
+											workspaceId: principal.workspaceId,
+											userId: principal.userId,
+											path: filePath,
+											includePending: principal.kind === "public_api_grant",
+											maxBytes,
+										},
+									),
 								})),
 							);
 
@@ -3857,7 +3870,11 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								if (requestedPath === "/") {
 									return {
 										status: 400,
-										body: await fail({ status: 400, message: "Path must point to a file.", errorCode: "invalid_input" }),
+										body: await fail({
+											status: 400,
+											message: "Path must point to a file.",
+											errorCode: "invalid_input",
+										}),
 									} as const;
 								}
 								// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
@@ -4009,7 +4026,10 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 
 								const stageId = prepared._yay.stageId;
 								const stageScope = { organizationId: principal.organizationId, workspaceId: principal.workspaceId };
-								const yjsSnapshotKey = r2_create_asset_key({ ...stageScope, assetId: prepared._yay.yjsSnapshotAssetId });
+								const yjsSnapshotKey = r2_create_asset_key({
+									...stageScope,
+									assetId: prepared._yay.yjsSnapshotAssetId,
+								});
 								const contentSnapshotKey = r2_create_asset_key({
 									...stageScope,
 									assetId: prepared._yay.contentSnapshotAssetId,
@@ -4529,8 +4549,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								const failedStatus =
 									created._nay.message === "Unauthenticated"
 										? 401
-										: created._nay.message === "Permission denied" ||
-											  created._nay.message === "Upload quota exceeded"
+										: created._nay.message === "Permission denied" || created._nay.message === "Upload quota exceeded"
 											? 403
 											: created._nay.message === "A file already exists at this path" ||
 												  created._nay.message === "The path cannot point to a folder" ||
@@ -4634,15 +4653,22 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								} as const;
 							}
 
-							const started: start_run_activity_Result = await ctx.runMutation(
-								internal.public_api.start_run_activity,
-								{ runId: principal.runId, title: body._yay.title, timeoutMs: body._yay.timeoutMs },
-							);
+							const started: start_run_activity_Result = await ctx.runMutation(internal.public_api.start_run_activity, {
+								runId: principal.runId,
+								title: body._yay.title,
+								timeoutMs: body._yay.timeoutMs,
+							});
 							if (started._nay) {
 								if (started._nay.message === "An activity already exists for this run") {
 									return {
 										status: 409,
 										body: await fail({ status: 409, message: started._nay.message, errorCode: "conflict" }),
+									} as const;
+								}
+								if (started._nay.message === "Permission denied") {
+									return {
+										status: 403,
+										body: await fail({ status: 403, message: started._nay.message, errorCode: "permission_denied" }),
 									} as const;
 								}
 								return {

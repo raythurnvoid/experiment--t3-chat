@@ -118,7 +118,9 @@ describe("RoutePlugins", () => {
 
 		render(<PageComponent />);
 
-		expect(screen.getByRole("alert").textContent).toContain("Plugin management is unavailable");
+		expect(screen.getByRole("alert").textContent).toContain(
+			"You don't have permission to manage plugins in this workspace.",
+		);
 		expect(screen.queryByText("No plugins published yet.")).toBeNull();
 		expect(screen.getByText("Publisher")).not.toBeNull();
 		expect(useQueryMock).toHaveBeenCalledWith("plugins.list_installations", "skip");

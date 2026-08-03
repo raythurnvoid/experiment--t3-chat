@@ -77,9 +77,7 @@ export function files_get_default_node_name(args: {
  */
 export function files_name_input_select_stem(args: { element: HTMLInputElement; kind: files_TreeItem["kind"] }) {
 	const selectionEnd =
-		args.kind === "file"
-			? files_find_file_stem_end_index({ fileName: args.element.value })
-			: args.element.value.length;
+		args.kind === "file" ? files_find_file_stem_end_index({ fileName: args.element.value }) : args.element.value.length;
 	if (selectionEnd > 0 && selectionEnd < args.element.value.length) {
 		args.element.setSelectionRange(0, selectionEnd);
 		return;
@@ -216,11 +214,7 @@ export function files_get_node_path_validation_message(args: {
 			);
 		});
 		if (isLeaf) {
-			return existingNode
-				? args.kind === "file"
-					? "This file already exists."
-					: "This folder already exists."
-				: null;
+			return existingNode ? (args.kind === "file" ? "This file already exists." : "This folder already exists.") : null;
 		}
 
 		if (!existingNode || existingNode.kind !== "folder") {
@@ -324,10 +318,22 @@ export function files_yjs_reconcile_branch_with_local_markdown(args: {
 	localMarkdown: string;
 }) {
 	const workspaceedLocalYjsDoc = files_yjs_doc_clone({ yjsDoc: args.previousRemoteYjsDoc });
+
+	// A state-vector diff against the previous remote doc would also carry that doc's full
+	// historical delete set, not only the edits made here. The next remote doc can be a sibling
+	// that never had those deletions (a content discard clones the staged branch into the
+	// unstaged branch), so replaying them would delete live content in the merged doc. Capture
+	// the updates the local projection emits instead: they hold exactly the local edits.
+	const localEditUpdates: Uint8Array[] = [];
+	const captureLocalEditUpdate = (update: Uint8Array) => {
+		localEditUpdates.push(update);
+	};
+	workspaceedLocalYjsDoc.on("update", captureLocalEditUpdate);
 	const workspaceedLocalBranchResult = files_yjs_doc_update_from_markdown({
 		mut_yjsDoc: workspaceedLocalYjsDoc,
 		markdown: args.localMarkdown,
 	});
+	workspaceedLocalYjsDoc.off("update", captureLocalEditUpdate);
 	if (workspaceedLocalBranchResult._nay) {
 		return workspaceedLocalBranchResult;
 	}
@@ -355,11 +361,9 @@ export function files_yjs_reconcile_branch_with_local_markdown(args: {
 		});
 	}
 
-	const localDiffUpdate = files_yjs_compute_diff_update_from_yjs_doc({
-		yjsDoc: workspaceedLocalYjsDoc,
-		yjsBeforeDoc: args.previousRemoteYjsDoc,
-	});
-	if (!localDiffUpdate) {
+	// No captured updates means the local markdown was already the previous remote content, so
+	// the next remote branch replaces the pane as-is.
+	if (localEditUpdates.length === 0) {
 		return Result({
 			_yay: {
 				mergedYjsDoc: files_yjs_doc_clone({ yjsDoc: args.nextRemoteYjsDoc }),
@@ -369,7 +373,9 @@ export function files_yjs_reconcile_branch_with_local_markdown(args: {
 	}
 
 	const mergedYjsDoc = files_yjs_doc_clone({ yjsDoc: args.nextRemoteYjsDoc });
-	applyUpdate(mergedYjsDoc, localDiffUpdate);
+	for (const localEditUpdate of localEditUpdates) {
+		applyUpdate(mergedYjsDoc, localEditUpdate);
+	}
 
 	const mergedMarkdown = files_yjs_doc_get_markdown({
 		yjsDoc: mergedYjsDoc,

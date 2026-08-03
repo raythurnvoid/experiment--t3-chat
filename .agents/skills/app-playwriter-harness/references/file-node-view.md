@@ -104,14 +104,22 @@ for (const chunk of ["\nlocal-one", "\nlocal-two", "\nlocal-three"]) {
 - Save staged changes: `getByRole("button", { name: "Save staged changes" })`.
 - Accept all: `getByRole("button", { name: "Accept all pending changes in this file" })`.
 - Accept all and save: `getByRole("button", { name: "Accept all pending changes and save" })`.
-- Monaco exposes each editor input as a `div.native-edit-context`, so Playwright `fill()` does not work. Focus the second textbox, press `Control+A`, then use `keyboard.insertText(...)`. A normal locator `focus()` is more reliable than a pointer click when the tab is in the background.
+- Synthetic input cannot drive Monaco at all since `monaco-editor` 0.56.0 — clicks do not focus it, and `keyboard.type` / `keyboard.insertText` / paste never reach the model (see the Monaco section in `known-hazards.md`). To put content in the modified (unstaged) pane, write the draft through the same public action the editor's debounced sync calls, from page context as the user who owns the draft:
 
 ```js
-const modifiedEditor = state.page.locator('[aria-label="File diff editor"] [role="textbox"]').nth(1);
-await modifiedEditor.focus();
-await state.page.keyboard.press("Control+A");
-await state.page.keyboard.insertText("Replacement text");
+const m = await import("/src/lib/app-convex-client.ts");
+const membership = await m.app_convex.query(m.app_convex_api.organizations.get_membership_by_organization_workspace_name, {
+	organizationName,
+	workspaceName,
+});
+await m.app_convex.action(m.app_convex_api.files_pending_updates.upsert_file_pending_update, {
+	membershipId: membership._id,
+	nodeId,
+	unstagedMarkdown, // the full proposed content; staged stays at the committed base when stagedMarkdown is omitted
+});
 ```
+
+  A fresh diff mount then shows the draft in the modified pane with hunk widgets, and the pending sidebar gets a `Modified` row. A draft equal to the committed content self-cancels and creates no row. Read pane text back with the sorted `.view-line` readback from `known-hazards.md`.
 
 ### Content Size Cap QA
 
@@ -227,6 +235,7 @@ async function replyInSidebarThread(page, threadRootText, replyText) {
 ## Known Gotchas
 
 - Do not use `{ force: true }`, `dispatchEvent`, or DOM `element.click()` to bypass editor/sidebar blockers.
+- The keyboard-driven Monaco steps in `Sync And Undo QA` and `Content Size Cap QA` predate `monaco-editor` 0.56.0 and no longer run: synthetic clicks and keys do not reach Monaco (see `known-hazards.md`, Monaco section). Rich-text (TipTap) typing still works. Until those flows are rewritten, drive Monaco content through the Convex actions recipe in the Diff Editor section and use the sorted `.view-line` readback.
 - The rich-text comment button depends on a live selection. If it is missing, reselect text and snapshot the toolbar/bubble controls.
 - Contenteditable TipTap editors may appear as textboxes in snapshots but still fail `getByRole("textbox")`; use the scoped `contenteditable` + `aria-label` selector above.
 - Right-sidebar content changes with the selected tab. Scope locators to comments or agent contexts after switching tabs.

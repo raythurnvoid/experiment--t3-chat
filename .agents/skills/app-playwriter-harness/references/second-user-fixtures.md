@@ -71,7 +71,7 @@ await cx.mutation(api.organizations.invite_user_to_organization_workspace, {
 
 ## 4. Content the second user can act on
 
-The anonymous user has no billing snapshot, so **content** writes fail with `Insufficient funds`. Create the files as the signed-in owner and let the second user do only metadata work (create, rename, move, archive, restore, share) — none of that is credit-gated.
+A freshly minted anonymous user now gets an auto-seeded `billing_usage_snapshots` row (balance 1000, Free product, null Polar ids), so its **content** writes work with no unblock step — verified 2026-08-03: `files_pending_updates.upsert_file_pending_update` drafts succeed for the invited anonymous member. Still create committed fixture files as the signed-in owner; that stays the simplest path, and metadata work (create, rename, move, archive, restore, share) was never credit-gated anyway.
 
 Owner-side fixture calls:
 
@@ -80,6 +80,8 @@ Owner-side fixture calls:
 - `files_sharing.restrict_node({ membershipId, nodeId })`
 - `files_sharing.set_node_share_grant({ membershipId, nodeId, principal: { kind: "user", userId }, level: "read" | "write" | "manage" })` — `nodeId` must be the restricted node itself
 - `files_nodes.move_nodes({ membershipId, itemIds, targetParentId })` — `itemIds` is an array and the target is a single sibling field, not per-item
+
+Live demotion recipe: `restrict_node` + `set_node_share_grant(level: "read")` on a node the member could write is the per-file demotion path, and it applies reactively — run it as the owner WHILE the second user holds an open rename input, a drag source, or a writable diff tab to test permission-reactive UI (rename aborts itself, folder-view rows de-register as drag sources without a reload, editors flip read-only). Two gotchas, both verified 2026-08-03: the window between the two mutations has NO access, so the second user's open tab can fall back to `?nodeId=root` (see the demotion entry in `known-hazards.md`), and restricting renames the sidebar row to `<name> restricted`, which breaks name-based locators.
 
 ## 5. Clean up
 

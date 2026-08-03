@@ -2884,67 +2884,66 @@ describe("plugins Phase 0", () => {
 		"installation version changes",
 		"source is archived",
 		"actor is removed",
-	] as const)(
-		"rejects a durable activity write after the %s",
-		async (change) => {
-			const t = test_convex();
-			const fixture = await install_plugin_with_upload_asset(t);
-			const runId = await insert_event_run(t, fixture, {
-				eventId: `plugin:activity-revoked-${change}`,
-				status: "queued",
-				expiresAt: Date.now() + 30 * 60 * 1000,
-			});
-			await t.mutation(internal.plugins_runtime.start_event_run, {
-				runId,
-				apiTokenHash: await crypto_sha256_hex(`plr_${"e".repeat(64)}`),
-			});
-			const replacementVersion =
-				change === "installation version changes"
-					? await register_media_plugin(t, fixture.membership.userId, {
-							version: "0.1.1",
-							artifactHash: `sha256:${"c".repeat(64)}`,
-							sourceCommitSha: "abcdef1234567890abcdef1234567890abcdef12",
-						})
-					: null;
+	] as const)("rejects a durable activity write after the %s", async (change) => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		const runId = await insert_event_run(t, fixture, {
+			eventId: `plugin:activity-revoked-${change}`,
+			status: "queued",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		await t.mutation(internal.plugins_runtime.start_event_run, {
+			runId,
+			apiTokenHash: await crypto_sha256_hex(`plr_${"e".repeat(64)}`),
+		});
+		const replacementVersion =
+			change === "installation version changes"
+				? await register_media_plugin(t, fixture.membership.userId, {
+						version: "0.1.1",
+						artifactHash: `sha256:${"c".repeat(64)}`,
+						sourceCommitSha: "abcdef1234567890abcdef1234567890abcdef12",
+					})
+				: null;
 
-			// Reproduce an authority or access change after the route consumes the API call but before
-			// the separate activity mutation writes the activity.
-			await t.run(async (ctx) => {
-				switch (change) {
-					case "installation is uninstalled":
-						await ctx.db.delete("plugins_workspace_installations", fixture.installationId);
-						break;
-					case "installation is disabled":
-						await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
-							status: "disabled",
-						});
-						break;
-					case "installation version changes":
-						if (!replacementVersion) {
-							throw new Error("Expected a replacement plugin version");
-						}
-						await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
-							pluginVersionId: replacementVersion.pluginVersionId,
-						});
-						break;
-					case "source is archived":
-						await ctx.db.patch("files_nodes", fixture.upload.nodeId, { archiveOperationId: "activity-race" });
-						break;
-					case "actor is removed":
-						await ctx.db.delete("organizations_workspaces_users", fixture.membership.membershipId);
-						break;
-				}
-			});
-			const result = await t.mutation(internal.public_api.start_run_activity, {
-				runId,
-				title: "",
-				timeoutMs: 60_000,
-			});
+		// Reproduce an authority or access change after the route consumes the API call but before
+		// the separate activity mutation writes the activity.
+		await t.run(async (ctx) => {
+			switch (change) {
+				case "installation is uninstalled":
+					await ctx.db.delete("plugins_workspace_installations", fixture.installationId);
+					break;
+				case "installation is disabled":
+					await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+						status: "disabled",
+					});
+					break;
+				case "installation version changes":
+					if (!replacementVersion) {
+						throw new Error("Expected a replacement plugin version");
+					}
+					await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+						pluginVersionId: replacementVersion.pluginVersionId,
+					});
+					break;
+				case "source is archived":
+					await ctx.db.patch("files_nodes", fixture.upload.nodeId, { archiveOperationId: "activity-race" });
+					break;
+				case "actor is removed":
+					await ctx.db.delete("organizations_workspaces_users", fixture.membership.membershipId);
+					break;
+			}
+		});
+		const result = await t.mutation(internal.public_api.start_run_activity, {
+			runId,
+			title: "",
+			timeoutMs: 60_000,
+		});
 
-			expect(result._nay?.message).toBe("Unauthenticated");
-			expect(await t.run((ctx) => ctx.db.query("activities").collect())).toEqual([]);
-		},
-	);
+		// Actor removal is a live run losing authority, so it reports "Permission denied"; every
+		// other change kills the plugin-run bearer itself and reports "Unauthenticated".
+		expect(result._nay?.message).toBe(change === "actor is removed" ? "Permission denied" : "Unauthenticated");
+		expect(await t.run((ctx) => ctx.db.query("activities").collect())).toEqual([]);
+	});
 
 	test("rejects invalid activity input and a second activity for the same run", async () => {
 		const t = test_convex();
