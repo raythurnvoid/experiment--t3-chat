@@ -891,7 +891,10 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 						handleDOMEvents: {
 							keydown: (_view, event) => handleCommandNavigation(event),
 						},
-						// ProseMirror treats true as handled. Use it in read-only mode so no default edit runs.
+						// ProseMirror treats true as handled. A settled read-only view skips these handlers on
+						// its own, but the view's read-only gate lands one `setEditable` effect later than the
+						// React render, so block a paste or drop that arrives in that window here and in
+						// `handleDrop` below.
 						handlePaste: (view, event) => {
 							if (!editable) {
 								return true;

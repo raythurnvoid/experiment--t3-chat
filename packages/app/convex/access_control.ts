@@ -129,7 +129,8 @@ async function resolve_role_permissions(
  *
  * Pass `{ kind: "organization" }` when the operation can affect every current holder of the role,
  * such as editing or deleting that role. Pass `{ kind: "workspaces" }` when the role reaches one
- * target through a known membership set. `set_user_role` uses the target's active workspaces, and an
+ * target through a known membership set. A default-workspace `set_user_role` assignment uses the
+ * target's active workspaces, a workspace assignment uses only that workspace, and an
  * invite uses only the workspaces it joins. A grant outside that set can never reach the target
  * through this operation, so weighing it would refuse for a reason the caller cannot act on.
  *

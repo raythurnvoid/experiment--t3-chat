@@ -260,7 +260,7 @@ Tree-item components:
 - Copy path yields the plain path; Copy link yields an absolute `?nodeId=` URL that reopens the same node; Copy node id yields the bare id. All three still work after the node is renamed or moved.
 - Selection modes and anchor behavior are correct.
 - Root create can create a file and a folder.
-- Root create, upload, folder import, and multi-selection archive controls stay disabled unless every affected node or destination is writable.
+- Root create, upload, folder import, and multi-selection archive controls stay disabled unless every selected node or destination is writable. Archiving a selection that sweeps an unwritable restricted descendant is refused by the backend with a toast.
 - Folder create can create child files/folders.
 - File rows do not show child creation actions and are not expandable.
 - Rename guards and optimistic rename behavior are correct.

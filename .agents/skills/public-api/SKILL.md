@@ -7,7 +7,7 @@ description: Spec for the public HTTP API under `/api/v1` — routes, auth princ
 
 The public API is the workspace file surface for external callers: import CLIs, scripts, and plugins. Every route is a Convex HTTP action registered in `packages/app/convex/public_api.ts` through the route-builder IIFE pattern, and every route has a typed entry in `api_schemas_Main` (`packages/app/shared/api-schemas.ts`). A route without a schema entry does not exist.
 
-A caller is never more powerful than the user behind it. Every route passes `requiredUserPermission` to `authorize_request`, and the write mutations re-check credential liveness, membership, and ACL transactionally at publish time (`db_revalidate_file_write_principal`).
+A caller is never more powerful than the user behind it. Every file route passes `requiredUserPermission` to `authorize_request` (the activities route relies on the plugin-run principal checks instead), and the write mutations re-check credential liveness, membership, and ACL transactionally at publish time (`db_revalidate_file_write_principal`).
 
 # Principals and scopes
 
@@ -17,7 +17,7 @@ A caller is never more powerful than the user behind it. Every route passes `req
 - `public_api_grant` (64-hex, short-lived): list/read only — the grant validator accepts only `files:list` and `files:read`. Organization removal deletes the member's grants so a later invite cannot revive an old token.
 - `plugin_run` (`plr_...`) and `plugin_ui` (`plu_...`): plugin runtime tokens with their own constraints (a backend plugin run can only write Markdown siblings of its triggering file, and can only download its own source upload). Organization removal also deletes that member's plugin UI sessions.
 
-Routes restrict kinds with `allowedKinds`; a valid token of a disallowed kind gets 403. `write-many` and `upload-urls` are `user_api_key` only. `write` also allows `plugin_run`. `download-urls` allows the plugin kinds too.
+Routes restrict kinds with `allowedKinds`; a valid token of a disallowed kind gets 403. `write-many` and `upload-urls` are `user_api_key` only. `write` and `touch` also allow `plugin_run`. `download-urls` allows the plugin kinds too.
 
 # Routes
 

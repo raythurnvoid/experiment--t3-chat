@@ -164,7 +164,7 @@ Structural review follows a parallel path:
 2. Agent-mode app-to-app `cp` and replace-moves may create or update a doc with `copiedFrom`, `eagerCreated`, or both. `cp -n` and `cp --no-clobber` create no pending replacement when the final destination already exists, including when it appears during eager creation.
 3. Agent-mode Bash `rm` stores `pendingArchive` (per operand, builtin flag semantics: `-r` for folders, `-f` silences missing paths, folder without `-r` fails with `Is a directory`). Accepting archives; nothing is ever hard-deleted except the own-Added-file cancel path.
 4. Bash and legacy file reads/listings/searches apply the proposing user's pending path overlay. A pending-deleted node reads as gone (a deleted folder hides its whole subtree). Other users continue to see the committed tree, and the sidebar file tree shows no delete indicator until accept.
-5. The Pending changes tab renders content-only, move-only, copy, content-plus-move, and delete rows. It applies moves through `apply_file_pending_move`, deletes through `apply_file_pending_archive`, saves content through the normal save path, and discards structural state through `discard_file_pending_structural`.
+5. The Pending changes tab renders content-only, move-only, copy, content-plus-move, and delete rows. It applies moves through `apply_file_pending_move`, deletes through `apply_file_pending_archive`, saves content through the normal save path, discards structural state through `discard_file_pending_structural`, and discards content rows through `discard_file_pending_content`.
 
 # Backend Responsibilities
 
@@ -178,6 +178,7 @@ Public and internal functions:
 - `apply_file_pending_move`
 - `apply_file_pending_archive`
 - `discard_file_pending_structural`
+- `discard_file_pending_content`
 - `persist_file_pending_update_rebased_state`
 - `get_file_pending_update`
 - `list_files_pending_updates`

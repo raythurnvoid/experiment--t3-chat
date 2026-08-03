@@ -901,14 +901,26 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			throw error;
 		}
 
-		// The modified/unstaged editor is writable; use editor-level edits so undo/redo behavior
-		// stays consistent with Monaco's normal editing workflow.
+		// Prefer editor-level edits so undo/redo behavior stays consistent with Monaco's normal
+		// editing workflow while the user can type.
 		const modifiedEditor = editorRef.current.getModifiedEditor();
 		modifiedEditor.pushUndoStop();
-		modifiedEditor.executeEdits("app_files_sync", [
+		const applied = modifiedEditor.executeEdits("app_files_sync", [
 			{ range: editorModelsRef.current.modified.getFullModelRange(), text: newMarkdown },
 		]);
 		modifiedEditor.pushUndoStop();
+
+		// Monaco refuses `executeEdits` while the editor is read-only, which is the case when the
+		// user lost write permission. Without this fallback the modified pane would stay empty on
+		// mount and keep stale content on remote updates. A model-level edit still fires the model
+		// change event, so the programmatic-change counter above stays balanced.
+		if (!applied) {
+			editorModelsRef.current.modified.pushStackElement();
+			editorModelsRef.current.modified.applyEdits([
+				{ range: editorModelsRef.current.modified.getFullModelRange(), text: newMarkdown },
+			]);
+			editorModelsRef.current.modified.pushStackElement();
+		}
 	};
 
 	const updateEditorValues = (editorValues: { stagedMarkdown: string; unstagedMarkdown: string }) => {

@@ -338,9 +338,7 @@ describe("FileEditorSidebarPending", () => {
 
 		fireEvent.click(screen.getByRole("combobox"));
 		expect(
-			screen
-				.getAllByRole("option")
-				.map((option) => option.querySelector(".MySelectItemContentPrimary")?.textContent),
+			screen.getAllByRole("option").map((option) => option.querySelector(".MySelectItemContentPrimary")?.textContent),
 		).toEqual(["All changes", "Your edits", "Second chat", "First chat"]);
 		expect(screen.getByRole("option", { name: /^Second chat Archived/ })).toBeTruthy();
 		fireEvent.click(screen.getByRole("option", { name: /^Your edits/ }));
@@ -410,9 +408,9 @@ describe("FileEditorSidebarPending", () => {
 		fireEvent.click(screen.getByRole("combobox"));
 
 		expect(screen.getByRole("option", { name: /^Loading chat… Agent chat 1$/ })).toBeTruthy();
-		expect(screen.getAllByRole("option", { name: /^Unavailable chat This chat is no longer available 1$/ })).toHaveLength(
-			2,
-		);
+		expect(
+			screen.getAllByRole("option", { name: /^Unavailable chat This chat is no longer available 1$/ }),
+		).toHaveLength(2);
 		expect(screen.getByRole("option", { name: /^New Chat Last message/ })).toBeTruthy();
 		expect(
 			screen.getByRole("option", { name: /^Your edits Changes you made in the editor, not from a chat 1$/ }),
@@ -630,9 +628,7 @@ describe("FileEditorSidebarPending", () => {
 		const truncatedPath = "alpha/de…/intro.md";
 		const clientWidthSpy = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(80);
 		truncatePathForWidthMock.mockReturnValue(truncatedPath);
-		useQueryMock.mockReturnValue([
-			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
-		]);
+		useQueryMock.mockReturnValue([makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" })]);
 		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path })]);
 
 		const { container } = render(<FileEditorSidebarPending />);
@@ -689,6 +685,35 @@ describe("FileEditorSidebarPending", () => {
 
 		expect(screen.getByText("Accept").closest("button")?.hasAttribute("disabled")).toBe(true);
 		expect(screen.getByText("Discard").closest("button")?.hasAttribute("disabled")).toBe(false);
+	});
+
+	test("disables Accept all while any visible row lacks write permission", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
+			makePendingUpdate({ id: "pu_b", fileNodeId: "node_b", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "alpha/intro.md" }),
+			makeNode({ id: "node_b", path: "alpha/other.md" }),
+		]);
+		useQueriesMock.mockImplementation((queries: Record<string, unknown>) =>
+			"node_b" in queries ? { node_b: false } : {},
+		);
+
+		render(<FileEditorSidebarPending />);
+
+		expect(screen.getByRole("button", { name: "Accept all shown pending changes" }).hasAttribute("disabled")).toBe(
+			true,
+		);
+		expect(screen.getByRole("button", { name: "Discard all shown pending changes" }).hasAttribute("disabled")).toBe(
+			false,
+		);
+		expect(screen.getByRole("button", { name: "Accept changes to alpha/intro.md" }).hasAttribute("disabled")).toBe(
+			false,
+		);
+		expect(screen.getByRole("button", { name: "Accept changes to alpha/other.md" }).hasAttribute("disabled")).toBe(
+			true,
+		);
 	});
 
 	test("a stale save resolves silently without an error toast", async () => {
@@ -1162,7 +1187,9 @@ describe("FileEditorSidebarPending", () => {
 	});
 
 	test("plain edit rows show the Modified caption without the green path", () => {
-		useQueryMock.mockReturnValue([makePendingUpdate({ id: "pu_edit", fileNodeId: "node_a", staged: "s", unstaged: "u" })]);
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_edit", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
+		]);
 		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 
 		const { container } = render(<FileEditorSidebarPending />);

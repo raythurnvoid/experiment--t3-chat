@@ -1357,7 +1357,8 @@ type RoutePluginsPlugin_ClassNames =
 
 /**
  * Let workspace managers open any plugin and publishers open their own plugin.
- * Return `undefined` until both live permission sources have loaded.
+ * Deny only after both live permission sources have loaded; a manager is allowed as soon as the
+ * workspace permission answers.
  */
 function can_open_plugin_detail(args: {
 	canManagePlugins: boolean | undefined;
@@ -1375,9 +1376,7 @@ function can_open_plugin_detail(args: {
 	return args.publisherPlugin !== null;
 }
 
-function get_publisher_version(
-	publisherPlugin: RoutePlugins_PublisherPlugin,
-): RoutePlugins_PublishedPlugin | null {
+function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): RoutePlugins_PublishedPlugin | null {
 	const version = publisherPlugin.versions.at(0);
 	if (!version) {
 		return null;
@@ -1880,20 +1879,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("allows a publisher without workspace plugin management", () => {
 			const publisherPlugin = {} as RoutePlugins_PublisherPlugin;
 
-			expect(
-				can_open_plugin_detail({ canManagePlugins: false, publisherPlugin }),
-			).toBe(true);
+			expect(can_open_plugin_detail({ canManagePlugins: false, publisherPlugin })).toBe(true);
 			expect(can_open_plugin_detail({ canManagePlugins: false, publisherPlugin: null })).toBe(false);
 			expect(can_open_plugin_detail({ canManagePlugins: true, publisherPlugin: undefined })).toBe(true);
 		});
 
 		test("waits for both permission sources before denying access", () => {
-			expect(can_open_plugin_detail({ canManagePlugins: undefined, publisherPlugin: null })).toBe(
-				undefined,
-			);
-			expect(can_open_plugin_detail({ canManagePlugins: false, publisherPlugin: undefined })).toBe(
-				undefined,
-			);
+			expect(can_open_plugin_detail({ canManagePlugins: undefined, publisherPlugin: null })).toBe(undefined);
+			expect(can_open_plugin_detail({ canManagePlugins: false, publisherPlugin: undefined })).toBe(undefined);
 		});
 	});
 }

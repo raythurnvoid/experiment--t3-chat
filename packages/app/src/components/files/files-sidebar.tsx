@@ -195,6 +195,12 @@ type TreeItems = {
 };
 
 // Permission can load or change live. Require true so edit controls fail closed.
+//
+// The workspace answer stands in for unrestricted nodes only while nothing writes a
+// `resourceKind: "workspace"` grant. The node check ignores such a grant for a file, the
+// workspace check honours it, so the day one is written this would report writable on
+// unrestricted rows that the server then refuses. No production code writes one today —
+// only a test fixture does — so if you add one, go back to asking per node.
 function can_write_item(args: {
 	item: files_TreeItem;
 	workspaceWritePermission: boolean | undefined;
@@ -207,10 +213,7 @@ function can_write_item(args: {
 	return args.restrictedScopeWritePermissions[args.item.restrictedScopeNodeId] === true;
 }
 
-function can_rename_item(args: {
-	item: files_TreeItem;
-	canWriteItem: (item: files_TreeItem) => boolean;
-}) {
+function can_rename_item(args: { item: files_TreeItem; canWriteItem: (item: files_TreeItem) => boolean }) {
 	return files_is_node(args.item) && args.canWriteItem(args.item);
 }
 
@@ -2798,10 +2801,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 									<MyMenuItemContentPrimary>{archivedItemsLabel}</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuCheckboxItem>
-							<MyMenuItem
-								disabled={isBusy || isUploadingFile || !canWriteUploadTarget}
-								onClick={onUploadFileClick}
-							>
+							<MyMenuItem disabled={isBusy || isUploadingFile || !canWriteUploadTarget} onClick={onUploadFileClick}>
 								<MyMenuItemContent>
 									<MyMenuItemContentIcon>
 										<Upload />
@@ -2809,10 +2809,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 									<MyMenuItemContentPrimary>Upload file</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuItem>
-							<MyMenuItem
-								disabled={isBusy || isUploadingFile || !canWriteUploadTarget}
-								onClick={onImportFolderClick}
-							>
+							<MyMenuItem disabled={isBusy || isUploadingFile || !canWriteUploadTarget} onClick={onImportFolderClick}>
 								<MyMenuItemContent>
 									<MyMenuItemContentIcon>
 										<FolderUp />
@@ -3885,8 +3882,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		return result;
 	}, [treeItemsList, showArchived]);
 	const canWriteParentId = useFn((parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID) => {
-		const parentItem =
-			parentId === files_ROOT_ID ? files_SYNTHETIC_ROOT_FOLDER : treeItems?.itemById.get(parentId);
+		const parentItem = parentId === files_ROOT_ID ? files_SYNTHETIC_ROOT_FOLDER : treeItems?.itemById.get(parentId);
 		return parentItem ? canWriteItem(parentItem) : false;
 	});
 
@@ -3971,9 +3967,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				!files_can_move_node_between_restricted_scopes({
 					nodeId: itemData._id,
 					sourceRestrictedScopeNodeId: itemData.restrictedScopeNodeId,
-					targetRestrictedScopeNodeId: files_is_node(targetData)
-						? targetData.restrictedScopeNodeId
-						: undefined,
+					targetRestrictedScopeNodeId: files_is_node(targetData) ? targetData.restrictedScopeNodeId : undefined,
 					canManageRestrictedScope,
 				})
 			) {
@@ -4250,9 +4244,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					files_can_move_node_between_restricted_scopes({
 						nodeId: sourceNode._id,
 						sourceRestrictedScopeNodeId: sourceNode.restrictedScopeNodeId,
-						targetRestrictedScopeNodeId: files_is_node(targetData)
-							? targetData.restrictedScopeNodeId
-							: undefined,
+						targetRestrictedScopeNodeId: files_is_node(targetData) ? targetData.restrictedScopeNodeId : undefined,
 						canManageRestrictedScope,
 					})
 				);
@@ -4274,8 +4266,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				isBusy,
 				isUploadingFile,
 				canWriteTarget: canWriteItem(effectiveTarget.item.getItemData()),
-			}) ||
-			canReceiveFileNodeDrop(dataTransfer, effectiveTarget)
+			}) || canReceiveFileNodeDrop(dataTransfer, effectiveTarget)
 		);
 	});
 
@@ -4289,8 +4280,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				isBusy,
 				isUploadingFile,
 				canWriteTarget: canWriteItem(target.item.getItemData()),
-			}) ||
-			canReceiveFileNodeDrop(dataTransfer, target)
+			}) || canReceiveFileNodeDrop(dataTransfer, target)
 		);
 	});
 
@@ -4970,9 +4960,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return;
 		}
 		if (
-			!canWriteParentId(
-				parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
-			)
+			!canWriteParentId(parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">))
 		) {
 			return;
 		}

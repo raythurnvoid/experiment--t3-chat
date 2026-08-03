@@ -249,11 +249,19 @@
 		*/
 		width: 52px;
 		height: 24px;
+
+		/*
+		In read-only mode the widget container stays mounted but empty, so it must not swallow
+		clicks on the text under it. The buttons re-enable pointer events for the writable mode.
+		*/
+		pointer-events: none;
 	}
 
 	/* Accept and discard button base styles */
 	.FileEditorDiffWidgetAcceptDiscard-accept-button,
 	.FileEditorDiffWidgetAcceptDiscard-discard-button {
+		pointer-events: auto;
+
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;

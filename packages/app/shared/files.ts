@@ -65,6 +65,9 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 /**
  * Require Can manage when a child leaves its restricted scope.
  * Moving the scope folder itself keeps the restriction with it.
+ *
+ * Frontend mirror of `authorize_leaving_restricted_scope` in `convex/files_nodes.ts`. The backend
+ * check is the authority; keep the two rules identical.
  */
 export function files_can_move_node_between_restricted_scopes(args: {
 	nodeId: app_convex_Id<"files_nodes">;

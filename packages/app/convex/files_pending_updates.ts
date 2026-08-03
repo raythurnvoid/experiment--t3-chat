@@ -1991,7 +1991,8 @@ export const discard_file_pending_content = mutation({
 		});
 
 		// Let users discard their own draft after losing `content.write`. Keep the membership and node
-		// checks, and require the exact pending-update id so a stale click cannot change its replacement.
+		// checks, and require the exact pending-update id so a stale click cannot touch the doc that
+		// replaced it.
 		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
@@ -2015,8 +2016,7 @@ export const discard_file_pending_content = mutation({
 		}
 
 		// Discard only unstaged edits. Keep the staged branch so the user can still accept it later.
-		const { baseYjsSequence, baseYjsDoc, stagedBranchYjsDoc } =
-			files_pending_update_reconstruct_branch_docs(content);
+		const { baseYjsSequence, baseYjsDoc, stagedBranchYjsDoc } = files_pending_update_reconstruct_branch_docs(content);
 		const stagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: stagedBranchYjsDoc });
 		if (stagedMarkdown._nay) {
 			console.error("Failed to reconstruct staged Markdown while discarding pending content", {
