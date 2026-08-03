@@ -169,6 +169,7 @@ Tree-item components:
 - Rename uses `files_nodes.rename_node` with Convex `optimisticUpdate` for immediate title feedback.
 - The selected file/folder path auto-expands in the sidebar after route changes and path-based create/rename moves so the focused row stays visible.
 - Archive/unarchive uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`.
+- The row menu's Restore gate mirrors the backend restore plan (`can_unarchive_item`): a node whose parent is missing or still archived restores to root, so Restore also needs workspace write at root plus scope manage when the node would leave its restricted scope. A node that carries its own restriction only needs its own write answer. An in-place restore only needs the node's write answer.
 
 ## Content Type Checks
 

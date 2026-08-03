@@ -421,8 +421,7 @@ const PLUGIN_PAGE_SUBPATH_REGEX = /\/pages\//;
 export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar_Props) {
 	const { ref, id, className } = props;
 
-	const { membershipId, organizationId, organizationName, workspaceId, workspaceName } =
-		AppTenantProvider.useContext();
+	const { membershipId, organizationId, organizationName, workspaceId, workspaceName } = AppTenantProvider.useContext();
 	const organizationList = useQuery(app_convex_api.organizations.list);
 	const pluginPages = useQuery(app_convex_api.plugins_ui.list_ui_pages, { membershipId });
 	const organization = organizationList?.organizations.find((organization) => organization._id === organizationId);

@@ -30,6 +30,7 @@ import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
 	files_monaco_create_editor_model,
+	files_monaco_execute_edits_with_read_only_fallback,
 	files_pending_update_has_yjs_content,
 	files_fetch_file_yjs_state_and_markdown,
 	files_u8_to_array_buffer,
@@ -902,25 +903,16 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		}
 
 		// Prefer editor-level edits so undo/redo behavior stays consistent with Monaco's normal
-		// editing workflow while the user can type.
-		const modifiedEditor = editorRef.current.getModifiedEditor();
-		modifiedEditor.pushUndoStop();
-		const applied = modifiedEditor.executeEdits("app_files_sync", [
-			{ range: editorModelsRef.current.modified.getFullModelRange(), text: newMarkdown },
-		]);
-		modifiedEditor.pushUndoStop();
-
-		// Monaco refuses `executeEdits` while the editor is read-only, which is the case when the
-		// user lost write permission. Without this fallback the modified pane would stay empty on
-		// mount and keep stale content on remote updates. A model-level edit still fires the model
+		// editing workflow while the user can type. Monaco refuses `executeEdits` while the editor
+		// is read-only, which is the case when the user lost write permission; the helper then
+		// falls back to a model-level edit, otherwise the modified pane would stay empty on mount
+		// and keep stale content on remote updates. A model-level edit still fires the model
 		// change event, so the programmatic-change counter above stays balanced.
-		if (!applied) {
-			editorModelsRef.current.modified.pushStackElement();
-			editorModelsRef.current.modified.applyEdits([
-				{ range: editorModelsRef.current.modified.getFullModelRange(), text: newMarkdown },
-			]);
-			editorModelsRef.current.modified.pushStackElement();
-		}
+		files_monaco_execute_edits_with_read_only_fallback({
+			editor: editorRef.current.getModifiedEditor(),
+			model: editorModelsRef.current.modified,
+			edits: [{ range: editorModelsRef.current.modified.getFullModelRange(), text: newMarkdown }],
+		});
 	};
 
 	const updateEditorValues = (editorValues: { stagedMarkdown: string; unstagedMarkdown: string }) => {
@@ -1117,9 +1109,10 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		return editorModelsRef.current?.original.getValue() ?? editorContentState.stagedMarkdown;
 	});
 
+	// No `editable` guard here on purpose: this runs only after the backend already committed the
+	// restore, so skipping the refresh when permission was removed mid-restore would leave the
+	// editor showing stale content. The pre-action gate lives in the snapshots modal.
 	const handleApplySnapshotMarkdown = useFn(() => {
-		if (!editable) return;
-
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const remoteData = await files_fetch_file_yjs_state_and_markdown({

@@ -6,6 +6,7 @@ import {
 	files_get_node_path_validation,
 	files_get_node_path_validation_cache_key,
 	files_get_node_path_validation_message,
+	files_monaco_execute_edits_with_read_only_fallback,
 	files_normalize_upload_file_name,
 	files_ROOT_ID,
 	files_set_node_path_cached_validation_message,
@@ -474,6 +475,43 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 		expect(reconcileResult._yay.mergedMarkdown).toBe(readMarkdown(nextUnstagedYjsDoc));
 		expect(readMarkdown(reconcileResult._yay.mergedYjsDoc)).toBe(readMarkdown(stagedYjsDoc));
 	});
+
+	test("keeps local typing when a discard swaps in the staged sibling branch", () => {
+		const baseYjsDoc = createYjsDocFromMarkdown("# Welcome\n\nYou can start editing your document here.\n");
+		const stagedYjsDoc = files_yjs_doc_clone({ yjsDoc: baseYjsDoc });
+		const previousUnstagedYjsDoc = files_yjs_doc_clone({ yjsDoc: baseYjsDoc });
+		const draftProjectionResult = files_yjs_doc_update_from_markdown({
+			mut_yjsDoc: previousUnstagedYjsDoc,
+			markdown: "# Welcome\n\nYou can start editing your document here.\n\nDRAFT-BLOCK: pending draft paragraph.\n",
+		});
+		if (draftProjectionResult._nay) {
+			throw new Error("Expected draft Yjs doc projection to succeed", {
+				cause: draftProjectionResult._nay,
+			});
+		}
+
+		// `discard_file_pending_content` replaces the unstaged branch with a clone of the staged
+		// doc, which never had the draft's Yjs structs.
+		const nextUnstagedYjsDoc = files_yjs_doc_clone({ yjsDoc: stagedYjsDoc });
+
+		// The local pane holds unsaved typing made after the draft text, so its Yjs edits anchor
+		// to structs that only exist in the previous branch and the sibling cannot integrate them.
+		const localMarkdown = `${readMarkdown(previousUnstagedYjsDoc)}\nLOCAL-TYPED: unsaved edit.\n`;
+
+		const reconcileResult = files_yjs_reconcile_branch_with_local_markdown({
+			previousRemoteYjsDoc: previousUnstagedYjsDoc,
+			nextRemoteYjsDoc: nextUnstagedYjsDoc,
+			localMarkdown,
+		});
+		if (reconcileResult._nay) {
+			throw new Error("Expected Yjs branch reconcile to succeed", {
+				cause: reconcileResult._nay,
+			});
+		}
+
+		expect(reconcileResult._yay.mergedMarkdown).toContain("LOCAL-TYPED: unsaved edit.");
+		expect(readMarkdown(reconcileResult._yay.mergedYjsDoc)).toBe(reconcileResult._yay.mergedMarkdown);
+	});
 });
 
 describe("files_yjs_rebase_branch_with_local_markdown", () => {
@@ -606,5 +644,75 @@ describe("files_yjs_rebase_branch_with_local_markdown", () => {
 				yjsBeforeDoc: nextBaseYjsDoc,
 			}),
 		).toBeNull();
+	});
+});
+
+describe("files_monaco_execute_edits_with_read_only_fallback", () => {
+	const edit = { range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 4 }, text: "next" };
+
+	test("keeps the editor-level edit when Monaco accepts it", () => {
+		const calls: string[] = [];
+
+		files_monaco_execute_edits_with_read_only_fallback({
+			editor: {
+				pushUndoStop: () => {
+					calls.push("editor.pushUndoStop");
+					return true;
+				},
+				executeEdits: () => {
+					calls.push("editor.executeEdits");
+					return true;
+				},
+			},
+			model: {
+				pushStackElement: () => {
+					calls.push("model.pushStackElement");
+				},
+				applyEdits: () => {
+					calls.push("model.applyEdits");
+					return [];
+				},
+			},
+			edits: [edit],
+		});
+
+		expect(calls).toEqual(["editor.pushUndoStop", "editor.executeEdits", "editor.pushUndoStop"]);
+	});
+
+	test("applies the edit at the model level when the read-only editor refuses it", () => {
+		const calls: string[] = [];
+		const appliedEdits: unknown[] = [];
+
+		files_monaco_execute_edits_with_read_only_fallback({
+			// A read-only Monaco editor refuses both `executeEdits` and `pushUndoStop`.
+			editor: {
+				pushUndoStop: () => false,
+				executeEdits: () => {
+					calls.push("editor.executeEdits");
+					return false;
+				},
+			},
+			model: {
+				pushStackElement: () => {
+					calls.push("model.pushStackElement");
+				},
+				applyEdits: (operations: unknown) => {
+					calls.push("model.applyEdits");
+					appliedEdits.push(operations);
+					return [];
+				},
+			},
+			edits: [edit],
+		});
+
+		// The content lands through exactly one model edit wrapped in undo stack boundaries, so a
+		// caller counting programmatic model changes sees exactly one change event.
+		expect(calls).toEqual([
+			"editor.executeEdits",
+			"model.pushStackElement",
+			"model.applyEdits",
+			"model.pushStackElement",
+		]);
+		expect(appliedEdits).toEqual([[edit]]);
 	});
 });

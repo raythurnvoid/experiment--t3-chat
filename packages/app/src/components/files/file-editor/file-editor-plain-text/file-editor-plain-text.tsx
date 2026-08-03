@@ -3,6 +3,7 @@ import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import {
 	files_u8_to_array_buffer,
 	files_monaco_create_editor_model,
+	files_monaco_execute_edits_with_read_only_fallback,
 	files_fetch_file_yjs_state_and_markdown,
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
@@ -407,26 +408,29 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			return;
 		}
 
-		editorRef.current.pushUndoStop();
-		editorRef.current.executeEdits("app_files_sync", [
-			{
-				range: monaco_Range.fromPositions(
-					model.getPositionAt(edit.startOffset),
-					model.getPositionAt(edit.endOffset),
-				),
-				text: edit.text,
-			},
-		]);
-		editorRef.current.pushUndoStop();
+		// The helper falls back to model-level edits when Monaco is read-only, so a sync or
+		// restore that finishes after write permission was removed still updates the model
+		// before the flow advances the Yjs baseline and working sequence below.
+		files_monaco_execute_edits_with_read_only_fallback({
+			editor: editorRef.current,
+			model,
+			edits: [
+				{
+					range: monaco_Range.fromPositions(model.getPositionAt(edit.startOffset), model.getPositionAt(edit.endOffset)),
+					text: edit.text,
+				},
+			],
+		});
 	};
 
 	const getCurrentMarkdown = useFn(() => {
 		return modelRef.current?.getValue() ?? initialData.markdown;
 	});
 
+	// No `editable` guard here on purpose: this runs only after the backend already committed the
+	// restore, so skipping the refresh when permission was removed mid-restore would leave the
+	// editor showing stale content. The pre-action gate lives in the snapshots modal.
 	const handleApplySnapshotMarkdown = useFn(() => {
-		if (!editable) return;
-
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const remoteData = await files_fetch_file_yjs_state_and_markdown({

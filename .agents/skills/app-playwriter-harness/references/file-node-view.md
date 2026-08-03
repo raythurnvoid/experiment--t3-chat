@@ -123,29 +123,9 @@ await m.app_convex.action(m.app_convex_api.files_pending_updates.upsert_file_pen
 
 ### Content Size Cap QA
 
-Checks that over-cap content cannot be saved and cannot be accepted. Use a disposable file created with the sidebar `New file` button, opened with `view=diff_editor`. One step per execute call.
+**Disabled — not currently runnable.** The flow needs over-cap content inside the local Monaco pane, and no supported path creates that state: synthetic clicks and paste never reach Monaco since `monaco-editor` 0.56.0 (see `known-hazards.md`, Monaco section), and the `upsert_file_pending_update` action recipe cannot stand in because the diff editor never sends an over-cap draft and the backend rejects one anyway. The old click-and-paste steps silently did nothing, so they were removed instead of left looking runnable.
 
-1. Put over-cap text on the clipboard inside the page. Build it there so it never crosses the relay, and keep lines wide rather than many (`950 × 1000` chars is fine, `91 × 10000` wedges the renderer):
-
-```js
-await state.page.evaluate(async () => {
-	const line = "qa-size-cap-".padEnd(999, "x");
-	await navigator.clipboard.writeText(Array.from({ length: 950 }, () => line).join("\n"));
-});
-```
-
-2. Paste it into the unstaged pane. Never `keyboard.insertText` this much text:
-
-```js
-await state.page.locator('[aria-label="File diff editor"] .editor.modified .view-lines').first().click();
-await state.page.keyboard.press("Control+A");
-await state.page.keyboard.press("Control+V");
-```
-
-3. Assert the ambient state: `.FileEditorDiffToolbarActions-size-badge` reads `Over limit`, the `role="status"` live region reads `File is over the size limit. Remove content to save.`, and `getLatestLogs` is empty — the blocked draft sync is silent by design.
-4. Click each of `Save staged changes`, `Accept all pending changes in this file`, and `Accept all pending changes and save`, reading `[data-sonner-toast]` in the **same** call as the click. Each must show `This file would be … over the … limit. Remove about ….`, leave `.editor.original` unchanged, and leave the accept buttons enabled.
-5. Reload. Both panes must return to the committed content and the badge must disappear — proof that nothing over-cap was persisted and that no accept was applied locally. Do not try to trim by select-all + paste; `Control+A` over ~950K chars does not finish.
-6. Regression guard for the normal path: make a small edit in the unstaged pane, click `Accept all pending changes and save`, and confirm no toast, the staged pane takes the new text, and it survives a reload.
+What the flow verified, kept for when Monaco input works again: with over-cap text in the unstaged pane, `.FileEditorDiffToolbarActions-size-badge` reads `Over limit`, the `role="status"` live region reads `File is over the size limit. Remove content to save.`, the blocked draft sync stays silent, each of `Save staged changes` / `Accept all pending changes in this file` / `Accept all pending changes and save` toasts `This file would be … over the … limit …` without changing `.editor.original`, and a reload returns both panes to the committed content. The durable server-side over-cap state has its own runnable flow below (`Content Too Large Banner QA`).
 
 ### Content Too Large Banner QA
 
@@ -235,7 +215,7 @@ async function replyInSidebarThread(page, threadRootText, replyText) {
 ## Known Gotchas
 
 - Do not use `{ force: true }`, `dispatchEvent`, or DOM `element.click()` to bypass editor/sidebar blockers.
-- The keyboard-driven Monaco steps in `Sync And Undo QA` and `Content Size Cap QA` predate `monaco-editor` 0.56.0 and no longer run: synthetic clicks and keys do not reach Monaco (see `known-hazards.md`, Monaco section). Rich-text (TipTap) typing still works. Until those flows are rewritten, drive Monaco content through the Convex actions recipe in the Diff Editor section and use the sorted `.view-line` readback.
+- The keyboard-driven Monaco steps in `Sync And Undo QA` predate `monaco-editor` 0.56.0 and no longer run: synthetic clicks and keys do not reach Monaco (see `known-hazards.md`, Monaco section). Rich-text (TipTap) typing still works. Until that flow is rewritten, drive Monaco content through the Convex actions recipe in the Diff Editor section and use the sorted `.view-line` readback. That recipe cannot stand in for `Content Size Cap QA` — over-cap drafts are rejected server-side — so that flow is disabled in place above.
 - The rich-text comment button depends on a live selection. If it is missing, reselect text and snapshot the toolbar/bubble controls.
 - Contenteditable TipTap editors may appear as textboxes in snapshots but still fail `getByRole("textbox")`; use the scoped `contenteditable` + `aria-label` selector above.
 - Right-sidebar content changes with the selected tab. Scope locators to comments or agent contexts after switching tabs.

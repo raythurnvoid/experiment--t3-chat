@@ -377,6 +377,20 @@ export function files_yjs_reconcile_branch_with_local_markdown(args: {
 		applyUpdate(mergedYjsDoc, localEditUpdate);
 	}
 
+	// A captured local edit can anchor to structs that only ever existed in the previous branch.
+	// A sibling branch never had those structs, so Yjs parks the edit as pending instead of
+	// integrating it, and the user's typing would silently disappear from the pane. Keep the
+	// local projection in that case: the pane keeps what the user sees, and the normal draft
+	// sync proposes it again on top of the new branch.
+	if (mergedYjsDoc.store.pendingStructs !== null || mergedYjsDoc.store.pendingDs !== null) {
+		return Result({
+			_yay: {
+				mergedYjsDoc: workspaceedLocalYjsDoc,
+				mergedMarkdown: workspaceedLocalMarkdown._yay,
+			},
+		});
+	}
+
 	const mergedMarkdown = files_yjs_doc_get_markdown({
 		yjsDoc: mergedYjsDoc,
 	});
@@ -641,5 +655,28 @@ export function files_monaco_create_editor_model(markdown: string) {
 	const model = monaco_editor.createModel(markdown, "markdown");
 	model.setEOL(monaco_editor.EndOfLineSequence.LF);
 	return model;
+}
+
+/**
+ * Apply a programmatic edit through the editor so undo/redo behaves like normal typing.
+ * Monaco refuses editor-level `executeEdits` while the editor is read-only, which happens when
+ * the user loses write permission while a sync or snapshot restore is running. Without a
+ * fallback the model would silently keep stale content while the flow advances its baselines.
+ * A model-level edit is still allowed then, and it still fires one model change event.
+ */
+export function files_monaco_execute_edits_with_read_only_fallback(args: {
+	editor: Pick<monaco_editor.ICodeEditor, "pushUndoStop" | "executeEdits">;
+	model: Pick<monaco_editor.ITextModel, "pushStackElement" | "applyEdits">;
+	edits: monaco_editor.IIdentifiedSingleEditOperation[];
+}) {
+	args.editor.pushUndoStop();
+	const applied = args.editor.executeEdits("app_files_sync", args.edits);
+	args.editor.pushUndoStop();
+
+	if (!applied) {
+		args.model.pushStackElement();
+		args.model.applyEdits(args.edits);
+		args.model.pushStackElement();
+	}
 }
 // #endregion monaco

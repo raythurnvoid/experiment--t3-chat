@@ -217,6 +217,50 @@ function can_rename_item(args: { item: files_TreeItem; canWriteItem: (item: file
 	return files_is_node(args.item) && args.canWriteItem(args.item);
 }
 
+/**
+ * Mirror the `unarchive_nodes` plan: when the archived node's parent is missing or still
+ * archived, the backend restores the node to root. That is a move, so it also needs workspace
+ * write at the root destination plus permission to leave the node's restricted scope. Without
+ * this gate a write-only sharee sees an enabled Restore that the backend always refuses.
+ */
+function can_unarchive_item(args: {
+	item: files_TreeItem;
+	itemById: Map<string, files_TreeItem> | undefined;
+	canWriteItem: (item: files_TreeItem) => boolean;
+	canWriteRoot: boolean;
+	canManageRestrictedScope: (scopeNodeId: app_convex_Id<"files_nodes">) => boolean;
+}) {
+	if (!files_is_node(args.item) || !args.canWriteItem(args.item)) {
+		return false;
+	}
+
+	// An active parent (or the root itself) means the restore stays in place, and writing the
+	// node was already answered above.
+	if (args.item.parentId === files_ROOT_ID) {
+		return true;
+	}
+	const parentItem = args.itemById?.get(args.item.parentId);
+	if (parentItem != null && files_is_node(parentItem) && parentItem.archiveOperationId === undefined) {
+		return true;
+	}
+
+	// A node that carries its own restriction keeps it wherever it lands, so the backend skips
+	// the destination and scope-leave checks for it.
+	if (args.item.restrictedScopeNodeId === args.item._id) {
+		return true;
+	}
+
+	return (
+		args.canWriteRoot &&
+		files_can_move_node_between_restricted_scopes({
+			nodeId: args.item._id,
+			sourceRestrictedScopeNodeId: args.item.restrictedScopeNodeId,
+			targetRestrictedScopeNodeId: undefined,
+			canManageRestrictedScope: args.canManageRestrictedScope,
+		})
+	);
+}
+
 function has_file_drop(dataTransfer: DataTransfer) {
 	return Array.from(dataTransfer.types).includes("Files");
 }
@@ -1713,6 +1757,7 @@ type FilesSidebarTreeItem_Props = {
 	isFallbackTabStop: boolean;
 	expandedFolderActionsVisible: boolean;
 	canWrite: boolean;
+	canUnarchive: boolean;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -1740,6 +1785,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		isFallbackTabStop,
 		expandedFolderActionsVisible,
 		canWrite,
+		canUnarchive,
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
@@ -2035,7 +2081,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					canCreate={canWrite}
 					canRename={canRename}
 					canShare={canShare}
-					canArchive={canWrite}
+					canArchive={isArchived ? canUnarchive : canWrite}
 					canExpandSubtree={canExpandSubtree}
 					canCollapseSubtree={canCollapseSubtree}
 					expandedFolderActionsVisible={expandedFolderActionsVisible}
@@ -2310,6 +2356,7 @@ type FilesSidebarTree_Props = {
 	pendingActionNodeIds: Set<string>;
 	renameErrorByNodeId: Map<string, string>;
 	canWriteItem: (item: files_TreeItem) => boolean;
+	canUnarchiveItem: (item: files_TreeItem) => boolean;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -2338,6 +2385,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		pendingActionNodeIds,
 		renameErrorByNodeId,
 		canWriteItem,
+		canUnarchiveItem,
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
@@ -2551,6 +2599,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 								isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
 								expandedFolderActionsVisible={expandedFolderActionsVisible}
 								canWrite={canWriteItem(item.getItemData())}
+								canUnarchive={canUnarchiveItem(item.getItemData())}
 								onCreateNode={onCreateNode}
 								onStartRename={onStartRename}
 								onRenameErrorClear={onRenameErrorClear}
@@ -3890,6 +3939,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const parentItem = parentId === files_ROOT_ID ? files_SYNTHETIC_ROOT_FOLDER : treeItems?.itemById.get(parentId);
 		return parentItem ? canWriteItem(parentItem) : false;
 	});
+	const canUnarchiveItem = useFn((item: files_TreeItem) =>
+		can_unarchive_item({
+			item,
+			itemById: treeItems?.itemById,
+			canWriteItem,
+			canWriteRoot: canWriteParentId(files_ROOT_ID),
+			canManageRestrictedScope,
+		}),
+	);
 
 	const canExpandAll = ((/* iife */) => {
 		const topLevelItems = treeItems?.itemsIdsByParentId.get(files_ROOT_ID);
@@ -5518,6 +5576,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					pendingActionNodeIds={pendingActionNodeIds}
 					renameErrorByNodeId={renameErrorByNodeId}
 					canWriteItem={canWriteItem}
+					canUnarchiveItem={canUnarchiveItem}
 					onCreateNode={handleCreateNodeClick}
 					onStartRename={handleStartRename}
 					onRenameErrorClear={clearRenameError}
@@ -5664,6 +5723,116 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(can_rename_item({ item: file, canWriteItem: () => true })).toBe(true);
 			expect(can_rename_item({ item: file, canWriteItem: () => false })).toBe(false);
+		});
+	});
+
+	describe("can_unarchive_item", () => {
+		test("allows an in-place restore with only node write permission", () => {
+			const activeFolder = test_node({ id: "folder", parentId: files_ROOT_ID, kind: "folder", name: "folder" });
+			const archivedChild = test_node({
+				id: "file",
+				parentId: "folder",
+				kind: "file",
+				name: "file.md",
+				archiveOperationId: "archive-operation",
+			});
+
+			expect(
+				can_unarchive_item({
+					item: archivedChild,
+					itemById: new Map([[activeFolder._id, activeFolder]]),
+					canWriteItem: () => true,
+					canWriteRoot: false,
+					canManageRestrictedScope: () => false,
+				}),
+			).toBe(true);
+		});
+
+		test("requires root write when the parent is still archived or missing", () => {
+			const archivedFolder = test_node({
+				id: "folder",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "folder",
+				archiveOperationId: "archive-operation",
+			});
+			const archivedChild = test_node({
+				id: "file",
+				parentId: "folder",
+				kind: "file",
+				name: "file.md",
+				archiveOperationId: "archive-operation",
+			});
+			const args = {
+				item: archivedChild,
+				itemById: new Map([[archivedFolder._id, archivedFolder]]),
+				canWriteItem: () => true,
+				canManageRestrictedScope: () => false,
+			};
+
+			expect(can_unarchive_item({ ...args, canWriteRoot: false })).toBe(false);
+			expect(can_unarchive_item({ ...args, canWriteRoot: true })).toBe(true);
+			expect(can_unarchive_item({ ...args, itemById: new Map(), canWriteRoot: false })).toBe(false);
+		});
+
+		test("requires scope manage when the restore-to-root leaves a restricted scope", () => {
+			const archivedScopeFolder = test_node({
+				id: "scope",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "scope",
+				archiveOperationId: "archive-operation",
+				restrictedScopeNodeId: "scope",
+			});
+			const archivedScopedChild = test_node({
+				id: "file",
+				parentId: "scope",
+				kind: "file",
+				name: "file.md",
+				archiveOperationId: "archive-operation",
+				restrictedScopeNodeId: "scope",
+			});
+			const args = {
+				item: archivedScopedChild,
+				itemById: new Map([[archivedScopeFolder._id, archivedScopeFolder]]),
+				canWriteItem: () => true,
+				canWriteRoot: true,
+			};
+
+			expect(can_unarchive_item({ ...args, canManageRestrictedScope: () => false })).toBe(false);
+			expect(can_unarchive_item({ ...args, canManageRestrictedScope: () => true })).toBe(true);
+
+			// The scope folder itself keeps its restriction wherever it lands, so the backend skips
+			// the destination and scope-leave checks for it.
+			expect(
+				can_unarchive_item({
+					item: archivedScopeFolder,
+					itemById: new Map(),
+					canWriteItem: () => true,
+					canWriteRoot: false,
+					canManageRestrictedScope: () => false,
+				}),
+			).toBe(true);
+		});
+
+		test("refuses without write permission on the node itself", () => {
+			const archivedFile = test_node({
+				id: "file",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				name: "file.md",
+				archiveOperationId: "archive-operation",
+			});
+
+			expect(
+				can_unarchive_item({
+					item: archivedFile,
+					itemById: new Map(),
+					canWriteItem: () => false,
+					canWriteRoot: true,
+					canManageRestrictedScope: () => true,
+				}),
+			).toBe(false);
 		});
 	});
 
