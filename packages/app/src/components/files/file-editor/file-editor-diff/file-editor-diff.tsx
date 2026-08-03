@@ -57,6 +57,7 @@ type FileEditorDiffToolbarActions_ClassNames =
 
 type FileEditorDiffToolbarActions_Props = {
 	byteSize: number;
+	editable: boolean;
 	isSaveDisabled: boolean;
 	isSyncDisabled: boolean;
 	isAcceptAllDisabled: boolean;
@@ -79,6 +80,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 ) {
 	const {
 		byteSize,
+		editable,
 		isSaveDisabled,
 		isSyncDisabled,
 		isAcceptAllDisabled,
@@ -201,6 +203,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 			<FileEditorSnapshotsModal
 				nodeId={nodeId}
 				sessionId={sessionId}
+				editable={editable}
 				getCurrentMarkdown={getCurrentMarkdown}
 				onApplySnapshotMarkdown={onApplySnapshotMarkdown}
 			/>
@@ -577,6 +580,7 @@ type FileEditorDiff_CssVars = {
 export type FileEditorDiff_Props = {
 	className?: string;
 	nodeId: app_convex_Id<"files_nodes">;
+	editable: boolean;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	presenceStore: files_PresenceStore;
 	threadId?: string;
@@ -603,6 +607,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	const {
 		className,
 		nodeId,
+		editable,
 		pendingUpdateId,
 		presenceStore,
 		commentsPortalHost,
@@ -680,10 +685,10 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	 */
 	const pendingUpdateSyncStatusRef = useRef<"idle" | "debouncing" | "mutation_in_flight">("idle");
 
-	const isSaveDisabled = isSaving || isSyncing || !isDirty;
-	const isAcceptAllDisabled = isSaving || isSyncing || !hasUnstagedChanges;
-	const isAcceptAllAndSaveDisabled = isSaving || isSyncing || !hasUnstagedChanges;
-	const isDiscardAllDisabled = isSaving || isSyncing || !hasUnstagedChanges;
+	const isSaveDisabled = !editable || isSaving || isSyncing || !isDirty;
+	const isAcceptAllDisabled = !editable || isSaving || isSyncing || !hasUnstagedChanges;
+	const isAcceptAllAndSaveDisabled = !editable || isSaving || isSyncing || !hasUnstagedChanges;
+	const isDiscardAllDisabled = !editable || isSaving || isSyncing || !hasUnstagedChanges;
 	const hasTopViewZoneSlot = topViewZoneSlot != null && topViewZoneSlot !== false;
 	const editorTopPadding = Math.max(16, topSafeArea ?? 0);
 	// Keep construction-only Monaco options stable because @monaco-editor/react deep-clones
@@ -1072,6 +1077,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	});
 
 	const doSave = () => {
+		if (!editable) return;
+
 		if (!editorModelsRef.current) {
 			const error = should_never_happen("[FileEditorDiff.handleClickSave] Missing editor models", {
 				editor: editorRef.current,
@@ -1099,6 +1106,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	});
 
 	const handleApplySnapshotMarkdown = useFn(() => {
+		if (!editable) return;
+
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const remoteData = await files_fetch_file_yjs_state_and_markdown({
@@ -1135,12 +1144,12 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	});
 
 	const handleClickSave = useFn(() => {
-		if (isSaving || isSyncing) return;
+		if (!editable || isSaving || isSyncing) return;
 		doSave();
 	});
 
 	const handleClickAcceptAllAndSave = useFn(() => {
-		if (isSaving || isSyncing || !hasUnstagedChanges) return;
+		if (!editable || isSaving || isSyncing || !hasUnstagedChanges) return;
 		// Check before accepting, not after: accepting copies the unstaged content into the staged
 		// model, and an over-cap upsert is rejected, so an accept applied here would look applied
 		// but silently disappear on reload.
@@ -1150,18 +1159,18 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	});
 
 	const handleClickAcceptAll = useFn(() => {
-		if (isSaving || isSyncing || !hasUnstagedChanges) return;
+		if (!editable || isSaving || isSyncing || !hasUnstagedChanges) return;
 		if (!checkAcceptAllFitsSizeCap()) return;
 		acceptAllDiffs();
 	});
 
 	const handleClickDiscardAll = useFn(() => {
-		if (isSaving || isSyncing || !hasUnstagedChanges) return;
+		if (!editable || isSaving || isSyncing || !hasUnstagedChanges) return;
 		discardAllDiffs();
 	});
 
 	const handleClickSync = useFn(() => {
-		if (isSyncDisabled) return;
+		if (!editable || isSyncDisabled) return;
 
 		if (!editorModelsRef.current) {
 			console.error(
@@ -1203,6 +1212,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	});
 
 	const handleClickWidgetAccept = useFn((index: number) => {
+		if (!editable) return;
+
 		if (!editorRef.current) {
 			const error = should_never_happen("[FileEditorDiff.handleClickWidgetAccept] Missing `editorRef.current`", {
 				editor: editorRef.current,
@@ -1227,6 +1238,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	});
 
 	const handleClickWidgetDiscard = useFn((index: number) => {
+		if (!editable) return;
+
 		if (!editorRef.current) {
 			const error = should_never_happen("[FileEditorDiff.handleClickWidgetDiscard] Missing `editorRef.current`", {
 				editor: editorRef.current,
@@ -1263,6 +1276,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 	const handleOnMount = useFn<DiffEditorProps["onMount"]>((editor) => {
 		editorRef.current = editor;
+		editor.updateOptions({ readOnly: !editable });
 		setMountedModifiedEditor(editor.getModifiedEditor());
 
 		const prevModels = [editor.getModel()?.original, editor.getModel()?.modified];
@@ -1493,6 +1507,12 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		lastAppliedRemoteEditorContentStateRef.current = editorContentState;
 	}, [editorContentState, editorModels]);
 
+	// The permission query can resolve or change after Monaco mounts. Update the live editor instead
+	// of rebuilding its models, which would drop the cursor and undo history.
+	useEffect(() => {
+		editorRef.current?.updateOptions({ readOnly: !editable });
+	}, [editable]);
+
 	useEffect(() => {
 		// In dev, React StrictMode may mount/unmount/mount to detect side effects.
 		// Ensure we don't permanently disable host registration after the first cleanup.
@@ -1538,6 +1558,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			>
 				<FileEditorDiffToolbarActions
 					byteSize={byteSize}
+					editable={editable}
 					isSaveDisabled={isSaveDisabled}
 					isSyncDisabled={isSyncDisabled || isSaving}
 					isAcceptAllDisabled={isAcceptAllDisabled}
@@ -1577,16 +1598,18 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			</div>
 			{commentsPortalHost &&
 				createPortal(<FileEditorCommentsSidebar threadIds={commentThreadIds} />, commentsPortalHost)}
-			{contentWidgets.map((widget) =>
-				createPortal(
-					<FileEditorDiffWidgetAcceptDiscard
-						onAccept={() => handleClickWidgetAccept(widget.args.index)}
-						onDiscard={() => handleClickWidgetDiscard(widget.args.index)}
-					/>,
-					widget.node,
-					widget.id,
-				),
-			)}
+			{editable
+				? contentWidgets.map((widget) =>
+						createPortal(
+							<FileEditorDiffWidgetAcceptDiscard
+								onAccept={() => handleClickWidgetAccept(widget.args.index)}
+								onDiscard={() => handleClickWidgetDiscard(widget.args.index)}
+							/>,
+							widget.node,
+							widget.id,
+						),
+					)
+				: null}
 		</>
 	);
 });
@@ -1594,6 +1617,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff_Props) {
 	const {
 		nodeId,
+		editable,
 		pendingUpdateId,
 		presenceStore,
 		commentsPortalHost,
@@ -1641,12 +1665,14 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		lastSequenceSaved: pendingUpdateLastSequenceSaved?.lastSequenceSaved,
 	});
 
-	const isSyncDisabled = file_editor_diff_is_sync_disabled({
-		isSyncing,
-		isSaving,
-		serverSequence,
-		editorBaseYjsSequence,
-	});
+	const isSyncDisabled =
+		!editable ||
+		file_editor_diff_is_sync_disabled({
+			isSyncing,
+			isSaving,
+			serverSequence,
+			editorBaseYjsSequence,
+		});
 
 	/**
 	 * The container for the tiptap hoisted elements.
@@ -1672,6 +1698,8 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	};
 
 	const handleSave = useFn<FileEditorDiffInner_Props["onSave"]>(({ flushPendingUpdateUpsertIfNeeded }) => {
+		if (!editable) return;
+
 		setIsSaving(true);
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
@@ -1741,7 +1769,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	});
 
 	const handleClickSync = useFn<FileEditorDiffInner_Props["onClickSync"]>((editorValues) => {
-		if (isSyncing) return;
+		if (!editable || isSyncing) return;
 
 		setIsSyncing(true);
 

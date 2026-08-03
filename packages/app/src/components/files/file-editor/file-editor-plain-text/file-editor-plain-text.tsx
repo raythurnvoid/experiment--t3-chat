@@ -52,6 +52,7 @@ type FileEditorPlainTextToolbarActions_ClassNames =
 
 type FileEditorPlainTextToolbarActions_Props = {
 	byteSize: number;
+	editable: boolean;
 	isSaveDisabled: boolean;
 	isSyncDisabled: boolean;
 	isSaveDebouncing: boolean;
@@ -69,6 +70,7 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 ) {
 	const {
 		byteSize,
+		editable,
 		isSaveDisabled,
 		isSyncDisabled,
 		isSaveDebouncing,
@@ -144,6 +146,7 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 			<FileEditorSnapshotsModal
 				nodeId={nodeId}
 				sessionId={sessionId}
+				editable={editable}
 				getCurrentMarkdown={getCurrentMarkdown}
 				onApplySnapshotMarkdown={onApplySnapshotMarkdown}
 			/>
@@ -235,6 +238,7 @@ type FileEditorPlainText_ClassNames = "FileEditorPlainText" | "FileEditorPlainTe
 
 type FileEditorPlainTextInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
+	editable: boolean;
 	initialData: {
 		markdown: string;
 		mut_yjsDoc: YDoc;
@@ -253,6 +257,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const {
 		initialData,
 		nodeId,
+		editable,
 		topSafeArea,
 		presenceStore,
 		commentsPortalHost,
@@ -288,9 +293,9 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const [byteSize, setByteSize] = useState(() => files_get_utf8_byte_size(initialData.markdown));
 
 	const isSaveDebouncing = dirtyCheckState === "checking";
-	const isSaveDisabled = isSaving || isSyncing || dirtyCheckState !== "dirty";
+	const isSaveDisabled = !editable || isSaving || isSyncing || dirtyCheckState !== "dirty";
 	const activeServerSequence = serverSequence ?? initialData.yjsSequence;
-	const isSyncDisabled = isSyncing || isSaving || workingYjsDocSequence === activeServerSequence;
+	const isSyncDisabled = !editable || isSyncing || isSaving || workingYjsDocSequence === activeServerSequence;
 	const hasTopViewZoneSlot = topViewZoneSlot != null && topViewZoneSlot !== false;
 	const editorTopPadding = Math.max(16, topSafeArea ?? 0);
 
@@ -420,6 +425,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	});
 
 	const handleApplySnapshotMarkdown = useFn(() => {
+		if (!editable) return;
+
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const remoteData = await files_fetch_file_yjs_state_and_markdown({
@@ -460,6 +467,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	});
 
 	const handleClickSave = useFn(() => {
+		if (!editable) return;
+
 		const editorModel = modelRef.current;
 		if (!editorModel) {
 			const error = should_never_happen("[FileEditorPlainText.handleClickSave] Missing editorModel", {
@@ -551,7 +560,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	});
 
 	const handleClickSync = useFn(() => {
-		if (isSyncing || isSaving) return;
+		if (!editable || isSyncing || isSaving) return;
 
 		setDirtyCheckState("checking");
 		clearTimeout(dirtyCheckTimeoutRef.current);
@@ -652,6 +661,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 	const handleOnMount = useFn<EditorProps["onMount"]>((editor) => {
 		editorRef.current = editor;
+		editor.updateOptions({ readOnly: !editable });
 		setMountedEditor(editor);
 		const prevModel = editor.getModel();
 		editor.setModel(initialEditorModel);
@@ -664,6 +674,12 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			scheduleDirtyCheck();
 		});
 	});
+
+	// The permission query can resolve or change after Monaco mounts. Update the live editor instead
+	// of rebuilding its model, which would drop the cursor and undo history.
+	useEffect(() => {
+		mountedEditor?.updateOptions({ readOnly: !editable });
+	}, [editable, mountedEditor]);
 
 	useEffect(() => {
 		return () => {
@@ -678,6 +694,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			<div className={"FileEditorPlainText" satisfies FileEditorPlainText_ClassNames}>
 				<FileEditorPlainTextToolbarActions
 					byteSize={byteSize}
+					editable={editable}
 					isSaveDisabled={isSaveDisabled}
 					isSyncDisabled={isSyncDisabled}
 					isSaveDebouncing={isSaveDebouncing}
@@ -715,6 +732,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 export type FileEditorPlainText_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
+	editable: boolean;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
@@ -727,6 +745,7 @@ export type FileEditorPlainText_Props = {
 export const FileEditorPlainText = memo(function FileEditorPlainText(props: FileEditorPlainText_Props) {
 	const {
 		nodeId,
+		editable,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
@@ -756,6 +775,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 		<FileEditorPlainTextInner
 			key={nodeId}
 			nodeId={nodeId}
+			editable={editable}
 			initialData={
 				fileContentData?.markdown._yay
 					? {

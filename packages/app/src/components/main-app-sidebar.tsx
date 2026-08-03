@@ -421,11 +421,16 @@ const PLUGIN_PAGE_SUBPATH_REGEX = /\/pages\//;
 export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar_Props) {
 	const { ref, id, className } = props;
 
-	const { membershipId, organizationId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { membershipId, organizationId, organizationName, workspaceId, workspaceName } =
+		AppTenantProvider.useContext();
 	const organizationList = useQuery(app_convex_api.organizations.list);
 	const pluginPages = useQuery(app_convex_api.plugins_ui.list_ui_pages, { membershipId });
 	const organization = organizationList?.organizations.find((organization) => organization._id === organizationId);
 	const showUsersNavigation = organization?.default === false;
+	const workspacePermissions = organizationList?.workspaceIdsPermissionsDict[workspaceId];
+	// Installed plugin pages have their own access checks and stay visible below.
+	const showPluginsManagementNavigation =
+		workspacePermissions === "all" || workspacePermissions?.includes("workspace.plugins.manage") === true;
 
 	const chatPath = url_path_chat({ organizationName, workspaceName });
 	const filesPath = url_path_files({ organizationName, workspaceName });
@@ -508,13 +513,15 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						icon={KeyRound}
 						tooltip={mainAppSidebarCollapsed ? "API keys" : undefined}
 					/>
-					<MainAppSidebarItem
-						to={pluginsPath}
-						label="Plugins"
-						icon={Puzzle}
-						tooltip={mainAppSidebarCollapsed ? "Plugins" : undefined}
-						subpathExcludePattern={PLUGIN_PAGE_SUBPATH_REGEX}
-					/>
+					{showPluginsManagementNavigation ? (
+						<MainAppSidebarItem
+							to={pluginsPath}
+							label="Plugins"
+							icon={Puzzle}
+							tooltip={mainAppSidebarCollapsed ? "Plugins" : undefined}
+							subpathExcludePattern={PLUGIN_PAGE_SUBPATH_REGEX}
+						/>
+					) : null}
 					{(pluginPages ?? []).flatMap((plugin) =>
 						plugin.pages.map((page) =>
 							page.navItem ? (

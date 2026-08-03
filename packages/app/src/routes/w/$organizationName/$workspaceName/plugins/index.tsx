@@ -113,12 +113,21 @@ type RoutePlugins_ClassNames =
 	| "RoutePluginsHeader-description";
 
 function RoutePlugins() {
-	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
-	const installations = useQuery(app_convex_api.plugins.list_installations, { membershipId });
+	const { membershipId, organizationName, workspaceId, workspaceName } = AppTenantProvider.useContext();
+	const organizationList = useQuery(app_convex_api.organizations.list);
+	const workspacePermissions = organizationList?.workspaceIdsPermissionsDict[workspaceId];
+	const canManagePlugins =
+		organizationList === undefined
+			? undefined
+			: workspacePermissions === "all" || workspacePermissions?.includes("workspace.plugins.manage") === true;
+	const installations = useQuery(
+		app_convex_api.plugins.list_installations,
+		canManagePlugins === true ? { membershipId } : "skip",
+	);
 
 	const breadcrumb = <PluginsHeaderBreadcrumb current="Plugins" />;
 
-	if (installations === undefined) {
+	if (canManagePlugins === undefined || (canManagePlugins && installations === undefined)) {
 		return (
 			<main
 				className={cn("RoutePlugins" satisfies RoutePlugins_ClassNames, "app-scrollable" satisfies AppClassName)}
@@ -145,7 +154,9 @@ function RoutePlugins() {
 					<div>
 						<h1 className={"RoutePluginsHeader-title" satisfies RoutePlugins_ClassNames}>Plugins</h1>
 						<p className={"RoutePluginsHeader-description" satisfies RoutePlugins_ClassNames}>
-							Browse published plugins and open a plugin page to install and manage it.
+							{canManagePlugins
+								? "Browse published plugins and open a plugin page to install and manage it."
+								: "You don't have permission to manage plugins in this workspace."}
 						</p>
 					</div>
 					<MyLink
@@ -160,7 +171,14 @@ function RoutePlugins() {
 					</MyLink>
 				</header>
 
-				<RoutePluginsGallery membershipId={membershipId} installations={installations} />
+				{canManagePlugins && installations ? (
+					<RoutePluginsGallery membershipId={membershipId} installations={installations} />
+				) : (
+					<div className={"RoutePlugins-loading" satisfies RoutePlugins_ClassNames} role="alert">
+						<Puzzle aria-hidden />
+						Plugin management is unavailable.
+					</div>
+				)}
 			</div>
 		</main>
 	);

@@ -180,10 +180,14 @@ Tree-item components:
 ## Drag And Drop
 
 - In-tree DnD uses headless-tree `onDrop` -> `files.move_nodes`.
-- `canDrop` guards target kind, self-drop, and descendant-drop.
+- `canDrag`, `canDrop`, and keyboard rename use the same per-node `content.write` answer as each row menu. Restricted scopes are queried once per scope, while unrestricted nodes and root share the workspace answer.
+- `canDrop` also guards target kind, self-drop, descendant-drop, source write access, and destination write access.
+- Moving a descendant out of its restricted scope also needs that scope's `content.permissions.manage` answer. The restricted folder itself carries its scope with it, so moving that folder does not need this extra check.
 - Root and folders can receive drops.
 - Files cannot receive drops.
 - External OS file drops use headless-tree foreign DnD for tree targeting and `file-selector` for browser file extraction.
+- Foreign file and node drops use the same destination write, source write, and cross-scope manage checks as in-tree drops.
+- The folder table uses the same source write, destination write, and cross-scope manage checks for its row drag/drop.
 - External drops over file rows resolve to the file's containing folder. Root, folder rows, empty-folder placeholders, and file-row parent resolution are accepted targets.
 - A single bare-file drop keeps the per-file flow: `files_nodes.create_upload_node`, PUT to the signed R2 URL, then the R2 event flow, with the rename/conflict modals. Frontend classification treats a file as Markdown only when `File.type` starts with `text/markdown`; `file-selector` fills that type in for `.md`/`.markdown` files when the browser leaves it empty.
 - Multi-file and folder drops run the folder import flow (see "Folder Import" below). The "Import folder" menu action feeds the same flow through a hidden `webkitdirectory` input.
@@ -224,7 +228,7 @@ Tree-item components:
 - controlled `expandedItems` + `setExpandedItems`
 - `canReorder: false`
 - sync data loader + selection + hotkeys + DnD + renaming + expand-all + click behavior + prop memoization features
-- node-only `canDrag` and `canRename`
+- node-and-write-permission `canDrag` and `canRename`
 - folder-only `isItemFolder`
 - guarded `canDrop`
 - guarded `canDragForeignDragObjectOver` / `canDropForeignDragObject` for external file drops
@@ -250,17 +254,19 @@ Tree-item components:
 - Search matches a name fragment, a path, a node id, and a pasted app link, and Enter opens the top match for each.
 - Path queries show the node path as the row's secondary line, and a sibling-prefix folder such as `/docs-archive` never matches a `/docs` query.
 - `Mod+K` opens the files sidebar when closed and focuses the search input.
-- Renaming a row still commits on Enter.
+- Renaming a row commits on Enter only while its live write permission still allows it. Losing that permission cancels the active rename.
 - A pasted path URL opens the file, settles on `?nodeId=`, adds one history entry, and never flashes the not-found panel on a cold load.
 - An unknown, archived, or wrong-case path URL shows the not-found panel with a working "Search for this path" link.
 - Copy path yields the plain path; Copy link yields an absolute `?nodeId=` URL that reopens the same node; Copy node id yields the bare id. All three still work after the node is renamed or moved.
 - Selection modes and anchor behavior are correct.
 - Root create can create a file and a folder.
+- Root create, upload, folder import, and multi-selection archive controls stay disabled unless every affected node or destination is writable.
 - Folder create can create child files/folders.
 - File rows do not show child creation actions and are not expandable.
 - Rename guards and optimistic rename behavior are correct.
 - Archive/unarchive and archived filter/toggle behavior is correct.
 - DnD allows legal moves, blocks drops onto files, and root-zone feedback works.
+- A viewer cannot start keyboard rename or drag a row. Read-only root and folder screens disable create, README, upload, import, archive, and drop controls.
 - With the matching plugin installed and enabled and its required secrets configured, verify PDF, image, video, and audio-derived outputs.
 - Static image uploads are compressed in the browser only when the result is smaller and always keep a visible source node.
 - Video and audio uploads remain visible as source nodes even when a plugin run fails.

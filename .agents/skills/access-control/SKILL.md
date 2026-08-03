@@ -206,10 +206,11 @@ you trust this list: a sixth one added later is a sixth door.
 
 **Activities answer to the files they name.** `db_filter_visible_activities` in `convex/activities.ts`
 is the one rule, used by `list_recent`, `archive_activity` and `archive_all_activities`. One
-unreadable target hides the whole activity, because the title usually carries the file's name. The
-two archive mutations use it as well as the feed, and not only because a refusal should match what
-the user sees: `archivedAt` is one field on the doc rather than one per user, so "Dismiss all" run by
-somebody who cannot see a restricted file would take that activity away from the people who can.
+unreadable target hides the whole activity, because the title usually carries the file's name. A
+target whose current path differs from its stored activity path also hides the whole activity: the
+stored path, title, target message, and error belong to the old location and cannot be made safe by
+current access alone. The two archive mutations use the same rule as the feed. `archivedAt` is one
+field on the doc rather than one per user, so "Dismiss all" must never reach hidden activities.
 
 **Comments answer to their file.** Every `chat_messages` row carries a required `fileNodeId`, and all
 six handlers in `convex/chat_messages.ts` check that node instead of the workspace: `content.write`
@@ -274,6 +275,9 @@ of a restricted folder has to be able to share what the grant gave them and noth
   `organizations_write`.
 - Return `Result({ _nay: { message: "Permission denied" } })` for a resolved user who lacks access.
 - Frontend gates are convenience. The backend write is the authority.
+- Discarding the caller's exact existing pending draft is a deliberate write exception. It gives
+  nobody access, so content and structural discard remain available after `content.write` is taken
+  away. General pending upserts and every accept/save path still require current write access.
 - Nobody may hand out more than they hold. `create_role`, `update_role`, `delete_role`,
   `set_user_role` and `invite_user_to_organization_workspace` all compare the target role's
   permissions against the caller's own set. Without this an admin mints a custom role above itself.
@@ -286,6 +290,10 @@ of a restricted folder has to be able to share what the grant gave them and noth
   contradiction: `delete_role`'s ceiling protects the role **definition**, which nobody can restore
   once it is gone, while a demotion or removal is undone by the owner in a click. Do not read the
   `delete_role` refusal as "this authority cannot be taken away".
+  For a default-workspace assignment, the file-grant half of this ceiling scans only the target's
+  current active workspaces. The organization role reaches files only where that target is also a
+  member; a share in an unrelated workspace must not block the assignment. Role edit/delete checks
+  still scan the whole organization because they can affect current holders in every workspace.
   Only `set_user_role` reads its ceiling at the target workspace, which the caller need not belong to;
   the other four read it at the default workspace. Note the ceiling is the caller's organization-wide
   role's *full* permission list, so at a workspace they do not belong to it can be slightly wider than
@@ -340,10 +348,10 @@ product decision, so record the answer here before changing the behaviour. An en
   "Show N items archived" toggle whose rows carry a Restore action. Known property, not a bug: while
   the folder sits in the archive nobody can open its share dialog, so restore it first to manage
   sharing.
-- **Removing a member deletes their grants in one mutation.** `remove_user_from_organization` collects
-  every `access_control_permission_grants` doc for the user and deletes them together, with no page
-  limit, exactly like the role assignments above it. Somebody on thousands of share lists would exceed
-  the mutation write limit and become impossible to remove.
+- **Removing a member performs unbounded cleanup in one mutation.** `remove_user_from_organization`
+  collects every role assignment, permission grant, public API grant, and plugin UI session for the
+  user in the organization and deletes them together, with no page limit. A member with thousands of
+  these docs could exceed the mutation write limit and become impossible to remove.
 - **A batch download re-checks the bearer, not every file.** `/api/v1/files/download-urls` reads each
   node through `get_data_for_public_download_url`, which filters per node, then materializes, then
   re-resolves the principal before signing. The re-resolve is a workspace question, and only the nodes

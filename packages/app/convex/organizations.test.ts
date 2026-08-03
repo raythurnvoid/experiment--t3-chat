@@ -2484,7 +2484,7 @@ describe("remove_user_from_organization", () => {
 		expect(otherMemberMemberships).toHaveLength(1);
 	});
 
-	test("permanently revokes the removed member's organization keys without changing other keys", async () => {
+	test("revokes only the removed member's credentials, grants, and plugin sessions", async () => {
 		const t = test_convex();
 		const [ownerId, memberId, otherMemberId] = await t.run(async (ctx) =>
 			Promise.all([
@@ -2531,7 +2531,7 @@ describe("remove_user_from_organization", () => {
 		expect(otherOrganization._yay).toBeTruthy();
 
 		const alreadyRevokedAt = 123;
-		const credentialIds = await t.run(async (ctx) => {
+		const seededAccess = await t.run(async (ctx) => {
 			const now = Date.now();
 			await Promise.all([
 				ctx.db.insert("organizations_workspaces_users", {
@@ -2623,7 +2623,122 @@ describe("remove_user_from_organization", () => {
 					}),
 				]);
 
-			return { memberHome, memberProject, memberAlreadyRevoked, otherMember, otherOrganizationCredential };
+			const pluginVersionId = await ctx.db.insert("plugins_versions", {
+				name: "removal-test",
+				displayName: "Removal test",
+				version: "0.1.0",
+				description: "Membership-removal token fixture",
+				reviewStatus: "passed",
+				isLatest: true,
+				artifactHash: `sha256:${"a".repeat(64)}`,
+				sourceRepositoryUrl: "https://github.com/bonobo/removal-test-plugin",
+				sourceOwner: "bonobo",
+				sourceRepo: "removal-test-plugin",
+				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+				manifestR2Key: "plugins/removal-test/manifest.json",
+				backendEntrypointFile: null,
+				configuration: null,
+				events: [],
+				pages: [],
+				fileViews: [],
+				capabilities: [],
+				outboundOrigins: [],
+				files: [],
+				sourceStatus: "ready",
+				sourceLastError: null,
+				createdBy: ownerId,
+				updatedAt: now,
+			});
+			const [removedInstallationId, keptInstallationId] = await Promise.all([
+				ctx.db.insert("plugins_workspace_installations", {
+					organizationId: organization._yay!.organizationId,
+					workspaceId: organization._yay!.defaultWorkspaceId,
+					pluginVersionId,
+					pluginName: "removal-test",
+					status: "enabled",
+					configurationYaml: null,
+					acceptedCapabilities: [],
+					capabilitiesAcceptedAt: now,
+					acceptedOutboundOrigins: [],
+					outboundOriginsAcceptedAt: now,
+					installedBy: ownerId,
+					updatedBy: ownerId,
+					updatedAt: now,
+				}),
+				ctx.db.insert("plugins_workspace_installations", {
+					organizationId: otherOrganization._yay!.organizationId,
+					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+					pluginVersionId,
+					pluginName: "removal-test",
+					status: "enabled",
+					configurationYaml: null,
+					acceptedCapabilities: [],
+					capabilitiesAcceptedAt: now,
+					acceptedOutboundOrigins: [],
+					outboundOriginsAcceptedAt: now,
+					installedBy: ownerId,
+					updatedBy: ownerId,
+					updatedAt: now,
+				}),
+			]);
+			const [removedGrantId, keptGrantId, removedSessionId, keptSessionId] = await Promise.all([
+				ctx.db.insert("public_api_grants", {
+					organizationId: organization._yay!.organizationId,
+					workspaceId: workspace._yay!.workspaceId,
+					userId: memberId,
+					threadId: null,
+					principalKey: "removal-test-target",
+					tokenHash: "1".repeat(64),
+					scopes: ["files:list"],
+					pathPrefix: null,
+					createdAt: now,
+					expiresAt: now + 10 * 60 * 1000,
+				}),
+				ctx.db.insert("public_api_grants", {
+					organizationId: otherOrganization._yay!.organizationId,
+					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+					userId: memberId,
+					threadId: null,
+					principalKey: "removal-test-control",
+					tokenHash: "2".repeat(64),
+					scopes: ["files:list"],
+					pathPrefix: null,
+					createdAt: now,
+					expiresAt: now + 10 * 60 * 1000,
+				}),
+				ctx.db.insert("plugins_ui_sessions", {
+					organizationId: organization._yay!.organizationId,
+					workspaceId: organization._yay!.defaultWorkspaceId,
+					installationId: removedInstallationId,
+					pluginVersionId,
+					userId: memberId,
+					tokenHash: "3".repeat(64),
+					createdAt: now,
+					expiresAt: now + 10 * 60 * 1000,
+				}),
+				ctx.db.insert("plugins_ui_sessions", {
+					organizationId: otherOrganization._yay!.organizationId,
+					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+					installationId: keptInstallationId,
+					pluginVersionId,
+					userId: memberId,
+					tokenHash: "4".repeat(64),
+					createdAt: now,
+					expiresAt: now + 10 * 60 * 1000,
+				}),
+			]);
+
+			return {
+				memberHome,
+				memberProject,
+				memberAlreadyRevoked,
+				otherMember,
+				otherOrganizationCredential,
+				removedGrantId,
+				keptGrantId,
+				removedSessionId,
+				keptSessionId,
+			};
 		});
 
 		const removeResult = await owner.mutation(api.organizations.remove_user_from_organization, {
@@ -2634,11 +2749,15 @@ describe("remove_user_from_organization", () => {
 
 		const afterRemove = await t.run(async (ctx) =>
 			Promise.all([
-				ctx.db.get("api_credentials", credentialIds.memberHome),
-				ctx.db.get("api_credentials", credentialIds.memberProject),
-				ctx.db.get("api_credentials", credentialIds.memberAlreadyRevoked),
-				ctx.db.get("api_credentials", credentialIds.otherMember),
-				ctx.db.get("api_credentials", credentialIds.otherOrganizationCredential),
+				ctx.db.get("api_credentials", seededAccess.memberHome),
+				ctx.db.get("api_credentials", seededAccess.memberProject),
+				ctx.db.get("api_credentials", seededAccess.memberAlreadyRevoked),
+				ctx.db.get("api_credentials", seededAccess.otherMember),
+				ctx.db.get("api_credentials", seededAccess.otherOrganizationCredential),
+				ctx.db.get("public_api_grants", seededAccess.removedGrantId),
+				ctx.db.get("public_api_grants", seededAccess.keptGrantId),
+				ctx.db.get("plugins_ui_sessions", seededAccess.removedSessionId),
+				ctx.db.get("plugins_ui_sessions", seededAccess.keptSessionId),
 			]),
 		);
 		expect(afterRemove[0]?.revokedAt).toEqual(expect.any(Number));
@@ -2646,6 +2765,10 @@ describe("remove_user_from_organization", () => {
 		expect(afterRemove[2]?.revokedAt).toBe(alreadyRevokedAt);
 		expect(afterRemove[3]?.revokedAt).toBeNull();
 		expect(afterRemove[4]?.revokedAt).toBeNull();
+		expect(afterRemove[5]).toBeNull();
+		expect(afterRemove[6]?._id).toBe(seededAccess.keptGrantId);
+		expect(afterRemove[7]).toBeNull();
+		expect(afterRemove[8]?._id).toBe(seededAccess.keptSessionId);
 		const quotaDocsAfterRemove = await t.run((ctx) =>
 			ctx.db
 				.query("quotas")
@@ -2668,12 +2791,16 @@ describe("remove_user_from_organization", () => {
 
 		const afterReinvite = await t.run(async (ctx) =>
 			Promise.all([
-				ctx.db.get("api_credentials", credentialIds.memberHome),
-				ctx.db.get("api_credentials", credentialIds.memberProject),
+				ctx.db.get("api_credentials", seededAccess.memberHome),
+				ctx.db.get("api_credentials", seededAccess.memberProject),
+				ctx.db.get("public_api_grants", seededAccess.removedGrantId),
+				ctx.db.get("plugins_ui_sessions", seededAccess.removedSessionId),
 			]),
 		);
 		expect(afterReinvite[0]?.revokedAt).toBe(afterRemove[0]?.revokedAt);
 		expect(afterReinvite[1]?.revokedAt).toBe(afterRemove[1]?.revokedAt);
+		expect(afterReinvite[2]).toBeNull();
+		expect(afterReinvite[3]).toBeNull();
 		const quotaDocsAfterReinvite = await t.run((ctx) =>
 			ctx.db
 				.query("quotas")

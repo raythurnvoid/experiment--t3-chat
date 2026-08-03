@@ -140,6 +140,7 @@ type FileEditorSnapshotsModalListItem_ClassNames =
 type FileEditorSnapshotsModalListItem_Props = {
 	snapshot: FileEditorSnapshotsModal_ListSnapshot;
 	userDisplayName: string;
+	editable: boolean;
 	onClickArchive: (snapshotId: app_convex_Id<"files_snapshots">, isArchived: boolean) => void | Promise<void>;
 	onClickSnapshot: (snapshotId: app_convex_Id<"files_snapshots">) => void;
 };
@@ -147,7 +148,7 @@ type FileEditorSnapshotsModalListItem_Props = {
 const FileEditorSnapshotsModalListItem = memo(function FileEditorSnapshotsModalListItem(
 	props: FileEditorSnapshotsModalListItem_Props,
 ) {
-	const { snapshot, userDisplayName, onClickArchive, onClickSnapshot } = props;
+	const { snapshot, userDisplayName, editable, onClickArchive, onClickSnapshot } = props;
 	const isArchived = snapshot.archivedAt > 0;
 
 	const handleRowClick = useFn((event: MouseEvent<HTMLDivElement>) => {
@@ -166,6 +167,7 @@ const FileEditorSnapshotsModalListItem = memo(function FileEditorSnapshotsModalL
 	});
 
 	const handleArchiveClick = useFn(() => {
+		if (!editable) return;
 		onClickArchive(snapshot._id, isArchived);
 	});
 
@@ -217,6 +219,7 @@ const FileEditorSnapshotsModalListItem = memo(function FileEditorSnapshotsModalL
 					)}
 					variant="ghost-highlightable"
 					tooltip={isArchived ? "Restore" : "Archive"}
+					disabled={!editable}
 					onClick={handleArchiveClick}
 				>
 					<MyIconButtonIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyIconButtonIcon>
@@ -261,6 +264,7 @@ type FileEditorSnapshotsModalList_ClassNames =
 type FileEditorSnapshotsModalList_Props = {
 	snapshotsQueryResult: FileEditorSnapshotsModal_ListQueryResult | undefined;
 	usersDict: FileEditorSnapshotsModal_UsersDict;
+	editable: boolean;
 	showSkeletonWhenLoading: boolean;
 	onClickArchive: (snapshotId: app_convex_Id<"files_snapshots">, isArchived: boolean) => void | Promise<void>;
 	onClickSnapshot: (snapshotId: app_convex_Id<"files_snapshots">) => void;
@@ -269,7 +273,7 @@ type FileEditorSnapshotsModalList_Props = {
 const FileEditorSnapshotsModalList = memo(function FileEditorSnapshotsModalList(
 	props: FileEditorSnapshotsModalList_Props,
 ) {
-	const { snapshotsQueryResult, usersDict, showSkeletonWhenLoading, onClickArchive, onClickSnapshot } = props;
+	const { snapshotsQueryResult, usersDict, editable, showSkeletonWhenLoading, onClickArchive, onClickSnapshot } = props;
 
 	if (snapshotsQueryResult === undefined) {
 		if (!showSkeletonWhenLoading) {
@@ -302,6 +306,7 @@ const FileEditorSnapshotsModalList = memo(function FileEditorSnapshotsModalList(
 					key={snapshot._id}
 					snapshot={snapshot}
 					userDisplayName={usersDict[snapshot.createdBy]?.displayName ?? "Unknown"}
+					editable={editable}
 					onClickArchive={onClickArchive}
 					onClickSnapshot={onClickSnapshot}
 				/>
@@ -401,6 +406,7 @@ type FileEditorSnapshotsModalPreviewModal_ClassNames =
 	| "FileEditorSnapshotsModalPreviewModal-error-message";
 
 type FileEditorSnapshotsModalPreviewModal_Props = {
+	editable: boolean;
 	isNextDisabled: boolean;
 	isPreviousDisabled: boolean;
 	isRestoring: boolean;
@@ -423,6 +429,7 @@ const FileEditorSnapshotsModalPreviewModal = memo(function FileEditorSnapshotsMo
 	props: FileEditorSnapshotsModalPreviewModal_Props,
 ) {
 	const {
+		editable,
 		isNextDisabled,
 		isPreviousDisabled,
 		isRestoring,
@@ -525,7 +532,7 @@ const FileEditorSnapshotsModalPreviewModal = memo(function FileEditorSnapshotsMo
 	const currentMarkdownForSnapshotDiff = selectedSnapshotContent === undefined ? "" : getCurrentMarkdown();
 
 	const handleClickConfirm = useFn(() => {
-		if (selectedSnapshotMarkdown == null) return;
+		if (!editable || selectedSnapshotMarkdown == null) return;
 		onClickConfirm(selectedSnapshotMarkdown);
 	});
 
@@ -662,7 +669,7 @@ const FileEditorSnapshotsModalPreviewModal = memo(function FileEditorSnapshotsMo
 						Cancel
 					</MyButton>
 					<MyButton
-						disabled={selectedSnapshotMarkdown == null || isRestoring}
+						disabled={!editable || selectedSnapshotMarkdown == null || isRestoring}
 						aria-busy={selectedSnapshotMarkdown == null || isRestoring}
 						onClick={handleClickConfirm}
 					>
@@ -681,6 +688,7 @@ const FileEditorSnapshotsModalPreviewModal = memo(function FileEditorSnapshotsMo
 export type FileEditorSnapshotsModal_ClassNames = "FileEditorSnapshotsModal";
 
 type FileEditorSnapshotsModalListModal_Props = {
+	editable: boolean;
 	isListOpen: boolean;
 	isNextDisabled: boolean;
 	isPreviewOpen: boolean;
@@ -712,6 +720,7 @@ const FileEditorSnapshotsModalListModal = memo(function FileEditorSnapshotsModal
 	props: FileEditorSnapshotsModalListModal_Props,
 ) {
 	const {
+		editable,
 		isListOpen,
 		isNextDisabled,
 		isPreviewOpen,
@@ -756,6 +765,7 @@ const FileEditorSnapshotsModalListModal = memo(function FileEditorSnapshotsModal
 					<FileEditorSnapshotsModalList
 						snapshotsQueryResult={snapshotsQueryResult}
 						usersDict={usersDict}
+						editable={editable}
 						showSkeletonWhenLoading={listShowSkeletonWhenLoading}
 						onClickArchive={onClickArchive}
 						onClickSnapshot={onClickSnapshot}
@@ -765,6 +775,7 @@ const FileEditorSnapshotsModalListModal = memo(function FileEditorSnapshotsModal
 				<MyModalCloseTrigger />
 
 				<FileEditorSnapshotsModalPreviewModal
+					editable={editable}
 					isNextDisabled={isNextDisabled}
 					isPreviousDisabled={isPreviousDisabled}
 					isRestoring={isRestoring}
@@ -792,12 +803,13 @@ const FileEditorSnapshotsModalListModal = memo(function FileEditorSnapshotsModal
 export type FileEditorSnapshotsModal_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
+	editable: boolean;
 	getCurrentMarkdown: () => string;
 	onApplySnapshotMarkdown?: (markdown: string) => void;
 };
 
 export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(props: FileEditorSnapshotsModal_Props) {
-	const { nodeId, sessionId, getCurrentMarkdown, onApplySnapshotMarkdown } = props;
+	const { nodeId, sessionId, editable, getCurrentMarkdown, onApplySnapshotMarkdown } = props;
 
 	const convex = useConvex();
 
@@ -871,7 +883,8 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 	});
 
 	const handleClickConfirm = useFn((selectedSnapshotMarkdown: string) => {
-		if (!selectedSnapshotId) return;
+		// Permission can change while the preview is open, so guard the restore handler too.
+		if (!editable || !selectedSnapshotId) return;
 
 		setIsRestoring(true);
 		Promise.try(async () => {
@@ -942,6 +955,8 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 
 	const handleClickArchive = useFn<FileEditorSnapshotsModalList_Props["onClickArchive"]>(
 		async (snapshotId, isArchived) => {
+			if (!editable) return;
+
 			const mutation = isArchived ? unarchiveSnapshot : archiveSnapshot;
 			const archiveResult = await mutation({
 				membershipId,
@@ -973,6 +988,7 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 			</MyIconButton>
 
 			<FileEditorSnapshotsModalListModal
+				editable={editable}
 				isListOpen={isListOpen}
 				isNextDisabled={isNextDisabled}
 				isPreviewOpen={isPreviewOpen}
@@ -1003,3 +1019,39 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 	);
 });
 // #endregion root
+
+// #region tests
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, expect, test, vi } = import.meta.vitest;
+
+	describe("FileEditorSnapshotsModalListItem", () => {
+		test("keeps archive disabled when the file is read-only", async () => {
+			const { cleanup, fireEvent, render, screen } = await import("@testing-library/react");
+			const onClickArchive = vi.fn();
+			try {
+				render(
+					<FileEditorSnapshotsModalListItem
+						snapshot={{
+							_id: "snapshot_1" as app_convex_Id<"files_snapshots">,
+							_creationTime: 1,
+							createdBy: "user_1",
+							archivedAt: 0,
+						}}
+						userDisplayName="User"
+						editable={false}
+						onClickArchive={onClickArchive}
+						onClickSnapshot={() => {}}
+					/>,
+				);
+
+				const archiveButton = screen.getByRole("button", { name: "Archive" });
+				expect(archiveButton.hasAttribute("disabled")).toBe(true);
+				fireEvent.click(archiveButton);
+				expect(onClickArchive).not.toHaveBeenCalled();
+			} finally {
+				cleanup();
+			}
+		});
+	});
+}
+// #endregion tests

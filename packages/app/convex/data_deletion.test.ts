@@ -591,6 +591,7 @@ async function data_deletion_test_count_workspace_content(
 		aiFileContents,
 		apiCredentials,
 		publicApiGrants,
+		permissionGrants,
 		chatMessages,
 	] = await Promise.all([
 		ctx.db.query("files_nodes").collect(),
@@ -614,6 +615,7 @@ async function data_deletion_test_count_workspace_content(
 		ctx.db.query("ai_chat_files_content").collect(),
 		ctx.db.query("api_credentials").collect(),
 		ctx.db.query("public_api_grants").collect(),
+		ctx.db.query("access_control_permission_grants").collect(),
 		ctx.db.query("chat_messages").collect(),
 	]);
 	const inWorkspace = (row: { organizationId: string; workspaceId: string }) =>
@@ -641,6 +643,7 @@ async function data_deletion_test_count_workspace_content(
 			aiFileContents,
 			apiCredentials,
 			publicApiGrants,
+			permissionGrants,
 			chatMessages,
 		].reduce((total, rows) => total + rows.filter(inWorkspace).length, 0) +
 		pendingUpdateCleanupTasks.filter((doc) => workspacePendingUpdateIds.has(doc.pendingUpdateId)).length
@@ -2965,11 +2968,33 @@ describe("hard_delete_user_data", () => {
 		);
 
 		const seeded = await t.run(async (ctx) => {
-			await data_deletion_test_seed_page(ctx, {
+			const defaultPage = await data_deletion_test_seed_page(ctx, {
 				userId: user.userId,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				tag: "reset-default-page",
+			});
+			const now = Date.now();
+			const defaultCustomRoleId = await ctx.db.insert("access_control_roles", {
+				organizationId: user.defaultOrganizationId,
+				name: "Reset reader",
+				normalizedName: "reset reader",
+				description: "Role removed by data reset",
+				permissions: ["content.read"],
+				createdBy: user.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				resourceKind: "file",
+				resourceId: String(defaultPage.nodeId),
+				principalKind: "role",
+				role: defaultCustomRoleId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
 			});
 
 			const extraWorkspace = await organizations_db_create_workspace(ctx, {
@@ -2982,11 +3007,22 @@ describe("hard_delete_user_data", () => {
 			if (extraWorkspace._nay) {
 				throw new Error(extraWorkspace._nay.message);
 			}
-			await data_deletion_test_seed_page(ctx, {
+			const extraPage = await data_deletion_test_seed_page(ctx, {
 				userId: user.userId,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: extraWorkspace._yay.workspaceId,
 				tag: "reset-personal-extra-page",
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: extraWorkspace._yay.workspaceId,
+				resourceKind: "file",
+				resourceId: String(extraPage.nodeId),
+				principalKind: "role",
+				role: defaultCustomRoleId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
 			});
 
 			const ownedOrganization = await organizations_db_create(ctx, {
@@ -3029,6 +3065,7 @@ describe("hard_delete_user_data", () => {
 			});
 
 			return {
+				defaultCustomRoleId,
 				extraWorkspaceId: extraWorkspace._yay.workspaceId,
 				ownedOrganizationId: ownedOrganization._yay.organizationId,
 				ownedDefaultWorkspaceId: ownedOrganization._yay.defaultWorkspaceId,
@@ -3039,9 +3076,41 @@ describe("hard_delete_user_data", () => {
 			};
 		});
 
-		await data_deletion_test_hard_delete_user_data_until_done(t, {
-			userId: user.userId,
-		});
+		let resetFinished = false;
+		for (let i = 0; i < 100; i += 1) {
+			const result = await t.run((ctx) =>
+				ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+					userId: user.userId,
+					_test_batchSize: 1,
+				}),
+			);
+			const roleState = await t.run(async (ctx) => {
+				const [role, grants] = await Promise.all([
+					ctx.db.get("access_control_roles", seeded.defaultCustomRoleId),
+					ctx.db
+						.query("access_control_permission_grants")
+						.withIndex("by_organization_role_workspace_resource", (q) =>
+							q
+								.eq("organizationId", user.defaultOrganizationId)
+								.eq("principalKind", "role")
+								.eq("role", seeded.defaultCustomRoleId),
+						)
+						.collect(),
+				]);
+				return { role, grants };
+			});
+
+			// Every mutation commits separately. Delete the role only after home and extra-workspace
+			// grants no longer point at it.
+			if (!roleState.role) {
+				expect(roleState.grants).toHaveLength(0);
+			}
+			if (result.done) {
+				resetFinished = true;
+				break;
+			}
+		}
+		expect(resetFinished).toBe(true);
 
 		const after = await t.run(async (ctx) => {
 			const [
@@ -3050,7 +3119,8 @@ describe("hard_delete_user_data", () => {
 				defaultWorkspace,
 				defaultMembership,
 				defaultOwnerRole,
-				defaultOrganizationGrants,
+				defaultCustomRole,
+				defaultPermissionGrants,
 				defaultWorkspaceFiles,
 				extraWorkspace,
 				ownedOrganization,
@@ -3086,15 +3156,11 @@ describe("hard_delete_user_data", () => {
 							.eq("userId", user.userId),
 					)
 					.first(),
+				ctx.db.get("access_control_roles", seeded.defaultCustomRoleId),
 				ctx.db
 					.query("access_control_permission_grants")
-					.withIndex("by_organization_workspace_resource_role_permission", (q) =>
-						q
-							.eq("organizationId", user.defaultOrganizationId)
-							.eq("workspaceId", user.defaultWorkspaceId)
-							.eq("resourceKind", "organization")
-							.eq("resourceId", user.defaultOrganizationId)
-							.eq("principalKind", "role"),
+					.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+						q.eq("organizationId", user.defaultOrganizationId).eq("workspaceId", user.defaultWorkspaceId),
 					)
 					.collect(),
 				ctx.db
@@ -3144,7 +3210,8 @@ describe("hard_delete_user_data", () => {
 				defaultWorkspace,
 				defaultMembership,
 				defaultOwnerRole,
-				defaultOrganizationGrants,
+				defaultCustomRole,
+				defaultPermissionGrants,
 				defaultWorkspaceFiles,
 				extraWorkspace,
 				ownedOrganization,
@@ -3170,7 +3237,8 @@ describe("hard_delete_user_data", () => {
 		// The reset keeps the owner in the organization doc. It writes no role assignment and no grant.
 		expect(after.defaultOwnerRole).toBeNull();
 		expect(after.defaultOrganization?.ownerUserId).toBe(user.userId);
-		expect(after.defaultOrganizationGrants).toHaveLength(0);
+		expect(after.defaultCustomRole).toBeNull();
+		expect(after.defaultPermissionGrants).toHaveLength(0);
 		expect(after.defaultWorkspaceFiles).toHaveLength(0);
 		expect(after.extraWorkspace).toBeNull();
 		expect(after.ownedOrganization).toBeNull();

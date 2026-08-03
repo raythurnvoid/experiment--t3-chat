@@ -1355,13 +1355,69 @@ type RoutePluginsPlugin_ClassNames =
 	| "RoutePluginsPluginConsentModal-empty"
 	| "RoutePluginsPluginConsentModal-actions";
 
+/**
+ * Let workspace managers open any plugin and publishers open their own plugin.
+ * Return `undefined` until both live permission sources have loaded.
+ */
+function can_open_plugin_detail(args: {
+	canManagePlugins: boolean | undefined;
+	publisherPlugin: RoutePlugins_PublisherPlugin | null | undefined;
+}) {
+	if (args.canManagePlugins === undefined) {
+		return undefined;
+	}
+	if (args.canManagePlugins) {
+		return true;
+	}
+	if (args.publisherPlugin === undefined) {
+		return undefined;
+	}
+	return args.publisherPlugin !== null;
+}
+
+function get_publisher_version(
+	publisherPlugin: RoutePlugins_PublisherPlugin,
+): RoutePlugins_PublishedPlugin | null {
+	const version = publisherPlugin.versions.at(0);
+	if (!version) {
+		return null;
+	}
+
+	return {
+		pluginVersionId: version._id,
+		name: version.name,
+		displayName: version.displayName,
+		description: version.description,
+		version: version.version,
+		publisherDisplayName: "You",
+		reviewStatus: version.reviewStatus,
+		capabilities: version.capabilities,
+		outboundOrigins: version.outboundOrigins,
+		pages: version.pages,
+		fileViews: version.fileViews,
+	};
+}
+
 function RoutePluginsPlugin() {
 	const { pluginName } = Route.useParams();
-	const { membershipId } = AppTenantProvider.useContext();
-	const plugins = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId });
-	const installations = useQuery(app_convex_api.plugins.list_installations, { membershipId });
+	const { membershipId, workspaceId } = AppTenantProvider.useContext();
+	const organizationList = useQuery(app_convex_api.organizations.list);
+	const workspacePermissions = organizationList?.workspaceIdsPermissionsDict[workspaceId];
+	const canManagePlugins =
+		organizationList === undefined
+			? undefined
+			: workspacePermissions === "all" || workspacePermissions?.includes("workspace.plugins.manage") === true;
+	const plugins = useQuery(
+		app_convex_api.plugins.list_published_plugins,
+		canManagePlugins === true ? { membershipId } : "skip",
+	);
+	const installations = useQuery(
+		app_convex_api.plugins.list_installations,
+		canManagePlugins === true ? { membershipId } : "skip",
+	);
 	// Non-null only when the signed-in user owns this plugin's repository claim.
 	const publisherPlugin = useQuery(app_convex_api.plugins.get_publisher_plugin, { pluginName });
+	const canOpenPluginDetail = can_open_plugin_detail({ canManagePlugins, publisherPlugin });
 	const [consenting, setConsenting] = useState(false);
 	const [installing, setInstalling] = useState(false);
 	const [uninstalling, setUninstalling] = useState(false);
@@ -1481,7 +1537,10 @@ function RoutePluginsPlugin() {
 
 	const breadcrumb = <PluginsHeaderBreadcrumb trail={["plugins"]} current={pluginName} />;
 
-	if (plugins === undefined || installations === undefined) {
+	if (
+		canOpenPluginDetail === undefined ||
+		(canManagePlugins === true && (plugins === undefined || installations === undefined))
+	) {
 		return (
 			<main
 				className={cn(
@@ -1502,7 +1561,29 @@ function RoutePluginsPlugin() {
 		);
 	}
 
-	const plugin = plugins.find((item) => item.name === pluginName) ?? null;
+	if (!canOpenPluginDetail) {
+		return (
+			<main
+				className={cn(
+					"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames,
+					"app-scrollable" satisfies AppClassName,
+				)}
+			>
+				<div className={"RoutePluginsPlugin-content" satisfies RoutePluginsPlugin_ClassNames}>
+					{breadcrumb}
+					<div className={"RoutePluginsPlugin-missing" satisfies RoutePluginsPlugin_ClassNames} role="alert">
+						You don't have permission to manage plugins in this workspace.
+					</div>
+				</div>
+			</main>
+		);
+	}
+
+	const plugin = canManagePlugins
+		? (plugins?.find((item) => item.name === pluginName) ?? null)
+		: publisherPlugin
+			? get_publisher_version(publisherPlugin)
+			: null;
 	if (plugin === null) {
 		return (
 			<main
@@ -1521,7 +1602,7 @@ function RoutePluginsPlugin() {
 		);
 	}
 
-	const installedItem = installations.find((item) => item.installation.pluginName === plugin.name) ?? null;
+	const installedItem = installations?.find((item) => item.installation.pluginName === plugin.name) ?? null;
 	const installedVersion = installedItem?.version;
 	const consentDiff = plugins_consent_diff({
 		current: installedVersion
@@ -1532,7 +1613,7 @@ function RoutePluginsPlugin() {
 	// Installed-and-current shows only Uninstall; reinstalling means uninstalling and installing again.
 	const installAction = installedVersion ? "Update" : "Install";
 	const installProgress = installAction === "Update" ? "Updating..." : "Installing...";
-	const showInstall = !installedVersion || installedVersion.version !== plugin.version;
+	const showInstall = canManagePlugins && (!installedVersion || installedVersion.version !== plugin.version);
 	const installationBlocked = plugin.reviewStatus === "rejected" || plugin.reviewStatus === "flagged";
 	// Upserts require plugin.secrets.read on the installed version, but listing and deleting deliberately
 	// do not — leftover secrets must stay reachable after an upgrade drops the capability.
@@ -1790,3 +1871,30 @@ const Route = createFileRoute("/w/$organizationName/$workspaceName/plugins/$plug
 
 export { Route };
 // #endregion root
+
+// #region tests
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, expect, test } = import.meta.vitest;
+
+	describe("can_open_plugin_detail", () => {
+		test("allows a publisher without workspace plugin management", () => {
+			const publisherPlugin = {} as RoutePlugins_PublisherPlugin;
+
+			expect(
+				can_open_plugin_detail({ canManagePlugins: false, publisherPlugin }),
+			).toBe(true);
+			expect(can_open_plugin_detail({ canManagePlugins: false, publisherPlugin: null })).toBe(false);
+			expect(can_open_plugin_detail({ canManagePlugins: true, publisherPlugin: undefined })).toBe(true);
+		});
+
+		test("waits for both permission sources before denying access", () => {
+			expect(can_open_plugin_detail({ canManagePlugins: undefined, publisherPlugin: null })).toBe(
+				undefined,
+			);
+			expect(can_open_plugin_detail({ canManagePlugins: false, publisherPlugin: undefined })).toBe(
+				undefined,
+			);
+		});
+	});
+}
+// #endregion tests

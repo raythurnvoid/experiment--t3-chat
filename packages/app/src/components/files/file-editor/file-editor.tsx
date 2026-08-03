@@ -414,6 +414,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 			<FileEditorDiff
 				key={nodeId}
 				nodeId={nodeId}
+				editable={editable}
 				pendingUpdateId={pendingUpdateId}
 				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
@@ -430,6 +431,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 	return (
 		<FileEditorPlainText
 			nodeId={nodeId}
+			editable={editable}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}

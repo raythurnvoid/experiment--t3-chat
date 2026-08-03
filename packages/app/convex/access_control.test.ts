@@ -4808,6 +4808,121 @@ describe("file sharing", () => {
 		expect(invitedIntoSide._nay?.message).toContain("shared on a file");
 	});
 
+	test("a default role assignment checks file grants only in workspaces the target has joined", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "assignment-reach-org",
+			suffix: "assignment-reach",
+		});
+		const targetId = await access_control_test_bootstrap_user(t, {
+			clerkUserId: "clerk-assignment-reach-target",
+		});
+
+		const invited = await fixture.asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userIdToAdd: targetId,
+		});
+		expect(invited._nay).toBeUndefined();
+
+		const sideWorkspaceId = await t.run(async (ctx) => {
+			const workspace = await organizations_db_create_workspace(ctx, {
+				userId: fixture.ownerId,
+				organizationId: fixture.organizationId,
+				name: "assign-side",
+				description: "",
+				now: Date.now(),
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return workspace._yay.workspaceId;
+		});
+		const ownerSideMembershipId = await access_control_test_read_membership_id(t, {
+			organizationId: fixture.organizationId,
+			workspaceId: sideWorkspaceId,
+			userId: fixture.ownerId,
+		});
+
+		const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: ownerSideMembershipId,
+			parentId: files_ROOT_ID,
+			path: "assign-secret",
+		});
+		expect(folder._nay).toBeUndefined();
+		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: ownerSideMembershipId,
+			nodeId: folder._yay!.nodeId,
+		});
+		expect(restricted._nay).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: ownerSideMembershipId,
+			nodeId: folder._yay!.nodeId,
+			principal: { kind: "role", role: "member" },
+			level: "read",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const managerAssigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: fixture.memberId,
+			role: "admin",
+		});
+		expect(managerAssigned._nay).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const targetLowered = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: targetId,
+			role: "viewer",
+		});
+		expect(targetLowered._nay).toBeUndefined();
+
+		// The role is shared in the side workspace, but the target is not a member there. Assigning it
+		// in the default workspace cannot switch that share on, so the unrelated grant must not block the assignment.
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const assignedOutsideShareReach = await fixture.asMember.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: targetId,
+			role: "member",
+		});
+		expect(assignedOutsideShareReach._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const loweredAgain = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: targetId,
+			role: "viewer",
+		});
+		expect(loweredAgain._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: sideWorkspaceId,
+				userId: targetId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+		});
+
+		// Once the target joins the side workspace, the same organization role opens the shared folder.
+		// The manager is not a member there, so they may not hand that access out.
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const refusedInsideShareReach = await fixture.asMember.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: targetId,
+			role: "member",
+		});
+		expect(refusedInsideShareReach._nay?.message).toContain("shared on a file");
+	});
+
 	test("someone given Can manage on a folder cannot share it with a role", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -5668,6 +5783,18 @@ describe("file sharing", () => {
 		});
 		expect(lowered._nay).toBeUndefined();
 
+		const [listedAfterLowering, canWriteAfterLowering] = await Promise.all([
+			fixture.asMember.query(api.files_pending_updates.list_files_pending_updates, {
+				membershipId: fixture.memberMembershipId,
+			}),
+			fixture.asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+				membershipId: fixture.memberMembershipId,
+				nodeId,
+			}),
+		]);
+		expect(listedAfterLowering.map((pendingUpdate) => pendingUpdate._id)).toEqual([draftId]);
+		expect(canWriteAfterLowering).toBe(false);
+
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 		const discarded = await fixture.asMember.mutation(api.files_pending_updates.discard_file_pending_structural, {
 			membershipId: fixture.memberMembershipId,
@@ -5677,6 +5804,17 @@ describe("file sharing", () => {
 
 		const afterDiscard = await t.run((ctx) => ctx.db.get("files_pending_updates", draftId));
 		expect(afterDiscard?.pendingMove).toBeUndefined();
+
+		const contentDiscarded = await fixture.asMember.mutation(
+			api.files_pending_updates.discard_file_pending_content,
+			{
+				membershipId: fixture.memberMembershipId,
+				nodeId,
+				pendingUpdateId: draftId,
+			},
+		);
+		expect(contentDiscarded._nay).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", draftId))).toBeNull();
 	});
 
 	test("an admin's role gives nothing inside a restricted scope", async () => {
@@ -6850,6 +6988,66 @@ describe("file sharing", () => {
 		expect(ownerListed).toHaveLength(3);
 		expect(memberListed).toHaveLength(1);
 		expect(memberListed[0]?.targets.map((target) => target.id)).toEqual([openId]);
+	});
+
+	test("an activity disappears when its target moves to a new access scope", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "activity-move-org",
+			suffix: "activity-move",
+		});
+		const { childId } = await seed_restricted_folder(t, fixture, { name: "activity-old-scope" });
+		const destinationFolder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: files_ROOT_ID,
+			path: "activity-new-scope",
+		});
+		expect(destinationFolder._nay).toBeUndefined();
+		const destinationFolderId = destinationFolder._yay!.nodeId;
+		const destinationRestricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: destinationFolderId,
+		});
+		expect(destinationRestricted._nay).toBeUndefined();
+
+		const staleActivityId = await access_control_test_seed_activity(t, fixture, {
+			fileNodeId: childId,
+			targets: [{ type: "file_node", id: childId, path: "/activity-old-scope/inside", message: "" }],
+		});
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const moved = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+			membershipId: fixture.ownerMembershipId,
+			itemIds: [childId],
+			targetParentId: destinationFolderId,
+		});
+		expect(moved._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: destinationFolderId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "read",
+		});
+		expect(shared._nay).toBeUndefined();
+
+		const currentActivityId = await access_control_test_seed_activity(t, fixture, {
+			fileNodeId: childId,
+			targets: [{ type: "file_node", id: childId, path: "/activity-new-scope/inside", message: "" }],
+		});
+		const [ownerListed, memberListed] = await Promise.all([
+			fixture.asOwner.query(api.activities.list_recent, { membershipId: fixture.ownerMembershipId }),
+			fixture.asMember.query(api.activities.list_recent, { membershipId: fixture.memberMembershipId }),
+		]);
+		expect(ownerListed.map((activity) => activity._id)).toEqual([currentActivityId]);
+		expect(memberListed.map((activity) => activity._id)).toEqual([currentActivityId]);
+
+		const archivedStale = await fixture.asMember.mutation(api.activities.archive_activity, {
+			membershipId: fixture.memberMembershipId,
+			activityId: staleActivityId,
+		});
+		expect(archivedStale._nay?.message).toBe("Activity not found");
 	});
 
 	test("dismissing activities leaves the ones about a restricted file alone", async () => {

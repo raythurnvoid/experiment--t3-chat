@@ -62,6 +62,24 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 	}
 >;
 
+/**
+ * Require Can manage when a child leaves its restricted scope.
+ * Moving the scope folder itself keeps the restriction with it.
+ */
+export function files_can_move_node_between_restricted_scopes(args: {
+	nodeId: app_convex_Id<"files_nodes">;
+	sourceRestrictedScopeNodeId: app_convex_Id<"files_nodes"> | undefined;
+	targetRestrictedScopeNodeId: app_convex_Id<"files_nodes"> | undefined;
+	canManageRestrictedScope: (scopeNodeId: app_convex_Id<"files_nodes">) => boolean;
+}) {
+	return (
+		!args.sourceRestrictedScopeNodeId ||
+		args.sourceRestrictedScopeNodeId === args.nodeId ||
+		args.sourceRestrictedScopeNodeId === args.targetRestrictedScopeNodeId ||
+		args.canManageRestrictedScope(args.sourceRestrictedScopeNodeId)
+	);
+}
+
 export const files_YJS_DOC_KEYS = {
 	richText: "default",
 	plainText: "markdown",

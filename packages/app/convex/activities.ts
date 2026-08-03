@@ -152,6 +152,7 @@ async function db_filter_visible_activities(
 	const targetNodes = (await Promise.all(targetNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
 		(fileNode) => fileNode !== null,
 	);
+	const targetNodeById = new Map(targetNodes.map((fileNode) => [fileNode._id, fileNode] as const));
 	const readableNodeIds = new Set(
 		(
 			await access_control_db_filter_readable_file_nodes(ctx, {
@@ -170,9 +171,11 @@ async function db_filter_visible_activities(
 			return args.hasWorkspaceRead;
 		}
 
-		// One hidden file is enough to drop the whole activity. Keeping it with the readable targets
-		// only would still show the title, and the title usually carries the hidden file's name.
-		return activity.targets.every((target) => readableNodeIds.has(target.id));
+		// One hidden or moved file is enough to drop the whole activity. The stored path, title, target
+		// message, and error belong to the old location, so current access cannot make them safe to show.
+		return activity.targets.every(
+			(target) => readableNodeIds.has(target.id) && targetNodeById.get(target.id)?.path === target.path,
+		);
 	});
 }
 

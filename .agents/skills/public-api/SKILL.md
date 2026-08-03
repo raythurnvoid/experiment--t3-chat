@@ -14,8 +14,8 @@ A caller is never more powerful than the user behind it. Every route passes `req
 `authorize_request(ctx, request, { requiredScope, allowedKinds, requiredUserPermission, route })` resolves the Bearer token into one principal kind:
 
 - `user_api_key` (`pk_<keyId>.<secret>`): user-bound key minted on the api-keys route. Only signed-in Clerk users can mint one. UI-mintable scopes: `files:list`, `files:read`, `files:write`, `files:download`.
-- `public_api_grant` (64-hex, short-lived): list/read only — the grant validator accepts only `files:list` and `files:read`.
-- `plugin_run` (`plr_...`) and `plugin_ui` (`plu_...`): plugin runtime tokens with their own constraints (a backend plugin run can only write Markdown siblings of its triggering file, and can only download its own source upload).
+- `public_api_grant` (64-hex, short-lived): list/read only — the grant validator accepts only `files:list` and `files:read`. Organization removal deletes the member's grants so a later invite cannot revive an old token.
+- `plugin_run` (`plr_...`) and `plugin_ui` (`plu_...`): plugin runtime tokens with their own constraints (a backend plugin run can only write Markdown siblings of its triggering file, and can only download its own source upload). Organization removal also deletes that member's plugin UI sessions.
 
 Routes restrict kinds with `allowedKinds`; a valid token of a disallowed kind gets 403. `write-many` and `upload-urls` are `user_api_key` only. `write` also allows `plugin_run`. `download-urls` allows the plugin kinds too.
 
@@ -33,7 +33,7 @@ All routes are POST and return JSON. Batch caps are tied to rate-bucket capaciti
 | `/api/v1/files/touch`        | `files:write`    | Up to 8 paths                                                                      |
 | `/api/v1/files/download-urls`| `files:download` | Up to 20 node ids, presigned GET urls, TTL <= 15 min                               |
 | `/api/v1/files/upload-urls`  | `files:write`    | Up to 20 files, presigned PUT urls, upload pipeline below                          |
-| `/api/v1/activities/start`   | `activities:write` | Plugin-facing activity feed entry                                                |
+| `/api/v1/activities/start`   | `activities:write` | Plugin-facing activity feed entry; its durable mutation rechecks the live installation/version, active actor membership, and unarchived source file |
 
 # Rate buckets and quota
 

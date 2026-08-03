@@ -328,15 +328,10 @@ async function files_pending_discard(
 	membershipId: app_convex_Id<"organizations_workspaces_users">,
 	pendingUpdate: app_convex_Doc<"files_pending_updates">,
 ) {
-	const decoded = decode_staged_unstaged(pendingUpdate);
-	if (decoded._nay) return decoded;
-
-	return await convex.action(app_convex_api.files_pending_updates.upsert_file_pending_update, {
+	return await convex.mutation(app_convex_api.files_pending_updates.discard_file_pending_content, {
 		membershipId,
 		nodeId: pendingUpdate.fileNodeId,
 		pendingUpdateId: pendingUpdate._id,
-		stagedMarkdown: decoded._yay.stagedMarkdown,
-		unstagedMarkdown: decoded._yay.stagedMarkdown,
 	});
 }
 
@@ -374,7 +369,7 @@ async function files_pending_row_accept(
 }
 
 /**
- * Discard a pending update doc per its kind: content-only → the existing content-revert upsert;
+ * Discard a pending update doc per its kind: content-only → the content-discard mutation;
  * move-only → the structural discard only; copy and eager-created docs → the structural discard
  * directly (it hard-deletes or fully removes the doc, which subsumes the content, and a revert
  * would hit a dead id); content-plus-move → revert the content first, then discard the move.
@@ -856,6 +851,7 @@ type FileEditorSidebarPendingItem_Props = {
 	isAddedFile: boolean;
 	replaceSourcePath: string | undefined;
 	acceptRequiresAllChanges: boolean;
+	canAccept: boolean;
 	disabled?: boolean;
 	onActionSuccess: (message: string) => void;
 };
@@ -874,6 +870,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		isAddedFile,
 		replaceSourcePath,
 		acceptRequiresAllChanges,
+		canAccept,
 		disabled,
 		onActionSuccess,
 	} = props;
@@ -956,7 +953,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// `preventDefault()` stops the native <summary> from toggling when the action buttons are clicked.
 	const handleAccept = useFn((event: MouseEvent<HTMLButtonElement>) => {
 		event.preventDefault();
-		if (isBusy) return;
+		if (isBusy || !canAccept) return;
 		if (acceptRequiresAllChanges) {
 			toast.error(PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE);
 			return;
@@ -1061,7 +1058,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							aria-label={`Accept ${actionLabel}`}
 							title={acceptRequiresAllChanges ? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE : undefined}
 							aria-busy={isBusy}
-							disabled={isBusy || disabled}
+							disabled={isBusy || disabled || !canAccept}
 							onClick={handleAccept}
 						>
 							Accept
@@ -1167,7 +1164,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							aria-label={`Accept ${actionLabel}`}
 							title={acceptRequiresAllChanges ? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE : undefined}
 							aria-busy={isBusy}
-							disabled={isBusy || disabled}
+							disabled={isBusy || disabled || !canAccept}
 							onClick={handleAccept}
 						>
 							Accept
@@ -1256,6 +1253,27 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 
 	const pendingUpdates = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, { membershipId });
 	const fileNodesList = useStableQuery(app_convex_api.files_nodes.list_tree, { membershipId });
+	// Accept writes into the file, so fail closed while permission loads or changes. Discard only
+	// removes this user's draft and stays available after demotion.
+	const pendingNodeIds = useMemo(
+		() => [...new Set((pendingUpdates ?? []).map((pendingUpdate) => pendingUpdate.fileNodeId))],
+		[pendingUpdates],
+	);
+	const acceptPermissionQueryResults = useQueries(
+		useMemo(
+			() =>
+				Object.fromEntries(
+					pendingNodeIds.map((nodeId) => [
+						nodeId,
+						{
+							query: app_convex_api.files_nodes.get_current_user_file_write_permission,
+							args: { membershipId, nodeId },
+						},
+					]),
+				),
+			[membershipId, pendingNodeIds],
+		),
+	);
 	// Keep both the id list and queries object stable. `useQueries` treats a new object as a new set
 	// of subscriptions and schedules render-phase state updates while it reconnects them.
 	const threadIds = useMemo(
@@ -1336,6 +1354,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		: PENDING_SOURCE_ALL;
 	const visibleRows = rows.filter((row) => pending_row_matches_source(row, activeSource));
 	const acceptRequiresAllChangesIds = files_pending_rows_get_accept_requires_all_changes_ids(rows, visibleRows);
+	const canAcceptAllVisibleRows = visibleRows.every(
+		(row) => acceptPermissionQueryResults[row.pendingUpdate.fileNodeId] === true,
+	);
 
 	useEffect(() => {
 		if (selectedSource !== activeSource) {
@@ -1344,7 +1365,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	}, [selectedSource, activeSource]);
 
 	const handleAcceptAll = useFn(() => {
-		if (isBulkBusy) return;
+		if (isBulkBusy || !canAcceptAllVisibleRows) return;
 		if (acceptRequiresAllChangesIds.size > 0) {
 			toast.error(PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE);
 			return;
@@ -1443,7 +1464,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							aria-label="Accept all shown pending changes"
 							title={acceptRequiresAllChangesIds.size > 0 ? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE : undefined}
 							aria-busy={isBulkBusy}
-							disabled={isBulkBusy}
+							disabled={isBulkBusy || !canAcceptAllVisibleRows}
 							onClick={handleAcceptAll}
 						>
 							<MyButtonIcon
@@ -1484,6 +1505,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							isAddedFile={row.isAddedFile}
 							replaceSourcePath={row.replaceSourcePath}
 							acceptRequiresAllChanges={acceptRequiresAllChangesIds.has(row.pendingUpdate._id)}
+							canAccept={acceptPermissionQueryResults[row.pendingUpdate.fileNodeId] === true}
 							disabled={isBulkBusy}
 							onActionSuccess={announceActionSuccess}
 						/>

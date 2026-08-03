@@ -10422,6 +10422,159 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 	});
 });
 
+describe("discard_file_pending_content", () => {
+	test("copies staged content into unstaged content without saving it", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/discard-content.md",
+				name: "discard-content.md",
+				markdown: "# Discard content base",
+			}),
+		);
+		const stagedMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nAccepted change`);
+		const unstagedMarkdown = normalize_pending_update_markdown(`${stagedMarkdown}\n\nUnresolved change`);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+
+		const pendingDoc = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!pendingDoc) {
+			throw new Error("Missing pending content doc before discard");
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_content, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: pendingDoc._id,
+		});
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+
+		const docAfterDiscard = await t.run((ctx) => ctx.db.get("files_pending_updates", pendingDoc._id));
+		if (!docAfterDiscard) {
+			throw new Error("Expected accepted staged content to keep the pending doc");
+		}
+		expect(read_pending_row_markdown_state({ pendingUpdate: docAfterDiscard })).toEqual({
+			baseMarkdown: seeded.baseMarkdown,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+	});
+
+	test("rejects a stale pendingUpdateId instead of discarding the replacement doc", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/discard-content-stale-id.md",
+				name: "discard-content-stale-id.md",
+				markdown: "# Discard stale content base",
+			}),
+		);
+
+		await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: seeded.baseMarkdown,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nFirst draft`,
+		});
+		const stalePendingDoc = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!stalePendingDoc) {
+			throw new Error("Missing stale pending content doc before replacement");
+		}
+
+		await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: seeded.baseMarkdown,
+			unstagedMarkdown: seeded.baseMarkdown,
+		});
+		const currentStagedMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nCurrent staged`);
+		const currentUnstagedMarkdown = normalize_pending_update_markdown(`${currentStagedMarkdown}\n\nCurrent draft`);
+		await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: currentStagedMarkdown,
+			unstagedMarkdown: currentUnstagedMarkdown,
+		});
+		const currentPendingDoc = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!currentPendingDoc) {
+			throw new Error("Missing replacement pending content doc");
+		}
+		expect(currentPendingDoc._id).not.toBe(stalePendingDoc._id);
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_content, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: stalePendingDoc._id,
+		});
+		expect(discarded._nay?.message).toBe("Not found");
+
+		const docAfterDiscard = await t.run((ctx) => ctx.db.get("files_pending_updates", currentPendingDoc._id));
+		expect(docAfterDiscard).not.toBeNull();
+		expect(read_pending_row_markdown_state({ pendingUpdate: docAfterDiscard! })).toEqual({
+			baseMarkdown: seeded.baseMarkdown,
+			stagedMarkdown: currentStagedMarkdown,
+			unstagedMarkdown: currentUnstagedMarkdown,
+		});
+	});
+});
+
 describe("discard_file_pending_structural", () => {
 	test("deletes a pure-move row and leaves the node untouched", async () => {
 		const t = test_convex();

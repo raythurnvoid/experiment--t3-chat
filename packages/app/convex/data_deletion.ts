@@ -618,6 +618,19 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: assets.length };
 	}
 
+	// File grants point at scope nodes by id. Delete them before the final file-node pass, including
+	// when data-only reset keeps the workspace structure and never runs the structure purge.
+	const permissionGrants = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (permissionGrants.length > 0) {
+		await Promise.all(permissionGrants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)));
+		return { done: false, deletedCount: permissionGrants.length };
+	}
+
 	// File nodes are deleted last because the content, job, and asset docs above
 	// can reference them.
 	const fileNodes = await ctx.db
@@ -1905,18 +1918,6 @@ export const hard_delete_user_data = internalMutation({
 				}
 			}
 
-			// This organization is not deleted by the reset, so we have to delete its custom roles here.
-			// Their number per organization is limited, so one pass is enough. Deleting them without
-			// first removing the docs that point at them is safe only here: this is the personal
-			// organization, `invite_user_to_organization_workspace` refuses it, and its only member is
-			// the owner, who has no role assignment. Everywhere else in this file we clean those docs
-			// first.
-			const customRoles = await ctx.db
-				.query("access_control_roles")
-				.withIndex("by_organization_normalizedName", (q) => q.eq("organizationId", organization._id))
-				.collect();
-			await Promise.all(customRoles.map((role) => ctx.db.delete("access_control_roles", role._id)));
-
 			// Everything below must preserve these default organization/workspace docs.
 			defaultTenant = {
 				organizationId: organization._id,
@@ -2076,6 +2077,15 @@ export const hard_delete_user_data = internalMutation({
 			// Delete at most one extra workspace doc and its related structure per call.
 			return { done: false, deletedCount: 1 };
 		}
+
+		// Custom roles belong to the personal organization, which the reset keeps. Delete them only
+		// after the home purge and all queued or live extra workspaces have removed their file grants.
+		// Their number per organization is limited, so one pass is enough.
+		const customRoles = await ctx.db
+			.query("access_control_roles")
+			.withIndex("by_organization_normalizedName", (q) => q.eq("organizationId", defaultTenant.organizationId))
+			.collect();
+		await Promise.all(customRoles.map((role) => ctx.db.delete("access_control_roles", role._id)));
 
 		// Now review every non-default organization connected to the user. Memberships
 		// catch shared organizations; ownership catches owned organizations whose

@@ -215,7 +215,7 @@ function createTenantContext() {
 	} satisfies AppTenantContextValue;
 }
 
-function createOrganizationList(args: { organizationIsDefault: boolean }) {
+function createOrganizationList(args: { organizationIsDefault: boolean; canManagePlugins: boolean }) {
 	return {
 		organizations: [
 			{
@@ -223,6 +223,9 @@ function createOrganizationList(args: { organizationIsDefault: boolean }) {
 				default: args.organizationIsDefault,
 			},
 		],
+		workspaceIdsPermissionsDict: {
+			workspace_1: args.canManagePlugins ? ["workspace.plugins.manage"] : ["content.read"],
+		},
 	};
 }
 
@@ -244,10 +247,17 @@ function createPluginPages() {
 	];
 }
 
-function mockQueries(args: { organizationIsDefault: boolean; pluginPages?: ReturnType<typeof createPluginPages> }) {
+function mockQueries(args: {
+	organizationIsDefault: boolean;
+	pluginPages?: ReturnType<typeof createPluginPages>;
+	canManagePlugins?: boolean;
+}) {
 	useQueryMock.mockImplementation((query: unknown) => {
 		if (query === "organizations.list") {
-			return createOrganizationList({ organizationIsDefault: args.organizationIsDefault });
+			return createOrganizationList({
+				organizationIsDefault: args.organizationIsDefault,
+				canManagePlugins: args.canManagePlugins ?? true,
+			});
 		}
 		if (query === "plugins_ui.list_ui_pages") {
 			return args.pluginPages ?? [];
@@ -304,6 +314,21 @@ describe("MainAppSidebar", () => {
 
 		const pageLink = screen.getByText("Gallery").closest("a");
 		expect(pageLink?.getAttribute("href")).toBe("/w/team/home/plugins/gallery/pages/gallery");
+	});
+
+	test("hides plugin management without permission but keeps installed plugin pages", () => {
+		mockQueries({
+			organizationIsDefault: false,
+			pluginPages: createPluginPages(),
+			canManagePlugins: false,
+		});
+
+		render(<MainAppSidebar />);
+
+		expect(screen.queryByText("Plugins")).toBeNull();
+		expect(screen.getByText("Gallery").closest("a")?.getAttribute("href")).toBe(
+			"/w/team/home/plugins/gallery/pages/gallery",
+		);
 	});
 
 	test("selects only the plugin page item on its route, not Plugins", () => {

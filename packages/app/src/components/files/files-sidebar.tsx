@@ -125,6 +125,7 @@ import {
 	files_ROOT_ID,
 	files_SYNTHETIC_ROOT_FOLDER,
 	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
+	files_can_move_node_between_restricted_scopes,
 	files_clear_node_path_cached_validation_messages,
 	files_create_tree_items_list_from_nodes,
 	files_get_default_node_name,
@@ -192,6 +193,26 @@ type TreeItems = {
 	sortedItemsIdsByParentId: Map<string, string[]>;
 	itemById: Map<string, files_TreeItem>;
 };
+
+// Permission can load or change live. Require true so edit controls fail closed.
+function can_write_item(args: {
+	item: files_TreeItem;
+	workspaceWritePermission: boolean | undefined;
+	restrictedScopeWritePermissions: Readonly<Record<string, boolean | Error | undefined>>;
+}) {
+	if (!files_is_node(args.item) || !args.item.restrictedScopeNodeId) {
+		return args.workspaceWritePermission === true;
+	}
+
+	return args.restrictedScopeWritePermissions[args.item.restrictedScopeNodeId] === true;
+}
+
+function can_rename_item(args: {
+	item: files_TreeItem;
+	canWriteItem: (item: files_TreeItem) => boolean;
+}) {
+	return files_is_node(args.item) && args.canWriteItem(args.item);
+}
 
 function has_file_drop(dataTransfer: DataTransfer) {
 	return Array.from(dataTransfer.types).includes("Files");
@@ -1688,6 +1709,7 @@ type FilesSidebarTreeItem_Props = {
 	isTreeDragging: boolean;
 	isFallbackTabStop: boolean;
 	expandedFolderActionsVisible: boolean;
+	canWrite: boolean;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -1714,6 +1736,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		isTreeDragging,
 		isFallbackTabStop,
 		expandedFolderActionsVisible,
+		canWrite,
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
@@ -1792,34 +1815,12 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 			(pendingUpdate) => pendingUpdate.fileNodeId === itemId && pendingUpdate.eagerCreated != null,
 		);
 
-	// The same server question every write mutation asks first (`authorize_file_write`): may this
-	// user write at this node? Anything except `true` keeps the write controls disabled, so nothing
-	// here is clickable only to be refused by the backend.
-	//
-	// Asked in two pieces, because this component is rendered once per visible row and the tree is not
-	// virtualized. Args never vary here, so Convex collapses this to a single subscription no matter
-	// how large the tree is.
-	const workspaceWritePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
-		membershipId,
-		permission: "content.write",
-	});
-	// Only a node inside a restricted scope needs its own question. Everywhere else the node check
-	// answers yes without reading anything (`access_control_db_can_act_on_file_node`) and the workspace
-	// answer above is already the whole answer — so asking per row would open one subscription, and
-	// about seven document reads, to learn what we just learned once. The synthetic root is the same
-	// case: `authorize_file_write` sends it straight to the workspace check.
-	//
-	// This holds only while nothing writes a `resourceKind: "workspace"` grant. The node check ignores
-	// such a grant for a file, the workspace check honours it, so the day one is written this would
-	// report writable on unrestricted rows that the server then refuses. No production code writes one
-	// today — only a test fixture does — so if you add one, go back to asking per node.
-	const restrictedScopeNodeId = files_is_node(itemData) ? itemData.restrictedScopeNodeId : undefined;
-	const nodeWritePermission = useQuery(
-		app_convex_api.files_nodes.get_current_user_file_write_permission,
-		restrictedScopeNodeId ? { membershipId, nodeId: itemId as app_convex_Id<"files_nodes"> } : "skip",
-	);
-	const canWrite = (restrictedScopeNodeId ? nodeWritePermission : workspaceWritePermission) === true;
 	const canRename = files_is_node(itemData) && canWrite;
+	useEffect(() => {
+		if (isRenaming && !canRename) {
+			item.getTree().abortRenaming();
+		}
+	}, [canRename, isRenaming, item]);
 	// The synthetic root is not a real node, so there is nothing to share it with. Not gated on
 	// `canWrite`: `get_node_share_state` answers for anybody who may read the node, on purpose, so a
 	// reader can see who else can open it. Gating here would only make this disagree with the header
@@ -2305,6 +2306,7 @@ type FilesSidebarTree_Props = {
 	isUploadingFile: boolean;
 	pendingActionNodeIds: Set<string>;
 	renameErrorByNodeId: Map<string, string>;
+	canWriteItem: (item: files_TreeItem) => boolean;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -2332,6 +2334,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		isUploadingFile,
 		pendingActionNodeIds,
 		renameErrorByNodeId,
+		canWriteItem,
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
@@ -2544,6 +2547,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 								isTreeDragging={isTreeDragging}
 								isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
 								expandedFolderActionsVisible={expandedFolderActionsVisible}
+								canWrite={canWriteItem(item.getItemData())}
 								onCreateNode={onCreateNode}
 								onStartRename={onStartRename}
 								onRenameErrorClear={onRenameErrorClear}
@@ -2698,6 +2702,8 @@ type FilesSidebarTopSectionMoreAction_Props = {
 	isBusy: boolean;
 	isUploadingFile: boolean;
 	isMultiSelectionActive: boolean;
+	canArchiveSelection: boolean;
+	canWriteUploadTarget: boolean;
 	selectedNodeIdsCount: number;
 	archivedCount: number;
 	showArchived: boolean;
@@ -2715,6 +2721,8 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 		isBusy,
 		isUploadingFile,
 		isMultiSelectionActive,
+		canArchiveSelection,
+		canWriteUploadTarget,
 		selectedNodeIdsCount,
 		archivedCount,
 		showArchived,
@@ -2764,7 +2772,12 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 			>
 				<MyMenuPopoverContent>
 					{isMultiSelectionActive ? (
-						<MyMenuItem variant="destructive" disabled={isBusy} hideOnClick onClick={handleArchiveSelectionClick}>
+						<MyMenuItem
+							variant="destructive"
+							disabled={isBusy || !canArchiveSelection}
+							hideOnClick
+							onClick={handleArchiveSelectionClick}
+						>
 							<MyMenuItemContent>
 								<MyMenuItemContentIcon>
 									<Archive />
@@ -2785,7 +2798,10 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 									<MyMenuItemContentPrimary>{archivedItemsLabel}</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuCheckboxItem>
-							<MyMenuItem disabled={isBusy || isUploadingFile} onClick={onUploadFileClick}>
+							<MyMenuItem
+								disabled={isBusy || isUploadingFile || !canWriteUploadTarget}
+								onClick={onUploadFileClick}
+							>
 								<MyMenuItemContent>
 									<MyMenuItemContentIcon>
 										<Upload />
@@ -2793,7 +2809,10 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 									<MyMenuItemContentPrimary>Upload file</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuItem>
-							<MyMenuItem disabled={isBusy || isUploadingFile} onClick={onImportFolderClick}>
+							<MyMenuItem
+								disabled={isBusy || isUploadingFile || !canWriteUploadTarget}
+								onClick={onImportFolderClick}
+							>
 								<MyMenuItemContent>
 									<MyMenuItemContentIcon>
 										<FolderUp />
@@ -2826,6 +2845,9 @@ type FilesSidebarTopSection_Props = {
 	isUploadingFile: boolean;
 	canExpandAll: boolean;
 	canCollapseAll: boolean;
+	canWriteRoot: boolean;
+	canWriteUploadTarget: boolean;
+	canArchiveSelection: boolean;
 	treeItemsList: files_TreeItem[] | undefined;
 	showArchived: boolean;
 	initialSearchQuery: string;
@@ -2851,6 +2873,9 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		isUploadingFile,
 		canExpandAll,
 		canCollapseAll,
+		canWriteRoot,
+		canWriteUploadTarget,
+		canArchiveSelection,
 		treeItemsList,
 		showArchived,
 		initialSearchQuery,
@@ -2919,7 +2944,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 							variant="ghost-highlightable"
 							tooltip="New file"
 							onClick={onCreateRootFileClick}
-							disabled={isBusy}
+							disabled={isBusy || !canWriteRoot}
 						>
 							<MyIconButtonIcon>
 								<FilePlus />
@@ -2930,7 +2955,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 							variant="ghost-highlightable"
 							tooltip="New folder"
 							onClick={onCreateRootFolderClick}
-							disabled={isBusy}
+							disabled={isBusy || !canWriteRoot}
 						>
 							<MyIconButtonIcon>
 								<FolderPlus />
@@ -2972,6 +2997,8 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 						isBusy={isBusy}
 						isUploadingFile={isUploadingFile}
 						isMultiSelectionActive={selectedNodeIdsCount > 1}
+						canArchiveSelection={canArchiveSelection}
+						canWriteUploadTarget={canWriteUploadTarget}
 						selectedNodeIdsCount={selectedNodeIdsCount}
 						archivedCount={archivedCount}
 						showArchived={showArchived}
@@ -3319,8 +3346,9 @@ function can_receive_file_drop(args: {
 	target: DragTarget<files_TreeItem>;
 	isBusy: boolean;
 	isUploadingFile: boolean;
+	canWriteTarget: boolean;
 }) {
-	if (args.isBusy || args.isUploadingFile || !has_file_drop(args.dataTransfer)) {
+	if (!args.canWriteTarget || args.isBusy || args.isUploadingFile || !has_file_drop(args.dataTransfer)) {
 		return false;
 	}
 
@@ -3334,8 +3362,9 @@ function can_receive_file_node_drop(args: {
 	target: DragTarget<files_TreeItem>;
 	isBusy: boolean;
 	isUploadingFile: boolean;
+	canWriteTarget: boolean;
 }) {
-	if (args.isBusy || args.isUploadingFile || !has_file_node_drop(args.dataTransfer)) {
+	if (!args.canWriteTarget || args.isBusy || args.isUploadingFile || !has_file_node_drop(args.dataTransfer)) {
 		return false;
 	}
 
@@ -3678,6 +3707,64 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		() => (treeNodesList ? files_create_tree_items_list_from_nodes(treeNodesList) : undefined),
 		[treeNodesList],
 	);
+	const workspaceWritePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
+		membershipId,
+		permission: "content.write",
+	});
+	const restrictedScopeNodeIds = useMemo(
+		() => [
+			...new Set(
+				(treeItemsList ?? []).flatMap((item) =>
+					files_is_node(item) && item.restrictedScopeNodeId ? [item.restrictedScopeNodeId] : [],
+				),
+			),
+		],
+		[treeItemsList],
+	);
+	const restrictedScopeWritePermissions = useQueries(
+		useMemo(
+			() =>
+				Object.fromEntries(
+					restrictedScopeNodeIds.map((nodeId) => [
+						nodeId,
+						{
+							query: app_convex_api.files_nodes.get_current_user_file_write_permission,
+							args: { membershipId, nodeId },
+						},
+					]),
+				),
+			[membershipId, restrictedScopeNodeIds],
+		),
+	);
+	const restrictedScopeShareStates = useQueries(
+		useMemo(
+			() =>
+				Object.fromEntries(
+					restrictedScopeNodeIds.map((nodeId) => [
+						nodeId,
+						{
+							query: app_convex_api.files_sharing.get_node_share_state,
+							args: { membershipId, nodeId },
+						},
+					]),
+				),
+			[membershipId, restrictedScopeNodeIds],
+		),
+	);
+	// Use one permission answer for row menus, keyboard rename, and drag/drop. Query each restricted
+	// scope once for its write answer and share state, which tells cross-scope moves whether the user
+	// has Can manage.
+	const canWriteItem = useFn((item: files_TreeItem) =>
+		can_write_item({
+			item,
+			workspaceWritePermission,
+			restrictedScopeWritePermissions,
+		}),
+	);
+	const canManageRestrictedScope = useFn((scopeNodeId: app_convex_Id<"files_nodes">) => {
+		const shareState = restrictedScopeShareStates[scopeNodeId];
+		return shareState != null && !(shareState instanceof Error) && shareState.canManage;
+	});
 
 	// Resolve updater ids through shared anagraphic queries; React Compiler memoizes these derived values.
 	const updatedByUserIds = ((/* iife */) => {
@@ -3797,6 +3884,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 		return result;
 	}, [treeItemsList, showArchived]);
+	const canWriteParentId = useFn((parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID) => {
+		const parentItem =
+			parentId === files_ROOT_ID ? files_SYNTHETIC_ROOT_FOLDER : treeItems?.itemById.get(parentId);
+		return parentItem ? canWriteItem(parentItem) : false;
+	});
 
 	const canExpandAll = ((/* iife */) => {
 		const topLevelItems = treeItems?.itemsIdsByParentId.get(files_ROOT_ID);
@@ -3858,7 +3950,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const canDrag = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDrag"]>>((items) => {
-		return items.every((item) => files_is_node(item.getItemData()));
+		return items.every((item) => files_is_node(item.getItemData()) && canWriteItem(item.getItemData()));
 	});
 
 	const canDrop = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDrop"]>>((items, target) => {
@@ -3867,9 +3959,24 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		if (targetId !== files_ROOT_ID && targetData.kind !== "folder") {
 			return false;
 		}
+		if (!canWriteItem(targetData)) {
+			return false;
+		}
 
 		return items.every((item) => {
-			if (!files_is_node(item.getItemData())) {
+			const itemData = item.getItemData();
+			if (
+				!files_is_node(itemData) ||
+				!canWriteItem(itemData) ||
+				!files_can_move_node_between_restricted_scopes({
+					nodeId: itemData._id,
+					sourceRestrictedScopeNodeId: itemData.restrictedScopeNodeId,
+					targetRestrictedScopeNodeId: files_is_node(targetData)
+						? targetData.restrictedScopeNodeId
+						: undefined,
+					canManageRestrictedScope,
+				})
+			) {
 				return false;
 			}
 			if (item.getId() === targetId) {
@@ -4038,6 +4145,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const uploadBrowserFile = useFn(
 		async (args: { file: File; parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID }) => {
+			if (!canWriteParentId(args.parentId)) {
+				return;
+			}
+
 			// Prepare the actual blob before creating the upload node so Convex and
 			// R2 store the same byte size and content type the browser uploads.
 			const file = await prepare_image_upload_file(args.file);
@@ -4067,6 +4178,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const importBrowserFiles = useFn(
 		(args: { entries: FilesImportEntry[]; parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID }) => {
+			if (!canWriteParentId(args.parentId)) {
+				return;
+			}
+
 			if (useFilesImportStore.getState().phase !== "idle") {
 				toast.error("Another import is already running.");
 				return;
@@ -4099,6 +4214,52 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		useFilesImportStore.getState().confirmResolver?.("cancel");
 	});
 
+	const canReceiveFileNodeDrop = useFn((dataTransfer: DataTransfer, target: DragTarget<files_TreeItem>) => {
+		if (!treeItems) {
+			return false;
+		}
+
+		const targetData = target.item.getItemData();
+		// A folder import can run for minutes. Moving existing nodes does not conflict with it, so only
+		// the short single-file upload blocks node moves.
+		if (
+			!can_receive_file_node_drop({
+				dataTransfer,
+				target,
+				isBusy,
+				isUploadingFile: isUploadingSingleFile,
+				canWriteTarget: canWriteItem(targetData),
+			})
+		) {
+			return false;
+		}
+
+		const targetParentId = target.item.getId();
+		const sourceNodeIds = get_file_node_drop_ids(dataTransfer);
+		return (
+			sourceNodeIds.length > 0 &&
+			sourceNodeIds.every((sourceNodeId) => {
+				const sourceNode = treeItems.itemById.get(sourceNodeId);
+				return (
+					sourceNode != null &&
+					files_is_node(sourceNode) &&
+					sourceNode._id !== targetParentId &&
+					sourceNode.parentId !== targetParentId &&
+					!target.item.isDescendentOf(sourceNodeId) &&
+					canWriteItem(sourceNode) &&
+					files_can_move_node_between_restricted_scopes({
+						nodeId: sourceNode._id,
+						sourceRestrictedScopeNodeId: sourceNode.restrictedScopeNodeId,
+						targetRestrictedScopeNodeId: files_is_node(targetData)
+							? targetData.restrictedScopeNodeId
+							: undefined,
+						canManageRestrictedScope,
+					})
+				);
+			})
+		);
+	});
+
 	const canDragForeignDragObjectOver = useFn<
 		NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDragForeignDragObjectOver"]>
 	>((dataTransfer, target) => {
@@ -4112,15 +4273,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				target: effectiveTarget,
 				isBusy,
 				isUploadingFile,
+				canWriteTarget: canWriteItem(effectiveTarget.item.getItemData()),
 			}) ||
-			can_receive_file_node_drop({
-				dataTransfer,
-				target: effectiveTarget,
-				isBusy,
-				// A folder import can run for minutes; moving existing nodes conflicts with nothing
-				// in it, so only the short single-file upload blocks node moves.
-				isUploadingFile: isUploadingSingleFile,
-			})
+			canReceiveFileNodeDrop(dataTransfer, effectiveTarget)
 		);
 	});
 
@@ -4133,27 +4288,16 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				target,
 				isBusy,
 				isUploadingFile,
+				canWriteTarget: canWriteItem(target.item.getItemData()),
 			}) ||
-			can_receive_file_node_drop({
-				dataTransfer,
-				target,
-				isBusy,
-				isUploadingFile: isUploadingSingleFile,
-			})
+			canReceiveFileNodeDrop(dataTransfer, target)
 		);
 	});
 
 	const handleDropForeignDragObject = useFn<
 		NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["onDropForeignDragObject"]>
 	>(async (dataTransfer, target) => {
-		if (
-			can_receive_file_node_drop({
-				dataTransfer,
-				target,
-				isBusy,
-				isUploadingFile: isUploadingSingleFile,
-			})
-		) {
+		if (canReceiveFileNodeDrop(dataTransfer, target)) {
 			if (!treeItems) {
 				console.error(should_never_happen("[FilesSidebar.handleDropForeignDragObject] missing deps", { treeItems }));
 				return;
@@ -4206,6 +4350,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				target,
 				isBusy,
 				isUploadingFile,
+				canWriteTarget: canWriteItem(target.item.getItemData()),
 			})
 		) {
 			toast.error("Drop files onto a folder or the root.");
@@ -4237,8 +4382,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const canRename = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canRename"]>>((item) => {
-		const itemData = item.getItemData();
-		return files_is_node(itemData);
+		return can_rename_item({ item: item.getItemData(), canWriteItem });
 	});
 
 	/**
@@ -4272,6 +4416,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 		if (!files_is_node(itemData)) {
 			console.error("[FilesSidebar.handleRename] item is not a node", { itemId, itemData });
+			return;
+		}
+		// Permission can change while rename mode is open, so recheck before starting the mutation.
+		if (!can_rename_item({ item: itemData, canWriteItem })) {
 			return;
 		}
 
@@ -4455,6 +4603,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 		const itemData = item.getItemData();
 		const itemId = item.getId();
+		// Abort when live permission changes so Headless Tree cannot submit a stale rename.
+		if (!can_rename_item({ item: itemData, canWriteItem })) {
+			event.preventDefault();
+			currentTree.abortRenaming();
+			return;
+		}
 		const trimmedValue = currentTree.getRenamingValue().trim();
 		if (files_is_node(itemData) && trimmedValue) {
 			const isMarkdown = itemData.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
@@ -4702,6 +4856,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			.filter((item) => item.isSelected() && files_is_node(item.getItemData()))
 			.map((item) => item.getId()),
 	);
+	const canArchiveSelection =
+		selectedNodeIds.size > 0 &&
+		[...selectedNodeIds].every((itemId) => {
+			const item = treeItems?.itemById.get(itemId);
+			return item != null && canWriteItem(item);
+		});
 	const selectionAnchorNodeId = tree().getDataRef<SelectionDataRef>().current.selectUpToAnchorId ?? null;
 
 	useGlobalEventList(
@@ -4807,6 +4967,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const handleCreateNodeClick = useFn<FilesSidebarTree_Props["onCreateNode"]>((parentNodeId, kind) => {
 		if (!treeItems) {
 			console.error(should_never_happen("[FilesSidebar.handleCreateNodeClick] missing deps", { treeItems }));
+			return;
+		}
+		if (
+			!canWriteParentId(
+				parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
+			)
+		) {
 			return;
 		}
 
@@ -4939,6 +5106,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const handleArchive = useFn<FilesSidebarTree_Props["onArchive"]>((nodeId) => {
 		const shouldArchiveSelectedFiles = selectedNodeIds.has(nodeId);
 		const nodeIdsToArchive = shouldArchiveSelectedFiles ? selectedNodeIds : new Set([nodeId]);
+		if (
+			[...nodeIdsToArchive].some((itemId) => {
+				const item = treeItems?.itemById.get(itemId);
+				return !item || !canWriteItem(item);
+			})
+		) {
+			return;
+		}
 
 		if (shouldArchiveSelectedFiles) {
 			setIsArchivingSelection(true);
@@ -5060,10 +5235,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		setShowArchived((oldValue) => !oldValue);
 	});
 
-	const handleUploadFileClick = useFn(() => {
-		uploadInputRef.current?.click();
-	});
-
 	// Picked uploads land in the selected folder when one is selected, otherwise in the root.
 	const resolveSelectedFolderParentId = () => {
 		const selectedItem = selectedNodeId && treeItems ? treeItems.itemById.get(selectedNodeId) : null;
@@ -5074,6 +5245,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			? (selectedItem._id as app_convex_Id<"files_nodes">)
 			: files_ROOT_ID;
 	};
+	const canWriteRoot = canWriteParentId(files_ROOT_ID);
+	const canWriteUploadTarget = canWriteParentId(resolveSelectedFolderParentId());
+
+	const handleUploadFileClick = useFn(() => {
+		if (!canWriteParentId(resolveSelectedFolderParentId())) {
+			return;
+		}
+		uploadInputRef.current?.click();
+	});
 
 	const handleUploadFileChange = useFn<React.ComponentProps<"input">["onChange"]>((event) => {
 		const file = event.currentTarget.files?.[0];
@@ -5089,6 +5269,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const handleImportFolderClick = useFn(() => {
+		if (!canWriteParentId(resolveSelectedFolderParentId())) {
+			return;
+		}
 		importFolderInputRef.current?.click();
 	});
 
@@ -5302,6 +5485,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				isUploadingFile={isUploadingFile}
 				canExpandAll={canExpandAll}
 				canCollapseAll={canCollapseAll}
+				canWriteRoot={canWriteRoot}
+				canWriteUploadTarget={canWriteUploadTarget}
+				canArchiveSelection={canArchiveSelection}
 				treeItemsList={treeItemsList}
 				showArchived={showArchived}
 				initialSearchQuery={initialSearchQuery}
@@ -5338,6 +5524,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					isUploadingFile={isUploadingFile}
 					pendingActionNodeIds={pendingActionNodeIds}
 					renameErrorByNodeId={renameErrorByNodeId}
+					canWriteItem={canWriteItem}
 					onCreateNode={handleCreateNodeClick}
 					onStartRename={handleStartRename}
 					onRenameErrorClear={clearRenameError}
@@ -5367,6 +5554,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		name: string;
 		path?: string;
 		archiveOperationId?: string;
+		restrictedScopeNodeId?: string;
 	}): files_VisibleTreeNode => {
 		const id = args.id as app_convex_Id<"files_nodes">;
 		const path = args.path ?? `/${args.name}`;
@@ -5387,6 +5575,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			kind: args.kind,
 			lowercaseExtension,
 			archiveOperationId: args.archiveOperationId,
+			restrictedScopeNodeId: args.restrictedScopeNodeId as app_convex_Id<"files_nodes"> | undefined,
 			createdBy: "test-user" as app_convex_Id<"users">,
 			updatedAt: 1,
 			updatedBy: "test-user" as app_convex_Id<"users">,
@@ -5423,6 +5612,119 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				: {}),
 		} satisfies FilesSidebarUploadDraft;
 	};
+
+	describe("can_write_item", () => {
+		test("uses the workspace answer for root and unrestricted nodes", () => {
+			const unrestricted = test_node({
+				id: "file",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				name: "file.md",
+			});
+			const args = { workspaceWritePermission: true, restrictedScopeWritePermissions: {} };
+
+			expect(can_write_item({ ...args, item: files_SYNTHETIC_ROOT_FOLDER })).toBe(true);
+			expect(can_write_item({ ...args, item: unrestricted })).toBe(true);
+			expect(
+				can_write_item({
+					item: unrestricted,
+					workspaceWritePermission: undefined,
+					restrictedScopeWritePermissions: {},
+				}),
+			).toBe(false);
+		});
+
+		test("uses the restricted scope answer instead of workspace write", () => {
+			const restricted = test_node({
+				id: "file",
+				parentId: "scope",
+				kind: "file",
+				name: "file.md",
+				restrictedScopeNodeId: "scope",
+			});
+
+			expect(
+				can_write_item({
+					item: restricted,
+					workspaceWritePermission: true,
+					restrictedScopeWritePermissions: { scope: false },
+				}),
+			).toBe(false);
+			expect(
+				can_write_item({
+					item: restricted,
+					workspaceWritePermission: false,
+					restrictedScopeWritePermissions: { scope: true },
+				}),
+			).toBe(true);
+		});
+	});
+
+	describe("can_rename_item", () => {
+		test("stops completion after write permission is lost", () => {
+			const file = test_node({
+				id: "file",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				name: "file.md",
+			});
+
+			expect(can_rename_item({ item: file, canWriteItem: () => true })).toBe(true);
+			expect(can_rename_item({ item: file, canWriteItem: () => false })).toBe(false);
+		});
+	});
+
+	describe("files_can_move_node_between_restricted_scopes", () => {
+		test("requires manage permission when a child leaves its restricted scope", () => {
+			const restrictedChild = test_node({
+				id: "file",
+				parentId: "scope",
+				kind: "file",
+				name: "file.md",
+				restrictedScopeNodeId: "scope",
+			});
+			const sameScopeFolder = test_node({
+				id: "same_scope_folder",
+				parentId: "scope",
+				kind: "folder",
+				name: "same",
+				restrictedScopeNodeId: "scope",
+			});
+
+			expect(
+				files_can_move_node_between_restricted_scopes({
+					nodeId: restrictedChild._id,
+					sourceRestrictedScopeNodeId: restrictedChild.restrictedScopeNodeId,
+					targetRestrictedScopeNodeId: sameScopeFolder.restrictedScopeNodeId,
+					canManageRestrictedScope: () => false,
+				}),
+			).toBe(true);
+			expect(
+				files_can_move_node_between_restricted_scopes({
+					nodeId: restrictedChild._id,
+					sourceRestrictedScopeNodeId: restrictedChild.restrictedScopeNodeId,
+					targetRestrictedScopeNodeId: undefined,
+					canManageRestrictedScope: () => false,
+				}),
+			).toBe(false);
+			expect(
+				files_can_move_node_between_restricted_scopes({
+					nodeId: restrictedChild._id,
+					sourceRestrictedScopeNodeId: restrictedChild.restrictedScopeNodeId,
+					targetRestrictedScopeNodeId: undefined,
+					canManageRestrictedScope: () => true,
+				}),
+			).toBe(true);
+			expect(
+				files_can_move_node_between_restricted_scopes({
+					nodeId: "scope" as app_convex_Id<"files_nodes">,
+					sourceRestrictedScopeNodeId: "scope" as app_convex_Id<"files_nodes">,
+					targetRestrictedScopeNodeId: undefined,
+					canManageRestrictedScope: () => false,
+				}),
+			).toBe(true);
+		});
+	});
 
 	const test_file_from_directory = (name = "upload.pdf") => {
 		const file = test_file(name) as FileWithPath;
@@ -5547,6 +5849,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					target: test_drag_target(files_SYNTHETIC_ROOT_FOLDER),
 					isBusy: false,
 					isUploadingFile: false,
+					canWriteTarget: true,
 				}),
 			).toBe(true);
 			expect(
@@ -5555,6 +5858,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					target: test_drag_target(folder),
 					isBusy: false,
 					isUploadingFile: false,
+					canWriteTarget: true,
 				}),
 			).toBe(true);
 			expect(
@@ -5563,6 +5867,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					target: test_drag_target(file),
 					isBusy: false,
 					isUploadingFile: false,
+					canWriteTarget: true,
 				}),
 			).toBe(false);
 			expect(
@@ -5571,6 +5876,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					target: test_drag_target(folder),
 					isBusy: false,
 					isUploadingFile: true,
+					canWriteTarget: true,
+				}),
+			).toBe(false);
+			expect(
+				can_receive_file_drop({
+					dataTransfer,
+					target: test_drag_target(folder),
+					isBusy: false,
+					isUploadingFile: false,
+					canWriteTarget: false,
 				}),
 			).toBe(false);
 		});
@@ -5596,6 +5911,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					target: test_drag_target(files_SYNTHETIC_ROOT_FOLDER),
 					isBusy: false,
 					isUploadingFile: false,
+					canWriteTarget: true,
 				}),
 			).toBe(true);
 			expect(
@@ -5604,6 +5920,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					target: test_drag_target(folder),
 					isBusy: false,
 					isUploadingFile: false,
+					canWriteTarget: true,
 				}),
 			).toBe(true);
 			expect(
@@ -5612,6 +5929,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					target: test_drag_target(file),
 					isBusy: false,
 					isUploadingFile: false,
+					canWriteTarget: true,
 				}),
 			).toBe(false);
 			expect(
@@ -5620,6 +5938,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					target: test_drag_target(folder),
 					isBusy: false,
 					isUploadingFile: true,
+					canWriteTarget: true,
+				}),
+			).toBe(false);
+			expect(
+				can_receive_file_node_drop({
+					dataTransfer,
+					target: test_drag_target(folder),
+					isBusy: false,
+					isUploadingFile: false,
+					canWriteTarget: false,
 				}),
 			).toBe(false);
 		});

@@ -947,7 +947,8 @@ export const execute_upload_completed_event_run = internalAction({
  *
  * Source-node archival is deliberately NOT rechecked here (resolve_principal covers it): an
  * archive landing in the resolve→consume gap lets at most one in-flight ephemeral call through.
- * Only durable output needs the transactional archival recheck, which publish_file_write does.
+ * Only durable output needs the transactional archival recheck. `publish_file_write` and
+ * `start_run_activity` each perform it in the mutation that writes the durable output.
  */
 export const consume_run_api_call = internalMutation({
 	args: {

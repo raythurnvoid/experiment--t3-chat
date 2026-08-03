@@ -161,6 +161,7 @@ Current purge coverage includes:
 - `files_snapshots`, `file_stats`
 - `files_content_materialization_jobs` with Workpool job cancellation
 - `files_r2_assets` with upload-conversion job cancellation and R2 object deletion. When `r2Key` is not set, derive the deterministic asset key because the browser PUT may have landed before its event updated the asset doc.
+- `access_control_permission_grants` before their file scope nodes. This purge step also runs for data-only reset, where the preserved home workspace never reaches structure deletion.
 - `files_nodes` last
 
 Known implementation gap: `activities` is tenant-scoped and can refer to plugin runs, installations, files, titles, and paths, but this purge does not delete it. Deleting the related run first also prevents the normal run-retention path from finding that activity later. Until the purge drains `activities` by its organization/workspace index, do not claim that workspace or organization deletion removes all tenant content.
@@ -185,7 +186,7 @@ When adding a new purge target:
 
 `users.hard_delete_user_now` has three modes:
 
-- `"data"`: data-only reset. Preserve `users`, auth ids, anonymous auth, anagraphic/profile, billing state, default `personal` organization, and default `home` workspace. Clear the user-scope deletion request. Purge content from the preserved home workspace and reset its active API credential quota counter. Force queue-only workspace purges in every reviewed organization because a phase-1 delete may have already removed the workspace doc. Delete extra personal workspaces, and delete non-default organizations/workspaces only when the reset user is the only active participant in that tenant scope.
+- `"data"`: data-only reset. Preserve `users`, auth ids, anonymous auth, anagraphic/profile, billing state, default `personal` organization, and default `home` workspace. Clear the user-scope deletion request. Purge content and file permission grants from the preserved home workspace and reset its active API credential quota counter. Force queued personal-workspace purges and delete extra personal workspaces. Delete personal custom roles only after every home and extra-workspace file grant is gone. Force queue-only workspace purges in every other reviewed organization because a phase-1 delete may have already removed the workspace doc. Delete non-default organizations/workspaces only when the reset user is the only active participant in that tenant scope.
 - `"data_and_auth"`: tombstone locally, drain user sessions, schedule period-end subscription cancellation, delete Clerk auth, finalize local user data/auth, keep the tombstone and `billing_usage_snapshots`, then hand queued tenant purge requests to the Workpool.
 - `"data_auth_and_user_record"`: tombstone locally, drain user sessions, revoke the paid subscription, delete the Polar customer, delete Clerk auth, finalize local data/auth/billing state, hand queued tenant purge requests to the Workpool, then purge the local tombstone.
 

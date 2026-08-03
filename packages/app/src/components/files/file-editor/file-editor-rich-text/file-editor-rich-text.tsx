@@ -84,6 +84,7 @@ type FileEditorRichTextSizeRef = { current: { isOverCap: boolean } };
 type FileEditorRichTextToolbarActions_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
+	editable: boolean;
 	sessionId: string;
 	sizeRef: FileEditorRichTextSizeRef;
 	syncChanged: boolean;
@@ -93,12 +94,17 @@ type FileEditorRichTextToolbarActions_Props = {
 
 type FileEditorRichTextToolbarTools_Props = {
 	editor: Editor;
+	editable: boolean;
 };
 
 const FileEditorRichTextToolbarTools = memo(function FileEditorRichTextToolbarTools(
 	props: FileEditorRichTextToolbarTools_Props,
 ) {
-	const { editor } = props;
+	const { editor, editable } = props;
+
+	if (!editable) {
+		return null;
+	}
 
 	return (
 		<>
@@ -120,6 +126,7 @@ const FileEditorRichTextToolbarTools = memo(function FileEditorRichTextToolbarTo
 
 type FileEditorRichTextToolbarStatus_Props = {
 	editor: Editor;
+	editable: boolean;
 	getCurrentMarkdown: () => string;
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
@@ -131,7 +138,7 @@ type FileEditorRichTextToolbarStatus_Props = {
 const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarStatus(
 	props: FileEditorRichTextToolbarStatus_Props,
 ) {
-	const { editor, getCurrentMarkdown, nodeId, sessionId, sizeRef, syncChanged, syncStatus } = props;
+	const { editor, editable, getCurrentMarkdown, nodeId, sessionId, sizeRef, syncChanged, syncStatus } = props;
 
 	const wordsCount = useEditorState({
 		editor,
@@ -208,7 +215,12 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 			<span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
 				{file_editor_get_size_status_message({ byteSize, blocks: "editing" })}
 			</span>
-			<FileEditorSnapshotsModal nodeId={nodeId} sessionId={sessionId} getCurrentMarkdown={getCurrentMarkdown} />
+			<FileEditorSnapshotsModal
+				nodeId={nodeId}
+				sessionId={sessionId}
+				editable={editable}
+				getCurrentMarkdown={getCurrentMarkdown}
+			/>
 		</>
 	);
 });
@@ -216,7 +228,7 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 const FileEditorRichTextToolbarActions = memo(function FileEditorRichTextToolbarActions(
 	props: FileEditorRichTextToolbarActions_Props,
 ) {
-	const { editor, nodeId, sessionId, sizeRef, syncChanged, syncStatus, toolbarPortalHost } = props;
+	const { editor, nodeId, editable, sessionId, sizeRef, syncChanged, syncStatus, toolbarPortalHost } = props;
 
 	const getCurrentMarkdown = useFn(() => {
 		const markdown = editor.getMarkdown();
@@ -231,9 +243,10 @@ const FileEditorRichTextToolbarActions = memo(function FileEditorRichTextToolbar
 			aria-label="Rich text editor actions"
 			className={cn("FileEditorRichTextToolbarActions" satisfies FileEditorRichTextToolbarActions_ClassNames)}
 		>
-			<FileEditorRichTextToolbarTools editor={editor} />
+			<FileEditorRichTextToolbarTools editor={editor} editable={editable} />
 			<FileEditorRichTextToolbarStatus
 				editor={editor}
+				editable={editable}
 				getCurrentMarkdown={getCurrentMarkdown}
 				nodeId={nodeId}
 				sessionId={sessionId}
@@ -853,6 +866,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 					<FileEditorRichTextToolbarActions
 						editor={editor}
 						nodeId={nodeId}
+						editable={editable}
 						sessionId={presenceStore.localSessionId}
 						sizeRef={sizeRef}
 						syncChanged={filesYjs.syncChanged}
@@ -877,13 +891,20 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 						handleDOMEvents: {
 							keydown: (_view, event) => handleCommandNavigation(event),
 						},
+						// ProseMirror treats true as handled. Use it in read-only mode so no default edit runs.
 						handlePaste: (view, event) => {
+							if (!editable) {
+								return true;
+							}
 							if (checkIncomingContentFitsSizeCap(event.clipboardData?.getData("text/plain") ?? "") === false) {
 								return true;
 							}
 							return handleImagePaste(view, event, uploadFn);
 						},
 						handleDrop: (view, event, _slice, moved) => {
+							if (!editable) {
+								return true;
+							}
 							// `moved` is an internal drag, so the content is only relocated, not added.
 							if (
 								!moved &&
@@ -899,14 +920,14 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 					immediatelyRender={false}
 					onCreate={handleCreate}
 					slotAfter={
-						editor && (
+						editor && editable ? (
 							<>
 								<ImageResizer />
 								<FileEditorRichTextToolsSlashCommand />
 								<FileEditorRichTextDragHandle editor={editor} />
 								<FileEditorRichTextBubble editor={editor} nodeId={nodeId} />
 							</>
-						)
+						) : null
 					}
 				></EditorContent>
 			</div>

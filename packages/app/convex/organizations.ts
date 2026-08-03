@@ -1277,6 +1277,32 @@ export const remove_user_from_organization = mutation({
 					.collect(),
 			),
 		);
+		const publicApiGrantsPromise = Promise.all(
+			memberships.map((membership) =>
+				ctx.db
+					.query("public_api_grants")
+					.withIndex("by_organization_workspace_user", (q) =>
+						q
+							.eq("organizationId", organization._id)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("userId", args.userIdToRemove),
+					)
+					.collect(),
+			),
+		);
+		const pluginUiSessionsPromise = Promise.all(
+			memberships.map((membership) =>
+				ctx.db
+					.query("plugins_ui_sessions")
+					.withIndex("by_organization_workspace_user", (q) =>
+						q
+							.eq("organizationId", organization._id)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("userId", args.userIdToRemove),
+					)
+					.collect(),
+			),
+		);
 		const apiCredentialQuotasPromise = Promise.all(
 			memberships.map((membership) =>
 				quotas_db_get(ctx, {
@@ -1297,6 +1323,13 @@ export const remove_user_from_organization = mutation({
 						.flat()
 						.map((apiCredential) => ctx.db.patch("api_credentials", apiCredential._id, { revokedAt: now })),
 				),
+			),
+			// Re-inviting this user must not restore public API grants or plugin UI sessions.
+			publicApiGrantsPromise.then((grants) =>
+				Promise.all(grants.flat().map((grant) => ctx.db.delete("public_api_grants", grant._id))),
+			),
+			pluginUiSessionsPromise.then((sessions) =>
+				Promise.all(sessions.flat().map((session) => ctx.db.delete("plugins_ui_sessions", session._id))),
 			),
 			// Delete these quota docs so a later invite creates counters with `usedCount: 0`.
 			apiCredentialQuotasPromise.then((quotaDocs) =>

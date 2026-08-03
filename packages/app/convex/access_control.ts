@@ -127,12 +127,11 @@ async function resolve_role_permissions(
  * spellings are words on purpose: the narrow one fails open if it is used where the wide one belongs,
  * so neither may be the value you get by writing the shorter thing.
  *
- * Pass `{ kind: "organization" }` when the role is written on the default workspace and so becomes
- * the organization role: it works in every workspace the target already belongs to, so grants from
- * every workspace count. Pass `{ kind: "workspaces" }` when the write only makes them a member of
- * those workspaces. An invite is the case that matters. A grant living in a workspace the invite does
- * not join can never reach the invitee through it, so weighing that grant refuses the invite for a
- * reason the caller cannot act on, and the refusal names no node to go and look at.
+ * Pass `{ kind: "organization" }` when the operation can affect every current holder of the role,
+ * such as editing or deleting that role. Pass `{ kind: "workspaces" }` when the role reaches one
+ * target through a known membership set. `set_user_role` uses the target's active workspaces, and an
+ * invite uses only the workspaces it joins. A grant outside that set can never reach the target
+ * through this operation, so weighing it would refuse for a reason the caller cannot act on.
  *
  * Each grant is judged in the workspace it lives in, and the caller must be a member there: nobody
  * hands out access where they have none.
@@ -254,9 +253,8 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
  * That state used to lock every admin out of inviting. An invite hands out `member`, so one share
  * with `member` made `member` unassignable by anybody without a grant on that folder, and the
  * refusal named no node to go and fix. What prevents it now is `reach` on
- * `access_control_db_role_file_grant_caller_cannot_give`: an invite weighs only the workspaces it
- * really joins the invitee to, so a share sitting in a workspace the invite does not touch cannot
- * refuse it.
+ * `access_control_db_role_file_grant_caller_cannot_give`: an invite checks file grants only in the
+ * workspaces it joins, so a share in an unrelated workspace cannot block it.
  */
 export async function access_control_db_caller_cannot_share_with_role(
 	ctx: QueryCtx | MutationCtx,
@@ -2067,15 +2065,22 @@ export const set_user_role = mutation({
 			// can name a role, so assigning one also hands over every restricted file shared with it.
 			// The list above cannot see those, and a caller who may manage members is not thereby
 			// somebody who may open a restricted folder.
+			let joinedWorkspaceIds = [args.workspaceId];
+			// The organization role reaches every workspace the target has joined. The workspace quota
+			// bounds this complete membership list.
+			if (isDefaultWorkspace) {
+				const targetMemberships = await ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_active_user_organization_workspace", (q) =>
+						q.eq("active", true).eq("userId", args.userId).eq("organizationId", organization._id),
+					)
+					.collect();
+				joinedWorkspaceIds = targetMemberships.map((membership) => membership.workspaceId);
+			}
 			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
 				organization,
 				defaultWorkspaceId,
-				// A role written on the default workspace is the organization role and reaches every
-				// workspace the target is already in; anywhere else it reaches only that workspace.
-				reach:
-					args.workspaceId === defaultWorkspaceId
-						? { kind: "organization" }
-						: { kind: "workspaces", joinedWorkspaceIds: [args.workspaceId] },
+				reach: { kind: "workspaces", joinedWorkspaceIds },
 				role: args.role,
 				userId: userAuth.id,
 			});

@@ -1954,6 +1954,95 @@ export const discard_file_pending_structural = mutation({
 	},
 });
 
+export const discard_file_pending_content = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+		pendingUpdateId: v.id("files_pending_updates"),
+	},
+	returns: v_result({
+		_yay: v.null(),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_pending_update_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const pendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			nodeId: args.nodeId,
+			pendingUpdateId: args.pendingUpdateId,
+		});
+
+		// Let users discard their own draft after losing `content.write`. Keep the membership and node
+		// checks, and require the exact pending-update id so a stale click cannot change its replacement.
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: args.nodeId,
+			permission: "content.write",
+		});
+		if (authorized._nay && !(pendingUpdate && authorized._nay.message === "Permission denied")) {
+			return authorized;
+		}
+
+		if (!pendingUpdate) {
+			return Result({ _yay: null });
+		}
+		if (pendingUpdate._id !== args.pendingUpdateId) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const content = files_pending_update_content_of(pendingUpdate);
+		if (!content) {
+			return Result({ _yay: null });
+		}
+
+		// Discard only unstaged edits. Keep the staged branch so the user can still accept it later.
+		const { baseYjsSequence, baseYjsDoc, stagedBranchYjsDoc } =
+			files_pending_update_reconstruct_branch_docs(content);
+		const stagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: stagedBranchYjsDoc });
+		if (stagedMarkdown._nay) {
+			console.error("Failed to reconstruct staged Markdown while discarding pending content", {
+				error: stagedMarkdown._nay,
+				nodeId: args.nodeId,
+				pendingUpdateId: pendingUpdate._id,
+			});
+			return Result({ _nay: { message: "Failed to discard pending content" } });
+		}
+
+		return await files_pending_update_upsert_branch_docs(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			nodeId: args.nodeId,
+			existingPendingUpdate: pendingUpdate,
+			baseYjsSequence,
+			baseYjsDoc,
+			stagedBranchYjsDoc,
+			unstagedBranchYjsDoc: files_yjs_doc_clone({ yjsDoc: stagedBranchYjsDoc }),
+			unstagedMarkdown: stagedMarkdown._yay,
+			unstagedBranchChanged: true,
+		});
+	},
+});
+
 export const persist_file_pending_update_rebased_state_in_db = internalMutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),

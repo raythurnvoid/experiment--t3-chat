@@ -69,6 +69,7 @@ import { file_editor_get_content_too_large_message } from "@/lib/file-editor.ts"
 import {
 	files_ROOT_ID,
 	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
+	files_can_move_node_between_restricted_scopes,
 	files_clear_node_path_cached_validation_messages,
 	files_download_blob,
 	files_find_file_stem_end_index,
@@ -89,7 +90,7 @@ import { cn, sx } from "@/lib/utils.ts";
 import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { Link } from "@tanstack/react-router";
-import { useConvex, useQuery } from "convex/react";
+import { useConvex, useQueries, useQuery } from "convex/react";
 import {
 	Archive,
 	BookOpen,
@@ -106,7 +107,17 @@ import {
 	Lock,
 	Users,
 } from "lucide-react";
-import React, { memo, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+import React, {
+	memo,
+	useCallback,
+	useEffect,
+	useId,
+	useImperativeHandle,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
@@ -162,12 +173,28 @@ function can_move_file_node_to_parent(args: {
 	fileNodesList: files_VisibleTreeNode[] | undefined;
 	fileNodeId: app_convex_Id<"files_nodes">;
 	targetParentId: app_convex_Doc<"files_nodes">["parentId"];
+	canManageRestrictedScope: (scopeNodeId: app_convex_Id<"files_nodes">) => boolean;
 }) {
 	const fileNode = args.fileNodesList?.find((candidate) => candidate._id === args.fileNodeId);
 	if (!fileNode || fileNode.archiveOperationId !== undefined) {
 		return false;
 	}
 	if (fileNode._id === args.targetParentId || fileNode.parentId === args.targetParentId) {
+		return false;
+	}
+
+	const targetParent =
+		args.targetParentId === files_ROOT_ID
+			? undefined
+			: args.fileNodesList?.find((candidate) => candidate._id === args.targetParentId);
+	if (
+		!files_can_move_node_between_restricted_scopes({
+			nodeId: fileNode._id,
+			sourceRestrictedScopeNodeId: fileNode.restrictedScopeNodeId,
+			targetRestrictedScopeNodeId: targetParent?.restrictedScopeNodeId,
+			canManageRestrictedScope: args.canManageRestrictedScope,
+		})
+	) {
 		return false;
 	}
 
@@ -1080,6 +1107,40 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	} = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const convex = useConvex();
+	const canWriteFolder = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
+		membershipId,
+		nodeId: folderItemId,
+	});
+	// Moving a child out of a restricted folder needs Can manage on its source scope.
+	const restrictedScopeNodeIds = useMemo(
+		() => [
+			...new Set(
+				(fileNodesList ?? []).flatMap((node) =>
+					node.restrictedScopeNodeId ? [node.restrictedScopeNodeId] : [],
+				),
+			),
+		],
+		[fileNodesList],
+	);
+	const restrictedScopeShareStates = useQueries(
+		useMemo(
+			() =>
+				Object.fromEntries(
+					restrictedScopeNodeIds.map((nodeId) => [
+						nodeId,
+						{
+							query: app_convex_api.files_sharing.get_node_share_state,
+							args: { membershipId, nodeId },
+						},
+					]),
+				),
+			[membershipId, restrictedScopeNodeIds],
+		),
+	);
+	const canManageRestrictedScope = useFn((scopeNodeId: app_convex_Id<"files_nodes">) => {
+		const shareState = restrictedScopeShareStates[scopeNodeId];
+		return shareState != null && !(shareState instanceof Error) && shareState.canManage;
+	});
 
 	const [showAllItems, setShowAllItems] = useState(false);
 	const [isCreatingReadme, setIsCreatingReadme] = useState(false);
@@ -1109,6 +1170,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	});
 
 	const handleCreateReadmeClick = useFn(() => {
+		if (canWriteFolder !== true) return;
+
 		setIsCreatingReadme(true);
 		convex
 			.action(app_convex_api.files_nodes_content.create_markdown_node, {
@@ -1171,6 +1234,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 				fileNodesList,
 				fileNodeId: args.fileNodeId,
 				targetParentId: args.targetParentId,
+				canManageRestrictedScope,
 			});
 		},
 	);
@@ -1249,6 +1313,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			<FileNodeViewFolderReadme
 				readmeNodeId={readmeNodeId}
 				fileNodesList={fileNodesList}
+				canWrite={canWriteFolder === true}
 				isCreatingReadme={isCreatingReadme}
 				onCreateReadmeClick={handleCreateReadmeClick}
 			/>
@@ -1560,6 +1625,7 @@ type FileNodeViewFolderCreateNodeModal_Props = {
 	folderItemId: FileNodeViewFolder_Props["folderItemId"];
 	fileNodesList: FileNodeViewFolder_Props["fileNodesList"];
 	siblingNames: Iterable<string>;
+	canWrite: boolean;
 	isCreatingNode: boolean;
 	onCreateNode: (args: { kind: app_convex_Doc<"files_nodes">["kind"]; path: string }) => Promise<string | null>;
 };
@@ -1567,7 +1633,8 @@ type FileNodeViewFolderCreateNodeModal_Props = {
 const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreateNodeModal(
 	props: FileNodeViewFolderCreateNodeModal_Props,
 ) {
-	const { ref, membershipId, folderItemId, fileNodesList, siblingNames, isCreatingNode, onCreateNode } = props;
+	const { ref, membershipId, folderItemId, fileNodesList, siblingNames, canWrite, isCreatingNode, onCreateNode } =
+		props;
 
 	const [kind, setKind] = useState<app_convex_Doc<"files_nodes">["kind"] | null>(null);
 	const [name, setName] = useState("");
@@ -1608,7 +1675,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 
 	const handleSubmit = useFn<React.ComponentProps<"form">["onSubmit"]>((event) => {
 		event.preventDefault();
-		if (!kind) {
+		if (!kind || !canWrite) {
 			return;
 		}
 
@@ -1731,7 +1798,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 									autoFocus
 									required
 									value={name}
-									disabled={isCreatingNode}
+									disabled={!canWrite || isCreatingNode}
 									onChange={handleNameChange}
 								/>
 							</MyInputArea>
@@ -1753,7 +1820,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 						</MyButton>
 						<MyButton
 							type="submit"
-							disabled={!name.trim() || isSubmitBlocked || isCreatingNode}
+							disabled={!canWrite || !name.trim() || isSubmitBlocked || isCreatingNode}
 							aria-busy={isCreatingNode}
 						>
 							{isCreatingNode ? `Creating ${kindLabel}...` : `Create ${kindLabel}`}
@@ -1779,6 +1846,10 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 	const { children, folderItemId, membershipId, fileNodesList } = props;
 
 	const convex = useConvex();
+	const canWrite = useQuery(
+		app_convex_api.files_nodes.get_current_user_file_write_permission,
+		folderItemId ? { membershipId, nodeId: folderItemId } : "skip",
+	);
 
 	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
 	const [isCreatingNode, setIsCreatingNode] = useState(false);
@@ -1791,7 +1862,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 			: [];
 
 	const handleCreateNodeModalOpen = useFn((kind: app_convex_Doc<"files_nodes">["kind"]) => {
-		if (!folderItemId) {
+		if (!folderItemId || canWrite !== true) {
 			return;
 		}
 
@@ -1802,6 +1873,9 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 		const { kind, path } = args;
 		if (!folderItemId) {
 			return Promise.resolve("Select a folder before creating a node.");
+		}
+		if (canWrite !== true) {
+			return Promise.resolve("You don't have permission to create files here.");
 		}
 
 		setIsCreatingNode(true);
@@ -1845,7 +1919,10 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 	});
 
 	const folderActionsSlot = folderItemId ? (
-		<FileNodeViewToolbarFolderActions disabled={isCreatingNode} onCreateNode={handleCreateNodeModalOpen} />
+		<FileNodeViewToolbarFolderActions
+			disabled={canWrite !== true || isCreatingNode}
+			onCreateNode={handleCreateNodeModalOpen}
+		/>
 	) : null;
 
 	return (
@@ -1857,6 +1934,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 					folderItemId={folderItemId}
 					fileNodesList={fileNodesList}
 					siblingNames={siblingNames}
+					canWrite={canWrite === true}
 					isCreatingNode={isCreatingNode}
 					onCreateNode={handleCreateNodeSubmit}
 				/>
@@ -1940,6 +2018,11 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 		onArchiveNode,
 		onMoveFileNodesToParent,
 	} = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const canWrite = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
+		membershipId,
+		nodeId: child._id,
+	});
 
 	const rowRef = useRef<HTMLDivElement | null>(null);
 	const [isDragging, setIsDragging] = useState(false);
@@ -1953,7 +2036,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 
 		const cleanupFns: Array<() => void> = [];
 
-		if (!isPendingAction) {
+		if (canWrite === true && !isPendingAction) {
 			cleanupFns.push(
 				draggable({
 					element,
@@ -1975,7 +2058,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 			);
 		}
 
-		if (child.kind === "folder" && !isPendingAction) {
+		if (canWrite === true && child.kind === "folder" && !isPendingAction) {
 			cleanupFns.push(
 				dropTargetForElements({
 					element,
@@ -2031,7 +2114,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 		}
 
 		return combine(...cleanupFns);
-	}, [canMoveFileNodeToParent, child._id, child.kind, isPendingAction, onMoveFileNodesToParent]);
+	}, [canMoveFileNodeToParent, canWrite, child._id, child.kind, isPendingAction, onMoveFileNodesToParent]);
 
 	return (
 		<MyGridTableRow
@@ -2108,9 +2191,11 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 						<MyMenuPopoverContent>
 							<MyMenuItem
 								variant="destructive"
-								disabled={isPendingAction}
+								disabled={canWrite !== true || isPendingAction}
 								hideOnClick
-								onClick={() => onArchiveNode(child._id)}
+								onClick={() => {
+									if (canWrite === true) onArchiveNode(child._id);
+								}}
 							>
 								<MyMenuItemContent>
 									<MyMenuItemContentIcon>
@@ -2251,12 +2336,13 @@ type FileNodeViewFolderReadme_ClassNames =
 type FileNodeViewFolderReadme_Props = {
 	readmeNodeId: app_convex_Id<"files_nodes"> | null;
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
+	canWrite: boolean;
 	isCreatingReadme: boolean;
 	onCreateReadmeClick: () => void;
 };
 
 const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: FileNodeViewFolderReadme_Props) {
-	const { readmeNodeId, fileNodesList, isCreatingReadme, onCreateReadmeClick } = props;
+	const { readmeNodeId, fileNodesList, canWrite, isCreatingReadme, onCreateReadmeClick } = props;
 
 	return (
 		<section className={"FileNodeViewFolderReadme" satisfies FileNodeViewFolderReadme_ClassNames}>
@@ -2280,7 +2366,7 @@ const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: F
 					<MyButton
 						className={"FileNodeViewFolderReadme-empty-action" satisfies FileNodeViewFolderReadme_ClassNames}
 						variant="outline"
-						disabled={isCreatingReadme}
+						disabled={!canWrite || isCreatingReadme}
 						aria-busy={isCreatingReadme}
 						onClick={onCreateReadmeClick}
 					>

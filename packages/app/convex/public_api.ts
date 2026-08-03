@@ -2188,21 +2188,46 @@ export const start_run_activity = internalMutation({
 		if (!pluginRun || pluginRun.status !== "running" || !pluginRun.apiTokenExpiresAt || pluginRun.apiTokenExpiresAt <= now) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		if (await activities_db_get_by_source_id(ctx, pluginRun._id)) {
-			return Result({ _nay: { message: "An activity already exists for this run" } });
-		}
-
-		const [version, fileNode] = await Promise.all([
+		const [installation, version, fileNode, actorMembership] = await Promise.all([
+			ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
 			ctx.db.get("plugins_versions", pluginRun.pluginVersionId),
 			ctx.db.get("files_nodes", pluginRun.fileNodeId),
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", pluginRun.actorUserId)
+						.eq("organizationId", pluginRun.organizationId)
+						.eq("workspaceId", pluginRun.workspaceId),
+				)
+				.first(),
 		]);
-		if (!version || !fileNode) {
-			// A live run holds its version through the enabled installation and its source node
-			// through the upload; supported flows never delete either while the run token works.
-			const errorMessage = "pluginRun.pluginVersionId or pluginRun.fileNodeId points to a missing doc";
-			const errorData = { runId: pluginRun._id, versionId: pluginRun.pluginVersionId, fileNodeId: pluginRun.fileNodeId };
+		// Recheck durable authority in this mutation. Removing the actor, changing the installation,
+		// or archiving the source can happen after the route consumes its API call but before this write.
+		if (
+			!installation ||
+			installation.status !== "enabled" ||
+			installation.pluginVersionId !== pluginRun.pluginVersionId ||
+			installation.organizationId !== pluginRun.organizationId ||
+			installation.workspaceId !== pluginRun.workspaceId ||
+			!fileNode ||
+			fileNode.archiveOperationId !== undefined ||
+			fileNode.organizationId !== pluginRun.organizationId ||
+			fileNode.workspaceId !== pluginRun.workspaceId ||
+			!actorMembership
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		if (!version) {
+			// The enabled installation points to a `plugins_versions` doc, so a missing one breaks an invariant.
+			const errorMessage = "pluginRun.pluginVersionId points to a missing plugins_versions doc";
+			const errorData = { runId: pluginRun._id, pluginVersionId: pluginRun.pluginVersionId };
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
+		}
+		if (await activities_db_get_by_source_id(ctx, pluginRun._id)) {
+			return Result({ _nay: { message: "An activity already exists for this run" } });
 		}
 
 		const activityId = await activities_db_start(ctx, {

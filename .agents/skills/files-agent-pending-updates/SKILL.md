@@ -254,7 +254,8 @@ Important behavior:
 - editable Markdown delete rows prefetch committed Markdown and expand to an inline fully-removed diff; binary and folder delete rows are plain rows without a disclosure control
 - binary structural replacements query both asset sizes while the row is mounted, then expand to removed and added size lines or `Size unchanged`
 - delete and binary-replacement links open the file, never the diff editor
-- per-row Accept/Discard actions, with the same `All changes` guard when accept would affect a hidden source
+- per-row Accept/Discard actions, with the same `All changes` guard when accept would affect a hidden source. Accept is enabled only after the node's current write query returns true; Discard stays available for a readable own draft after write access is removed
+- bulk Accept is enabled only when every shown row currently returns true from its node write query. The backend still checks destination, replacement, and subtree permissions that one source-node query cannot prove
 - move-before-content ordering for content-plus-move row acceptance
 - delete rows run as their own trailing bulk phase (accepting a folder delete first would archive descendants and fail sibling accepts)
 - safe eager-created destination deletion during discard
@@ -290,7 +291,7 @@ Important behavior:
 - Metadata search hides committed metadata only for docs that carry a content proposal (`files_pending_update_content_of` returns non-null), the same rule full-text search uses. A move-only doc does not mask the file's committed metadata.
 - `Review changes` must switch into diff mode.
 - In the diff editor, `Accept all` only copies unstaged content into staged content; it does not save by itself. In the Pending changes tab, bulk Accept applies or saves every row shown by the selected source.
-- In the diff editor, `Discard all` copies staged content into unstaged content without a special clear mutation. The Pending changes tab uses backend discard mutations for its rows.
+- In the diff editor, `Discard all` copies staged content into unstaged content without a special clear mutation. The Pending changes tab uses backend discard mutations for its rows. Its content mutation copies staged into unstaged and may waive only a missing `content.write` permission for the caller's exact existing doc; it never weakens general pending upserts.
 - `Save` can partially resolve a pending update and keep the unresolved branch alive.
 - `Sync` must rebase on top of the latest live file state before persisting.
 - Stale rebases must be rejected.

@@ -186,6 +186,7 @@ const app_convex_schema = defineSchema({
 		.index("by_tokenHash", ["tokenHash"])
 		.index("by_expiresAt", ["expiresAt"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
 		.index("by_user", ["userId"]),
 
 	api_credentials: defineTable({
@@ -1200,6 +1201,7 @@ const app_convex_schema = defineSchema({
 		.index("by_tokenHash", ["tokenHash"])
 		.index("by_expiresAt", ["expiresAt"])
 		.index("by_installation", ["installationId"])
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
 		.index("by_user", ["userId"]),
 
 	/**

@@ -28,7 +28,14 @@ const {
 // Network boundary: the real hooks talk to a live Convex client; tests feed query data directly.
 vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => useQueryMock(...args),
-	useQueries: (...args: unknown[]) => useQueriesMock(...args),
+	useQueries: (queries: Record<string, { query: unknown }>) => ({
+		...Object.fromEntries(
+			Object.entries(queries)
+				.filter(([, query]) => query.query === "get_current_user_file_write_permission")
+				.map(([key]) => [key, true]),
+		),
+		...((useQueriesMock(queries) as Record<string, unknown> | undefined) ?? {}),
+	}),
 	useConvex: () => ({ action: actionMock, mutation: mutationMock }),
 }));
 
@@ -59,6 +66,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		},
 		files_pending_updates: {
 			list_files_pending_updates: "list_files_pending_updates",
+			discard_file_pending_content: "discard_file_pending_content",
 			upsert_file_pending_update: "upsert_file_pending_update",
 			save_file_pending_update: "save_file_pending_update",
 			apply_file_pending_move: "apply_file_pending_move",
@@ -67,6 +75,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		},
 		files_nodes: {
 			list_tree: "list_tree",
+			get_current_user_file_write_permission: "get_current_user_file_write_permission",
 		},
 		r2: {
 			get_asset: "get_asset",
@@ -545,18 +554,17 @@ describe("FileEditorSidebarPending", () => {
 		fireEvent.click(screen.getByRole("option", { name: /^Agent chat/ }));
 		fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" }));
 
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
-		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_content", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_agent",
 			pendingUpdateId: "pu_agent",
-			stagedMarkdown: "S_AGENT",
-			unstagedMarkdown: "S_AGENT",
 		});
-		expect(actionMock).not.toHaveBeenCalledWith(
-			"upsert_file_pending_update",
+		expect(mutationMock).not.toHaveBeenCalledWith(
+			"discard_file_pending_content",
 			expect.objectContaining({ nodeId: "node_user" }),
 		);
+		expect(actionMock).not.toHaveBeenCalled();
 		expect(screen.getByRole("status").textContent).toBe("Discarded 1 pending changes");
 	});
 
@@ -668,6 +676,21 @@ describe("FileEditorSidebarPending", () => {
 		});
 	});
 
+	test("keeps Accept disabled and Discard enabled while write permission is loading", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
+		useQueriesMock.mockImplementation((queries: Record<string, unknown>) =>
+			"node_a" in queries ? { node_a: undefined } : {},
+		);
+
+		render(<FileEditorSidebarPending />);
+
+		expect(screen.getByText("Accept").closest("button")?.hasAttribute("disabled")).toBe(true);
+		expect(screen.getByText("Discard").closest("button")?.hasAttribute("disabled")).toBe(false);
+	});
+
 	test("a stale save resolves silently without an error toast", async () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
@@ -695,14 +718,13 @@ describe("FileEditorSidebarPending", () => {
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Discard"));
 
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
-		expect(actionMock).toHaveBeenNthCalledWith(1, "upsert_file_pending_update", {
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).toHaveBeenNthCalledWith(1, "discard_file_pending_content", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_a",
-			stagedMarkdown: "STAGED_MD",
-			unstagedMarkdown: "STAGED_MD",
 		});
+		expect(actionMock).not.toHaveBeenCalled();
 	});
 
 	test("Accept all accepts and saves every pending update", async () => {
@@ -759,22 +781,18 @@ describe("FileEditorSidebarPending", () => {
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Discard all"));
 
-		// 2 rows x upsert = 2 action calls, no save
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
-		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_content", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_a",
-			stagedMarkdown: "STAGED_A",
-			unstagedMarkdown: "STAGED_A",
 		});
-		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_content", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_b",
 			pendingUpdateId: "pu_b",
-			stagedMarkdown: "STAGED_B",
-			unstagedMarkdown: "STAGED_B",
 		});
+		expect(actionMock).not.toHaveBeenCalled();
 	});
 
 	test("Discard all waits out a rate-limited row and retries it", async () => {
@@ -1598,20 +1616,17 @@ describe("FileEditorSidebarPending", () => {
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Discard"));
 
-		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
-		expect(actionMock).toHaveBeenCalledTimes(1);
-		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+		expect(mutationMock).toHaveBeenNthCalledWith(1, "discard_file_pending_content", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_mixed",
-			stagedMarkdown: "STAGED_MD",
-			unstagedMarkdown: "STAGED_MD",
 		});
-		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
+		expect(mutationMock).toHaveBeenNthCalledWith(2, "discard_file_pending_structural", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 		});
-		expect(actionMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(mutationMock.mock.invocationCallOrder[0] ?? 0);
+		expect(actionMock).not.toHaveBeenCalled();
 	});
 
 	test("mixed Discard stops before the structural discard when the content revert fails", async () => {
@@ -1625,15 +1640,21 @@ describe("FileEditorSidebarPending", () => {
 			}),
 		]);
 		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
-		actionMock.mockReset();
+		mutationMock.mockReset();
 		// A failed revert must not discard the move: a retry needs the row intact.
-		actionMock.mockResolvedValue({ _nay: { message: "Revert failed" } });
+		mutationMock.mockResolvedValue({ _nay: { message: "Revert failed" } });
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Discard"));
 
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
-		expect(mutationMock).not.toHaveBeenCalled();
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_content", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_mixed",
+		});
+		expect(mutationMock).not.toHaveBeenCalledWith("discard_file_pending_structural", expect.anything());
+		expect(actionMock).not.toHaveBeenCalled();
 		expect(toast.error).toHaveBeenCalledWith("Revert failed");
 	});
 
@@ -1788,19 +1809,16 @@ describe("FileEditorSidebarPending", () => {
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Discard all"));
 
-		// content row → content-revert upsert; copy row → one structural discard mutation
-		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
-		expect(actionMock).toHaveBeenCalledTimes(1);
-		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_content", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_content",
-			stagedMarkdown: "STAGED_A",
-			unstagedMarkdown: "STAGED_A",
 		});
 		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_b",
 		});
+		expect(actionMock).not.toHaveBeenCalled();
 	});
 });
