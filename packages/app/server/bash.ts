@@ -3812,7 +3812,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					{
 						path: "/docs/meta-email.md",
 						content:
-							"---\nfrom: alice@example.com\ncc:\n  - Bob\n  - Jane\namount: 125\nreviewed: true\n---\n# Email\n",
+							"---\nfrom: alice@example.com\ncc:\n  - Bob\n  - Jane\namount: 125\nreviewed: true\nsentAt: 2026-07-29T14:30:00Z\n---\n# Email\n",
 					},
 					{
 						path: "/docs/meta-tags.md",
@@ -3824,6 +3824,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const paths = await run(`meta search --where '{"eq":["frontmatter.from","alice@example.com"]}' --limit 5`);
 			const json = await run(`meta search --format json --where '{"range":["frontmatter.amount",{"gte":100}]}'`);
 			const jsonExists = await run(`meta search --format json --where '{"exists":"frontmatter.cc"}'`);
+			const jsonDateRange = await run(
+				`meta search --format json --where '{"range":["frontmatter.sentAt",{"gte":"2026-07-27","lt":"2026-08-02"}]}'`,
+			);
 			const dedupedPrefix = await run(`meta search --where '{"prefix":["frontmatter.topic","a"]}' --limit 5`);
 			const scoped = await run(`cd ${test_db_files_mount}/docs && meta search --where '{"exists":"frontmatter.cc"}'`);
 			const get = await run(`meta get ${test_db_files_mount}/docs/meta-email.md`);
@@ -3869,6 +3872,21 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			]);
 			expect(parsedExistsJson.results[0]).not.toHaveProperty("matchedValue");
 
+			expect(jsonDateRange.metadata.exitCode).toBe(0);
+			expect(jsonDateRange.stderr).toBe("");
+			const parsedDateRangeJson = JSON.parse(jsonDateRange.stdout) as {
+				results: Array<{ path: string; field: string; valueKind: string; matchedValue: unknown }>;
+			};
+			// Confirm that string bounds match the maybe_date companion doc and render as an ISO string.
+			expect(parsedDateRangeJson.results).toEqual([
+				expect.objectContaining({
+					path: `${test_db_files_mount}/docs/meta-email.md`,
+					field: "frontmatter.sentAt",
+					valueKind: "maybe_date",
+					matchedValue: "2026-07-29T14:30:00.000Z",
+				}),
+			]);
+
 			expect(dedupedPrefix.metadata.exitCode).toBe(0);
 			expect(dedupedPrefix.stderr).toBe("");
 			expect(dedupedPrefix.stdout).toBe(`${test_db_files_mount}/docs/meta-tags.md\n`);
@@ -3887,6 +3905,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(get.stdout).toContain("source: committed");
 			expect(get.stdout).toContain("frontmatter.cc");
 			expect(get.stdout).toContain('frontmatter.from = "alice@example.com"');
+			// A date-like string produces two lines. Only the maybe_date line carries the marker, so the
+			// agent can tell them apart and see that the field supports range filters.
+			expect(get.stdout).toContain('frontmatter.sentAt = "2026-07-29T14:30:00Z"\n');
+			expect(get.stdout).toContain('frontmatter.sentAt = "2026-07-29T14:30:00.000Z" (maybe_date)');
 
 			expect(invalid.metadata.exitCode).toBe(2);
 			expect(invalid.stderr).toContain("must be qualified");

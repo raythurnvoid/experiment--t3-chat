@@ -72,6 +72,8 @@ function create_command_runner() {
 
 describe("bash_meta_command_create", () => {
 	test("accepts one positive indexed predicate", async () => {
+		// Include valueKind in every range plan. toMatchObject ignores missing expected fields, so
+		// omitting it would not test the discriminator.
 		const cases = [
 			{
 				where: '{"exists":"frontmatter.cc"}',
@@ -87,7 +89,36 @@ describe("bash_meta_command_create", () => {
 			},
 			{
 				where: '{"range":["frontmatter.amount",{"gte":100,"lt":500}]}',
-				plan: { op: "range", qualifiedField: "frontmatter.amount", gte: 100, lt: 500 },
+				plan: { op: "range", qualifiedField: "frontmatter.amount", valueKind: "number", gte: 100, lt: 500 },
+			},
+			{
+				where: '{"range":["frontmatter.realStartTime",{"gte":"2026-07-27","lt":"2026-08-02"}]}',
+				plan: {
+					op: "range",
+					qualifiedField: "frontmatter.realStartTime",
+					valueKind: "maybe_date",
+					gte: Date.UTC(2026, 6, 27),
+					lt: Date.UTC(2026, 7, 2),
+				},
+			},
+			{
+				where: '{"range":["frontmatter.realStartTime",{"gte":"2026-07-29T14:30:36.264Z"}]}',
+				plan: {
+					op: "range",
+					qualifiedField: "frontmatter.realStartTime",
+					valueKind: "maybe_date",
+					gte: Date.UTC(2026, 6, 29, 14, 30, 36, 264),
+				},
+			},
+			{
+				// Keep zero as a valid bound. A falsiness check would reject it.
+				where: '{"range":["frontmatter.realStartTime",{"gte":"1970-01-01"}]}',
+				plan: {
+					op: "range",
+					qualifiedField: "frontmatter.realStartTime",
+					valueKind: "maybe_date",
+					gte: 0,
+				},
 			},
 		];
 
@@ -138,13 +169,23 @@ describe("bash_meta_command_create", () => {
 		}
 	});
 
-	test("range errors point at the bounds-object shape with an example", async () => {
+	test("range errors point at the bounds-object shape and the accepted bound kinds", async () => {
 		const cases = [
 			{
 				where: '{"range":["frontmatter.estimate",5,120]}',
 				message: '{"range":["frontmatter.estimate",{"gte":5,"lte":120}]}',
 			},
 			{ where: '{"range":["frontmatter.estimate",5]}', message: "bounds object" },
+			// Reject empty bounds before reading bounds[0]. Otherwise valueKind access would fail.
+			{ where: '{"range":["frontmatter.estimate",{}]}', message: "at least one bound" },
+			{
+				where: '{"range":["frontmatter.due",{"gte":"2026-02-31"}]}',
+				message: "ISO date string values only",
+			},
+			{
+				where: '{"range":["frontmatter.due",{"gte":"2026-07-27","lt":100}]}',
+				message: "one kind",
+			},
 		];
 
 		for (const item of cases) {

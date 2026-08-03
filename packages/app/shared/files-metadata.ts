@@ -5,17 +5,23 @@ const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---(?:\n|$)/u;
 const FIELD_SEGMENT_REGEX = /^[A-Za-z0-9_-]+$/u;
 
 /**
- * Product cap on distinct frontmatter fields per file. Each field becomes one or two
- * `files_metadata_docs` inserts inside the same save transaction, so an unbounded field count
- * (the 900 KB content cap alone allows thousands) would exceed Convex's per-transaction doc-write
- * limit. Saves that extract more fields than this are refused.
+ * Product cap on how many frontmatter fields one file can index. Each field becomes one metadata
+ * doc insert in the save transaction, and the 900 KB content cap alone would allow thousands.
+ *
+ * Value docs have no matching count limit. Arrays and maybe_date companions can write more than
+ * one value doc per field.
+ *
+ * Do not add a thrown limit check to the insert helpers. Committed inserts run in a workpool that
+ * retries forever, so that error would block later files. Follow the byte cap in
+ * `files_nodes_content.ts` instead, which reports the failure rather than throwing.
  */
 export const files_metadata_MAX_FRONTMATTER_FIELDS = 128;
 
 export type files_metadata_Value =
 	| { qualifiedField: string; valueKind: "string"; value: string }
 	| { qualifiedField: string; valueKind: "number"; value: number }
-	| { qualifiedField: string; valueKind: "boolean"; value: boolean };
+	| { qualifiedField: string; valueKind: "boolean"; value: boolean }
+	| { qualifiedField: string; valueKind: "maybe_date"; value: number };
 
 type ExtractedMetadata = {
 	fields: string[];
@@ -29,11 +35,87 @@ export type files_metadata_SearchPlan =
 	| {
 			op: "range";
 			qualifiedField: string;
+			/**
+			 * Which value docs the range scans: plain numbers, or maybe_date timestamps. Bounds are
+			 * always epoch milliseconds for maybe_date; date strings are parsed before the plan is built.
+			 */
+			valueKind: "number" | "maybe_date";
 			gte?: number;
 			gt?: number;
 			lte?: number;
 			lt?: number;
 	  };
+
+// #region maybe date
+
+// Keep this regex fully anchored and omit the m flag. A block scalar has a trailing newline, so it
+// must not match.
+const MAYBE_DATE_REGEX = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})?)?$/u;
+
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/**
+ * Recognize a date-like string and return its timestamp in epoch milliseconds, or null.
+ * The result is a guess from the string shape, which is why the indexed kind is called
+ * maybe_date. Only ISO-8601 shapes are accepted: YYYY-MM-DD, optionally followed by a
+ * T time with optional seconds, fraction, and Z or +-HH:MM offset.
+ *
+ * Callers must check `=== null`, never falsiness: 0 is the valid epoch for
+ * 1970-01-01T00:00:00Z.
+ *
+ * Extraction and `meta search` range-bound parsing must share this exact rule, or query
+ * bounds could match docs the index never wrote.
+ */
+export function files_metadata_parse_maybe_date(value: string) {
+	const match = MAYBE_DATE_REGEX.exec(value);
+	if (!match) {
+		return null;
+	}
+	const [, year, month, day, hour, minute, second, fraction, offset] = match;
+
+	// Validate calendar components from the captures instead of trusting Date.parse to reject
+	// them. V8 rolls an invalid day like 2026-02-31 over to the next month instead of returning
+	// NaN, and rollover-vs-NaN is implementation-defined across engines.
+	const monthNumber = Number(month);
+	if (monthNumber < 1 || monthNumber > 12) {
+		return null;
+	}
+	const yearNumber = Number(year);
+	const isLeapYear = yearNumber % 4 === 0 && (yearNumber % 100 !== 0 || yearNumber % 400 === 0);
+	const daysInMonth = monthNumber === 2 && isLeapYear ? 29 : DAYS_IN_MONTH[monthNumber - 1];
+	const dayNumber = Number(day);
+	if (dayNumber < 1 || dayNumber > daysInMonth) {
+		return null;
+	}
+	if (hour !== undefined && (Number(hour) > 23 || Number(minute) > 59)) {
+		return null;
+	}
+	if (second !== undefined && Number(second) > 59) {
+		return null;
+	}
+	if (offset !== undefined && offset !== "Z" && (Number(offset.slice(1, 3)) > 23 || Number(offset.slice(4, 6)) > 59)) {
+		return null;
+	}
+
+	// Truncate long fractions to milliseconds because Date.parse only accepts 3 fraction digits.
+	// Add Z to an offset-less datetime, which keeps the indexed value independent of the runtime
+	// timezone. Leave date-only strings unchanged because Date.parse treats them as UTC.
+	let normalized = `${year}-${month}-${day}`;
+	if (hour !== undefined) {
+		normalized += `T${hour}:${minute}`;
+		if (second !== undefined) {
+			normalized += `:${second}`;
+			if (fraction !== undefined) {
+				normalized += `.${fraction.slice(0, 3)}`;
+			}
+		}
+		normalized += offset ?? "Z";
+	}
+	const timestamp = Date.parse(normalized);
+	return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+// #endregion maybe date
 
 // #region frontmatter extraction
 
@@ -118,6 +200,27 @@ function primitive_value_key(value: files_metadata_Value) {
 	return `${value.qualifiedField}\u0000${value.valueKind}\u0000${String(value.value)}`;
 }
 
+// Keep the string value searchable as before, and add one maybe_date companion value when the
+// string looks like a date, so the field also supports date-range search. Two spellings of the
+// same instant dedupe into one maybe_date value through the valueKind-namespaced key.
+function add_value_with_maybe_date(mut_values: Map<string, files_metadata_Value>, value: files_metadata_Value) {
+	mut_values.set(primitive_value_key(value), value);
+
+	if (value.valueKind !== "string") {
+		return;
+	}
+	const timestamp = files_metadata_parse_maybe_date(value.value);
+	if (timestamp === null) {
+		return;
+	}
+	const dateValue: files_metadata_Value = {
+		qualifiedField: value.qualifiedField,
+		valueKind: "maybe_date",
+		value: timestamp,
+	};
+	mut_values.set(primitive_value_key(dateValue), dateValue);
+}
+
 function collect_metadata_from_node(args: {
 	node: YamlNode | null;
 	qualifiedField: string;
@@ -133,7 +236,7 @@ function collect_metadata_from_node(args: {
 
 	const scalarValue = scalar_metadata_value(args.qualifiedField, args.node);
 	if (scalarValue) {
-		args.mut_values.set(primitive_value_key(scalarValue), scalarValue);
+		add_value_with_maybe_date(args.mut_values, scalarValue);
 		return;
 	}
 
@@ -142,7 +245,7 @@ function collect_metadata_from_node(args: {
 			const itemNode = node_or_null(item);
 			const itemValue = scalar_metadata_value(args.qualifiedField, itemNode);
 			if (itemValue) {
-				args.mut_values.set(primitive_value_key(itemValue), itemValue);
+				add_value_with_maybe_date(args.mut_values, itemValue);
 			}
 		}
 		return;

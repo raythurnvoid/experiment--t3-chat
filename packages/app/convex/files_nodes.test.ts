@@ -6239,6 +6239,7 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 			"amountString: '120.5'",
 			"hasAttachments: true",
 			"subject: Invoice reminder",
+			"sentAt: 2026-07-29T14:30:00Z",
 			"---",
 			"Body",
 		].join("\n"),
@@ -6248,7 +6249,7 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 		asUser,
 		db,
 		"/meta-other/outside.md",
-		["---", "from: alice@example.com", "amount: 300", "---", "Outside"].join("\n"),
+		["---", "from: alice@example.com", "amount: 300", "sentAt: 2026-06-01", "---", "Outside"].join("\n"),
 	);
 
 	const search = (plan: files_metadata_SearchPlan, pathPrefix?: string) =>
@@ -6273,8 +6274,24 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 	const invoiceSubject = await search({ op: "prefix", qualifiedField: "frontmatter.subject", value: "Invoice" });
 	expect(invoiceSubject.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
-	const amountRange = await search({ op: "range", qualifiedField: "frontmatter.amount", gte: 100, lt: 200 });
+	const amountRange = await search({
+		op: "range",
+		qualifiedField: "frontmatter.amount",
+		valueKind: "number",
+		gte: 100,
+		lt: 200,
+	});
 	expect(amountRange.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
+
+	// Use sentAt to prove that maybe_date companion docs make YAML strings range-searchable.
+	const sentInWindow = await search({
+		op: "range",
+		qualifiedField: "frontmatter.sentAt",
+		valueKind: "maybe_date",
+		gte: Date.UTC(2026, 6, 27),
+		lt: Date.UTC(2026, 7, 2),
+	});
+	expect(sentInWindow.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
 	const amountStringMismatch = await search({ op: "eq", qualifiedField: "frontmatter.amount", value: "120.5" });
 	expect(amountStringMismatch.items).toEqual([]);
@@ -6304,6 +6321,16 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 		values: expect.arrayContaining([
 			expect.objectContaining({ qualifiedField: "frontmatter.amount", valueKind: "number", numberValue: 120.5 }),
 			expect.objectContaining({ qualifiedField: "frontmatter.amountString", valueKind: "string", stringValue: "120.5" }),
+			expect.objectContaining({
+				qualifiedField: "frontmatter.sentAt",
+				valueKind: "string",
+				stringValue: "2026-07-29T14:30:00Z",
+			}),
+			expect.objectContaining({
+				qualifiedField: "frontmatter.sentAt",
+				valueKind: "maybe_date",
+				numberValue: Date.UTC(2026, 6, 29, 14, 30),
+			}),
 		]),
 	});
 });
@@ -6326,7 +6353,9 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 		asUser,
 		db,
 		path,
-		["---", "from: committed@example.com", "subject: Committed subject", "---", "Committed body"].join("\n"),
+		["---", "from: committed@example.com", "subject: Committed subject", "sentAt: 2026-06-01", "---", "Committed body"].join(
+			"\n",
+		),
 	);
 
 	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
@@ -6334,7 +6363,9 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 		workspaceId: db.workspaceId,
 		userId: db.userId,
 		nodeId,
-		unstagedMarkdown: ["---", "from: pending@example.com", "subject: Pending subject", "---", "Pending body"].join("\n"),
+		unstagedMarkdown: ["---", "from: pending@example.com", "subject: Pending subject", "sentAt: 2026-07-29", "---", "Pending body"].join(
+			"\n",
+		),
 	});
 	if (pending._nay) throw new Error(pending._nay.message);
 
@@ -6384,6 +6415,30 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 
 	const otherUserPendingMiss = await searchAs(otherUserId, "pending@example.com");
 	expect(otherUserPendingMiss.items).toEqual([]);
+
+	// Include both committed and pending dates in the window. One pending doc then proves the
+	// overlay hides the committed doc instead of excluding it by range.
+	const dateRangeAs = (userId: Id<"users">) =>
+		asUser.query(internal.files_metadata.search, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId,
+			plan: {
+				op: "range",
+				qualifiedField: "frontmatter.sentAt",
+				valueKind: "maybe_date",
+				gte: Date.UTC(2026, 5, 1),
+				lt: Date.UTC(2026, 7, 1),
+			},
+			numItems: 20,
+			cursor: null,
+		});
+
+	const pendingDateHit = await dateRangeAs(db.userId);
+	expect(pendingDateHit.items).toMatchObject([{ path, sourceKind: "pending" }]);
+
+	const otherUserDateHit = await dateRangeAs(otherUserId);
+	expect(otherUserDateHit.items).toMatchObject([{ path, sourceKind: "committed" }]);
 });
 
 test("a pure-move row keeps committed metadata visible", async () => {

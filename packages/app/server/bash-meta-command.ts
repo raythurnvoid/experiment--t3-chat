@@ -4,7 +4,7 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
 import type { files_metadata_get_by_path_Result, files_metadata_search_Result } from "../convex/files_metadata.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
+import { files_metadata_parse_maybe_date, type files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import {
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
@@ -93,9 +93,18 @@ function parse_range_bound(value: unknown, key: string) {
 		return Result({ _yay: undefined });
 	}
 	if (typeof value === "number" && Number.isFinite(value)) {
-		return Result({ _yay: value });
+		return Result({ _yay: { valueKind: "number" as const, value } });
 	}
-	return Result({ _nay: { message: `range.${key} supports number values only.` } });
+	// Use the extraction recognizer so a date bound can only match timestamps the index wrote.
+	if (typeof value === "string") {
+		const timestamp = files_metadata_parse_maybe_date(value);
+		if (timestamp !== null) {
+			return Result({ _yay: { valueKind: "maybe_date" as const, value: timestamp } });
+		}
+	}
+	return Result({
+		_nay: { message: `range.${key} supports number and ISO date string values only, such as 2026-07-29.` },
+	});
 }
 
 function parse_search_where_json(whereJson: string) {
@@ -178,12 +187,11 @@ function parse_search_where_json(whereJson: string) {
 		});
 	}
 
+	// Show the exact bounds-object shape in range errors. Agents often send [field, min, max] or
+	// [field, n] and then repeat the same invalid shape after a generic array error.
 	if ("range" in parsed) {
-		// range's second element is a bounds OBJECT, not a scalar — agents reliably send
-		// [field, min, max] or [field, n] and then loop on the generic array message. Surface the
-		// exact shape with an example for both structural failures so the next attempt is correct.
 		const rangeShapeMessage =
-			'range takes a field and a bounds object, e.g. {"range":["frontmatter.estimate",{"gte":5,"lte":120}]} (use any of gte, gt, lte, lt).';
+			'range takes a field and a bounds object, e.g. {"range":["frontmatter.estimate",{"gte":5,"lte":120}]} or {"range":["frontmatter.realStartTime",{"gte":"2026-07-27","lt":"2026-08-02"}]} (use any of gte, gt, lte, lt).';
 		const args = parse_binary_args(parsed.range, "range");
 		if (args._nay) {
 			return Result({ _nay: { message: rangeShapeMessage } });
@@ -200,17 +208,26 @@ function parse_search_where_json(whereJson: string) {
 				return bound;
 			}
 		}
-		if (gte._yay === undefined && gt._yay === undefined && lte._yay === undefined && lt._yay === undefined) {
-			return Result({ _nay: { message: "range requires at least one numeric bound: gte, gt, lte, or lt." } });
+		const bounds = [gte._yay, gt._yay, lte._yay, lt._yay].filter((bound) => bound !== undefined);
+		if (bounds.length === 0) {
+			return Result({ _nay: { message: "range requires at least one bound: gte, gt, lte, or lt." } });
+		}
+		// Keep every range on one indexed value kind. Mixed bounds do not identify which kind to scan.
+		const valueKind = bounds[0].valueKind;
+		if (bounds.some((bound) => bound.valueKind !== valueKind)) {
+			return Result({
+				_nay: { message: "range bounds must be one kind: use all numbers or all ISO date strings." },
+			});
 		}
 		return Result({
 			_yay: {
 				op: "range",
 				qualifiedField: args._yay.qualifiedField,
-				...(gte._yay === undefined ? {} : { gte: gte._yay }),
-				...(gt._yay === undefined ? {} : { gt: gt._yay }),
-				...(lte._yay === undefined ? {} : { lte: lte._yay }),
-				...(lt._yay === undefined ? {} : { lt: lt._yay }),
+				valueKind,
+				...(gte._yay === undefined ? {} : { gte: gte._yay.value }),
+				...(gt._yay === undefined ? {} : { gt: gt._yay.value }),
+				...(lte._yay === undefined ? {} : { lte: lte._yay.value }),
+				...(lt._yay === undefined ? {} : { lt: lt._yay.value }),
 			} satisfies files_metadata_SearchPlan,
 		});
 	}
@@ -394,6 +411,10 @@ function search_result_value(result: files_metadata_search_Result["items"][numbe
 			return result.numberValue;
 		case "boolean":
 			return result.booleanValue;
+		// Print the timestamp as an ISO string. A maybe_date doc always fills numberValue, so the
+		// non-null read is safe.
+		case "maybe_date":
+			return new Date(result.numberValue!).toISOString();
 		case "none":
 			return undefined;
 	}
@@ -407,6 +428,10 @@ function get_value(value: NonNullable<files_metadata_get_by_path_Result>["values
 			return value.numberValue;
 		case "boolean":
 			return value.booleanValue;
+		// Print the timestamp as an ISO string, like meta search does. A maybe_date doc always fills
+		// numberValue, so the non-null read is safe.
+		case "maybe_date":
+			return new Date(value.numberValue!).toISOString();
 	}
 }
 
@@ -503,7 +528,10 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				lines.push(field);
 			}
 			for (const value of result.values) {
-				lines.push(`${value.qualifiedField} = ${JSON.stringify(get_value(value))}`);
+				// Mark the maybe_date line so the agent can distinguish it from the string line and know
+				// the field supports range filters.
+				const valueKindSuffix = value.valueKind === "maybe_date" ? " (maybe_date)" : "";
+				lines.push(`${value.qualifiedField} = ${JSON.stringify(get_value(value))}${valueKindSuffix}`);
 			}
 			return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
 		}

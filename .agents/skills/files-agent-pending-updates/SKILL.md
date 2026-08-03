@@ -101,11 +101,16 @@ Unified Markdown frontmatter metadata docs:
   - denormalized `treePath`
   - optional `archiveOperationId`
   - `qualifiedField`, currently `frontmatter.*`
-  - optional `valueKind: "string" | "number" | "boolean"` for value docs
-  - one value column matching `valueKind`: `stringValue`, `numberValue`, or `booleanValue`
-  - committed replacement, pending replacement, scope patching, field-existence search, string prefix/equality, numeric range/equality, and boolean equality indexes
+  - optional `valueKind: "string" | "number" | "boolean" | "maybe_date"` for value docs
+  - one value column matching `valueKind`: `stringValue`, `numberValue`, or `booleanValue`; `maybe_date` stores its epoch-milliseconds timestamp in `numberValue`
+  - a date-like string value is indexed twice: the normal string value doc plus one `maybe_date` companion doc
+  - committed replacement, pending replacement, scope patching, field-existence search, string prefix/equality, numeric and maybe_date range/equality, and boolean equality indexes; maybe_date reuses the number-range index because `valueKind` sorts before `numberValue` in it
 
 Frontmatter field cap: a save whose markdown extracts more than `files_metadata_MAX_FRONTMATTER_FIELDS` (128, in `packages/app/shared/files-metadata.ts`) distinct frontmatter fields is refused. Both metadata insert helpers in `packages/app/convex/files_metadata.ts` (committed and pending) throw the stable `Too many frontmatter fields` ConvexError, which rolls back the whole save mutation. The cap exists because each field becomes one or two metadata doc inserts in the same transaction, and the 900 KB content cap alone would allow thousands.
+
+Date-like frontmatter strings: a string shaped like an ISO date (`YYYY-MM-DD`, optionally with a time) also gets a `maybe_date` value doc holding its epoch-milliseconds timestamp, so the agent can range-filter dates that YAML keeps as strings. The shared recognizer is `files_metadata_parse_maybe_date` in `packages/app/shared/files-metadata.ts`. Extraction and `meta search` range-bound parsing must use that same recognizer, or a query bound could ask for timestamps the index never wrote. Only files saved after this feature landed have the companion docs; there is no backfill, so an older file stays string-only until its next save.
+
+There is deliberately no matching cap on value docs. Array items add one value doc per distinct item, and a date-like string adds a second `maybe_date` doc, so a very long array still writes an unbounded number of value docs. That hole predates the `maybe_date` companions and is not closed in the insert helpers: committed inserts run inside the materialization workpool (`maxParallelism: 1`, infinite retries), so a throw there would retry forever and block materialization for every other file. The byte cap in `packages/app/convex/files_nodes_content.ts` shows the pattern to follow instead — warn, mark the file, and return `_nay` from the action rather than throwing from the mutation.
 
 Saved-sequence marker table:
 

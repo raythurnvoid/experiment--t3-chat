@@ -43,6 +43,12 @@ function value_doc_payload(value: files_metadata_Value) {
 				valueKind: "boolean" as const,
 				booleanValue: value.value,
 			};
+		case "maybe_date":
+			return {
+				docKind: "value" as const,
+				valueKind: "maybe_date" as const,
+				numberValue: value.value,
+			};
 	}
 }
 
@@ -107,9 +113,9 @@ export async function files_metadata_db_insert_committed(
 	}
 
 	const metadata = files_metadata_extract_frontmatter(args.markdownContent);
-	// Refuse over-cap saves: each field becomes one or two metadata doc inserts in this same
-	// transaction, so an unbounded field count would exceed Convex's per-transaction doc-write
-	// limit. The throw rolls back the whole save mutation.
+	// Refuse over-cap saves: every field becomes a metadata doc insert in this same transaction,
+	// so unbounded counts would exceed Convex's per-transaction doc-write limit. The throw rolls
+	// back the whole save mutation.
 	if (metadata.fields.length > files_metadata_MAX_FRONTMATTER_FIELDS) {
 		throw convex_error({ message: "Too many frontmatter fields" });
 	}
@@ -301,6 +307,12 @@ function format_search_result(doc: Doc<"files_metadata_docs">) {
 				valueKind: "boolean" as const,
 				booleanValue: doc.booleanValue,
 			};
+		case "maybe_date":
+			return {
+				...base,
+				valueKind: "maybe_date" as const,
+				numberValue: doc.numberValue,
+			};
 		default: {
 			const errorMessage = "metadataDoc.valueKind is not set";
 			const errorData = {
@@ -482,6 +494,8 @@ function search_query(
 			return query;
 		}
 		case "range": {
+			// Reuse the numeric range index for maybe_date docs. Read their epoch milliseconds from
+			// numberValue, and use valueKind to keep them separate from plain number docs.
 			let query = ctx.db
 				.query("files_metadata_docs")
 				.withIndex("by_org_workspace_archive_docKind_qualifiedField_number_tree", (q) => {
@@ -491,7 +505,7 @@ function search_query(
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "value")
 						.eq("qualifiedField", plan.qualifiedField)
-						.eq("valueKind", "number");
+						.eq("valueKind", plan.valueKind);
 					if (plan.gte != null) {
 						const lower = base.gte("numberValue", plan.gte);
 						if (plan.lte != null) return lower.lte("numberValue", plan.lte);
@@ -547,6 +561,7 @@ export const search = internalQuery({
 			v.object({
 				op: v.literal("range"),
 				qualifiedField: v.string(),
+				valueKind: v.union(v.literal("number"), v.literal("maybe_date")),
 				gte: v.optional(v.number()),
 				gt: v.optional(v.number()),
 				lte: v.optional(v.number()),
@@ -565,7 +580,13 @@ export const search = internalQuery({
 				qualifiedField: v.string(),
 				metadataKind: v.string(),
 				sourceKind: v.union(v.literal("committed"), v.literal("pending")),
-				valueKind: v.union(v.literal("none"), v.literal("string"), v.literal("number"), v.literal("boolean")),
+				valueKind: v.union(
+					v.literal("none"),
+					v.literal("string"),
+					v.literal("number"),
+					v.literal("boolean"),
+					v.literal("maybe_date"),
+				),
 				stringValue: v.optional(v.string()),
 				numberValue: v.optional(v.number()),
 				booleanValue: v.optional(v.boolean()),
@@ -652,6 +673,12 @@ function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 				valueKind: "boolean" as const,
 				booleanValue: doc.booleanValue,
 			};
+		case "maybe_date":
+			return {
+				qualifiedField: doc.qualifiedField,
+				valueKind: "maybe_date" as const,
+				numberValue: doc.numberValue,
+			};
 		default: {
 			const errorMessage = "metadataDoc.valueKind is not set";
 			const errorData = {
@@ -685,7 +712,7 @@ export const get_by_path = internalQuery({
 			values: v.array(
 				v.object({
 					qualifiedField: v.string(),
-					valueKind: v.union(v.literal("string"), v.literal("number"), v.literal("boolean")),
+					valueKind: v.union(v.literal("string"), v.literal("number"), v.literal("boolean"), v.literal("maybe_date")),
 					stringValue: v.optional(v.string()),
 					numberValue: v.optional(v.number()),
 					booleanValue: v.optional(v.boolean()),

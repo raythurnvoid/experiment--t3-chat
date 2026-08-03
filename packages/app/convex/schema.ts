@@ -362,10 +362,10 @@ const app_convex_schema = defineSchema({
 	}).index("by_pendingUpdate", ["pendingUpdateId"]),
 
 	/**
-	 * Indexed metadata docs for Markdown YAML frontmatter. Field docs support
-	 * existence search for presence-only metadata, and value docs support primitive
-	 * string, number, and boolean search. Arrays insert one value doc for each
-	 * primitive item.
+	 * Indexed metadata docs for Markdown YAML frontmatter. Field docs support existence search
+	 * for presence-only metadata. Value docs support string, number, boolean, and maybe_date search.
+	 * Arrays insert one value doc for each primitive item. Date-like strings also insert a
+	 * maybe_date companion whose epoch-millisecond timestamp uses numberValue for range search.
 	 *
 	 * Pending docs are user-scoped. Query code filters out other users' pending docs
 	 * and hides stale committed docs for files the acting user is editing.
@@ -387,7 +387,9 @@ const app_convex_schema = defineSchema({
 		archiveOperationId: v.optional(v.string()),
 		qualifiedField: v.string(),
 		docKind: v.union(v.literal("field"), v.literal("value")),
-		valueKind: v.optional(v.union(v.literal("string"), v.literal("number"), v.literal("boolean"))),
+		valueKind: v.optional(
+			v.union(v.literal("string"), v.literal("number"), v.literal("boolean"), v.literal("maybe_date")),
+		),
 		stringValue: v.optional(v.string()),
 		numberValue: v.optional(v.number()),
 		booleanValue: v.optional(v.boolean()),

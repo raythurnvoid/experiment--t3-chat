@@ -180,7 +180,18 @@ Use this after changing the bulk import flow (`run_folder_import` in `files-side
 - In Agent mode, ask Bash to `mv` a file to a new path and verify the Pending tab shows a move proposal before acceptance. Test both a rename and a move between folders.
 - Ask Bash to `cp` a file to a new path and to an occupied path. Verify the Pending tab shows the copy or replacement proposal and that committed files stay unchanged until acceptance.
 - For a mixed move plus content proposal, accept it and verify the move is applied before the updated content is saved.
-- Writes, redirects, deletes, and `rm` remain unsupported through Bash. Verify they fail instead of creating a pending proposal.
+- In Agent mode, shell writes ARE supported and become reviewable pending proposals, not immediate commits: `cat > path <<'EOF' ... EOF`, `>`, `>>`, and app-to-app `mv`, `cp`, `rm` all show up in the Pending changes tab (`rm` archives on acceptance). Verified 2026-08-03; the older "writes are unsupported" note here was stale. Links are still not shell operations, and app-to-`/tmp` copy stays immediate thread scratch.
+
+### Indexed Frontmatter Metadata Through The Agent
+
+Use this to verify backend changes to `files_metadata` (extraction, `meta search`, `meta get`) from the running app without touching the user's own files. Verified 2026-08-03.
+
+- Drive the checks by asking the agent to run exact Bash commands: prefix the prompt with "Run exactly these Bash commands, one per Bash call, in this order. Do not modify them. Show the raw stdout and stderr of each. Do not summarize." Without that, the agent rewrites commands or reports a summary instead of output.
+- Read results from `[aria-label="Bash terminal output"]` via `textContent`, not the assistant's prose.
+- Create the fixture with a heredoc write (`cat > qa-<topic>/a.md <<'EOF' ... EOF`) instead of editing real files. The write is a pending proposal, and pending metadata docs are indexed and overlaid for the acting user, so `meta search` and `meta get` already see them — no acceptance needed for a read-path check.
+- Copy the real frontmatter shape you care about. Sybill meeting files quote their dates: `realStartTime: "2026-07-29T19:00:00.000Z"`.
+- Clean up with the Pending changes tab: use `role=button[name="Discard changes to /<path>"]` for each file. Discarding an eager-created file also deletes the folders that same write created, but only while they are still empty, and only the first write into a new folder records them. Two fixture files in one folder therefore always leave the folder behind, so archive it through `More actions for <folder>` → `Archive`.
+- Metadata changes live in `convex/`, which `pnpm dev` does NOT push (that script is Vite only). Run `vp env exec pnpm exec convex dev --once` from `packages/app` after each edit, and reload the route afterwards using the blanked-tab recipe in `agent-panel.md`.
 
 ### File Agent Just Bash
 
