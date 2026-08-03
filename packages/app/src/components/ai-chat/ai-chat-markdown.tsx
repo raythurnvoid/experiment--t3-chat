@@ -131,6 +131,87 @@ function AiChatMarkdownOl(props: ComponentPropsWithoutRef<"ol"> & { node?: unkno
 }
 // #endregion ol
 
+// #region hr
+/**
+ * Streamdown's default hr uses Tailwind utility classes. Render a plain hr so the
+ * app's component CSS owns the divider style.
+ */
+function AiChatMarkdownHr(props: ComponentPropsWithoutRef<"hr"> & { node?: unknown }) {
+	const { className, node: _node, ...rest } = props;
+
+	return <hr className={cn("AiChatMarkdown-hr" satisfies AiChatMarkdown_ClassNames, className)} {...rest} />;
+}
+// #endregion hr
+
+// #region table
+/**
+ * Streamdown's default table components use Tailwind utility classes. Render plain
+ * table elements so the app's component CSS owns the table style. Keep a scrollable
+ * wrapper so a wide table scrolls inside the chat instead of overflowing it.
+ */
+function AiChatMarkdownTable(props: ComponentPropsWithoutRef<"table"> & { node?: unknown }) {
+	const { className, children, node: _node, ...rest } = props;
+
+	return (
+		<div className={"AiChatMarkdown-table-wrapper" satisfies AiChatMarkdown_ClassNames}>
+			<table className={cn("AiChatMarkdown-table" satisfies AiChatMarkdown_ClassNames, className)} {...rest}>
+				{children}
+			</table>
+		</div>
+	);
+}
+
+function AiChatMarkdownThead(props: ComponentPropsWithoutRef<"thead"> & { node?: unknown }) {
+	const { className, children, node: _node, ...rest } = props;
+
+	return (
+		<thead className={cn("AiChatMarkdown-thead" satisfies AiChatMarkdown_ClassNames, className)} {...rest}>
+			{children}
+		</thead>
+	);
+}
+
+function AiChatMarkdownTbody(props: ComponentPropsWithoutRef<"tbody"> & { node?: unknown }) {
+	const { className, children, node: _node, ...rest } = props;
+
+	return (
+		<tbody className={cn("AiChatMarkdown-tbody" satisfies AiChatMarkdown_ClassNames, className)} {...rest}>
+			{children}
+		</tbody>
+	);
+}
+
+function AiChatMarkdownTr(props: ComponentPropsWithoutRef<"tr"> & { node?: unknown }) {
+	const { className, children, node: _node, ...rest } = props;
+
+	return (
+		<tr className={cn("AiChatMarkdown-tr" satisfies AiChatMarkdown_ClassNames, className)} {...rest}>
+			{children}
+		</tr>
+	);
+}
+
+function AiChatMarkdownTh(props: ComponentPropsWithoutRef<"th"> & { node?: unknown }) {
+	const { className, children, node: _node, ...rest } = props;
+
+	return (
+		<th className={cn("AiChatMarkdown-th" satisfies AiChatMarkdown_ClassNames, className)} {...rest}>
+			{children}
+		</th>
+	);
+}
+
+function AiChatMarkdownTd(props: ComponentPropsWithoutRef<"td"> & { node?: unknown }) {
+	const { className, children, node: _node, ...rest } = props;
+
+	return (
+		<td className={cn("AiChatMarkdown-td" satisfies AiChatMarkdown_ClassNames, className)} {...rest}>
+			{children}
+		</td>
+	);
+}
+// #endregion table
+
 // #region root
 export type AiChatMarkdown_ClassNames =
 	| "AiChatMarkdown"
@@ -147,7 +228,10 @@ export type AiChatMarkdown_ClassNames =
 	| "AiChatMarkdown-ul"
 	| "AiChatMarkdown-ol"
 	| "AiChatMarkdown-hr"
+	| "AiChatMarkdown-table-wrapper"
 	| "AiChatMarkdown-table"
+	| "AiChatMarkdown-thead"
+	| "AiChatMarkdown-tbody"
 	| "AiChatMarkdown-th"
 	| "AiChatMarkdown-td"
 	| "AiChatMarkdown-tr"
@@ -158,6 +242,13 @@ const ai_chat_markdown_components = {
 	pre: AiChatMarkdownPre,
 	ul: AiChatMarkdownUl,
 	ol: AiChatMarkdownOl,
+	hr: AiChatMarkdownHr,
+	table: AiChatMarkdownTable,
+	thead: AiChatMarkdownThead,
+	tbody: AiChatMarkdownTbody,
+	tr: AiChatMarkdownTr,
+	th: AiChatMarkdownTh,
+	td: AiChatMarkdownTd,
 } satisfies Components;
 
 export type AiChatMarkdown_Props = {

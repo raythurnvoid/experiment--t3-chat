@@ -70,4 +70,48 @@
 		font: inherit;
 	}
 	/* #endregion pre */
+
+	/* #region hr */
+	/* Block spacing comes from Streamdown's space-y wrapper (utilities layer), which
+	   overrides any margin set here. Only style the divider line itself. */
+	.AiChatMarkdown-hr {
+		border: none;
+		border-top: 1px solid var(--color-base-1-06);
+	}
+	/* #endregion hr */
+
+	/* #region table */
+	.AiChatMarkdown-table-wrapper {
+		overflow-x: auto;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 6px;
+	}
+
+	.AiChatMarkdown-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.875rem;
+	}
+
+	.AiChatMarkdown-thead {
+		border-bottom: 1px solid var(--color-base-1-06);
+		background: var(--color-base-1-04);
+	}
+
+	/* Keep the last row open so the wrapper border closes the table. */
+	.AiChatMarkdown-tbody .AiChatMarkdown-tr:not(:last-child) {
+		border-bottom: 1px solid var(--color-base-1-05);
+	}
+
+	.AiChatMarkdown-th {
+		padding: 8px 16px;
+		text-align: start;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+
+	.AiChatMarkdown-td {
+		padding: 8px 16px;
+	}
+	/* #endregion table */
 }
