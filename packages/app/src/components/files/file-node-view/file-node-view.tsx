@@ -2133,7 +2133,8 @@ type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer"
 	| "FileNodeViewFolderExplorer-table"
 	| "FileNodeViewFolderExplorer-show-more"
-	| "FileNodeViewFolderExplorer-show-less";
+	| "FileNodeViewFolderExplorer-show-less"
+	| "FileNodeViewFolderExplorer-show-less-cover";
 
 type FileNodeViewFolderExplorer_Props = {
 	visibleChildItems: files_VisibleTreeNode[];
@@ -2216,13 +2217,19 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			)}
 
 			{canShowLess && (
-				<MyButton
-					className={"FileNodeViewFolderExplorer-show-less" satisfies FileNodeViewFolderExplorer_ClassNames}
-					variant="ghost"
-					onClick={onShowLessClick}
-				>
-					Show less
-				</MyButton>
+				<>
+					<MyButton
+						className={"FileNodeViewFolderExplorer-show-less" satisfies FileNodeViewFolderExplorer_ClassNames}
+						variant="ghost"
+						onClick={onShowLessClick}
+					>
+						Show less
+					</MyButton>
+					{/* Hide the table rows in the 16px gap below the sticky show less button. */}
+					<div
+						className={"FileNodeViewFolderExplorer-show-less-cover" satisfies FileNodeViewFolderExplorer_ClassNames}
+					/>
+				</>
 			)}
 		</div>
 	);
