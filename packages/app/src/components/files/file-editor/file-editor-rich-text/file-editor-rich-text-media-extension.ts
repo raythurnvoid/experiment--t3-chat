@@ -159,6 +159,14 @@ class MediaNodeView implements NodeView {
 			return;
 		}
 
+		// A re-resolve passes through "processing" even when the media is already on screen: the
+		// uploader swaps the node's src right after finalizing, and the collaborator's embed
+		// resolves the new src from scratch. Keep showing the rendered media instead of flashing
+		// the placeholder. A hard answer (missing, failed, broken) still replaces the media.
+		if (state === "processing" && this.media.getAttribute("src")) {
+			return;
+		}
+
 		for (const className of Object.values(MEDIA_STATE_CLASS_NAMES)) {
 			this.dom.classList.remove(className);
 		}
