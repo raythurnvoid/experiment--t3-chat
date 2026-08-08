@@ -236,7 +236,17 @@ class MediaNodeView implements NodeView {
 				return;
 			}
 
-			const asset = watch.localQueryResult() ?? null;
+			// `localQueryResult()` returns `undefined` while the subscription has not received its
+			// first result, and `null` only when the server answered that the asset does not exist.
+			// Treating `undefined` as `null` here made every collaborator see a short "File not
+			// available" flash during an upload, once per subscribe: the embed re-resolves when the
+			// uploader swaps the node's src, and each new watch starts one round trip away from its
+			// first result. Keep the current placeholder until a real result lands.
+			const asset = watch.localQueryResult();
+			if (asset === undefined) {
+				return;
+			}
+
 			const state = media_state_from_asset(asset);
 			if (state !== "ready") {
 				this.render_state(state);
