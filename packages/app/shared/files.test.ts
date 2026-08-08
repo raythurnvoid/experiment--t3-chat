@@ -944,6 +944,21 @@ describe("media embeds round-trip through Yjs", () => {
 		expect(round_trip_markdown(input)).toBe(input);
 	});
 
+	test("preserves a sized image in its raw img form", () => {
+		const input = '<img src="bonobo-file://k17abcdef" alt="Shot" width="320">\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("keeps a sized image inline in its paragraph", () => {
+		const input = 'Before <img src="bonobo-file://k17abcdef" width="200"> after.\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("preserves a video width", () => {
+		const input = '<video src="bonobo-file://k17abcdef" width="480"></video>\n\nCaption text\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
 	test("does not write the upload placeholder marker into markdown", () => {
 		const editor = files_headless_tiptap_editor_create({
 			initialContent: {
@@ -971,6 +986,35 @@ describe("media embeds round-trip through Yjs", () => {
 		editor._yay.destroy();
 
 		expect(markdown).toBe("![Shot](bonobo-file://k17abcdef)");
+	});
+
+	test("writes a sized image as a raw img tag", () => {
+		const editor = files_headless_tiptap_editor_create({
+			initialContent: {
+				json: {
+					type: "doc",
+					content: [
+						{
+							type: "paragraph",
+							content: [
+								{
+									type: "image",
+									attrs: { src: "bonobo-file://k17abcdef", alt: "Shot", width: 320 },
+								},
+							],
+						},
+					],
+				},
+			},
+		});
+		if (editor._nay) {
+			throw new Error("Expected headless editor creation to succeed", { cause: editor._nay });
+		}
+
+		const markdown = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+		editor._yay.destroy();
+
+		expect(markdown).toBe('<img src="bonobo-file://k17abcdef" alt="Shot" width="320">');
 	});
 });
 

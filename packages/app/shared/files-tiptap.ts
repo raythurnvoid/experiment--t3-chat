@@ -360,6 +360,15 @@ const files_image_node = Node.create({
 			src: { default: null },
 			alt: { default: null },
 			title: { default: null },
+			// Pixel width picked with the resize handle. Markdown image syntax cannot carry a
+			// width, so a sized image serializes as a raw `<img>` tag (see `renderMarkdown`).
+			width: {
+				default: null,
+				parseHTML: (element) => {
+					const parsed = Number.parseInt(element.getAttribute("width") ?? "", 10);
+					return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+				},
+			},
 			// Set while an upload runs, so the client can find its own placeholder node again
 			// after the upload mutations resolve. `rendered: false` keeps it out of the HTML,
 			// and `renderMarkdown` below ignores it, so it never reaches the saved markdown.
@@ -379,6 +388,19 @@ const files_image_node = Node.create({
 		const src = typeof node.attrs?.src === "string" ? node.attrs.src : "";
 		const alt = typeof node.attrs?.alt === "string" ? node.attrs.alt : "";
 		const title = typeof node.attrs?.title === "string" ? node.attrs.title : "";
+		const width =
+			typeof node.attrs?.width === "number" && Number.isFinite(node.attrs.width) && node.attrs.width > 0
+				? Math.round(node.attrs.width)
+				: null;
+
+		// A sized image rides through markdown as a raw `<img>` tag, the same way the video
+		// node below always does. Keep the attribute order fixed so the round-trip stays
+		// byte-stable.
+		if (width !== null) {
+			const altAttribute = alt ? ` alt="${html_escape_attribute(alt)}"` : "";
+			const titleAttribute = title ? ` title="${html_escape_attribute(title)}"` : "";
+			return `<img src="${html_escape_attribute(src)}"${altAttribute}${titleAttribute} width="${width}">`;
+		}
 
 		const image = `![${markdown_escape_image_alt(alt)}](${markdown_link_destination(src)}`;
 		return title ? `${image} "${title.replace(/([\\"])/g, "\\$1")}")` : `${image})`;
@@ -401,6 +423,14 @@ const files_video_node = Node.create({
 	addAttributes() {
 		return {
 			src: { default: null },
+			// Same pixel width as the image node above.
+			width: {
+				default: null,
+				parseHTML: (element) => {
+					const parsed = Number.parseInt(element.getAttribute("width") ?? "", 10);
+					return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+				},
+			},
 			// Same upload placeholder marker as the image node above.
 			uploadId: { default: null, rendered: false },
 		};
@@ -416,7 +446,12 @@ const files_video_node = Node.create({
 
 	renderMarkdown(node) {
 		const src = typeof node.attrs?.src === "string" ? node.attrs.src : "";
-		return `<video src="${html_escape_attribute(src)}"></video>`;
+		const width =
+			typeof node.attrs?.width === "number" && Number.isFinite(node.attrs.width) && node.attrs.width > 0
+				? Math.round(node.attrs.width)
+				: null;
+		const widthAttribute = width !== null ? ` width="${width}"` : "";
+		return `<video src="${html_escape_attribute(src)}"${widthAttribute}></video>`;
 	},
 });
 // #endregion media embeds
