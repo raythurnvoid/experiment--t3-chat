@@ -351,6 +351,33 @@ class FilesConvexYjsStream {
 			clearTimeout(this.outgoingUpdatesDebounceTimer);
 			this.outgoingUpdatesDebounceTimer = null;
 		}
+
+		// Edits from the last debounce window are still queued here. Dropping them would lose
+		// the user's newest keystrokes whenever the editor is destroyed right after an edit
+		// (switching the Rich/Markdown view, opening another file). Send them in one final
+		// best-effort mutation instead. The head batch may already be in flight; re-sending it
+		// is safe because applying the same Yjs update twice is a no-op.
+		if (this.pendingOutgoingUpdates.length > 0) {
+			const merged = mergeUpdates(this.pendingOutgoingUpdates);
+			if (!files_yjs_doc_is_diff_update_empty(merged)) {
+				app_convex
+					.mutation(app_convex_api.files_nodes.yjs_push_update, {
+						membershipId: this.args.membershipId,
+						nodeId: this.args.nodeId,
+						update: files_u8_to_array_buffer(merged),
+						sessionId: this.args.presenceStore.localSessionId,
+					})
+					.then((result) => {
+						if (result._nay) {
+							console.warn("[FilesConvexYjsStream] final yjs_push_update failed", result._nay);
+						}
+					})
+					.catch((err: unknown) => {
+						console.warn("[FilesConvexYjsStream] final yjs_push_update errored", err);
+					});
+			}
+		}
+
 		this.outgoingUpdateInFlight = false;
 		this.pendingOutgoingUpdates = [];
 		this.unsubscribe();

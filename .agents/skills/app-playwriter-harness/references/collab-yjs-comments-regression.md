@@ -191,3 +191,16 @@ Two selectors in this playbook were stale and are corrected above: the comment t
 
 Presence was left enabled at the end of this run because the `Disable` click was reported as impossible.
 That was wrong — the hover worked and the locator did not. Cleanup above now has a verified recipe.
+
+## Run 2026-08-09 — dispose flush in `files-yjs-provider.ts`
+
+Change: `FilesConvexYjsStream.dispose()` now sends any still-queued outgoing updates in one final
+best-effort mutation instead of dropping them. Before the fix, any edit made in the last ~500ms
+debounce window before the provider was destroyed (Rich/Markdown view toggle, opening another
+file) was silently lost — reproduced with a typed marker that vanished after a fast view toggle.
+
+Ran check 1 (provider sync and persistence) as the affected surface: with the fix, a marker typed
+immediately before a view toggle survives the editor remount (the fresh provider rehydrates it
+from Convex) and shows up in the materialized markdown once materialization catches up (~15-30s).
+Checks 2-7 were skipped: the diff only touches the outgoing-update queue in `dispose()`, not
+comments, awareness, or the sync path. Logs stayed clean.
