@@ -5,7 +5,8 @@
 // transactions), so every later step finds its node again by scanning the document for the
 // `uploadId` attribute instead of remembering a position. The node view in
 // `file-editor-rich-text-media-extension.ts` renders `Uploading…` for exactly this attr
-// shape (an `uploadId` and no `src`).
+// shape (an `uploadId` and no `src`) — except in the tab that started the upload, where it
+// previews the bytes from `local_uploads` right away.
 //
 // Uploads land in an `assets` folder that is a sibling of the document (created when it is
 // missing), and always with `onConflict: "fail"`: a name collision must never archive the
@@ -93,6 +94,8 @@ export function file_editor_rich_text_upload_media_files(args: {
 		files: args.files,
 		source: args.source,
 		dropPos: args.dropPos ?? null,
+		membershipId: args.membershipId,
+		documentNodeId: args.documentNodeId,
 	});
 	run_upload_batch({
 		view: args.view,
@@ -121,11 +124,108 @@ type PendingUpload = {
 	requestedName: string;
 };
 
+/**
+ * The original file of an upload that started in this tab, keyed by `uploadId`.
+ *
+ * Two consumers: the node view shows the local bytes right away instead of an "Uploading…"
+ * placeholder (only this tab has the bytes), and a failed PUT keeps the file here so the
+ * retry button can upload the same bytes again. An entry is removed when its upload settles.
+ * A failed entry that is never retried stays until the page unloads; that is bounded by how
+ * many uploads one session can start, so there is no eviction.
+ */
+type LocalUpload = {
+	file: File;
+	/** Object url for the file, used as the preview `src`. Revoked when the entry is removed. */
+	objectUrl: string;
+	status: "uploading" | "failed";
+	item: PendingUpload;
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	documentNodeId: app_convex_Id<"files_nodes">;
+};
+
+const local_uploads = new Map<string, LocalUpload>();
+const local_upload_listeners = new Map<string, Set<() => void>>();
+
+export function file_editor_rich_text_local_upload_get(uploadId: string) {
+	return local_uploads.get(uploadId) ?? null;
+}
+
+/**
+ * Tell the node view when its upload's local entry changes (failed, retried, settled). The
+ * node attrs do not change on those transitions, so ProseMirror fires no update on its own.
+ */
+export function file_editor_rich_text_local_upload_subscribe(uploadId: string, listener: () => void) {
+	let listeners = local_upload_listeners.get(uploadId);
+	if (!listeners) {
+		listeners = new Set();
+		local_upload_listeners.set(uploadId, listeners);
+	}
+	listeners.add(listener);
+	return () => {
+		listeners.delete(listener);
+		if (listeners.size === 0) {
+			local_upload_listeners.delete(uploadId);
+		}
+	};
+}
+
+function local_upload_notify(uploadId: string) {
+	for (const listener of local_upload_listeners.get(uploadId) ?? []) {
+		listener();
+	}
+}
+
+function local_upload_set_status(uploadId: string, status: LocalUpload["status"]) {
+	const entry = local_uploads.get(uploadId);
+	if (!entry || entry.status === status) {
+		return;
+	}
+	entry.status = status;
+	local_upload_notify(uploadId);
+}
+
+function local_upload_remove(uploadId: string) {
+	const entry = local_uploads.get(uploadId);
+	if (!entry) {
+		return;
+	}
+	URL.revokeObjectURL(entry.objectUrl);
+	local_uploads.delete(uploadId);
+	local_upload_notify(uploadId);
+}
+
+/**
+ * Upload the same bytes again after a failed PUT. The caller passes its own live view: the
+ * entry was created by an earlier editor instance, and the document may have been closed and
+ * reopened since, which destroys that view while the placeholder node survives in the doc.
+ */
+export function file_editor_rich_text_retry_upload(args: { view: EditorView; uploadId: string }) {
+	const entry = local_uploads.get(args.uploadId);
+	if (!entry || entry.status !== "failed") {
+		return;
+	}
+
+	local_upload_set_status(args.uploadId, "uploading");
+	run_upload_batch({
+		view: args.view,
+		membershipId: entry.membershipId,
+		documentNodeId: entry.documentNodeId,
+		pending: [entry.item],
+	}).catch((error: unknown) => {
+		console.error("[file_editor_rich_text_retry_upload] Unexpected retry error", {
+			error,
+			uploadId: args.uploadId,
+		});
+	});
+}
+
 function insert_upload_placeholders(args: {
 	view: EditorView;
 	files: File[];
 	source: "clipboard" | "file";
 	dropPos: number | null;
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	documentNodeId: app_convex_Id<"files_nodes">;
 }) {
 	// Land the drop where the pointer released instead of at the old caret.
 	if (args.dropPos != null) {
@@ -139,12 +239,24 @@ function insert_upload_placeholders(args: {
 		const uploadId = crypto.randomUUID();
 		const requestedName =
 			args.source === "clipboard" ? build_pasted_media_name(file, isVideo) : files_normalize_upload_file_name(file.name);
+		const item: PendingUpload = { uploadId, file, isVideo, requestedName };
+
+		// Register the local file before the node lands in the document, so the node view can
+		// show the bytes on its very first render instead of an "Uploading…" placeholder.
+		local_uploads.set(uploadId, {
+			file,
+			objectUrl: URL.createObjectURL(file),
+			status: "uploading",
+			item,
+			membershipId: args.membershipId,
+			documentNodeId: args.documentNodeId,
+		});
 
 		// The video node has no alt attribute, so only the image placeholder carries a name.
 		const nodeType = args.view.state.schema.nodes[isVideo ? "video" : "image"];
 		const node = nodeType.create(isVideo ? { src: "", uploadId } : { src: "", uploadId, alt: requestedName });
 		args.view.dispatch(args.view.state.tr.replaceSelectionWith(node).scrollIntoView());
-		pending.push({ uploadId, file, isVideo, requestedName });
+		pending.push(item);
 	}
 
 	return pending;
@@ -202,6 +314,10 @@ function find_upload_node(view: EditorView, uploadId: string): { node: PmNode; p
 }
 
 function remove_upload_node(view: EditorView, uploadId: string) {
+	// Every removal path also ends the upload's local life: without the embed there is
+	// nothing left to preview or retry.
+	local_upload_remove(uploadId);
+
 	const found = find_upload_node(view, uploadId);
 	if (!found) {
 		return;
@@ -293,8 +409,10 @@ async function run_upload_batch(args: {
 		return null;
 	});
 	if (!target) {
+		// Keep the placeholders instead of deleting them: the files are still in
+		// `local_uploads`, so the node views offer a retry button.
 		for (const item of args.pending) {
-			remove_upload_node(args.view, item.uploadId);
+			local_upload_set_status(item.uploadId, "failed");
 		}
 		toast.error("Failed to prepare upload");
 		return;
@@ -345,6 +463,7 @@ async function upload_one(args: {
 
 	// Undone or deleted while compressing: nothing was created yet, nothing to clean up.
 	if (!find_upload_node(view, item.uploadId)) {
+		local_upload_remove(item.uploadId);
 		return "done";
 	}
 
@@ -379,6 +498,7 @@ async function upload_one(args: {
 		// The embed disappeared while the node was being created (undo, collaborator delete).
 		// There is no embed left to keep either way; the discard's `removed: false` answer just
 		// means the bytes already landed and the file stays in the tree as a normal file.
+		local_upload_remove(item.uploadId);
 		await discard_upload_node({ membershipId, nodeId: created.nodeId });
 		return "done";
 	}
@@ -391,13 +511,18 @@ async function upload_one(args: {
 		// `removed: false` means the R2 event recorded the object first: the bytes landed
 		// despite the browser-side failure, so the file and the embed both stay.
 		if (discarded === "removed") {
-			remove_upload_node(view, item.uploadId);
-			toast.error("Upload failed before processing could start.");
+			// Keep the embed as a retryable placeholder instead of deleting it: the file is
+			// still in `local_uploads`, so the node view offers a retry button. Point the node
+			// back at nothing, because the created node was just discarded.
+			patch_upload_node(view, item.uploadId, { src: "" });
+			local_upload_set_status(item.uploadId, "failed");
+			toast.error("Upload failed");
 			return "failed";
 		}
 	}
 
 	patch_upload_node(view, item.uploadId, { uploadId: null });
+	local_upload_remove(item.uploadId);
 	return "done";
 }
 
