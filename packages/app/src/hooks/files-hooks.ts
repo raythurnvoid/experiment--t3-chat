@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { files_yjs_Provider } from "@/lib/files-yjs-provider.ts";
+import { app_qa_register_files_yjs_provider } from "@/lib/app-qa.ts";
 import type { files_PresenceStore } from "@/lib/files.ts";
 import type { app_convex_Id } from "../lib/app-convex-client.ts";
 
@@ -57,9 +58,12 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 			setLoadFailed(yjsProvider.loadFailed);
 			yjsProvider.on("loadFailed", handleLoadFailed);
 
+			const unregisterQaProvider = app_qa_register_files_yjs_provider(yjsProvider);
+
 			onDestroyRef.current = () => {
 				yjsProvider.off("status", handleStatus);
 				yjsProvider.off("loadFailed", handleLoadFailed);
+				unregisterQaProvider();
 				yjsProvider.destroy();
 			};
 		});

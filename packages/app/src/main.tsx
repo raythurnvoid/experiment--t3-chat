@@ -11,6 +11,9 @@ import { ConvexProviderWithAuth } from "convex/react";
 import { AppAuthProvider } from "./components/app-auth.tsx";
 import { AppHotkeysProvider } from "./components/app-hotkeys.tsx";
 import type { AppElementId } from "./lib/dom-utils.ts";
+import { app_qa_install } from "./lib/app-qa.ts";
+
+app_qa_install();
 
 // Import your Publishable Key
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;

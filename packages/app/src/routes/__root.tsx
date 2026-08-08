@@ -22,6 +22,10 @@ export type RootLayout_ClassNames =
 	| "RootLayoutAuthState-title"
 	| "RootLayoutAuthState-description";
 
+type RootLayout_CustomAttributes = {
+	"data-app-ready": "";
+};
+
 const RootRouteError = memo(function RootRouteError(props: ErrorComponentProps) {
 	return <AppRouteError {...props} layout="fullscreen" />;
 });
@@ -58,6 +62,13 @@ function billing_is_loading(args: {
 function RootLayoutInner() {
 	useEffect(() => {
 		valorize_scrollbar_width_px_css_var();
+
+		// Browser QA waits on this attribute instead of polling route content. It appears only
+		// after auth, organization access, and billing bootstrap have all finished.
+		document.documentElement.setAttribute("data-app-ready" satisfies keyof RootLayout_CustomAttributes, "");
+		return () => {
+			document.documentElement.removeAttribute("data-app-ready" satisfies keyof RootLayout_CustomAttributes);
+		};
 	}, []);
 
 	return (
