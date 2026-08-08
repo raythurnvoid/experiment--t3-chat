@@ -1,0 +1,43 @@
+@layer components {
+	/* #region embed picker */
+	.FileEditorRichTextMediaEmbedPicker {
+		min-width: 280px;
+		max-width: 480px;
+	}
+
+	.FileEditorRichTextMediaEmbedPicker-empty {
+		padding: 12px 16px;
+
+		/* fg-07 is the dimmest scale entry that still clears AA contrast on these surfaces. */
+		color: var(--color-fg-07);
+
+		font-size: 0.875rem;
+		text-align: center;
+	}
+
+	.FileEditorRichTextMediaEmbedPicker-item {
+		display: grid;
+		gap: 2px;
+	}
+
+	.FileEditorRichTextMediaEmbedPicker-item-name {
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.FileEditorRichTextMediaEmbedPicker-item-path {
+		min-width: 0;
+
+		/* fg-07 is the dimmest scale entry that still clears AA contrast on these surfaces. */
+		color: var(--color-fg-07);
+
+		font-size: 0.75rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* #endregion embed picker */
+}

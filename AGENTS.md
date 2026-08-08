@@ -1078,6 +1078,7 @@ When a `MySelectItem` or `MySearchSelectItem` row contains secondary buttons, us
 - Keep action buttons out of the tab order unless their row is the active composite item.
 - For a toggle, expose its pressed state and use a dynamic action label. Do not use `aria-pressed` for one-shot or paired commands that do not expose a persistent pressed state.
 - Use the wrapper's attached store hooks instead of importing Ariakit context/store hooks into feature code.
+- When a select composite has no current selection, pin `value=""` instead of leaving it uncontrolled. An uncontrolled Ariakit select adopts the first item's value on mount and fires `setValue` — a pick nobody made (see the pinned `value=""` in `file-editor-rich-text-media-insert.tsx`).
 
 ```tsx
 type ThreadRow_Props = {

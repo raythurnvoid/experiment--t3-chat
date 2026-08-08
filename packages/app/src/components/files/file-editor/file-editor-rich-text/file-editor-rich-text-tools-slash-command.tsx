@@ -1,13 +1,18 @@
 import "./file-editor-rich-text-tools-slash-command.css";
 import {
 	CheckSquare,
+	Clapperboard,
 	Code,
+	FileImage,
+	FileVideo,
 	Heading1,
 	Heading2,
 	Heading3,
 	Heading4,
 	Heading5,
 	Heading6,
+	ImageDown,
+	ImagePlus,
 	List,
 	ListOrdered,
 	Text,
@@ -149,6 +154,89 @@ const suggestionItems = createSuggestionItems([
 		searchTerms: ["codeblock"],
 		icon: <Code size={18} />,
 		command: ({ editor, range }) => editor.chain().focus().deleteRange(range).toggleCodeBlock().run(),
+	},
+	{
+		title: "Image",
+		description: "Upload an image from your device.",
+		searchTerms: ["image", "picture", "photo", "upload"],
+		icon: <ImagePlus size={18} />,
+		command: ({ editor, range }) => {
+			editor.chain().focus().deleteRange(range).run();
+			editor.commands.filesMediaPickUpload("image");
+		},
+	},
+	{
+		title: "Video",
+		description: "Upload a video from your device.",
+		searchTerms: ["video", "movie", "upload"],
+		icon: <Clapperboard size={18} />,
+		command: ({ editor, range }) => {
+			editor.chain().focus().deleteRange(range).run();
+			editor.commands.filesMediaPickUpload("video");
+		},
+	},
+	{
+		title: "Embed file",
+		description: "Embed an image or video from this workspace.",
+		searchTerms: ["embed", "file", "image", "video", "workspace"],
+		icon: <FileImage size={18} />,
+		command: ({ editor, range }) => {
+			editor.chain().focus().deleteRange(range).run();
+			editor.commands.filesMediaEmbedExisting();
+		},
+	},
+	{
+		title: "Image from URL",
+		description: "Embed an external image by its link.",
+		searchTerms: ["image", "url", "link", "external"],
+		icon: <ImageDown size={18} />,
+		command: ({ editor, range }) => {
+			const image_link = prompt("Please enter the image URL");
+
+			if (!image_link) {
+				return;
+			}
+
+			// Only plain web urls: the node view refuses every other scheme anyway, and accepting
+			// one here would just store a reference that can never render.
+			if (!/^https?:\/\//i.test(image_link.trim())) {
+				alert("Please enter an http(s) image URL");
+				return;
+			}
+
+			editor
+				.chain()
+				.focus()
+				.deleteRange(range)
+				.insertContent({ type: "image", attrs: { src: image_link.trim() } })
+				.run();
+		},
+	},
+	{
+		title: "Video from URL",
+		description: "Embed an external video by its link.",
+		searchTerms: ["video", "url", "link", "external"],
+		icon: <FileVideo size={18} />,
+		command: ({ editor, range }) => {
+			const video_link = prompt("Please enter the video URL");
+
+			if (!video_link) {
+				return;
+			}
+
+			// Same http(s) gate as the image item above.
+			if (!/^https?:\/\//i.test(video_link.trim())) {
+				alert("Please enter an http(s) video URL");
+				return;
+			}
+
+			editor
+				.chain()
+				.focus()
+				.deleteRange(range)
+				.insertContent({ type: "video", attrs: { src: video_link.trim() } })
+				.run();
+		},
 	},
 	{
 		title: "Youtube",

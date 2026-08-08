@@ -68,13 +68,12 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Plugin `files/write` or `files/touch` calls create ordinary Markdown sibling files. Image and video flows may touch an empty output before filling it.
 - Rename, move, archive, and unarchive treat source and output nodes independently. Plugin writes derive target paths from `source.path`; do not claim the host finalizes a pre-created output by node id.
 - Archiving a source upload should keep the original R2 object; permanent tenant purge deletes R2 objects for every `files_r2_assets` row before deleting the rows.
-- Browser-side source uploads try to compress static JPEG/PNG/WebP images before `files_nodes.create_upload_node`; keep the original file when compression fails or is not smaller. Animated GIFs must keep the original blob so animation is not destroyed, but still use the image-description generation path.
+- Browser-side source uploads try to compress static JPEG/PNG/WebP images before `files_nodes.create_upload_node` (`files_prepare_image_upload_file` in `packages/app/src/lib/files-image-compression.ts`, shared with the rich-text editor's paste/drop upload); keep the original file when compression fails or is not smaller. Animated GIFs must keep the original blob so animation is not destroyed, but still use the image-description generation path.
 - If a plugin fails, the source stays. Outputs already touched or written also stay; a missing-secret failure before the first write creates no output.
 - Manual plugin reruns are supported. Keep detailed plugin execution, permissions, services, and release behavior in `../plugin-system/SKILL.md` and the individual plugin README files.
 
 Known gaps:
 
-- Rich-text image upload currently posts to legacy `/api/upload`; that is not the first-party R2 source/generated-output upload pipeline.
 - Plugin-generated Markdown outputs use the same normal editable-file lifecycle as other Markdown files after creation.
 
 # Main Components
@@ -198,14 +197,14 @@ Tree-item components:
 
 1. The Upload file menu action and a single bare-file drop receive one file. Folder drops, multi-file drops, and the Import folder picker run the folder import flow, which ends in the same per-file lifecycle below.
 2. The client prepares static images, classifies Markdown from MIME type, normalizes the path, and opens the draft/conflict modal when needed (single file) or the import conflict modal once for the whole batch (folder import).
-3. `files_nodes.create_upload_node` (single) or `files_nodes.create_upload_nodes` (batch) validates the request and creates the upload asset plus visible source node. After batch validation, per-item problems are reported as skips, never whole-call failures.
+3. `files_nodes.create_upload_node` (single) or `files_nodes.create_upload_nodes` (batch) validates the request and creates the upload asset plus visible source node. After batch validation, per-item problems are reported as skips, never whole-call failures. `create_upload_node` takes `onConflict: "replace" | "fail"`: `"replace"` (the sidebar's choice after the conflict modal) archives the existing file, `"fail"` answers `_nay` with the path-taken message so the caller can pick another name — the rich-text editor always uses `"fail"` because the existing file may be another document's embed.
 4. The browser uploads the binary through the signed R2 PUT URL.
 5. The R2 event patches the source asset's key, size, and optional ETag.
 6. Markdown MIME uploads run the host Markdown finalizer, which creates Yjs, chunks, and a content snapshot on the uploaded node. Oversized Markdown stays a stored file.
 7. Other uploads become terminal source files and dispatch eligible `files.upload.completed` plugin runs.
 8. Installed first-party plugins own PDF, image, video, and audio-derived outputs plus their external provider calls.
 9. Plugin-created outputs are ordinary Markdown files. No host-owned output placeholder exists before the plugin writes or touches the path.
-10. Rich-text image upload still uses the legacy `/api/upload` route rather than this Files-sidebar flow.
+10. Rich-text paste/drop/slash media uploads run this same lifecycle (`create_upload_node` with `onConflict: "fail"`, signed PUT, R2 event) from the editor, landing files in an `assets` folder next to the document. The editor-side flow is specified in `../files-rich-text-embeds/SKILL.md`.
 
 ## Folder Import
 

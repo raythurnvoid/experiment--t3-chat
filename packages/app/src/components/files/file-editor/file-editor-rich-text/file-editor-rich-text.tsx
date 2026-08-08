@@ -7,8 +7,6 @@ import {
 	type EditorContentProps,
 	ImageResizer,
 	handleCommandNavigation,
-	handleImageDrop,
-	handleImagePaste,
 	EditorBubble,
 } from "novel";
 import { Editor, useEditorState } from "@tiptap/react";
@@ -25,7 +23,15 @@ import { FileEditorRichTextToolsTextStyles } from "./file-editor-rich-text-tools
 import { FileEditorRichTextToolsSlashCommand } from "./file-editor-rich-text-tools-slash-command.tsx";
 import { FileEditorRichTextToolsHistoryButtons } from "./file-editor-rich-text-tools-history-buttons.tsx";
 import { MySeparator } from "@/components/my-separator.tsx";
-import { uploadFn } from "./image-upload.ts";
+import {
+	file_editor_rich_text_handle_media_drop,
+	file_editor_rich_text_handle_media_paste,
+	file_editor_rich_text_upload_media_files,
+} from "./file-editor-rich-text-media-upload.ts";
+import {
+	FileEditorRichTextMediaEmbedPicker,
+	file_editor_rich_text_MediaInsertExtension,
+} from "./file-editor-rich-text-media-insert.tsx";
 import { FileEditorRichTextAnchoredComments } from "./file-editor-rich-text-comments.tsx";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
@@ -819,12 +825,69 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 
 	const media = file_editor_rich_text_MediaExtension.configure({ membershipId });
 
+	const imageUploadInputRef = useRef<HTMLInputElement>(null);
+	const videoUploadInputRef = useRef<HTMLInputElement>(null);
+	const [embedPickerAnchorRect, setEmbedPickerAnchorRect] = useState<{
+		x: number;
+		y: number;
+		width: number;
+		height: number;
+	} | null>(null);
+
+	// Click the input synchronously: the browser only opens a file dialog while the user
+	// gesture that ran the slash command is still active.
+	const pickMediaUploadFile = useFn((kind: "image" | "video") => {
+		(kind === "image" ? imageUploadInputRef : videoUploadInputRef).current?.click();
+	});
+
+	const openEmbedExistingPicker = useFn(() => {
+		if (!editor) {
+			return;
+		}
+
+		// Anchor the picker to the caret; the slash item already deleted the "/..." text.
+		const caretRect = editor.view.coordsAtPos(editor.state.selection.from);
+		setEmbedPickerAnchorRect({
+			x: caretRect.left,
+			y: caretRect.top,
+			width: 1,
+			height: caretRect.bottom - caretRect.top,
+		});
+	});
+
+	const handleEmbedPickerClose = useFn(() => {
+		setEmbedPickerAnchorRect(null);
+	});
+
+	const handleMediaUploadInputChange = useFn((event: React.ChangeEvent<HTMLInputElement>) => {
+		const files = Array.from(event.currentTarget.files ?? []);
+		// Reset so picking the same file twice in a row still fires a change event.
+		event.currentTarget.value = "";
+		if (files.length === 0 || !editor) {
+			return;
+		}
+
+		file_editor_rich_text_upload_media_files({
+			view: editor.view,
+			files,
+			source: "file",
+			membershipId,
+			documentNodeId: nodeId,
+		});
+	});
+
+	const mediaInsert = file_editor_rich_text_MediaInsertExtension.configure({
+		pickUploadFile: pickMediaUploadFile,
+		openEmbedExistingPicker,
+	});
+
 	const extensions = [
 		...defaultExtensions,
 		FileEditorRichTextToolsSlashCommand.slashCommand,
 		liveblocks,
 		sizeLimit,
 		media,
+		mediaInsert,
 	];
 
 	const handleCreate: EditorContentProps["onCreate"] = ({ editor }) => {
@@ -871,6 +934,34 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 					isEditorReady && ("FileEditorRichText-visible" satisfies FileEditorRichText_ClassNames),
 				)}
 			>
+				<input
+					ref={imageUploadInputRef}
+					type="file"
+					accept="image/*"
+					multiple
+					aria-hidden="true"
+					tabIndex={-1}
+					style={{ display: "none" }}
+					onChange={handleMediaUploadInputChange}
+				/>
+				<input
+					ref={videoUploadInputRef}
+					type="file"
+					accept="video/*"
+					multiple
+					aria-hidden="true"
+					tabIndex={-1}
+					style={{ display: "none" }}
+					onChange={handleMediaUploadInputChange}
+				/>
+				{editor && embedPickerAnchorRect && (
+					<FileEditorRichTextMediaEmbedPicker
+						editor={editor}
+						membershipId={membershipId}
+						anchorRect={embedPickerAnchorRect}
+						onClose={handleEmbedPickerClose}
+					/>
+				)}
 				{editor && (
 					<FileEditorRichTextToolbarActions
 						editor={editor}
@@ -911,7 +1002,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 							if (checkIncomingContentFitsSizeCap(event.clipboardData?.getData("text/plain") ?? "") === false) {
 								return true;
 							}
-							return handleImagePaste(view, event, uploadFn);
+							return file_editor_rich_text_handle_media_paste({ view, event, membershipId, documentNodeId: nodeId });
 						},
 						handleDrop: (view, event, _slice, moved) => {
 							if (!editable) {
@@ -924,7 +1015,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 							) {
 								return true;
 							}
-							return handleImageDrop(view, event, moved, uploadFn);
+							return file_editor_rich_text_handle_media_drop({ view, event, moved, membershipId, documentNodeId: nodeId });
 						},
 					}}
 					extensions={extensions}
