@@ -369,6 +369,16 @@ const files_image_node = Node.create({
 					return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 				},
 			},
+			// Horizontal placement. `null` is the inline/left default; markdown cannot carry it,
+			// so an aligned image serializes as a raw `<img>` tag like a sized one (see
+			// `renderMarkdown`).
+			align: {
+				default: null,
+				parseHTML: (element) => {
+					const value = element.getAttribute("align");
+					return value === "center" || value === "right" ? value : null;
+				},
+			},
 			// Set while an upload runs, so the client can find its own placeholder node again
 			// after the upload mutations resolve. `rendered: false` keeps it out of the HTML,
 			// and `renderMarkdown` below ignores it, so it never reaches the saved markdown.
@@ -392,14 +402,17 @@ const files_image_node = Node.create({
 			typeof node.attrs?.width === "number" && Number.isFinite(node.attrs.width) && node.attrs.width > 0
 				? Math.round(node.attrs.width)
 				: null;
+		const align = node.attrs?.align === "center" || node.attrs?.align === "right" ? node.attrs.align : null;
 
-		// A sized image rides through markdown as a raw `<img>` tag, the same way the video
-		// node below always does. Keep the attribute order fixed so the round-trip stays
-		// byte-stable.
-		if (width !== null) {
+		// A sized or aligned image rides through markdown as a raw `<img>` tag, the same way
+		// the video node below always does. Keep the attribute order fixed so the round-trip
+		// stays byte-stable.
+		if (width !== null || align !== null) {
 			const altAttribute = alt ? ` alt="${html_escape_attribute(alt)}"` : "";
 			const titleAttribute = title ? ` title="${html_escape_attribute(title)}"` : "";
-			return `<img src="${html_escape_attribute(src)}"${altAttribute}${titleAttribute} width="${width}">`;
+			const widthAttribute = width !== null ? ` width="${width}"` : "";
+			const alignAttribute = align !== null ? ` align="${align}"` : "";
+			return `<img src="${html_escape_attribute(src)}"${altAttribute}${titleAttribute}${widthAttribute}${alignAttribute}>`;
 		}
 
 		const image = `![${markdown_escape_image_alt(alt)}](${markdown_link_destination(src)}`;
@@ -423,12 +436,23 @@ const files_video_node = Node.create({
 	addAttributes() {
 		return {
 			src: { default: null },
+			// Caption text, like the image node's `title`. The raw `<video>` tag is already the
+			// only markdown form, so the caption rides as a `title` attribute on it.
+			title: { default: null },
 			// Same pixel width as the image node above.
 			width: {
 				default: null,
 				parseHTML: (element) => {
 					const parsed = Number.parseInt(element.getAttribute("width") ?? "", 10);
 					return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+				},
+			},
+			// Same horizontal placement as the image node above.
+			align: {
+				default: null,
+				parseHTML: (element) => {
+					const value = element.getAttribute("align");
+					return value === "center" || value === "right" ? value : null;
 				},
 			},
 			// Same upload placeholder marker as the image node above.
@@ -446,12 +470,18 @@ const files_video_node = Node.create({
 
 	renderMarkdown(node) {
 		const src = typeof node.attrs?.src === "string" ? node.attrs.src : "";
+		const title = typeof node.attrs?.title === "string" ? node.attrs.title : "";
 		const width =
 			typeof node.attrs?.width === "number" && Number.isFinite(node.attrs.width) && node.attrs.width > 0
 				? Math.round(node.attrs.width)
 				: null;
+		const align = node.attrs?.align === "center" || node.attrs?.align === "right" ? node.attrs.align : null;
+
+		// Keep the attribute order fixed so the round-trip stays byte-stable.
+		const titleAttribute = title ? ` title="${html_escape_attribute(title)}"` : "";
 		const widthAttribute = width !== null ? ` width="${width}"` : "";
-		return `<video src="${html_escape_attribute(src)}"${widthAttribute}></video>`;
+		const alignAttribute = align !== null ? ` align="${align}"` : "";
+		return `<video src="${html_escape_attribute(src)}"${titleAttribute}${widthAttribute}${alignAttribute}></video>`;
 	},
 });
 // #endregion media embeds

@@ -959,6 +959,23 @@ describe("media embeds round-trip through Yjs", () => {
 		expect(round_trip_markdown(input)).toBe(input);
 	});
 
+	test("preserves an aligned image in its raw img form", () => {
+		const input = '<img src="bonobo-file://k17abcdef" alt="Shot" width="320" align="center">\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("preserves an aligned image without a width", () => {
+		const input = '<img src="bonobo-file://k17abcdef" align="right">\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("preserves a video caption and alignment", () => {
+		// The trailing paragraph matters: a document that ends in a video gains one blank line
+		// on its first round-trip (pre-existing serializer behavior for a trailing block).
+		const input = '<video src="bonobo-file://k17abcdef" title="A red circle" width="480" align="center"></video>\n\nOutro\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
 	test("does not write the upload placeholder marker into markdown", () => {
 		const editor = files_headless_tiptap_editor_create({
 			initialContent: {
@@ -1015,6 +1032,33 @@ describe("media embeds round-trip through Yjs", () => {
 		editor._yay.destroy();
 
 		expect(markdown).toBe('<img src="bonobo-file://k17abcdef" alt="Shot" width="320">');
+	});
+
+	test("writes an aligned captioned video as a raw video tag", () => {
+		const editor = files_headless_tiptap_editor_create({
+			initialContent: {
+				json: {
+					type: "doc",
+					content: [
+						{
+							type: "video",
+							attrs: { src: "bonobo-file://k17abcdef", title: "A red circle", width: 480, align: "center" },
+						},
+						{ type: "paragraph", content: [{ type: "text", text: "Outro" }] },
+					],
+				},
+			},
+		});
+		if (editor._nay) {
+			throw new Error("Expected headless editor creation to succeed", { cause: editor._nay });
+		}
+
+		const markdown = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+		editor._yay.destroy();
+
+		expect(markdown).toBe(
+			'<video src="bonobo-file://k17abcdef" title="A red circle" width="480" align="center"></video>\n\nOutro',
+		);
 	});
 });
 
