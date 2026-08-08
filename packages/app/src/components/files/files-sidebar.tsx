@@ -72,7 +72,6 @@ import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import { MySidebarHeader, MySidebarTitle } from "@/components/my-sidebar.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
-import { MyPrimaryAction } from "@/components/my-action.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import {
 	MyMenu,
@@ -1366,9 +1365,13 @@ type FilesSidebarTreeItemPrimaryAction_ClassNames =
 	| "FilesSidebarTreeItemPrimaryAction-surface";
 
 type FilesSidebarTreeItemPrimaryAction_Props = {
-	itemProps: ReturnType<FilesSidebarTreeItem_Instance["getProps"]>;
+	/**
+	 * Headless Tree's pointer and drag handlers. The role, aria attributes, tabIndex, and
+	 * element ref from the same getProps() object live on the treeitem wrapper instead.
+	 */
+	interactionProps: ReturnType<FilesSidebarTreeItem_Instance["getProps"]>;
+	onClick: NonNullable<ComponentProps<"div">["onClick"]>;
 	itemId: string;
-	kind: files_TreeItem["kind"];
 	updatedAt: files_TreeItem["updatedAt"];
 	updatedByDisplayName: string;
 	isPending: boolean;
@@ -1377,17 +1380,15 @@ type FilesSidebarTreeItemPrimaryAction_Props = {
 	isDropZoneIncluded: boolean;
 	isTreeDragging: boolean;
 	isFocused: boolean;
-	isFallbackTabStop: boolean;
-	ariaLabel: string;
 };
 
 const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrimaryAction(
 	props: FilesSidebarTreeItemPrimaryAction_Props,
 ) {
 	const {
-		itemProps,
+		interactionProps,
+		onClick,
 		itemId,
-		kind,
 		updatedAt,
 		updatedByDisplayName,
 		isPending,
@@ -1396,8 +1397,6 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 		isDropZoneIncluded,
 		isTreeDragging,
 		isFocused,
-		isFallbackTabStop,
-		ariaLabel,
 	} = props;
 
 	// The sharing mark takes no pointer events, so it cannot host its own tooltip; a restricted row
@@ -1407,34 +1406,37 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 		: `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedByDisplayName}`;
 
 	return (
-		<MyPrimaryAction
-			{...itemProps}
-			// Keep one row Tab-reachable when the focused item is no longer rendered (e.g. archived away).
-			{...(isFallbackTabStop ? { tabIndex: 0 } : null)}
-			className={cn(
-				"FilesSidebarTreeItemPrimaryAction" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames,
-				isDropZoneIncluded &&
-					("FilesSidebarTreeItemPrimaryAction-drop-zone-included" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames),
-			)}
-			selected={isSelected}
-			disabled={isPending && !isFocused}
-			tooltip={tooltipContent}
-			tooltipTimeout={2000}
-			tooltipDisabled={isTreeDragging}
-			data-focused={isFocused || undefined}
-			aria-selected={isSelected ? "true" : "false"}
-			aria-label={ariaLabel}
-			// The expand/collapse button renders as a sibling; own it so it stays associated with this row.
-			aria-owns={kind === "folder" ? files_sidebar_tree_item_arrow_dom_id(itemId) : undefined}
-			{...({
-				"data-file-id": itemId,
-			} satisfies Partial<FilesSidebarTreeItem_CustomAttributes>)}
-		>
-			<span
-				className={"FilesSidebarTreeItemPrimaryAction-surface" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames}
-				aria-hidden="true"
-			/>
-		</MyPrimaryAction>
+		<MyTooltip timeout={2000} placement="bottom" open={isTreeDragging ? false : undefined}>
+			{/* focusable=false keeps Ariakit from adding a tabindex: this overlay is only a
+			    pointer hit-area, and the treeitem wrapper owns keyboard focus. */}
+			<MyTooltipTrigger focusable={false}>
+				<div
+					{...interactionProps}
+					onClick={onClick}
+					className={cn(
+						"FilesSidebarTreeItemPrimaryAction" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames,
+						isDropZoneIncluded &&
+							("FilesSidebarTreeItemPrimaryAction-drop-zone-included" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames),
+					)}
+					// The wrapper announces the row; this hit-area would only repeat it.
+					aria-hidden="true"
+					data-selected={isSelected || undefined}
+					// A div has no native disabled; CSS turns this into pointer-events: none.
+					data-disabled={(isPending && !isFocused) || undefined}
+					{...({
+						"data-file-id": itemId,
+					} satisfies Partial<FilesSidebarTreeItem_CustomAttributes>)}
+				>
+					<span
+						className={
+							"FilesSidebarTreeItemPrimaryAction-surface" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames
+						}
+						aria-hidden="true"
+					/>
+				</div>
+			</MyTooltipTrigger>
+			<MyTooltipContent unmountOnHide>{tooltipContent}</MyTooltipContent>
+		</MyTooltip>
 	);
 });
 // #endregion tree item primary action
@@ -1733,6 +1735,24 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	const itemData = useVal(() => item.getItemData());
 	const itemProps = useVal(() => item.getProps());
 
+	// Split Headless Tree's item props. The wrapper div is the treeitem for assistive tech, so it
+	// takes the role, aria attributes, roving tabIndex, and the focus element ref. Only the pointer
+	// and drag handlers stay on the overlay hit-area. This keeps every row child (title, rename
+	// input, arrow, actions) inside the treeitem, which is the only structure role=tree allows.
+	const {
+		ref: itemElementRef,
+		role: itemRole,
+		tabIndex: itemTabIndex,
+		"aria-setsize": itemAriaSetSize,
+		"aria-posinset": itemAriaPosInSet,
+		"aria-selected": _itemAriaSelected,
+		"aria-label": _itemAriaLabel,
+		"aria-level": itemAriaLevel,
+		"aria-expanded": itemAriaExpanded,
+		onClick: _itemOnClick,
+		...itemInteractionProps
+	} = itemProps;
+
 	const renameInputProps = useVal(() => item.getRenameInputProps());
 	const isRenaming = useVal(() => item.isRenaming());
 	const isArchived = itemData.archiveOperationId !== undefined;
@@ -1889,6 +1909,38 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		item.setFocused();
 	});
 
+	const wrapperElementRef = useRef<HTMLDivElement | null>(null);
+	const handleWrapperRef = useFn((element: HTMLDivElement | null) => {
+		wrapperElementRef.current = element;
+		// Register the wrapper as the item element so Headless Tree focuses and scrolls the treeitem.
+		forward_ref(element, itemElementRef);
+	});
+
+	const handlePrimaryActionClick = useFn<NonNullable<ComponentProps<"div">["onClick"]>>((event) => {
+		itemProps.onClick?.(event);
+		// The old row button took DOM focus on click by itself. The overlay div does not, so move
+		// focus to the treeitem here or arrow-key navigation goes dead right after a mouse click.
+		wrapperElementRef.current?.focus();
+	});
+
+	const handleWrapperKeyDown = useFn<NonNullable<ComponentProps<"div">["onKeyDown"]>>((event) => {
+		// The old row was a native button, so Enter and Space clicked it. The wrapper div does not,
+		// so run the row click behavior here. Only react to keys pressed on the wrapper itself, not
+		// on the rename input or the action buttons inside the row.
+		if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) {
+			return;
+		}
+
+		// Mirror the old button's disabled state for pending rows.
+		if (isPending && !isFocused) {
+			return;
+		}
+
+		// Keep Space from scrolling the tree.
+		event.preventDefault();
+		itemProps.onClick?.(event);
+	});
+
 	const handleTreeItemArrowClick = useFn<FilesSidebarTreeItemArrow_Props["onClick"]>(() => {
 		if (isExpanded) {
 			item.collapse();
@@ -1918,6 +1970,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 			<MyContextMenu setOpen={setIsMenuOpen}>
 				<MyContextMenuTrigger onContextMenu={handleRowContextMenu}>
 					<div
+						ref={handleWrapperRef}
 						className={cn(
 							"FilesSidebarTreeItem" satisfies FilesSidebarTreeItem_ClassNames,
 							isNavigated && ("FilesSidebarTreeItem-content-navigated" satisfies FilesSidebarTreeItem_ClassNames),
@@ -1927,15 +1980,27 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 						style={sx({
 							"--FilesSidebarTreeItem-content-depth": depth,
 						} satisfies Partial<FilesSidebar_CssVars>)}
+						role={itemRole}
+						// Keep one row Tab-reachable when the focused item is no longer rendered (e.g. archived away).
+						tabIndex={isFallbackTabStop ? 0 : itemTabIndex}
+						aria-setsize={itemAriaSetSize}
+						aria-posinset={itemAriaPosInSet}
+						aria-level={itemAriaLevel}
+						aria-expanded={itemAriaExpanded}
+						aria-selected={isSelected || isMenuOpen ? "true" : "false"}
+						aria-label={label}
+						aria-disabled={(isPending && !isFocused) || undefined}
+						data-focused={isFocused || undefined}
+						onKeyDown={handleWrapperKeyDown}
 						{...({
 							"data-files-sidebar-tree-context": "",
 							"data-file-id": itemId,
 						} satisfies Partial<CustomAttributes & FilesSidebarTreeItem_CustomAttributes>)}
 					>
 						<FilesSidebarTreeItemPrimaryAction
-							itemProps={itemProps}
+							interactionProps={itemInteractionProps}
+							onClick={handlePrimaryActionClick}
 							itemId={itemId}
-							kind={itemData.kind}
 							updatedAt={itemData.updatedAt}
 							updatedByDisplayName={updatedByDisplayName}
 							isPending={isPending}
@@ -1944,8 +2009,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 							isDropZoneIncluded={isDropZoneIncluded}
 							isTreeDragging={isTreeDragging}
 							isFocused={isFocused}
-							isFallbackTabStop={isFallbackTabStop}
-							ariaLabel={label}
 						/>
 
 						<FilesSidebarTreeItemTrack
@@ -2485,74 +2548,80 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 	}, [isTreeDragging]);
 
 	return (
-		<div
-			ref={handleTreeRootRef}
-			className={cn(
-				"FilesSidebarTree" satisfies FilesSidebarTree_ClassNames,
-				isTreeDragging && ("FilesSidebarTree-dragging" satisfies FilesSidebarTree_ClassNames),
-				expandedFolderActionsVisible &&
-					("FilesSidebarTree-folder-actions-expanded" satisfies FilesSidebarTree_ClassNames),
-			)}
-			{...treeContainerRest}
-			style={treeContainerProps.style}
-			onDragEnterCapture={handleDragEnterCapture}
-			onDragOverCapture={handleDragOverCapture}
-			onDragLeaveCapture={handleDragLeaveCapture}
-			onDragEndCapture={handleDragEndCapture}
-			onDropCapture={handleDropCapture}
-		>
+		<>
+			<div
+				ref={handleTreeRootRef}
+				className={cn(
+					"FilesSidebarTree" satisfies FilesSidebarTree_ClassNames,
+					isTreeDragging && ("FilesSidebarTree-dragging" satisfies FilesSidebarTree_ClassNames),
+					expandedFolderActionsVisible &&
+						("FilesSidebarTree-folder-actions-expanded" satisfies FilesSidebarTree_ClassNames),
+				)}
+				{...treeContainerRest}
+				style={treeContainerProps.style}
+				onDragEnterCapture={handleDragEnterCapture}
+				onDragOverCapture={handleDragOverCapture}
+				onDragLeaveCapture={handleDragLeaveCapture}
+				onDragEndCapture={handleDragEndCapture}
+				onDropCapture={handleDropCapture}
+			>
+				{isTreeLoading ? (
+					<div className={cn("FilesSidebarTree-empty-state" satisfies FilesSidebarTree_ClassNames)}>
+						Loading files...
+					</div>
+				) : (
+					<>
+						{showEmptyState ? (
+							<div className={cn("FilesSidebarTree-empty-state" satisfies FilesSidebarTree_ClassNames)}>
+								{isSearchActive ? "No files match your search." : "No files yet."}
+							</div>
+						) : null}
+						{renderedTreeItems.map((item, itemIndex) => {
+							const itemId = item.getId();
+							return (
+								<FilesSidebarTreeItem
+									key={itemId}
+									tree={tree}
+									item={item}
+									displayNameByUserId={displayNameByUserId}
+									trackActiveFileIds={trackActiveFileIds}
+									selectedNodeId={selectedNodeId}
+									isSelected={selectedNodeIds.has(itemId)}
+									isDropZoneIncluded={dropZoneItemIds.has(itemId)}
+									isSearchActive={isSearchActive}
+									isBusy={isBusy}
+									pendingActionNodeIds={pendingActionNodeIds}
+									renameError={renameErrorByNodeId.get(itemId)}
+									isTreeDragging={isTreeDragging}
+									isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
+									expandedFolderActionsVisible={expandedFolderActionsVisible}
+									canWrite={canWriteItem(item.getItemData())}
+									canUnarchive={canUnarchiveItem(item.getItemData())}
+									onCreateNode={onCreateNode}
+									onStartRename={onStartRename}
+									onRenameErrorClear={onRenameErrorClear}
+									onCopy={onCopy}
+									onCopyLink={onCopyLink}
+									onCopyNodeId={onCopyNodeId}
+									onShare={onShare}
+									onArchive={onArchive}
+									onUnarchive={onUnarchive}
+								/>
+							);
+						})}
+					</>
+				)}
+				{dropZone ? (
+					<>
+						<FilesSidebarTreeDropZoneArea dropZone={dropZone} />
+						<FilesSidebarTreeDropZoneIndicator kind={dropZone.kind} />
+					</>
+				) : null}
+			</div>
+			{/* Keep the drag announcement live region outside the role=tree element: a tree may
+			    only own treeitems and groups, and this span is neither. */}
 			<AssistiveTreeDescription tree={tree()} />
-			{isTreeLoading ? (
-				<div className={cn("FilesSidebarTree-empty-state" satisfies FilesSidebarTree_ClassNames)}>Loading files...</div>
-			) : (
-				<>
-					{showEmptyState ? (
-						<div className={cn("FilesSidebarTree-empty-state" satisfies FilesSidebarTree_ClassNames)}>
-							{isSearchActive ? "No files match your search." : "No files yet."}
-						</div>
-					) : null}
-					{renderedTreeItems.map((item, itemIndex) => {
-						const itemId = item.getId();
-						return (
-							<FilesSidebarTreeItem
-								key={itemId}
-								tree={tree}
-								item={item}
-								displayNameByUserId={displayNameByUserId}
-								trackActiveFileIds={trackActiveFileIds}
-								selectedNodeId={selectedNodeId}
-								isSelected={selectedNodeIds.has(itemId)}
-								isDropZoneIncluded={dropZoneItemIds.has(itemId)}
-								isSearchActive={isSearchActive}
-								isBusy={isBusy}
-								pendingActionNodeIds={pendingActionNodeIds}
-								renameError={renameErrorByNodeId.get(itemId)}
-								isTreeDragging={isTreeDragging}
-								isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
-								expandedFolderActionsVisible={expandedFolderActionsVisible}
-								canWrite={canWriteItem(item.getItemData())}
-								canUnarchive={canUnarchiveItem(item.getItemData())}
-								onCreateNode={onCreateNode}
-								onStartRename={onStartRename}
-								onRenameErrorClear={onRenameErrorClear}
-								onCopy={onCopy}
-								onCopyLink={onCopyLink}
-								onCopyNodeId={onCopyNodeId}
-								onShare={onShare}
-								onArchive={onArchive}
-								onUnarchive={onUnarchive}
-							/>
-						);
-					})}
-				</>
-			)}
-			{dropZone ? (
-				<>
-					<FilesSidebarTreeDropZoneArea dropZone={dropZone} />
-					<FilesSidebarTreeDropZoneIndicator kind={dropZone.kind} />
-				</>
-			) : null}
-		</div>
+		</>
 	);
 });
 // #endregion tree
@@ -5242,7 +5311,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const canWriteRoot = canWriteItemInRender(files_SYNTHETIC_ROOT_FOLDER);
 	const uploadTargetParentId = resolveSelectedFolderParentId();
 	const uploadTargetParentItem =
-		uploadTargetParentId === files_ROOT_ID ? files_SYNTHETIC_ROOT_FOLDER : treeItems?.itemById.get(uploadTargetParentId);
+		uploadTargetParentId === files_ROOT_ID
+			? files_SYNTHETIC_ROOT_FOLDER
+			: treeItems?.itemById.get(uploadTargetParentId);
 	const canWriteUploadTarget = uploadTargetParentItem ? canWriteItemInRender(uploadTargetParentItem) : false;
 
 	const handleUploadFileClick = useFn(() => {

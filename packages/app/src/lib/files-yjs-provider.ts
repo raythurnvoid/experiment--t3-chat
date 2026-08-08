@@ -36,6 +36,7 @@ type FilesConvexYjsStream_Args = {
 	onAckUpdatePacket: (packet: FilesConvexIncrementalUpdates["updates"][number]) => void;
 	onOutgoingUpdateSent: () => void;
 	onSync: (currentStateUpdate: Uint8Array) => void;
+	onLoadFailedChange: (failed: boolean) => void;
 };
 
 class FilesConvexYjsStream {
@@ -51,6 +52,7 @@ class FilesConvexYjsStream {
 	private onAckUpdatePacket: FilesConvexYjsStream_Args["onAckUpdatePacket"];
 	private onOutgoingUpdateSent: FilesConvexYjsStream_Args["onOutgoingUpdateSent"];
 	private onSync: FilesConvexYjsStream_Args["onSync"];
+	private onLoadFailedChange: FilesConvexYjsStream_Args["onLoadFailedChange"];
 
 	private watcher: app_convex_Watch<
 		app_convex_FunctionReturnType<typeof app_convex_api.files_nodes.yjs_get_incremental_updates>
@@ -77,6 +79,7 @@ class FilesConvexYjsStream {
 		this.onAckUpdatePacket = args.onAckUpdatePacket;
 		this.onOutgoingUpdateSent = args.onOutgoingUpdateSent;
 		this.onSync = args.onSync;
+		this.onLoadFailedChange = args.onLoadFailedChange;
 
 		this.watcher = app_convex.watchQuery(app_convex_api.files_nodes.yjs_get_incremental_updates, {
 			membershipId: args.membershipId,
@@ -224,13 +227,17 @@ class FilesConvexYjsStream {
 		try {
 			do {
 				iteration++;
-				if (iteration > 10) {
+				// After 10 straight failures, tell the UI the document is not loading, then keep
+				// retrying more slowly. The old code gave up here, and a tab that was open during
+				// a short storage outage stayed on an empty document forever with no message.
+				if (iteration === 11) {
 					console.error("[FilesConvexYjsStream.sync] yjs sync failed after 10 retries", {
 						membershipId: this.args.membershipId,
 						nodeId: this.args.nodeId,
 					});
-					break;
+					this.onLoadFailedChange(true);
 				}
+				const retryDelayMs = iteration > 10 ? 5000 : 500;
 
 				let result: app_convex_FunctionReturnType<
 					typeof app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot
@@ -247,12 +254,14 @@ class FilesConvexYjsStream {
 				} catch (err) {
 					console.warn("[FilesConvexYjsStream.sync] snapshot query failed, retrying", err);
 					// Backoff a bit before retrying to avoid hot-looping on transient errors.
-					await new Promise((resolve) => setTimeout(resolve, 500));
+					await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
 					continue;
 				}
 
+				// A null answer is not retryable: the node is gone or this user lost read access.
 				if (!result) {
 					console.error("[FilesConvexYjsStream.sync] fetch_doc returned null");
+					this.onLoadFailedChange(true);
 					break;
 				}
 
@@ -274,7 +283,7 @@ class FilesConvexYjsStream {
 				} catch (err) {
 					console.warn("[FilesConvexYjsStream.sync] snapshot fetch failed, retrying", err);
 					// Backoff a bit before retrying to avoid hot-looping on transient R2 errors.
-					await new Promise((resolve) => setTimeout(resolve, 500));
+					await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
 					continue;
 				}
 
@@ -326,6 +335,7 @@ class FilesConvexYjsStream {
 				this.onSync(currentStateUpdate);
 				this.state.ready = true;
 				this.state.appliedSeq = lastSequence;
+				this.onLoadFailedChange(false);
 
 				break;
 			} while (true);
@@ -359,6 +369,8 @@ type files_yjs_Provider_Events = {
 	sync: (synced: boolean) => void;
 	synced: (synced: boolean) => void;
 	status: (status: YjsSyncStatus) => void;
+	/** Fires with true when the initial document load keeps failing, and false once a load succeeds. */
+	loadFailed: (failed: boolean) => void;
 };
 
 export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> implements IYjsProvider {
@@ -372,6 +384,9 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 	public readonly awareness: files_yjs_Awareness;
 
 	public readonly rootDocHandler: files_yjs_DocHandler;
+
+	/** True while the initial document load keeps failing; read it before the event fires. */
+	public loadFailed = false;
 
 	private readonly syncStatusΣ: DerivedSignal<YjsSyncStatus>;
 
@@ -488,6 +503,11 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 					currentStateUpdate,
 					canWrite: canWrite,
 				});
+			},
+			onLoadFailedChange: (failed) => {
+				if (failed === this.loadFailed) return;
+				this.loadFailed = failed;
+				this.emit("loadFailed", [failed]);
 			},
 		});
 

@@ -101,19 +101,13 @@
 	/* #endregion tab-surface */
 
 	/* #region tab-primary-action */
+	/* Rendered merged onto a MyTabsTabSurface via Ariakit's render prop, so the surface variant
+	   class sits on the same element. The tab element keeps no padding: the close-button column
+	   must stay full-size, and the feature CSS insets the label instead. */
 	.MyTabsTabPrimaryAction {
-		display: grid;
-		grid-template-columns: subgrid;
-		align-items: center;
-		justify-content: center;
-		gap: 6px;
-
 		min-width: 0;
-		align-self: stretch;
-		padding: 8px 10px;
 
 		border-radius: 6px;
-		border: 2px solid transparent;
 		outline: 2px solid transparent;
 		outline-offset: -2px;
 
@@ -135,7 +129,7 @@
 			cursor: default;
 		}
 
-		.MyTabsTabSurface-variant-default & {
+		&.MyTabsTabSurface-variant-default {
 			&:hover:not([aria-selected="true"]) {
 				background: linear-gradient(var(--color-base-alt-1-07), var(--color-base-alt-1-06));
 				color: var(--color-fg-10);
@@ -153,7 +147,7 @@
 			}
 		}
 
-		.MyTabsTabSurface-variant-bordered & {
+		&.MyTabsTabSurface-variant-bordered {
 			background: transparent;
 			color: var(--color-fg-07);
 

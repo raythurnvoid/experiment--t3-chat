@@ -59,7 +59,11 @@ import {
 	type AiChatThreadListController,
 } from "@/hooks/ai-chat-controller.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { ai_chat_is_optimistic_thread, ai_chat_thread_is_unread, ai_chat_get_unread_dot_delay_ms } from "@/lib/ai-chat.ts";
+import {
+	ai_chat_is_optimistic_thread,
+	ai_chat_thread_is_unread,
+	ai_chat_get_unread_dot_delay_ms,
+} from "@/lib/ai-chat.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_local_storage_set_value, type storage_local_ValueByKey, useAppLocalStorageValue } from "@/lib/storage.ts";
@@ -517,7 +521,9 @@ const FileEditorSidebarAgentHeaderActions = memo(function FileEditorSidebarAgent
 						<MyMenuItem
 							disabled={!persistedThreadId}
 							onClick={handleOpenChatPage}
-							render={<Link to="/w/$organizationName/$workspaceName/chat" params={{ organizationName, workspaceName }} />}
+							render={
+								<Link to="/w/$organizationName/$workspaceName/chat" params={{ organizationName, workspaceName }} />
+							}
 						>
 							<MyMenuItemContent>
 								<MyMenuItemContentIcon>
@@ -539,7 +545,6 @@ type FileEditorSidebarAgentHeaderTabs_ClassNames =
 	| "FileEditorSidebarAgentHeaderTabs"
 	| "FileEditorSidebarAgentHeaderTabs-tabs-draggable"
 	| "FileEditorSidebarAgentHeaderTabs-tab"
-	| "FileEditorSidebarAgentHeaderTabs-tab-primary-action"
 	| "FileEditorSidebarAgentHeaderTabs-tab-title"
 	| "FileEditorSidebarAgentHeaderTabs-tab-unread-dot"
 	| "FileEditorSidebarAgentHeaderTabs-tab-close";
@@ -634,7 +639,10 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 		}
 
 		const closedTabIds = new Set(closedTabs.map((tab) => tab.id));
-		if (closedTabIds.has(selectedChatTabId) || (controller.selectedThreadId && closedTabIds.has(controller.selectedThreadId))) {
+		if (
+			closedTabIds.has(selectedChatTabId) ||
+			(controller.selectedThreadId && closedTabIds.has(controller.selectedThreadId))
+		) {
 			app_local_storage_set_value(selectedTabStorageKey, threadId);
 			controller.selectThread(threadId);
 		}
@@ -690,49 +698,53 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 										ai_chat_is_optimistic_thread(currentThreads.find((thread) => thread._id === entry.id));
 
 									return (
-										<Draggable key={entry.id} draggableId={entry.id} index={index} disableInteractiveElementBlocking>
+										<Draggable key={entry.id} draggableId={entry.id} index={index}>
 											{(draggableProvided, draggableSnapshot) => {
-												const { role: _dragHandleRole, tabIndex: _dragHandleTabIndex, ...dragHandleProps } =
-													draggableProvided.dragHandleProps ?? {};
+												const {
+													role: _dragHandleRole,
+													tabIndex: _dragHandleTabIndex,
+													...dragHandleProps
+												} = draggableProvided.dragHandleProps ?? {};
 												const draggableTab = (
-													<MyTabsTabSurface
-														ref={draggableProvided.innerRef}
-														{...draggableProvided.draggableProps}
-														variant="bordered"
-														{...({
-															"data-ai-chat-thread-id": entry.id,
-														} satisfies Partial<FileEditorSidebarAgentHeaderTabs_CustomAttributes>)}
+													// Render the Ariakit tab as the surface div so the close button lives inside
+													// the role=tab element; a tablist may only own tabs.
+													<MyTabsTabPrimaryAction
+														{...dragHandleProps}
+														id={entry.id}
+														aria-label={`${isUnreadTab ? "Unread " : ""}${entry.title}`}
 														className={cn(
 															"FileEditorSidebarAgentHeaderTabs-tab" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
 														)}
+														render={
+															<MyTabsTabSurface
+																ref={draggableProvided.innerRef}
+																{...draggableProvided.draggableProps}
+																variant="bordered"
+																{...({
+																	"data-ai-chat-thread-id": entry.id,
+																} satisfies Partial<FileEditorSidebarAgentHeaderTabs_CustomAttributes>)}
+															/>
+														}
 													>
-														<MyTabsTabPrimaryAction
-															{...dragHandleProps}
-															id={entry.id}
+														<span
 															className={cn(
-																"FileEditorSidebarAgentHeaderTabs-tab-primary-action" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
+																"FileEditorSidebarAgentHeaderTabs-tab-title" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
 															)}
 														>
-															<span
-																className={cn(
-																	"FileEditorSidebarAgentHeaderTabs-tab-title" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
-																)}
-															>
-																{isUnreadTab ? (
-																	<span
-																		className={cn(
-																			"FileEditorSidebarAgentHeaderTabs-tab-unread-dot" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
-																		)}
-																		style={{
-																			animationDelay: `${ai_chat_get_unread_dot_delay_ms(entryThread?.lastMessageAt)}ms`,
-																		}}
-																		role="img"
-																		aria-label="Unread"
-																	/>
-																) : null}
-																{entry.title}
-															</span>
-														</MyTabsTabPrimaryAction>
+															{isUnreadTab ? (
+																<span
+																	className={cn(
+																		"FileEditorSidebarAgentHeaderTabs-tab-unread-dot" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
+																	)}
+																	style={{
+																		animationDelay: `${ai_chat_get_unread_dot_delay_ms(entryThread?.lastMessageAt)}ms`,
+																	}}
+																	role="img"
+																	aria-label="Unread"
+																/>
+															) : null}
+															{entry.title}
+														</span>
 
 														<MyTabsTabSecondaryAction
 															className={cn(
@@ -741,13 +753,22 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 															tooltip={isCloseDisabled ? "Already a new chat" : "Close tab"}
 															disabled={isCloseDisabled}
 															tabIndex={isSelectedTab ? 0 : -1}
-															onClick={() => handleCloseTab(entry.id)}
+															// Keep pointer-down from moving Ariakit's composite focus to this tab,
+															// which would also select it before the close runs.
+															onMouseDown={(event) => {
+																event.preventDefault();
+																event.stopPropagation();
+															}}
+															onClick={(event) => {
+																event.stopPropagation();
+																handleCloseTab(entry.id);
+															}}
 														>
 															<MyTabsTabSecondaryActionIcon>
 																<X />
 															</MyTabsTabSecondaryActionIcon>
 														</MyTabsTabSecondaryAction>
-													</MyTabsTabSurface>
+													</MyTabsTabPrimaryAction>
 												);
 
 												if (draggableSnapshot.isDragging && appHoistingContainer) {
@@ -759,10 +780,7 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 														<MyContextMenuTrigger>{draggableTab}</MyContextMenuTrigger>
 														<MyContextMenuPopover>
 															<MyMenuPopoverContent>
-																<MyMenuItem
-																	disabled={isCloseDisabled}
-																	onClick={() => handleCloseTab(entry.id)}
-																>
+																<MyMenuItem disabled={isCloseDisabled} onClick={() => handleCloseTab(entry.id)}>
 																	<MyMenuItemContent>
 																		<MyMenuItemContentIcon>
 																			<X />

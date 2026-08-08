@@ -52,6 +52,10 @@
 		align-items: center;
 		gap: 4px;
 
+		/* The chip is a tooltip trigger. It has no background, so this padding only grows the
+		   pointer target to the 24px minimum without any visible change. */
+		padding-block: 2px;
+
 		font-size: 0.875rem;
 	}
 
@@ -79,6 +83,9 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
+
+		/* Same pointer-target padding as the Due chip above. */
+		padding-block: 2px;
 
 		font-size: 0.875rem;
 	}

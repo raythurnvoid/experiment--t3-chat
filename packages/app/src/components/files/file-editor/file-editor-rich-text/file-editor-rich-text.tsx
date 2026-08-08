@@ -767,6 +767,7 @@ const FileEditorRichTextAnchoredCommentsLayer = memo(function FileEditorRichText
 export type FileEditorRichText_ClassNames =
 	| "FileEditorRichText"
 	| "FileEditorRichText-visible"
+	| "FileEditorRichText-load-error"
 	| "FileEditorRichText-editor-content-root"
 	| "FileEditorRichText-editor-content-container"
 	| "FileEditorRichText-editor-content"
@@ -924,6 +925,13 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 
 	return (
 		<>
+			{/* Keep this outside the root div: the root stays display:none until the editor is
+			    ready, and the load failure must also be visible over the loading skeleton. */}
+			{filesYjs.loadFailed && (
+				<div className={"FileEditorRichText-load-error" satisfies FileEditorRichText_ClassNames} role="alert">
+					Can't load this document right now. Retrying — check your connection.
+				</div>
+			)}
 			<div
 				className={cn(
 					"FileEditorRichText" satisfies FileEditorRichText_ClassNames,

@@ -16,6 +16,7 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 	const [providerNodeId, setProviderNodeId] = useState<app_convex_Id<"files_nodes"> | undefined>(undefined);
 	const [syncStatus, setSyncStatus] = useState<ReturnType<files_yjs_Provider["getStatus"]>>("loading");
 	const [syncChanged, setSyncChanged] = useState(false);
+	const [loadFailed, setLoadFailed] = useState(false);
 	const lastStatusRef = useRef<ReturnType<files_yjs_Provider["getStatus"]>>("loading");
 
 	const onDestroyRef = useRef<() => void>(null);
@@ -49,8 +50,16 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 			handleStatus();
 			yjsProvider.on("status", handleStatus);
 
+			function handleLoadFailed(failed: boolean) {
+				setLoadFailed(failed);
+			}
+
+			setLoadFailed(yjsProvider.loadFailed);
+			yjsProvider.on("loadFailed", handleLoadFailed);
+
 			onDestroyRef.current = () => {
 				yjsProvider.off("status", handleStatus);
+				yjsProvider.off("loadFailed", handleLoadFailed);
 				yjsProvider.destroy();
 			};
 		});
@@ -67,6 +76,7 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 				providerNodeId,
 				syncStatus,
 				syncChanged,
+				loadFailed,
 			}
 		: undefined;
 }

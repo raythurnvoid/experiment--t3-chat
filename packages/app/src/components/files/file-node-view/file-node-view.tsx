@@ -2957,7 +2957,12 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	};
 
 	return (
+		// The whole workspace area is this route's main landmark: the files sidebar, the resize
+		// handle between the panels, and the editor. With main only on the editor area, the resize
+		// handle sat outside every landmark, which axe flags (region). The editor keeps its own
+		// named region landmark, and the files sidebar stays an aside inside main, which ARIA allows.
 		<MyPanelGroup
+			tagName="main"
 			className={"FileNodeView" satisfies FileNodeView_ClassNames}
 			defaultLayout={DEFAULT_PANEL_LAYOUT}
 			direction="horizontal"
@@ -2991,10 +2996,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				minSize={40}
 				className={"FileNodeView-main-panel" satisfies FileNodeView_ClassNames}
 			>
-				{/* The editor area is this route's main content, and the files sidebar next to it is not.
-				    The api-keys, plugins and users routes each render their own; without one here the
-			    layout wraps `<Outlet />` in nothing and `/files` had no main landmark at all. */}
-				<main
+				<div
 					className={cn(
 						"FileNodeView-editor-area" satisfies FileNodeView_ClassNames,
 						"app-scrollable" satisfies AppClassName,
@@ -3058,7 +3060,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 							<FileEditorSidebar commentsContainerRef={setCommentsPortalHost} />
 						</MyPanel>
 					</MyPanelGroup>
-				</main>
+				</div>
 			</MyPanel>
 		</MyPanelGroup>
 	);

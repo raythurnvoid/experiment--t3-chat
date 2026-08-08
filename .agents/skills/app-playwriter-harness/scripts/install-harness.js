@@ -1,5 +1,5 @@
 (() => {
-	const VERSION = "0.6.1";
+	const VERSION = "0.6.2";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	/** Somewhere harmless to move the pointer from, so the next move has a non-zero screen delta. */
 	const HOVERCARD_PARK_POINT = { x: 900, y: 500 };
@@ -570,11 +570,29 @@
 					return rect.width > 0 && rect.height > 0;
 				}
 
+				const INTERACTIVE_ROLES = new Set(["button", "link", "menuitem", "tab", "checkbox", "radio"]);
+
+				// An element that matched only through [tabindex] and holds a negative value is a
+				// programmatic focus target (tooltip anchor, scroll container), not a control any
+				// assistive tech announces. Auditing those as controls flooded `unlabeled` with one
+				// false positive per sidebar row (harness 0.6.2).
+				function isAuditableControl(element) {
+					const tag = element.tagName.toLowerCase();
+					if (tag === "button" || tag === "select" || tag === "textarea") return true;
+					if (tag === "a" && element.hasAttribute("href")) return true;
+					if (tag === "input") return true;
+					if (INTERACTIVE_ROLES.has(element.getAttribute("role"))) return true;
+					return element.tabIndex >= 0;
+				}
+
 				const controls = Array.from(
 					root.querySelectorAll(
 						"button, a[href], input:not([type=hidden]), select, textarea, [role=button], [role=link], [role=menuitem], [role=tab], [role=checkbox], [role=radio], [tabindex]",
 					),
-				).filter((element) => isVisible(element) && !element.closest("[aria-hidden=true], [inert]"));
+				).filter(
+					(element) =>
+						isAuditableControl(element) && isVisible(element) && !element.closest("[aria-hidden=true], [inert]"),
+				);
 
 				const unlabeled = [];
 				const blockedHitTargets = [];
@@ -603,7 +621,18 @@
 						}
 					}
 
-					if (element.tabIndex < 0 && !element.disabled && element.getAttribute("aria-hidden") !== "true") {
+					// Inside a composite widget (tree, menu, listbox, ...) a negative tabindex on every
+					// non-active item IS the correct roving-tabindex pattern, so reporting those items
+					// buried the review list under hundreds of correct rows.
+					const inRovingComposite = element.closest(
+						"[role=tree], [role=menu], [role=menubar], [role=listbox], [role=tablist], [role=grid], [role=radiogroup]",
+					);
+					if (
+						element.tabIndex < 0 &&
+						!element.disabled &&
+						element.getAttribute("aria-hidden") !== "true" &&
+						!inRovingComposite
+					) {
 						negativeTabIndex.push(described);
 					}
 				}

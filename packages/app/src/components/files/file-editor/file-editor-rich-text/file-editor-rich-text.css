@@ -13,6 +13,20 @@
 		}
 	}
 
+	.FileEditorRichText-load-error {
+		margin: 16px auto 0;
+		padding: 8px 16px;
+		max-width: 640px;
+
+		border: 1px solid var(--color-red-06);
+		border-radius: 8px;
+		background: var(--color-red-02);
+
+		color: var(--color-red-11);
+		font-size: 0.875rem;
+		text-align: center;
+	}
+
 	.FileEditorRichText-editor-content-root {
 		width: 100%;
 	}

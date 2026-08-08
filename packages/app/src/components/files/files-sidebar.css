@@ -246,8 +246,10 @@
 			}
 		}
 
-		.FilesSidebarTreeItem.FilesSidebarTreeItem-content-navigated:has(
-				> .FilesSidebarTreeItemPrimaryAction:is(:hover, :focus-visible, [data-selected])
+		/* Keyboard focus sits on the treeitem wrapper itself; pointer states stay on the overlay. */
+		.FilesSidebarTreeItem.FilesSidebarTreeItem-content-navigated:is(
+				:focus-visible,
+				:has(> .FilesSidebarTreeItemPrimaryAction:is(:hover, [data-selected]))
 			) {
 			.FilesSidebarTreeItemSecondaryContent-text {
 				color: var(--color-fg-09);
@@ -351,7 +353,10 @@
 		grid-template-columns: auto 1fr auto;
 		grid-template-rows: auto auto;
 
-		&:has(> .FilesSidebarTreeItemPrimaryAction:is(:hover, :focus-visible)) {
+		/* The wrapper is the focusable treeitem; its focus ring is painted on the row surface below. */
+		outline: none;
+
+		&:is(:focus-visible, :has(> .FilesSidebarTreeItemPrimaryAction:hover)) {
 			color: var(--color-fg-11);
 
 			.FilesSidebarTreeItemSecondaryContent-text {
@@ -367,7 +372,7 @@
 			}
 		}
 
-		&:has(> .FilesSidebarTreeItemPrimaryAction:not(:disabled):active) {
+		&:has(> .FilesSidebarTreeItemPrimaryAction:not([data-disabled]):active) {
 			color: var(--color-fg-12);
 
 			.FilesSidebarTreeItemSecondaryContent-text {
@@ -397,22 +402,24 @@
 		background: transparent;
 		box-shadow: none;
 
+		cursor: pointer;
+
 		contain: layout style size;
 
-		&[data-selected] > .FilesSidebarTreeItemPrimaryAction-surface,
-		&:not(:disabled):focus-visible:not(:active) > .FilesSidebarTreeItemPrimaryAction-surface {
+		/* The overlay is a div, so this stands in for the old button's disabled attribute. */
+		&[data-disabled] {
+			pointer-events: none;
+		}
+
+		&[data-selected] > .FilesSidebarTreeItemPrimaryAction-surface {
+			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
 			box-shadow:
 				inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
 				inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 70%, transparent),
 				0 4px 10px color-mix(in oklch, black 38%, transparent);
 		}
 
-		&[data-selected] > .FilesSidebarTreeItemPrimaryAction-surface {
-			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
-		}
-
-		&:not(:disabled):hover:not(:active):not(:focus-visible):not([data-selected])
-			> .FilesSidebarTreeItemPrimaryAction-surface {
+		&:not([data-disabled]):hover:not(:active):not([data-selected]) > .FilesSidebarTreeItemPrimaryAction-surface {
 			background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
 			box-shadow:
 				inset 0 1px 0 oklch(1 0 0 / 0.06),
@@ -420,19 +427,27 @@
 				0 3px 8px oklch(0 0 0 / 0.26);
 		}
 
-		&:not(:disabled):focus-visible:not(:active) > .FilesSidebarTreeItemPrimaryAction-surface {
-			background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
-			/* Inset so the row's content-visibility paint containment can't clip it. */
-			outline: 2px solid var(--color-fg-12);
-			outline-offset: -2px;
-		}
-
-		&:not(:disabled):active > .FilesSidebarTreeItemPrimaryAction-surface {
+		&:not([data-disabled]):active > .FilesSidebarTreeItemPrimaryAction-surface {
 			background: linear-gradient(var(--color-base-1-08), var(--color-base-1-07));
 			box-shadow:
 				inset 0 2px 4px color-mix(in oklch, black 32%, transparent),
 				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
 		}
+	}
+
+	/* Keyboard focus lives on the treeitem wrapper; paint its ring on the row surface. Placed
+	   after the hover rule above so the focus style wins when both apply. */
+	.FilesSidebarTreeItem:focus-visible:not(:active)
+		> .FilesSidebarTreeItemPrimaryAction:not([data-disabled])
+		> .FilesSidebarTreeItemPrimaryAction-surface {
+		background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
+		box-shadow:
+			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 70%, transparent),
+			0 4px 10px color-mix(in oklch, black 38%, transparent);
+		/* Inset so the row's content-visibility paint containment can't clip it. */
+		outline: 2px solid var(--color-fg-12);
+		outline-offset: -2px;
 	}
 
 	.FilesSidebarTreeItemPrimaryAction-surface {
@@ -444,14 +459,6 @@
 		pointer-events: none;
 	}
 
-	.FilesSidebarTreeItem > .FilesSidebarTreeItemPrimaryAction-drop-zone-included,
-	.FilesSidebarTreeItem > .FilesSidebarTreeItemPrimaryAction-drop-zone-included[data-selected],
-	.FilesSidebarTreeItem
-		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included:not(:disabled):is(:focus-visible, :active) {
-		background: transparent;
-		box-shadow: none;
-	}
-
 	.FilesSidebarTreeItem
 		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included
 		> .FilesSidebarTreeItemPrimaryAction-surface,
@@ -459,7 +466,10 @@
 		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included[data-selected]
 		> .FilesSidebarTreeItemPrimaryAction-surface,
 	.FilesSidebarTreeItem
-		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included:not(:disabled):is(:focus-visible, :active)
+		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included:not([data-disabled]):active
+		> .FilesSidebarTreeItemPrimaryAction-surface,
+	.FilesSidebarTreeItem:focus-visible:not(:active)
+		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included:not([data-disabled])
 		> .FilesSidebarTreeItemPrimaryAction-surface {
 		/* Keep row state surfaces from covering the active drop-zone enclosure. */
 		background: transparent;
@@ -476,7 +486,7 @@
 	*/
 	.FilesSidebarTree
 		.FilesSidebarTreeItem-content-navigated
-		> .FilesSidebarTreeItemPrimaryAction:not(:disabled):not(:active):not(
+		> .FilesSidebarTreeItemPrimaryAction:not([data-disabled]):not(:active):not(
 			.FilesSidebarTreeItemPrimaryAction-drop-zone-included
 		)
 		> .FilesSidebarTreeItemPrimaryAction-surface {

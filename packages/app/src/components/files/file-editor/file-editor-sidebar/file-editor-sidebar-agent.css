@@ -80,16 +80,13 @@
 		grid-template-columns: minmax(0, 1fr) 36px;
 	}
 
-	.FileEditorSidebarAgentHeaderTabs-tab-primary-action {
-		grid-row: 1;
-		grid-column: 1/3;
-	}
-
 	.FileEditorSidebarAgentHeaderTabs-tab-title {
 		grid-row: 1;
 		grid-column: 1;
 
 		min-width: 0;
+		/* The tab element has no padding so the close column stays full-size; inset the label here. */
+		padding-inline-start: 10px;
 
 		overflow: hidden;
 		text-overflow: ellipsis;

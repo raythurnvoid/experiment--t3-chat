@@ -97,7 +97,9 @@ export type MyPanelInfiniteBackground_ClassNames = "MyPanelInfiniteBackground";
 
 export type MyPanelInfiniteBackground_Props = ComponentPropsWithRef<"div">;
 
-export const MyPanelInfiniteBackground = memo(function MyPanelInfiniteBackground(props: MyPanelInfiniteBackground_Props) {
+export const MyPanelInfiniteBackground = memo(function MyPanelInfiniteBackground(
+	props: MyPanelInfiniteBackground_Props,
+) {
 	const { className, ...rest } = props;
 
 	return (
@@ -138,7 +140,10 @@ const MyPanelResizeHandleGrip = memo(function MyPanelResizeHandleGrip(props: MyP
 			)}
 		>
 			<span className={"MyPanelResizeHandleGrip-pill" satisfies MyPanelResizeHandleGrip_ClassNames}>
-				<Icon aria-hidden="true" className={"MyPanelResizeHandleGrip-icon" satisfies MyPanelResizeHandleGrip_ClassNames} />
+				<Icon
+					aria-hidden="true"
+					className={"MyPanelResizeHandleGrip-icon" satisfies MyPanelResizeHandleGrip_ClassNames}
+				/>
 			</span>
 		</div>
 	);
@@ -146,9 +151,11 @@ const MyPanelResizeHandleGrip = memo(function MyPanelResizeHandleGrip(props: MyP
 // #endregion handle grip
 
 // #region handle
-// Keep the separator physically narrow while giving fine pointers an 8px total hit target.
+// Keep the separator physically narrow. Touch gets 8 + 2*8 = 24px so the target meets
+// WCAG 2.5.8; fine pointers stay at the visible 8px so the handle does not steal precise
+// clicks on content right next to the panel edge.
 const DEFAULT_HIT_AREA = {
-	coarse: 7,
+	coarse: 8,
 	fine: 0,
 } satisfies NonNullable<ComponentPropsWithRef<typeof PanelResizeHandle>["hitAreaMargins"]>;
 
@@ -244,7 +251,10 @@ export const MyPanelResizeHandle = memo(function MyPanelResizeHandle(props: MyPa
 				onDragging={onDragging}
 				{...rest}
 			>
-				<span aria-hidden="true" className={"MyPanelResizeHandle-track" satisfies MyPanelResizeHandle_ClassNames}></span>
+				<span
+					aria-hidden="true"
+					className={"MyPanelResizeHandle-track" satisfies MyPanelResizeHandle_ClassNames}
+				></span>
 				{children}
 				<MyPanelResizeHandleGrip orientation={orientation} />
 			</PanelResizeHandle>
