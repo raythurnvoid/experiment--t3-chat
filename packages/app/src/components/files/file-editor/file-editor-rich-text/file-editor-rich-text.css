@@ -161,6 +161,58 @@
 			}
 		}
 
+		/* #region media embeds */
+		.FileEditorRichTextMedia {
+			display: inline-block;
+			max-width: 100%;
+			vertical-align: bottom;
+		}
+
+		.FileEditorRichTextMedia-image,
+		.FileEditorRichTextMedia-video {
+			display: block;
+			max-width: 100%;
+			height: auto;
+			border-radius: 8px;
+		}
+
+		/* The placeholder replaces the media while there is nothing to show, so it only takes
+		   space in the states below. */
+		.FileEditorRichTextMedia-placeholder {
+			display: none;
+		}
+
+		.FileEditorRichTextMedia-state-uploading,
+		.FileEditorRichTextMedia-state-processing,
+		.FileEditorRichTextMedia-state-failed,
+		.FileEditorRichTextMedia-state-missing,
+		.FileEditorRichTextMedia-state-broken {
+			.FileEditorRichTextMedia-image,
+			.FileEditorRichTextMedia-video {
+				display: none;
+			}
+
+			.FileEditorRichTextMedia-placeholder {
+				display: inline-block;
+
+				padding: 8px 12px;
+				border: 1px dashed var(--color-base-1-07);
+				border-radius: 8px;
+				background-color: var(--color-base-1-03);
+
+				font-family: var(--app-font-sans);
+				font-size: 13px;
+				color: var(--color-fg-07);
+			}
+		}
+
+		/* An upload that never arrived is the reader's problem to act on: nothing else deletes it. */
+		.FileEditorRichTextMedia-state-failed .FileEditorRichTextMedia-placeholder {
+			border-color: var(--color-red-07);
+			color: var(--color-red-09);
+		}
+		/* #endregion media embeds */
+
 		/*
 		Give a remote user a caret
 

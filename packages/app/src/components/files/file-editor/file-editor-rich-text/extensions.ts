@@ -150,6 +150,12 @@ export const defaultExtensions = [
 	mathematics,
 	characterCount,
 	sharedExtensions.markdown,
+	// The media nodes come from the shared set, so the client schema and the schema Convex
+	// serializes with stay identical. Their node views are added by
+	// `file_editor_rich_text_MediaExtension`, which needs a membership and is configured where the
+	// editor is assembled.
+	sharedExtensions.image,
+	sharedExtensions.video,
 	sharedExtensions.highlight,
 	sharedExtensions.textStyle,
 	Color,

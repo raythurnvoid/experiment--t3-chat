@@ -33,6 +33,11 @@ const TRAILING_NEWLINES_REGEX = /\n+$/;
 const STRUCTURAL_HTML_WHITESPACE_REGEX = />\n[ \t]*</g;
 const TRAILING_HARD_BREAKS_REGEX = /(?:\\\n)+$/;
 const HARD_BREAK_REGEX = /\\\n/g;
+const VIDEO_BLOCK_START_REGEX = /^<video[\s>]/m;
+const VIDEO_BLOCK_REGEX = /^(<video\b[^>]*>(?:\s*<\/video>)?)[ \t]*(?:\n|$)/;
+// A markdown link destination ends at the first space or unbalanced parenthesis, so a url
+// containing either needs the `<...>` form instead.
+const MARKDOWN_URL_NEEDS_ANGLE_BRACKETS_REGEX = /[\s()]/;
 
 /**
  * Shared marked instance configured for Markdown files.
@@ -78,6 +83,30 @@ const files_marked = ((/* iife */) => {
 						const text = (token as { text?: string }).text ?? "";
 						const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 						return `<pre data-frontmatter>${escaped}</pre>`;
+					},
+				},
+				{
+					// `<video>` embeds. Marked keeps a raw HTML tag at the top level only when its tag
+					// name is in the CommonMark block list, and `video` is not in it. Without this
+					// tokenizer the tag comes back wrapped in `<p>`, and parsing the block video node
+					// out of that wrapper splits the paragraph and leaves an empty one behind. The
+					// document would then grow a blank line on every markdown round-trip.
+					name: "videoBlock",
+					level: "block",
+					start(src) {
+						return src.match(VIDEO_BLOCK_START_REGEX)?.index ?? -1;
+					},
+					tokenizer(src) {
+						const match = VIDEO_BLOCK_REGEX.exec(src);
+						if (!match) return undefined;
+						return {
+							type: "videoBlock",
+							raw: match[0],
+							text: match[1],
+						};
+					},
+					renderer(token) {
+						return (token as { text?: string }).text ?? "";
 					},
 				},
 				{
@@ -282,6 +311,116 @@ export const files_frontmatter_node = Node.create({
 });
 // #endregion frontmatter
 
+// #region media embeds
+// Images and videos in a document reference a workspace file by node id
+// (`bonobo-file://<fileNodeId>`) or hold a plain external url. The bytes never live in the
+// document, and a signed url must never be written into `src`: signed urls expire after
+// minutes, so one would be dead by the time anyone reads the file again. The client resolves
+// a reference to a signed url only while rendering.
+
+/**
+ * Escape text that goes inside `![...]`.
+ *
+ * An unescaped bracket would end the alt text early, and a newline would end the image.
+ */
+function markdown_escape_image_alt(text: string) {
+	return text.replace(/([\\[\]])/g, "\\$1").replace(/\r?\n/g, " ");
+}
+
+/**
+ * Write a url as a markdown link destination.
+ */
+function markdown_link_destination(url: string) {
+	if (!MARKDOWN_URL_NEEDS_ANGLE_BRACKETS_REGEX.test(url)) {
+		return url;
+	}
+
+	return `<${url.replace(/([<>\\])/g, "\\$1")}>`;
+}
+
+function html_escape_attribute(value: string) {
+	return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Image embed.
+ *
+ * Inline because CommonMark images are inline. Marked wraps a standalone `![alt](src)` in
+ * `<p>`, so a block image node would split that paragraph and leave an empty one behind on
+ * every round-trip.
+ */
+const files_image_node = Node.create({
+	name: "image",
+	inline: true,
+	group: "inline",
+	draggable: true,
+
+	addAttributes() {
+		return {
+			src: { default: null },
+			alt: { default: null },
+			title: { default: null },
+			// Set while an upload runs, so the client can find its own placeholder node again
+			// after the upload mutations resolve. `rendered: false` keeps it out of the HTML,
+			// and `renderMarkdown` below ignores it, so it never reaches the saved markdown.
+			uploadId: { default: null, rendered: false },
+		};
+	},
+
+	parseHTML() {
+		return [{ tag: "img[src]" }];
+	},
+
+	renderHTML({ HTMLAttributes }) {
+		return ["img", HTMLAttributes];
+	},
+
+	renderMarkdown(node) {
+		const src = typeof node.attrs?.src === "string" ? node.attrs.src : "";
+		const alt = typeof node.attrs?.alt === "string" ? node.attrs.alt : "";
+		const title = typeof node.attrs?.title === "string" ? node.attrs.title : "";
+
+		const image = `![${markdown_escape_image_alt(alt)}](${markdown_link_destination(src)}`;
+		return title ? `${image} "${title.replace(/([\\"])/g, "\\$1")}")` : `${image})`;
+	},
+});
+
+/**
+ * Video embed.
+ *
+ * Markdown has no video syntax, so it serializes to a raw `<video>` tag, the same way
+ * comments and underlines already ride through markdown as HTML. The parse direction needs
+ * the `videoBlock` tokenizer in `files_marked()`, otherwise marked wraps the tag in `<p>`.
+ */
+const files_video_node = Node.create({
+	name: "video",
+	group: "block",
+	atom: true,
+	draggable: true,
+
+	addAttributes() {
+		return {
+			src: { default: null },
+			// Same upload placeholder marker as the image node above.
+			uploadId: { default: null, rendered: false },
+		};
+	},
+
+	parseHTML() {
+		return [{ tag: "video[src]" }];
+	},
+
+	renderHTML({ HTMLAttributes }) {
+		return ["video", { controls: "true", ...HTMLAttributes }];
+	},
+
+	renderMarkdown(node) {
+		const src = typeof node.attrs?.src === "string" ? node.attrs.src : "";
+		return `<video src="${html_escape_attribute(src)}"></video>`;
+	},
+});
+// #endregion media embeds
+
 export function files_tiptap_markdown_to_json(args: {
 	markdown: string;
 	extensions?: Extensions;
@@ -470,6 +609,8 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 				},
 			}),
 			frontmatter: files_frontmatter_node,
+			image: files_image_node,
+			video: files_video_node,
 			liveblocksComments: files_CommentsExtension,
 		};
 	}

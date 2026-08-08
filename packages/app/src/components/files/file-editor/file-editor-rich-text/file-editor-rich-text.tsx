@@ -49,6 +49,7 @@ import {
 	file_editor_get_size_status_message,
 } from "@/lib/file-editor.ts";
 import { file_editor_rich_text_SizeLimitExtension } from "@/lib/file-editor-rich-text-size-limit-extension.ts";
+import { file_editor_rich_text_MediaExtension } from "./file-editor-rich-text-media-extension.ts";
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-inline-ai.tsx";
@@ -816,7 +817,15 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 
 	const sizeLimit = file_editor_rich_text_SizeLimitExtension.configure({ getIsOverCap });
 
-	const extensions = [...defaultExtensions, FileEditorRichTextToolsSlashCommand.slashCommand, liveblocks, sizeLimit];
+	const media = file_editor_rich_text_MediaExtension.configure({ membershipId });
+
+	const extensions = [
+		...defaultExtensions,
+		FileEditorRichTextToolsSlashCommand.slashCommand,
+		liveblocks,
+		sizeLimit,
+		media,
+	];
 
 	const handleCreate: EditorContentProps["onCreate"] = ({ editor }) => {
 		setEditor(editor);

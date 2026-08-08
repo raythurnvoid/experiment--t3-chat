@@ -18,6 +18,8 @@ import {
 	type files_PendingPathOverlayRow,
 } from "./files.ts";
 import {
+	files_headless_tiptap_editor_create,
+	files_headless_tiptap_editor_get_markdown,
 	files_parse_markdown_to_html,
 	files_tiptap_markdown_to_json,
 	files_tiptap_markdown_to_plain_text,
@@ -864,6 +866,111 @@ describe("frontmatter round-trip through Yjs", () => {
 		}
 
 		expect(markdownResult._yay).toBe(input);
+	});
+});
+
+describe("media embeds round-trip through Yjs", () => {
+	function round_trip_markdown(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_markdown({
+			markdown,
+			mut_yjsDoc: yjsDoc,
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected media markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_markdown({ yjsDoc });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	test("preserves a standalone image line", () => {
+		const input = "![Wiring diagram](bonobo-file://k17abcdef)\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("preserves an image inside a paragraph without splitting it", () => {
+		const input = "Before ![Shot](bonobo-file://k17abcdef) after.\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("preserves an external image url", () => {
+		const input = "![Logo](https://example.com/logo.png)\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("preserves an image title", () => {
+		const input = '![Shot](bonobo-file://k17abcdef "Hover text")\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("escapes brackets in alt text so they cannot end the image early", () => {
+		const input = "![Figure \\[1\\]](bonobo-file://k17abcdef)\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("keeps a url with parentheses in the angle-bracket form", () => {
+		const input = "![Shot](<https://example.com/a(1).png>)\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("preserves a video line without adding a blank line", () => {
+		const input = '<video src="bonobo-file://k17abcdef"></video>\n\nCaption text\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("preserves a video between two paragraphs", () => {
+		const input = 'Intro\n\n<video src="bonobo-file://k17abcdef"></video>\n\nOutro\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("escapes the video src attribute", () => {
+		const input = '<video src="https://example.com/v.mp4?a=1&amp;b=2"></video>\n\nCaption text\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("keeps an unresolvable file reference as opaque text", () => {
+		// A hand-edited markdown file can name a file node that does not exist. The reference is
+		// just a string here; only the client decides it cannot be resolved and shows a placeholder.
+		const input = "![Gone](bonobo-file://not-a-real-id)\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("does not write the upload placeholder marker into markdown", () => {
+		const editor = files_headless_tiptap_editor_create({
+			initialContent: {
+				json: {
+					type: "doc",
+					content: [
+						{
+							type: "paragraph",
+							content: [
+								{
+									type: "image",
+									attrs: { src: "bonobo-file://k17abcdef", alt: "Shot", uploadId: "upload-1" },
+								},
+							],
+						},
+					],
+				},
+			},
+		});
+		if (editor._nay) {
+			throw new Error("Expected headless editor creation to succeed", { cause: editor._nay });
+		}
+
+		const markdown = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+		editor._yay.destroy();
+
+		expect(markdown).toBe("![Shot](bonobo-file://k17abcdef)");
 	});
 });
 

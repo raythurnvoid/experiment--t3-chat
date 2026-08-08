@@ -249,6 +249,16 @@ Use this after changing chat send, stop, branch, pending-message, or parent-id l
 - Wait 8-10 seconds for presence heartbeats/disconnects.
 - Check logs for `presence:disconnect`, `presence:heartbeat`, `Rate limit exceeded`, `should_never_happen`, and `currentPresenceData`.
 
+### Rich Text Image And Video Embeds
+
+Selectors and a proven flow for the media embeds in the rich text editor (verified 2026-08-08).
+
+- Every embed's node view root is `span.FileEditorRichTextMedia` inside `.FileEditorRichText-editor-content`. The media element is its `img` or `video` child; while there is nothing to show, a state class sits on the root (`FileEditorRichTextMedia-state-uploading|processing|failed|missing|broken`) and `.FileEditorRichTextMedia-placeholder` holds text like `Processing…: <alt>` or `File not available: <alt>`.
+- A document embeds a workspace file as `![alt](bonobo-file://<fileNodeId>)` or `<video src="bonobo-file://<fileNodeId>"></video>`. The node view resolves that to a 15-minute signed R2 url, so assert on `img.naturalWidth > 0` / `video.readyState >= 1`, never on the url string.
+- Build the whole fixture set without any editor typing: upload the media files with `setInputFiles` on the sidebar's hidden input (see known-hazards), read their node ids from the folder-explorer overlay links (`a[aria-label="Open <name>"]`, the `href` carries `nodeId`), write a `.md` referencing those ids, and upload it too — markdown uploads become normal editable documents server-side.
+- To prove the reactive swap: `create_upload_node` from page context gives `{ nodeId, url, headers }`; reference the node in an uploaded doc (shows `Processing…`), then `fetch(url, { method: "PUT", headers, body })` with bytes whose length matches the declared `size`. The open document swaps the placeholder to the rendered image without a reload when the R2 event lands (~8s in dev).
+- Novel's `ImageResizer` never attaches to these embeds (it expects the selected node's DOM to be the `img` itself, not a wrapper span); clicking an embed selects it (`ProseMirror-selectednode` on the span) and no resizer appears. That is the intended v1 behavior, not a regression.
+
 ## Script Pattern
 
 For anything longer than a one-liner, keep the runner in a dated personal AI folder:

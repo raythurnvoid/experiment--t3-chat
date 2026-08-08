@@ -13,6 +13,7 @@ import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_ROOT_ID,
 	files_INITIAL_CONTENT,
+	files_UPLOAD_PATH_TAKEN_MESSAGE,
 	files_get_utf8_byte_size,
 	files_u8_to_array_buffer,
 } from "../server/files.ts";
@@ -2795,6 +2796,56 @@ describe("files_nodes.create_upload_node", () => {
 			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${replacement._yay.assetId}`,
 		);
 	});
+
+	test("fail leaves the file holding the path alone and creates nothing", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const firstUpload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "photo.png",
+			contentType: "image/png",
+			size: 1024,
+		});
+		if (firstUpload._nay) {
+			throw new Error(firstUpload._nay.message);
+		}
+
+		const secondUpload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "photo.png",
+			contentType: "image/png",
+			size: 2048,
+			onConflict: "fail",
+		});
+
+		expect(secondUpload._nay).toMatchObject({ message: files_UPLOAD_PATH_TAKEN_MESSAGE });
+		const docs = await t.run(async (ctx) => {
+			const firstSource = await ctx.db.get("files_nodes", firstUpload._yay.nodeId);
+			const uploadAssets = await ctx.db
+				.query("files_r2_assets")
+				.collect()
+				.then((assets) =>
+					assets.filter(
+						(asset) =>
+							asset.organizationId === db.organizationId && asset.workspaceId === db.workspaceId && asset.kind === "upload",
+					),
+				);
+			return { firstSource, uploadAssets };
+		});
+		// A document embedding the first upload keeps working: refusing must not archive it.
+		expect(docs.firstSource?.archiveOperationId).toBeUndefined();
+		expect(docs.uploadAssets).toHaveLength(1);
+		expect(docs.uploadAssets[0]?._id).toBe(firstUpload._yay.assetId);
+	});
+
 });
 
 describe("files_nodes.create_upload_nodes", () => {

@@ -149,6 +149,16 @@ export const files_MAX_UPLOADS_BYTES = 500 * 1024 * 1024;
  */
 export const files_IMPORT_MAX_ITEMS_PER_CALL = 50;
 
+/**
+ * What `files_nodes.create_upload_node` answers when the target path is taken and the caller
+ * asked it to fail instead of replacing.
+ *
+ * A caller that picks its own name reads this exact message to decide it should try the next
+ * name. Any other refusal (no write access to the parent, file too large) is not fixed by
+ * renaming, so it must stop instead.
+ */
+export const files_UPLOAD_PATH_TAKEN_MESSAGE = "This file already exists.";
+
 export function files_create_tree_items_list_from_nodes(nodes: files_VisibleTreeNode[]) {
 	return [files_SYNTHETIC_ROOT_FOLDER, ...nodes];
 }

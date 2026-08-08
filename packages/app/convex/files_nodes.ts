@@ -40,6 +40,7 @@ import {
 	files_ROOT_ID,
 	files_IMPORT_MAX_ITEMS_PER_CALL,
 	files_MAX_UPLOADS_BYTES,
+	files_UPLOAD_PATH_TAKEN_MESSAGE,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
 	files_pending_update_content_of,
@@ -1583,6 +1584,13 @@ export const create_upload_node = mutation({
 		filename: v.string(),
 		contentType: v.optional(v.string()),
 		size: v.number(),
+		/**
+		 * What to do when the target path is taken. Defaults to "replace", which archives the
+		 * file that holds the path. "fail" leaves it alone and answers
+		 * `files_UPLOAD_PATH_TAKEN_MESSAGE`, for callers that pick their own name and can try
+		 * the next one, like the rich text editor uploading a pasted image.
+		 */
+		onConflict: v.optional(v.union(v.literal("replace"), v.literal("fail"))),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -1704,6 +1712,13 @@ export const create_upload_node = mutation({
 		}
 
 		if (existingNode) {
+			// Answer before the permission check below, so a caller that may write the parent
+			// folder gets the same reply whether or not it may write the file holding the path.
+			// `create_upload_nodes` hides restricted paths the same way.
+			if (args.onConflict === "fail") {
+				return Result({ _nay: { message: files_UPLOAD_PATH_TAKEN_MESSAGE } });
+			}
+
 			if (existingNode.kind !== "file") {
 				return Result({
 					_nay: {
