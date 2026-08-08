@@ -193,6 +193,35 @@
 			border-radius: 8px;
 		}
 
+		/* Alignment turns the inline embed into its own row; markdown carries it as the old
+		   HTML `align` attribute on the img/video tag. */
+		.FileEditorRichTextMedia-align-center {
+			display: block;
+			width: fit-content;
+			margin-inline: auto;
+		}
+
+		.FileEditorRichTextMedia-align-right {
+			display: block;
+			width: fit-content;
+			margin-inline-start: auto;
+		}
+
+		.FileEditorRichTextMedia-caption {
+			display: block;
+
+			margin-top: 4px;
+
+			font-family: var(--app-font-sans);
+			font-size: 12px;
+			color: var(--color-fg-07);
+			text-align: center;
+
+			&:empty {
+				display: none;
+			}
+		}
+
 		/* The placeholder replaces the media while there is nothing to show, so it only takes
 		   space in the states below. */
 		.FileEditorRichTextMedia-placeholder {
@@ -205,7 +234,8 @@
 		.FileEditorRichTextMedia-state-missing,
 		.FileEditorRichTextMedia-state-broken {
 			.FileEditorRichTextMedia-image,
-			.FileEditorRichTextMedia-video {
+			.FileEditorRichTextMedia-video,
+			.FileEditorRichTextMedia-caption {
 				display: none;
 			}
 
@@ -289,12 +319,22 @@
 			display: block;
 		}
 
-		.FileEditorRichTextMedia-alt-button {
+		.FileEditorRichTextMedia-controls {
 			position: absolute;
 			top: 6px;
 			right: 6px;
 			display: none;
 
+			gap: 4px;
+		}
+
+		.FileEditorRichTextMedia-has-media.ProseMirror-selectednode .FileEditorRichTextMedia-controls {
+			display: flex;
+		}
+
+		.FileEditorRichTextMedia-alt-button,
+		.FileEditorRichTextMedia-caption-button,
+		.FileEditorRichTextMedia-align-button {
 			padding: 3px 8px;
 			border: 1px solid var(--color-base-1-07);
 			border-radius: 6px;
@@ -315,11 +355,8 @@
 			}
 		}
 
-		.FileEditorRichTextMedia-has-media.ProseMirror-selectednode .FileEditorRichTextMedia-alt-button {
-			display: inline-block;
-		}
-
-		.FileEditorRichTextMedia-alt-input {
+		.FileEditorRichTextMedia-alt-input,
+		.FileEditorRichTextMedia-caption-input {
 			position: absolute;
 			left: 6px;
 			right: 6px;
@@ -341,7 +378,8 @@
 			}
 		}
 
-		.FileEditorRichTextMedia-alt-editing .FileEditorRichTextMedia-alt-input {
+		.FileEditorRichTextMedia-alt-editing .FileEditorRichTextMedia-alt-input,
+		.FileEditorRichTextMedia-caption-editing .FileEditorRichTextMedia-caption-input {
 			display: block;
 		}
 		/* #endregion media embeds */

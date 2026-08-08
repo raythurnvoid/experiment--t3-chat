@@ -7,7 +7,7 @@
 // once an editor is built, so this extension is configured where the editor is assembled, next to
 // the size limit extension.
 
-import { Extension } from "@tiptap/core";
+import { Extension, type Editor } from "@tiptap/core";
 import { NodeSelection, Plugin, PluginKey } from "@tiptap/pm/state";
 import type { Node as PmNode } from "@tiptap/pm/model";
 import type { EditorView, NodeView } from "@tiptap/pm/view";
@@ -24,15 +24,23 @@ export type FileEditorRichTextMedia_ClassNames =
 	| "FileEditorRichTextMedia"
 	| "FileEditorRichTextMedia-image"
 	| "FileEditorRichTextMedia-video"
+	| "FileEditorRichTextMedia-caption"
 	| "FileEditorRichTextMedia-placeholder"
 	| "FileEditorRichTextMedia-local-preview"
 	| "FileEditorRichTextMedia-retry"
 	| "FileEditorRichTextMedia-retryable"
 	| "FileEditorRichTextMedia-has-media"
 	| "FileEditorRichTextMedia-resize-handle"
+	| "FileEditorRichTextMedia-controls"
 	| "FileEditorRichTextMedia-alt-button"
 	| "FileEditorRichTextMedia-alt-input"
 	| "FileEditorRichTextMedia-alt-editing"
+	| "FileEditorRichTextMedia-caption-button"
+	| "FileEditorRichTextMedia-caption-input"
+	| "FileEditorRichTextMedia-caption-editing"
+	| "FileEditorRichTextMedia-align-button"
+	| "FileEditorRichTextMedia-align-center"
+	| "FileEditorRichTextMedia-align-right"
 	| "FileEditorRichTextMedia-state-uploading"
 	| "FileEditorRichTextMedia-state-processing"
 	| "FileEditorRichTextMedia-state-failed"
@@ -68,6 +76,29 @@ const MEDIA_STATE_LABELS = {
 	broken: "Could not load media",
 } satisfies Record<MediaPlaceholderState, string>;
 
+const MEDIA_MIN_WIDTH_PX = 80;
+const MEDIA_MAX_WIDTH_PX = 4096;
+const MEDIA_KEYBOARD_WIDTH_STEP_PX = 64;
+
+// The keyboard shortcuts live on the extension but the alt and caption editors live in the
+// node view, so a shortcut reaches them through these events on the node view's root element.
+const MEDIA_ALT_OPEN_EVENT = "FileEditorRichTextMedia-alt-open";
+const MEDIA_CAPTION_OPEN_EVENT = "FileEditorRichTextMedia-caption-open";
+
+type MediaAlign = "center" | "right" | null;
+
+function media_next_align(align: MediaAlign): MediaAlign {
+	if (align === null) return "center";
+	if (align === "center") return "right";
+	return null;
+}
+
+// A collaborator sees "Uploading…" while the uploader's tab has not yet created the file node,
+// so there is no asset record to read a deadline from. That window is seconds in a healthy
+// upload; if no src arrives within this time, the uploader's tab is gone and nothing will ever
+// finish this upload.
+const UPLOADING_PLACEHOLDER_EXPIRY_MS = 2 * 60 * 1000;
+
 function media_state_from_asset(asset: app_convex_Doc<"files_r2_assets"> | null): MediaState {
 	if (!asset) {
 		return "missing";
@@ -86,13 +117,19 @@ function media_state_from_asset(asset: app_convex_Doc<"files_r2_assets"> | null)
 class MediaNodeView implements NodeView {
 	dom: HTMLElement;
 	private media: HTMLImageElement | HTMLVideoElement;
+	private caption: HTMLElement;
 	private placeholder: HTMLElement;
 	private retryButton: HTMLButtonElement;
 	private resizeHandle: HTMLElement;
+	private controls: HTMLElement;
+	private alignButton: HTMLButtonElement;
+	private captionButton: HTMLButtonElement;
+	private captionInput: HTMLInputElement;
 	private altButton: HTMLButtonElement | null = null;
 	private altInput: HTMLInputElement | null = null;
 	private assetWatchUnsubscribe: (() => void) | null = null;
 	private localUploadUnsubscribe: (() => void) | null = null;
+	private expiryTimer: ReturnType<typeof setTimeout> | null = null;
 	private isDestroyed = false;
 
 	constructor(
@@ -119,6 +156,11 @@ class MediaNodeView implements NodeView {
 		}
 		this.media.addEventListener("error", () => this.render_state("broken"));
 
+		// The caption is the visible text under the media; it doubles as the image's markdown
+		// `title`. CSS hides it while it is empty.
+		this.caption = document.createElement("span");
+		this.caption.className = "FileEditorRichTextMedia-caption" satisfies FileEditorRichTextMedia_ClassNames;
+
 		this.placeholder = document.createElement("span");
 		this.placeholder.className = "FileEditorRichTextMedia-placeholder" satisfies FileEditorRichTextMedia_ClassNames;
 
@@ -139,13 +181,53 @@ class MediaNodeView implements NodeView {
 
 		this.resizeHandle = document.createElement("span");
 		this.resizeHandle.className = "FileEditorRichTextMedia-resize-handle" satisfies FileEditorRichTextMedia_ClassNames;
-		// Pointer-only affordance with no keyboard equivalent yet, so keep it out of the
-		// accessibility tree instead of pretending it is operable.
+		// The handle itself stays pointer-only and out of the accessibility tree; the keyboard
+		// path is Alt+ArrowLeft/Right on the selected node (see addKeyboardShortcuts below).
 		this.resizeHandle.setAttribute("aria-hidden", "true");
 		this.resizeHandle.addEventListener("pointerdown", this.handle_resize_start);
 		this.resizeHandle.addEventListener("dblclick", this.handle_resize_reset);
 
-		this.dom.append(this.media, this.placeholder, this.retryButton, this.resizeHandle);
+		// One shared cluster for the selected-embed buttons, so they lay out as a row instead
+		// of each one owning an absolute position.
+		this.controls = document.createElement("span");
+		this.controls.className = "FileEditorRichTextMedia-controls" satisfies FileEditorRichTextMedia_ClassNames;
+
+		this.alignButton = document.createElement("button");
+		this.alignButton.type = "button";
+		this.alignButton.className = "FileEditorRichTextMedia-align-button" satisfies FileEditorRichTextMedia_ClassNames;
+		this.alignButton.setAttribute("aria-keyshortcuts", "Alt+Shift+A");
+		this.alignButton.addEventListener("mousedown", (event) => event.stopPropagation());
+		this.alignButton.addEventListener("click", this.handle_align_cycle);
+
+		this.captionButton = document.createElement("button");
+		this.captionButton.type = "button";
+		this.captionButton.className = "FileEditorRichTextMedia-caption-button" satisfies FileEditorRichTextMedia_ClassNames;
+		this.captionButton.textContent = "Caption";
+		this.captionButton.setAttribute("aria-label", "Edit caption (Alt+Shift+Enter)");
+		this.captionButton.addEventListener("mousedown", (event) => event.stopPropagation());
+		this.captionButton.addEventListener("click", this.handle_caption_open);
+		this.dom.addEventListener(MEDIA_CAPTION_OPEN_EVENT, () => this.open_caption_editor());
+
+		this.captionInput = document.createElement("input");
+		this.captionInput.type = "text";
+		this.captionInput.className = "FileEditorRichTextMedia-caption-input" satisfies FileEditorRichTextMedia_ClassNames;
+		this.captionInput.setAttribute("aria-label", "Caption");
+		this.captionInput.placeholder = "Add a caption";
+		this.captionInput.addEventListener("mousedown", (event) => event.stopPropagation());
+		this.captionInput.addEventListener("keydown", this.handle_caption_keydown);
+		this.captionInput.addEventListener("blur", this.handle_caption_commit);
+
+		this.controls.append(this.alignButton, this.captionButton);
+
+		this.dom.append(
+			this.media,
+			this.caption,
+			this.placeholder,
+			this.retryButton,
+			this.resizeHandle,
+			this.controls,
+			this.captionInput,
+		);
 
 		// The video node has no alt attribute, so only images get the alt editor.
 		if (!isVideo) {
@@ -153,9 +235,10 @@ class MediaNodeView implements NodeView {
 			this.altButton.type = "button";
 			this.altButton.className = "FileEditorRichTextMedia-alt-button" satisfies FileEditorRichTextMedia_ClassNames;
 			this.altButton.textContent = "Alt";
-			this.altButton.setAttribute("aria-label", "Edit alt text");
+			this.altButton.setAttribute("aria-label", "Edit alt text (Alt+Enter)");
 			this.altButton.addEventListener("mousedown", (event) => event.stopPropagation());
 			this.altButton.addEventListener("click", this.handle_alt_open);
+			this.dom.addEventListener(MEDIA_ALT_OPEN_EVENT, () => this.open_alt_editor());
 
 			this.altInput = document.createElement("input");
 			this.altInput.type = "text";
@@ -166,11 +249,13 @@ class MediaNodeView implements NodeView {
 			this.altInput.addEventListener("keydown", this.handle_alt_keydown);
 			this.altInput.addEventListener("blur", this.handle_alt_commit);
 
-			this.dom.append(this.altButton, this.altInput);
+			this.controls.append(this.altButton);
+			this.dom.append(this.altInput);
 		}
 
 		this.apply_text_attributes();
 		this.apply_width();
+		this.apply_align();
 		this.resolve();
 	}
 
@@ -186,7 +271,8 @@ class MediaNodeView implements NodeView {
 		return (
 			this.retryButton.contains(target) ||
 			this.resizeHandle.contains(target) ||
-			(this.altButton?.contains(target) ?? false) ||
+			this.controls.contains(target) ||
+			this.captionInput.contains(target) ||
 			(this.altInput?.contains(target) ?? false)
 		);
 	}
@@ -207,6 +293,7 @@ class MediaNodeView implements NodeView {
 		this.node = node;
 		this.apply_text_attributes();
 		this.apply_width();
+		this.apply_align();
 		if (!hasSameSource) {
 			this.resolve();
 		}
@@ -228,7 +315,12 @@ class MediaNodeView implements NodeView {
 		}
 	}
 
-	private commit_attributes(attrs: { width?: number | null; alt?: string | null }) {
+	private commit_attributes(attrs: {
+		width?: number | null;
+		alt?: string | null;
+		title?: string | null;
+		align?: MediaAlign;
+	}) {
 		const pos = this.getPos();
 		if (pos === undefined) {
 			return;
@@ -253,7 +345,9 @@ class MediaNodeView implements NodeView {
 		this.resizeHandle.setPointerCapture(event.pointerId);
 
 		const handleMove = (moveEvent: PointerEvent) => {
-			const width = Math.round(Math.min(4096, Math.max(80, startWidth + (moveEvent.clientX - startX))));
+			const width = Math.round(
+				Math.min(MEDIA_MAX_WIDTH_PX, Math.max(MEDIA_MIN_WIDTH_PX, startWidth + (moveEvent.clientX - startX))),
+			);
 			this.media.style.width = `${width}px`;
 		};
 		const removeListeners = () => {
@@ -289,6 +383,10 @@ class MediaNodeView implements NodeView {
 	private handle_alt_open = (event: MouseEvent) => {
 		event.preventDefault();
 		event.stopPropagation();
+		this.open_alt_editor();
+	};
+
+	private open_alt_editor() {
 		if (!this.altInput) {
 			return;
 		}
@@ -296,7 +394,7 @@ class MediaNodeView implements NodeView {
 		this.dom.classList.add("FileEditorRichTextMedia-alt-editing" satisfies FileEditorRichTextMedia_ClassNames);
 		this.altInput.focus();
 		this.altInput.select();
-	};
+	}
 
 	private handle_alt_keydown = (event: KeyboardEvent) => {
 		// The editor must never treat these keys as document input.
@@ -330,23 +428,95 @@ class MediaNodeView implements NodeView {
 		this.view.focus();
 	}
 
-	/**
-	 * Put the document's alt and title text on the image. Without an `alt` a screen reader
-	 * falls back to reading the signed url's filename, which is a random asset key. The video
-	 * node has no alt or title attribute, so there is nothing to apply for it.
-	 */
-	private apply_text_attributes() {
-		if (!(this.media instanceof HTMLImageElement)) {
+	private handle_caption_open = (event: MouseEvent) => {
+		event.preventDefault();
+		event.stopPropagation();
+		this.open_caption_editor();
+	};
+
+	private open_caption_editor() {
+		this.captionInput.value = typeof this.node.attrs.title === "string" ? this.node.attrs.title : "";
+		this.dom.classList.add("FileEditorRichTextMedia-caption-editing" satisfies FileEditorRichTextMedia_ClassNames);
+		this.captionInput.focus();
+		this.captionInput.select();
+	}
+
+	private handle_caption_keydown = (event: KeyboardEvent) => {
+		// The editor must never treat these keys as document input.
+		event.stopPropagation();
+		if (event.key === "Enter") {
+			event.preventDefault();
+			this.handle_caption_commit();
+		} else if (event.key === "Escape") {
+			event.preventDefault();
+			this.close_caption_editor();
+		}
+	};
+
+	private handle_caption_commit = () => {
+		// Closing the editor moves focus, which fires the input's blur; the class check keeps
+		// that second call (and a blur after Escape) from committing again.
+		if (
+			!this.dom.classList.contains("FileEditorRichTextMedia-caption-editing" satisfies FileEditorRichTextMedia_ClassNames)
+		) {
 			return;
 		}
 
-		this.media.alt = typeof this.node.attrs.alt === "string" ? this.node.attrs.alt : "";
+		const value = this.captionInput.value.trim();
+		this.close_caption_editor();
+		this.commit_attributes({ title: value || null });
+	};
+
+	private close_caption_editor() {
+		this.dom.classList.remove("FileEditorRichTextMedia-caption-editing" satisfies FileEditorRichTextMedia_ClassNames);
+		this.view.focus();
+	}
+
+	private handle_align_cycle = (event: MouseEvent) => {
+		event.preventDefault();
+		event.stopPropagation();
+		const align: MediaAlign =
+			this.node.attrs.align === "center" || this.node.attrs.align === "right" ? this.node.attrs.align : null;
+		this.commit_attributes({ align: media_next_align(align) });
+	};
+
+	/**
+	 * Put the document's text attributes on the element. `title` is the caption for both
+	 * media kinds: visible under the media and doubling as the hover tooltip. `alt` is
+	 * image-only; without it a screen reader falls back to reading the signed url's
+	 * filename, which is a random asset key.
+	 */
+	private apply_text_attributes() {
 		const title = typeof this.node.attrs.title === "string" ? this.node.attrs.title : "";
+		this.caption.textContent = title;
 		if (title) {
 			this.media.title = title;
 		} else {
 			this.media.removeAttribute("title");
 		}
+
+		if (!(this.media instanceof HTMLImageElement)) {
+			return;
+		}
+		this.media.alt = typeof this.node.attrs.alt === "string" ? this.node.attrs.alt : "";
+	}
+
+	/**
+	 * Apply the document's alignment as a class on the root, and keep the align button's
+	 * label saying what the current placement is.
+	 */
+	private apply_align() {
+		const align: MediaAlign =
+			this.node.attrs.align === "center" || this.node.attrs.align === "right" ? this.node.attrs.align : null;
+		this.dom.classList.toggle(
+			"FileEditorRichTextMedia-align-center" satisfies FileEditorRichTextMedia_ClassNames,
+			align === "center",
+		);
+		this.dom.classList.toggle(
+			"FileEditorRichTextMedia-align-right" satisfies FileEditorRichTextMedia_ClassNames,
+			align === "right",
+		);
+		this.alignButton.textContent = `Align: ${align ?? "left"}`;
 	}
 
 	destroy() {
@@ -355,6 +525,14 @@ class MediaNodeView implements NodeView {
 		this.assetWatchUnsubscribe = null;
 		this.localUploadUnsubscribe?.();
 		this.localUploadUnsubscribe = null;
+		this.clear_expiry_timer();
+	}
+
+	private clear_expiry_timer() {
+		if (this.expiryTimer) {
+			clearTimeout(this.expiryTimer);
+			this.expiryTimer = null;
+		}
 	}
 
 	private render_state(state: MediaState, url?: string) {
@@ -425,6 +603,7 @@ class MediaNodeView implements NodeView {
 		this.assetWatchUnsubscribe = null;
 		this.localUploadUnsubscribe?.();
 		this.localUploadUnsubscribe = null;
+		this.clear_expiry_timer();
 
 		const src = typeof this.node.attrs.src === "string" ? this.node.attrs.src : "";
 		const uploadId = typeof this.node.attrs.uploadId === "string" ? this.node.attrs.uploadId : "";
@@ -452,6 +631,16 @@ class MediaNodeView implements NodeView {
 		}
 
 		if (!src) {
+			// No local entry (the return above) and no src: this is a collaborator's or a reloaded
+			// tab's view of somebody else's in-flight upload. If the src never arrives, the
+			// uploader's tab died, so stop claiming progress after a while. There are no local
+			// bytes here, so the failed state deliberately has no retry.
+			if (uploadId) {
+				this.expiryTimer = setTimeout(() => {
+					this.expiryTimer = null;
+					this.render_state("failed");
+				}, UPLOADING_PLACEHOLDER_EXPIRY_MS);
+			}
 			this.render_state(uploadId ? "uploading" : "missing");
 			return;
 		}
@@ -514,8 +703,22 @@ class MediaNodeView implements NodeView {
 				return;
 			}
 
+			this.clear_expiry_timer();
+
 			const state = media_state_from_asset(asset);
 			if (state !== "ready") {
+				// Nothing in the database changes when the upload deadline passes, so the watch
+				// never fires again on its own and "Processing…" would stay on screen forever.
+				// Re-run this check right after the deadline to flip the placeholder to "failed".
+				if (state === "processing" && asset && asset.unfinalizedExpiresAt !== undefined) {
+					this.expiryTimer = setTimeout(
+						() => {
+							this.expiryTimer = null;
+							apply();
+						},
+						Math.max(0, asset.unfinalizedExpiresAt - Date.now()) + 1000,
+					);
+				}
 				this.render_state(state);
 				return;
 			}
@@ -546,6 +749,62 @@ class MediaNodeView implements NodeView {
 
 const FILE_EDITOR_RICH_TEXT_MEDIA_PLUGIN_KEY = new PluginKey("file-editor-rich-text-media");
 
+/**
+ * Resize the selected image or video from the keyboard. Mirrors the pointer drag: same clamp,
+ * and the node is re-selected after the replace so the next press keeps working.
+ */
+function media_adjust_width(editor: Editor, delta: number) {
+	const state = editor.view.state;
+	const selection = state.selection;
+	if (!(selection instanceof NodeSelection)) {
+		return false;
+	}
+	const node = selection.node;
+	if (node.type.name !== "image" && node.type.name !== "video") {
+		return false;
+	}
+
+	// With no stored width, start from the rendered size so the first press is a small nudge,
+	// not a jump to some unrelated default.
+	let width = typeof node.attrs.width === "number" && Number.isFinite(node.attrs.width) ? node.attrs.width : null;
+	if (width === null) {
+		const dom = editor.view.nodeDOM(selection.from);
+		const media = dom instanceof HTMLElement ? dom.querySelector("img, video") : null;
+		width = media ? Math.round(media.getBoundingClientRect().width) : null;
+	}
+	if (width === null) {
+		return false;
+	}
+
+	const next = Math.round(Math.min(MEDIA_MAX_WIDTH_PX, Math.max(MEDIA_MIN_WIDTH_PX, width + delta)));
+	const tr = state.tr.setNodeMarkup(selection.from, undefined, { ...node.attrs, width: next });
+	tr.setSelection(NodeSelection.create(tr.doc, selection.from));
+	editor.view.dispatch(tr);
+	return true;
+}
+
+/**
+ * Cycle the selected embed's alignment left → center → right from the keyboard. Same
+ * re-select as the width helper above.
+ */
+function media_cycle_align(editor: Editor) {
+	const state = editor.view.state;
+	const selection = state.selection;
+	if (!(selection instanceof NodeSelection)) {
+		return false;
+	}
+	const node = selection.node;
+	if (node.type.name !== "image" && node.type.name !== "video") {
+		return false;
+	}
+
+	const align: MediaAlign = node.attrs.align === "center" || node.attrs.align === "right" ? node.attrs.align : null;
+	const tr = state.tr.setNodeMarkup(selection.from, undefined, { ...node.attrs, align: media_next_align(align) });
+	tr.setSelection(NodeSelection.create(tr.doc, selection.from));
+	editor.view.dispatch(tr);
+	return true;
+}
+
 export const file_editor_rich_text_MediaExtension = Extension.create<{
 	membershipId: app_convex_Id<"organizations_workspaces_users"> | null;
 }>({
@@ -553,6 +812,46 @@ export const file_editor_rich_text_MediaExtension = Extension.create<{
 
 	addOptions() {
 		return { membershipId: null };
+	},
+
+	addKeyboardShortcuts() {
+		return {
+			// Keyboard path for the pointer-only resize handle.
+			"Alt-ArrowRight": () => media_adjust_width(this.editor, MEDIA_KEYBOARD_WIDTH_STEP_PX),
+			"Alt-ArrowLeft": () => media_adjust_width(this.editor, -MEDIA_KEYBOARD_WIDTH_STEP_PX),
+			// Keyboard path for the align button.
+			"Alt-Shift-a": () => media_cycle_align(this.editor),
+			// Keyboard path for the alt editor; only images have one.
+			"Alt-Enter": () => {
+				const selection = this.editor.view.state.selection;
+				if (!(selection instanceof NodeSelection) || selection.node.type.name !== "image") {
+					return false;
+				}
+				const dom = this.editor.view.nodeDOM(selection.from);
+				if (!(dom instanceof HTMLElement)) {
+					return false;
+				}
+				dom.dispatchEvent(new CustomEvent(MEDIA_ALT_OPEN_EVENT));
+				return true;
+			},
+			// Keyboard path for the caption editor; images and videos both have one.
+			"Alt-Shift-Enter": () => {
+				const selection = this.editor.view.state.selection;
+				if (!(selection instanceof NodeSelection)) {
+					return false;
+				}
+				const typeName = selection.node.type.name;
+				if (typeName !== "image" && typeName !== "video") {
+					return false;
+				}
+				const dom = this.editor.view.nodeDOM(selection.from);
+				if (!(dom instanceof HTMLElement)) {
+					return false;
+				}
+				dom.dispatchEvent(new CustomEvent(MEDIA_CAPTION_OPEN_EVENT));
+				return true;
+			},
+		};
 	},
 
 	addProseMirrorPlugins() {
