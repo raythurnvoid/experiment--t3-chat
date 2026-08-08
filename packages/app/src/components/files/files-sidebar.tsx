@@ -3812,6 +3812,17 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			restrictedScopeWritePermissions,
 		}),
 	);
+	// Render-time twin of `canWriteItem`. Do not call the useFn above while rendering: its
+	// identity is stable and it hides `workspaceWritePermission` from the React Compiler, so
+	// the compiler caches the first render's answer — computed before the permission query
+	// resolves — and controls like New file / New folder stay disabled until a remount. This
+	// plain closure exposes the permission values as real dependencies.
+	const canWriteItemInRender = (item: files_TreeItem) =>
+		can_write_item({
+			item,
+			workspaceWritePermission,
+			restrictedScopeWritePermissions,
+		});
 	const canManageRestrictedScope = useFn((scopeNodeId: app_convex_Id<"files_nodes">) => {
 		const shareState = restrictedScopeShareStates[scopeNodeId];
 		return shareState != null && !(shareState instanceof Error) && shareState.canManage;
@@ -4913,7 +4924,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		selectedNodeIds.size > 0 &&
 		[...selectedNodeIds].every((itemId) => {
 			const item = treeItems?.itemById.get(itemId);
-			return item != null && canWriteItem(item);
+			return item != null && canWriteItemInRender(item);
 		});
 	const selectionAnchorNodeId = tree().getDataRef<SelectionDataRef>().current.selectUpToAnchorId ?? null;
 
@@ -5296,8 +5307,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			? (selectedItem._id as app_convex_Id<"files_nodes">)
 			: files_ROOT_ID;
 	};
-	const canWriteRoot = canWriteParentId(files_ROOT_ID);
-	const canWriteUploadTarget = canWriteParentId(resolveSelectedFolderParentId());
+	const canWriteRoot = canWriteItemInRender(files_SYNTHETIC_ROOT_FOLDER);
+	const uploadTargetParentId = resolveSelectedFolderParentId();
+	const uploadTargetParentItem =
+		uploadTargetParentId === files_ROOT_ID ? files_SYNTHETIC_ROOT_FOLDER : treeItems?.itemById.get(uploadTargetParentId);
+	const canWriteUploadTarget = uploadTargetParentItem ? canWriteItemInRender(uploadTargetParentItem) : false;
 
 	const handleUploadFileClick = useFn(() => {
 		if (!canWriteParentId(resolveSelectedFolderParentId())) {
