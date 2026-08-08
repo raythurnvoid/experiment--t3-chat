@@ -177,6 +177,9 @@
 
 		/* #region media embeds */
 		.FileEditorRichTextMedia {
+			/* Anchor for the selected-embed controls below (alt button, resize handle). */
+			position: relative;
+
 			display: inline-block;
 			max-width: 100%;
 			vertical-align: bottom;
@@ -224,6 +227,122 @@
 		.FileEditorRichTextMedia-state-failed .FileEditorRichTextMedia-placeholder {
 			border-color: var(--color-red-07);
 			color: var(--color-red-09);
+		}
+
+		/* The uploader's own tab shows the local bytes while they upload; dimming says
+		   "not stored yet" without hiding the content. */
+		.FileEditorRichTextMedia-local-preview {
+			.FileEditorRichTextMedia-image,
+			.FileEditorRichTextMedia-video {
+				opacity: 0.7;
+			}
+		}
+
+		/* Only a failed upload whose bytes are still in this tab shows the retry button. */
+		.FileEditorRichTextMedia-retry {
+			display: none;
+
+			margin-inline-start: 8px;
+			padding: 6px 10px;
+			border: 1px solid var(--color-base-1-07);
+			border-radius: 6px;
+
+			background-color: var(--color-base-1-04);
+			font-family: var(--app-font-sans);
+			font-size: 13px;
+			color: var(--color-fg-09);
+			cursor: pointer;
+
+			&:hover {
+				background-color: var(--color-base-1-05);
+			}
+
+			&:focus-visible {
+				outline: 2px solid var(--color-accent-09);
+				outline-offset: 1px;
+			}
+		}
+
+		.FileEditorRichTextMedia-retryable .FileEditorRichTextMedia-retry {
+			display: inline-block;
+		}
+
+		/* Selected-embed controls. They only exist while real media is on screen
+		   (`-has-media`), so a placeholder chip never grows dead controls. */
+		.FileEditorRichTextMedia-resize-handle {
+			position: absolute;
+			right: 3px;
+			bottom: 3px;
+			width: 14px;
+			height: 14px;
+			display: none;
+
+			border-right: 3px solid var(--color-accent-09);
+			border-bottom: 3px solid var(--color-accent-09);
+			border-bottom-right-radius: 7px;
+
+			cursor: nwse-resize;
+			touch-action: none;
+		}
+
+		.FileEditorRichTextMedia-has-media.ProseMirror-selectednode .FileEditorRichTextMedia-resize-handle {
+			display: block;
+		}
+
+		.FileEditorRichTextMedia-alt-button {
+			position: absolute;
+			top: 6px;
+			right: 6px;
+			display: none;
+
+			padding: 3px 8px;
+			border: 1px solid var(--color-base-1-07);
+			border-radius: 6px;
+
+			background-color: var(--color-base-1-03);
+			font-family: var(--app-font-sans);
+			font-size: 12px;
+			color: var(--color-fg-09);
+			cursor: pointer;
+
+			&:hover {
+				background-color: var(--color-base-1-05);
+			}
+
+			&:focus-visible {
+				outline: 2px solid var(--color-accent-09);
+				outline-offset: 1px;
+			}
+		}
+
+		.FileEditorRichTextMedia-has-media.ProseMirror-selectednode .FileEditorRichTextMedia-alt-button {
+			display: inline-block;
+		}
+
+		.FileEditorRichTextMedia-alt-input {
+			position: absolute;
+			left: 6px;
+			right: 6px;
+			bottom: 6px;
+			display: none;
+
+			padding: 6px 8px;
+			border: 1px solid var(--color-base-1-08);
+			border-radius: 6px;
+
+			background-color: var(--color-base-1-02);
+			font-family: var(--app-font-sans);
+			font-size: 13px;
+			color: var(--color-fg-09);
+
+			&:focus-visible {
+				outline: 2px solid var(--color-accent-09);
+				outline-offset: 1px;
+			}
+		}
+
+		.FileEditorRichTextMedia-alt-editing .FileEditorRichTextMedia-alt-input {
+			display: block;
 		}
 		/* #endregion media embeds */
 
