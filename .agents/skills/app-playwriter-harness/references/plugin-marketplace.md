@@ -35,6 +35,17 @@ Read install state from the page text: the detail page shows `Installed` plus a 
 
 After a successful publish, the publisher card turns into a link to the plugin detail page. The `Publish` button for a republish lives on the detail page, not on the card.
 
+The claim form's submit button is named `Claim` (`exact: true`) — there is no button named "Claim repository".
+
+## Publishing a QA fixture plugin without GitHub
+
+When a check needs a plugin with an arbitrary manifest (for example specific `secrets[]` declarations), publishing through GitHub is overkill. Claim a fake repository URL through the publisher UI as the signed-in user, then register the version with the operator-invokable internal mutations from the CLI (see the CLI recipe in `snippets.md` for the command wrapper and the JSON5 args syntax):
+
+1. In the browser, claim a unique URL like `https://github.com/<user>/qa-health-<date>` with the `Claim` button.
+2. Read the new claim's `_id` and `ownerUserId` back with `convex data plugins_publisher_repositories` — do not trust an older seeded claim, the owner differs.
+3. Run `plugins:upsert_plugin` with the manifest fields (pass `createdBy` = the claim's `ownerUserId` so publisher-tier rules match), then `plugins:finalize_plugin_version` to flip it `ready`.
+4. Cleanup: uninstall from every workspace, then run `plugins:hard_delete_plugin_from_registry "{pluginName:'<name>'}"` repeatedly until it returns `done: true`, and check the claim is gone from `plugins_publisher_repositories`.
+
 ## Manage secrets dialog
 
 Reachable only for an **installed** plugin that declares `plugin.secrets.read` (`video` does,

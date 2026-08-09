@@ -289,6 +289,8 @@ $json._id
 
 The CLI prints progress text before the JSON, so slice from the first `{` before `ConvertFrom-Json`. A function returning null prints **empty** stdout — treat that as null instead of parsing it. Long results are worse to filter in PowerShell than in the query: pass the query's own filter args when it has them.
 
+Args survive `vp env exec` best as JSON5 with single-quoted strings inside one double-quoted PowerShell string: `"{pluginName:'media',userId:'<id>'}"`. Backslash-escaped double quotes get mangled on the way through and the CLI fails with `JSON5: invalid character '\"'`.
+
 ⚠ `convex run` carries an **admin key, not a user identity**, so `ctx.auth.getUserIdentity()` is null by default and any handler that calls `require_identity` refuses it. Pass `--identity '<json>'` to supply a fake identity when you need one; the admin key still authorizes the call, so this reaches internal functions too.
 
 Presence is no longer usable as the "is the client registered" probe from here. All seven handlers require an identity, `listRoom` refuses `app_presence_global` outright even *with* one, and `heartbeat` refuses an identity-less caller with its own message before `require_identity` is reached — so it is not a `convex run` workaround either. Check presence registration from **inside the page** instead, where the app's own identity is live: `presence:heartbeat` for the room, then `presence:list` with the returned room token.
