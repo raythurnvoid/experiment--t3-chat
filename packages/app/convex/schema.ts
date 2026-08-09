@@ -1575,7 +1575,9 @@ const app_convex_schema = defineSchema({
 		/**
 		 * The refresh JWT this row held before the last rotation. A tab that raced the rotation can
 		 * still present it once and receive the current token back, so the shared localStorage copy
-		 * converges instead of falling into 401 → storage clear → new anonymous user.
+		 * converges instead of falling into 401 → storage clear → new anonymous user. This is the
+		 * standard grace window for refresh-token rotation; Auth0's rotation docs call it the
+		 * "reuse interval" (see also RFC 9700 §4.14 on rotation).
 		 */
 		previousToken: v.optional(v.string()),
 		updatedAt: v.number(),

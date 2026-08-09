@@ -90,6 +90,10 @@ const ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
  * refresh JWT can never authenticate a function call. The refresh route requires this audience, and
  * that requirement is what retires pre-split dual-role tokens: they carry `aud "convex"`, so they
  * stop working as refresh credentials even though they still byte-match their stored row.
+ *
+ * The whole two-token scheme is the standard OAuth split (RFC 6749 §1.5): only this route reads the
+ * token table, every other call verifies a short-lived signed access token. Rotation follows
+ * RFC 9700 §4.14, with the `previousToken` grace window (Auth0's "reuse interval") for tab races.
  */
 const ANONYMOUS_USERS_REFRESH_JWT_AUD = "anonymous-refresh";
 

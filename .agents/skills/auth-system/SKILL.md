@@ -71,6 +71,8 @@ Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={App
 
 ### Anonymous (not signed in)
 
+The design is the standard OAuth token split: a long-lived refresh token that only the token endpoint accepts, and a short-lived access token used on API calls (RFC 6749 §1.5; rotation guidance in RFC 9700 §4.14 "Refresh Token Protection"). The `previousToken` grace field below is the industry mitigation for rotation races — Auth0's refresh-token-rotation docs call it the "reuse interval": strict one-time-use rotation breaks multi-tab apps, so the just-replaced token stays accepted until the next rotation.
+
 Anonymous auth uses two JWTs signed with the same key, split by audience:
 
 - The **refresh token** (`aud "anonymous-refresh"`, 30 days) lives in `localStorage` and is also stored byte-for-byte in `users_anon_tokens`. It only works against `/api/auth/anonymous`, where it is checked against that table. Convex rejects it because `auth.config.ts` only accepts `aud "convex"`.
