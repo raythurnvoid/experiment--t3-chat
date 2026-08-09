@@ -247,3 +247,8 @@ Also consider:
 - Quota tests when quota counters or quota doc cleanup changes.
 
 Do not run lint/typecheck/full test suites unless the user asked for broad verification.
+
+For a live purge check on the dev deployment, two CLI levers avoid waiting out the grace window:
+
+- Seed a purge fixture row with `vp env exec pnpx convex import --table <table> --append --yes <file.jsonl>`. Id fields only need to decode for the right table, so referencing an existing doc from another tenant is fine for purge proofs.
+- Process one queued request early with `vp env exec pnpx convex run data_deletion:process_organization_deletion_request '{"requestId":"..."}'` (or the workspace/user variant) in a loop until `done: true`. This targets a single request by id, so other queued requests keep their undo window. Do not force the whole queue early with `process_deletion_requests` and `_test_now`.
