@@ -5,17 +5,21 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import {
 	ChevronRight,
+	CircleCheck,
 	Clock3,
 	Download,
 	Ellipsis,
 	GitBranch,
+	HeartPulse,
 	History,
+	Info,
 	KeyRound,
 	Puzzle,
 	Save,
 	Settings2,
 	ShieldCheck,
 	Trash2,
+	TriangleAlert,
 	UploadCloud,
 } from "lucide-react";
 import { editor as monaco_editor } from "monaco-editor";
@@ -85,6 +89,169 @@ type RoutePlugins_PublishedPlugin = app_convex_FunctionReturnType<
 type RoutePlugins_PublisherPlugin = NonNullable<
 	app_convex_FunctionReturnType<typeof app_convex_api.plugins.get_publisher_plugin>
 >;
+
+// #region health
+type RoutePluginsPluginHealth_ClassNames =
+	| "RoutePluginsPluginHealth"
+	| "RoutePluginsPluginHealth-header"
+	| "RoutePluginsPluginHealth-title"
+	| "RoutePluginsPluginHealth-status"
+	| "RoutePluginsPluginHealth-status-incomplete"
+	| "RoutePluginsPluginHealth-list"
+	| "RoutePluginsPluginHealthIssue"
+	| "RoutePluginsPluginHealthIssue-icon"
+	| "RoutePluginsPluginHealthIssue-icon-notice"
+	| "RoutePluginsPluginHealthIssue-body"
+	| "RoutePluginsPluginHealthIssue-title"
+	| "RoutePluginsPluginHealthIssue-text"
+	| "RoutePluginsPluginHealthIssue-note"
+	| "RoutePluginsPluginHealthIssue-error";
+
+type RoutePluginsPluginHealth_Props = {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	pluginName: string;
+	onOpenSecrets: () => void;
+};
+
+const RoutePluginsPluginHealth = memo(function RoutePluginsPluginHealth(props: RoutePluginsPluginHealth_Props) {
+	const { membershipId, pluginName, onOpenSecrets } = props;
+	const health = useQuery(app_convex_api.plugins.get_installation_health, { membershipId, pluginName });
+
+	const handleOpenActivity = () => {
+		const activity = document.getElementById("app_plugin_activity_section" satisfies AppElementId);
+		if (activity instanceof HTMLDetailsElement) {
+			activity.open = true;
+			activity.scrollIntoView({ behavior: "smooth", block: "start" });
+		}
+	};
+
+	// undefined is still loading; null means not installed or not a plugin manager.
+	if (!health) {
+		return null;
+	}
+	const hasMissingSecret = health.issues.some((issue) => issue.kind === "missing_secret");
+
+	return (
+		<section className={"RoutePluginsPluginHealth" satisfies RoutePluginsPluginHealth_ClassNames}>
+			<header className={"RoutePluginsPluginHealth-header" satisfies RoutePluginsPluginHealth_ClassNames}>
+				<h2 className={"RoutePluginsPluginHealth-title" satisfies RoutePluginsPluginHealth_ClassNames}>
+					<HeartPulse aria-hidden />
+					Health
+				</h2>
+				<p
+					className={cn(
+						"RoutePluginsPluginHealth-status" satisfies RoutePluginsPluginHealth_ClassNames,
+						hasMissingSecret &&
+							("RoutePluginsPluginHealth-status-incomplete" satisfies RoutePluginsPluginHealth_ClassNames),
+					)}
+				>
+					{/* The capability notice alone must not demote the header: a plugin that runs fine
+					    on publisher defaults would otherwise read "Needs attention" forever. */}
+					{hasMissingSecret ? (
+						<>
+							<TriangleAlert aria-hidden />
+							Installation incomplete
+						</>
+					) : health.issues.some((issue) => issue.kind === "recent_runs_failing") ? (
+						<>
+							<TriangleAlert aria-hidden />
+							Needs attention
+						</>
+					) : (
+						<>
+							<CircleCheck aria-hidden />
+							Installation healthy
+						</>
+					)}
+				</p>
+			</header>
+			{health.issues.length > 0 ? (
+				<ul className={"RoutePluginsPluginHealth-list" satisfies RoutePluginsPluginHealth_ClassNames}>
+					{health.issues.map((issue) =>
+						issue.kind === "missing_secret" ? (
+							<li
+								key={`missing_secret:${issue.name}`}
+								className={"RoutePluginsPluginHealthIssue" satisfies RoutePluginsPluginHealth_ClassNames}
+							>
+								<TriangleAlert
+									aria-hidden
+									className={"RoutePluginsPluginHealthIssue-icon" satisfies RoutePluginsPluginHealth_ClassNames}
+								/>
+								<div className={"RoutePluginsPluginHealthIssue-body" satisfies RoutePluginsPluginHealth_ClassNames}>
+									<div className={"RoutePluginsPluginHealthIssue-title" satisfies RoutePluginsPluginHealth_ClassNames}>
+										Missing secret <code>{issue.name}</code>
+									</div>
+									<p className={"RoutePluginsPluginHealthIssue-text" satisfies RoutePluginsPluginHealth_ClassNames}>
+										The installed version declares this secret as required, and no value is configured.
+									</p>
+									{/* Publisher-authored text: render it escaped and clearly attributed, never as markup. */}
+									{issue.description.trim().length > 0 ? (
+										<p className={"RoutePluginsPluginHealthIssue-note" satisfies RoutePluginsPluginHealth_ClassNames}>
+											Publisher's note: {issue.description}
+										</p>
+									) : null}
+								</div>
+								<MyButton variant="outline" onClick={onOpenSecrets}>
+									Manage secrets
+								</MyButton>
+							</li>
+						) : issue.kind === "secrets_capability_unconfigured" ? (
+							<li
+								key="secrets_capability_unconfigured"
+								className={"RoutePluginsPluginHealthIssue" satisfies RoutePluginsPluginHealth_ClassNames}
+							>
+								<Info
+									aria-hidden
+									className={cn(
+										"RoutePluginsPluginHealthIssue-icon" satisfies RoutePluginsPluginHealth_ClassNames,
+										"RoutePluginsPluginHealthIssue-icon-notice" satisfies RoutePluginsPluginHealth_ClassNames,
+									)}
+								/>
+								<div className={"RoutePluginsPluginHealthIssue-body" satisfies RoutePluginsPluginHealth_ClassNames}>
+									<div className={"RoutePluginsPluginHealthIssue-title" satisfies RoutePluginsPluginHealth_ClassNames}>
+										No secrets configured
+									</div>
+									<p className={"RoutePluginsPluginHealthIssue-text" satisfies RoutePluginsPluginHealth_ClassNames}>
+										This plugin can read workspace secrets; none are configured in this workspace. Configure them only
+										if the plugin's documentation asks for them.
+									</p>
+								</div>
+							</li>
+						) : (
+							<li
+								key="recent_runs_failing"
+								className={"RoutePluginsPluginHealthIssue" satisfies RoutePluginsPluginHealth_ClassNames}
+							>
+								<TriangleAlert
+									aria-hidden
+									className={"RoutePluginsPluginHealthIssue-icon" satisfies RoutePluginsPluginHealth_ClassNames}
+								/>
+								<div className={"RoutePluginsPluginHealthIssue-body" satisfies RoutePluginsPluginHealth_ClassNames}>
+									<div className={"RoutePluginsPluginHealthIssue-title" satisfies RoutePluginsPluginHealth_ClassNames}>
+										Recent runs are failing
+									</div>
+									<p className={"RoutePluginsPluginHealthIssue-text" satisfies RoutePluginsPluginHealth_ClassNames}>
+										The last {issue.failedCount} finished runs all failed.
+									</p>
+									{/* Plugin-authored text, rendered escaped like the Activity list does. */}
+									{issue.latestErrorMessage ? (
+										<p className={"RoutePluginsPluginHealthIssue-error" satisfies RoutePluginsPluginHealth_ClassNames}>
+											{issue.latestErrorMessage}
+										</p>
+									) : null}
+								</div>
+								<MyButton variant="outline" onClick={handleOpenActivity}>
+									View activity
+								</MyButton>
+							</li>
+						),
+					)}
+				</ul>
+			) : null}
+		</section>
+	);
+});
+// #endregion health
 
 // #region secrets
 type RoutePluginsPluginSecretsModalPanel_ClassNames =
@@ -549,11 +716,14 @@ type RoutePluginsPluginSecrets_Props = {
 	installationId: app_convex_Id<"plugins_workspace_installations"> | null;
 	installationCanAdd: boolean;
 	publisherRepositoryId: app_convex_Id<"plugins_publisher_repositories"> | null;
+	// Owned by the route so the Health section's "Manage secrets" action can open the same modal.
+	managing: boolean;
+	onManagingChange: (managing: boolean) => void;
 };
 
 const RoutePluginsPluginSecrets = memo(function RoutePluginsPluginSecrets(props: RoutePluginsPluginSecrets_Props) {
-	const { membershipId, installationId, installationCanAdd, publisherRepositoryId } = props;
-	const [managing, setManaging] = useState(false);
+	const { membershipId, installationId, installationCanAdd, publisherRepositoryId, managing, onManagingChange } =
+		props;
 	// A non-publisher install without plugin.secrets.read only needs this section while leftover
 	// secrets from a previous version remain deletable, so peek at the list in that rare case.
 	// `managing` keeps the section (and the modal mounted inside it) alive while the user deletes
@@ -577,7 +747,7 @@ const RoutePluginsPluginSecrets = memo(function RoutePluginsPluginSecrets(props:
 					Values this plugin can read at runtime.
 				</p>
 			</header>
-			<MyButton variant="outline" onClick={() => setManaging(true)}>
+			<MyButton variant="outline" onClick={() => onManagingChange(true)}>
 				Manage secrets
 			</MyButton>
 			{/* Mounted per open so form state resets and the secret queries only subscribe while managing. */}
@@ -587,7 +757,7 @@ const RoutePluginsPluginSecrets = memo(function RoutePluginsPluginSecrets(props:
 					installationId={installationId}
 					installationCanAdd={installationCanAdd}
 					publisherRepositoryId={publisherRepositoryId}
-					onClose={() => setManaging(false)}
+					onClose={() => onManagingChange(false)}
 				/>
 			) : null}
 		</section>
@@ -885,7 +1055,10 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 	const runs = useQuery(app_convex_api.plugins.list_recent_runs, { membershipId, installationId });
 
 	return (
-		<details className={"RoutePluginsInstalledRuns" satisfies RoutePluginsInstalledRuns_ClassNames}>
+		<details
+			id={"app_plugin_activity_section" satisfies AppElementId}
+			className={"RoutePluginsInstalledRuns" satisfies RoutePluginsInstalledRuns_ClassNames}
+		>
 			<summary className={"RoutePluginsInstalledRuns-summary" satisfies RoutePluginsInstalledRuns_ClassNames}>
 				<ChevronRight
 					className={"RoutePluginsInstalledRuns-chevron" satisfies RoutePluginsInstalledRuns_ClassNames}
@@ -1422,6 +1595,7 @@ function RoutePluginsPlugin() {
 	const [uninstalling, setUninstalling] = useState(false);
 	const [publishing, setPublishing] = useState(false);
 	const [removing, setRemoving] = useState(false);
+	const [managingSecrets, setManagingSecrets] = useState(false);
 
 	const handleUninstall = useFn((installation: RoutePlugins_Installation["installation"]) => {
 		setUninstalling(true);
@@ -1736,12 +1910,22 @@ function RoutePluginsPlugin() {
 					</div>
 				</header>
 
+				{/* Health renders only for an installed plugin: the query returns null otherwise. */}
+				{installedItem ? (
+					<RoutePluginsPluginHealth
+						membershipId={membershipId}
+						pluginName={plugin.name}
+						onOpenSecrets={() => setManagingSecrets(true)}
+					/>
+				) : null}
 				{secretsInstallationId || publisherPlugin ? (
 					<RoutePluginsPluginSecrets
 						membershipId={membershipId}
 						installationId={secretsInstallationId}
 						installationCanAdd={secretsCanAdd}
 						publisherRepositoryId={publisherPlugin?.repository._id ?? null}
+						managing={managingSecrets}
+						onManagingChange={setManagingSecrets}
 					/>
 				) : null}
 				{installedItem && pluginConfiguration && installedItem.installation.configurationYaml !== null ? (

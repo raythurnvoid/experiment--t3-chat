@@ -567,6 +567,73 @@ describe("plugins_validate_manifest", () => {
 		});
 	});
 
+	test("accepts secrets declarations and defaults optional to false", () => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				secrets: [
+					{ name: "OPENAI_API_KEY", description: "OpenAI key used for transcription." },
+					{ name: "WEBHOOK_TOKEN", description: "", optional: true },
+				],
+			}),
+		).toMatchObject({
+			_yay: {
+				secrets: [
+					{ name: "OPENAI_API_KEY", description: "OpenAI key used for transcription.", optional: false },
+					{ name: "WEBHOOK_TOKEN", description: "", optional: true },
+				],
+			},
+		});
+		expect(plugins_validate_manifest(manifest_json())).toMatchObject({ _yay: { secrets: [] } });
+	});
+
+	test("rejects secret declarations with invalid names, duplicates, or missing capability", () => {
+		// A name that is not a valid env key could never be configured or read.
+		for (const name of ["MY KEY", "https://example.com", "please set the api key"]) {
+			expect(
+				plugins_validate_manifest({ ...manifest_json(), secrets: [{ name, description: "" }] }),
+			).toEqual({ _nay: { message: "Secret names must use env key syntax" } });
+		}
+		expect(
+			plugins_validate_manifest({ ...manifest_json(), secrets: [{ name: " OPENAI_API_KEY ", description: "" }] }),
+		).toEqual({ _nay: { message: "Secret names must already be normalized" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				secrets: [
+					{ name: "OPENAI_API_KEY", description: "" },
+					{ name: "OPENAI_API_KEY", description: "", optional: true },
+				],
+			}),
+		).toEqual({ _nay: { message: 'Plugin manifest has duplicate secret "OPENAI_API_KEY"' } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				secrets: [{ name: "OPENAI_API_KEY", description: "x".repeat(301) }],
+			}),
+		).toEqual({ _nay: { message: "Secret descriptions must be at most 300 characters" } });
+		// A bidi override could visually reorder the rendered note into phishing copy.
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				secrets: [{ name: "OPENAI_API_KEY", description: "paste at ‮moc.live‬" }],
+			}),
+		).toEqual({ _nay: { message: 'Secret "OPENAI_API_KEY" description must not contain control characters' } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				secrets: Array.from({ length: 33 }, (_, index) => ({ name: `SECRET_${index}`, description: "" })),
+			}),
+		).toEqual({ _nay: { message: "Plugin manifests can declare at most 32 secrets" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				capabilities: ["outbound.fetch"],
+				secrets: [{ name: "OPENAI_API_KEY", description: "" }],
+			}),
+		).toEqual({ _nay: { message: "Plugin secrets declarations require the plugin.secrets.read capability" } });
+	});
+
 	test("rejects duplicate file view content types within and across views", () => {
 		expect(
 			plugins_validate_manifest({

@@ -75,6 +75,7 @@ async function register_media_plugin(
 		sourceRepo?: string;
 		sourceCommitSha?: string;
 		outboundOrigins?: string[];
+		secrets?: Array<{ name: string; description: string; optional: boolean }>;
 		sourceFiles?: Array<{ path: string; rawText: string }>;
 	} = {},
 ) {
@@ -141,6 +142,7 @@ async function register_media_plugin(
 		fileViews: [],
 		capabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: args.outboundOrigins ?? [],
+		secrets: args.secrets,
 		files: [
 			{
 				path: "dist/backend/worker.js",
@@ -402,6 +404,24 @@ describe("plugins Phase 0", () => {
 				.collect(),
 		);
 		expect(sourceNodes.filter((node) => node.kind === "file")).toHaveLength(1);
+	});
+
+	test("persists the manifest secrets declaration on the version doc", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+
+		const declared = await register_media_plugin(t, membership.userId, {
+			secrets: [{ name: "OPENAI_API_KEY", description: "OpenAI key used for transcription.", optional: false }],
+		});
+		const declaredVersion = await t.run((ctx) => ctx.db.get("plugins_versions", declared.pluginVersionId));
+		expect(declaredVersion?.secrets).toEqual([
+			{ name: "OPENAI_API_KEY", description: "OpenAI key used for transcription.", optional: false },
+		]);
+
+		// Versions published before the field existed have no secrets field at all.
+		const undeclared = await register_media_plugin(t, membership.userId, { name: "media-plain", version: "0.1.0" });
+		const undeclaredVersion = await t.run((ctx) => ctx.db.get("plugins_versions", undeclared.pluginVersionId));
+		expect(undeclaredVersion?.secrets).toBeUndefined();
 	});
 
 	test("rechecks plugin-name ownership after a successful publish preflight", async () => {
@@ -4169,6 +4189,340 @@ describe("plugins publisher secrets", () => {
 		expect(secrets.map((secret) => ({ name: secret.name, repositoryId: secret.repositoryId }))).toEqual([
 			{ name: "MODAL_TOKEN", repositoryId: otherRepositoryId },
 		]);
+	});
+});
+
+describe("plugins get_installation_health", () => {
+	// plugins_manage is a token bucket with capacity 2; refill a token before each extra write.
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	function refill_manage_rate_limit() {
+		vi.advanceTimersByTime(60_000);
+	}
+
+	async function install_plugin_for_health(
+		t: ReturnType<typeof test_convex>,
+		args: { secrets?: Array<{ name: string; description: string; optional: boolean }> } = {},
+	) {
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId, { secrets: args.secrets });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		return {
+			membership,
+			asOwner,
+			repositoryId: registered.repositoryId,
+			installationId: installed._yay.installationId,
+		};
+	}
+
+	test("reports each declared required secret without a value and recovers once it is set", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_for_health(t, {
+			secrets: [
+				{ name: "OPENAI_API_KEY", description: "OpenAI key used for transcription.", optional: false },
+				{ name: "WEBHOOK_TOKEN", description: "", optional: true },
+			],
+		});
+
+		// Only the required secret is an issue; the optional one and the capability notice stay out.
+		const missing = await fixture.asOwner.query(api.plugins.get_installation_health, {
+			membershipId: fixture.membership.membershipId,
+			pluginName: "media",
+		});
+		expect(missing).toEqual({
+			issues: [
+				{ kind: "missing_secret", name: "OPENAI_API_KEY", description: "OpenAI key used for transcription." },
+			],
+		});
+
+		refill_manage_rate_limit();
+		const saved = await fixture.asOwner.mutation(api.plugins.upsert_installation_secret, {
+			membershipId: fixture.membership.membershipId,
+			installationId: fixture.installationId,
+			name: "OPENAI_API_KEY",
+			value: "sk-health-secret",
+		});
+		if (saved._nay) {
+			throw new Error(saved._nay.message);
+		}
+
+		const healthy = await fixture.asOwner.query(api.plugins.get_installation_health, {
+			membershipId: fixture.membership.membershipId,
+			pluginName: "media",
+		});
+		expect(healthy).toEqual({ issues: [] });
+		expect(JSON.stringify(healthy)).not.toContain("sk-health-secret");
+	});
+
+	test("counts a publisher default only while the repository is claimed by the version creator", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_for_health(t, {
+			secrets: [{ name: "OPENAI_API_KEY", description: "", optional: false }],
+		});
+
+		refill_manage_rate_limit();
+		const saved = await fixture.asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+			repositoryId: fixture.repositoryId,
+			name: "OPENAI_API_KEY",
+			value: "sk-publisher-default",
+		});
+		if (saved._nay) {
+			throw new Error(saved._nay.message);
+		}
+		expect(
+			await fixture.asOwner.query(api.plugins.get_installation_health, {
+				membershipId: fixture.membership.membershipId,
+				pluginName: "media",
+			}),
+		).toEqual({ issues: [] });
+
+		// Someone else re-claims the repository URL: the runtime read would return null now, so
+		// health must report the secret as missing again.
+		await t.run(async (ctx) => {
+			const claimerUserId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.patch("plugins_publisher_repositories", fixture.repositoryId, { ownerUserId: claimerUserId });
+		});
+		expect(
+			await fixture.asOwner.query(api.plugins.get_installation_health, {
+				membershipId: fixture.membership.membershipId,
+				pluginName: "media",
+			}),
+		).toEqual({
+			issues: [{ kind: "missing_secret", name: "OPENAI_API_KEY", description: "" }],
+		});
+	});
+
+	test("evaluates the installed version's manifest, not the latest published one", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_for_health(t);
+
+		// A newer version declares a required secret, but the workspace still runs the old one.
+		await register_media_plugin(t, fixture.membership.userId, {
+			version: "0.2.0",
+			artifactHash: `sha256:${"c".repeat(64)}`,
+			secrets: [{ name: "OPENAI_API_KEY", description: "", optional: false }],
+		});
+
+		const health = await fixture.asOwner.query(api.plugins.get_installation_health, {
+			membershipId: fixture.membership.membershipId,
+			pluginName: "media",
+		});
+		expect(health).toEqual({ issues: [{ kind: "secrets_capability_unconfigured" }] });
+	});
+
+	test("keys the capability notice to installation-tier rows only", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_for_health(t);
+
+		// A publisher-tier row must not clear the notice: that would tell a workspace manager
+		// whether the publisher keeps secrets on this repository.
+		refill_manage_rate_limit();
+		const publisherSaved = await fixture.asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+			repositoryId: fixture.repositoryId,
+			name: "OPENAI_API_KEY",
+			value: "sk-publisher-default",
+		});
+		if (publisherSaved._nay) {
+			throw new Error(publisherSaved._nay.message);
+		}
+		expect(
+			await fixture.asOwner.query(api.plugins.get_installation_health, {
+				membershipId: fixture.membership.membershipId,
+				pluginName: "media",
+			}),
+		).toEqual({ issues: [{ kind: "secrets_capability_unconfigured" }] });
+
+		refill_manage_rate_limit();
+		const installationSaved = await fixture.asOwner.mutation(api.plugins.upsert_installation_secret, {
+			membershipId: fixture.membership.membershipId,
+			installationId: fixture.installationId,
+			name: "OPENAI_API_KEY",
+			value: "sk-workspace-secret",
+		});
+		if (installationSaved._nay) {
+			throw new Error(installationSaved._nay.message);
+		}
+		expect(
+			await fixture.asOwner.query(api.plugins.get_installation_health, {
+				membershipId: fixture.membership.membershipId,
+				pluginName: "media",
+			}),
+		).toEqual({ issues: [] });
+	});
+
+	test("stays healthy for a version that declares only optional secrets", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_for_health(t, {
+			secrets: [{ name: "WEBHOOK_TOKEN", description: "", optional: true }],
+		});
+
+		// Declaring secrets, even all-optional ones, also keeps the capability notice out.
+		expect(
+			await fixture.asOwner.query(api.plugins.get_installation_health, {
+				membershipId: fixture.membership.membershipId,
+				pluginName: "media",
+			}),
+		).toEqual({ issues: [] });
+	});
+
+	test("flags an installation whose last five finished runs all failed", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_for_health(t, {
+			secrets: [{ name: "WEBHOOK_TOKEN", description: "", optional: true }],
+		});
+		const upload = await fixture.asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: fixture.membership.membershipId,
+			parentId: "root",
+			filename: "photo.png",
+			contentType: "image/png",
+			size: 1024,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const uploadedFile = upload._yay;
+
+		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
+		if (!installation) {
+			throw new Error("Expected installation");
+		}
+		const installedVersionId = installation.pluginVersionId;
+		const acceptedCapabilities = installation.acceptedCapabilities;
+		let nextUpdatedAt = Date.now();
+		function insert_run(args: { status: "queued" | "running" | "succeeded" | "failed"; errorMessage?: string }) {
+			nextUpdatedAt += 1000;
+			const updatedAt = nextUpdatedAt;
+			return t.run((ctx) =>
+				ctx.db.insert("plugins_event_runs", {
+					organizationId: fixture.membership.organizationId,
+					workspaceId: fixture.membership.workspaceId,
+					assetId: uploadedFile.assetId,
+					fileNodeId: uploadedFile.nodeId,
+					actorUserId: fixture.membership.userId,
+					installationId: fixture.installationId,
+					pluginVersionId: installedVersionId,
+					event: "files.upload.completed",
+					eventId: `plugin:health-run-${updatedAt}`,
+					status: args.status,
+					acceptedCapabilities,
+					expiresAt: updatedAt + 30 * 60 * 1000,
+					apiCallCount: 0,
+					outputWriteCount: 0,
+					errorMessage: args.errorMessage ?? null,
+					updatedAt,
+				}),
+			);
+		}
+
+		for (let i = 0; i < 4; i++) {
+			await insert_run({ status: "failed", errorMessage: "earlier failure" });
+		}
+		await insert_run({ status: "failed", errorMessage: "missing WEBHOOK_TOKEN" });
+		// Queued and running rows are not finished runs, so they must not dilute the window.
+		await insert_run({ status: "queued" });
+		expect(
+			await fixture.asOwner.query(api.plugins.get_installation_health, {
+				membershipId: fixture.membership.membershipId,
+				pluginName: "media",
+			}),
+		).toEqual({
+			issues: [{ kind: "recent_runs_failing", failedCount: 5, latestErrorMessage: "missing WEBHOOK_TOKEN" }],
+		});
+
+		// One new success breaks the streak.
+		await insert_run({ status: "succeeded" });
+		expect(
+			await fixture.asOwner.query(api.plugins.get_installation_health, {
+				membershipId: fixture.membership.membershipId,
+				pluginName: "media",
+			}),
+		).toEqual({ issues: [] });
+	});
+
+	test("refuses non-managers, forged memberships, signed-out callers, and unknown plugins", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_for_health(t, {
+			secrets: [{ name: "OPENAI_API_KEY", description: "", optional: false }],
+		});
+
+		const memberUserId = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId,
+				role: "member",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			return userId;
+		});
+		const memberMembershipId = await t.run(async (ctx) => {
+			const member = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", fixture.membership.workspaceId).eq("userId", memberUserId).eq("active", true),
+				)
+				.first();
+			if (!member) {
+				throw new Error("Expected member membership");
+			}
+			return member._id;
+		});
+
+		// A member without workspace.plugins.manage gets nothing.
+		const asMember = t.withIdentity(user_identity(memberUserId));
+		expect(
+			await asMember.query(api.plugins.get_installation_health, {
+				membershipId: memberMembershipId,
+				pluginName: "media",
+			}),
+		).toBeNull();
+
+		// A forged membershipId belonging to another user gets nothing.
+		expect(
+			await asMember.query(api.plugins.get_installation_health, {
+				membershipId: fixture.membership.membershipId,
+				pluginName: "media",
+			}),
+		).toBeNull();
+
+		// Signed out gets nothing.
+		expect(
+			await t.query(api.plugins.get_installation_health, {
+				membershipId: fixture.membership.membershipId,
+				pluginName: "media",
+			}),
+		).toBeNull();
+
+		// A plugin that is not installed in this workspace gets nothing.
+		expect(
+			await fixture.asOwner.query(api.plugins.get_installation_health, {
+				membershipId: fixture.membership.membershipId,
+				pluginName: "not-installed",
+			}),
+		).toBeNull();
 	});
 });
 

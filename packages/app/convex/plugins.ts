@@ -31,6 +31,7 @@ import {
 	plugins_validate_manifest,
 	plugins_validate_secret_name,
 	plugins_validate_secret_value,
+	type plugins_Capability,
 } from "../shared/plugins.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -248,6 +249,7 @@ export const register_plugin_version = internalAction({
 		manifestR2Key: doc(app_convex_schema, "plugins_versions").fields.manifestR2Key,
 		backendEntrypointFile: doc(app_convex_schema, "plugins_versions").fields.backendEntrypointFile,
 		configuration: doc(app_convex_schema, "plugins_versions").fields.configuration,
+		secrets: doc(app_convex_schema, "plugins_versions").fields.secrets,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
@@ -326,6 +328,7 @@ export const upsert_plugin = internalMutation({
 		manifestR2Key: doc(app_convex_schema, "plugins_versions").fields.manifestR2Key,
 		backendEntrypointFile: doc(app_convex_schema, "plugins_versions").fields.backendEntrypointFile,
 		configuration: doc(app_convex_schema, "plugins_versions").fields.configuration,
+		secrets: doc(app_convex_schema, "plugins_versions").fields.secrets,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
@@ -1691,6 +1694,7 @@ async function publish_version_from_github(
 		manifestR2Key,
 		backendEntrypointFile,
 		configuration: manifest._yay.configuration,
+		secrets: manifest._yay.secrets,
 		events: manifest._yay.events,
 		pages: (manifest._yay.pages ?? []).map((page) => ({
 			id: page.id,
@@ -3355,6 +3359,175 @@ export const list_recent_runs = query({
 });
 
 // #endregion runs
+
+// #region installation health
+
+const PLUGIN_HEALTH_FAILING_RUN_COUNT = 5;
+
+export const get_installation_health = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		pluginName: v.string(),
+	},
+	returns: v.union(
+		v.object({
+			issues: v.array(
+				v.union(
+					v.object({
+						kind: v.literal("missing_secret"),
+						name: v.string(),
+						description: v.string(),
+					}),
+					v.object({
+						kind: v.literal("secrets_capability_unconfigured"),
+					}),
+					v.object({
+						kind: v.literal("recent_runs_failing"),
+						failedCount: v.number(),
+						latestErrorMessage: v.union(v.string(), v.null()),
+					}),
+				),
+			),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return null;
+		}
+
+		const authorization = await db_authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (authorization._nay) {
+			return null;
+		}
+
+		const installation = await ctx.db
+			.query("plugins_workspace_installations")
+			.withIndex("by_organization_workspace_pluginName", (q) =>
+				q
+					.eq("organizationId", authorization._yay.membership.organizationId)
+					.eq("workspaceId", authorization._yay.membership.workspaceId)
+					.eq("pluginName", args.pluginName),
+			)
+			.first();
+		if (!installation) {
+			return null;
+		}
+
+		// Health must describe the manifest that is actually running, so read the installed
+		// version, not the latest published one.
+		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+		if (!version) {
+			return null;
+		}
+
+		const issues: Array<
+			| { kind: "missing_secret"; name: string; description: string }
+			| { kind: "secrets_capability_unconfigured" }
+			| { kind: "recent_runs_failing"; failedCount: number; latestErrorMessage: string | null }
+		> = [];
+
+		// Versions published before the secrets field exist without it; absent means "declares no
+		// secrets" and routes to the capability notice below, never to a false missing_secret.
+		const declaredSecrets = version.secrets ?? [];
+		const requiredSecrets = declaredSecrets.filter((secret) => !secret.optional);
+		if (requiredSecrets.length > 0) {
+			// Only row existence leaves this block; the encrypted docs never reach the response.
+			const installationRowExists = (
+				await Promise.all(
+					requiredSecrets.map((secret) =>
+						ctx.db
+							.query("plugins_workspace_installation_secrets")
+							.withIndex("by_installation_name", (q) =>
+								q.eq("installationId", installation._id).eq("name", secret.name),
+							)
+							.first(),
+					),
+				)
+			).map((row) => row !== null);
+			const unconfiguredSecrets = requiredSecrets.filter((_, index) => !installationRowExists[index]);
+
+			// Publisher defaults stay bound to the immutable version creator, even if someone else
+			// later claims the URL — same rule as get_secret_for_runtime, so health never says
+			// "configured" where the runtime read would return null.
+			let publisherRowExists = unconfiguredSecrets.map(() => false);
+			if (unconfiguredSecrets.length > 0) {
+				const repository = await ctx.db
+					.query("plugins_publisher_repositories")
+					.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", version.sourceRepositoryUrl))
+					.first();
+				if (repository && repository.ownerUserId === version.createdBy) {
+					publisherRowExists = (
+						await Promise.all(
+							unconfiguredSecrets.map((secret) =>
+								ctx.db
+									.query("plugins_publisher_repository_secrets")
+									.withIndex("by_repository_name", (q) =>
+										q.eq("repositoryId", repository._id).eq("name", secret.name),
+									)
+									.first(),
+							),
+						)
+					).map((row) => row !== null);
+				}
+			}
+			for (const [index, secret] of unconfiguredSecrets.entries()) {
+				if (!publisherRowExists[index]) {
+					issues.push({ kind: "missing_secret", name: secret.name, description: secret.description });
+				}
+			}
+		}
+
+		// The notice is only for versions that declare no secrets[] but accepted the read
+		// capability. Check installation-tier rows only: a publisher-tier check would tell a
+		// workspace manager whether the publisher keeps secrets on this repo, an existence
+		// oracle no manager-reachable surface exposes today.
+		if (
+			declaredSecrets.length === 0 &&
+			installation.acceptedCapabilities.includes("plugin.secrets.read" satisfies plugins_Capability)
+		) {
+			const anyInstallationSecret = await ctx.db
+				.query("plugins_workspace_installation_secrets")
+				.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id))
+				.first();
+			if (anyInstallationSecret === null) {
+				issues.push({ kind: "secrets_capability_unconfigured" });
+			}
+		}
+
+		// Flag only when the last PLUGIN_HEALTH_FAILING_RUN_COUNT finished runs all failed.
+		// Queued and running rows must not count as finished, so take a larger slice and keep
+		// the first finished ones.
+		const recentRuns = await ctx.db
+			.query("plugins_event_runs")
+			.withIndex("by_installation_updatedAt", (q) => q.eq("installationId", installation._id))
+			.order("desc")
+			.take(PLUGIN_HEALTH_FAILING_RUN_COUNT * 4);
+		const finishedRuns = recentRuns
+			.filter((run) => run.status === "succeeded" || run.status === "failed")
+			.slice(0, PLUGIN_HEALTH_FAILING_RUN_COUNT);
+		if (
+			finishedRuns.length === PLUGIN_HEALTH_FAILING_RUN_COUNT &&
+			finishedRuns.every((run) => run.status === "failed")
+		) {
+			// Same audience and gate as list_recent_runs' errorMessage; no file details, so the
+			// per-node content.read carve-out stays intact.
+			issues.push({
+				kind: "recent_runs_failing",
+				failedCount: finishedRuns.length,
+				latestErrorMessage: finishedRuns[0]!.errorMessage,
+			});
+		}
+
+		return { issues };
+	},
+});
+
+// #endregion installation health
 
 // #region admin
 

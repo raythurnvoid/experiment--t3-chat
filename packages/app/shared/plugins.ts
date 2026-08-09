@@ -572,6 +572,8 @@ const MAX_EXPANDED_EVENT_CONTENT_TYPES = 64;
 const MAX_CONTENT_TYPES_PER_FILE_VIEW = 32;
 const MAX_EXPANDED_FILE_VIEW_CONTENT_TYPES = 64;
 const MAX_OUTBOUND_ORIGINS = 16;
+const MAX_SECRETS = 32;
+const MAX_SECRET_DESCRIPTION_LENGTH = 300;
 const MAX_FILE_PATH_LENGTH = 512;
 const MAX_CONTENT_TYPE_LENGTH = 255;
 // Matches files_MAX_TEXT_CONTENT_BYTES: every artifact file must fit the app's text-content cap.
@@ -698,6 +700,20 @@ const file_view_schema = z
 	})
 	.strict();
 
+const secret_declaration_schema = z
+	.object({
+		name: z.string(),
+		/** Publisher-authored text. The details page renders it escaped and attributed, never as markup. */
+		description: z
+			.string()
+			.max(
+				MAX_SECRET_DESCRIPTION_LENGTH,
+				`Secret descriptions must be at most ${MAX_SECRET_DESCRIPTION_LENGTH} characters`,
+			),
+		optional: z.boolean().default(false),
+	})
+	.strict();
+
 const manifest_schema = z
 	.object({
 		schemaVersion: z.literal(MANIFEST_SCHEMA_VERSION),
@@ -727,6 +743,10 @@ const manifest_schema = z
 			.max(MAX_FILE_VIEWS, `Plugin manifests can declare at most ${MAX_FILE_VIEWS} file views`)
 			.optional(),
 		capabilities: z.array(z.enum(CAPABILITIES)),
+		secrets: z
+			.array(secret_declaration_schema)
+			.max(MAX_SECRETS, `Plugin manifests can declare at most ${MAX_SECRETS} secrets`)
+			.default([]),
 		outboundOrigins: z
 			.array(z.string())
 			.max(MAX_OUTBOUND_ORIGINS, `Plugin manifests can declare at most ${MAX_OUTBOUND_ORIGINS} outbound origins`),
@@ -871,6 +891,35 @@ export function plugins_validate_manifest(input: unknown) {
 			return Result({ _nay: { message: `Plugin manifest has duplicate capability "${capability}"` } });
 		}
 		capabilities.add(capability);
+	}
+	const secretNames = new Set<string>();
+	for (const secret of parsed.data.secrets) {
+		// A name that fails the env-key rules could never be configured or read, so the
+		// installation would stay "incomplete" forever. Reject it at publish instead.
+		const validated = plugins_validate_secret_name(secret.name);
+		if (validated._nay) {
+			return Result({ _nay: { message: validated._nay.message } });
+		}
+		if (validated._yay !== secret.name) {
+			return Result({ _nay: { message: "Secret names must already be normalized" } });
+		}
+		if (secretNames.has(secret.name)) {
+			return Result({ _nay: { message: `Plugin manifest has duplicate secret "${secret.name}"` } });
+		}
+		secretNames.add(secret.name);
+		// The description renders in the manager UI next to a credential input. Control and
+		// format characters (bidi overrides, zero-width) can visually reorder or hide text
+		// there, so reject them at publish.
+		if (/[\p{Cc}\p{Cf}]/u.test(secret.description)) {
+			return Result({
+				_nay: { message: `Secret "${secret.name}" description must not contain control characters` },
+			});
+		}
+	}
+	// The converse is allowed: plugin.secrets.read without secrets[] stays valid for
+	// already-published plugins that never declared their secret names.
+	if (parsed.data.secrets.length > 0 && !capabilities.has("plugin.secrets.read" satisfies plugins_Capability)) {
+		return Result({ _nay: { message: "Plugin secrets declarations require the plugin.secrets.read capability" } });
 	}
 	return Result({ _yay: parsed.data });
 }

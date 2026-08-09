@@ -32,6 +32,8 @@ Validation lives in `plugins_validate_manifest` (`packages/app/shared/plugins.ts
 | Content type length                                      | 255      | `manifest_file_schema.contentType`                      |
 | Secret name length                                       | 128      | `plugins_validate_secret_name`                          |
 | Secret value bytes                                       | 16 KiB   | `plugins_validate_secret_value`                         |
+| Declared secrets per manifest                            | 32       | `manifest_schema.secrets`                               |
+| Secret description length                                | 300      | `secret_declaration_schema.description`                 |
 | Publisher secrets per repository                         | 64       | publisher-secret mutations                              |
 | Declared and actual bytes per file                       | 900,000  | schema + streaming reader                               |
 | Aggregate artifact bytes (declared and downloaded)       | 16 MiB   | `plugins_MAX_ARTIFACT_BYTES`                            |
@@ -143,6 +145,39 @@ Configuration is manifest-driven. `plugins_versions.configuration` stores the pl
 - `workspace.plugins.manage` is not `content.read`. A custom role can hold either without the other, so a query that returns plugin state plus file details needs both. `list_recent_runs` is the worked example: it authorizes on plugin management, then drops each run's file name, path, content type and size to `null` unless the caller also holds `content.read`. Run status, errors and timings stay visible — an operator has to see failures.
 - Automatic dispatch loads the matching manifest event and applies its generic filters before dedupe and run creation. Invalid stored YAML is an unreachable invariant, but dispatch logs and isolates that installation so it cannot block upload finalization or other plugins. Manual runs bypass automatic event filters. Every run receives the parsed value as `event.configuration`, or `null` for a plugin without configuration.
 
+# Manifest secrets declaration and installation health
+
+A manifest may declare its secrets so the details page can say when an installation is incomplete:
+
+```jsonc
+"secrets": [
+	{ "name": "OPENAI_API_KEY", "description": "Key used for transcription.", "optional": false }
+]
+```
+
+Declaration rules in `plugins_validate_manifest` (`packages/app/shared/plugins.ts`):
+
+- Names must already pass `plugins_validate_secret_name` unchanged (env-key syntax, max 128). A name that fails those rules could never be configured or read, so the installation would stay "incomplete" forever.
+- Names are unique per manifest. `optional` defaults to `false`. `description` is required but may be empty; it is capped at 300 characters and rejects control and format characters (bidi overrides, zero-width) because it renders in the manager UI next to a credential input.
+- Declaring secrets requires the `plugin.secrets.read` capability. The converse is allowed: an already-published plugin may hold `plugin.secrets.read` without a `secrets[]` field.
+- Persistence: `plugins_versions.secrets` is `v.optional(...)` because versions published before the field exist without it. Every read is `version.secrets ?? []`; an absent field means "declares no secrets" and must never produce a `missing_secret`.
+
+Health is computed on read by the public query `plugins.get_installation_health` (`packages/app/convex/plugins.ts`, region "installation health"):
+
+- Args are `membershipId` + `pluginName`; org/workspace derive from the membership doc, so a forged scope is structurally impossible. Non-managers, anonymous callers, and not-installed plugins get `null`. The enumerated `returns` validator carries only names, descriptions, booleans, and counts, so a handler bug fail-closes instead of leaking secret docs.
+- Health evaluates the INSTALLED version (`installation.pluginVersionId`), not the latest published one.
+- `missing_secret`: a declared non-optional secret with no installation-tier row and no valid publisher-tier row. The publisher check replicates the runtime re-claim guard (`repository.ownerUserId === version.createdBy`), so health never says "configured" where `get_secret_for_runtime` would return null.
+- `secrets_capability_unconfigured`: only for versions that declare NO `secrets[]` but accepted `plugin.secrets.read`, computed from installation-tier rows only. Checking the publisher tier here would leak whether the publisher keeps secrets on the repo — an existence oracle no manager-reachable surface exposes. Accepted residual: a plugin running fine on publisher defaults shows this notice.
+- `recent_runs_failing`: the last 5 finished runs all failed. The query reads a bounded slice (20 rows) and keeps the first 5 with status succeeded/failed, so queued and running rows never count. Accepted residual: a backlog of 16+ queued/running rows can temporarily hide the flag. Payload is the count plus the latest plugin-authored `errorMessage` — same audience and gate as `list_recent_runs`, with no file details.
+- `disabled` is not an issue: it is an explicit user state, already badged in the Hero, and disabled installations still report their health.
+
+The details-page Health section (`RoutePluginsPluginHealth` in `$pluginName.tsx`, between Hero and Secrets):
+
+- Issue titles and instructions are app-owned strings. The publisher-authored description renders as escaped plain text, attributed as "Publisher's note:", and must never render inside the secrets modal itself — keep the publisher's words one click away from the credential input.
+- The header says "Installation incomplete" only when a `missing_secret` issue exists and "Needs attention" only for failing runs. The capability notice alone keeps "Installation healthy": it is informational, and demoting the header would make correctly-configured publisher-default plugins read as unhealthy forever.
+- The missing-secret action opens the shared secrets modal (its open state lives on the route so both the Health row and the Secrets section drive one modal). The failing-runs action opens and scrolls to the Activity section.
+- Hidden when the plugin is not installed or the viewer cannot manage plugins.
+
 # Gallery plugin (`plugins/bonobo-plugin-gallery`)
 
 Git submodule with its own repo (`raythurnvoid/bonobo-plugin-gallery`). `dist/` is committed; publish fetches raw files from GitHub at the pinned commit; `scripts/build-manifest.mjs` recomputes manifest hashes. Vite builds with `minify: false` and fixed un-hashed output names, then Prettier formats the generated JS/CSS. The manifest build rejects text files with a line over 1,000 characters, and every bundle must stay under the 900,000-byte per-file cap.
@@ -180,6 +215,7 @@ races between route authorization and the durable write.
 
 - Installation configuration parsing and folder matching: `packages/app/shared/plugins.test.ts`; authenticated saves, automatic dispatch filtering, and manual-run bypass: `packages/app/convex/plugins.test.ts`.
 - Manifest caps, duplicates, zero-fetch-on-declared-over-limit, streaming bounds, 4-wide concurrency, and the cleanup-attempt lifecycle: `packages/app/convex/plugins.test.ts`.
+- Secrets declaration validation: `packages/app/shared/plugins.test.ts`; declaration persistence and installation health (missing secrets, re-claim guard, installed-version evaluation, capability notice tier, failing-runs window, refusals): the "plugins get_installation_health" describe in `packages/app/convex/plugins.test.ts`.
 - Bounded session deletion on all three paths: `packages/app/convex/data_deletion.test.ts`.
 - Full-artifact review, artifact-hash cache, bounded stored reads, and backend/page classification: `packages/app/convex/plugins.test.ts` plus `packages/app/shared/plugins.test.ts`.
 - Direct asset routes, passed-review gates, rotation/revocation, stable rate identity, expiry cleanup, and session behavior: `packages/app/convex/plugins_ui.test.ts`. File-view session mints (content-type match, restricted-node refusal, refresh re-check, own rate bucket) live in its "plugin ui file view sessions" describe.

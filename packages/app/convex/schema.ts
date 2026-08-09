@@ -959,6 +959,20 @@ const app_convex_schema = defineSchema({
 			}),
 			v.null(),
 		),
+		/**
+		 * Secret names the manifest declares, so the details page can report which required
+		 * secrets are still missing. Optional because versions published before this field
+		 * exist without it; read as `version.secrets ?? []`.
+		 */
+		secrets: v.optional(
+			v.array(
+				v.object({
+					name: v.string(),
+					description: v.string(),
+					optional: v.boolean(),
+				}),
+			),
+		),
 		events: v.array(
 			v.object({
 				type: v.literal("files.upload.completed"),
