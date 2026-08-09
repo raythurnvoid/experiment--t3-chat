@@ -838,10 +838,12 @@ describe("frontmatter round-trip through Yjs", () => {
 			});
 		}
 
-		// ProseMirror appends a trailing empty paragraph so the document remains
-		// editable when its only block is an atom; the markdown renderer surfaces
-		// that as `\n\n` after the closing fence. A second round-trip is stable.
-		expect(markdownResult._yay).toBe(`${input}\n\n`);
+		// Only the usual POSIX final newline is added. The headless doc replace no longer
+		// appends an empty trailing paragraph after a trailing atom block (that paragraph came
+		// from `commands.setContent`'s ProseMirror replace step, and it surfaced as `\n\n`
+		// after the closing fence). In the mounted editor a trailing atom is still editable:
+		// select it and press Enter to get a paragraph after it.
+		expect(markdownResult._yay).toBe(`${input}\n`);
 	});
 
 	test("does not invent a frontmatter node for a body-only document", () => {
@@ -959,6 +961,13 @@ describe("media embeds round-trip through Yjs", () => {
 		expect(round_trip_markdown(input)).toBe(input);
 	});
 
+	test("preserves a plain video as the last block", () => {
+		// Guards the headless doc-replace path: `commands.setContent` used to append an empty
+		// trailing paragraph after a trailing atom block, which grew a blank line here.
+		const input = '<video src="bonobo-file://k17abcdef"></video>\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
 	test("preserves an aligned image in its raw img form", () => {
 		const input = '<img src="bonobo-file://k17abcdef" alt="Shot" width="320" align="center">\n';
 		expect(round_trip_markdown(input)).toBe(input);
@@ -970,9 +979,7 @@ describe("media embeds round-trip through Yjs", () => {
 	});
 
 	test("preserves a video caption and alignment", () => {
-		// The trailing paragraph matters: a document that ends in a video gains one blank line
-		// on its first round-trip (pre-existing serializer behavior for a trailing block).
-		const input = '<video src="bonobo-file://k17abcdef" title="A red circle" width="480" align="center"></video>\n\nOutro\n';
+		const input = '<video src="bonobo-file://k17abcdef" title="A red circle" width="480" align="center"></video>\n';
 		expect(round_trip_markdown(input)).toBe(input);
 	});
 
@@ -1044,7 +1051,6 @@ describe("media embeds round-trip through Yjs", () => {
 							type: "video",
 							attrs: { src: "bonobo-file://k17abcdef", title: "A red circle", width: 480, align: "center" },
 						},
-						{ type: "paragraph", content: [{ type: "text", text: "Outro" }] },
 					],
 				},
 			},
@@ -1056,9 +1062,7 @@ describe("media embeds round-trip through Yjs", () => {
 		const markdown = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
 		editor._yay.destroy();
 
-		expect(markdown).toBe(
-			'<video src="bonobo-file://k17abcdef" title="A red circle" width="480" align="center"></video>\n\nOutro',
-		);
+		expect(markdown).toBe('<video src="bonobo-file://k17abcdef" title="A red circle" width="480" align="center"></video>');
 	});
 });
 

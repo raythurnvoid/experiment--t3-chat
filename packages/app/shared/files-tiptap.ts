@@ -18,6 +18,8 @@ import { marked } from "marked";
 import type { Doc as YDoc } from "yjs";
 import { Editor, Extension, Node, type Extensions } from "@tiptap/core";
 import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
+import { EditorState } from "@tiptap/pm/state";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { is_browser, should_never_happen } from "./shared-utils.ts";
 import { files_CommentsExtension } from "./files-tiptap-comments.ts";
@@ -527,8 +529,7 @@ export function files_yjs_doc_get_markdown(args: { yjsDoc: YDoc }) {
 
 	try {
 		const node = yXmlFragmentToProseMirrorRootNode(fragment, editor._yay.schema);
-		const json = node.toJSON();
-		editor._yay.commands.setContent(json);
+		headless_editor_replace_doc(editor._yay, node);
 		const markdown = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
 		// Non-empty file content ends with one `\n` (POSIX shape). The parse side treats a
 		// single final `\n` as a line terminator (tiptap_markdown_to_html), so
@@ -708,6 +709,18 @@ const get_tiptap_shared_extensions_list = ((/* iife */) => {
  *   (e.g., Collaboration extension for client-side Yjs sync)
  * @returns Editor instance
  */
+/**
+ * Replace a headless editor's whole document by swapping the editor state.
+ *
+ * `commands.setContent` fits the new blocks into the old document with a ProseMirror
+ * replace step, and that fitting appends an empty trailing paragraph when the content ends
+ * in an atom block (for example a trailing video embed). The serialization paths here must
+ * reproduce the document exactly, so they must not go through that replace step.
+ */
+function headless_editor_replace_doc(editor: Editor, doc: ProseMirrorNode) {
+	editor.view.updateState(EditorState.create({ doc, plugins: editor.state.plugins }));
+}
+
 export function files_headless_tiptap_editor_create(args?: {
 	initialContent?: { markdown?: string; json?: TiptapJSONContent };
 	additionalExtensions?: Extension[];
@@ -746,7 +759,7 @@ export function files_headless_tiptap_editor_create(args?: {
 			return result;
 		}
 	} else if (args?.initialContent?.json) {
-		editor.commands.setContent(args.initialContent.json);
+		headless_editor_replace_doc(editor, editor.schema.nodeFromJSON(args.initialContent.json));
 	}
 
 	return Result({ _yay: editor });
@@ -778,7 +791,7 @@ export function files_headless_tiptap_editor_set_content_from_markdown(args: { m
 		return json;
 	}
 
-	editor.commands.setContent(json._yay);
+	headless_editor_replace_doc(editor, editor.schema.nodeFromJSON(json._yay));
 	return Result({ _yay: json._yay });
 }
 
