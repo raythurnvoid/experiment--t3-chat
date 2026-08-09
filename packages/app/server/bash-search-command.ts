@@ -268,6 +268,9 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
 						userId: pageArgs.mount.fs.ctxData.userId,
+						// Mount trees live under the reserved global organization, where no node can be
+						// restricted, so workspace read holds by construction.
+						hasWorkspaceRead: true,
 						query: parsed._yay.query,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
@@ -307,6 +310,9 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
 						userId: pageArgs.mount.fs.ctxData.userId,
+						// Plugin trees live under the reserved global organization, where no node can be
+						// restricted, so workspace read holds by construction.
+						hasWorkspaceRead: true,
 						query: parsed._yay.query,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
@@ -344,6 +350,9 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				organizationId: scope.ctxData.organizationId,
 				workspaceId: scope.ctxData.workspaceId,
 				userId: scope.ctxData.userId,
+				// The /api/chat gate already required content.read on this workspace before any bash
+				// tool ran, so workspace read is proven upstream.
+				hasWorkspaceRead: true,
 				query: parsed._yay.query,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,

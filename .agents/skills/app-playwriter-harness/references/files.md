@@ -249,6 +249,17 @@ Use this after changing chat send, stop, branch, pending-message, or parent-id l
 - Wait 8-10 seconds for presence heartbeats/disconnects.
 - Check logs for `presence:disconnect`, `presence:heartbeat`, `Rate limit exceeded`, `should_never_happen`, and `currentPresenceData`.
 
+### Content Search Palette
+
+Selectors and a proven flow for the file-content search palette (verified 2026-08-09).
+
+- The trigger is the header icon button `[aria-label="Search file contents (Ctrl+Shift+F)"]`. It is a `MyTooltipTrigger`, so `locator.click()` can burn the whole CLI timeout without landing — open it with `focus()` + `Enter`, or with the `Control+Shift+F` hotkey (works while the editor or another input has focus).
+- The dialog is `.FilesSearchPalette` (`role=dialog`, label `Search file contents`), removed from the DOM when closed. Focus lands in the combobox input on open; the query resets on close. Escape closes it, but the leave animation takes ~500ms — a DOM-presence probe right after Escape reads it as still open.
+- Rows are `.FilesSearchPalette-item` (`role=option`); slots: `-item-name`, `-item-path`, `-item-snippet`, `-item-count` (only when a file has 2+ matching chunks). The state line `.FilesSearchPalette-state` shows `Type to search file contents` under 2 chars, a spinner while loading, and `No matches`.
+- Typing auto-highlights the first row (`[data-active-item]`); Enter or a row click navigates to `?nodeId=<id>` and closes. A row `click()` often times out on the post-click actionability check after it already landed — re-read the URL before retrying.
+- Results come from the public `files_nodes.search_content` query (args: `membershipId`, `query`), which searches committed `files_plain_text_chunks` plus the caller's own pending chunks and drops files the member cannot read. Grants apply reactively: adding a `set_node_share_grant` while the palette is open pushes the newly readable file into the visible results with no user action.
+- Fixture recipe: upload a small `.md` with a unique token through the sidebar's hidden file input — markdown uploads are chunked ~8s after upload. `.txt` uploads are stored but never chunked (not searchable, pre-existing pipeline gap), and `.ts` uploads get `contentType: video/mp2t` from the browser, so neither works as a search fixture.
+
 ### Rich Text Image And Video Embeds
 
 Selectors and a proven flow for the media embeds in the rich text editor (verified 2026-08-08).

@@ -3700,6 +3700,102 @@ describe("file sharing", () => {
 		expect(assigned._nay).toBeUndefined();
 	}
 
+	/**
+	 * One committed searchable file written straight into the database: the node plus both chunk
+	 * kinds. `create_markdown_node` uploads to R2, which these tests do not have, and text search
+	 * reads only the node and its plain-text chunks.
+	 */
+	async function seed_committed_search_file(
+		t: TestConvex,
+		fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
+		args: {
+			workspaceId?: Id<"organizations_workspaces">;
+			parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+			path: string;
+			markdown: string;
+			restrictedScopeNodeId?: Id<"files_nodes">;
+		},
+	) {
+		const chunks = await files_chunk_markdown(args.markdown);
+		if (chunks._nay) {
+			throw new Error(chunks._nay.message);
+		}
+
+		const workspaceId = args.workspaceId ?? fixture.defaultWorkspaceId;
+		return await t.run(async (ctx) => {
+			const now = Date.now();
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: fixture.organizationId,
+				workspaceId,
+				kind: "content",
+				r2Bucket: "test-bucket",
+				size: 0,
+				createdBy: fixture.ownerId,
+				updatedAt: now,
+			});
+			const fileNodeId = await ctx.db.insert("files_nodes", {
+				organizationId: fixture.organizationId,
+				workspaceId,
+				createdBy: fixture.ownerId,
+				updatedBy: fixture.ownerId,
+				updatedAt: now,
+				parentId: args.parentId,
+				name: args.path.slice(args.path.lastIndexOf("/") + 1),
+				kind: "file",
+				contentType: "text/markdown;charset=utf-8",
+				assetId,
+				path: args.path,
+				treePath: args.path,
+				pathDepth: args.path.split("/").length - 1,
+				lowercaseExtension: "md",
+				...(args.restrictedScopeNodeId ? { restrictedScopeNodeId: args.restrictedScopeNodeId } : {}),
+			});
+			const markdownChunkIds = await Promise.all(
+				chunks._yay.map((chunk) =>
+					ctx.db.insert("files_markdown_chunks", {
+						organizationId: fixture.organizationId,
+						workspaceId,
+						fileNodeId,
+						sourceKind: "committed",
+						yjsSequence: 0,
+						chunkIndex: chunk.chunkIndex,
+						markdownChunk: chunk.markdownChunk,
+						startIndex: chunk.startIndex,
+						endIndex: chunk.endIndex,
+						lineStart: chunk.lineStart,
+						lineEnd: chunk.lineEnd,
+						chunkFlags: chunk.chunkFlags,
+					}),
+				),
+			);
+			await Promise.all(
+				chunks._yay.map((chunk, index) =>
+					ctx.db.insert("files_plain_text_chunks", {
+						organizationId: fixture.organizationId,
+						workspaceId,
+						fileNodeId,
+						sourceKind: "committed",
+						yjsSequence: 0,
+						markdownChunkId: markdownChunkIds[index]!,
+						chunkIndex: chunk.chunkIndex,
+						path: args.path,
+						plainTextChunk: chunk.plainTextChunk,
+						markdownChunk: chunk.markdownChunk,
+						startIndex: chunk.startIndex,
+						endIndex: chunk.endIndex,
+						lineStart: chunk.lineStart,
+						lineEnd: chunk.lineEnd,
+						chunkFlags: chunk.chunkFlags,
+						hasChunkAbove: index > 0,
+						hasChunkBelow: index < chunks._yay.length - 1,
+					}),
+				),
+			);
+
+			return fileNodeId;
+		});
+	}
+
 	test("a path-like rename cannot write into a folder the caller has no say over", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -6333,6 +6429,127 @@ describe("file sharing", () => {
 		expect(memberMarkdownMatch).toBeNull();
 		expect(ownerPlainTextMatch?.selectedCount).toBe(1);
 		expect(memberPlainTextMatch).toBeNull();
+	});
+
+	test("search_content stays inside the membership's own workspace", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "search-tenant-org",
+			suffix: "search-tenant",
+		});
+
+		// A second workspace in the SAME organization holds the only file with the needle.
+		const otherWorkspace = await fixture.asOwner.mutation(api.organizations.create_workspace, {
+			organizationId: fixture.organizationId,
+			name: "search-other",
+			description: "",
+		});
+		expect(otherWorkspace._nay).toBeUndefined();
+		const otherWorkspaceId = otherWorkspace._yay!.workspaceId;
+		await seed_committed_search_file(t, fixture, {
+			workspaceId: otherWorkspaceId,
+			parentId: files_ROOT_ID,
+			path: "/other-only.md",
+			markdown: "# Other\n\ntenantleakneedle\n",
+		});
+
+		// Positive control: through the owner's membership in that workspace the file is found, so
+		// the empty results below cannot come from a broken fixture.
+		const otherMembershipId = await access_control_test_read_membership_id(t, {
+			organizationId: fixture.organizationId,
+			workspaceId: otherWorkspaceId,
+			userId: fixture.ownerId,
+		});
+		const insideOther = await fixture.asOwner.query(api.files_nodes.search_content, {
+			membershipId: otherMembershipId,
+			query: "tenantleakneedle",
+		});
+		expect(insideOther.results.map((result) => result.path)).toEqual(["/other-only.md"]);
+
+		// The default-workspace membership must not surface it: the searched workspace comes from
+		// the membership doc, not from anything the caller can point at.
+		const fromDefaultWorkspace = await fixture.asOwner.query(api.files_nodes.search_content, {
+			membershipId: fixture.ownerMembershipId,
+			query: "tenantleakneedle",
+		});
+		expect(fromDefaultWorkspace.results).toEqual([]);
+
+		// An outsider from another organization gets nothing out of a foreign membership id.
+		const outsider = await access_control_test_seed_enforcement_fixture(t, {
+			name: "search-outsider-org",
+			suffix: "search-outsider",
+		});
+		const forged = await outsider.asOwner.query(api.files_nodes.search_content, {
+			membershipId: otherMembershipId,
+			query: "tenantleakneedle",
+		});
+		expect(forged.results).toEqual([]);
+	});
+
+	test("search_content hides restricted files and scopes a grant-only member to their grant", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "search-grant-org",
+			suffix: "search-grant",
+		});
+		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+
+		await seed_committed_search_file(t, fixture, {
+			parentId: files_ROOT_ID,
+			path: "/open-notes.md",
+			markdown: "# Open\n\ngrantsearchneedle\n",
+		});
+		await seed_committed_search_file(t, fixture, {
+			parentId: folderId,
+			path: "/closed/secret-notes.md",
+			markdown: "# Secret\n\ngrantsearchneedle\n",
+			restrictedScopeNodeId: folderId,
+		});
+
+		// The owner reads everything.
+		const ownerFound = await fixture.asOwner.query(api.files_nodes.search_content, {
+			membershipId: fixture.ownerMembershipId,
+			query: "grantsearchneedle",
+		});
+		expect(new Set(ownerFound.results.map((result) => result.path))).toEqual(
+			new Set(["/open-notes.md", "/closed/secret-notes.md"]),
+		);
+
+		// A member with workspace read but no grant: the restricted file and its snippet stay absent.
+		const memberFound = await fixture.asMember.query(api.files_nodes.search_content, {
+			membershipId: fixture.memberMembershipId,
+			query: "grantsearchneedle",
+		});
+		expect(memberFound.results.map((result) => result.path)).toEqual(["/open-notes.md"]);
+
+		// Grant the member the closed folder, then drop their role to one with no workspace read:
+		// the grant keeps working and the open file disappears, because only the grant is left.
+		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "read",
+		});
+		expect(granted._nay).toBeUndefined();
+		await demote_to_guest_role(fixture);
+
+		const grantOnlyFound = await fixture.asMember.query(api.files_nodes.search_content, {
+			membershipId: fixture.memberMembershipId,
+			query: "grantsearchneedle",
+		});
+		expect(grantOnlyFound.results.map((result) => result.path)).toEqual(["/closed/secret-notes.md"]);
+
+		// Deactivating the membership must refuse the whole search. Only the wrapper's own
+		// active check does that: the deeper authorize helper would just degrade the call to
+		// grant-only reads, and this member's grant would keep leaking the restricted file.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("organizations_workspaces_users", fixture.memberMembershipId, { active: false });
+		});
+		const deactivatedFound = await fixture.asMember.query(api.files_nodes.search_content, {
+			membershipId: fixture.memberMembershipId,
+			query: "grantsearchneedle",
+		});
+		expect(deactivatedFound.results).toEqual([]);
 	});
 
 	test("archiving a folder does not sweep up a restricted folder inside it", async () => {

@@ -6441,6 +6441,13 @@ const text_search_args = {
 	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 	userId: v.id("users"),
+	/**
+	 * Whether the caller proved workspace-wide content.read for this workspace.
+	 * Required on purpose: the readable filter defaults to true when the field is absent, so a
+	 * forgotten argument would fail open and stream open-file snippets to a user who only has a
+	 * per-node grant. A required field turns that mistake into a validator error instead.
+	 */
+	hasWorkspaceRead: v.boolean(),
 	query: v.string(),
 	/** Optional subtree scope: keep only matches whose file path is under this folder prefix. */
 	pathPrefix: v.optional(v.string()),
@@ -6455,6 +6462,7 @@ export const text_search_files = internalQuery({
 	returns: v.object({
 		items: v.array(
 			v.object({
+				nodeId: v.id("files_nodes"),
 				path: v.string(),
 				markdownChunk: v.string(),
 				chunkIndex: v.number(),
@@ -6475,6 +6483,7 @@ export const text_search_files = internalQuery({
 		args,
 	): Promise<{
 		items: Array<{
+			nodeId: Id<"files_nodes">;
 			path: string;
 			markdownChunk: string;
 			chunkIndex: number;
@@ -6536,6 +6545,7 @@ export const text_search_files = internalQuery({
 					workspaceId: args.workspaceId,
 					userId: args.userId,
 					nodes: pageNodes,
+					hasWorkspaceRead: args.hasWorkspaceRead,
 				})
 			).map((fileNode) => fileNode._id),
 		);
@@ -6543,6 +6553,7 @@ export const text_search_files = internalQuery({
 		const items = result.page
 			.filter((searchChunk) => readableNodeIds.has(searchChunk.fileNodeId))
 			.map((searchChunk) => ({
+				nodeId: searchChunk.fileNodeId,
 				path: searchChunk.path,
 				markdownChunk: searchChunk.markdownChunk,
 				chunkIndex: searchChunk.chunkIndex,
@@ -6567,6 +6578,104 @@ export type files_nodes_text_search_files_Result =
 	typeof text_search_files extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+export const search_content = query({
+	args: {
+		// The workspace is the membership's own workspace, on purpose. Caller-supplied
+		// organization/workspace ids would let a member of one workspace search another workspace in
+		// the same organization, because the search index's only tenant boundary is the ids it is
+		// given while the permission checks answer for the membership's workspace.
+		membershipId: v.id("organizations_workspaces_users"),
+		query: v.string(),
+	},
+	returns: v.object({
+		results: v.array(
+			v.object({
+				nodeId: v.id("files_nodes"),
+				path: v.string(),
+				markdownChunk: v.string(),
+				lineStart: v.number(),
+				matchCount: v.number(),
+			}),
+		),
+	}),
+	handler: async (ctx, args) => {
+		const [userAuth, membership] = await Promise.all([
+			server_convex_get_user_fallback_to_anonymous(ctx),
+			ctx.db.get("organizations_workspaces_users", args.membershipId),
+		]);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		if (!membership || membership.userId !== userAuth.id || membership.active === false) {
+			return { results: [] };
+		}
+
+		// Below 2 characters every search is noise; above 200 the query is not something a person
+		// typed into the palette. Both return empty instead of erroring so the palette just shows
+		// its idle/no-results state.
+		const trimmedQuery = args.query.trim();
+		if (trimmedQuery.length < 2 || trimmedQuery.length > 200) {
+			return { results: [] };
+		}
+
+		// A failed check does not end the query here. Somebody whose role gives no workspace-wide
+		// read can still have been given one folder, and finding matches in that folder is the whole
+		// point of sharing. The internal query is told what the check said and keeps only what they
+		// were given.
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+
+		// The internal query filters restricted files AFTER filling a page, so one page can come back
+		// empty for a grant-only user even when their shared folder matches. Fetch a few more pages
+		// until enough distinct files are collected; the budget keeps one call bounded.
+		const resultsByNodeId = new Map<
+			Id<"files_nodes">,
+			{ nodeId: Id<"files_nodes">; path: string; markdownChunk: string; lineStart: number; matchCount: number }
+		>();
+		let cursor: string | null = null;
+		for (let pageIndex = 0; pageIndex < 3; pageIndex++) {
+			const page = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				hasWorkspaceRead: !authorized._nay,
+				query: trimmedQuery,
+				numItems: 32,
+				cursor,
+			})) as files_nodes_text_search_files_Result;
+
+			for (const item of page.items) {
+				const existing = resultsByNodeId.get(item.nodeId);
+				// The first chunk of a file wins (search relevance order); later chunks only bump the
+				// count, which is a count over the fetched pages, not a total for the file.
+				if (existing) {
+					existing.matchCount += 1;
+				} else {
+					resultsByNodeId.set(item.nodeId, {
+						nodeId: item.nodeId,
+						path: item.path,
+						markdownChunk: item.markdownChunk,
+						lineStart: item.lineStart,
+						matchCount: 1,
+					});
+				}
+			}
+
+			if (page.isDone || resultsByNodeId.size >= 10) {
+				break;
+			}
+			cursor = page.continueCursor;
+		}
+
+		// No cursor or isDone in the response, on purpose: fewer-than-requested results plus a
+		// "not done" flag would tell the caller that restricted content matched the query.
+		return { results: [...resultsByNodeId.values()] };
+	},
+});
 
 export const profile_text_search_files = internalAction({
 	args: {

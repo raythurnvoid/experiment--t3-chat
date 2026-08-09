@@ -5915,6 +5915,7 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	const search = await t.query(internal.files_nodes.text_search_files, {
 		...readScope,
 		userId: db.userId,
+		hasWorkspaceRead: true,
 		query: "externalsearchneedle",
 		numItems: 10,
 		cursor: null,
@@ -6079,6 +6080,7 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			hasWorkspaceRead: true,
 			query: "scopeneedle",
 			numItems,
 			cursor,
@@ -6147,6 +6149,7 @@ test("text_search_files searches pending unstaged content instead of stale commi
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			hasWorkspaceRead: true,
 			query,
 			numItems: 10,
 			cursor: null,
@@ -6219,6 +6222,7 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	const pendingSearch = await search("pendingneedle");
 	expect(pendingSearch.items).toEqual([
 		{
+			nodeId,
 			path,
 			markdownChunk: expectedChunk.markdownChunk,
 			chunkIndex: expectedChunk.chunkIndex,
@@ -6242,6 +6246,7 @@ test("text_search_files searches pending unstaged content instead of stale commi
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: otherUserId,
+		hasWorkspaceRead: true,
 		query: "committedneedle",
 		numItems: 10,
 		cursor: null,
@@ -6732,6 +6737,7 @@ test("text_search_files scopes pending hits to a path prefix without sibling-pre
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			hasWorkspaceRead: true,
 			query: "pendingscopeneedle",
 			numItems: 10,
 			cursor: null,
@@ -6781,6 +6787,7 @@ test("text_search_files drops pending hits for archived files", async () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			hasWorkspaceRead: true,
 			query: "archivedpendingneedle",
 			numItems: 10,
 			cursor: null,
@@ -6851,6 +6858,7 @@ test("text_search_files updates unified search scope when files are renamed and 
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			hasWorkspaceRead: true,
 			query,
 			numItems: 10,
 			cursor: null,
@@ -6902,6 +6910,7 @@ test("text_search_files updates unified committed search scope when files are ar
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			hasWorkspaceRead: true,
 			query,
 			numItems: 10,
 			cursor: null,
@@ -6965,6 +6974,7 @@ test("text_search_files paginates unified pending and committed chunks with the 
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			hasWorkspaceRead: true,
 			query: "pagingneedle",
 			numItems: 2,
 			cursor,
@@ -7015,6 +7025,65 @@ test("text_search_files paginates unified pending and committed chunks with the 
 		hasChunkAbove: true,
 		hasChunkBelow: false,
 	});
+});
+
+test("search_content groups readable matches per file for the calling member", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Palette Search User",
+		email: "palette-search-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	// The second file is long enough to split into two committed chunks with the needle in both,
+	// so the per-file grouping has something to count.
+	const filler = "lorem ipsum dolor sit amet ".repeat(60);
+	const singleChunkNodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		"/palette-single.md",
+		"# Single\n\nOnly one palneedle lives here.",
+	);
+	const doubleChunkNodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		"/palette-double.md",
+		`# Double\n\nFirst palneedle here.\n\n${filler}\n\nSecond palneedle here.`,
+	);
+
+	const found = await asUser.query(api.files_nodes.search_content, {
+		membershipId: db.membershipId,
+		query: "palneedle",
+	});
+	const resultsByPath = new Map(found.results.map((result) => [result.path, result]));
+	expect([...resultsByPath.keys()].sort()).toEqual(["/palette-double.md", "/palette-single.md"]);
+	expect(resultsByPath.get("/palette-single.md")).toMatchObject({ nodeId: singleChunkNodeId, matchCount: 1 });
+	expect(resultsByPath.get("/palette-double.md")).toMatchObject({ nodeId: doubleChunkNodeId, matchCount: 2 });
+	expect(resultsByPath.get("/palette-single.md")!.markdownChunk).toContain("palneedle");
+
+	// Bounds: a 1-character query (after trim) and an over-200-character query return empty
+	// without touching the search index.
+	const tooShort = await asUser.query(api.files_nodes.search_content, {
+		membershipId: db.membershipId,
+		query: " p ",
+	});
+	expect(tooShort.results).toEqual([]);
+	const tooLong = await asUser.query(api.files_nodes.search_content, {
+		membershipId: db.membershipId,
+		query: `palneedle ${"x".repeat(200)}`,
+	});
+	expect(tooLong.results).toEqual([]);
+
+	// No identity is the only hard refusal.
+	await expect(
+		t.query(api.files_nodes.search_content, { membershipId: db.membershipId, query: "palneedle" }),
+	).rejects.toThrow(/Unauthenticated/);
 });
 
 test("create_file_snapshot_content_url returns a signed R2 URL without fetching snapshot Markdown", async () => {
@@ -8251,6 +8320,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
+			hasWorkspaceRead: true,
 			query: "Zorptelemetry",
 			pathPrefix: "/t3-chat",
 			numItems: 20,
@@ -8263,6 +8333,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			hasWorkspaceRead: true,
 			query: "Zorptelemetry",
 			numItems: 20,
 			cursor: null,

@@ -8,6 +8,7 @@ import { toast } from "sonner";
 
 import { AppNotifications } from "@/components/app-notifications.tsx";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
+import { FilesSearchPalette } from "@/components/files/files-search-palette.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import {
 	MainAppHeaderOrganizationSwitcherModal,
@@ -781,6 +782,7 @@ export const MainAppHeader = memo(function MainAppHeader(props: MainAppHeader_Pr
 				{/* The files inject content here */}
 			</div>
 			<div className={"MainAppHeader-actions" satisfies MainAppHeader_ClassNames}>
+				<FilesSearchPalette />
 				<AppNotifications />
 				{!isFilesRoute && <MainAppHeaderBillingIndicator />}
 			</div>

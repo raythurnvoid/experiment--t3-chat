@@ -1,0 +1,107 @@
+@layer components {
+	.FilesSearchPalette {
+		/* A palette sits near the top of the screen, not vertically centered like a form modal. */
+		top: 96px;
+		transform: translate(-50%, 0);
+
+		max-width: 640px;
+
+		display: flex;
+		flex-direction: column;
+	}
+
+	.FilesSearchPalette-input {
+		padding: 12px 12px 8px;
+	}
+
+	.FilesSearchPalette-list {
+		overflow-y: auto;
+		max-height: min(480px, 60vh);
+		padding: 0 8px 8px;
+	}
+
+	.FilesSearchPalette-state {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		padding: 24px 12px;
+
+		color: var(--color-fg-07);
+	}
+
+	.FilesSearchPalette-item {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: center;
+		column-gap: 8px;
+
+		padding: 8px 10px;
+
+		border-radius: 8px;
+
+		cursor: pointer;
+
+		&[data-active-item] {
+			background: var(--color-base-1-06);
+		}
+	}
+
+	.FilesSearchPalette-item-icon {
+		grid-column: 1;
+		grid-row: 1;
+
+		width: 16px;
+		height: 16px;
+
+		color: var(--color-fg-07);
+	}
+
+	.FilesSearchPalette-item-name {
+		grid-column: 2;
+		grid-row: 1;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-weight: 600;
+		color: var(--color-fg-11);
+	}
+
+	.FilesSearchPalette-item-count {
+		grid-column: 3;
+		grid-row: 1;
+
+		font-size: 0.75rem;
+		white-space: nowrap;
+		/* fg-07 at this size measures 3.96:1 on the active-row highlight and fails AA. */
+		color: var(--color-fg-08);
+	}
+
+	.FilesSearchPalette-item-path {
+		grid-column: 2 / -1;
+		grid-row: 2;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 0.75rem;
+		/* fg-07 at this size measures 3.96:1 on the active-row highlight and fails AA. */
+		color: var(--color-fg-08);
+	}
+
+	.FilesSearchPalette-item-snippet {
+		grid-column: 2 / -1;
+		grid-row: 3;
+
+		overflow: hidden;
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+
+		font-size: 0.8125rem;
+		color: var(--color-fg-08);
+	}
+}

@@ -2329,6 +2329,9 @@ export async function bash_overlay_content_search_injections(args: {
 			organizationId: args.ctxData.organizationId,
 			workspaceId: args.ctxData.workspaceId,
 			userId: args.ctxData.userId,
+			// The /api/chat gate already required content.read on the thread's workspace before any
+			// bash tool ran; overlay injections only run for the proposer's own tenant workspace.
+			hasWorkspaceRead: true,
 			query: args.query,
 			numItems: args.numItems,
 			cursor: null,

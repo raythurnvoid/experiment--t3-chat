@@ -756,6 +756,10 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
+					// The /api/chat gate already required content.read on the thread's workspace before
+					// any bash tool ran, and reserved-scope trees (mounts/plugins) cannot hold restricted
+					// nodes, so workspace read is proven for whichever scope this path resolved to.
+					hasWorkspaceRead: true,
 					query: recursivePattern,
 					numItems: 20,
 					cursor: null,
