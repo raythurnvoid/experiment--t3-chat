@@ -38,6 +38,8 @@ vp env exec pnpx playwriter session new --direct 127.0.0.1:9223
 
 If the relay restarts between calls, the session dies (`Session <id> not found`) but the scratch Chrome keeps running. Recreate with `session new --direct 127.0.0.1:9223` and rebind `state.page` from `context.pages()`.
 
+The URL passed to `Start-Process` does not always open: the first tab can sit on a blank page with an empty URL (observed 2026-08-09). Bind `context.pages()[0]` and call `page.goto("http://localhost:5173/")` yourself instead of relying on the launch argument.
+
 ## Sign in
 
 ```js
