@@ -38,6 +38,10 @@ function jwt_read_payload_claim_string(jwt: string, key: string): string | null 
 	return typeof value === "string" && value ? value : null;
 }
 
+/**
+ * Read the stored anonymous refresh token. This is never a Convex access token: it only works
+ * against `/api/auth/anonymous`, and as `anonymousUserToken` when sign-in links the account.
+ */
 function storage_get_anonymous_token() {
 	const token = storage_local().getItem("app::auth::anonymous_token");
 	const userId = storage_local().getItem("app::auth::anonymous_token_user_id") as app_convex_Id<"users"> | null;
@@ -61,53 +65,80 @@ function storage_clear_anonymous_token(): void {
 	storage_local().removeItem("app::auth::anonymous_token_user_id");
 }
 
-async function auth_get_anonymous_convex_token() {
-	const cached = storage_get_anonymous_token();
+async function auth_get_anonymous_convex_token(args: { shouldStop: () => boolean }) {
+	let transientFailures = 0;
 
-	if (cached) {
-		// Anonymous localStorage is disposable. Validate cached tokens before app queries
-		// run so stale dev-reset sessions do not trip the route error boundary.
-		const refreshResult = await app_fetch_auth_anonymous({ token: cached.token });
-		if (refreshResult._yay) {
+	// Retry until the server gives a definitive answer. Resolving `null` is not a soft failure:
+	// the Convex client treats it as "signed out for sure", never asks again, and the app stays
+	// unauthenticated until a full reload. And the stored refresh token cannot stand in for an
+	// access token (Convex rejects its audience), so on a `429`, a `5xx` or a network failure the
+	// only correct move is to wait and try again.
+	while (true) {
+		if (args.shouldStop()) {
+			return null;
+		}
+
+		// Re-read storage on every attempt: another tab can rotate or clear the refresh token
+		// while this one is backing off.
+		const cached = storage_get_anonymous_token();
+
+		const result = cached
+			? await app_fetch_auth_anonymous({ refreshToken: cached.token })
+			: await app_fetch_auth_anonymous();
+
+		// A newer flow may have replaced this one while the request was in flight. Acting on the
+		// result anyway could overwrite the storage the new flow just wrote, or re-clear it.
+		if (args.shouldStop()) {
+			return null;
+		}
+
+		if (result._yay) {
 			storage_set_anonymous_token({
-				token: refreshResult._yay.payload.token,
-				userId: refreshResult._yay.payload.userId,
+				token: result._yay.payload.refreshToken,
+				userId: result._yay.payload.userId,
 			});
+			// Only the refresh token is stored. The short-lived access token goes to Convex and
+			// lives in memory, so deleting the user revokes access within the hour.
 			return {
-				token: refreshResult._yay.payload.token,
-				userId: refreshResult._yay.payload.userId,
+				token: result._yay.payload.token,
+				userId: result._yay.payload.userId,
 			};
 		}
 
-		// Only a `401`/`400` means the server read the token and refused it. That is the stale
-		// dev-reset case this validation exists for. A `429`, a `5xx` or a network failure says
-		// nothing about the identity. Clearing on those mints a new anonymous user, and its freshly
-		// seeded `personal`/`home` hides the previous one, so the old files stay in the database
-		// with no reachable address. Keep the cached token instead and let Convex verify it.
-		const status = refreshResult._nay.data?.status;
-		if (status !== 401 && status !== 400) {
-			console.error("Failed to refresh the anonymous token, keeping the cached one:", refreshResult._nay);
-			return cached;
+		const status = result._nay.data?.status;
+
+		// Only a `401`/`400` means the server read the refresh token and refused it: a stale
+		// dev-reset token, a deleted user, or a pre-split token. That answer is definitive, so
+		// clear the token and create a fresh anonymous user on the next attempt, without backoff.
+		if (status === 401 || status === 400) {
+			if (!cached) {
+				// The create path carries no credential, so retrying cannot change this answer.
+				console.error("Failed to create anonymous user:", result._nay);
+				return null;
+			}
+
+			storage_clear_anonymous_token();
+			continue;
 		}
 
-		storage_clear_anonymous_token();
-	}
+		// The rate limiter answers `429` with `retryAfterMs`; honor it instead of guessing.
+		let retryAfterMs: number | null = null;
+		if (result._nay.data) {
+			const body: unknown = await result._nay.data.json().catch(() => null);
+			if (body && typeof body === "object" && "retryAfterMs" in body && typeof body.retryAfterMs === "number") {
+				retryAfterMs = body.retryAfterMs;
+			}
+		}
 
-	// Create new anonymous user (either no cached token, or refresh failed)
-	const fetchRresult = await app_fetch_auth_anonymous();
-	if (fetchRresult._nay) {
-		console.error("Failed to create anonymous user:", fetchRresult._nay);
-		return null;
+		transientFailures++;
+		const waitMs = Math.min(retryAfterMs ?? 1000 * 2 ** Math.min(transientFailures, 5), 30_000);
+		console.error("Anonymous token request failed, retrying:", {
+			waitMs,
+			transientFailures,
+			error: result._nay,
+		});
+		await delay(waitMs);
 	}
-
-	storage_set_anonymous_token({
-		token: fetchRresult._yay.payload.token,
-		userId: fetchRresult._yay.payload.userId,
-	});
-	return {
-		token: fetchRresult._yay.payload.token,
-		userId: fetchRresult._yay.payload.userId,
-	};
 }
 
 type AnonymousTokenResult = string | null;
@@ -221,7 +252,9 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		anonymousTokenDeferredRef.current = create_deferred<AnonymousTokenResult>();
 		const deferred = anonymousTokenDeferredRef.current;
 
-		auth_get_anonymous_convex_token()
+		// The fetch retries transient failures for as long as it stays the current flow. It stops
+		// when this deferred is replaced (skipCache), cleared (reset, sign-in), and only then.
+		auth_get_anonymous_convex_token({ shouldStop: () => anonymousTokenDeferredRef.current !== deferred })
 			.then((result) => {
 				if (result) {
 					if (!signal.aborted) {
@@ -241,7 +274,9 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 					deferred.resolve(result.token);
 				} else {
 					if (!signal.aborted) {
-						// Treat a null result as a real failure.
+						// A null result here is a definitive refusal, not a transient failure; those
+						// retry inside the fetch. Superseded flows also resolve null, but their
+						// signal is always aborted, so they never reach this status update.
 						setAuthStatus({
 							isAnonymous: true,
 							isLoading: false,
@@ -417,6 +452,9 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 
 			// Post sign in resolution
 			if (clerkAuth.isSignedIn) {
+				// Stop any pending anonymous retry loop so it cannot rewrite the anonymous storage
+				// this flow reads below and clears at the end.
+				anonymousTokenDeferredRef.current = undefined;
 				do {
 					const anonymousUserToken = storage_get_anonymous_token()?.token;
 					let clerkTokenData = await fetchClerkToken({

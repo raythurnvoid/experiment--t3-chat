@@ -12,7 +12,7 @@ import {
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
 import { internal } from "./_generated/api.js";
-import { type RouteSpec } from "convex/server";
+import { type RegisteredMutation, type RouteSpec } from "convex/server";
 import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import type { RouterForConvexModules } from "./http.ts";
@@ -81,9 +81,26 @@ const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
 const ANONYMOUS_USERS_JWT_KID_LIST = ["anonymous-user-jwt-2025-12"];
 
 /**
- * Refresh tokens that are 7 days away from expiry.
+ * Rotate the stored refresh JWT once it is 7 days away from expiry.
  */
 const ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * `aud` of the refresh JWT. Convex only accepts `aud "convex"` (auth.config.ts applicationID), so a
+ * refresh JWT can never authenticate a function call. The refresh route requires this audience, and
+ * that requirement is what retires pre-split dual-role tokens: they carry `aud "convex"`, so they
+ * stop working as refresh credentials even though they still byte-match their stored row.
+ */
+const ANONYMOUS_USERS_REFRESH_JWT_AUD = "anonymous-refresh";
+
+/**
+ * The access JWT is the revocation window: after a user is tombstoned, already-issued access tokens
+ * keep authenticating for at most this long. The refresh route checks the user row (including
+ * `deletedAt`) on every call, so nothing outlives this window except that route's own 401.
+ */
+const ANONYMOUS_USERS_ACCESS_JWT_EXPIRY = "1h";
+
+const ANONYMOUS_USERS_REFRESH_JWT_EXPIRY = "30d";
 
 const USERS_RESOLVE_USER_BAD_REQUEST_MESSAGES = [
 	"Signed-in user email is required",
@@ -125,6 +142,7 @@ const get_anonymous_users_jwt_private_key = ((/* iife */) => {
 })();
 
 async function sign_anonymous_users_jwt(args: {
+	kind: "access" | "refresh";
 	subject: string;
 	tokenId: Id<"users_anon_tokens">;
 	name: string;
@@ -138,11 +156,13 @@ async function sign_anonymous_users_jwt(args: {
 	})
 		.setProtectedHeader({ alg: "ES256", kid: ANONYMOUS_USERS_JWT_KID_LIST[0], typ: "JWT" })
 		.setIssuer(ANONYMOUS_USERS_JWT_ISSUER)
-		.setAudience("convex")
+		.setAudience(args.kind === "access" ? "convex" : ANONYMOUS_USERS_REFRESH_JWT_AUD)
 		.setSubject(args.subject)
 		.setJti(args.tokenId)
 		.setIssuedAt()
-		.setExpirationTime("30d")
+		.setExpirationTime(
+			args.kind === "access" ? ANONYMOUS_USERS_ACCESS_JWT_EXPIRY : ANONYMOUS_USERS_REFRESH_JWT_EXPIRY,
+		)
 		.sign(key);
 }
 
@@ -213,17 +233,41 @@ export const set_anonymous_auth_token = internalMutation({
 	args: {
 		tokenId: v.id("users_anon_tokens"),
 		token: v.string(),
+		/**
+		 * Rotation guard: write only when the row still holds this token. Two tabs can pass the
+		 * route's validation with the same old token and both try to rotate; without this guard the
+		 * second write would orphan the first tab's token and the shared localStorage copy could end
+		 * up matching neither. The loser gets the winner's token back and returns that to its client.
+		 */
+		expectedCurrentToken: v.optional(v.string()),
 	},
-	returns: v.null(),
+	returns: v.string(),
 	handler: async (ctx, args) => {
+		const row = await ctx.db.get("users_anon_tokens", args.tokenId);
+		if (!row) {
+			throw convex_error({ message: "Anonymous auth token not found" });
+		}
+
+		if (args.expectedCurrentToken !== undefined && row.token !== args.expectedCurrentToken) {
+			return row.token;
+		}
+
 		await ctx.db.patch("users_anon_tokens", args.tokenId, {
 			token: args.token,
+			// Keep the replaced token accepted once more, so a tab that read localStorage just before
+			// this rotation still converges instead of minting a new user.
+			...(row.token ? { previousToken: row.token } : null),
 			updatedAt: Date.now(),
 		});
 
-		return null;
+		return args.token;
 	},
 });
+
+type set_anonymous_auth_token_Result =
+	typeof set_anonymous_auth_token extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const clear_clerk_user_id_after_clerk_delete = internalMutation({
 	args: {
@@ -506,18 +550,18 @@ async function action_mint_anonymous_jwt(ctx: ActionCtx) {
 	const { userId, tokenId } = await ctx.runMutation(internal.users.create_anonymous_user);
 
 	// Keep JWT signing in the action because Convex queries/mutations cannot use crypto randomness.
-	const jwt = await sign_anonymous_users_jwt({
-		subject: userId,
-		tokenId,
-		name: users_create_anonymouse_user_display_name(userId),
-	});
+	const name = users_create_anonymouse_user_display_name(userId);
+	const [refreshJwt, accessJwt] = await Promise.all([
+		sign_anonymous_users_jwt({ kind: "refresh", subject: userId, tokenId, name }),
+		sign_anonymous_users_jwt({ kind: "access", subject: userId, tokenId, name }),
+	]);
 
 	await ctx.runMutation(internal.users.set_anonymous_auth_token, {
 		tokenId,
-		token: jwt,
+		token: refreshJwt,
 	});
 
-	return { jwt, userId };
+	return { accessJwt, refreshJwt, userId };
 }
 
 export const resolve_user = internalMutation({
@@ -678,7 +722,9 @@ export const resolve_user = internalMutation({
 			}
 
 			const user = await ctx.db.get("users", userId);
-			if (!user) {
+			// Refuse a tombstoned anonymous source like a missing one: upgrading it would resurrect
+			// an account that deletion already retired, the same gap the refresh route closes.
+			if (!user || user.deletedAt != null) {
 				return Result({ _nay: { message: "Invalid `anonymousUserToken`" } });
 			}
 
@@ -691,7 +737,10 @@ export const resolve_user = internalMutation({
 			if (
 				!anonymousAuthTokenDoc ||
 				anonymousAuthTokenDoc.userId !== user._id ||
-				anonymousAuthTokenDoc.token !== args.anonymousUserToken
+				// Accept the previous token too, mirroring the refresh route: sign-in can race a
+				// refresh-token rotation in another tab.
+				(anonymousAuthTokenDoc.token !== args.anonymousUserToken &&
+					anonymousAuthTokenDoc.previousToken !== args.anonymousUserToken)
 			) {
 				return Result({ _nay: { message: "Invalid `anonymousUserToken`, cannot link to Clerk account" } });
 			}
@@ -1006,21 +1055,29 @@ export function users_http_routes(router: RouterForConvexModules) {
 						type SearchParams = never;
 						type PathParams = never;
 						type Headers = Record<string, string>;
-						type Body = { token?: string };
+						type Body = { refreshToken?: string };
 
 						const handler = async (ctx: ActionCtx, request: Request) => {
 							const body = (await request.json().catch(() => null)) as null | Body;
 
-							// Refresh path: if token is provided, only re-issue when it is close to expiry.
-							if (body?.token) {
+							// Refresh path: validate the refresh JWT against the stored row, then mint a fresh
+							// short-lived access JWT. The row itself rotates only near its own expiry.
+							if (body?.refreshToken) {
 								let authFromToken: ReturnType<typeof users_get_user_id_from_jwt>;
 								try {
-									authFromToken = users_get_user_id_from_jwt(body.token);
+									authFromToken = users_get_user_id_from_jwt(body.refreshToken);
 								} catch {
 									return { status: 401, body: { message: "Invalid token" } } as const;
 								}
 								if (!authFromToken.userId) {
 									return { status: 400, body: { message: "Invalid token subject" } } as const;
+								}
+
+								// Load-bearing, not defense in depth: this route never verifies signatures, only
+								// byte-equality with the stored row. Pre-split dual-role JWTs still byte-match
+								// their row, and only this audience check retires them (they carry aud "convex").
+								if (!authFromToken.audiences.includes(ANONYMOUS_USERS_REFRESH_JWT_AUD)) {
+									return { status: 401, body: { message: "Invalid token" } } as const;
 								}
 
 								const userWithAnagraphicAndAnonToken = await ctx.runQuery(
@@ -1038,7 +1095,10 @@ export function users_http_routes(router: RouterForConvexModules) {
 										userWithAnagraphicAndAnonToken.user.anonymousAuthToken ||
 									userWithAnagraphicAndAnonToken.anonymousAuthToken.userId !==
 										userWithAnagraphicAndAnonToken.user._id ||
-									userWithAnagraphicAndAnonToken.anonymousAuthToken.token !== body.token
+									// Accept the previous token too: a tab that read localStorage just before a
+									// rotation converges here instead of losing the identity.
+									(userWithAnagraphicAndAnonToken.anonymousAuthToken.token !== body.refreshToken &&
+										userWithAnagraphicAndAnonToken.anonymousAuthToken.previousToken !== body.refreshToken)
 								) {
 									return { status: 401, body: { message: "Invalid token" } } as const;
 								}
@@ -1062,52 +1122,71 @@ export function users_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								// Let a token that is still far from expiry take the read-only fast path.
-								if (
-									authFromToken.expiresAt &&
-									authFromToken.expiresAt > Date.now() + ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS
-								) {
-									return {
-										status: 200,
-										body: { token: body.token, userId: userWithAnagraphicAndAnonToken.user._id },
-									} as const;
-								}
+								const anonTokenRow = userWithAnagraphicAndAnonToken.anonymousAuthToken;
+								const displayName =
+									userWithAnagraphicAndAnonToken.anagraphic?.displayName ??
+									users_create_anonymouse_user_display_name(userWithAnagraphicAndAnonToken.user._id);
 
-								// Reissuing writes, so it also spends the stricter auth limiter.
-								const rateLimit = await rate_limiter_limit_by_key(ctx, {
-									name: "auth_http",
-									key: userWithAnagraphicAndAnonToken.user._id,
-								});
-								if (rateLimit) {
-									return {
-										status: 429,
-										body: {
-											message: rateLimit.message,
-											retryAfterMs: rateLimit.retryAfterMs,
-										},
-									} as const;
-								}
-
-								const newJwt = await sign_anonymous_users_jwt({
+								// Every refresh call mints a fresh access JWT. Pure signing, no database write, so
+								// the hourly client refresh stays on the read limiter.
+								const accessJwt = await sign_anonymous_users_jwt({
+									kind: "access",
 									subject: userWithAnagraphicAndAnonToken.user._id,
-									tokenId: userWithAnagraphicAndAnonToken.anonymousAuthToken._id,
-									name:
-										userWithAnagraphicAndAnonToken.anagraphic?.displayName ??
-										users_create_anonymouse_user_display_name(userWithAnagraphicAndAnonToken.user._id),
+									tokenId: anonTokenRow._id,
+									name: displayName,
 								});
 
-								await ctx.runMutation(internal.users.set_anonymous_auth_token, {
-									tokenId: userWithAnagraphicAndAnonToken.anonymousAuthToken._id,
-									token: newJwt,
-								});
+								// The stored refresh JWT rotates only when the presented current token is close to
+								// its expiry. A previous-token match never rotates; the row already holds a newer
+								// token and the client just needs it back.
+								let refreshTokenForClient = anonTokenRow.token;
+								const presentedIsCurrent = anonTokenRow.token === body.refreshToken;
+								const farFromExpiry =
+									authFromToken.expiresAt &&
+									authFromToken.expiresAt > Date.now() + ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS;
+								if (presentedIsCurrent && !farFromExpiry) {
+									// Rotation writes, so it also spends the stricter auth limiter.
+									const rateLimit = await rate_limiter_limit_by_key(ctx, {
+										name: "auth_http",
+										key: userWithAnagraphicAndAnonToken.user._id,
+									});
+									if (rateLimit) {
+										return {
+											status: 429,
+											body: {
+												message: rateLimit.message,
+												retryAfterMs: rateLimit.retryAfterMs,
+											},
+										} as const;
+									}
+
+									const newRefreshJwt = await sign_anonymous_users_jwt({
+										kind: "refresh",
+										subject: userWithAnagraphicAndAnonToken.user._id,
+										tokenId: anonTokenRow._id,
+										name: displayName,
+									});
+
+									// Compare-and-swap: if another tab rotated first, this returns the winner's
+									// token and the client converges on it.
+									refreshTokenForClient = (await ctx.runMutation(internal.users.set_anonymous_auth_token, {
+										tokenId: anonTokenRow._id,
+										token: newRefreshJwt,
+										expectedCurrentToken: anonTokenRow.token,
+									})) as set_anonymous_auth_token_Result;
+								}
 
 								return {
 									status: 200,
-									body: { token: newJwt, userId: userWithAnagraphicAndAnonToken.user._id },
+									body: {
+										token: accessJwt,
+										refreshToken: refreshTokenForClient,
+										userId: userWithAnagraphicAndAnonToken.user._id,
+									},
 								} as const;
 							}
 
-							// Create path: no token provided, create new anonymous user
+							// Create path: no refresh token provided, create new anonymous user
 							const rateLimit = await rate_limiter_limit_by_key(ctx, {
 								name: "auth_http",
 								key: rate_limiter_http_client_key(request),
@@ -1122,11 +1201,12 @@ export function users_http_routes(router: RouterForConvexModules) {
 								} as const;
 							}
 
-							const { jwt, userId } = await action_mint_anonymous_jwt(ctx);
+							const { accessJwt, refreshJwt, userId } = await action_mint_anonymous_jwt(ctx);
 							return {
 								status: 200,
 								body: {
-									token: jwt,
+									token: accessJwt,
+									refreshToken: refreshJwt,
 									userId: userId,
 								},
 							} as const;

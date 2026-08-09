@@ -1570,7 +1570,14 @@ const app_convex_schema = defineSchema({
 	// #region users
 	users_anon_tokens: defineTable({
 		userId: v.id("users"),
+		/** The current refresh JWT. The refresh route only accepts a byte-equal presented token. */
 		token: v.string(),
+		/**
+		 * The refresh JWT this row held before the last rotation. A tab that raced the rotation can
+		 * still present it once and receive the current token back, so the shared localStorage copy
+		 * converges instead of falling into 401 → storage clear → new anonymous user.
+		 */
+		previousToken: v.optional(v.string()),
 		updatedAt: v.number(),
 	}).index("by_user", ["userId"]),
 

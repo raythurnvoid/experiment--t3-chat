@@ -689,13 +689,17 @@ describe("resolve_user", () => {
 			},
 			body: JSON.stringify({}),
 		});
-		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
 
 		const result = await t.run((ctx) =>
 			ctx.runMutation(internal.users.resolve_user, {
 				clerkUserId: "clerk-user-resolve-anonymous-email",
 				email: " Resolve-Anonymous-Email@Test.Local ",
-				anonymousUserToken: anonymousPayload.token,
+				anonymousUserToken: anonymousPayload.refreshToken,
 				displayName: "Resolved Anonymous User",
 			}),
 		);
@@ -718,6 +722,46 @@ describe("resolve_user", () => {
 		expect(after.user?.anonymousAuthToken).toBeUndefined();
 		expect(after.anagraphic?.displayName).toBe("Resolved Anonymous User");
 		expect(after.anagraphic?.email).toBe("resolve-anonymous-email@test.local");
+	});
+
+	test("refuses to upgrade a deleted anonymous user", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_upgrade_tombstone_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
+
+		// Deleting the account only sets `deletedAt`; the token doc stays until the retention job
+		// removes it. A sign-in carrying the old refresh token must not resurrect the account.
+		await t.run((ctx) => ctx.db.patch("users", anonymousPayload.userId, { deletedAt: Date.now() }));
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-user-resolve-tombstoned-anon",
+				email: "resolve-tombstoned-anon@test.local",
+				anonymousUserToken: anonymousPayload.refreshToken,
+				displayName: "Tombstoned Anon User",
+			}),
+		);
+
+		const after = await t.run((ctx) => ctx.db.get("users", anonymousPayload.userId));
+
+		expect(result._yay).toBeUndefined();
+		expect(result._nay?.message).toBe("Invalid `anonymousUserToken`");
+		expect(after?.deletedAt).toBeTypeOf("number");
+		expect(after?.clerkUserId).toBeNull();
 	});
 
 	test("rate-limits anonymous user creation by forwarded client key", async () => {
@@ -770,31 +814,43 @@ describe("resolve_user", () => {
 			},
 			body: JSON.stringify({}),
 		});
-		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
 
 		await t.run(async (ctx) => test_mocks_cancel_pending_home_file_seeds(ctx));
 
 		// A single page load already validates the cached token twice, so anything at or below
 		// the limiter's burst of 2 used to return 429 on the second reload. The client answered
 		// that by minting a new anonymous user and orphaning this one's workspace.
-		const refreshed: Array<{ status: number; userId: Id<"users">; token: string }> = [];
+		const refreshed: Array<{ status: number; userId: Id<"users">; token: string; refreshToken: string }> = [];
 		for (let i = 0; i < 6; i++) {
 			const response = await t.fetch("/api/auth/anonymous", {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ token: anonymousPayload.token }),
+				body: JSON.stringify({ refreshToken: anonymousPayload.refreshToken }),
 			});
-			const payload = (await response.json()) as { token: string; userId: Id<"users"> };
-			refreshed.push({ status: response.status, userId: payload.userId, token: payload.token });
+			const payload = (await response.json()) as { token: string; refreshToken: string; userId: Id<"users"> };
+			refreshed.push({
+				status: response.status,
+				userId: payload.userId,
+				token: payload.token,
+				refreshToken: payload.refreshToken,
+			});
 		}
 
 		const users = await t.run((ctx) => ctx.db.query("users").collect());
 
 		expect(refreshed.map((r) => r.status)).toEqual([200, 200, 200, 200, 200, 200]);
 		expect(refreshed.every((r) => r.userId === anonymousPayload.userId)).toBe(true);
-		expect(refreshed.every((r) => r.token === anonymousPayload.token)).toBe(true);
+		// Far from expiry the stored refresh token never rotates, but every call still gets a
+		// fresh access token distinct from the refresh token.
+		expect(refreshed.every((r) => r.refreshToken === anonymousPayload.refreshToken)).toBe(true);
+		expect(refreshed.every((r) => r.token !== r.refreshToken)).toBe(true);
 		expect(users).toHaveLength(1);
 	});
 
@@ -816,11 +872,15 @@ describe("resolve_user", () => {
 				},
 				body: JSON.stringify({}),
 			});
-			const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+			const anonymousPayload = (await anonymousResponse.json()) as {
+				token: string;
+				refreshToken: string;
+				userId: Id<"users">;
+			};
 
 			await t.run(async (ctx) => test_mocks_cancel_pending_home_file_seeds(ctx));
 
-			// Tokens live 30 days and are reissued inside the last 7, so move into that window.
+			// Refresh tokens live 30 days and rotate inside the last 7, so move into that window.
 			vi.setSystemTime(Date.now() + 24 * 24 * 60 * 60 * 1000);
 
 			const reissueResponse = await t.fetch("/api/auth/anonymous", {
@@ -828,9 +888,13 @@ describe("resolve_user", () => {
 				headers: {
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ token: anonymousPayload.token }),
+				body: JSON.stringify({ refreshToken: anonymousPayload.refreshToken }),
 			});
-			const reissuePayload = (await reissueResponse.json()) as { token: string; userId: Id<"users"> };
+			const reissuePayload = (await reissueResponse.json()) as {
+				token: string;
+				refreshToken: string;
+				userId: Id<"users">;
+			};
 
 			const stored = await t.run(async (ctx) => {
 				const user = await ctx.db.get("users", anonymousPayload.userId);
@@ -839,10 +903,12 @@ describe("resolve_user", () => {
 
 			expect(reissueResponse.status).toBe(200);
 			expect(reissuePayload.userId).toBe(anonymousPayload.userId);
-			expect(stored?.token).toBe(reissuePayload.token);
-			// The point of reissuing is a later expiry, not just a different string.
-			expect(users_get_user_id_from_jwt(reissuePayload.token).expiresAt).toBeGreaterThan(
-				users_get_user_id_from_jwt(anonymousPayload.token).expiresAt ?? 0,
+			expect(stored?.token).toBe(reissuePayload.refreshToken);
+			// The replaced token stays as the grace token so a tab that still holds it converges.
+			expect(stored?.previousToken).toBe(anonymousPayload.refreshToken);
+			// The point of rotating is a later expiry, not just a different string.
+			expect(users_get_user_id_from_jwt(reissuePayload.refreshToken).expiresAt).toBeGreaterThan(
+				users_get_user_id_from_jwt(anonymousPayload.refreshToken).expiresAt ?? 0,
 			);
 		} finally {
 			vi.useRealTimers();
@@ -863,7 +929,11 @@ describe("resolve_user", () => {
 			},
 			body: JSON.stringify({}),
 		});
-		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
 
 		await t.run(async (ctx) => test_mocks_cancel_pending_home_file_seeds(ctx));
 
@@ -875,7 +945,7 @@ describe("resolve_user", () => {
 				headers: {
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ token: anonymousPayload.token }),
+				body: JSON.stringify({ refreshToken: anonymousPayload.refreshToken }),
 			});
 			statuses.push(response.status);
 		}
@@ -898,7 +968,11 @@ describe("resolve_user", () => {
 			},
 			body: JSON.stringify({}),
 		});
-		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
 
 		await t.run(async (ctx) => {
 			await ctx.db.delete("users", anonymousPayload.userId);
@@ -909,7 +983,7 @@ describe("resolve_user", () => {
 			headers: {
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({ token: anonymousPayload.token }),
+			body: JSON.stringify({ refreshToken: anonymousPayload.refreshToken }),
 		});
 		const freshResponse = await t.fetch("/api/auth/anonymous", {
 			method: "POST",
@@ -918,7 +992,11 @@ describe("resolve_user", () => {
 			},
 			body: JSON.stringify({}),
 		});
-		const freshPayload = (await freshResponse.json()) as { token: string; userId: Id<"users"> };
+		const freshPayload = (await freshResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
 
 		const after = await t.run(async (ctx) => {
 			const [oldUser, freshUser] = await Promise.all([
@@ -935,7 +1013,7 @@ describe("resolve_user", () => {
 		expect(refreshResponse.status).toBe(401);
 		expect(freshResponse.status).toBe(200);
 		expect(freshPayload.userId).not.toBe(anonymousPayload.userId);
-		expect(freshPayload.token).not.toBe(anonymousPayload.token);
+		expect(freshPayload.refreshToken).not.toBe(anonymousPayload.refreshToken);
 		expect(after.oldUser).toBeNull();
 		expect(after.freshUser?._id).toBe(freshPayload.userId);
 	});
@@ -954,7 +1032,11 @@ describe("resolve_user", () => {
 			},
 			body: JSON.stringify({}),
 		});
-		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
 
 		const refresh = () =>
 			t.fetch("/api/auth/anonymous", {
@@ -962,7 +1044,7 @@ describe("resolve_user", () => {
 				headers: {
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ token: anonymousPayload.token }),
+				body: JSON.stringify({ refreshToken: anonymousPayload.refreshToken }),
 			});
 
 		// Control: the same token, before we mark the account as deleted. This route answers 401 from
@@ -975,6 +1057,265 @@ describe("resolve_user", () => {
 		await t.run((ctx) => ctx.db.patch("users", anonymousPayload.userId, { deletedAt: Date.now() }));
 
 		expect((await refresh()).status).toBe(401);
+	});
+
+	test("mints a short-lived access token and a long-lived refresh token with separate audiences", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_token_shapes_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+
+		const before = Date.now();
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
+
+		const access = users_get_user_id_from_jwt(anonymousPayload.token);
+		const refresh = users_get_user_id_from_jwt(anonymousPayload.refreshToken);
+		const hour = 60 * 60 * 1000;
+		const day = 24 * hour;
+
+		// The access token is what Convex accepts (aud "convex"); its 1 hour life is the
+		// revocation window after an anonymous user is deleted.
+		expect(access.audiences).toContain("convex");
+		expect(access.expiresAt).toBeGreaterThan(before + 50 * 60 * 1000);
+		expect(access.expiresAt).toBeLessThan(before + 70 * 60 * 1000);
+
+		// The refresh token only works against this route, never against Convex directly.
+		expect(refresh.audiences).toContain("anonymous-refresh");
+		expect(refresh.audiences).not.toContain("convex");
+		expect(refresh.expiresAt).toBeGreaterThan(before + 29 * day);
+		expect(refresh.expiresAt).toBeLessThan(before + 31 * day);
+
+		expect(access.userId).toBe(anonymousPayload.userId);
+		expect(refresh.userId).toBe(anonymousPayload.userId);
+	});
+
+	test("rejects a stored token without the refresh audience, retiring pre-split tokens", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_presplit_reject_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
+
+		// Before the split, the stored row held a dual-role JWT with aud "convex". Simulate one of
+		// those rows by storing the access token, then present it. It byte-matches the row, so only
+		// the route's audience check can refuse it.
+		await t.run(async (ctx) => {
+			const user = await ctx.db.get("users", anonymousPayload.userId);
+			if (!user?.anonymousAuthToken) {
+				throw new Error("Expected an anonymous auth token row");
+			}
+			await ctx.db.patch("users_anon_tokens", user.anonymousAuthToken, { token: anonymousPayload.token });
+		});
+
+		const response = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ refreshToken: anonymousPayload.token }),
+		});
+
+		expect(response.status).toBe(401);
+	});
+
+	test("answers refresh far from expiry without writing the token row", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_no_write_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
+
+		const readTokenRow = () =>
+			t.run(async (ctx) => {
+				const user = await ctx.db.get("users", anonymousPayload.userId);
+				return user?.anonymousAuthToken ? await ctx.db.get("users_anon_tokens", user.anonymousAuthToken) : null;
+			});
+		const rowBefore = await readTokenRow();
+
+		const response = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ refreshToken: anonymousPayload.refreshToken }),
+		});
+		const payload = (await response.json()) as { token: string; refreshToken: string; userId: Id<"users"> };
+		const rowAfter = await readTokenRow();
+
+		expect(response.status).toBe(200);
+		expect(payload.refreshToken).toBe(anonymousPayload.refreshToken);
+		// The whole point of the split: routine refresh is pure signing, no database write.
+		expect(rowAfter?.token).toBe(rowBefore?.token);
+		expect(rowAfter?.previousToken).toBeUndefined();
+		expect(rowAfter?.updatedAt).toBe(rowBefore?.updatedAt);
+	});
+
+	test("keeps accepting the replaced refresh token after a rotation and hands back the winner", async () => {
+		// Fake timers rather than a `Date.now` spy: jose reads `new Date()` when it stamps `iat`,
+		// so a spy would move the handler's freshness check without moving the new token's expiry.
+		vi.useFakeTimers();
+		try {
+			const t = test_convex();
+			await users_test_seed_product(t, {
+				polarProductId: "users_anonymous_previous_token_free_product",
+				name: billing_PRODUCTS.Free.name,
+			});
+
+			const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			const anonymousPayload = (await anonymousResponse.json()) as {
+				token: string;
+				refreshToken: string;
+				userId: Id<"users">;
+			};
+
+			await t.run(async (ctx) => test_mocks_cancel_pending_home_file_seeds(ctx));
+
+			// Move into the rotation window and rotate, like a first tab racing ahead.
+			vi.setSystemTime(Date.now() + 24 * 24 * 60 * 60 * 1000);
+			const rotateResponse = await t.fetch("/api/auth/anonymous", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ refreshToken: anonymousPayload.refreshToken }),
+			});
+			const rotatePayload = (await rotateResponse.json()) as {
+				token: string;
+				refreshToken: string;
+				userId: Id<"users">;
+			};
+			expect(rotateResponse.status).toBe(200);
+			expect(rotatePayload.refreshToken).not.toBe(anonymousPayload.refreshToken);
+
+			// A second tab still holds the replaced token. It must converge on the rotated one
+			// instead of losing the identity, and it must not rotate the row again.
+			const staleTabResponse = await t.fetch("/api/auth/anonymous", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ refreshToken: anonymousPayload.refreshToken }),
+			});
+			const staleTabPayload = (await staleTabResponse.json()) as {
+				token: string;
+				refreshToken: string;
+				userId: Id<"users">;
+			};
+
+			const stored = await t.run(async (ctx) => {
+				const user = await ctx.db.get("users", anonymousPayload.userId);
+				return user?.anonymousAuthToken ? await ctx.db.get("users_anon_tokens", user.anonymousAuthToken) : null;
+			});
+
+			expect(staleTabResponse.status).toBe(200);
+			expect(staleTabPayload.userId).toBe(anonymousPayload.userId);
+			expect(staleTabPayload.refreshToken).toBe(rotatePayload.refreshToken);
+			expect(stored?.token).toBe(rotatePayload.refreshToken);
+			expect(stored?.previousToken).toBe(anonymousPayload.refreshToken);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("set_anonymous_auth_token keeps the winner when the expected current token does not match", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_cas_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
+
+		const tokenId = await t.run(async (ctx) => {
+			const user = await ctx.db.get("users", anonymousPayload.userId);
+			if (!user?.anonymousAuthToken) {
+				throw new Error("Expected an anonymous auth token row");
+			}
+			return user.anonymousAuthToken;
+		});
+
+		// A rotation that lost the race presents a stale expected token and must not overwrite.
+		const loserResult = await t.run((ctx) =>
+			ctx.runMutation(internal.users.set_anonymous_auth_token, {
+				tokenId,
+				token: "loser-token",
+				expectedCurrentToken: "stale-expected-token",
+			}),
+		);
+		const rowAfterLoser = await t.run((ctx) => ctx.db.get("users_anon_tokens", tokenId));
+
+		expect(loserResult).toBe(anonymousPayload.refreshToken);
+		expect(rowAfterLoser?.token).toBe(anonymousPayload.refreshToken);
+		expect(rowAfterLoser?.previousToken).toBeUndefined();
+
+		// The rotation that read the real current token wins and archives it as previousToken.
+		const winnerResult = await t.run((ctx) =>
+			ctx.runMutation(internal.users.set_anonymous_auth_token, {
+				tokenId,
+				token: "winner-token",
+				expectedCurrentToken: anonymousPayload.refreshToken,
+			}),
+		);
+		const rowAfterWinner = await t.run((ctx) => ctx.db.get("users_anon_tokens", tokenId));
+
+		expect(winnerResult).toBe("winner-token");
+		expect(rowAfterWinner?.token).toBe("winner-token");
+		expect(rowAfterWinner?.previousToken).toBe(anonymousPayload.refreshToken);
 	});
 
 	test("returns a conflict when another live user already owns the email and leaves the anonymous user untouched", async () => {
@@ -997,13 +1338,17 @@ describe("resolve_user", () => {
 			},
 			body: JSON.stringify({}),
 		});
-		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
 
 		const result = await t.run((ctx) =>
 			ctx.runMutation(internal.users.resolve_user, {
 				clerkUserId: "clerk-user-resolve-conflict",
 				email: " Resolve-Internal-Conflict@Test.Local ",
-				anonymousUserToken: anonymousPayload.token,
+				anonymousUserToken: anonymousPayload.refreshToken,
 				displayName: "Resolve Conflict User",
 			}),
 		);
@@ -3504,7 +3849,11 @@ describe("anonymous billing snapshot lifecycle", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({}),
 		});
-		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
 
 		// Verify the anonymous snapshot exists.
 		const usageSnapshotBefore = await t.run(async (ctx) =>
@@ -3521,7 +3870,7 @@ describe("anonymous billing snapshot lifecycle", () => {
 			ctx.runMutation(internal.users.resolve_user, {
 				clerkUserId: "clerk-user-anon-snapshot-upgrade",
 				email: "anon-snapshot-upgrade@test.local",
-				anonymousUserToken: anonymousPayload.token,
+				anonymousUserToken: anonymousPayload.refreshToken,
 				displayName: "Upgraded Anon User",
 			}),
 		);

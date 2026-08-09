@@ -57,7 +57,7 @@ Auth is coordinated by `ClerkProvider` + `AppAuthProvider` + Convex auth integra
 - `isAuthenticated`, `isLoaded`, `isAnonymous`, `userId`
 - `getToken()` returning either:
   - a Clerk JWT (`template: "convex"`) when signed in, or
-  - an anonymous JWT when not signed in
+  - a short-lived anonymous access JWT when not signed in
 
 Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={AppAuthProvider.useAuth}`.
 
@@ -71,12 +71,18 @@ Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={App
 
 ### Anonymous (not signed in)
 
-- The frontend calls `/api/auth/anonymous` (or refreshes it) to mint/refresh an anonymous JWT.
-- The JWT subject is the Convex `users` id.
-- The anonymous JWT is stored in `localStorage` and re-used until refreshed/cleared.
-- On anonymous startup, cached anonymous credentials are validated through `/api/auth/anonymous` before the app marks auth loaded. Only a `401` or `400` clears both localStorage keys and mints a fresh anonymous user, because only those mean the server read the token and refused it. On a `429`, a `5xx` or a network failure the client keeps the cached token and lets Convex verify it: discarding it there would mint a new user whose freshly seeded `personal`/`home` hides the previous one, which reads as total data loss. The current route does not reject a user only because `deletedAt` is set; see the gap below.
+Anonymous auth uses two JWTs signed with the same key, split by audience:
 
-Anonymous token caching keys (frontend):
+- The **refresh token** (`aud "anonymous-refresh"`, 30 days) lives in `localStorage` and is also stored byte-for-byte in `users_anon_tokens`. It only works against `/api/auth/anonymous`, where it is checked against that table. Convex rejects it because `auth.config.ts` only accepts `aud "convex"`.
+- The **access token** (`aud "convex"`, 1 hour) is what Convex actually verifies. It is minted by pure signing (no table read) and lives only in memory; the Convex client asks for a new one shortly before expiry. The one-hour life is the revocation window: deleting the anonymous user stops the next refresh, so a revoked identity dies within the hour.
+- Both JWTs carry the Convex `users` id as `sub` and the `users_anon_tokens` id as `jti`.
+
+Client behavior on refresh failure (`auth_get_anonymous_convex_token` in [app-auth.tsx](../../../packages/app/src/components/app-auth.tsx)):
+
+- Only a `401` or `400` clears both localStorage keys and mints a fresh anonymous user, because only those mean the server read the refresh token and refused it (stale dev-reset token, deleted user, pre-split token).
+- On a `429`, a `5xx` or a network failure the client keeps the stored refresh token and retries with backoff (it honors `retryAfterMs`, caps waits at 30s, and re-reads localStorage before each attempt). It must never resolve `null` there: the Convex client treats `null` as "signed out for sure" and never asks again, and the refresh token cannot stand in for an access token because Convex rejects its audience.
+
+Anonymous token caching keys (frontend, refresh token only — the access token is never stored):
 
 - `app::auth::anonymous_token`
 - `app::auth::anonymous_token_user_id`
@@ -89,34 +95,35 @@ Routes implemented in: [users.ts](../../../packages/app/convex/users.ts)
 
 ### `POST /api/auth/anonymous`
 
-- With no body token: creates a new anonymous user record and mints a JWT.
-- With `token`: refresh path:
-  - extract user id from JWT
-  - verify the provided token matches the stored token for that user
-  - return the existing token while it has more than seven days left
-  - otherwise issue a new 30-day JWT and store it on the anonymous-token doc
+- With no body: creates a new anonymous user record and responds `{ token, refreshToken, userId }` (access JWT, refresh JWT, users id).
+- With `refreshToken`: refresh path:
+  - decode the JWT (no signature check on this path) and refuse it with `401` unless its audience contains `"anonymous-refresh"`. This check is load-bearing, not defense in depth: validity comes from byte-equality with the stored row, and a pre-split dual-role JWT (aud `"convex"`) still byte-matches its row — only the audience check retires those.
+  - load the `users_anon_tokens` row and require the presented token to byte-match `token` **or** `previousToken`. The grace field exists because two tabs share one localStorage: a tab that read it just before a rotation must converge instead of losing the identity.
+  - the row lookup rejects a tombstoned user (`users.deletedAt`), so a deleted anonymous user cannot refresh.
+  - always mint a fresh 1-hour access JWT (pure signing, no table write).
+  - rotate the stored refresh JWT only when the presented token is the current one and is inside its last 7 days. Rotation goes through a compare-and-swap (`set_anonymous_auth_token` with `expectedCurrentToken`): if another tab rotated first, the route returns the winner's token and the client converges on it. The replaced token becomes `previousToken`.
+  - respond `{ token, refreshToken, userId }`; `refreshToken` is the stored current token (rotated or not).
 - The create path is rate-limited by forwarded client IP headers with a stable fallback before minting a user/token. On deny the route returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
-- The refresh path is rate-limited twice by the resolved anonymous user id. Validation spends `auth_http_refresh` (capacity 10), which is deliberately well above a normal page load: a load validates the cached token at least twice, and charging that to the strict `auth_http` bucket (capacity 2) made ordinary reloads return `429`. Reissuing a token is a write, so it also spends `auth_http`.
+- The refresh path is rate-limited by the resolved anonymous user id. Every refresh spends `auth_http_refresh` (capacity 10), which is deliberately well above a normal page load: a load validates the stored token at least twice, and charging that to the strict `auth_http` bucket (capacity 2) made ordinary reloads return `429`. Rotation is a write, so it also spends `auth_http`.
 
-### Known anonymous deletion gap
+### Anonymous deletion: closed and remaining gaps
 
-**Closed:** the refresh lookup now checks `users.deletedAt` (`get_with_anagraphic_and_anonymous_auth_token`), so a tombstoned anonymous user can no longer mint a fresh JWT. Covered by a test asserting `401`.
+**Closed:**
+
+- The refresh lookup checks `users.deletedAt` (`get_with_anagraphic_and_anonymous_auth_token`), so a tombstoned anonymous user cannot mint fresh tokens. Covered by a test asserting `401`.
+- The token split caps how long a pre-tombstone token keeps working. Convex only accepts the 1-hour access JWT, so after a tombstone the identity dies as soon as the current access token expires and the next refresh is refused — within the hour, instead of the old 30 days.
+- The anonymous-to-Clerk upgrade path refuses a tombstoned anonymous source (`resolve_user` treats it like a missing user), so sign-in cannot resurrect a deleted account through the anonymous link.
 
 **Still open:**
 
-- `server_convex_get_user_fallback_to_anonymous` trusts the JWT subject without loading a live user doc, so a JWT issued *before* the tombstone stays valid until it expires — up to 30 days. Refresh is closed; expiry is not.
-- The anonymous-to-Clerk upgrade path still accepts a tombstoned anonymous source. The anonymous anagraphic carries `email: ""`, so the deleted-reclaim-by-email branch in `resolve_user` cannot select it, and the upgrade patches `clerkUserId` without clearing `deletedAt`.
-- Handlers that trust only the auth id can still accept account-level writes.
+- `server_convex_get_user_fallback_to_anonymous` trusts the JWT subject without loading a live user doc, so account-level writes inside the remaining 1-hour window still pass handlers that check nothing else. Require a live user doc for anonymous account-level writes (see "Current app user resolution" below).
+- Rotating the signing `kid` would invalidate every outstanding access token at once, but it is a production-incident lever, not a routine tool: Convex caches `/.well-known/jwks.json` per its `Cache-Control: public, max-age=86400`, so a new kid can be unverifiable for up to a day. Do not bump the kid to "reset" dev identities; the refresh route's audience check already retires pre-split tokens without touching the key.
 
-Do not describe a tombstone as anonymous-session revocation. Fix the rest at the auth and write boundaries: reject tombstoned sources during upgrade, require a live user doc for anonymous account-level writes, and add focused tests for upgrade and a representative write after tombstoning.
+Anonymous JWT properties (both tokens, signed with the same ES256 key):
 
-Anonymous JWT properties:
-
-- `alg: ES256`
-- `iss`: `VITE_CONVEX_HTTP_URL` (Convex env var)
-- `aud`: `"convex"`
-- `sub`: Convex `users` id
-- expiry: `"30d"`
+- `alg: ES256`, `iss`: `VITE_CONVEX_HTTP_URL` (Convex env var), `sub`: Convex `users` id, `jti`: `users_anon_tokens` id
+- access token: `aud "convex"`, expiry `"1h"`
+- refresh token: `aud "anonymous-refresh"`, expiry `"30d"`
 
 ### `GET /.well-known/jwks.json`
 
@@ -381,8 +388,8 @@ If a handler intentionally treats a missing row or a deleted anonymous user as s
 # Keep anonymous flows robust
 
 - Anonymous token fetch must be resilient and should not crash the app.
-- Token suppliers used by Convex should resolve (not reject) so auth state can transition cleanly.
-- Treat anonymous localStorage as disposable client cache. Do not let a cached anonymous JWT become the first Convex app token until `/api/auth/anonymous` has accepted/refreshed it, because local/dev data resets can leave old browser storage pointing at an invalid app principal.
+- Token suppliers used by Convex should resolve (not reject) so auth state can transition cleanly — but never resolve `null` on a transient failure. The Convex client treats `null` as a definitive "signed out" and stops asking; only a server `401`/`400` justifies it.
+- Treat anonymous localStorage as disposable client cache. The stored refresh JWT can never reach Convex directly (wrong audience); every Convex access token comes from `/api/auth/anonymous`, so a stale dev-reset identity is always caught there first.
 
 # Treat “public write” as intentionally unsafe
 

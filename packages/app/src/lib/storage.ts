@@ -38,6 +38,11 @@ function define_field<K extends `app${string}`, T>(definition: FieldDefinition<T
  * prevent unnecessary cache updates and rerenders.
  */
 const storage_local_schema = {
+	/**
+	 * The anonymous user's long-lived refresh JWT (aud "anonymous-refresh"). It only works
+	 * against `/api/auth/anonymous`; the short-lived Convex access token is never stored and
+	 * lives only in memory.
+	 */
 	"app::auth::anonymous_token": define_field<"app::auth::anonymous_token", string | null>({
 		defaultValue: null,
 		parse: (raw) => raw,

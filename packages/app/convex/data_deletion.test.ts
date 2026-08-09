@@ -5821,13 +5821,17 @@ describe("resolve_user after tombstone", () => {
 			},
 			body: JSON.stringify({}),
 		});
-		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+		const anonymousPayload = (await anonymousResponse.json()) as {
+			token: string;
+			refreshToken: string;
+			userId: Id<"users">;
+		};
 
 		const result = await t.run((ctx) =>
 			ctx.runMutation(internal.users.resolve_user, {
 				clerkUserId: "clerk-user-delete-return-anon-again",
 				email: recoveryEmail,
-				anonymousUserToken: anonymousPayload.token,
+				anonymousUserToken: anonymousPayload.refreshToken,
 				displayName: "Returning User Again",
 			}),
 		);

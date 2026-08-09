@@ -34,10 +34,14 @@ export function users_get_user_id_from_jwt(jwt: string) {
 		throw should_never_happen("users_get_user_id_from_jwt: no sub in JWT, failed to extract user ID");
 	}
 
+	// jose types `aud` as string | string[]; normalize so callers can compare one value.
+	const audiences = typeof payload.aud === "string" ? [payload.aud] : Array.isArray(payload.aud) ? payload.aud : [];
+
 	return {
 		userId: payload.sub,
 		tokenId: typeof payload.jti === "string" ? payload.jti : null,
 		expiresAt: typeof payload.exp === "number" ? payload.exp * 1000 : null,
+		audiences,
 	};
 }
 

@@ -21,7 +21,7 @@ export async function app_fetch_auth_anonymous(
 		url,
 		method: "POST",
 		auth: false,
-		body: args?.token ? { token: args.token } : {},
+		body: args?.refreshToken ? { refreshToken: args.refreshToken } : {},
 		signal: args?.signal,
 	});
 }
