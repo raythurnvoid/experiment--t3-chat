@@ -1748,6 +1748,111 @@ describe("process_user_deletion_request", () => {
 		expect(after.user?.defaultOrganizationId).toBeUndefined();
 	});
 
+	test("drains the deleted user's notifications in bounded batches before finalizing", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-notification-drain",
+				displayName: "Notification Drain",
+			}),
+		);
+		const survivingUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-notification-survivor",
+				displayName: "Notification Survivor",
+			}),
+		);
+
+		// Every row lives in the surviving user's organization on purpose. Finalization queues the
+		// deleted user's now-empty personal organization for immediate purge, and that purge deletes
+		// all notifications in the organization regardless of recipient — rows seeded there would
+		// make both assertions pass for the wrong reason.
+		const seeded = await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let i = 0; i < 3; i += 1) {
+				await ctx.db.insert("notifications", {
+					userId: deletedUser.userId,
+					kind: "organization_workspace_invite",
+					archivedAt: 0,
+					actorUserId: survivingUser.userId,
+					organizationId: survivingUser.defaultOrganizationId,
+					workspaceId: survivingUser.defaultWorkspaceId,
+					updatedAt: now,
+				});
+			}
+			// The deleted user only as actor: this row belongs to the surviving user's inbox and stays.
+			const actorOnlyId = await ctx.db.insert("notifications", {
+				userId: survivingUser.userId,
+				kind: "organization_workspace_invite",
+				archivedAt: 0,
+				actorUserId: deletedUser.userId,
+				organizationId: survivingUser.defaultOrganizationId,
+				workspaceId: survivingUser.defaultWorkspaceId,
+				updatedAt: now,
+			});
+			return { actorOnlyId };
+		});
+
+		const requestId = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: deletedUser.userId,
+				nowTs: 10_001,
+			}),
+		);
+		if (!requestId) {
+			throw new Error("Expected a queued user deletion request");
+		}
+		const test_now = await t.run(async (ctx) => {
+			const request = await ctx.db.get("data_deletion_requests", requestId);
+			if (!request) {
+				throw new Error("Expected the queued user request doc");
+			}
+			return request.eligibleAt + 1;
+		});
+
+		// Two notifications per pass: the request must stay queued (done: false) until all are gone.
+		const passes = [];
+		for (let i = 0; i < 2; i += 1) {
+			passes.push(
+				await t.run((ctx) =>
+					ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
+						requestId,
+						_test_now: test_now,
+						_test_batchSize: 2,
+					}),
+				),
+			);
+		}
+		expect(passes).toEqual([
+			{ done: false, deletedCount: 2 },
+			{ done: false, deletedCount: 1 },
+		]);
+
+		const finalPass = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
+				requestId,
+				_test_now: test_now,
+				_test_batchSize: 2,
+			}),
+		);
+		expect(finalPass).toEqual({ done: true, deletedCount: 1 });
+
+		const after = await t.run(async (ctx) => {
+			const [recipientRows, actorOnly, request] = await Promise.all([
+				ctx.db
+					.query("notifications")
+					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
+				ctx.db.get("notifications", seeded.actorOnlyId),
+				ctx.db.get("data_deletion_requests", requestId),
+			]);
+			return { recipientRows, actorOnly, request };
+		});
+		expect(after.recipientRows).toHaveLength(0);
+		expect(after.actorOnly).not.toBeNull();
+		expect(after.request).toBeNull();
+	});
+
 	test("clears user quota docs when the queued request runs after the user doc is gone", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
@@ -2137,7 +2242,7 @@ describe("process_workspace_deletion_request", () => {
 		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
 	});
 
-	test("purges plugin installations, secrets, upload event routes, runs, and call docs", async () => {
+	test("purges plugin installations, secrets, upload event routes, runs, call docs, and activities", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -2146,7 +2251,7 @@ describe("process_workspace_deletion_request", () => {
 			}),
 		);
 
-		const { requestId } = await t.run(async (ctx) => {
+		const { requestId, siblingActivityId } = await t.run(async (ctx) => {
 			const now = Date.now();
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: user.defaultOrganizationId,
@@ -2292,6 +2397,47 @@ describe("process_workspace_deletion_request", () => {
 				elapsedMs: 0,
 				updatedAt: now,
 			});
+			// Activities sourced at the run. The purge deletes the run docs directly, so the
+			// run-retention path that normally deletes a run's activity never gets to run here.
+			await ctx.db.insert("activities", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				userId: user.userId,
+				status: "succeeded",
+				source: { type: "plugin_run", id: runId, installationId, pluginName: "media" },
+				title: "Media plugin · plugin-source.png",
+				errorMessage: null,
+				targets: [],
+				timeoutAt: now + 60_000,
+				finishedAt: now,
+				archivedAt: 0,
+				updatedAt: now,
+			});
+			// A sibling-workspace activity must survive: the drain is scoped by the index, not by table.
+			const siblingWorkspace = await organizations_db_create_workspace(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				name: "activity-sibling-ws",
+				description: "",
+				now,
+			});
+			if (siblingWorkspace._nay) {
+				throw new Error(siblingWorkspace._nay.message);
+			}
+			const siblingActivityId = await ctx.db.insert("activities", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: siblingWorkspace._yay.workspaceId,
+				userId: user.userId,
+				status: "succeeded",
+				source: { type: "plugin_run", id: runId, installationId, pluginName: "media" },
+				title: "Media plugin · sibling.png",
+				errorMessage: null,
+				targets: [],
+				timeoutAt: now + 60_000,
+				finishedAt: now,
+				archivedAt: 0,
+				updatedAt: now,
+			});
 			// An unpublished staged write: its asset docs have no r2Key, so only the stage purge
 			// block can reach the R2 objects.
 			const stagedYjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
@@ -2330,7 +2476,7 @@ describe("process_workspace_deletion_request", () => {
 				workspaceId: user.defaultWorkspaceId,
 				scope: "workspace",
 			});
-			return { requestId };
+			return { requestId, siblingActivityId };
 		});
 
 		await data_deletion_test_process_workspace_request_until_done(t, {
@@ -2339,7 +2485,7 @@ describe("process_workspace_deletion_request", () => {
 		});
 
 		const remaining = await t.run(async (ctx) => {
-			const [calls, runs, eventHandlers, secrets, uiSessions, installations, stages] = await Promise.all([
+			const [calls, runs, eventHandlers, secrets, uiSessions, installations, stages, activities] = await Promise.all([
 				ctx.db.query("plugins_event_run_calls").collect(),
 				ctx.db.query("plugins_event_runs").collect(),
 				ctx.db.query("plugins_workspace_event_handlers").collect(),
@@ -2347,16 +2493,19 @@ describe("process_workspace_deletion_request", () => {
 				ctx.db.query("plugins_ui_sessions").collect(),
 				ctx.db.query("plugins_workspace_installations").collect(),
 				ctx.db.query("public_api_file_write_stages").collect(),
+				ctx.db.query("activities").collect(),
 			]);
 			const inWorkspace = (doc: { organizationId: string; workspaceId: string }) =>
 				doc.organizationId === user.defaultOrganizationId && doc.workspaceId === user.defaultWorkspaceId;
-			return [calls, runs, eventHandlers, secrets, uiSessions, installations, stages].reduce(
+			return [calls, runs, eventHandlers, secrets, uiSessions, installations, stages, activities].reduce(
 				(total, docs) => total + docs.filter(inWorkspace).length,
 				0,
 			);
 		});
 
 		expect(remaining).toBe(0);
+		// The sibling workspace was not purged, so its activity is still there.
+		expect(await t.run((ctx) => ctx.db.get("activities", siblingActivityId))).not.toBeNull();
 	});
 
 	test("drains plugin UI sessions in bounded batches before deleting their installation", async () => {
@@ -5974,5 +6123,74 @@ describe("prepare_user_for_hard_deletion", () => {
 		expect(after.unrelatedRepository?._id).toBe(seeded.unrelatedRepositoryId);
 		expect(after.unrelatedSecret?._id).toBe(seeded.unrelatedSecretId);
 		expect(after.unrelatedReview?._id).toBe(seeded.unrelatedReviewId);
+	});
+
+	test("drains the deleted user's notifications after the publisher docs", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-prepare-notification-drain",
+				displayName: "Prepare Notification Drain",
+			}),
+		);
+		const otherUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-prepare-notification-other",
+				displayName: "Prepare Notification Other",
+			}),
+		);
+
+		const seeded = await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let i = 0; i < 3; i += 1) {
+				await ctx.db.insert("notifications", {
+					userId: deletedUser.userId,
+					kind: "organization_workspace_invite",
+					archivedAt: 0,
+					actorUserId: otherUser.userId,
+					organizationId: otherUser.defaultOrganizationId,
+					workspaceId: otherUser.defaultWorkspaceId,
+					updatedAt: now,
+				});
+			}
+			// The deleted user only as actor: this row belongs to the other user's inbox and stays.
+			const actorOnlyId = await ctx.db.insert("notifications", {
+				userId: otherUser.userId,
+				kind: "organization_workspace_invite",
+				archivedAt: 0,
+				actorUserId: deletedUser.userId,
+				organizationId: otherUser.defaultOrganizationId,
+				workspaceId: otherUser.defaultWorkspaceId,
+				updatedAt: now,
+			});
+			return { actorOnlyId };
+		});
+
+		// Pass 1 deletes two notifications, pass 2 the last one, pass 3 finds nothing and reports done.
+		const passes = [];
+		for (let i = 0; i < 3; i += 1) {
+			passes.push(
+				await t.run((ctx) =>
+					ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+						userId: deletedUser.userId,
+						_test_batchSize: 2,
+					}),
+				),
+			);
+		}
+		expect(passes).toEqual([false, false, true]);
+
+		const after = await t.run(async (ctx) => {
+			const [recipientRows, actorOnly] = await Promise.all([
+				ctx.db
+					.query("notifications")
+					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
+				ctx.db.get("notifications", seeded.actorOnlyId),
+			]);
+			return { recipientRows, actorOnly };
+		});
+		expect(after.recipientRows).toHaveLength(0);
+		expect(after.actorOnly).not.toBeNull();
 	});
 });

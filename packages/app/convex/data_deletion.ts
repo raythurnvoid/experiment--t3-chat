@@ -469,6 +469,21 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: 1 };
 	}
 
+	// The run-retention path deletes an activity together with its plugin run, but this purge
+	// deletes the run docs directly, so their activities would stay behind forever. Every
+	// activity producer needs a live run doc, and the run pass above empties first, so no new
+	// rows can appear behind this pass.
+	const activities = await ctx.db
+		.query("activities")
+		.withIndex("by_organization_workspace_archivedAt_updatedAt", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (activities.length > 0) {
+		await Promise.all(activities.map((doc) => ctx.db.delete("activities", doc._id)));
+		return { done: false, deletedCount: activities.length };
+	}
+
 	// Legacy chat messages are still workspace-scoped content and are purged with
 	// the same per-call deletion limit.
 	const chatMessages = await ctx.db
@@ -1111,6 +1126,22 @@ async function db_drain_user_plugin_publisher_docs_batch(
 }
 
 /**
+ * Deletes one batch of notifications where the deleted user is the recipient. Both user-deletion
+ * paths call this until none remain before `db_finalize_deleted_user`. The per-user cap sweep in
+ * `notifications.cleanup_extra_notifications` walks the `users` table, so once the user record is
+ * purged its rows could never be reached again. Notifications that only name this user as the
+ * actor sit in another user's inbox and stay.
+ */
+async function db_drain_user_notifications_batch(ctx: MutationCtx, args: { userId: Id<"users">; batchSize: number }) {
+	const notifications = await ctx.db
+		.query("notifications")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	await Promise.all(notifications.map((doc) => ctx.db.delete("notifications", doc._id)));
+	return notifications.length;
+}
+
+/**
  * Phase 2 for a tombstoned user.
  *
  * This removes user-scoped docs that can be deleted after retention. It can also
@@ -1621,6 +1652,14 @@ export const process_user_deletion_request = internalMutation({
 		});
 		if (drainedPublisherDocs > 0) {
 			return { done: false, deletedCount: drainedPublisherDocs };
+		}
+
+		const drainedNotifications = await db_drain_user_notifications_batch(ctx, {
+			userId: user._id,
+			batchSize: batch_size(args),
+		});
+		if (drainedNotifications > 0) {
+			return { done: false, deletedCount: drainedNotifications };
 		}
 
 		// Finalize the user first to delete the remaining user-owned docs and to
@@ -2347,7 +2386,17 @@ export const prepare_user_for_hard_deletion = internalMutation({
 			userId: args.userId,
 			batchSize,
 		});
-		return deletedPublisherDocCount === 0;
+		// Not the session-style `>= batchSize` guard: the publisher drain walks several classes and
+		// can return a short count while later classes still hold docs.
+		if (deletedPublisherDocCount > 0) {
+			return false;
+		}
+
+		const deletedNotificationCount = await db_drain_user_notifications_batch(ctx, {
+			userId: args.userId,
+			batchSize,
+		});
+		return deletedNotificationCount === 0;
 	},
 });
 
