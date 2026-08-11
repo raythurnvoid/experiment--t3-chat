@@ -1,6 +1,6 @@
 /**
  * Plugin UI pages and file views: manifest-declared HTML entries rendered in sandboxed iframes
- * (`sandbox="allow-scripts"`, opaque origin). Pages open from the plugins nav; file views open
+ * (`sandbox="allow-scripts allow-same-origin"`). Pages open from the plugins nav; file views open
  * from `/files` when a file's stored content type matches a view's declared content types.
  *
  * Security model:
@@ -38,11 +38,6 @@ export const experimental_reuseContext = true;
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const SESSION_CLEANUP_BATCH_SIZE = 100;
 
-if (!process.env.VITE_CONVEX_HTTP_URL) {
-	throw new Error("VITE_CONVEX_HTTP_URL is not set in Convex env");
-}
-const HOST_ORIGIN = process.env.VITE_CONVEX_HTTP_URL;
-
 if (!process.env.R2_ENDPOINT) {
 	throw new Error("R2_ENDPOINT is not set in Convex env");
 }
@@ -52,16 +47,16 @@ if (!process.env.R2_ENDPOINT) {
 const R2_ENDPOINT_URL = new URL(process.env.R2_ENDPOINT);
 const R2_MEDIA_ORIGINS = `${R2_ENDPOINT_URL.origin} ${R2_ENDPOINT_URL.protocol}//${r2_get_bucket()}.${R2_ENDPOINT_URL.host}`;
 
-// A sandboxed document has an opaque origin, so CSP 'self' matches nothing: every source must be
-// explicit.
+// The frame keeps this asset origin so its public API calls stay same-origin and skip CORS
+// preflights. The host app has a different origin and remains outside the sandbox.
 const PLUGIN_PAGE_CSP = [
 	"default-src 'none'",
-	`script-src ${HOST_ORIGIN}`,
-	`style-src ${HOST_ORIGIN} 'unsafe-inline'`,
+	"script-src 'self'",
+	"style-src 'self' 'unsafe-inline'",
 	`img-src ${R2_MEDIA_ORIGINS} data: blob:`,
 	`media-src ${R2_MEDIA_ORIGINS} blob:`,
-	`connect-src ${HOST_ORIGIN}`,
-	`font-src ${HOST_ORIGIN}`,
+	"connect-src 'self'",
+	"font-src 'self'",
 	"base-uri 'none'",
 	"form-action 'none'",
 	`frame-ancestors ${allowed_origins().join(" ")}`,
@@ -668,11 +663,6 @@ export async function plugins_ui_http_handle_request(ctx: ActionCtx, request: Re
 		// The URL embeds the immutable version id, so content never changes under it.
 		"Cache-Control": "public, max-age=31536000, immutable",
 		"Cross-Origin-Resource-Policy": "cross-origin",
-		// The sandboxed page fetches its own module scripts/stylesheets in CORS mode with
-		// Origin: null (Vite emits crossorigin attributes, and module scripts are always
-		// CORS). Dists are public immutable content, so the wildcard gives away nothing
-		// sensitive.
-		"Access-Control-Allow-Origin": "*",
 	});
 	// CSP only matters when a resource is rendered as a document, so setting it on every
 	// response costs nothing for subresources and makes sure no document slips through

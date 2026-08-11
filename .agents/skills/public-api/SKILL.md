@@ -9,6 +9,8 @@ The public API is the workspace file surface for external callers: import CLIs, 
 
 The HTTP wrappers are split by startup cost. `/api/v1/files/list` lives in `packages/app/convex/public_api_files_list_http.ts` and stays in the small static root graph because it is the hot plugin read path. The other route definitions live in the small `packages/app/convex/public_api_http_routes.ts` module. Each route loads its heavy implementation from `packages/app/convex/public_api.ts` with a literal dynamic import only when that route runs. Shared Bearer-token authorization lives in `packages/app/convex/public_api_http_auth.ts`. Public scopes and the plugin token formats that principal resolution and HTTP authorization must agree on live in `packages/app/shared/public-api.ts`; one-consumer credential and grant details stay private to their owning Convex module.
 
+Plugin UI documents and `/api/v1/*` share the Convex HTTP origin. Their iframe keeps that origin through `sandbox="allow-scripts allow-same-origin"`, so the browser sends the existing JSON plus `Authorization` request directly without a CORS preflight. Do not add a `text/plain` token envelope or route calls through the host app. External browser callers on another origin still use normal CORS behavior.
+
 A caller is never more powerful than the user behind it. `public_api_http_auth.ts` maps every `files:*` scope to its required app permission (`content.read` or `content.write`). Routes pass only their scope, so they cannot forget the app-permission check. Plugin runs still use scopes only. The write mutations re-check credential liveness, membership, and ACL transactionally at publish time (`db_revalidate_file_write_principal`).
 
 # Principals and scopes

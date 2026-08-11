@@ -1603,6 +1603,8 @@ describe("plugin ui assets", () => {
 		expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
 		const csp = response.headers.get("Content-Security-Policy");
 		expect(csp).toContain("default-src 'none'");
+		expect(csp).toContain("script-src 'self'");
+		expect(csp).toContain("connect-src 'self'");
 		expect(csp).toContain("frame-ancestors https://app.test");
 		expect(await response.text()).toBe("<!doctype html><title>Gallery</title>");
 	});
@@ -1618,8 +1620,8 @@ describe("plugin ui assets", () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get("Content-Type")).toBe("application/javascript");
 		expect(response.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
-		// Module scripts fetch in CORS mode from the opaque-origin page.
-		expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+		// The frame and its immutable assets share one origin, so these files need no CORS header.
+		expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
 	});
 
 	test("does not serve artifacts until the source snapshot is ready", async () => {

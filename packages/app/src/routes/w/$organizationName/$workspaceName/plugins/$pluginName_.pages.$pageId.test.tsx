@@ -1,9 +1,8 @@
 /**
- * @vitest-environment happy-dom
- * @vitest-environment-options {"happyDOM": {"settings": {"disableIframePageLoading": true}}}
+ * @vitest-environment jsdom
  *
  * These tests cover the route's state machine and message fields. WindowProxy identity,
- * sandbox navigation, and opaque-origin delivery require the browser-project coverage.
+ * sandbox navigation, and concrete-origin delivery require the browser-project coverage.
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode, Ref } from "react";
@@ -71,6 +70,7 @@ import { Route } from "./$pluginName_.pages.$pageId.tsx";
 
 const postMessageMock = vi.fn();
 const frameWindow = { postMessage: postMessageMock } as unknown as Window;
+const CONVEX_HTTP_ORIGIN = new URL(import.meta.env.VITE_CONVEX_HTTP_URL).origin;
 
 function createUiPages() {
 	return [
@@ -101,7 +101,7 @@ function bridge_for(container: HTMLElement) {
 	return { iframe, iframeUrl, fragment, bridgeNonce };
 }
 
-function post_from_frame(data: unknown, origin = "null") {
+function post_from_frame(data: unknown, origin = CONVEX_HTTP_ORIGIN) {
 	window.dispatchEvent(new MessageEvent("message", { data, origin, source: frameWindow }));
 }
 
@@ -168,6 +168,7 @@ describe("RoutePluginsPluginPage", () => {
 		]);
 		expect(secondBridge.bridgeNonce).not.toBe(firstBridge.bridgeNonce);
 		expect(secondBridge.iframe.getAttribute("referrerpolicy")).toBe("no-referrer");
+		expect(secondBridge.iframe.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin");
 	});
 
 	test("mint failure replaces the page with an alert and moves focus to Retry", async () => {
@@ -209,10 +210,16 @@ describe("RoutePluginsPluginPage", () => {
 			});
 			await mintPromise;
 		});
-		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
+		expect(postMessageMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:init" }),
+			CONVEX_HTTP_ORIGIN,
+		);
 
 		await act(async () => post_ready(bridgeNonce));
-		expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
+		expect(postMessageMock).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:init" }),
+			CONVEX_HTTP_ORIGIN,
+		);
 	});
 
 	test("startup deadline replaces the page with an alert and moves focus to Retry", () => {
@@ -257,7 +264,10 @@ describe("RoutePluginsPluginPage", () => {
 		act(() => vi.advanceTimersByTime(1));
 
 		expect(screen.queryByRole("alert")).toBeNull();
-		expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
+		expect(postMessageMock).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:init" }),
+			CONVEX_HTTP_ORIGIN,
+		);
 	});
 
 	test("revokes a session minted after the host deadline without posting init", async () => {
@@ -288,7 +298,10 @@ describe("RoutePluginsPluginPage", () => {
 			await mintPromise;
 		});
 
-		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
+		expect(postMessageMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:init" }),
+			CONVEX_HTTP_ORIGIN,
+		);
 		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_ui_session", {
 			membershipId: "membership_1",
 			sessionId: "session_late",
@@ -322,7 +335,10 @@ describe("RoutePluginsPluginPage", () => {
 			await mintPromise;
 		});
 
-		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
+		expect(postMessageMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:init" }),
+			CONVEX_HTTP_ORIGIN,
+		);
 		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_ui_session", {
 			membershipId: "membership_1",
 			sessionId: "session_after_unmount",
@@ -390,7 +406,10 @@ describe("RoutePluginsPluginPage", () => {
 			1,
 		);
 		expect(screen.getByRole("alert").textContent).toContain("installed plugin version changed");
-		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
+		expect(postMessageMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:init" }),
+			CONVEX_HTTP_ORIGIN,
+		);
 	});
 
 	test("serializes refreshes and reuses the response for a repeated request id", async () => {
@@ -437,7 +456,7 @@ describe("RoutePluginsPluginPage", () => {
 		});
 		expect(postMessageMock).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "bonobo:token-error", requestId: "refresh_2" }),
-			"*",
+			CONVEX_HTTP_ORIGIN,
 		);
 
 		await act(async () => {
@@ -457,7 +476,7 @@ describe("RoutePluginsPluginPage", () => {
 		).toHaveLength(1);
 		expect(postMessageMock).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "bonobo:token", requestId: "refresh_1", token: "plu_2" }),
-			"*",
+			CONVEX_HTTP_ORIGIN,
 		);
 	});
 
@@ -536,7 +555,10 @@ describe("RoutePluginsPluginPage", () => {
 			await mintPromise;
 		});
 
-		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
+		expect(postMessageMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:init" }),
+			CONVEX_HTTP_ORIGIN,
+		);
 		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_ui_session", {
 			membershipId: "membership_1",
 			sessionId: "session_late",

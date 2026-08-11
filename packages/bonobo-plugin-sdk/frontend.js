@@ -1,11 +1,11 @@
 /**
  * Bonobo plugin frontend bridge — hand-written browser ESM, no dependencies, no build step.
  *
- * Runs inside the host app's sandboxed plugin iframe (`sandbox="allow-scripts"`, so the document
- * has an opaque origin) for plugin pages and plugin file views alike, and talks to the embedding
- * host app over the current strict postMessage contract: the page announces `bonobo:ready`, the
- * host answers `bonobo:init` with a short-lived scoped bearer token, and from then on the client
- * calls the public `/api/v1/*` API on `apiOrigin` directly with `Authorization: Bearer <token>`.
+ * Runs inside the host app's sandboxed plugin iframe for plugin pages and plugin file views alike,
+ * and talks to the embedding host app over the current strict postMessage contract: the page
+ * announces `bonobo:ready`, the host answers `bonobo:init` with a short-lived scoped bearer token,
+ * and from then on the client calls the public `/api/v1/*` API on its own iframe origin directly
+ * with `Authorization: Bearer <token>`.
  */
 
 /** `getToken` refreshes when the token is expired or expires within this margin. */

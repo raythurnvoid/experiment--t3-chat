@@ -1,10 +1,10 @@
 # Gallery Plugin Page Playbook
 
-Reusable recipes for driving the Gallery plugin page (`/w/:organizationName/:workspaceName/plugins/gallery/pages/gallery`) with Playwriter. The SPA runs inside the sandboxed iframe `.RoutePluginsPluginPage-frame` with an opaque origin — app-level locators do not reach it.
+Reusable recipes for driving the Gallery plugin page (`/w/:organizationName/:workspaceName/plugins/gallery/pages/gallery`) with Playwriter. The SPA runs inside the sandboxed iframe `.PluginsUiFrame` on the Convex asset/API origin. That origin differs from the app, so app-level locators do not reach it.
 
 ## Reaching the SPA document
 
-`contentDocument` is null from the app document — the sandbox omits `allow-same-origin`, so the SPA runs in an opaque origin. Use the Playwright frame handle instead (CDP attaches per frame regardless of origin):
+`contentDocument` is null from the app document because the app and iframe use different origins. Use the Playwright frame handle instead (CDP attaches per frame regardless of origin):
 
 ```js
 const frame = state.page.frames().find((f) => f.url().includes("/plugins-ui/"));
@@ -13,6 +13,7 @@ const tiles = await frame.evaluate(() => document.querySelectorAll(".tile").leng
 
 - The tab is often backgrounded: prefer `frame.evaluate()` DOM reads (`textContent`, `getComputedStyle`, counts) over snapshots/screenshots.
 - Handshake completion signal: the SPA replaces the boot screen (`role="status"` "Connecting…") with the `.gallery` grid or an error (`role="alert"`).
+- Public API requests are same-origin inside the frame. A normal JSON request with `Authorization` must produce one `POST` and no CORS `OPTIONS` request.
 
 ## Gallery DOM map
 
@@ -35,7 +36,7 @@ const tiles = await frame.evaluate(() => document.querySelectorAll(".tile").leng
 
 ## Known hazards
 
-- `fetch()` from the opaque-origin page to R2 fails by design (connect-src CSP) — probe media via element `readyState`/`naturalWidth`, not fetch.
+- `fetch()` from the plugin page to R2 fails by design because CSP limits `connect-src` to the Convex origin. Probe media via element `readyState`/`naturalWidth`, not fetch.
 - The extension relay does not support `Emulation.*` CDP methods: `page.emulateMedia()` and `page.unrouteAll()` fail. To restore real network after `page.route()` interception, register a later route with the same pattern that calls `route.continue()` (last-registered wins).
 - Routes added after the plugin iframe exists can intercept its later API fetches, but cached immutable plugin assets may bypass them. Do not rewrite the iframe document with `context.route()` plus `route.fetch()` / `route.fulfill()` to force a different asset: this killed the Windows relay and lost the session in two separate runs. Test a candidate bundle in a local top-level preview, or publish a new plugin version for a real iframe comparison.
 - Frame handles detach when the host startup deadline, Retry, or client navigation re-keys the iframe; `frame.evaluate` then throws "Execution context was destroyed". Re-find the frame each call. Stale entries linger in `page.frames()`, so after navigation use `page.frames().filter((frame) => frame.url().includes("/plugins-ui/")).at(-1)` instead of `find(...)`, which returns the oldest stale frame.

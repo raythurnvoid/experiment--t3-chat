@@ -6,6 +6,7 @@ import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "
 import type { Id } from "../../convex/_generated/dataModel.ts";
 
 const CONVEX_HTTP_URL = import.meta.env.VITE_CONVEX_HTTP_URL as string;
+const CONVEX_HTTP_ORIGIN = new URL(CONVEX_HTTP_URL).origin;
 
 // Max time a frame attempt gets from mount to posting bonobo:init before it counts as failed.
 const STARTUP_DEADLINE_MS = 15_000;
@@ -121,8 +122,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			if (cancelled || iframeRef.current !== iframeNode) {
 				return;
 			}
-			// The sandboxed document has an opaque origin, so no concrete targetOrigin can match it.
-			iframeWindow.postMessage(message, "*");
+			iframeWindow.postMessage(message, CONVEX_HTTP_ORIGIN);
 		};
 
 		const token_error = (requestId: string, message: string): RefreshResponse => ({
@@ -248,8 +248,8 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		};
 
 		const handle_message = (event: MessageEvent) => {
-			// Trust only this iframe's opaque-origin WindowProxy and the nonce placed in its fragment.
-			if (cancelled || event.source !== iframeWindow || event.origin !== "null") {
+			// Trust only this iframe's WindowProxy, its asset origin, and the nonce placed in its fragment.
+			if (cancelled || event.source !== iframeWindow || event.origin !== CONVEX_HTTP_ORIGIN) {
 				return;
 			}
 			const data: unknown = event.data;
@@ -299,11 +299,13 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 	}, [bridgeNonce, entry, getInitContext, kindLabel, membershipId, mintSession, onError, pluginName, pluginVersionId]);
 
 	return (
+		// The frame and public API share the Convex origin, so normal JSON requests need no CORS
+		// preflight. The host app uses a different origin, so the plugin still cannot reach its DOM.
 		<iframe
 			ref={iframeRef}
 			className={"PluginsUiFrame" satisfies PluginsUiFrame_ClassNames}
 			title={title}
-			sandbox="allow-scripts"
+			sandbox="allow-scripts allow-same-origin"
 			referrerPolicy="no-referrer"
 		/>
 	);

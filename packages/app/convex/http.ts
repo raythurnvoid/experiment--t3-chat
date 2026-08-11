@@ -23,22 +23,13 @@ const appCors = corsRouter(http, {
 	allowedHeaders: ["Authorization", "Content-Type"],
 });
 
-// Sandboxed plugin iframes have an opaque origin, so the browser sends the literal header
-// `Origin: null`. The "null" entry lets them call the bearer-token public API (no cookies;
-// allowCredentials stays false). It has to be added here in code because allowed_origins()
-// URL-parses the env entries and would drop the bare "null" string.
-const appCorsPublicApi = corsRouter(http, {
-	allowedOrigins: [...allowed_origins(), "null"],
-	allowedHeaders: ["Authorization", "Content-Type"],
-});
-
 // Route definitions stay small and static. Each heavy implementation loads inside its route.
 users_http_routes(appCors);
 ai_chat_http_routes(appCors);
 files_nodes_ai_http_routes(appCors);
 // File listing stays static because it is small and is the hot plugin read path.
-public_api_files_list_http_routes(appCorsPublicApi);
-public_api_http_routes(appCorsPublicApi);
+public_api_files_list_http_routes(appCors);
+public_api_http_routes(appCors);
 r2_http_routes(appCors);
 plugins_runtime_http_routes(appCors);
 plugins_ui_http_routes(http);
