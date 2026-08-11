@@ -35,7 +35,7 @@ All routes are POST and return JSON. Batch caps are tied to rate-bucket capaciti
 | `/api/v1/files/upload-urls`  | `files:write`    | Up to 20 files, presigned PUT urls, upload pipeline below                          |
 | `/api/v1/activities/start`   | `activities:write` | Plugin-facing activity feed entry; its durable mutation rechecks the live installation/version, active actor membership, and unarchived source file |
 
-`files/list` applies `contentTypePrefixes` inside the Convex query before pagination. `limit` counts matching docs, while `maximumRowsRead: 1000` bounds how many source docs one call scans. A sparse filtered page can therefore be short or empty while `isDone` is false; callers must continue with the returned cursor. The prefix predicate uses lexicographic string ranges because Convex filters do not provide `startsWith`.
+`files/list` applies `contentTypePrefixes` inside one Convex query before pagination. `limit` counts matching docs. `scanLimit` controls how many source docs the filtered query may inspect; the public route defaults it to 10,000, and the internal query caps it at 10,000 source docs. The query does not set `maximumBytesRead`. A sparse filtered page can still be short or empty while `isDone` is false, so callers must continue with the returned cursor. Direct internal callers such as AI file tools omit `scanLimit` and keep the 1,000-doc default. The prefix predicate uses lexicographic string ranges because Convex filters do not provide `startsWith`.
 
 # Rate buckets and quota
 

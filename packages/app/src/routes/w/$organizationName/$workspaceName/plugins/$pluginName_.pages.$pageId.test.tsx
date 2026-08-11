@@ -128,7 +128,18 @@ describe("RoutePluginsPluginPage", () => {
 			workspaceId: "ws_1",
 		});
 		useQueryMock.mockReturnValue(createUiPages());
-		mutationMock.mockResolvedValue({ _yay: {} });
+		mutationMock.mockImplementation((reference: string) =>
+			reference === "plugins_ui.mint_page_session"
+				? Promise.resolve({
+						_yay: {
+							token: "plu_default",
+							expiresAt: Date.now() + 60_000,
+							pluginVersionId: "version_1",
+							sessionId: "session_default",
+						},
+					})
+				: Promise.resolve({ _yay: {} }),
+		);
 		vi.spyOn(HTMLIFrameElement.prototype, "contentWindow", "get").mockReturnValue(frameWindow);
 	});
 
@@ -165,15 +176,43 @@ describe("RoutePluginsPluginPage", () => {
 		);
 
 		const PageComponent = Route.options.component as () => JSX.Element;
-		const { container } = render(<PageComponent />);
-		const { bridgeNonce } = bridge_for(container);
-
-		await act(async () => post_ready(bridgeNonce));
+		render(<PageComponent />);
 
 		const alert = await screen.findByRole("alert");
 		expect(alert.textContent).toContain("Unauthorized");
 		const retry = screen.getByRole("button", { name: "Retry" });
 		expect(document.activeElement).toBe(retry);
+	});
+
+	test("mints in parallel but waits for the frame ready message before posting init", async () => {
+		let resolveMint: ((value: unknown) => void) | null = null;
+		const mintPromise = new Promise((resolve) => {
+			resolveMint = resolve;
+		});
+		mutationMock.mockImplementation((reference: string) =>
+			reference === "plugins_ui.mint_page_session" ? mintPromise : Promise.resolve({ _yay: {} }),
+		);
+
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const { container } = render(<PageComponent />);
+		const { bridgeNonce } = bridge_for(container);
+		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.mint_page_session", expect.anything());
+
+		await act(async () => {
+			resolveMint?.({
+				_yay: {
+					token: "plu_parallel",
+					expiresAt: Date.now() + 60_000,
+					pluginVersionId: "version_1",
+					sessionId: "session_parallel",
+				},
+			});
+			await mintPromise;
+		});
+		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
+
+		await act(async () => post_ready(bridgeNonce));
+		expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), "*");
 	});
 
 	test("startup deadline replaces the page with an alert and moves focus to Retry", () => {
@@ -318,7 +357,9 @@ describe("RoutePluginsPluginPage", () => {
 			});
 		});
 
-		expect(mutationMock).not.toHaveBeenCalledWith("plugins_ui.mint_page_session", expect.anything());
+		expect(mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.mint_page_session")).toHaveLength(
+			1,
+		);
 		expect(postMessageMock).not.toHaveBeenCalled();
 	});
 
@@ -533,7 +574,7 @@ describe("RoutePluginsPluginPage", () => {
 		postMessageMock.mockClear();
 
 		await act(async () => post_ready(firstNonce));
-		expect(mintCount).toBe(1);
+		expect(mintCount).toBe(2);
 		expect(postMessageMock).not.toHaveBeenCalled();
 
 		await act(async () => post_ready(secondBridge.bridgeNonce));

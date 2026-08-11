@@ -155,7 +155,7 @@ A plugin frontend is trusted with the token and every datum its accepted permiss
 | host → page | `bonobo:token`                 | `bridgeNonce`, `requestId`, `token`, `tokenExpiresAt`                                                                                       |
 | host → page | `bonobo:token-error`           | `bridgeNonce`, `requestId`, `message`                                                                                                       |
 
-`bonobo_ui_connect` (from `bonobo-plugin-sdk/frontend`) implements the page side. Before connecting, it requires exactly one canonical HTTP(S) `parentOrigin` and one UUIDv4 `bridgeNonce` in the URL fragment. It sends ready with that nonce to the exact parent origin and retries until init or document unload. Every host message must come from `window.parent`, that exact origin, and the matching nonce. The host still posts to the opaque iframe with `targetOrigin: "*"`, because an opaque receiver has no concrete target origin. The host owns the startup deadline.
+`bonobo_ui_connect` (from `bonobo-plugin-sdk/frontend`) implements the page side. Before connecting, it requires exactly one canonical HTTP(S) `parentOrigin` and one UUIDv4 `bridgeNonce` in the URL fragment. It sends ready with that nonce to the exact parent origin and retries until init or document unload. The host starts minting the session while the iframe assets load, but it does not send the token until this ready message proves the current frame loaded the bridge. Every host message must come from `window.parent`, that exact origin, and the matching nonce. The host still posts to the opaque iframe with `targetOrigin: "*"`, because an opaque receiver has no concrete target origin. The host owns the startup deadline.
 
 ### UI token API surface
 
@@ -174,7 +174,7 @@ Each of the first 20 requested files consumes one call from the route's principa
 bucket. One inaccessible file appears in `errors` without discarding the other successful URLs.
 Duplicate file IDs are rejected with `400` before they consume route capacity or start file work.
 
-Pagination of `/api/v1/files/list` (`{ items, cursor, isDone }`): with `contentTypePrefixes` the server scans for matching files inside a bounded source page. A page may come back short or even empty while `isDone` is still `false` — keep passing `cursor` until `isDone` is `true` or you have enough items. Scan with `limit: 100` and `kind: "file"`, bound the pages advanced per user action, buffer overflow items for the next action, and retry a `429` on the same cursor.
+Pagination of `/api/v1/files/list` (`{ items, cursor, isDone }`): with `contentTypePrefixes`, one request uses one bounded query. `scanLimit` sets its source-doc budget; the server defaults and caps it at 10,000 docs. The query does not set a byte-read cap. A page may come back short or even empty while `isDone` is still `false` — keep passing `cursor` until `isDone` is `true` or you have enough items. Scan with `limit: 100`, `scanLimit: 10000`, and `kind: "file"`; bound the requests advanced per user action, buffer overflow items for the next action, and retry a `429` on the same cursor.
 
 ### Frontend page example
 
@@ -188,8 +188,8 @@ if (client.context.kind === "page") {
 }
 
 // files:list — a bounded contentTypePrefixes scan can return a short or even empty page, so
-// that does not mean the listing is done. Scan wide (limit 100, kind "file"), cap how many source
-// pages one user action advances, and keep the cursor so the next action resumes; anything
+// that does not mean the listing is done. Scan wide (limit 100, scanLimit 10000, kind "file"),
+// cap how many source pages one user action advances, and keep the cursor so the next action resumes; anything
 // fetched beyond what is shown stays buffered for that next action.
 let cursor = null;
 let isDone = false;
@@ -199,7 +199,15 @@ for (let pages = 0; images.length < 48 && !isDone && pages < 30; pages += 1) {
 	for (let attempt = 0; ; attempt += 1) {
 		try {
 			page = await client.fetchJson("/api/v1/files/list", {
-				body: { path: "/", recursive: true, kind: "file", limit: 100, contentTypePrefixes: ["image/"], cursor },
+				body: {
+					path: "/",
+					recursive: true,
+					kind: "file",
+					limit: 100,
+					scanLimit: 10_000,
+					contentTypePrefixes: ["image/"],
+					cursor,
+				},
 			});
 			break;
 		} catch (error) {

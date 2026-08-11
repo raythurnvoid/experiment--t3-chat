@@ -4264,7 +4264,8 @@ export const get_authorized_by_path = query({
 	},
 });
 
-const SUBTREE_FILTER_MAX_ROWS_READ = 1000;
+const SUBTREE_FILTER_DEFAULT_MAX_ROWS_READ = 1000;
+const SUBTREE_FILTER_MAX_ROWS_READ = 10_000;
 
 // #region list
 
@@ -4512,6 +4513,7 @@ export const list_subtree = internalQuery({
 		contentTypePrefixes: v.optional(v.array(v.string())),
 		minDepth: v.optional(v.number()),
 		maxDepth: v.optional(v.number()),
+		maximumRowsRead: v.optional(v.number()),
 	},
 	returns: paginationResultValidator(doc(app_convex_schema, "files_nodes")),
 	handler: async (ctx, args) => {
@@ -4594,7 +4596,12 @@ export const list_subtree = internalQuery({
 			numItems: args.numItems,
 			...(contentTypePrefixes == null && minAbsoluteDepth == null && maxAbsoluteDepth == null
 				? {}
-				: { maximumRowsRead: SUBTREE_FILTER_MAX_ROWS_READ }),
+				: {
+						maximumRowsRead: Math.min(
+							args.maximumRowsRead ?? SUBTREE_FILTER_DEFAULT_MAX_ROWS_READ,
+							SUBTREE_FILTER_MAX_ROWS_READ,
+						),
+					}),
 		});
 
 		// A bounded query filter or the access check can make a page shorter. The cursor still walks

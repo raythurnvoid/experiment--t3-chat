@@ -100,6 +100,8 @@ export const public_api_SCOPE_OUTBOUND_FETCH = "outbound:fetch";
 export const public_api_SCOPE_ACTIVITIES_WRITE = "activities:write";
 
 const FILES_LIST_MAX_ITEMS = 100;
+// Public clients may scan more source docs than AI file tools. The internal query still owns the hard cap.
+const FILES_LIST_DEFAULT_SCAN_LIMIT = 10_000;
 const FILES_READ_MAX_BYTES = 128_000;
 const FILES_READ_MANY_MAX_ITEMS = 50;
 const FILES_READ_MANY_MAX_CONTENT_BYTES = 384_000;
@@ -3036,6 +3038,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							path: z.string().optional(),
 							cursor: z.string().nullable().optional(),
 							limit: z.number().int().min(1).optional(),
+							scanLimit: z.number().int().min(1).optional(),
 							recursive: z.boolean().optional(),
 							kind: z.enum(["file", "folder"]).optional(),
 							extension: z.string().optional(),
@@ -3083,6 +3086,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								contentTypePrefixes: body._yay.contentTypePrefixes,
 								minDepth: 1,
 								maxDepth: body._yay.recursive ? undefined : 1,
+								maximumRowsRead: body._yay.scanLimit ?? FILES_LIST_DEFAULT_SCAN_LIMIT,
 							});
 
 							// One readiness query for the whole page, separate from list_subtree so upload

@@ -116,12 +116,13 @@ export interface BonoboUiFrontendClient {
 	 * refreshes the token and retries exactly once. Ok responses resolve with the parsed JSON
 	 * body; non-ok responses throw an `Error` carrying `status` and `responseText`.
 	 *
-	 * Pagination: with `contentTypePrefixes`, `/api/v1/files/list` scans for matching files
-	 * inside a bounded server page. A page may come back short or even empty while `isDone`
-	 * is still `false`.
-	 * Scan with `limit: 100` and `kind: "file"`, advance a bounded number of source pages per
-	 * user action (say 30), keep `cursor` across actions, buffer items fetched beyond what is
-	 * shown, and retry a `429` on the same cursor — the page is not lost.
+	 * Pagination: with `contentTypePrefixes`, one `/api/v1/files/list` request uses one bounded
+	 * query. `scanLimit` sets its source-doc budget; the server defaults and caps it at 10,000 docs.
+	 * The query does not set a byte-read cap. A page may come back short or even empty while
+	 * `isDone` is still `false`.
+	 * Scan with `limit: 100`, `scanLimit: 10000`, and `kind: "file"`. Advance a bounded number
+	 * of requests per user action (say 30), keep `cursor` across actions, buffer items fetched
+	 * beyond what is shown, and retry a `429` on the same cursor — the page is not lost.
 	 */
 	fetchJson(path: string, init?: { method?: string; headers?: Record<string, string>; body?: unknown }): Promise<any>;
 }

@@ -326,6 +326,7 @@ describe("public files API", () => {
 
 		for (const [path, body] of [
 			["/api/v1/files/list", { limit: 0 }],
+			["/api/v1/files/list", { scanLimit: 0 }],
 			["/api/v1/files/list", { contentTypePrefixes: [] }],
 			["/api/v1/files/read", { path: "/file.md", maxBytes: 0 }],
 			["/api/v1/files/read-many", { paths: [] }],

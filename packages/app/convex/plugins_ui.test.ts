@@ -804,13 +804,13 @@ describe("plugin ui sessions", () => {
 		expect(separateRoute.status).not.toBe(429);
 	});
 
-	test("scans past non-matching files before returning a content-type page", async () => {
+	test("uses the caller scan limit to return a sparse content-type page", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
 		await t.run(async (ctx) => {
 			const now = Date.now();
-			for (let index = 0; index < 105; index += 1) {
-				const name = `a-${String(index).padStart(3, "0")}.md`;
+			for (let index = 0; index < 2005; index += 1) {
+				const name = `a-${String(index).padStart(4, "0")}.md`;
 				await ctx.db.insert("files_nodes", {
 					organizationId: fixture.membership.organizationId,
 					workspaceId: fixture.membership.workspaceId,
@@ -856,6 +856,7 @@ describe("plugin ui sessions", () => {
 			body: JSON.stringify({
 				recursive: true,
 				limit: 100,
+				scanLimit: 10_000,
 				contentTypePrefixes: ["image/", "video/"],
 			}),
 		});

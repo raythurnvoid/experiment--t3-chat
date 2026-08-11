@@ -87,7 +87,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		let loadCount = 0;
 		let sessionId: Id<"plugins_ui_sessions"> | null = null;
 		let revokeStarted = false;
-		let mintStarted = false;
+		let frameReady = false;
 		let initMessage: unknown = null;
 		let refreshInFlight: { requestId: string; promise: Promise<RefreshResponse> } | null = null;
 		let lastRefreshResponse: RefreshResponse | null = null;
@@ -133,61 +133,62 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		});
 
 		const handle_ready = () => {
-			// The SDK repeats ready until init arrives, so replay the same init instead of minting again.
+			frameReady = true;
+			// The SDK repeats ready until init arrives, so replay the same init when it is available.
 			if (initMessage) {
 				post_to_iframe(initMessage);
-				return;
+				clearTimeout(startupDeadline);
 			}
-			if (mintStarted) {
-				return;
-			}
+		};
 
-			mintStarted = true;
-			const mintPromise = mintSession();
-			void mintPromise
-				.then((result) => {
-					if (cancelled || iframeRef.current !== iframeNode) {
-						// A mint can finish after Retry or unmount. Revoke it instead of posting to a stale frame.
-						if (result._yay) {
-							revoke_session(result._yay.sessionId);
-						}
-						return;
-					}
-					if (result._nay) {
-						cancelled = true;
-						onError(result._nay.message);
-						return;
-					}
-					if (result._yay.pluginVersionId !== pluginVersionId) {
+		// Start the session while the iframe downloads and evaluates its assets. Keep the token in the
+		// host until the nonce-bound ready message proves that this frame loaded the bridge SDK.
+		const mintPromise = mintSession();
+		void mintPromise
+			.then((result) => {
+				if (cancelled || iframeRef.current !== iframeNode) {
+					// A mint can finish after Retry or unmount. Revoke it instead of posting to a stale frame.
+					if (result._yay) {
 						revoke_session(result._yay.sessionId);
-						cancelled = true;
-						onError(`The installed plugin version changed while the ${kindLabel} was starting`);
-						return;
 					}
+					return;
+				}
+				if (result._nay) {
+					cancelled = true;
+					onError(result._nay.message);
+					return;
+				}
+				if (result._yay.pluginVersionId !== pluginVersionId) {
+					revoke_session(result._yay.sessionId);
+					cancelled = true;
+					onError(`The installed plugin version changed while the ${kindLabel} was starting`);
+					return;
+				}
 
-					sessionId = result._yay.sessionId;
-					initMessage = {
-						type: "bonobo:init",
-						bridgeNonce,
-						apiOrigin: CONVEX_HTTP_URL,
-						token: result._yay.token,
-						tokenExpiresAt: result._yay.expiresAt,
-						context: getInitContext(),
-					};
+				sessionId = result._yay.sessionId;
+				initMessage = {
+					type: "bonobo:init",
+					bridgeNonce,
+					apiOrigin: CONVEX_HTTP_URL,
+					token: result._yay.token,
+					tokenExpiresAt: result._yay.expiresAt,
+					context: getInitContext(),
+				};
+				if (frameReady) {
 					post_to_iframe(initMessage);
 					clearTimeout(startupDeadline);
-				})
-				.catch((error) => {
-					console.error("[PluginsUiFrame] Failed to mint ui session:", {
-						error,
-						pluginName,
-					});
-					if (!cancelled) {
-						cancelled = true;
-						onError(`Failed to start the ${kindLabel} session`);
-					}
+				}
+			})
+			.catch((error) => {
+				console.error("[PluginsUiFrame] Failed to mint ui session:", {
+					error,
+					pluginName,
 				});
-		};
+				if (!cancelled) {
+					cancelled = true;
+					onError(`Failed to start the ${kindLabel} session`);
+				}
+			});
 
 		const handle_refresh = (requestId: string) => {
 			if (!sessionId) {
