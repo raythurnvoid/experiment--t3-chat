@@ -17,6 +17,14 @@ const FIELD_SEGMENT_REGEX = /^[A-Za-z0-9_-]+$/u;
  */
 export const files_metadata_MAX_FRONTMATTER_FIELDS = 128;
 
+/**
+ * Product cap on the TOTAL metadata docs one file's frontmatter can index: one doc per field
+ * plus one doc per value, including every `maybe_date` companion. The field cap alone does not
+ * bound this. A single array field with hundreds of unique scalar values (each date-like string
+ * adding a companion) would still exceed the per-transaction doc-write limit.
+ */
+export const files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS = 512;
+
 export type files_metadata_Value =
 	| { qualifiedField: string; valueKind: "string"; value: string }
 	| { qualifiedField: string; valueKind: "number"; value: number }
@@ -308,6 +316,32 @@ export function files_metadata_extract_frontmatter(markdown: string): ExtractedM
 		fields: [...fields],
 		values: [...values.values()],
 	};
+}
+
+/**
+ * The one pure extraction/preflight both save paths run BEFORE any canonical write. It returns
+ * the extracted metadata plus both counts the caps gate on: the field count and the total
+ * index-document count (one doc per field plus one per value, `maybe_date` companions included).
+ * Committed materialization settles a marker and pending creation/rebase returns a refusal when
+ * either count is over. The insert helpers keep their late throws only as impossible backstops.
+ */
+export function files_metadata_preflight_frontmatter(markdown: string) {
+	const metadata = files_metadata_extract_frontmatter(markdown);
+	return {
+		metadata,
+		fieldCount: metadata.fields.length,
+		indexDocumentCount: metadata.fields.length + metadata.values.length,
+	};
+}
+
+export function files_metadata_frontmatter_exceeds_index_caps(preflight: {
+	fieldCount: number;
+	indexDocumentCount: number;
+}) {
+	return (
+		preflight.fieldCount > files_metadata_MAX_FRONTMATTER_FIELDS ||
+		preflight.indexDocumentCount > files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS
+	);
 }
 
 // #endregion frontmatter extraction

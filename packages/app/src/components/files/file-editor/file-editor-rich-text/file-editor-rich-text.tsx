@@ -134,7 +134,7 @@ const FileEditorRichTextToolbarTools = memo(function FileEditorRichTextToolbarTo
 type FileEditorRichTextToolbarStatus_Props = {
 	editor: Editor;
 	editable: boolean;
-	getCurrentMarkdown: () => string;
+	getCurrentText: () => string;
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
 	sizeRef: FileEditorRichTextSizeRef;
@@ -145,7 +145,7 @@ type FileEditorRichTextToolbarStatus_Props = {
 const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarStatus(
 	props: FileEditorRichTextToolbarStatus_Props,
 ) {
-	const { editor, editable, getCurrentMarkdown, nodeId, sessionId, sizeRef, syncChanged, syncStatus } = props;
+	const { editor, editable, getCurrentText, nodeId, sessionId, sizeRef, syncChanged, syncStatus } = props;
 
 	const wordsCount = useEditorState({
 		editor,
@@ -171,10 +171,10 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 			return;
 		}
 
-		const nextByteSize = files_get_utf8_byte_size(getCurrentMarkdown());
+		const nextByteSize = files_get_utf8_byte_size(getCurrentText());
 		setByteSize(nextByteSize);
 		sizeRef.current.isOverCap = nextByteSize > files_MAX_TEXT_CONTENT_BYTES;
-		// `getCurrentMarkdown` is a `useFn` wrapper: stable identity, always calling the latest
+		// `getCurrentText` is a `useFn` wrapper: stable identity, always calling the latest
 		// closure. It stays out of the deps because it says nothing about when to re-measure —
 		// the debounced character count is what decides that.
 	}, [debouncedCharactersCount, isWorthMeasuring, sizeRef]);
@@ -226,7 +226,7 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 				nodeId={nodeId}
 				sessionId={sessionId}
 				editable={editable}
-				getCurrentMarkdown={getCurrentMarkdown}
+				getCurrentText={getCurrentText}
 			/>
 		</>
 	);
@@ -237,9 +237,9 @@ const FileEditorRichTextToolbarActions = memo(function FileEditorRichTextToolbar
 ) {
 	const { editor, nodeId, editable, sessionId, sizeRef, syncChanged, syncStatus, toolbarPortalHost } = props;
 
-	const getCurrentMarkdown = useFn(() => {
+	const getCurrentText = useFn(() => {
 		const markdown = editor.getMarkdown();
-		// Match files_yjs_doc_get_markdown: non-empty file content ends with one `\n`,
+		// Match files_yjs_doc_get_text: non-empty file content ends with one `\n`,
 		// so the snapshot preview does not show a fake final-newline diff.
 		return markdown === "" || markdown.endsWith("\n") ? markdown : markdown + "\n";
 	});
@@ -254,7 +254,7 @@ const FileEditorRichTextToolbarActions = memo(function FileEditorRichTextToolbar
 			<FileEditorRichTextToolbarStatus
 				editor={editor}
 				editable={editable}
-				getCurrentMarkdown={getCurrentMarkdown}
+				getCurrentText={getCurrentText}
 				nodeId={nodeId}
 				sessionId={sessionId}
 				sizeRef={sizeRef}
@@ -768,6 +768,7 @@ export type FileEditorRichText_ClassNames =
 	| "FileEditorRichText"
 	| "FileEditorRichText-visible"
 	| "FileEditorRichText-load-error"
+	| "FileEditorRichText-push-refused"
 	| "FileEditorRichText-editor-content-root"
 	| "FileEditorRichText-editor-content-container"
 	| "FileEditorRichText-editor-content"
@@ -930,6 +931,15 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 			{filesYjs.loadFailed && (
 				<div className={"FileEditorRichText-load-error" satisfies FileEditorRichText_ClassNames} role="alert">
 					Can't load this document right now. Retrying — check your connection.
+				</div>
+			)}
+			{/* The Yjs push loop retries transient failures on its own; this shows only when the
+			    server refused the update for good, so typing would otherwise keep going into a
+			    document that silently stopped saving. */}
+			{!filesYjs.loadFailed && filesYjs.pushRefused && (
+				<div className={"FileEditorRichText-push-refused" satisfies FileEditorRichText_ClassNames} role="alert">
+					Your latest changes were not saved: the server refused the update. New edits retry it — if this
+					message stays, copy your changes and reload.
 				</div>
 			)}
 			<div

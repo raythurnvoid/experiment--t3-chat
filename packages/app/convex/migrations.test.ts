@@ -53,16 +53,16 @@ const migrations_test_schema = defineSchema({
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
 	}),
-	files_markdown_chunks: defineTable({
+	files_text_chunks: defineTable({
 		organizationId: v.string(),
 		workspaceId: v.string(),
 		fileNodeId: v.id("files_nodes"),
 		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
 		userId: v.optional(v.string()),
-		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		pendingUpdateId: v.optional(v.string()),
 		yjsSequence: v.optional(v.number()),
 		chunkIndex: v.number(),
-		markdownChunk: v.string(),
+		textChunk: v.string(),
 		startIndex: v.number(),
 		endIndex: v.number(),
 		lineStart: v.number(),
@@ -79,7 +79,7 @@ const migrations_test_schema = defineSchema({
 		path: v.optional(v.string()),
 		archiveOperationId: v.optional(v.string()),
 		plainTextChunk: v.string(),
-		markdownChunkId: v.id("files_markdown_chunks"),
+		textChunkId: v.id("files_text_chunks"),
 	}),
 	plugins_workspace_installation_secrets: defineTable({
 		organizationId: v.string(),
@@ -115,14 +115,14 @@ describe("rename_plain_text_chunks_file_node_id", () => {
 				updatedBy: userId,
 				updatedAt: 100,
 			});
-			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+			const textChunkId = await ctx.db.insert("files_text_chunks", {
 				organizationId: "organization-files-node-id-rename",
 				workspaceId: "workspace-files-node-id-rename",
 				fileNodeId: fileId,
 				sourceKind: "committed",
 				yjsSequence: 0,
 				chunkIndex: 0,
-				markdownChunk: "hello",
+				textChunk: "hello",
 				startIndex: 0,
 				endIndex: 5,
 				lineStart: 1,
@@ -136,7 +136,7 @@ describe("rename_plain_text_chunks_file_node_id", () => {
 				yjsSequence: 0,
 				chunkIndex: 0,
 				plainTextChunk: "hello",
-				markdownChunkId,
+				textChunkId,
 			});
 
 			return { fileId, plainTextChunkId };
@@ -270,14 +270,14 @@ describe("files chunk search backfills", () => {
 				updatedBy: userId,
 				updatedAt: 100,
 			});
-			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+			const textChunkId = await ctx.db.insert("files_text_chunks", {
 				organizationId: "organization-files-backfill",
 				workspaceId: "workspace-files-backfill",
 				fileNodeId: fileId,
 				sourceKind: "committed",
 				yjsSequence: 0,
 				chunkIndex: 0,
-				markdownChunk: "hello",
+				textChunk: "hello",
 				startIndex: 0,
 				endIndex: 5,
 				lineStart: 1,
@@ -291,7 +291,7 @@ describe("files chunk search backfills", () => {
 				yjsSequence: 0,
 				chunkIndex: 0,
 				plainTextChunk: "hello",
-				markdownChunkId,
+				textChunkId,
 			});
 
 			return { fileId, plainTextChunkId };

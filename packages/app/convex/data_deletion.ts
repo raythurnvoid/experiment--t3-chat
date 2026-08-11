@@ -238,6 +238,76 @@ async function db_purge_organization_workspace_content_batch(
 ) {
 	const { organizationId, workspaceId, batchSize } = args;
 
+	// Paged pending-state families and their operation scaffolding go before the pending-update
+	// parent docs: pages before state docs, text inputs before their operation batches.
+	const statePages = await ctx.db
+		.query("files_pending_update_yjs_state_pages")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (statePages.length > 0) {
+		await Promise.all(statePages.map((doc) => ctx.db.delete("files_pending_update_yjs_state_pages", doc._id)));
+		return { done: false, deletedCount: statePages.length };
+	}
+
+	const stateDocs = await ctx.db
+		.query("files_pending_update_yjs_states")
+		.withIndex("by_organization_workspace_fileNode", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (stateDocs.length > 0) {
+		await Promise.all(stateDocs.map((doc) => ctx.db.delete("files_pending_update_yjs_states", doc._id)));
+		return { done: false, deletedCount: stateDocs.length };
+	}
+
+	const stateCleanupTasks = await ctx.db
+		.query("files_pending_update_state_cleanup_tasks")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (stateCleanupTasks.length > 0) {
+		await Promise.all(
+			stateCleanupTasks.map((doc) => ctx.db.delete("files_pending_update_state_cleanup_tasks", doc._id)),
+		);
+		return { done: false, deletedCount: stateCleanupTasks.length };
+	}
+
+	const textInputs = await ctx.db
+		.query("files_pending_update_text_inputs")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (textInputs.length > 0) {
+		await Promise.all(textInputs.map((doc) => ctx.db.delete("files_pending_update_text_inputs", doc._id)));
+		return { done: false, deletedCount: textInputs.length };
+	}
+
+	const operationBatches = await ctx.db
+		.query("files_pending_update_operation_batches")
+		.withIndex("by_organization_workspace_user_fileNode", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (operationBatches.length > 0) {
+		await Promise.all(operationBatches.map((doc) => ctx.db.delete("files_pending_update_operation_batches", doc._id)));
+		return { done: false, deletedCount: operationBatches.length };
+	}
+
+	const trustedUpdateStages = await ctx.db
+		.query("files_yjs_trusted_update_stages")
+		.withIndex("by_organization_workspace_user_fileNode", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (trustedUpdateStages.length > 0) {
+		await Promise.all(trustedUpdateStages.map((doc) => ctx.db.delete("files_yjs_trusted_update_stages", doc._id)));
+		return { done: false, deletedCount: trustedUpdateStages.length };
+	}
+
 	// Pending-update parent docs have cleanup-task, chunk, and metadata
 	// children. Delete those children first, then delete the parent pending-update doc.
 	const pendingUpdate = await ctx.db
@@ -265,13 +335,13 @@ async function db_purge_organization_workspace_content_batch(
 			return { done: false, deletedCount: pendingPlainTextChunks.length };
 		}
 
-		const markdownChunks = await ctx.db
-			.query("files_markdown_chunks")
+		const textChunks = await ctx.db
+			.query("files_text_chunks")
 			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
 			.take(batchSize);
-		if (markdownChunks.length > 0) {
-			await Promise.all(markdownChunks.map((doc) => ctx.db.delete("files_markdown_chunks", doc._id)));
-			return { done: false, deletedCount: markdownChunks.length };
+		if (textChunks.length > 0) {
+			await Promise.all(textChunks.map((doc) => ctx.db.delete("files_text_chunks", doc._id)));
+			return { done: false, deletedCount: textChunks.length };
 		}
 
 		const metadataDocs = await ctx.db
@@ -521,15 +591,15 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: plainTextChunks.length };
 	}
 
-	const markdownChunks = await ctx.db
-		.query("files_markdown_chunks")
+	const textChunks = await ctx.db
+		.query("files_text_chunks")
 		.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
-	if (markdownChunks.length > 0) {
-		await Promise.all(markdownChunks.map((doc) => ctx.db.delete("files_markdown_chunks", doc._id)));
-		return { done: false, deletedCount: markdownChunks.length };
+	if (textChunks.length > 0) {
+		await Promise.all(textChunks.map((doc) => ctx.db.delete("files_text_chunks", doc._id)));
+		return { done: false, deletedCount: textChunks.length };
 	}
 
 	const yjsSnapshots = await ctx.db
@@ -1182,7 +1252,7 @@ async function db_finalize_deleted_user(
 		anonymousAuthTokens,
 		pendingUpdates,
 		pendingUpdateCleanupTasks,
-		pendingMarkdownChunks,
+		pendingTextChunks,
 		pendingPlainTextChunks,
 		pendingMetadataDocs,
 		lastSequenceSaved,
@@ -1224,7 +1294,7 @@ async function db_finalize_deleted_user(
 				await Promise.all(
 					docs.map((doc) =>
 						ctx.db
-							.query("files_markdown_chunks")
+							.query("files_text_chunks")
 							.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", doc._id))
 							.collect(),
 					),
@@ -1290,7 +1360,9 @@ async function db_finalize_deleted_user(
 		affectedOrganizationIds.add(assignment.organizationId);
 	}
 
-	// Delete pending-update children before parent pending-update docs.
+	// Delete pending-update children before parent pending-update docs. The by-user drain below
+	// covers this user's paged state families in every ownership (active, temporary, retired),
+	// so the per-pending-doc family lookup is not repeated here.
 	const [directPermissionGrants, userQuotaDocs] = await Promise.all([
 		ctx.db
 			.query("access_control_permission_grants")
@@ -1300,10 +1372,43 @@ async function db_finalize_deleted_user(
 			.query("quotas")
 			.withIndex("by_user_quotaName", (q) => q.eq("userId", user._id))
 			.collect(),
+		ctx.db
+			.query("files_pending_update_yjs_states")
+			.withIndex("by_user", (q) => q.eq("userId", userIdString))
+			.collect()
+			.then((stateDocs) =>
+				Promise.all(
+					stateDocs.map(async (stateDoc) => {
+						const pages = await ctx.db
+							.query("files_pending_update_yjs_state_pages")
+							.withIndex("by_state_pageIndex", (q) => q.eq("stateId", stateDoc._id))
+							.collect();
+						await Promise.all(pages.map((page) => ctx.db.delete("files_pending_update_yjs_state_pages", page._id)));
+						await ctx.db.delete("files_pending_update_yjs_states", stateDoc._id);
+					}),
+				),
+			),
+		ctx.db
+			.query("files_pending_update_text_inputs")
+			.withIndex("by_user", (q) => q.eq("userId", userIdString))
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("files_pending_update_text_inputs", doc._id)))),
+		ctx.db
+			.query("files_pending_update_operation_batches")
+			.withIndex("by_user", (q) => q.eq("userId", userIdString))
+			.collect()
+			.then((docs) =>
+				Promise.all(docs.map((doc) => ctx.db.delete("files_pending_update_operation_batches", doc._id))),
+			),
+		ctx.db
+			.query("files_yjs_trusted_update_stages")
+			.withIndex("by_user", (q) => q.eq("userId", user._id))
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("files_yjs_trusted_update_stages", doc._id)))),
 		Promise.all([
 			...pendingPlainTextChunks.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),
 			...pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)),
-			...pendingMarkdownChunks.map((doc) => ctx.db.delete("files_markdown_chunks", doc._id)),
+			...pendingTextChunks.map((doc) => ctx.db.delete("files_text_chunks", doc._id)),
 			...pendingMetadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)),
 		]),
 	]);

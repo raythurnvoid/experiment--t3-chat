@@ -277,6 +277,9 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				workspaceId: args.workspaceId,
 				fileNodeId,
 				lastSequence: 1,
+				unmaterializedUpdateCount: 0,
+				unmaterializedUpdateBytes: 0,
+				lineageGeneration: 0,
 			}),
 		]);
 		await ctx.db.patch("files_nodes", fileNodeId, {
@@ -284,15 +287,16 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			statsId,
 			yjsSnapshotId,
 			yjsLastSequenceId,
+			yjsRootKind: "rich_text",
 		});
-		const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+		const textChunkId = await ctx.db.insert("files_text_chunks", {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			fileNodeId,
 			sourceKind: "committed",
 			yjsSequence: 1,
 			chunkIndex: 0,
-			markdownChunk: `# ${args.tag} ${i}`,
+			textChunk: `# ${args.tag} ${i}`,
 			startIndex: 0,
 			endIndex: 12,
 			lineStart: 1,
@@ -306,11 +310,11 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				fileNodeId,
 				sourceKind: "committed",
 				yjsSequence: 1,
-				markdownChunkId,
+				textChunkId,
 				chunkIndex: 0,
 				path: `/${args.tag}-${i}.md`,
 				plainTextChunk: `${args.tag} ${i}`,
-				markdownChunk: `# ${args.tag} ${i}`,
+				textChunk: `# ${args.tag} ${i}`,
 				startIndex: 0,
 				endIndex: 12,
 				lineStart: 1,
@@ -369,14 +373,10 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				workspaceId: args.workspaceId,
 				userId: args.userId,
 				fileNodeId,
-				baseYjsSequence: 0,
-				baseYjsUpdate: new ArrayBuffer(0),
-				stagedBranchYjsUpdate: new ArrayBuffer(0),
-				unstagedBranchYjsUpdate: new ArrayBuffer(0),
 				size: files_get_utf8_byte_size(`# pending ${i}`),
 				updatedAt: pendingUpdateUpdatedAt,
 			});
-			const pendingMarkdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+			const pendingTextChunkId = await ctx.db.insert("files_text_chunks", {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				sourceKind: "pending",
@@ -384,7 +384,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				fileNodeId,
 				pendingUpdateId,
 				chunkIndex: 0,
-				markdownChunk: `# pending ${i}`,
+				textChunk: `# pending ${i}`,
 				startIndex: 0,
 				endIndex: 10,
 				lineStart: 1,
@@ -398,11 +398,11 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				sourceKind: "pending",
 				userId: args.userId,
 				pendingUpdateId,
-				markdownChunkId: pendingMarkdownChunkId,
+				textChunkId: pendingTextChunkId,
 				path: `/${args.tag}-${i}.md`,
 				chunkIndex: 0,
 				plainTextChunk: `pending ${i}`,
-				markdownChunk: `# pending ${i}`,
+				textChunk: `# pending ${i}`,
 				startIndex: 0,
 				endIndex: 10,
 				lineStart: 1,
@@ -573,7 +573,7 @@ async function data_deletion_test_count_workspace_content(
 		files,
 		fileStats,
 		assets,
-		markdownChunks,
+		textChunks,
 		plainTextChunks,
 		metadataDocs,
 		yjsSnapshots,
@@ -597,7 +597,7 @@ async function data_deletion_test_count_workspace_content(
 		ctx.db.query("files_nodes").collect(),
 		ctx.db.query("file_stats").collect(),
 		ctx.db.query("files_r2_assets").collect(),
-		ctx.db.query("files_markdown_chunks").collect(),
+		ctx.db.query("files_text_chunks").collect(),
 		ctx.db.query("files_plain_text_chunks").collect(),
 		ctx.db.query("files_metadata_docs").collect(),
 		ctx.db.query("files_yjs_snapshots").collect(),
@@ -626,7 +626,7 @@ async function data_deletion_test_count_workspace_content(
 			files,
 			fileStats,
 			assets,
-			markdownChunks,
+			textChunks,
 			plainTextChunks,
 			metadataDocs,
 			yjsSnapshots,
@@ -1419,10 +1419,6 @@ describe("process_user_deletion_request", () => {
 						tag: "shared-page",
 					})
 				).nodeId,
-				baseYjsSequence: 0,
-				baseYjsUpdate: new ArrayBuffer(0),
-				stagedBranchYjsUpdate: new ArrayBuffer(0),
-				unstagedBranchYjsUpdate: new ArrayBuffer(0),
 				size: 0,
 				updatedAt: Date.now(),
 			});
@@ -2175,6 +2171,145 @@ describe("process_workspace_deletion_request", () => {
 		for (const r2Key of r2Keys) {
 			expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), r2Key);
 		}
+	});
+
+	test("purges paged pending-state families and pending-operation scaffolding with the workspace", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-ws-state-family",
+				displayName: "Workspace State Family",
+			}),
+		);
+
+		const seeded = await t.run(async (ctx) => {
+			const victimWorkspace = await organizations_db_create_workspace(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				name: "state-family-victim",
+				description: "",
+				now: Date.now(),
+			});
+			if (victimWorkspace._nay) {
+				throw new Error(victimWorkspace._nay.message);
+			}
+			const workspaceId = victimWorkspace._yay.workspaceId;
+			const now = Date.now();
+
+			const nodeId = await ctx.db.insert("files_nodes", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				path: "/state-family.md",
+				treePath: "/state-family.md",
+				pathDepth: 1,
+				name: "state-family.md",
+				kind: "file",
+				lowercaseExtension: "md",
+				parentId: "root",
+				createdBy: user.userId,
+				updatedBy: user.userId,
+				updatedAt: now,
+			});
+			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				userId: String(user.userId),
+				fileNodeId: nodeId,
+				size: 0,
+				updatedAt: now,
+			});
+
+			// One state per ownership variant, each with a page, plus the operation scaffolding.
+			const cleanupTaskId = await ctx.db.insert("files_pending_update_state_cleanup_tasks", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				createdAt: now,
+			});
+			const operationBatchId = await ctx.db.insert("files_pending_update_operation_batches", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				userId: String(user.userId),
+				fileNodeId: nodeId,
+				expiresAt: now + 30 * 60 * 1000,
+				lastActivityAt: now,
+				updatedAt: now,
+			});
+			const stateOwners = [
+				{ kind: "active", pendingUpdateId, role: "base" },
+				{ kind: "temporary", operationBatchId, phase: "input", role: "staged", expiresAt: now + 30 * 60 * 1000 },
+				{ kind: "retired", cleanupTaskId },
+			] as const;
+			for (const owner of stateOwners) {
+				const stateId = await ctx.db.insert("files_pending_update_yjs_states", {
+					organizationId: user.defaultOrganizationId,
+					workspaceId,
+					userId: String(user.userId),
+					fileNodeId: nodeId,
+					owner,
+					lineageGeneration: 0,
+					sealed: true,
+					pageCount: 1,
+					totalBytes: 4,
+					digest: "purge-digest",
+				});
+				await ctx.db.insert("files_pending_update_yjs_state_pages", {
+					organizationId: user.defaultOrganizationId,
+					workspaceId,
+					stateId,
+					pageIndex: 0,
+					bytes: new Uint8Array([1, 2, 3, 4]).buffer as ArrayBuffer,
+				});
+			}
+			await ctx.db.insert("files_pending_update_text_inputs", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				userId: String(user.userId),
+				fileNodeId: nodeId,
+				operationBatchId,
+				role: "unstaged",
+				text: "staged text",
+				expiresAt: now + 30 * 60 * 1000,
+			});
+			await ctx.db.insert("files_yjs_trusted_update_stages", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				userId: user.userId,
+				fileNodeId: nodeId,
+				kind: "pending_accept",
+				update: new Uint8Array([0, 0]).buffer as ArrayBuffer,
+				expiresAt: now + 30 * 60 * 1000,
+			});
+
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				scope: "workspace",
+			});
+			return { workspaceId, requestId };
+		});
+
+		await data_deletion_test_process_workspace_request_until_done(t, {
+			requestId: seeded.requestId,
+			batchSize: 2,
+		});
+
+		const remaining = await t.run(async (ctx) => ({
+			states: await ctx.db.query("files_pending_update_yjs_states").collect(),
+			pages: await ctx.db.query("files_pending_update_yjs_state_pages").collect(),
+			cleanupTasks: await ctx.db.query("files_pending_update_state_cleanup_tasks").collect(),
+			batches: await ctx.db.query("files_pending_update_operation_batches").collect(),
+			textInputs: await ctx.db.query("files_pending_update_text_inputs").collect(),
+			trustedStages: await ctx.db.query("files_yjs_trusted_update_stages").collect(),
+			pendingUpdates: await ctx.db.query("files_pending_updates").collect(),
+		}));
+		expect(remaining.states).toHaveLength(0);
+		expect(remaining.pages).toHaveLength(0);
+		expect(remaining.cleanupTasks).toHaveLength(0);
+		expect(remaining.batches).toHaveLength(0);
+		expect(remaining.textInputs).toHaveLength(0);
+		expect(remaining.trustedStages).toHaveLength(0);
+		expect(remaining.pendingUpdates).toHaveLength(0);
 	});
 
 	test("deletes the deterministic R2 object for an asset without r2Key", async () => {
@@ -3975,6 +4110,122 @@ describe("hard_delete_user_data", () => {
 });
 
 describe("finalize_user_deletion_data", () => {
+	test("deletes the user's paged state families, batches, text inputs, and trusted-update stages", async () => {
+		const t = test_convex();
+		const victim = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: null,
+				displayName: "State Family Victim",
+			}),
+		);
+		const survivor = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-state-family-survivor",
+				displayName: "State Family Survivor",
+			}),
+		);
+
+		async function seed_user_state_docs(user: { userId: Id<"users">; defaultOrganizationId: Id<"organizations">; defaultWorkspaceId: Id<"organizations_workspaces"> }, tag: string) {
+			return await t.run(async (ctx) => {
+				const now = Date.now();
+				const nodeId = await ctx.db.insert("files_nodes", {
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					path: `/${tag}.md`,
+					treePath: `/${tag}.md`,
+					pathDepth: 1,
+					name: `${tag}.md`,
+					kind: "file",
+					lowercaseExtension: "md",
+					parentId: "root",
+					createdBy: user.userId,
+					updatedBy: user.userId,
+					updatedAt: now,
+				});
+				const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					userId: String(user.userId),
+					fileNodeId: nodeId,
+					size: 0,
+					updatedAt: now,
+				});
+				const stateId = await ctx.db.insert("files_pending_update_yjs_states", {
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					userId: String(user.userId),
+					fileNodeId: nodeId,
+					owner: { kind: "active", pendingUpdateId, role: "base" },
+					lineageGeneration: 0,
+					sealed: true,
+					pageCount: 1,
+					totalBytes: 4,
+					digest: "finalize-digest",
+				});
+				await ctx.db.insert("files_pending_update_yjs_state_pages", {
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					stateId,
+					pageIndex: 0,
+					bytes: new Uint8Array([1, 2, 3, 4]).buffer as ArrayBuffer,
+				});
+				const operationBatchId = await ctx.db.insert("files_pending_update_operation_batches", {
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					userId: String(user.userId),
+					fileNodeId: nodeId,
+					expiresAt: now + 30 * 60 * 1000,
+					lastActivityAt: now,
+					updatedAt: now,
+				});
+				await ctx.db.insert("files_pending_update_text_inputs", {
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					userId: String(user.userId),
+					fileNodeId: nodeId,
+					operationBatchId,
+					role: "staged",
+					text: "staged text",
+					expiresAt: now + 30 * 60 * 1000,
+				});
+				await ctx.db.insert("files_yjs_trusted_update_stages", {
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					userId: user.userId,
+					fileNodeId: nodeId,
+					kind: "snapshot_restore",
+					update: new Uint8Array([0, 0]).buffer as ArrayBuffer,
+					expiresAt: now + 30 * 60 * 1000,
+				});
+				return { stateId };
+			});
+		}
+
+		await seed_user_state_docs(victim, "victim-state-family");
+		const survivorSeed = await seed_user_state_docs(survivor, "survivor-state-family");
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
+				userId: victim.userId,
+			}),
+		);
+
+		const remaining = await t.run(async (ctx) => ({
+			states: await ctx.db.query("files_pending_update_yjs_states").collect(),
+			pages: await ctx.db.query("files_pending_update_yjs_state_pages").collect(),
+			batches: await ctx.db.query("files_pending_update_operation_batches").collect(),
+			textInputs: await ctx.db.query("files_pending_update_text_inputs").collect(),
+			trustedStages: await ctx.db.query("files_yjs_trusted_update_stages").collect(),
+		}));
+
+		// Only the survivor's docs remain: user finalization drains every user-scoped doc class.
+		expect(remaining.states.map((doc) => doc._id)).toEqual([survivorSeed.stateId]);
+		expect(remaining.pages.map((doc) => doc.stateId)).toEqual([survivorSeed.stateId]);
+		expect(remaining.batches.map((doc) => doc.userId)).toEqual([String(survivor.userId)]);
+		expect(remaining.textInputs.map((doc) => doc.userId)).toEqual([String(survivor.userId)]);
+		expect(remaining.trustedStages.map((doc) => doc.userId)).toEqual([survivor.userId]);
+	});
+
 	test("keeps a shared organization when its Clerk member is reset before its local owner is removed", async () => {
 		const t = test_convex();
 		const owner = await t.run((ctx) =>

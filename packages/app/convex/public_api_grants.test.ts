@@ -2,8 +2,10 @@ import { describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { encodeStateAsUpdate } from "yjs";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_create_empty_state_update } from "../shared/files-yjs.ts";
+import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 
 async function seed_public_api_grant(args: {
@@ -109,6 +111,7 @@ async function seed_markdown_file(args: {
 			kind: "file",
 			contentType: "text/markdown;charset=utf-8",
 			assetId: markdownAssetId,
+			yjsRootKind: "rich_text",
 			parentId,
 			createdBy: args.userId,
 			updatedBy: args.userId,
@@ -129,6 +132,9 @@ async function seed_markdown_file(args: {
 			workspaceId: args.workspaceId,
 			fileNodeId,
 			lastSequence: 0,
+			unmaterializedUpdateCount: 0,
+			unmaterializedUpdateBytes: 0,
+			lineageGeneration: 0,
 		});
 		await ctx.db.patch("files_nodes", fileNodeId, {
 			yjsSnapshotId,
@@ -137,15 +143,76 @@ async function seed_markdown_file(args: {
 		return fileNodeId;
 	});
 
+	// Run the agent upsert commit the way the action does: stage and seal one sealed output
+	// family under a server-side batch, then commit by ids with the one bounded text. The
+	// pending read reconstructs from the canonical unstaged state, so that state must hold the
+	// real markdown; base and staged stay on the empty committed state.
 	const baseYjsUpdate = files_u8_to_array_buffer(files_yjs_create_empty_state_update());
-	const pending = await args.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+	const unstagedYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: args.markdown });
+	if ("_nay" in unstagedYjsDoc) {
+		throw new Error("Failed to build the unstaged pending doc for the grant fixture");
+	}
+	const unstagedYjsUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(unstagedYjsDoc));
+	unstagedYjsDoc.destroy();
+	const batch = await args.t.mutation(
+		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+		{
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId,
+		},
+	);
+	if (batch._nay) {
+		throw new Error(batch._nay.message);
+	}
+	const sealedByRole = new Map<"base" | "staged" | "unstaged", { stateId: Id<"files_pending_update_yjs_states">; digest: string }>();
+	for (const role of ["base", "staged", "unstaged"] as const) {
+		const roleYjsUpdate = role === "unstaged" ? unstagedYjsUpdate : baseYjsUpdate;
+		const staged = await args.t.mutation(internal.files_pending_updates.stage_file_pending_update_state_page_internal, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			operationBatchId: batch._yay.operationBatchId,
+			phase: "output",
+			role,
+			pageIndex: 0,
+			bytes: roleYjsUpdate,
+		});
+		if (staged._nay) {
+			throw new Error(staged._nay.message);
+		}
+		const sealed = await args.t.mutation(internal.files_pending_updates.seal_file_pending_update_state_internal, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			operationBatchId: batch._yay.operationBatchId,
+			phase: "output",
+			role,
+			expectedTotalBytes: roleYjsUpdate.byteLength,
+		});
+		if (sealed._nay) {
+			throw new Error(sealed._nay.message);
+		}
+		sealedByRole.set(role, { stateId: sealed._yay.stateId, digest: sealed._yay.digest });
+	}
+	const pending = await args.t.mutation(internal.files_pending_updates.commit_file_pending_update_upsert_in_db, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
 		nodeId,
+		operationBatchId: batch._yay.operationBatchId,
+		expectedUpdatedAt: null,
 		baseYjsSequence: 0,
-		baseYjsUpdate,
-		unstagedMarkdown: args.markdown,
+		baseLineageGeneration: 0,
+		baseStateId: sealedByRole.get("base")!.stateId,
+		stagedStateId: sealedByRole.get("staged")!.stateId,
+		unstagedStateId: sealedByRole.get("unstaged")!.stateId,
+		baseStateDigest: sealedByRole.get("base")!.digest,
+		stagedStateDigest: sealedByRole.get("staged")!.digest,
+		unstagedStateDigest: sealedByRole.get("unstaged")!.digest,
+		unstagedText: args.markdown,
+		unstagedBranchChanged: true,
 	});
 	if (pending._nay) {
 		throw new Error(pending._nay.message);
@@ -469,4 +536,3 @@ describe("public API grants", () => {
 		expect(readManyWithListOnly.status).toBe(403);
 	});
 });
-

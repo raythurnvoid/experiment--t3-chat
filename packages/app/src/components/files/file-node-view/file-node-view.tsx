@@ -75,14 +75,17 @@ import {
 	files_find_file_stem_end_index,
 	files_format_size,
 	files_get_default_node_name,
+	files_get_monaco_language_id,
 	files_get_node_path_validation,
 	files_get_normalized_node_path_segments,
 	files_get_upload_pipeline_state,
 	files_node_has_editable_yjs_state,
 	files_pending_update_has_yjs_content,
+	files_resolve_effective_editor_view,
 	type files_EditorView,
 	type files_SpecialFileName,
 	type files_VisibleTreeNode,
+	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { url_path_file_by_node_id } from "@/lib/urls.ts";
@@ -121,6 +124,10 @@ import React, {
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
+import {
+	files_metadata_MAX_FRONTMATTER_FIELDS,
+	files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
+} from "../../../../shared/files-metadata.ts";
 import { plugins_list_file_view_matches } from "../../../../shared/plugins.ts";
 import { users_SYSTEM_AUTHOR } from "../../../../shared/users.ts";
 
@@ -244,6 +251,8 @@ type FileNodeViewHeader_Props = {
 	selectedNodeId: string | null | undefined;
 	fileNodesList: files_VisibleTreeNode[] | undefined;
 	editorMode: FileEditor_Mode;
+	/** The active editor document shape; the view switch offers only views that shape supports. */
+	rootKind: files_YjsRootKind;
 	filesSidebarOpen: boolean;
 	showFileControls: boolean;
 	onlineUsers: FileEditor_OnlineUser[];
@@ -255,6 +264,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 		selectedNodeId,
 		fileNodesList,
 		editorMode,
+		rootKind,
 		filesSidebarOpen,
 		showFileControls,
 		onlineUsers,
@@ -317,7 +327,8 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									to="/w/$organizationName/$workspaceName/files"
 									params={{ organizationName, workspaceName }}
 									// Keep `q` so the URL stays in step with the still-filled sidebar search box.
-									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, view: editorMode })}
+									// Drop `view` so the target node opens on its own default editor.
+									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, view: undefined })}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
 								>
@@ -349,7 +360,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 													)}
 													to="/w/$organizationName/$workspaceName/files"
 													params={{ organizationName, workspaceName }}
-													search={(prev) => ({ ...prev, nodeId: item._id, view: editorMode })}
+													search={(prev) => ({ ...prev, nodeId: item._id, view: undefined })}
 													variant="button-tertiary"
 												>
 													{item.name}
@@ -403,8 +414,10 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 				<MainAppHeaderBillingIndicator />
 				{showFileControls && (
 					<MyButtonGroup value={editorMode} onValueChange={handleEditorModeChange}>
-						<MyButtonGroupItem value="rich_text_editor">Rich</MyButtonGroupItem>
-						<MyButtonGroupItem value="plain_text_editor">Markdown</MyButtonGroupItem>
+						{/* A plain text document has no rich view, so hide that switch entry and call the
+						    Monaco view "Code" instead of "Markdown". */}
+						{rootKind === "rich_text" && <MyButtonGroupItem value="rich_text_editor">Rich</MyButtonGroupItem>}
+						<MyButtonGroupItem value="plain_text_editor">{rootKind === "rich_text" ? "Markdown" : "Code"}</MyButtonGroupItem>
 						<MyButtonGroupItem value="diff_editor">Diff</MyButtonGroupItem>
 					</MyButtonGroup>
 				)}
@@ -433,20 +446,24 @@ type FileNodeViewTopFloating_ClassNames =
 	| "FileNodeViewTopFloating-activity-message"
 	| "FileNodeViewTopFloating-content-too-large"
 	| "FileNodeViewTopFloating-content-too-large-icon"
-	| "FileNodeViewTopFloating-content-too-large-message";
+	| "FileNodeViewTopFloating-content-too-large-message"
+	| "FileNodeViewTopFloating-frontmatter-too-large"
+	| "FileNodeViewTopFloating-frontmatter-too-large-icon"
+	| "FileNodeViewTopFloating-frontmatter-too-large-message";
 
 type FileNodeViewTopFloating_Props = {
 	nodeId: app_convex_Id<"files_nodes"> | null;
 	/** Byte size recorded by `files_nodes.contentTooLargeByteSize`, or `null` while the content fits. */
 	contentTooLargeByteSize: number | null;
+	frontmatterTooLarge: { fieldCount: number; indexDocumentCount: number } | null;
 	pendingSlot: React.ReactNode;
 };
 
-// The single floating surface of the sticky row: the node's activity status, the over-cap content
-// warning and the pending-updates controls, split by separators like the toolbar. Subscribes to one
-// node's activities slice, so the parent view never re-renders on feed traffic.
+// The single floating surface of the sticky row: the node's activity status, durable content
+// warnings and the pending-updates controls, split by separators like the toolbar. Subscribes to
+// one node's activities slice, so the parent view never re-renders on feed traffic.
 const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: FileNodeViewTopFloating_Props) {
-	const { nodeId, contentTooLargeByteSize, pendingSlot } = props;
+	const { nodeId, contentTooLargeByteSize, frontmatterTooLarge, pendingSlot } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const convex = useConvex();
 	const activityArchivePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
@@ -491,8 +508,11 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 	// the file needs to hear whether the number is going down.
 	const contentTooLargeMessage =
 		contentTooLargeByteSize == null ? null : file_editor_get_content_too_large_message(contentTooLargeByteSize);
+	const frontmatterTooLargeMessage = frontmatterTooLarge
+		? `Frontmatter is not indexed: ${frontmatterTooLarge.fieldCount} fields and ${frontmatterTooLarge.indexDocumentCount} index entries. The limits are ${files_metadata_MAX_FRONTMATTER_FIELDS} fields and ${files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS} index entries.`
+		: null;
 
-	if (!activity && !contentTooLargeMessage && !pendingSlot) {
+	if (!activity && !contentTooLargeMessage && !frontmatterTooLargeMessage && !pendingSlot) {
 		return null;
 	}
 
@@ -572,7 +592,29 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 					</span>
 				</div>
 			) : null}
-			{(activity || contentTooLargeMessage) && pendingSlot ? <MySeparator orientation="vertical" /> : null}
+			{contentTooLargeMessage && frontmatterTooLargeMessage ? <MySeparator orientation="vertical" /> : null}
+			{frontmatterTooLargeMessage ? (
+				<div className={"FileNodeViewTopFloating-frontmatter-too-large" satisfies FileNodeViewTopFloating_ClassNames}>
+					<MyIcon
+						className={
+							"FileNodeViewTopFloating-frontmatter-too-large-icon" satisfies FileNodeViewTopFloating_ClassNames
+						}
+					>
+						<CircleAlert />
+					</MyIcon>
+					<span
+						className={
+							"FileNodeViewTopFloating-frontmatter-too-large-message" satisfies FileNodeViewTopFloating_ClassNames
+						}
+						title={frontmatterTooLargeMessage}
+					>
+						{frontmatterTooLargeMessage}
+					</span>
+				</div>
+			) : null}
+			{(activity || contentTooLargeMessage || frontmatterTooLargeMessage) && pendingSlot ? (
+				<MySeparator orientation="vertical" />
+			) : null}
 			{pendingSlot}
 		</MyFloatingSurface>
 	);
@@ -583,6 +625,8 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 type FileNodeViewFileEditor_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	rootKind: FileEditor_Props["rootKind"];
+	monacoLanguageId: FileEditor_Props["monacoLanguageId"];
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
 	topSafeArea?: number;
@@ -597,6 +641,8 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 	const {
 		nodeId,
 		pendingUpdateId,
+		rootKind,
+		monacoLanguageId,
 		serverSequence,
 		editorMode,
 		topSafeArea,
@@ -611,6 +657,8 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 		<FileEditor
 			nodeId={nodeId}
 			pendingUpdateId={pendingUpdateId}
+			rootKind={rootKind}
+			monacoLanguageId={monacoLanguageId}
 			serverSequence={serverSequence}
 			editorMode={editorMode}
 			topSafeArea={topSafeArea}
@@ -624,7 +672,7 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 });
 
 type FileNodeViewFile_Props = {
-	node: app_convex_Doc<"files_nodes">;
+	node: app_convex_Doc<"files_nodes"> & { yjsRootKind: files_YjsRootKind };
 	editorNodeId?: app_convex_Id<"files_nodes">;
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
@@ -662,6 +710,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				selectedNodeId={node._id}
 				fileNodesList={fileNodesList}
 				editorMode={editorMode}
+				rootKind={node.yjsRootKind}
 				filesSidebarOpen={filesSidebarOpen}
 				showFileControls={true}
 				onlineUsers={onlineUsers}
@@ -670,6 +719,8 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 			<FileNodeViewFileEditor
 				nodeId={editorNodeId ?? node._id}
 				pendingUpdateId={pendingUpdateId}
+				rootKind={node.yjsRootKind}
+				monacoLanguageId={files_get_monaco_language_id(node.name)}
 				serverSequence={serverSequence}
 				topSafeArea={topSafeArea}
 				editorMode={editorMode}
@@ -916,6 +967,8 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 				selectedNodeId={node._id}
 				fileNodesList={fileNodesList}
 				editorMode={editorMode}
+				// No file controls render for a stored file, so the shape value is inert here.
+				rootKind="rich_text"
 				filesSidebarOpen={filesSidebarOpen}
 				showFileControls={false}
 				onlineUsers={onlineUsers}
@@ -1177,7 +1230,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 		setIsCreatingReadme(true);
 		convex
-			.action(app_convex_api.files_nodes_content.create_markdown_node, {
+			.action(app_convex_api.files_nodes_content.create_text_node, {
 				membershipId,
 				parentId: folderItemId,
 				path: "README.md" satisfies files_SpecialFileName,
@@ -1302,7 +1355,6 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			<FileNodeViewFolderExplorer
 				visibleChildItems={visibleChildItems}
 				hiddenChildItemsCount={hiddenChildItemsCount}
-				editorMode={editorMode}
 				organizationName={organizationName}
 				workspaceName={workspaceName}
 				pendingActionNodeIds={pendingActionNodeIds}
@@ -1889,7 +1941,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 						parentId: folderItemId,
 						path,
 					})
-				: convex.action(app_convex_api.files_nodes_content.create_markdown_node, {
+				: convex.action(app_convex_api.files_nodes_content.create_text_node, {
 						membershipId,
 						parentId: folderItemId,
 						path,
@@ -1993,7 +2045,6 @@ type FileNodeViewFolderExplorerRow_ClassNames =
 
 type FileNodeViewFolderExplorerRow_Props = {
 	child: files_VisibleTreeNode;
-	editorMode: FileEditor_Mode;
 	organizationName: string;
 	workspaceName: string;
 	isPendingAction: boolean;
@@ -2013,7 +2064,6 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 ) {
 	const {
 		child,
-		editorMode,
 		organizationName,
 		workspaceName,
 		isPendingAction,
@@ -2144,7 +2194,8 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 					className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
 					to="/w/$organizationName/$workspaceName/files"
 					params={{ organizationName, workspaceName }}
-					search={(prev) => ({ ...prev, nodeId: child._id, view: editorMode })}
+					// Drop `view` so the target node opens on its own default editor.
+					search={(prev) => ({ ...prev, nodeId: child._id, view: undefined })}
 					draggable={false}
 				/>
 				<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
@@ -2227,7 +2278,6 @@ type FileNodeViewFolderExplorer_ClassNames =
 type FileNodeViewFolderExplorer_Props = {
 	visibleChildItems: files_VisibleTreeNode[];
 	hiddenChildItemsCount: number;
-	editorMode: FileEditor_Mode;
 	organizationName: string;
 	workspaceName: string;
 	pendingActionNodeIds: ReadonlySet<string>;
@@ -2249,7 +2299,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const {
 		visibleChildItems,
 		hiddenChildItemsCount,
-		editorMode,
 		organizationName,
 		workspaceName,
 		pendingActionNodeIds,
@@ -2280,7 +2329,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 								<FileNodeViewFolderExplorerRow
 									key={child._id}
 									child={child}
-									editorMode={editorMode}
 									organizationName={organizationName}
 									workspaceName={workspaceName}
 									isPendingAction={isPendingAction}
@@ -2423,6 +2471,10 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 				key={readmeNodeId}
 				nodeId={readmeNodeId}
 				pendingUpdateId={pendingUpdateId}
+				// This embedded editor only ever targets a folder's README.md, which is a rich
+				// text document by definition.
+				rootKind="rich_text"
+				monacoLanguageId="markdown"
 				serverSequence={serverSequence}
 				editorMode={editorMode}
 				presenceStore={presenceStore}
@@ -2477,6 +2529,8 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					selectedNodeId={files_ROOT_ID}
 					fileNodesList={fileNodesList}
 					editorMode={editorMode}
+					// The folder view's editor is the README.md, a rich text document by definition.
+					rootKind="rich_text"
 					filesSidebarOpen={filesSidebarOpen}
 					showFileControls={true}
 					onlineUsers={onlineUsers}
@@ -2509,6 +2563,8 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					selectedNodeId={node._id}
 					fileNodesList={fileNodesList}
 					editorMode={editorMode}
+					// The folder view's editor is the README.md, a rich text document by definition.
+					rootKind="rich_text"
 					filesSidebarOpen={filesSidebarOpen}
 					showFileControls={true}
 					onlineUsers={onlineUsers}
@@ -2621,8 +2677,6 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const { membershipId } = AppTenantProvider.useContext();
 	const authenticated = AppAuthProvider.useAuthenticated();
 
-	const effectiveView: files_EditorView = searchParams.view ?? "rich_text_editor";
-
 	const [filesSidebarOpen, setFilesSidebarOpen] = useAppLocalStorageStateValue("app_state::sidebar::files_open");
 	const [savedPanelLayout, setMainPanelLayout] = useAppLocalStorageStateValue("app_state::resizable_panel::main_panel");
 	const [savedEditorPanelLayout, setEditorPanelLayout] = useAppLocalStorageStateValue(
@@ -2657,6 +2711,18 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const targetFolderId = isRootNodeSelected ? files_ROOT_ID : resolvedNode?.kind === "folder" ? resolvedNode._id : null;
 	const resolvedNodeHasEditableYjsState = files_node_has_editable_yjs_state(resolvedNode);
 
+	// Clamp the requested view to the resolved node's document shape. The clamped value drives
+	// everything below — the header switch, the rendered editor, and the sequence subscription —
+	// so a plain-text node opened with ?view=rich_text_editor still syncs like a plain view.
+	const requestedView: files_EditorView = searchParams.view ?? "rich_text_editor";
+	const effectiveView =
+		resolvedNode && resolvedNode.kind === "file" && resolvedNodeHasEditableYjsState
+			? files_resolve_effective_editor_view({
+					requestedView,
+					rootKind: resolvedNode.yjsRootKind,
+				})
+			: requestedView;
+
 	// Treat a folder README as the active editor node so pending-update and sync subscriptions
 	// have the same owner for selected files and folder README editors.
 	const activeEditorNodeId = isRootNodeSelected
@@ -2686,8 +2752,9 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	 * Carry `q` through navigation.
 	 * The sidebar keeps its filter when a result is opened, so the URL
 	 * has to keep matching the search box instead of silently dropping the query.
+	 * The current view is NOT carried: each node opens on its own default editor.
 	 */
-	const navigateToNode = useFn((nodeId?: string, nextEditorMode: files_EditorView = effectiveView) => {
+	const navigateToNode = useFn((nodeId?: string, nextEditorMode: files_EditorView = "rich_text_editor") => {
 		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
 
 		onNavigateSearch({ nodeId, view, q: searchParams.q });
@@ -2747,7 +2814,10 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 
 	const handleNavigatePendingUpdates = useFn(
 		(args: { nodeId: app_convex_Id<"files_nodes">; forceDiffEditor: boolean }) => {
-			const nextView = args.forceDiffEditor ? "diff_editor" : effectiveView;
+			// Carry only the diff view: paging inside a diff review stays in diff review. Any
+			// other current view is dropped so each node opens on its own default editor —
+			// carrying a plain node's view would force the next `.md` into Monaco.
+			const nextView = args.forceDiffEditor || effectiveView === "diff_editor" ? "diff_editor" : undefined;
 			navigateToNode(args.nodeId, nextView);
 		},
 	);
@@ -2793,6 +2863,15 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		<FileNodeViewTopFloating
 			nodeId={resolvedNode?.kind === "file" ? resolvedNode._id : null}
 			contentTooLargeByteSize={resolvedNode?.contentTooLargeByteSize ?? null}
+			frontmatterTooLarge={
+				resolvedNode?.contentFrontmatterTooLargeFieldCount !== undefined &&
+				resolvedNode.contentFrontmatterTooLargeIndexDocumentCount !== undefined
+					? {
+							fieldCount: resolvedNode.contentFrontmatterTooLargeFieldCount,
+							indexDocumentCount: resolvedNode.contentFrontmatterTooLargeIndexDocumentCount,
+						}
+					: null
+			}
 			pendingSlot={
 				hasPendingUpdates ? (
 					<FileEditorPendingUpdatesFloating
@@ -3057,7 +3136,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								overflow: "initial",
 							}}
 						>
-							<FileEditorSidebar commentsContainerRef={setCommentsPortalHost} />
+							<FileEditorSidebar node={resolvedNode ?? null} commentsContainerRef={setCommentsPortalHost} />
 						</MyPanel>
 					</MyPanelGroup>
 				</div>

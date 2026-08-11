@@ -2,15 +2,18 @@ import {
 	files_is_node,
 	files_find_file_stem_end_index,
 	files_get_normalized_node_path_segments,
+	files_MAX_YJS_WIRE_BYTES,
+	files_u8_to_array_buffer,
 	type files_TreeItem,
 	type files_VisibleTreeNode,
+	type files_YjsRootKind,
 } from "../../shared/files.ts";
 import {
 	files_yjs_compute_diff_update_from_yjs_doc,
 	files_yjs_doc_clone,
 	files_yjs_doc_create_from_array_buffer_update,
 } from "../../shared/files-yjs.ts";
-import { files_yjs_doc_get_markdown, files_yjs_doc_update_from_markdown } from "../../shared/files-tiptap.ts";
+import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../../shared/files-tiptap.ts";
 import { composite_key } from "../../shared/shared-utils.ts";
 import type { Doc } from "../../convex/_generated/dataModel";
 import { TypedEventTarget } from "@remix-run/interaction";
@@ -27,6 +30,22 @@ export * from "../../shared/files.ts";
 export const files_editor_view_values = ["rich_text_editor", "plain_text_editor", "diff_editor"] as const;
 
 export type files_EditorView = (typeof files_editor_view_values)[number];
+
+/**
+ * Clamp a requested editor view to what the node's document shape supports. A plain text
+ * document has no rich editor: mounting Tiptap on a `Y.Text` root would show an empty editor
+ * and write keystrokes into a second root nobody reads. The plain (Monaco) and diff views are
+ * valid for both shapes, so only the rich view is redirected.
+ */
+export function files_resolve_effective_editor_view(args: {
+	requestedView: files_EditorView;
+	rootKind: files_YjsRootKind;
+}): files_EditorView {
+	if (args.rootKind === "plain_text" && args.requestedView === "rich_text_editor") {
+		return "plain_text_editor";
+	}
+	return args.requestedView;
+}
 
 export const files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE = "application/x-bonobo-senate-press-file-node-id";
 
@@ -100,8 +119,13 @@ export function files_get_node_path_validation_cache_key(args: {
 	parentId: Doc<"files_nodes">["parentId"];
 	kind: Doc<"files_nodes">["kind"] | null;
 	nameOrPath: string;
+	fileNamePolicy?: "markdown" | "editable_text" | "keep_extension";
 }) {
-	const normalizedPath = files_get_normalized_node_path_segments({ kind: args.kind, nameOrPath: args.nameOrPath });
+	const normalizedPath = files_get_normalized_node_path_segments({
+		kind: args.kind,
+		nameOrPath: args.nameOrPath,
+		fileNamePolicy: args.fileNamePolicy,
+	});
 	if (!args.kind || !normalizedPath || "validationMessage" in normalizedPath) {
 		return null;
 	}
@@ -135,6 +159,7 @@ export function files_get_node_path_validation(args: {
 	parentId: Doc<"files_nodes">["parentId"];
 	kind: Doc<"files_nodes">["kind"] | null;
 	nameOrPath: string;
+	fileNamePolicy?: "markdown" | "editable_text" | "keep_extension";
 }) {
 	const validationMessage = files_get_node_path_validation_message({
 		fileNodesList: args.fileNodesList,
@@ -142,6 +167,7 @@ export function files_get_node_path_validation(args: {
 		parentId: args.parentId,
 		kind: args.kind,
 		nameOrPathValidate: args.nameOrPath,
+		fileNamePolicy: args.fileNamePolicy,
 	});
 	const validationCacheKey = files_get_node_path_validation_cache_key({
 		scopeId: args.scopeId,
@@ -149,6 +175,7 @@ export function files_get_node_path_validation(args: {
 		parentId: args.parentId,
 		kind: args.kind,
 		nameOrPath: args.nameOrPath,
+		fileNamePolicy: args.fileNamePolicy,
 	});
 	const cachedValidationMessage = validationCacheKey
 		? files_get_node_path_cached_validation_message({ cacheKey: validationCacheKey })
@@ -184,11 +211,13 @@ export function files_get_node_path_validation_message(args: {
 	parentId: Doc<"files_nodes">["parentId"];
 	kind: Doc<"files_nodes">["kind"] | null;
 	nameOrPathValidate: string;
+	fileNamePolicy?: "markdown" | "editable_text" | "keep_extension";
 }) {
 	// First validate and canonicalize the user input without consulting the tree.
 	const normalizedPath = files_get_normalized_node_path_segments({
 		kind: args.kind,
 		nameOrPath: args.nameOrPathValidate,
+		fileNamePolicy: args.fileNamePolicy,
 	});
 	if (!normalizedPath) {
 		return null;
@@ -228,44 +257,48 @@ export function files_get_node_path_validation_message(args: {
 }
 // #endregion node path validation
 
-export function files_yjs_rebase_branch_with_local_markdown(args: {
+export function files_yjs_rebase_branch_with_local_text(args: {
 	previousBaseYjsDoc: YDoc;
 	nextBaseYjsDoc: YDoc;
 	previousBranchYjsDoc: YDoc;
-	localMarkdown: string;
+	localText: string;
+	rootKind: files_YjsRootKind;
 }) {
-	const previousBaseMarkdown = files_yjs_doc_get_markdown({
+	const previousBaseText = files_yjs_doc_get_text({
 		yjsDoc: args.previousBaseYjsDoc,
+		rootKind: args.rootKind,
 	});
-	if (previousBaseMarkdown._nay) {
-		return previousBaseMarkdown;
+	if (previousBaseText._nay) {
+		return previousBaseText;
 	}
 
-	const previousBranchMarkdown = files_yjs_doc_get_markdown({
+	const previousBranchText = files_yjs_doc_get_text({
 		yjsDoc: args.previousBranchYjsDoc,
+		rootKind: args.rootKind,
 	});
-	if (previousBranchMarkdown._nay) {
-		return previousBranchMarkdown;
+	if (previousBranchText._nay) {
+		return previousBranchText;
 	}
 
-	const nextBaseMarkdown = files_yjs_doc_get_markdown({
+	const nextBaseText = files_yjs_doc_get_text({
 		yjsDoc: args.nextBaseYjsDoc,
+		rootKind: args.rootKind,
 	});
-	if (nextBaseMarkdown._nay) {
-		return nextBaseMarkdown;
+	if (nextBaseText._nay) {
+		return nextBaseText;
 	}
 
-	if (args.localMarkdown === nextBaseMarkdown._yay) {
+	if (args.localText === nextBaseText._yay) {
 		return Result({
 			_yay: {
 				rebasedBranchYjsDoc: files_yjs_doc_clone({ yjsDoc: args.nextBaseYjsDoc }),
-				rebasedBranchMarkdown: nextBaseMarkdown._yay,
+				rebasedBranchText: nextBaseText._yay,
 			},
 		});
 	}
 
 	const rebasedStoredBranchYjsDoc =
-		previousBranchMarkdown._yay === previousBaseMarkdown._yay
+		previousBranchText._yay === previousBaseText._yay
 			? files_yjs_doc_clone({ yjsDoc: args.nextBaseYjsDoc })
 			: ((/* iife */) => {
 					const rebasedBranchYjsDoc = files_yjs_doc_clone({ yjsDoc: args.previousBranchYjsDoc });
@@ -279,26 +312,28 @@ export function files_yjs_rebase_branch_with_local_markdown(args: {
 					return rebasedBranchYjsDoc;
 				})();
 
-	const rebasedStoredBranchMarkdown = files_yjs_doc_get_markdown({
+	const rebasedStoredBranchText = files_yjs_doc_get_text({
 		yjsDoc: rebasedStoredBranchYjsDoc,
+		rootKind: args.rootKind,
 	});
-	if (rebasedStoredBranchMarkdown._nay) {
-		return rebasedStoredBranchMarkdown;
+	if (rebasedStoredBranchText._nay) {
+		return rebasedStoredBranchText;
 	}
 
-	if (args.localMarkdown === previousBranchMarkdown._yay) {
+	if (args.localText === previousBranchText._yay) {
 		return Result({
 			_yay: {
 				rebasedBranchYjsDoc: rebasedStoredBranchYjsDoc,
-				rebasedBranchMarkdown: rebasedStoredBranchMarkdown._yay,
+				rebasedBranchText: rebasedStoredBranchText._yay,
 			},
 		});
 	}
 
-	const rebasedLocalBranchResult = files_yjs_reconcile_branch_with_local_markdown({
+	const rebasedLocalBranchResult = files_yjs_reconcile_branch_with_local_text({
 		previousRemoteYjsDoc: args.previousBranchYjsDoc,
 		nextRemoteYjsDoc: rebasedStoredBranchYjsDoc,
-		localMarkdown: args.localMarkdown,
+		localText: args.localText,
+		rootKind: args.rootKind,
 	});
 	if (rebasedLocalBranchResult._nay) {
 		return rebasedLocalBranchResult;
@@ -307,15 +342,16 @@ export function files_yjs_rebase_branch_with_local_markdown(args: {
 	return Result({
 		_yay: {
 			rebasedBranchYjsDoc: rebasedLocalBranchResult._yay.mergedYjsDoc,
-			rebasedBranchMarkdown: rebasedLocalBranchResult._yay.mergedMarkdown,
+			rebasedBranchText: rebasedLocalBranchResult._yay.mergedText,
 		},
 	});
 }
 
-export function files_yjs_reconcile_branch_with_local_markdown(args: {
+export function files_yjs_reconcile_branch_with_local_text(args: {
 	previousRemoteYjsDoc: YDoc;
 	nextRemoteYjsDoc: YDoc;
-	localMarkdown: string;
+	localText: string;
+	rootKind: files_YjsRootKind;
 }) {
 	const workspaceedLocalYjsDoc = files_yjs_doc_clone({ yjsDoc: args.previousRemoteYjsDoc });
 
@@ -329,45 +365,48 @@ export function files_yjs_reconcile_branch_with_local_markdown(args: {
 		localEditUpdates.push(update);
 	};
 	workspaceedLocalYjsDoc.on("update", captureLocalEditUpdate);
-	const workspaceedLocalBranchResult = files_yjs_doc_update_from_markdown({
+	const workspaceedLocalBranchResult = files_yjs_doc_update_from_text({
 		mut_yjsDoc: workspaceedLocalYjsDoc,
-		markdown: args.localMarkdown,
+		text: args.localText,
+		rootKind: args.rootKind,
 	});
 	workspaceedLocalYjsDoc.off("update", captureLocalEditUpdate);
 	if (workspaceedLocalBranchResult._nay) {
 		return workspaceedLocalBranchResult;
 	}
 
-	const workspaceedLocalMarkdown = files_yjs_doc_get_markdown({
+	const workspaceedLocalText = files_yjs_doc_get_text({
 		yjsDoc: workspaceedLocalYjsDoc,
+		rootKind: args.rootKind,
 	});
-	if (workspaceedLocalMarkdown._nay) {
-		return workspaceedLocalMarkdown;
+	if (workspaceedLocalText._nay) {
+		return workspaceedLocalText;
 	}
 
-	const nextRemoteMarkdown = files_yjs_doc_get_markdown({
+	const nextRemoteText = files_yjs_doc_get_text({
 		yjsDoc: args.nextRemoteYjsDoc,
+		rootKind: args.rootKind,
 	});
-	if (nextRemoteMarkdown._nay) {
-		return nextRemoteMarkdown;
+	if (nextRemoteText._nay) {
+		return nextRemoteText;
 	}
 
-	if (workspaceedLocalMarkdown._yay === nextRemoteMarkdown._yay) {
+	if (workspaceedLocalText._yay === nextRemoteText._yay) {
 		return Result({
 			_yay: {
 				mergedYjsDoc: files_yjs_doc_clone({ yjsDoc: args.nextRemoteYjsDoc }),
-				mergedMarkdown: nextRemoteMarkdown._yay,
+				mergedText: nextRemoteText._yay,
 			},
 		});
 	}
 
-	// No captured updates means the local markdown was already the previous remote content, so
+	// No captured updates means the local text was already the previous remote content, so
 	// the next remote branch replaces the pane as-is.
 	if (localEditUpdates.length === 0) {
 		return Result({
 			_yay: {
 				mergedYjsDoc: files_yjs_doc_clone({ yjsDoc: args.nextRemoteYjsDoc }),
-				mergedMarkdown: nextRemoteMarkdown._yay,
+				mergedText: nextRemoteText._yay,
 			},
 		});
 	}
@@ -386,27 +425,194 @@ export function files_yjs_reconcile_branch_with_local_markdown(args: {
 		return Result({
 			_yay: {
 				mergedYjsDoc: workspaceedLocalYjsDoc,
-				mergedMarkdown: workspaceedLocalMarkdown._yay,
+				mergedText: workspaceedLocalText._yay,
 			},
 		});
 	}
 
-	const mergedMarkdown = files_yjs_doc_get_markdown({
+	const mergedText = files_yjs_doc_get_text({
 		yjsDoc: mergedYjsDoc,
+		rootKind: args.rootKind,
 	});
-	if (mergedMarkdown._nay) {
-		return mergedMarkdown;
+	if (mergedText._nay) {
+		return mergedText;
 	}
 
 	return Result({
 		_yay: {
 			mergedYjsDoc,
-			mergedMarkdown: mergedMarkdown._yay,
+			mergedText: mergedText._yay,
 		},
 	});
 }
 
-export async function files_fetch_file_yjs_state_and_markdown(args: {
+/**
+ * Reassemble one of the caller's own pending-update Yjs states from its pages. One page per
+ * query call is the server contract (a page may itself be 930,000 bytes), so this loops the
+ * page index until the recorded page count and concatenates locally.
+ */
+export async function files_fetch_file_pending_update_yjs_state(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	nodeId: app_convex_Id<"files_nodes">;
+	stateId: app_convex_Id<"files_pending_update_yjs_states">;
+}) {
+	const pages: ArrayBuffer[] = [];
+	let pageIndex = 0;
+	let pageCount = 1;
+	let totalBytes = 0;
+	while (pageIndex < pageCount) {
+		const page = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_update_state_page, {
+			membershipId: args.membershipId,
+			nodeId: args.nodeId,
+			stateId: args.stateId,
+			pageIndex,
+		});
+		if (page === null) {
+			return Result({ _nay: { name: "nay", message: "Failed to load a pending update state page" } });
+		}
+		pages.push(page.bytes);
+		pageCount = page.pageCount;
+		totalBytes = page.totalBytes;
+		pageIndex += 1;
+	}
+
+	const whole = new Uint8Array(totalBytes);
+	let offset = 0;
+	for (const page of pages) {
+		if (offset + page.byteLength > totalBytes) {
+			return Result({ _nay: { name: "nay", message: "Pending update state pages exceed the recorded size" } });
+		}
+		whole.set(new Uint8Array(page), offset);
+		offset += page.byteLength;
+	}
+	if (offset !== totalBytes) {
+		return Result({ _nay: { name: "nay", message: "Pending update state pages did not match the recorded size" } });
+	}
+
+	return Result({ _yay: files_u8_to_array_buffer(whole) });
+}
+
+/**
+ * The client upsert flow: one operation batch, one bounded text per staging call, then the
+ * finishing action that carries only ids. A staging refusal already retired the batch
+ * server-side, so refusals return directly.
+ */
+export async function files_upsert_file_pending_update(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	nodeId: app_convex_Id<"files_nodes">;
+	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	/**
+	 * The `updatedAt` of the proposal version the user reviewed. The server refuses when the
+	 * proposal was revised after that read; pass it from review flows (the sidebar Accept).
+	 */
+	reviewedUpdatedAt?: number;
+	stagedText?: string;
+	unstagedText: string;
+}) {
+	const batch = await app_convex.mutation(app_convex_api.files_pending_updates.create_file_pending_update_operation_batch, {
+		membershipId: args.membershipId,
+		nodeId: args.nodeId,
+	});
+	if (batch._nay) {
+		return batch;
+	}
+	const operationBatchId = batch._yay.operationBatchId;
+
+	if (args.stagedText !== undefined) {
+		const staged = await app_convex.mutation(app_convex_api.files_pending_updates.stage_file_pending_update_text_input, {
+			membershipId: args.membershipId,
+			operationBatchId,
+			role: "staged",
+			text: args.stagedText,
+		});
+		if (staged._nay) {
+			return staged;
+		}
+	}
+	const unstaged = await app_convex.mutation(app_convex_api.files_pending_updates.stage_file_pending_update_text_input, {
+		membershipId: args.membershipId,
+		operationBatchId,
+		role: "unstaged",
+		text: args.unstagedText,
+	});
+	if (unstaged._nay) {
+		return unstaged;
+	}
+
+	return await app_convex.action(app_convex_api.files_pending_updates.upsert_file_pending_update, {
+		membershipId: args.membershipId,
+		nodeId: args.nodeId,
+		operationBatchId,
+		...(args.pendingUpdateId ? { pendingUpdateId: args.pendingUpdateId } : {}),
+		...(args.reviewedUpdatedAt !== undefined ? { reviewedUpdatedAt: args.reviewedUpdatedAt } : {}),
+	});
+}
+
+/**
+ * The client rebase flow: stage the three full branch states as pages under one operation batch,
+ * seal each role (the seal runs door 2 server-side), then run the finishing action that carries
+ * only ids. A refusal at any staging step already retired the batch server-side.
+ */
+export async function files_persist_file_pending_update_rebased_state(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	nodeId: app_convex_Id<"files_nodes">;
+	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	baseYjsSequence: number;
+	baseYjsUpdate: ArrayBuffer;
+	stagedBranchYjsUpdate: ArrayBuffer;
+	unstagedBranchYjsUpdate: ArrayBuffer;
+}) {
+	const batch = await app_convex.mutation(app_convex_api.files_pending_updates.create_file_pending_update_operation_batch, {
+		membershipId: args.membershipId,
+		nodeId: args.nodeId,
+	});
+	if (batch._nay) {
+		return batch;
+	}
+	const operationBatchId = batch._yay.operationBatchId;
+
+	const inputs = [
+		{ role: "base" as const, update: args.baseYjsUpdate },
+		{ role: "staged" as const, update: args.stagedBranchYjsUpdate },
+		{ role: "unstaged" as const, update: args.unstagedBranchYjsUpdate },
+	];
+	for (const input of inputs) {
+		const bytes = new Uint8Array(input.update);
+		for (let pageIndex = 0; pageIndex * files_MAX_YJS_WIRE_BYTES < bytes.byteLength; pageIndex++) {
+			const pageStart = pageIndex * files_MAX_YJS_WIRE_BYTES;
+			const staged = await app_convex.mutation(app_convex_api.files_pending_updates.stage_file_pending_update_state_page, {
+				membershipId: args.membershipId,
+				operationBatchId,
+				role: input.role,
+				pageIndex,
+				bytes: files_u8_to_array_buffer(bytes.slice(pageStart, pageStart + files_MAX_YJS_WIRE_BYTES)),
+			});
+			if (staged._nay) {
+				return staged;
+			}
+		}
+
+		const sealed = await app_convex.mutation(app_convex_api.files_pending_updates.seal_file_pending_update_state, {
+			membershipId: args.membershipId,
+			operationBatchId,
+			role: input.role,
+			expectedTotalBytes: input.update.byteLength,
+		});
+		if (sealed._nay) {
+			return sealed;
+		}
+	}
+
+	return await app_convex.action(app_convex_api.files_pending_updates.persist_file_pending_update_rebased_state, {
+		membershipId: args.membershipId,
+		nodeId: args.nodeId,
+		operationBatchId,
+		...(args.pendingUpdateId ? { pendingUpdateId: args.pendingUpdateId } : {}),
+		baseYjsSequence: args.baseYjsSequence,
+	});
+}
+
+export async function files_fetch_file_yjs_state_and_text(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	nodeId: app_convex_Id<"files_nodes">;
 }) {
@@ -440,11 +646,14 @@ export async function files_fetch_file_yjs_state_and_markdown(args: {
 			(u: app_convex_Doc<"files_yjs_updates">) => u.update,
 		),
 	});
-	const markdown = files_yjs_doc_get_markdown({ yjsDoc });
+	// The shape comes from the server call that already loaded the node: there is no node doc on
+	// the client, and the snapshot response's `yjsRootKind` is the resolved required union.
+	const yjsRootKind = yjsSnapshotTarget.yjsRootKind;
+	const text = files_yjs_doc_get_text({ yjsDoc, rootKind: yjsRootKind });
 
 	const yjsSequence = yjsLastSequenceDoc?.lastSequence ?? yjsSnapshotDoc.sequence;
 
-	return { markdown, yjsDoc, yjsSequence };
+	return { text, yjsDoc, yjsSequence, yjsRootKind };
 }
 
 // #region presence store
@@ -651,8 +860,10 @@ export class files_PresenceStore extends TypedEventTarget<files_PresenceStore_Ev
 // #endregion PresenceStore
 
 // #region monaco
-export function files_monaco_create_editor_model(markdown: string) {
-	const model = monaco_editor.createModel(markdown, "markdown");
+export function files_monaco_create_editor_model(text: string, languageId: string) {
+	const model = monaco_editor.createModel(text, languageId);
+	// Keep this pin: Monaco is a second normalizer. Without it a CRLF string reaching a mounted
+	// model would flip the whole buffer's line endings and mark the file dirty with no user edit.
 	model.setEOL(monaco_editor.EndOfLineSequence.LF);
 	return model;
 }

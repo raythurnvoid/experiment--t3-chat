@@ -8,14 +8,15 @@ import {
 	files_get_node_path_validation_message,
 	files_monaco_execute_edits_with_read_only_fallback,
 	files_normalize_upload_file_name,
+	files_resolve_effective_editor_view,
 	files_ROOT_ID,
 	files_set_node_path_cached_validation_message,
-	files_yjs_rebase_branch_with_local_markdown,
-	files_yjs_reconcile_branch_with_local_markdown,
+	files_yjs_rebase_branch_with_local_text,
+	files_yjs_reconcile_branch_with_local_text,
 	type files_TreeItem,
 } from "./files.ts";
 import { files_yjs_compute_diff_update_from_yjs_doc, files_yjs_doc_clone } from "../../shared/files-yjs.ts";
-import { files_yjs_doc_get_markdown, files_yjs_doc_update_from_markdown } from "../../shared/files-tiptap.ts";
+import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../../shared/files-tiptap.ts";
 import type { Id } from "../../convex/_generated/dataModel";
 import { Doc as YDoc } from "yjs";
 
@@ -59,6 +60,23 @@ describe("files_normalize_upload_file_name", () => {
 
 	test("uses the last path segment and preserves non-adjacent dots", () => {
 		expect(files_normalize_upload_file_name("C:\\Uploads\\Résumé..Final.PDF")).toBe("resume.final.pdf");
+	});
+});
+
+describe("files_resolve_effective_editor_view", () => {
+	test("redirects only the rich view on a plain-text document", () => {
+		expect(files_resolve_effective_editor_view({ requestedView: "diff_editor", rootKind: "plain_text" })).toBe(
+			"diff_editor",
+		);
+		expect(files_resolve_effective_editor_view({ requestedView: "plain_text_editor", rootKind: "plain_text" })).toBe(
+			"plain_text_editor",
+		);
+		expect(files_resolve_effective_editor_view({ requestedView: "rich_text_editor", rootKind: "plain_text" })).toBe(
+			"plain_text_editor",
+		);
+		expect(files_resolve_effective_editor_view({ requestedView: "rich_text_editor", rootKind: "rich_text" })).toBe(
+			"rich_text_editor",
+		);
 	});
 });
 
@@ -314,7 +332,7 @@ describe("files node path validation cache", () => {
 	});
 });
 
-describe("files_yjs_reconcile_branch_with_local_markdown", () => {
+describe("files_yjs_reconcile_branch_with_local_text", () => {
 	beforeEach(() => {
 		const domParser = globalThis.window?.DOMParser;
 		if (!domParser) {
@@ -335,9 +353,10 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 
 	const createYjsDocFromMarkdown = (markdown: string) => {
 		const yjsDoc = new YDoc();
-		const yjsDocFromMarkdown = files_yjs_doc_update_from_markdown({
+		const yjsDocFromMarkdown = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
 			mut_yjsDoc: yjsDoc,
-			markdown,
+			text: markdown,
 		});
 		if (yjsDocFromMarkdown._nay) {
 			throw new Error("Expected Yjs doc markdown projection to succeed", {
@@ -349,7 +368,7 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 	};
 
 	const readMarkdown = (yjsDoc: YDoc) => {
-		const markdown = files_yjs_doc_get_markdown({ yjsDoc });
+		const markdown = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
 		if (markdown._nay) {
 			throw new Error("Expected Yjs doc markdown extraction to succeed", {
 				cause: markdown._nay,
@@ -364,9 +383,10 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 		const nextRemoteYjsDoc = files_yjs_doc_clone({ yjsDoc: previousRemoteYjsDoc });
 		const matchingMarkdown = "# Base\n\nAlready synced\n";
 
-		const nextRemoteProjectionResult = files_yjs_doc_update_from_markdown({
+		const nextRemoteProjectionResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
 			mut_yjsDoc: nextRemoteYjsDoc,
-			markdown: matchingMarkdown,
+			text: matchingMarkdown,
 		});
 		if (nextRemoteProjectionResult._nay) {
 			throw new Error("Expected next remote Yjs doc projection to succeed", {
@@ -374,10 +394,11 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 			});
 		}
 
-		const reconcileResult = files_yjs_reconcile_branch_with_local_markdown({
+		const reconcileResult = files_yjs_reconcile_branch_with_local_text({
 			previousRemoteYjsDoc,
 			nextRemoteYjsDoc,
-			localMarkdown: matchingMarkdown,
+			rootKind: "rich_text",
+			localText: matchingMarkdown,
 		});
 		if (reconcileResult._nay) {
 			throw new Error("Expected Yjs branch reconcile to succeed", {
@@ -385,7 +406,7 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 			});
 		}
 
-		expect(reconcileResult._yay.mergedMarkdown).toBe(matchingMarkdown);
+		expect(reconcileResult._yay.mergedText).toBe(matchingMarkdown);
 		expect(
 			files_yjs_compute_diff_update_from_yjs_doc({
 				yjsDoc: reconcileResult._yay.mergedYjsDoc,
@@ -400,9 +421,10 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 		const localMarkdown = "# Base\n\nLocal draft";
 		const remoteMarkdown = "# Base\n\nRemote change";
 
-		const nextRemoteProjectionResult = files_yjs_doc_update_from_markdown({
+		const nextRemoteProjectionResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
 			mut_yjsDoc: nextRemoteYjsDoc,
-			markdown: remoteMarkdown,
+			text: remoteMarkdown,
 		});
 		if (nextRemoteProjectionResult._nay) {
 			throw new Error("Expected next remote Yjs doc projection to succeed", {
@@ -410,10 +432,11 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 			});
 		}
 
-		const reconcileResult = files_yjs_reconcile_branch_with_local_markdown({
+		const reconcileResult = files_yjs_reconcile_branch_with_local_text({
 			previousRemoteYjsDoc,
 			nextRemoteYjsDoc,
-			localMarkdown,
+			localText: localMarkdown,
+			rootKind: "rich_text",
 		});
 		if (reconcileResult._nay) {
 			throw new Error("Expected Yjs branch reconcile to succeed", {
@@ -421,7 +444,7 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 			});
 		}
 
-		const mergedMarkdown = reconcileResult._yay.mergedMarkdown;
+		const mergedMarkdown = reconcileResult._yay.mergedText;
 		expect(mergedMarkdown).toContain("Local draft");
 		expect(mergedMarkdown).toContain("Remote change");
 		expect(mergedMarkdown).not.toBe(readMarkdown(nextRemoteYjsDoc));
@@ -434,9 +457,10 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 		const baseYjsDoc = createYjsDocFromMarkdown("# Welcome\n\nYou can start editing your document here.\n");
 		const stagedYjsDoc = files_yjs_doc_clone({ yjsDoc: baseYjsDoc });
 		const previousUnstagedYjsDoc = files_yjs_doc_clone({ yjsDoc: baseYjsDoc });
-		const draftProjectionResult = files_yjs_doc_update_from_markdown({
+		const draftProjectionResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
 			mut_yjsDoc: previousUnstagedYjsDoc,
-			markdown: [
+			text: [
 				"FIXCHECK-ALPHA: first pending marker.",
 				"",
 				"# Welcome",
@@ -461,10 +485,11 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 
 		// The local Monaco pane holds the previous unstaged branch unchanged, so the reconcile
 		// must adopt the next remote branch byte-for-byte instead of leaking phantom edits.
-		const reconcileResult = files_yjs_reconcile_branch_with_local_markdown({
+		const reconcileResult = files_yjs_reconcile_branch_with_local_text({
 			previousRemoteYjsDoc: previousUnstagedYjsDoc,
 			nextRemoteYjsDoc: nextUnstagedYjsDoc,
-			localMarkdown: readMarkdown(previousUnstagedYjsDoc),
+			rootKind: "rich_text",
+			localText: readMarkdown(previousUnstagedYjsDoc),
 		});
 		if (reconcileResult._nay) {
 			throw new Error("Expected Yjs branch reconcile to succeed", {
@@ -472,7 +497,7 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 			});
 		}
 
-		expect(reconcileResult._yay.mergedMarkdown).toBe(readMarkdown(nextUnstagedYjsDoc));
+		expect(reconcileResult._yay.mergedText).toBe(readMarkdown(nextUnstagedYjsDoc));
 		expect(readMarkdown(reconcileResult._yay.mergedYjsDoc)).toBe(readMarkdown(stagedYjsDoc));
 	});
 
@@ -480,9 +505,10 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 		const baseYjsDoc = createYjsDocFromMarkdown("# Welcome\n\nYou can start editing your document here.\n");
 		const stagedYjsDoc = files_yjs_doc_clone({ yjsDoc: baseYjsDoc });
 		const previousUnstagedYjsDoc = files_yjs_doc_clone({ yjsDoc: baseYjsDoc });
-		const draftProjectionResult = files_yjs_doc_update_from_markdown({
+		const draftProjectionResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
 			mut_yjsDoc: previousUnstagedYjsDoc,
-			markdown: "# Welcome\n\nYou can start editing your document here.\n\nDRAFT-BLOCK: pending draft paragraph.\n",
+			text: "# Welcome\n\nYou can start editing your document here.\n\nDRAFT-BLOCK: pending draft paragraph.\n",
 		});
 		if (draftProjectionResult._nay) {
 			throw new Error("Expected draft Yjs doc projection to succeed", {
@@ -498,10 +524,11 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 		// to structs that only exist in the previous branch and the sibling cannot integrate them.
 		const localMarkdown = `${readMarkdown(previousUnstagedYjsDoc)}\nLOCAL-TYPED: unsaved edit.\n`;
 
-		const reconcileResult = files_yjs_reconcile_branch_with_local_markdown({
+		const reconcileResult = files_yjs_reconcile_branch_with_local_text({
 			previousRemoteYjsDoc: previousUnstagedYjsDoc,
 			nextRemoteYjsDoc: nextUnstagedYjsDoc,
-			localMarkdown,
+			localText: localMarkdown,
+			rootKind: "rich_text",
 		});
 		if (reconcileResult._nay) {
 			throw new Error("Expected Yjs branch reconcile to succeed", {
@@ -509,12 +536,12 @@ describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 			});
 		}
 
-		expect(reconcileResult._yay.mergedMarkdown).toContain("LOCAL-TYPED: unsaved edit.");
-		expect(readMarkdown(reconcileResult._yay.mergedYjsDoc)).toBe(reconcileResult._yay.mergedMarkdown);
+		expect(reconcileResult._yay.mergedText).toContain("LOCAL-TYPED: unsaved edit.");
+		expect(readMarkdown(reconcileResult._yay.mergedYjsDoc)).toBe(reconcileResult._yay.mergedText);
 	});
 });
 
-describe("files_yjs_rebase_branch_with_local_markdown", () => {
+describe("files_yjs_rebase_branch_with_local_text", () => {
 	beforeEach(() => {
 		const domParser = globalThis.window?.DOMParser;
 		if (!domParser) {
@@ -535,9 +562,10 @@ describe("files_yjs_rebase_branch_with_local_markdown", () => {
 
 	const createYjsDocFromMarkdown = (markdown: string) => {
 		const yjsDoc = new YDoc();
-		const yjsDocFromMarkdown = files_yjs_doc_update_from_markdown({
+		const yjsDocFromMarkdown = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
 			mut_yjsDoc: yjsDoc,
-			markdown,
+			text: markdown,
 		});
 		if (yjsDocFromMarkdown._nay) {
 			throw new Error("Expected Yjs doc markdown projection to succeed", {
@@ -549,7 +577,7 @@ describe("files_yjs_rebase_branch_with_local_markdown", () => {
 	};
 
 	const readMarkdown = (yjsDoc: YDoc) => {
-		const markdown = files_yjs_doc_get_markdown({ yjsDoc });
+		const markdown = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
 		if (markdown._nay) {
 			throw new Error("Expected Yjs doc markdown extraction to succeed", {
 				cause: markdown._nay,
@@ -562,9 +590,10 @@ describe("files_yjs_rebase_branch_with_local_markdown", () => {
 	test("rebases an existing branch onto the latest base while preserving local branch edits", () => {
 		const previousBaseYjsDoc = createYjsDocFromMarkdown("# Base");
 		const previousBranchYjsDoc = files_yjs_doc_clone({ yjsDoc: previousBaseYjsDoc });
-		const previousBranchProjectionResult = files_yjs_doc_update_from_markdown({
+		const previousBranchProjectionResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
 			mut_yjsDoc: previousBranchYjsDoc,
-			markdown: "# Base\n\nPending update",
+			text: "# Base\n\nPending update",
 		});
 		if (previousBranchProjectionResult._nay) {
 			throw new Error("Expected previous branch Yjs doc projection to succeed", {
@@ -573,9 +602,10 @@ describe("files_yjs_rebase_branch_with_local_markdown", () => {
 		}
 
 		const nextBaseYjsDoc = files_yjs_doc_clone({ yjsDoc: previousBaseYjsDoc });
-		const nextBaseProjectionResult = files_yjs_doc_update_from_markdown({
+		const nextBaseProjectionResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
 			mut_yjsDoc: nextBaseYjsDoc,
-			markdown: "# Base\n\nRemote drift",
+			text: "# Base\n\nRemote drift",
 		});
 		if (nextBaseProjectionResult._nay) {
 			throw new Error("Expected next base Yjs doc projection to succeed", {
@@ -584,11 +614,12 @@ describe("files_yjs_rebase_branch_with_local_markdown", () => {
 		}
 		const localMarkdown = "# Base\n\nPending update";
 
-		const rebaseResult = files_yjs_rebase_branch_with_local_markdown({
+		const rebaseResult = files_yjs_rebase_branch_with_local_text({
 			previousBaseYjsDoc,
 			nextBaseYjsDoc,
 			previousBranchYjsDoc,
-			localMarkdown,
+			localText: localMarkdown,
+			rootKind: "rich_text",
 		});
 		if (rebaseResult._nay) {
 			throw new Error("Expected Yjs branch rebase to succeed", {
@@ -596,8 +627,8 @@ describe("files_yjs_rebase_branch_with_local_markdown", () => {
 			});
 		}
 
-		expect(rebaseResult._yay.rebasedBranchMarkdown).toContain("Remote drift");
-		expect(rebaseResult._yay.rebasedBranchMarkdown).toContain("Pending update");
+		expect(rebaseResult._yay.rebasedBranchText).toContain("Remote drift");
+		expect(rebaseResult._yay.rebasedBranchText).toContain("Pending update");
 	});
 
 	test("adopts the latest base when the branch has no local edits to preserve", () => {
@@ -605,11 +636,12 @@ describe("files_yjs_rebase_branch_with_local_markdown", () => {
 		const previousBranchYjsDoc = createYjsDocFromMarkdown("# Base");
 		const nextBaseYjsDoc = createYjsDocFromMarkdown("# Base\n\nRemote drift");
 
-		const rebaseResult = files_yjs_rebase_branch_with_local_markdown({
+		const rebaseResult = files_yjs_rebase_branch_with_local_text({
 			previousBaseYjsDoc,
 			nextBaseYjsDoc,
 			previousBranchYjsDoc,
-			localMarkdown: "# Base",
+			rootKind: "rich_text",
+			localText: "# Base",
 		});
 		if (rebaseResult._nay) {
 			throw new Error("Expected Yjs branch rebase to succeed", {
@@ -617,7 +649,7 @@ describe("files_yjs_rebase_branch_with_local_markdown", () => {
 			});
 		}
 
-		expect(rebaseResult._yay.rebasedBranchMarkdown).toBe(readMarkdown(nextBaseYjsDoc));
+		expect(rebaseResult._yay.rebasedBranchText).toBe(readMarkdown(nextBaseYjsDoc));
 	});
 
 	test("collapses back to the latest base when the rebased branch matches it", () => {
@@ -625,11 +657,12 @@ describe("files_yjs_rebase_branch_with_local_markdown", () => {
 		const previousBranchYjsDoc = createYjsDocFromMarkdown("# Base\n\nPending update");
 		const nextBaseYjsDoc = createYjsDocFromMarkdown("# Base\n\nRemote drift");
 
-		const rebaseResult = files_yjs_rebase_branch_with_local_markdown({
+		const rebaseResult = files_yjs_rebase_branch_with_local_text({
 			previousBaseYjsDoc,
 			nextBaseYjsDoc,
 			previousBranchYjsDoc,
-			localMarkdown: readMarkdown(nextBaseYjsDoc),
+			rootKind: "rich_text",
+			localText: readMarkdown(nextBaseYjsDoc),
 		});
 		if (rebaseResult._nay) {
 			throw new Error("Expected Yjs branch rebase to succeed", {
@@ -637,7 +670,7 @@ describe("files_yjs_rebase_branch_with_local_markdown", () => {
 			});
 		}
 
-		expect(rebaseResult._yay.rebasedBranchMarkdown).toBe(readMarkdown(nextBaseYjsDoc));
+		expect(rebaseResult._yay.rebasedBranchText).toBe(readMarkdown(nextBaseYjsDoc));
 		expect(
 			files_yjs_compute_diff_update_from_yjs_doc({
 				yjsDoc: rebaseResult._yay.rebasedBranchYjsDoc,

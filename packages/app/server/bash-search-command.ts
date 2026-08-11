@@ -449,9 +449,9 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				);
 
 				// Each hit is one block: stable location metadata, optional context hints,
-				// then the matched Markdown chunk exactly as it was indexed.
+				// then the matched text chunk exactly as it was indexed.
 				const blockLines = [
-					`${item.path} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(exactQueryFilter, parsed._yay.query, item.markdownChunk)}`,
+					`${item.path} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(exactQueryFilter, parsed._yay.query, item.textChunk)}`,
 				];
 
 				if (item.hasChunkAbove) {
@@ -464,7 +464,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 					}
 				}
 
-				blockLines.push(item.markdownChunk);
+				blockLines.push(item.textChunk);
 
 				if (item.hasChunkBelow) {
 					if (hasSpecificBelow && isCodeChunk) {
@@ -483,7 +483,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 			const blocks = [
 				`Found ${searchResult.items.length} results${scopeNote}${bash_search_command_exact_query_summary(
 					exactQueryFilter,
-					searchResult.items.map((item) => item.markdownChunk),
+					searchResult.items.map((item) => item.textChunk),
 				)}`,
 			];
 			blocks.push(...continuationBlocks);

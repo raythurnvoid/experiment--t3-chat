@@ -3,22 +3,20 @@ import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
-import type { files_nodes_get_file_last_available_markdown_content_by_path_Result } from "../convex/files_nodes_content.ts";
-import type {
-	upsert_file_pending_move_in_db_Result,
-	upsert_file_pending_update_internal_action_Result,
-} from "../convex/files_pending_updates.ts";
+import type { files_nodes_get_file_last_available_text_content_by_path_Result } from "../convex/files_nodes_content.ts";
+import type { upsert_file_pending_move_in_db_Result } from "../convex/files_pending_updates.ts";
 import {
 	files_ROOT_ID,
 	files_SYNTHETIC_ROOT_FOLDER,
 	files_get_normalized_node_path_segments,
 	files_node_has_editable_yjs_state,
+	files_normalize_markdown_name,
 } from "../shared/files.ts";
 import { organizations_is_global_organization_id, organizations_is_reserved_workspace_id } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { path_join } from "./server-utils.ts";
-import { bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_db_files_path_to_current_workspace_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { files_agent_upsert_file_pending_update, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_db_files_path_to_current_workspace_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
@@ -373,6 +371,9 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			const normalizedDestName = files_get_normalized_node_path_segments({
 				kind: sourceNode.kind,
 				nameOrPath: rawDestName,
+				// A rename keeps the extension the caller typed; the proposal mutation's class
+				// class rule judges it, so a crossing refuses there with the rule's message.
+				fileNamePolicy: "keep_extension",
 			});
 			if (!normalizedDestName || "validationMessage" in normalizedDestName) {
 				return {
@@ -385,6 +386,24 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			}
 			// The raw name has no path separators, so normalization yields exactly one segment.
 			destName = normalizedDestName.normalizedPathSegments.join("/");
+			// Keep the extensionless→.md convenience for Markdown sources (mv notes.md intro →
+			// intro.md); the Markdown normalizer also restores special casing (readme → README.md).
+			// Plain text and stored files keep the bare name and let the class rule answer.
+			if (
+				!destName.includes(".") &&
+				files_node_has_editable_yjs_state(sourceNode) &&
+				sourceNode.yjsRootKind === "rich_text"
+			) {
+				const markdownDestName = files_normalize_markdown_name(destName);
+				if (markdownDestName._nay) {
+					return {
+						stdout: "",
+						stderr: `mv: invalid destination name '${rawDestName}': ${markdownDestName._nay.message}\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
+				destName = markdownDestName._yay;
+			}
 			intendedDestPath = path_join(destParentPath, destName);
 			intendedDestOperand = destOperand;
 		}
@@ -400,7 +419,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			// Copy what the agent sees: the last available markdown, including the calling user's
 			// own pending overlay on the source file.
 			const sourceContent = (await ctx.runAction(
-				internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
+				internal.files_nodes_content.get_file_last_available_text_content_by_path,
 				{
 					organizationId,
 					workspaceId,
@@ -408,7 +427,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					path: sourceDbFilesPath,
 					overlayUserId: userId,
 				},
-			)) as files_nodes_get_file_last_available_markdown_content_by_path_Result;
+			)) as files_nodes_get_file_last_available_text_content_by_path_Result;
 			// Bind the copy to the node resolved at the start: the source path can be re-occupied
 			// by a DIFFERENT file mid-action, and proposing its content would archive the wrong file.
 			if (sourceContent && sourceContent.nodeId !== sourceNode._id) {
@@ -419,18 +438,15 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				};
 			}
 			if (sourceContent) {
-				const upserted = (await ctx.runAction(
-					internal.files_pending_updates.upsert_file_pending_update_internal_action,
-					{
-						organizationId,
-						workspaceId,
-						userId,
-						nodeId: replaceTargetNode._id,
-						unstagedMarkdown: sourceContent.content,
-						copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath, archivesSourceOnAccept: true },
-						threadId: threadId ?? undefined,
-					},
-				)) as upsert_file_pending_update_internal_action_Result;
+				const upserted = await files_agent_upsert_file_pending_update(ctx, {
+					organizationId,
+					workspaceId,
+					userId,
+					nodeId: replaceTargetNode._id,
+					unstagedText: sourceContent.content,
+					copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath, archivesSourceOnAccept: true },
+					threadId: threadId ?? undefined,
+				});
 				if (upserted._nay) {
 					return {
 						stdout: "",

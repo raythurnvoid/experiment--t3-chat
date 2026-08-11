@@ -10,8 +10,20 @@ import { public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ } from "../con
 import { files_READ_RANGE_MAX_LINES } from "../convex/files_nodes.ts";
 import { server_path_normalize } from "./server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "./crypto-utils.ts";
-import { files_normalize_ai_edit_content, files_normalize_lf_newlines } from "./files.ts";
-import { bash_EXTERNAL_MOUNTS_ROOT, bash_PLUGINS_MOUNT_ROOT, bash_is_path_under } from "./bash-utils.ts";
+import {
+	files_EDITABLE_TEXT_EXTENSIONS,
+	files_editable_text_refusal_message,
+	files_get_editable_text_content_type,
+	files_normalize_ai_edit_content,
+	files_normalize_lf_newlines,
+} from "./files.ts";
+import { path_name_of } from "../shared/paths.ts";
+import {
+	bash_EXTERNAL_MOUNTS_ROOT,
+	bash_PLUGINS_MOUNT_ROOT,
+	bash_is_path_under,
+	files_agent_upsert_file_pending_update,
+} from "./bash-utils.ts";
 
 /**
  * Advanced replace utility mirroring OpenCode's edit replacer pipeline.
@@ -500,6 +512,12 @@ export function replace_once_or_all(
 	throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.");
 }
 
+// The plain text half of the writable-extension contract, shown in tool descriptions so the
+// model learns the real rule instead of assuming Markdown-only writes.
+const ai_chat_PLAIN_TEXT_EXTENSIONS_LIST = files_EDITABLE_TEXT_EXTENSIONS.filter((extension) => extension !== "md")
+	.map((extension) => `.${extension}`)
+	.join(", ");
+
 // #region bash
 export function ai_chat_tool_create_bash(
 	ctx: ActionCtx,
@@ -554,10 +572,10 @@ export function ai_chat_tool_create_bash(
 			Use search [--limit N] [--cursor CURSOR] <content terms...> for full-text content search across Markdown/text content. Pass one distinctive word or a few plain terms that should appear in the document body; the text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. It overlays the current user's pending unstaged file proposals before returning results. It is implemented with db full-text search, but it is not regex, glob, path/name search, or exact grep. For requests like "where does X appear" or "which files mention X", run search first; do not substitute find, which only searches paths/names. For recursive grep, grep -R, or rg wording over an app folder, do not try native rg or multi-file grep first; run search --path <folder> <content terms> directly. Scope to one folder with search --path <folder> <content terms...> when useful, but broad folder scopes with common terms can be heavier. Raising --limit past 100 has no effect; page with the printed Next page command. If cwd is inside the app tree, bare search scopes to that cwd; pass a folder via --path, not as a positional operand, and do not use search as a pipeline filter.
 			Use exact app paths with cat [-n] [--] [FILE...], head, tail, wc, and stat; these readers fetch at most 10 app files per command — to READ specific known files, cat them in batches of 10 or fewer across multiple commands; to FIND which files mention something, use search (it returns matching snippets, not whole files). The 10-file cap is a per-command batch limit, not a total ceiling. cat unreadable-file advisories are stderr, not file content, so do not parse them as content. Large files are not read inline: a single cat shows a bounded first page (with a footer telling you how to page on), and a multi-file cat refuses when any file is too large to inline. Read a large file in bounded pages with head -n N (first lines; prints the next sed -n page command to continue), sed -n 'A,Bp' (any line range), or tail -n N (last lines) — up to ${files_READ_RANGE_MAX_LINES} lines per read; wc reports line/word/byte/character counts (use wc -m for characters) so you know its size first (line/word/character counts are lower bounds for files beyond the scan window); wc accepts multiple files (per-file counts plus a total) and does not refuse a large member. Use search to find content across files. Pipelines with sed/awk/sort/uniq/cut/grep/head process already emitted text, but direct app-aware grep/head path operands are preferred for app files.
 			Uploaded source files do not alias to generated Markdown outputs. If an unreadable-source advisory suggests generated output paths such as <source>.pdf.md, read the exact generated output path when the user wants converted text; do not expect the original source path to auto-read that sibling.
-			To search content across files use search (or search --path <folder> for one folder); to find lines in a SINGLE file use grep [-n] [-i] [-F] PATTERN <file> over Markdown chunks. Normal single-file grep uses regex matching; -F/--fixed-strings uses literal substring matching; -n prints lineNumber:line, and without -n it prints raw matching lines; also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context. For rendered plain-text chunk scans, use textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file> for one app file (regex by default; -F/--fixed-strings uses literal substring matching; -v inverts; -c counts; -l prints the path if matched), or textgrep -R PATTERN <folder> for a recursive folder scan via indexed full-text search (not exact recursive regex/fixed-string grep). Single-file textgrep has no line numbers or context flags; use grep for -n or -A/-B/-C context. Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer search --path. Use tree [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape; unsupported native tree flags fail for app paths.
+			To search content across files use search (or search --path <folder> for one folder); to find lines in a SINGLE file use grep [-n] [-i] [-F] PATTERN <file> over the file's stored text chunks. Normal single-file grep uses regex matching; -F/--fixed-strings uses literal substring matching; -n prints lineNumber:line, and without -n it prints raw matching lines; also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context. For rendered plain-text chunk scans, use textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file> for one app file (regex by default; -F/--fixed-strings uses literal substring matching; -v inverts; -c counts; -l prints the path if matched), or textgrep -R PATTERN <folder> for a recursive folder scan via indexed full-text search (not exact recursive regex/fixed-string grep). Single-file textgrep has no line numbers or context flags; use grep for -n or -A/-B/-C context. Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer search --path. Use tree [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape; unsupported native tree flags fail for app paths.
 			Keep commands simple: avoid strict-mode boilerplate such as set -euo pipefail because pipefail is unsupported, comments in command strings, and process substitution. For multi-command inspection or eval checks, do not use set -e or hide stderr with 2>/dev/null; later commands and visible stderr should still be observed. Only summarize actual Bash stdout/stderr; the blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents. Do not work around app read-only write or delete requests by copying app files to /tmp unless the user asked for a scratch copy.
 			App file tree mkdir is available only when this tool is configured for Agent mode; /tmp scratch does not create app file tree folders.
-			In Agent mode, shell writes under ${currentWorkspacePath} create pending proposals the user reviews in Files, exactly like edit_file: create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect, append with >>, tee writes each app target as a proposal, and touch on a new path creates an empty-file proposal (touch on an existing app file changes nothing). Your own reads (bash and the file tools) see your pending proposals as if applied, while other users and the Files UI see the committed tree until the user accepts (a brand-new file appears to everyone right away as an empty placeholder). In Ask mode app files are read-only. rm <app-path> proposes a pending delete: accepting archives the file, and rm -r <app-folder> archives the folder with everything inside. Your own reads see a pending-deleted path as gone; rm on your own not-yet-accepted new file usually removes it immediately (stdout prints removed '<path>'; when it cannot be removed safely it becomes a normal pending delete). ln is not available for app files. mv <app-path> <app-path> proposes a pending move/rename (one source only); accepting a move onto an occupied path replaces that file. Plain mv never overwrites an existing destination; mv -f <app-file> <existing-app-file> proposes a replace: the destination file keeps its identity and gets the source's content as a pending content replacement, and accepting saves that as a new version of the destination and archives the source file (mv -f replaces files only; a plain folder move can replace an empty folder, and folders never replace files or the reverse). cp <app-file> <app-path> proposes a pending copy (one source only): a new destination file appears immediately with the copied content pending review, your reads at the destination show that pending content, accepting publishes it, and discarding removes the destination file. When the cp destination file already exists, the copy becomes a pending content replacement on that file, and discarding keeps the destination file with its committed content. Use cp -n or cp --no-clobber to leave an existing final destination unchanged without creating a replacement proposal. cp <app-file> /tmp/<name> stays an immediate durable per-thread scratch copy. Targeted edits to existing Markdown belong in edit_file with app paths such as /docs/readme.md; the edit_file description states how to convert a bash path to an app path. If a user asks to delete a file, run rm on it; the delete still waits for their accept in Files.`,
+			In Agent mode, shell writes under ${currentWorkspacePath} create pending proposals the user reviews in Files, exactly like edit_file: create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect, append with >>, tee writes each app target as a proposal, and touch on a new path creates an empty-file proposal (touch on an existing app file changes nothing). Writable file types: Markdown (.md) keeps rich text and serves back its rendered Markdown text, while these plain text extensions store bytes exactly as written: ${ai_chat_PLAIN_TEXT_EXTENSIONS_LIST}. An extensionless new file name becomes <name>.md, any other extension is refused with the supported list, and copies or renames cannot cross between Markdown and plain text (cp notes.md data.json is refused; cp data.json data.yaml is fine). Your own reads (bash and the file tools) see your pending proposals as if applied, while other users and the Files UI see the committed tree until the user accepts (a brand-new file appears to everyone right away as an empty placeholder). In Ask mode app files are read-only. rm <app-path> proposes a pending delete: accepting archives the file, and rm -r <app-folder> archives the folder with everything inside. Your own reads see a pending-deleted path as gone; rm on your own not-yet-accepted new file usually removes it immediately (stdout prints removed '<path>'; when it cannot be removed safely it becomes a normal pending delete). ln is not available for app files. mv <app-path> <app-path> proposes a pending move/rename (one source only); accepting a move onto an occupied path replaces that file. Plain mv never overwrites an existing destination; mv -f <app-file> <existing-app-file> proposes a replace: the destination file keeps its identity and gets the source's content as a pending content replacement, and accepting saves that as a new version of the destination and archives the source file (mv -f replaces files only; a plain folder move can replace an empty folder, and folders never replace files or the reverse). cp <app-file> <app-path> proposes a pending copy (one source only): a new destination file appears immediately with the copied content pending review, your reads at the destination show that pending content, accepting publishes it, and discarding removes the destination file. When the cp destination file already exists, the copy becomes a pending content replacement on that file, and discarding keeps the destination file with its committed content. Use cp -n or cp --no-clobber to leave an existing final destination unchanged without creating a replacement proposal. cp <app-file> /tmp/<name> stays an immediate durable per-thread scratch copy. Targeted edits to existing text files belong in edit_file with app paths such as /docs/readme.md or /data/config.json; the edit_file description states how to convert a bash path to an app path. If a user asks to delete a file, run rm on it; the delete still waits for their accept in Files.`,
 		inputSchema: z.object({
 			command: z
 				.string()
@@ -619,19 +637,21 @@ export function ai_chat_tool_create_edit_file(
 			Edits an existing file by replacing text and returns a preview diff.
 
 			Usage:
-			- The path must refer to an existing Markdown file (absolute, starting with "/" and ending with ".md").
+			- The path must refer to an existing editable text file (absolute, starting with "/"): Markdown (.md), or a plain text file with one of these extensions: ${ai_chat_PLAIN_TEXT_EXTENSIONS_LIST}. Any other file type is refused.
 			- By default, replaces a single unique occurrence of oldString; fails if not found or ambiguous.
 			- Set replaceAll=true to replace every occurrence.
 			- If copying from numbered output such as cat -n, do NOT include the line-number prefix.
 			- If copying a path from bash, remove the /home/cloud-usr/w/<organization>/<workspace> current workspace path prefix before passing it here.
 			- Preserve the full remaining suffix after that prefix; /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.
-			- The text must be valid GitHub Flavored Markdown; ensure replacements preserve valid Markdown structure (headings, code fences, lists).
+			- For a .md file the text must be valid GitHub Flavored Markdown; preserve valid Markdown structure (headings, code fences, lists). For any other text file, match the file's own format exactly (for example valid JSON in a .json file) and do not reformat the rest of the file.
 			- This tool does not apply changes directly; it saves a pending update for human review.`,
 
 		inputSchema: z.object({
-			path: z.string().describe('Absolute path to the Markdown file (must start with "/" and end with ".md").'),
-			oldString: z.string().describe("The GitHub Flavored Markdown text to replace"),
-			newString: z.string().describe("The replacement GitHub Flavored Markdown text"),
+			path: z
+				.string()
+				.describe('Absolute path to the file (must start with "/"): a .md file or a supported plain text file.'),
+			oldString: z.string().describe("The exact text to replace"),
+			newString: z.string().describe("The replacement text"),
 			replaceAll: z.boolean().optional().default(false),
 			pendingUpdateId: z
 				.string()
@@ -655,9 +675,16 @@ export function ai_chat_tool_create_edit_file(
 					`Invalid path: ${normalizedPath}. The ${bash_PLUGINS_MOUNT_ROOT} tree is a read-only mount of installed plugin sources and cannot be edited.`,
 				);
 			}
+			// Cross-class refusal that names the class, not the path: without it a .png or .exe
+			// path falls through to the read below and answers "File not found", and the model
+			// loops on a wrong retry hint instead of learning the rule.
+			const editedFileName = path_name_of(normalizedPath);
+			if (files_get_editable_text_content_type(editedFileName) === null) {
+				throw new Error(`Cannot edit ${normalizedPath}: ${files_editable_text_refusal_message(editedFileName)}`);
+			}
 
 			const currentFileContent = await ctx.runAction(
-				internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
+				internal.files_nodes_content.get_file_last_available_text_content_by_path,
 				{
 					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
@@ -687,13 +714,13 @@ export function ai_chat_tool_create_edit_file(
 
 			const nodeId = currentFileContent.nodeId;
 
-			const upserted = await ctx.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			const upserted = await files_agent_upsert_file_pending_update(ctx, {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				userId: ctxData.userId,
 				nodeId,
 				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
-				unstagedMarkdown: modifiedText,
+				unstagedText: modifiedText,
 				threadId: ctxData.getThreadId() ?? undefined,
 			});
 			// The node can be archived or deleted between the read above and this upsert;

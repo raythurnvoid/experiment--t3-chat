@@ -5,7 +5,10 @@ import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	files_INITIAL_CONTENT,
+	files_MAX_TEXT_CONTENT_BYTES,
 	files_ROOT_ID,
+	files_YJS_DOC_KEYS,
+	files_db_load_pending_update_yjs_state_bytes,
 	files_pending_update_has_yjs_content,
 	files_u8_to_array_buffer,
 } from "../server/files.ts";
@@ -13,7 +16,11 @@ import {
 	files_yjs_compute_diff_update_from_yjs_doc,
 	files_yjs_doc_create_from_array_buffer_update,
 } from "../shared/files-yjs.ts";
-import { files_yjs_doc_get_markdown, files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
+import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
+import {
+	files_metadata_MAX_FRONTMATTER_FIELDS,
+	files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
+} from "../shared/files-metadata.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
@@ -410,7 +417,7 @@ describe("r2 asset content", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
+		const created = await asUser.action(api.files_nodes_content.create_text_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "README.md",
@@ -479,7 +486,7 @@ describe("r2 asset content", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
+		const created = await asUser.action(api.files_nodes_content.create_text_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "stale-read.md",
@@ -509,9 +516,10 @@ describe("r2 asset content", () => {
 		const updatedMarkdown = "# Stale read\n\nThis content only exists in Yjs updates.\n";
 		const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(baseSnapshotBytes));
 		const nextYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(baseSnapshotBytes));
-		const nextProjection = files_yjs_doc_update_from_markdown({
+		const nextProjection = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
 			mut_yjsDoc: nextYjsDoc,
-			markdown: updatedMarkdown,
+			text: updatedMarkdown,
 		});
 		if (nextProjection._nay) {
 			throw new Error(nextProjection._nay.message);
@@ -536,7 +544,7 @@ describe("r2 asset content", () => {
 			throw new Error(pushResult._nay.message);
 		}
 
-		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
+		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -560,7 +568,7 @@ describe("r2 asset content", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
+		const created = await asUser.action(api.files_nodes_content.create_text_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "revoked-download.md",
@@ -591,9 +599,10 @@ describe("r2 asset content", () => {
 		const updatedMarkdown = "# Revoked download\n\nThis content only exists in Yjs updates.\n";
 		const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(baseSnapshotBytes));
 		const nextYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(baseSnapshotBytes));
-		const nextProjection = files_yjs_doc_update_from_markdown({
+		const nextProjection = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
 			mut_yjsDoc: nextYjsDoc,
-			markdown: updatedMarkdown,
+			text: updatedMarkdown,
 		});
 		if (nextProjection._nay) {
 			throw new Error(nextProjection._nay.message);
@@ -649,7 +658,7 @@ describe("r2 asset content", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
+		const created = await asUser.action(api.files_nodes_content.create_text_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "archived-download.md",
@@ -684,7 +693,7 @@ describe("r2 asset content", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.action(api.files_nodes_content.create_markdown_node, {
+		const created = await asUser.action(api.files_nodes_content.create_text_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "pending-read.md",
@@ -694,6 +703,30 @@ describe("r2 asset content", () => {
 		}
 
 		const pendingMarkdown = "# Pending edit\n\nThis content is still in the agent draft.\n";
+		// Stage the text under a server-side batch first: the internal action carries only ids.
+		const upsertBatch = await t.mutation(
+			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+			{
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				nodeId: created._yay.nodeId,
+			},
+		);
+		if (upsertBatch._nay) {
+			throw new Error(upsertBatch._nay.message);
+		}
+		const upsertText = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			operationBatchId: upsertBatch._yay.operationBatchId,
+			role: "unstaged",
+			text: pendingMarkdown,
+		});
+		if (upsertText._nay) {
+			throw new Error(upsertText._nay.message);
+		}
 		const upsertResult = await asUser.action(
 			internal.files_pending_updates.upsert_file_pending_update_internal_action,
 			{
@@ -701,7 +734,7 @@ describe("r2 asset content", () => {
 				workspaceId: db.workspaceId,
 				userId: db.userId,
 				nodeId: created._yay.nodeId,
-				unstagedMarkdown: pendingMarkdown,
+				operationBatchId: upsertBatch._yay.operationBatchId,
 			},
 		);
 		if (upsertResult._nay) {
@@ -720,20 +753,32 @@ describe("r2 asset content", () => {
 				)
 				.unique(),
 		);
-		if (!files_pending_update_has_yjs_content(pendingUpdate)) {
+		if (!pendingUpdate || !files_pending_update_has_yjs_content(pendingUpdate)) {
 			throw new Error("Expected pending update with content");
 		}
-		const pendingYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.baseYjsUpdate, {
-			additionalIncrementalArrayBufferUpdates: [pendingUpdate.unstagedBranchYjsUpdate],
+		// The unstaged branch is a full paged state now; reassemble it and read its markdown.
+		const unstagedBytes = await t.run(async (ctx) => {
+			const stateDoc = await ctx.db.get("files_pending_update_yjs_states", pendingUpdate.unstagedStateId);
+			if (!stateDoc) {
+				throw new Error("Expected the unstaged pending state doc");
+			}
+			const bytes = await files_db_load_pending_update_yjs_state_bytes(ctx, { stateDoc });
+			if (bytes._nay) {
+				throw new Error(bytes._nay.message);
+			}
+			// Return an ArrayBuffer: `t.run` serializes the return value as a Convex value, and
+			// Convex bytes are ArrayBuffers, not Uint8Arrays.
+			return files_u8_to_array_buffer(bytes._yay);
 		});
-		const pendingRowMarkdown = files_yjs_doc_get_markdown({ yjsDoc: pendingYjsDoc });
+		const pendingYjsDoc = files_yjs_doc_create_from_array_buffer_update(unstagedBytes);
+		const pendingRowMarkdown = files_yjs_doc_get_text({ rootKind: "rich_text", yjsDoc: pendingYjsDoc });
 		pendingYjsDoc.destroy();
 		if (pendingRowMarkdown._nay) {
 			throw new Error(pendingRowMarkdown._nay.message);
 		}
 		expect(pendingRowMarkdown._yay).toBe(pendingMarkdown);
 
-		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
+		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -1133,7 +1178,7 @@ describe("r2 asset content", () => {
 			runId: pluginRun._id,
 		});
 
-		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
+		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -1292,13 +1337,13 @@ describe("r2 asset content", () => {
 		});
 
 		const [summaryReadResult, transcriptReadResult] = await Promise.all([
-			asUser.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
+			asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
 				path: "/clip.mp4.summary.md",
 			}),
-			asUser.action(internal.files_nodes_content.get_file_last_available_markdown_content_by_path, {
+			asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
@@ -1386,7 +1431,7 @@ describe("r2 asset content", () => {
 		});
 
 		const audioTranscriptReadResult = await asUser.action(
-			internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
+			internal.files_nodes_content.get_file_last_available_text_content_by_path,
 			{
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
@@ -1467,10 +1512,11 @@ describe("r2 asset content", () => {
 		const uploadedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		expect(uploadedAsset?.processingWorkId).toBe("work_asset_refactor");
 
-		await asUser.action(internal.r2.finalize_uploaded_markdown_file, {
+		await asUser.action(internal.r2.finalize_uploaded_text_file, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			assetId: upload._yay.assetId,
+			eventId: "event_markdown",
 		});
 
 		const docs = await t.run(async (ctx) => {
@@ -1488,6 +1534,515 @@ describe("r2 asset content", () => {
 		// The promoted node points at its first version snapshot, not a content asset row.
 		expect(docs.contentAsset?.kind).toBe("content_snapshot");
 		expect(docs.contentAsset?.r2Key ? r2_text(docs.contentAsset.r2Key) : null).toBe(markdownContent);
+		expect(docs.asset?.processingWorkId).toBeNull();
+
+		// Producer shape pair: a node born with a `yjsRootKind` that does not match its first Yjs
+		// snapshot is invisible to every later guard, so read both sides of this producer's write.
+		expect(docs.fileNode?.yjsRootKind).toBe("rich_text");
+		const yjsSnapshotR2Key = await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			if (!fileNode?.yjsSnapshotId) {
+				throw new Error("Expected the promoted node to hold a Yjs snapshot pointer");
+			}
+			const yjsSnapshotDoc = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
+			const yjsSnapshotAsset = yjsSnapshotDoc ? await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId) : null;
+			return yjsSnapshotAsset?.r2Key ?? null;
+		});
+		const yjsSnapshotBytes = yjsSnapshotR2Key ? r2Objects.get(yjsSnapshotR2Key) : undefined;
+		if (!yjsSnapshotBytes) {
+			throw new Error("Expected the uploaded Yjs snapshot bytes to be captured");
+		}
+		const snapshotYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(yjsSnapshotBytes));
+		expect([...snapshotYjsDoc.share.keys()]).toEqual([files_YJS_DOC_KEYS.richText]);
+	});
+
+	test("finalizes an uploaded plain text file into a Y.Text document with the classifier content type", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		// The client media type is deliberately wrong for a .yaml name: the classifier over the
+		// The node name must pick both the document shape and the stored content type.
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "notes.yaml",
+			contentType: "text/plain;charset=utf-8",
+			size: 1024,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!asset) {
+			throw new Error("Expected upload asset");
+		}
+		const assetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: asset._id,
+		});
+		// BOM + CRLF in the uploaded bytes: the producer boundary must store LF text without a BOM.
+		r2Objects.set(assetR2Key, new TextEncoder().encode("\uFEFFkey: value\r\nother: 2\r\n"));
+
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_yaml",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: asset.r2Bucket,
+					object: {
+						key: assetR2Key,
+						size: 1024,
+						eTag: "etag_yaml",
+					},
+					eventTime: "2026-05-11T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+
+		const uploadedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		expect(uploadedAsset?.processingWorkId).toBe("work_asset_refactor");
+
+		await asUser.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload._yay.assetId,
+			eventId: "event_yaml",
+		});
+
+		const docs = await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+			const contentAsset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
+
+			return { fileNode, asset, contentAsset };
+		});
+
+		expect(docs.fileNode?.yjsRootKind).toBe("plain_text");
+		expect(docs.fileNode?.contentType).toBe("application/yaml");
+		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
+		expect(docs.fileNode?.yjsLastSequenceId).toEqual(expect.any(String));
+		expect(docs.contentAsset?.kind).toBe("content_snapshot");
+		expect(docs.contentAsset?.r2Key ? r2_text(docs.contentAsset.r2Key) : null).toBe("key: value\nother: 2\n");
+		expect(docs.asset?.processingWorkId).toBeNull();
+
+		// Producer shape pair: the first Yjs snapshot must hold the Y.Text root the stamped
+		// `yjsRootKind` promises, and its text must round-trip the normalized upload.
+		const yjsSnapshotR2Key = await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			if (!fileNode?.yjsSnapshotId) {
+				throw new Error("Expected the promoted node to hold a Yjs snapshot pointer");
+			}
+			const yjsSnapshotDoc = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
+			const yjsSnapshotAsset = yjsSnapshotDoc ? await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId) : null;
+			return yjsSnapshotAsset?.r2Key ?? null;
+		});
+		const yjsSnapshotBytes = yjsSnapshotR2Key ? r2Objects.get(yjsSnapshotR2Key) : undefined;
+		if (!yjsSnapshotBytes) {
+			throw new Error("Expected the uploaded Yjs snapshot bytes to be captured");
+		}
+		const snapshotYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(yjsSnapshotBytes));
+		expect([...snapshotYjsDoc.share.keys()]).toEqual([files_YJS_DOC_KEYS.plainText]);
+		expect(files_yjs_doc_get_text({ yjsDoc: snapshotYjsDoc, rootKind: "plain_text" })).toEqual({
+			_yay: "key: value\nother: 2\n",
+		});
+	});
+
+	test("converts an over-cap frontmatter upload with the frontmatter marker instead of throwing", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		// The installed plugin subscribes to the Markdown type. Successful conversion suppresses the upload event
+		// on every successful conversion, and this marked publish IS a successful conversion, so
+		// no event run may appear for it either.
+		await install_upload_plugin(t, {
+			userId: db.userId,
+			membershipId: db.membershipId,
+			name: "pdf",
+			displayName: "Markdown watcher",
+			description: "Watches markdown uploads",
+			contentTypes: ["text/markdown;charset=utf-8"],
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "frontmatter-overcap.md",
+			contentType: "text/markdown;charset=utf-8",
+			size: 4096,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!asset) {
+			throw new Error("Expected upload asset");
+		}
+		const assetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: asset._id,
+		});
+		// 129 frontmatter fields, mirroring the qa-frontmatter-overcap.md fixture: over the field
+		// cap while the byte size stays far under the content cap. The markdown itself is valid,
+		// so the conversion must publish an editable node instead of throwing the insert
+		// backstop inside the infinite-retry workpool.
+		const overCapMarkdown = `---\n${Array.from({ length: files_metadata_MAX_FRONTMATTER_FIELDS + 1 }, (_, index) => `field_${index}: ${index}`).join("\n")}\n---\n\n# Body\n`;
+		r2Objects.set(assetR2Key, new TextEncoder().encode(overCapMarkdown));
+
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_frontmatter_overcap",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: asset.r2Bucket,
+					object: {
+						key: assetR2Key,
+						size: 4096,
+						eTag: "etag_frontmatter_overcap",
+					},
+					eventTime: "2026-05-11T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+
+		await asUser.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload._yay.assetId,
+			eventId: "event_frontmatter_overcap",
+		});
+
+		const docs = await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+			const metadataDocs = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", upload._yay.nodeId),
+				)
+				.collect();
+			const pluginRun = await ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_asset_event_installation", (q) =>
+					q.eq("assetId", upload._yay.assetId).eq("event", "files.upload.completed"),
+				)
+				.unique();
+
+			return { fileNode, asset, metadataDocs, pluginRun };
+		});
+
+		// The node publishes editable with the marker pair set from its first publish, exactly
+		// like a materialization settle would set it.
+		expect(docs.fileNode?.yjsRootKind).toBe("rich_text");
+		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
+		expect(docs.fileNode?.contentFrontmatterTooLargeFieldCount).toBe(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
+		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeGreaterThan(
+			files_metadata_MAX_FRONTMATTER_FIELDS + 1,
+		);
+		expect(docs.asset?.processingWorkId).toBeNull();
+		// The over-cap frontmatter is committed as chunk content but never indexed.
+		expect(docs.metadataDocs).toHaveLength(0);
+		// Only stored-blob exits dispatch the plugin upload event. This publish is a
+		// successful conversion, so it keeps the suppression every other conversion has.
+		expect(docs.pluginRun).toBeNull();
+	});
+
+	test("converts an upload whose frontmatter values overflow the index-document cap with the marker pair", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "frontmatter-values-overcap.md",
+			contentType: "text/markdown;charset=utf-8",
+			size: 8192,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!asset) {
+			throw new Error("Expected upload asset");
+		}
+		const assetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: asset._id,
+		});
+		// One field with 600 distinct tag values, mirroring the qa-frontmatter-values-overcap.md
+		// fixture: the field count stays under its cap while the index-document count (1 field +
+		// 600 values) crosses 512.
+		const valuesOverCapMarkdown = `---\ntags:\n${Array.from({ length: 600 }, (_, index) => `  - tag_${index}`).join("\n")}\n---\n\n# Body\n`;
+		r2Objects.set(assetR2Key, new TextEncoder().encode(valuesOverCapMarkdown));
+
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_frontmatter_values_overcap",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: asset.r2Bucket,
+					object: {
+						key: assetR2Key,
+						size: 8192,
+						eTag: "etag_frontmatter_values_overcap",
+					},
+					eventTime: "2026-05-11T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+
+		await asUser.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload._yay.assetId,
+			eventId: "event_frontmatter_values_overcap",
+		});
+
+		const docs = await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+			const metadataDocs = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", upload._yay.nodeId),
+				)
+				.collect();
+
+			return { fileNode, asset, metadataDocs };
+		});
+
+		// The index-document half of the pair is the one this content crosses; the field count is
+		// recorded beside it as the fresh preflight measured it.
+		expect(docs.fileNode?.yjsRootKind).toBe("rich_text");
+		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
+		expect(docs.fileNode?.contentFrontmatterTooLargeFieldCount).toBe(1);
+		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBe(601);
+		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeGreaterThan(
+			files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
+		);
+		expect(docs.asset?.processingWorkId).toBeNull();
+		expect(docs.metadataDocs).toHaveLength(0);
+	});
+
+	test("falls back to the stored blob on invalid UTF-8 and dispatches the plugin upload event", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		// The installed plugin subscribes to this upload's content type, so the fallback settle is
+		// the only step that can create its event run.
+		await install_upload_plugin(t, {
+			userId: db.userId,
+			membershipId: db.membershipId,
+			name: "pdf",
+			displayName: "JSON watcher",
+			description: "Watches JSON uploads",
+			contentTypes: ["application/json"],
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "data.json",
+			contentType: "application/json",
+			size: 16,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!asset) {
+			throw new Error("Expected upload asset");
+		}
+		const assetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: asset._id,
+		});
+		// 0xff can never appear in UTF-8, so the fatal decode refuses on every retry: the upload
+		// must stay a stored blob instead of storing replacement characters as editable text.
+		r2Objects.set(assetR2Key, new Uint8Array([0x48, 0xff, 0xfe]));
+
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_invalid_utf8",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: asset.r2Bucket,
+					object: {
+						key: assetR2Key,
+						size: 16,
+						eTag: "etag_invalid_utf8",
+					},
+					eventTime: "2026-05-11T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+
+		// The conversion is still pending, so the plugin event must not exist yet.
+		const pluginRunBeforeSettle = await t.run(async (ctx) =>
+			ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_asset_event_installation", (q) =>
+					q.eq("assetId", upload._yay.assetId).eq("event", "files.upload.completed"),
+				)
+				.unique(),
+		);
+		expect(pluginRunBeforeSettle).toBeNull();
+
+		await asUser.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload._yay.assetId,
+			eventId: "event_invalid_utf8",
+		});
+
+		const docs = await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+			const pluginRun = await ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_asset_event_installation", (q) =>
+					q.eq("assetId", upload._yay.assetId).eq("event", "files.upload.completed"),
+				)
+				.unique();
+
+			return { fileNode, asset, pluginRun };
+		});
+
+		// The node stays a stored blob pointing at the original upload.
+		expect(docs.fileNode?.assetId).toBe(upload._yay.assetId);
+		expect(docs.fileNode?.yjsSnapshotId).toBeUndefined();
+		expect(docs.fileNode?.yjsRootKind).toBeUndefined();
+		expect(docs.asset?.processingWorkId).toBeNull();
+		// Every stored-blob fallback exit dispatches the plugin upload event.
+		expect(docs.pluginRun).toMatchObject({ event: "files.upload.completed" });
+	});
+
+	test("keeps an over-cap upload as a stored blob without downloading it", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const overCapSize = files_MAX_TEXT_CONTENT_BYTES + 1;
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "big.txt",
+			contentType: "text/plain;charset=utf-8",
+			size: overCapSize,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!asset) {
+			throw new Error("Expected upload asset");
+		}
+		const assetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: asset._id,
+		});
+		// No bytes are seeded on purpose: the pre-download size check must settle the fallback
+		// before any bucket read, so a download attempt would fail this test.
+
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_over_cap",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: asset.r2Bucket,
+					object: {
+						key: assetR2Key,
+						size: overCapSize,
+						eTag: "etag_over_cap",
+					},
+					eventTime: "2026-05-11T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+
+		await asUser.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload._yay.assetId,
+			eventId: "event_over_cap",
+		});
+
+		const docs = await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+
+			return { fileNode, asset };
+		});
+
+		expect(docs.fileNode?.assetId).toBe(upload._yay.assetId);
+		expect(docs.fileNode?.yjsSnapshotId).toBeUndefined();
 		expect(docs.asset?.processingWorkId).toBeNull();
 	});
 

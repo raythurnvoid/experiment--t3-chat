@@ -65,4 +65,13 @@ crons.cron(
 // Every 5 minutes — close running activities past their caller-set deadline as "timeout".
 crons.cron("timeout stale activities", "*/5 * * * *", internal.activities.timeout_stale_activities, {});
 
+// Every 15 minutes — crash/abandon fallback for paged pending states: expired temporary
+// states/batches/text inputs, expired trusted-update stages, and retired-state cleanup tasks.
+crons.cron(
+	"cleanup expired pending state rows",
+	"*/15 * * * *",
+	internal.files_pending_updates.cleanup_expired_pending_state_rows,
+	{},
+);
+
 export default crons;

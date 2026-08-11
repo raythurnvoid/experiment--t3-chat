@@ -1,0 +1,43 @@
+@layer components {
+	/* #region details */
+	.FileEditorSidebarDetails {
+		padding: 16px;
+
+		overflow: hidden auto;
+	}
+
+	.FileEditorSidebarDetails-metadata {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		margin: 0;
+	}
+
+	.FileEditorSidebarDetails-row {
+		display: grid;
+		grid-template-columns: 110px minmax(0, 1fr);
+		gap: 16px;
+	}
+
+	.FileEditorSidebarDetails-label {
+		font-size: 0.8125rem;
+		font-weight: 500;
+		color: var(--gray-600);
+	}
+
+	.FileEditorSidebarDetails-value {
+		margin: 0;
+
+		overflow-wrap: anywhere;
+
+		font-size: 0.875rem;
+		color: var(--gray-800);
+	}
+
+	.FileEditorSidebarDetails-skeleton {
+		height: 20px;
+		width: 90px;
+	}
+	/* #endregion details */
+}

@@ -56,10 +56,10 @@ const TEXTGREP_NOOP_FLAGS = new Set([
 ]);
 
 const TEXTGREP_LINE_NUMBER_GUIDANCE =
-	"textgrep prints rendered plain text without line numbers; use `grep -n PATTERN <file>` for canonical Markdown line numbers.";
+	"textgrep prints rendered plain text without line numbers; use `grep -n PATTERN <file>` for canonical file line numbers.";
 const TEXTGREP_CONTEXT_GUIDANCE =
-	"textgrep does not support context windows over derived plain text; use `grep` for canonical file context, or `search` for cross-file snippets.";
-const TEXTGREP_WINDOW_GUIDANCE = "Markdown scan-window controls don't apply to derived plain text; use `grep`.";
+	"textgrep does not support context windows over rendered plain text; use `grep` for canonical file context, or `search` for cross-file snippets.";
+const TEXTGREP_WINDOW_GUIDANCE = "grep's scan-window controls don't apply to textgrep's rendered plain text; use `grep`.";
 const TEXTGREP_RECURSIVE_FIXED_STRINGS_GUIDANCE =
 	"textgrep -R over app folders uses indexed full-text search and does not support exact fixed-string (-F) matching; use `search --path <folder> <terms>` for indexed search, or `textgrep -F PATTERN <file>` on one exact file.";
 
@@ -217,8 +217,9 @@ function guidance() {
 		stdout:
 			[
 				"textgrep regex runs over ONE app file's rendered plain text: textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file>.",
+				"On a Markdown file that is the rendered Markdown text; on a plain text file it is the file's own text.",
 				"For recursive or cross-file content, use textgrep -R PATTERN <folder> or search (indexed full-text).",
-				"For canonical Markdown line numbers or -A/-B/-C context, use grep [-n] PATTERN <file>.",
+				"For canonical file line numbers or -A/-B/-C context, use grep [-n] PATTERN <file>.",
 			].join("\n") + "\n",
 		stderr: "",
 		exitCode: bash_COMMAND_EXIT_USAGE,
@@ -324,18 +325,18 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 								"textgrep -R over app folders uses indexed full-text search, not exact recursive regex grep.",
 								`Found ${allItems.length} results under ${scopePath}${bash_search_command_exact_query_summary(
 									exactQueryFilter,
-									allItems.map((item) => item.markdownChunk ?? ""),
+									allItems.map((item) => item.textChunk ?? ""),
 								)}`,
 								"",
 								...allItems.map((item) => {
-									const markdownChunk = item.markdownChunk ?? "";
+									const textChunk = item.textChunk ?? "";
 									return [
 										`${pathResolution.renderShellPath(item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(
 											exactQueryFilter,
 											pattern,
-											markdownChunk,
+											textChunk,
 										)}`,
-										markdownChunk,
+										textChunk,
 									].join("\n");
 								}),
 							]

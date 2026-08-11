@@ -21,17 +21,25 @@ Use this reference when touching `packages/app/convex/**`.
 Schema comments should name the concrete docs and why the table exists:
 
 - `files_plain_text_chunks` docs support full-text search and pending/committed overlay; `files_search_chunks` no longer exists.
-- `files_markdown_chunks` docs support exact Markdown reads and regex scans for both committed and pending content; the old pending-only chunk table no longer exists.
+- `files_text_chunks` docs support exact text reads and regex scans for both committed and pending content; the old pending-only chunk table no longer exists.
 - `files_metadata_docs` field docs support field-existence search.
 - `files_metadata_docs` value docs support primitive value search.
 
 Avoid vague terms such as `projection` when `search chunks`, `metadata docs`, or `indexed docs` is clearer.
 
+## Large Values: Page/Seal And One-Large-Value-Per-Call
+
+Convex rejects values close to 1 MiB, so large binary state never travels or stores as one value. The pending-state family in `files_pending_updates.ts` is the reference implementation:
+
+- Page/seal: stage bytes in bounded pages (each at most `files_MAX_YJS_WIRE_BYTES`, non-empty, contiguous by index), then one seal mutation reloads the pages, verifies completeness against recorded totals plus a digest, runs every content check on the reassembled value, and marks the state valid. Only the seal validates; the final commit re-checks ids and digests and never reloads pages.
+- One large value per call: every registered function carries at most ONE page or ONE bounded text, plus ids and scalars. A flow that needs two large inputs stages one first (a text-input doc or a trusted-update stage) and passes its id to the next call.
+- Give every staged/temporary doc an owner and an expiry so an abandoned flow is swept, and retire superseded families into durable cleanup tasks drained by a bounded scheduled continuation instead of deleting children inline.
+
 ## Search Chunks
 
-- Full-text search pages read denormalized display fields and offsets directly from `files_plain_text_chunks`; do not add a `markdownChunkId` dereference to hydrate each hit.
-- Exact Markdown scans query `files_markdown_chunks` directly.
-- `files_plain_text_chunks.markdownChunkId` remains an integrity/provenance link between paired chunk docs. Validate it only in code that actually follows the link.
+- Full-text search pages read denormalized display fields and offsets directly from `files_plain_text_chunks`; do not add a `textChunkId` dereference to hydrate each hit.
+- Exact text scans query `files_text_chunks` directly.
+- `files_plain_text_chunks.textChunkId` remains an integrity/provenance link between paired chunk docs. Validate it only in code that actually follows the link.
 - Keep invariant error metadata structured and never log chunk text or document bodies.
 - Keep query filters before pagination for the current full-text overlay. Do not add a JavaScript re-filter or a separate page probe that changes the established page semantics.
 - Do not hide hard caps such as `.take(100)` inside a cursor phase unless the cursor can advance past that cap.

@@ -30,6 +30,63 @@ self.MonacoEnvironment = {
 	},
 };
 
+// Tokenizer-only for v1: plain-text documents get syntax colors but no language services.
+// Only the base editor worker is wired above, and monaco 0.56's json/css/typescript modes
+// register worker-backed providers (completions, hovers, folding ranges, document symbols,
+// colors, validation) that request a labelled worker. `getWorker` answers with the base editor
+// worker, so every such call errors with "Missing requestHandler or method: doValidation" (and
+// doComplete, getFoldingRanges, ...). Turning single options off is not enough — the providers
+// stay registered — so disable the whole feature set through each mode's `setModeConfiguration`.
+// The languages the app can actually open (see `files_get_monaco_language_id`) that have a
+// worker mode are json, css, javascript and typescript; the rest are monarch-only already.
+monaco.json.jsonDefaults.setModeConfiguration({
+	// JSON's tokens provider is synchronous mode code, not worker-backed: it is the one feature
+	// tokenizer-only keeps. css/js/ts tokenize through basic-languages monarch grammars outside
+	// these modes, so their configurations can turn everything off.
+	tokens: true,
+	completionItems: false,
+	hovers: false,
+	documentSymbols: false,
+	colors: false,
+	foldingRanges: false,
+	diagnostics: false,
+	selectionRanges: false,
+	documentFormattingEdits: false,
+	documentRangeFormattingEdits: false,
+});
+monaco.css.cssDefaults.setModeConfiguration({
+	completionItems: false,
+	hovers: false,
+	documentSymbols: false,
+	definitions: false,
+	references: false,
+	documentHighlights: false,
+	rename: false,
+	colors: false,
+	foldingRanges: false,
+	diagnostics: false,
+	selectionRanges: false,
+	documentFormattingEdits: false,
+	documentRangeFormattingEdits: false,
+});
+const app_monaco_TS_TOKENIZER_ONLY_MODE_CONFIGURATION = {
+	completionItems: false,
+	hovers: false,
+	documentSymbols: false,
+	definitions: false,
+	references: false,
+	documentHighlights: false,
+	rename: false,
+	diagnostics: false,
+	documentRangeFormattingEdits: false,
+	signatureHelp: false,
+	onTypeFormattingEdits: false,
+	codeActions: false,
+	inlayHints: false,
+};
+monaco.typescript.typescriptDefaults.setModeConfiguration(app_monaco_TS_TOKENIZER_ONLY_MODE_CONFIGURATION);
+monaco.typescript.javascriptDefaults.setModeConfiguration(app_monaco_TS_TOKENIZER_ONLY_MODE_CONFIGURATION);
+
 function hex_with_alpha(hex: string, alpha01: number) {
 	const clamped = Math.max(0, Math.min(1, alpha01));
 	const alpha = Math.round(clamped * 255)

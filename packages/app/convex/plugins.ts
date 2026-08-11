@@ -3578,9 +3578,11 @@ export const run_installation_on_files = internalMutation({
 				runs.push({ nodeId, runId: null, message: "File and plugin installation are in different workspaces" });
 				continue;
 			}
-			// Plugins process finished binary uploads only, matching the upload fan-out gate.
+			// Backfill stays stored-upload-only by decision: a converted editable document (even one
+			// born by upload) is no longer the stored blob a plugin run would read, so the refusal
+			// names the supported input instead of hinting the node is broken.
 			if (fileNode.kind !== "file" || fileNode.assetId === undefined || files_node_has_editable_yjs_state(fileNode)) {
-				runs.push({ nodeId, runId: null, message: "Plugin runs are only supported for uploaded files" });
+				runs.push({ nodeId, runId: null, message: "Plugin backfill supports stored upload blobs only" });
 				continue;
 			}
 			// A local is load-bearing here: the undefined-narrowing does not flow into the withIndex

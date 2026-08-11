@@ -35,8 +35,8 @@ const SNIPPET_RADIUS = 60;
  * Cut roughly 120 characters around the first query-term hit, so the row shows why the file
  * matched without rendering the whole 1200-character chunk.
  */
-function files_search_palette_snippet(markdownChunk: string, query: string) {
-	const flatText = markdownChunk.replace(/\s+/gu, " ").trim();
+function files_search_palette_snippet(textChunk: string, query: string) {
+	const flatText = textChunk.replace(/\s+/gu, " ").trim();
 	const firstTerm = query.trim().split(/\s+/u)[0] ?? "";
 	const hitIndex = firstTerm ? flatText.toLowerCase().indexOf(firstTerm.toLowerCase()) : -1;
 
@@ -179,7 +179,7 @@ const FilesSearchPalette = memo(function FilesSearchPalette() {
 											{result.path}
 										</span>
 										<span className={cn("FilesSearchPalette-item-snippet" satisfies FilesSearchPalette_ClassNames)}>
-											{files_search_palette_snippet(result.markdownChunk, serverQuery)}
+											{files_search_palette_snippet(result.textChunk, serverQuery)}
 										</span>
 									</Ariakit.ComboboxItem>
 								))

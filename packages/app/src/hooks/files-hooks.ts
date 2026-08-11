@@ -18,6 +18,7 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 	const [syncStatus, setSyncStatus] = useState<ReturnType<files_yjs_Provider["getStatus"]>>("loading");
 	const [syncChanged, setSyncChanged] = useState(false);
 	const [loadFailed, setLoadFailed] = useState(false);
+	const [pushRefused, setPushRefused] = useState(false);
 	const lastStatusRef = useRef<ReturnType<files_yjs_Provider["getStatus"]>>("loading");
 
 	const onDestroyRef = useRef<() => void>(null);
@@ -58,11 +59,19 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 			setLoadFailed(yjsProvider.loadFailed);
 			yjsProvider.on("loadFailed", handleLoadFailed);
 
+			function handlePushRefused(refused: boolean) {
+				setPushRefused(refused);
+			}
+
+			setPushRefused(yjsProvider.pushRefused);
+			yjsProvider.on("pushRefused", handlePushRefused);
+
 			const unregisterQaProvider = app_qa_register_files_yjs_provider(yjsProvider);
 
 			onDestroyRef.current = () => {
 				yjsProvider.off("status", handleStatus);
 				yjsProvider.off("loadFailed", handleLoadFailed);
+				yjsProvider.off("pushRefused", handlePushRefused);
 				unregisterQaProvider();
 				yjsProvider.destroy();
 			};
@@ -81,6 +90,7 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 				syncStatus,
 				syncChanged,
 				loadFailed,
+				pushRefused,
 			}
 		: undefined;
 }

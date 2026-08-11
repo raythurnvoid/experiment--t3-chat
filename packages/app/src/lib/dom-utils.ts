@@ -8,6 +8,7 @@ export type AppElementId =
 	| "app_file_editor_sidebar_tabs_comments"
 	| "app_file_editor_sidebar_tabs_agent"
 	| "app_file_editor_sidebar_tabs_pending"
+	| "app_file_editor_sidebar_tabs_details"
 	| "app_files_sidebar_search"
 	| "app_plugin_activity_section";
 

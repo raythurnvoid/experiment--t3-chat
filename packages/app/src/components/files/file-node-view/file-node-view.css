@@ -384,7 +384,8 @@
 	}
 
 	.FileNodeViewTopFloating-activity,
-	.FileNodeViewTopFloating-content-too-large {
+	.FileNodeViewTopFloating-content-too-large,
+	.FileNodeViewTopFloating-frontmatter-too-large {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -405,14 +406,16 @@
 		color: var(--color-red-09);
 	}
 
-	.FileNodeViewTopFloating-content-too-large-icon {
+	.FileNodeViewTopFloating-content-too-large-icon,
+	.FileNodeViewTopFloating-frontmatter-too-large-icon {
 		flex: 0 0 auto;
 
 		color: var(--color-red-09);
 	}
 
 	.FileNodeViewTopFloating-activity-message,
-	.FileNodeViewTopFloating-content-too-large-message {
+	.FileNodeViewTopFloating-content-too-large-message,
+	.FileNodeViewTopFloating-frontmatter-too-large-message {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;

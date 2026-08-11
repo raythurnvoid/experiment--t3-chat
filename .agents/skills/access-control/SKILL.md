@@ -197,8 +197,8 @@ Rules that are easy to miss, all of which were real holes:
 
 For listings, use `access_control_db_filter_readable_file_nodes`. For **file content and exact
 statistics**, the check lives inside the five readers that resolve a node and then answer from it:
-`read_file_content_from_chunks`, `get_file_markdown_content_db_state_by_path`,
-`db_resolve_committed_chunk_source`, `match_markdown_file_lines`, and
+`read_file_content_from_chunks`, `get_file_text_content_db_state_by_path`,
+`db_resolve_committed_chunk_source`, `match_text_file_lines`, and
 `match_plain_text_file_lines`. The stats reader returns no text, but exact line, word and byte counts
 still reveal a file. Every bash command, AI tool and public API read route goes through one of these
 readers, so a check in each caller would be a check waiting to be forgotten. Count the readers before

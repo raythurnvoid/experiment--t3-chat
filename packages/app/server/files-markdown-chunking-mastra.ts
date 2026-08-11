@@ -214,7 +214,7 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 
 	const chunks: Array<{
 		chunkIndex: number;
-		markdownChunk: string;
+		textChunk: string;
 		plainTextChunk: string;
 		startIndex: number;
 		endIndex: number;
@@ -225,8 +225,8 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 
 	for (let chunkIndex = 0; chunkIndex < chunkDocs.length; chunkIndex++) {
 		const chunkDoc = chunkDocs[chunkIndex]!;
-		const markdownChunk = chunkDoc.text;
-		if (markdownChunk.length === 0) {
+		const textChunk = chunkDoc.text;
+		if (textChunk.length === 0) {
 			continue;
 		}
 
@@ -242,7 +242,7 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 			});
 		}
 
-		const endIndex = startIndex + markdownChunk.length;
+		const endIndex = startIndex + textChunk.length;
 
 		const lineStart = get_line_number_from_offset({
 			targetOffset: startIndex,
@@ -254,7 +254,7 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 		});
 
 		const plainTextResult = files_tiptap_markdown_to_plain_text({
-			markdown: markdownChunk,
+			markdown: textChunk,
 		});
 		if (plainTextResult._nay) {
 			return Result({
@@ -275,7 +275,7 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 
 		chunks.push({
 			chunkIndex: chunks.length,
-			markdownChunk,
+			textChunk,
 			plainTextChunk,
 			startIndex,
 			endIndex,

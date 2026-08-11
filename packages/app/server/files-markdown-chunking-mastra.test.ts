@@ -44,7 +44,7 @@ describe("files_chunk_markdown", () => {
 		for (const chunk of chunks._yay) {
 			expect(chunk.startIndex).toBeGreaterThanOrEqual(0);
 			expect(chunk.endIndex).toBeGreaterThan(chunk.startIndex);
-			expect(markdownContent.slice(chunk.startIndex, chunk.endIndex)).toBe(chunk.markdownChunk);
+			expect(markdownContent.slice(chunk.startIndex, chunk.endIndex)).toBe(chunk.textChunk);
 			expect(chunk.lineStart).toBeGreaterThanOrEqual(1);
 			expect(chunk.lineEnd).toBeGreaterThanOrEqual(chunk.lineStart);
 			expect(chunk.plainTextChunk).not.toContain("```");
@@ -94,14 +94,14 @@ describe("files_chunk_markdown", () => {
 		expect(chunks._yay.length).toBeGreaterThan(3);
 		// Verbatim: every chunk is the exact source slice at its recorded offsets.
 		for (const chunk of chunks._yay) {
-			expect(markdownContent.slice(chunk.startIndex, chunk.endIndex)).toBe(chunk.markdownChunk);
+			expect(markdownContent.slice(chunk.startIndex, chunk.endIndex)).toBe(chunk.textChunk);
 		}
 		// Contiguous: each chunk starts exactly where the previous ended (no dropped bytes).
 		for (let i = 1; i < chunks._yay.length; i++) {
 			expect(chunks._yay[i]!.startIndex).toBe(chunks._yay[i - 1]!.endIndex);
 		}
 		// Concatenating all chunk text reproduces the whole document.
-		expect(chunks._yay.map((chunk) => chunk.markdownChunk).join("")).toBe(markdownContent);
+		expect(chunks._yay.map((chunk) => chunk.textChunk).join("")).toBe(markdownContent);
 	});
 
 	test("returns empty chunks for empty markdown", async () => {
@@ -131,7 +131,7 @@ describe("files_chunk_markdown", () => {
 			chunks._yay.map((chunk) => ({
 				startIndex: chunk.startIndex,
 				endIndex: chunk.endIndex,
-				length: chunk.markdownChunk.length,
+				length: chunk.textChunk.length,
 			})),
 		).toEqual([
 			{ startIndex: 0, endIndex: 1200, length: 1200 },
@@ -154,10 +154,10 @@ describe("files_chunk_markdown", () => {
 		if (chunks._nay) throw new Error("Expected markdown chunking to succeed", { cause: chunks._nay });
 
 		expect(markdownContent).toContain(phrase);
-		expect(chunks._yay.some((chunk) => chunk.markdownChunk.includes(phrase))).toBe(false);
+		expect(chunks._yay.some((chunk) => chunk.textChunk.includes(phrase))).toBe(false);
 		// Both halves survive, each in its own chunk, which is why per-chunk term search still hits.
-		expect(chunks._yay.some((chunk) => chunk.markdownChunk.includes("quarterly"))).toBe(true);
-		expect(chunks._yay.some((chunk) => chunk.markdownChunk.includes("revenue reconciliation"))).toBe(true);
+		expect(chunks._yay.some((chunk) => chunk.textChunk.includes("quarterly"))).toBe(true);
+		expect(chunks._yay.some((chunk) => chunk.textChunk.includes("revenue reconciliation"))).toBe(true);
 		// No overlap: neighbours meet exactly, so merged reads reproduce the source without repeats.
 		for (let i = 1; i < chunks._yay.length; i++) {
 			expect(chunks._yay[i]!.startIndex).toBe(chunks._yay[i - 1]!.endIndex);
@@ -180,7 +180,7 @@ describe("files_chunk_markdown", () => {
 
 		expect(chunks._yay.length).toBeGreaterThan(0);
 		for (const chunk of chunks._yay) {
-			expect(markdownContent.slice(chunk.startIndex, chunk.endIndex)).toBe(chunk.markdownChunk);
+			expect(markdownContent.slice(chunk.startIndex, chunk.endIndex)).toBe(chunk.textChunk);
 			expect(chunk.lineStart).toBeGreaterThanOrEqual(1);
 			expect(chunk.lineEnd).toBeGreaterThanOrEqual(chunk.lineStart);
 		}

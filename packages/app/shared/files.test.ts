@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	files_find_file_stem_end_index,
+	files_get_editable_text_content_type,
+	files_get_editable_text_yjs_root_kind,
+	files_get_monaco_language_id,
+	files_get_served_media_content_type,
 	files_get_upload_pipeline_state,
 	files_get_normalized_node_path_segments,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
+	files_normalize_editable_file_name,
 	files_normalize_markdown_name,
+	files_validate_file_rename_class,
+	files_normalize_text_document_input,
+	files_u8_equals,
 	files_normalize_name_input,
 	files_normalize_name,
 	files_pending_path_overlay_build,
@@ -23,10 +31,31 @@ import {
 	files_parse_markdown_to_html,
 	files_tiptap_markdown_to_json,
 	files_tiptap_markdown_to_plain_text,
-	files_yjs_doc_get_markdown,
-	files_yjs_doc_update_from_markdown,
+	files_yjs_doc_create_from_text,
+	files_yjs_doc_get_text,
+	files_yjs_doc_update_from_text,
 } from "./files-tiptap.ts";
-import { Doc as YDoc } from "yjs";
+import {
+	files_yjs_doc_check_text_addressable,
+	files_yjs_doc_plain_text_root_map_size,
+	files_yjs_decode_v1_update,
+	files_yjs_scan_client_update,
+	files_yjs_TEXT_NOT_ADDRESSABLE_MESSAGE,
+	files_yjs_RICH_TEXT_SHAPE_MISMATCH_MESSAGE,
+	files_yjs_MALFORMED_UPDATE_MESSAGE,
+	files_yjs_UNSUPPORTED_UPDATE_ENCODING_MESSAGE,
+	files_yjs_UPDATE_SHAPE_REFUSED_MESSAGE,
+} from "./files-yjs.ts";
+import { files_text_diff_TOO_LARGE_MESSAGE } from "./files-text-diff.ts";
+import {
+	Doc as YDoc,
+	XmlElement as YXmlElement,
+	applyUpdate,
+	encodeStateAsUpdate,
+	encodeStateAsUpdateV2,
+	encodeStateVector,
+	mergeUpdates,
+} from "yjs";
 import stringByteLength from "string-byte-length";
 import type { WorkId } from "@convex-dev/workpool";
 import type { app_convex_Doc } from "./app-convex.ts";
@@ -149,6 +178,20 @@ describe("files_get_utf8_byte_size", () => {
 	});
 });
 
+describe("files_normalize_text_document_input", () => {
+	test.each([
+		{ title: "CRLF pairs become LF", input: "a\r\nb\r\n", expected: "a\nb\n" },
+		{ title: "a lone CR becomes LF", input: "a\rb", expected: "a\nb" },
+		{ title: "one leading BOM is dropped", input: "\uFEFFabc", expected: "abc" },
+		{ title: "a BOM after position 0 is content", input: "a\uFEFFb", expected: "a\uFEFFb" },
+		{ title: "only the first BOM is dropped", input: "\uFEFF\uFEFFa", expected: "\uFEFFa" },
+		{ title: "already-normalized text is untouched", input: "a\nb\n", expected: "a\nb\n" },
+		{ title: "empty input stays empty", input: "", expected: "" },
+	])("$title", ({ input, expected }) => {
+		expect(files_normalize_text_document_input(input)).toBe(expected);
+	});
+});
+
 describe("string-byte-length runtime paths", () => {
 	test.each([
 		["without Buffer.byteLength", { bufferByteLength: "removed", textEncoder: "current" }],
@@ -183,6 +226,147 @@ describe("files_find_file_stem_end_index", () => {
 	});
 });
 
+describe("files_get_editable_text_content_type", () => {
+	test.each([
+		["notes.md", "text/markdown;charset=utf-8"],
+		["NOTES.MD", "text/markdown;charset=utf-8"],
+		["notes.txt", "text/plain;charset=utf-8"],
+		["build.log", "text/plain;charset=utf-8"],
+		["data.json", "application/json"],
+		["DATA.JSON", "application/json"],
+		["config.jsonc", "application/json"],
+		["config.yaml", "application/yaml"],
+		["config.yml", "application/yaml"],
+		["config.toml", "application/toml"],
+		["settings.ini", "text/plain;charset=utf-8"],
+		["table.csv", "text/csv"],
+		["table.tsv", "text/tab-separated-values"],
+		["style.css", "text/css"],
+		["script.js", "text/javascript"],
+		["script.mjs", "text/javascript"],
+		["script.cjs", "text/javascript"],
+		["view.jsx", "text/javascript"],
+		["module.ts", "text/typescript"],
+		["view.tsx", "text/typescript"],
+		["run.sh", "application/x-sh"],
+		["query.sql", "application/sql"],
+		// Active content and unknown extensions are not editable text.
+		["page.html", null],
+		["feed.xml", null],
+		["image.svg", null],
+		["photo.png", null],
+		["movie.mp4", null],
+		["secrets.env", null],
+		["archive.tar.gz", null],
+		["script.py", null],
+		// A leading-dot name has no extension, same rule as `files_lowercase_extension`.
+		[".json", null],
+		[".env", null],
+		[".gitignore", null],
+		// A trailing dot means no extension either, and so does no dot at all.
+		["data.", null],
+		["notes", null],
+	] satisfies Array<[string, ReturnType<typeof files_get_editable_text_content_type>]>)(
+		"classifies %s as %s",
+		(fileName, expected) => {
+			expect(files_get_editable_text_content_type(fileName)).toBe(expected);
+		},
+	);
+});
+
+describe("files_get_editable_text_yjs_root_kind", () => {
+	test.each([
+		// `.md` keeps the rich text document; that routing rule is this table's reason to exist.
+		["notes.md", "rich_text"],
+		["README.MD", "rich_text"],
+		["notes.txt", "plain_text"],
+		["build.log", "plain_text"],
+		["data.json", "plain_text"],
+		["config.jsonc", "plain_text"],
+		["config.yaml", "plain_text"],
+		["config.yml", "plain_text"],
+		["config.toml", "plain_text"],
+		["settings.ini", "plain_text"],
+		["table.csv", "plain_text"],
+		["table.tsv", "plain_text"],
+		["style.css", "plain_text"],
+		["script.js", "plain_text"],
+		["script.mjs", "plain_text"],
+		["script.cjs", "plain_text"],
+		["view.jsx", "plain_text"],
+		["module.ts", "plain_text"],
+		["view.tsx", "plain_text"],
+		["run.sh", "plain_text"],
+		["query.sql", "plain_text"],
+		["photo.png", null],
+		["page.html", null],
+		["image.svg", null],
+		[".json", null],
+		[".gitignore", null],
+		["data.", null],
+		["notes", null],
+	] satisfies Array<[string, ReturnType<typeof files_get_editable_text_yjs_root_kind>]>)(
+		"classifies %s as %s",
+		(fileName, expected) => {
+			expect(files_get_editable_text_yjs_root_kind(fileName)).toBe(expected);
+		},
+	);
+});
+
+describe("files_get_monaco_language_id", () => {
+	test.each([
+		["notes.md", "markdown"],
+		["notes.txt", "plaintext"],
+		["build.log", "plaintext"],
+		["data.json", "json"],
+		["config.jsonc", "json"],
+		["config.yaml", "yaml"],
+		["config.yml", "yaml"],
+		["config.toml", "plaintext"],
+		["settings.ini", "ini"],
+		["table.csv", "plaintext"],
+		["table.tsv", "plaintext"],
+		["style.css", "css"],
+		["script.js", "javascript"],
+		["script.mjs", "javascript"],
+		["script.cjs", "javascript"],
+		["view.jsx", "javascript"],
+		["module.ts", "typescript"],
+		["view.tsx", "typescript"],
+		["run.sh", "shell"],
+		["query.sql", "sql"],
+		["MODULE.TS", "typescript"],
+		["unknown.bin", "plaintext"],
+		[".gitignore", "plaintext"],
+		["notes", "plaintext"],
+	] satisfies Array<[string, string]>)("maps %s to %s", (fileName, expected) => {
+		expect(files_get_monaco_language_id(fileName)).toBe(expected);
+	});
+});
+
+describe("files_get_served_media_content_type", () => {
+	test.each([
+		["photo.png", "image/png"],
+		["PHOTO.PNG", "image/png"],
+		["photo.jpg", "image/jpeg"],
+		["photo.jpeg", "image/jpeg"],
+		["photo.webp", "image/webp"],
+		["clip.gif", "image/gif"],
+		["movie.mp4", "video/mp4"],
+		["movie.webm", "video/webm"],
+		// SVG and HTML can run script when served inline, so they never get an inline media type.
+		["image.svg", null],
+		["page.html", null],
+		["notes.md", null],
+		["data.json", null],
+		["unknown.bin", null],
+		[".png", null],
+		["photo", null],
+	] satisfies Array<[string, string | null]>)("serves %s as %s", (fileName, expected) => {
+		expect(files_get_served_media_content_type(fileName)).toBe(expected);
+	});
+});
+
 describe("files_get_upload_pipeline_state", () => {
 	test.each([
 		[null, "not_applicable"],
@@ -213,6 +397,7 @@ describe("files_node_has_editable_yjs_state", () => {
 				assetId,
 				yjsSnapshotId,
 				yjsLastSequenceId,
+				yjsRootKind: "rich_text",
 			}),
 		).toBe(true);
 
@@ -221,7 +406,17 @@ describe("files_node_has_editable_yjs_state", () => {
 				kind: "file",
 				assetId,
 				yjsSnapshotId,
+				yjsLastSequenceId,
+				yjsRootKind: undefined,
+			}),
+		).toBe(false);
+		expect(
+			files_node_has_editable_yjs_state({
+				kind: "file",
+				assetId,
+				yjsSnapshotId,
 				yjsLastSequenceId: undefined,
+				yjsRootKind: "rich_text",
 			}),
 		).toBe(false);
 		expect(
@@ -230,6 +425,7 @@ describe("files_node_has_editable_yjs_state", () => {
 				assetId,
 				yjsSnapshotId,
 				yjsLastSequenceId,
+				yjsRootKind: "rich_text",
 			}),
 		).toBe(false);
 	});
@@ -387,6 +583,84 @@ describe("files_normalize_markdown_name", () => {
 		expect(files_normalize_markdown_name("Feature Plan.pdf")).toEqual({
 			_nay: { name: "nay", message: "Invalid file name" },
 		});
+	});
+});
+
+describe("files_normalize_editable_file_name", () => {
+	test.each([
+		["data.json", "data.json"],
+		["DATA.JSON", "data.json"],
+		["My Notes.yaml", "my-notes.yaml"],
+		// Extensionless names still default to Markdown, like the UI create flow.
+		["Feature Plan", "feature-plan.md"],
+		["notes.", "notes.md"],
+		["readme.md", "README.md"],
+	])("normalizes %s to %s", (input, expected) => {
+		expect(files_normalize_editable_file_name(input)).toEqual({ _yay: expected });
+	});
+
+	test("refuses an unwritable extension with the classifier's rule", () => {
+		const result = files_normalize_editable_file_name("tool.exe");
+		if (!result._nay) {
+			throw new Error("Expected the unwritable extension to refuse");
+		}
+		expect(result._nay.message).toContain("'.exe' is not supported");
+		expect(result._nay.message).toContain("Writable extensions: .md, .txt");
+	});
+});
+
+describe("files_validate_file_rename_class", () => {
+	const richNode = {
+		kind: "file",
+		lowercaseExtension: "md",
+		assetId: "asset" as never,
+		yjsSnapshotId: "snapshot" as never,
+		yjsLastSequenceId: "sequence" as never,
+		yjsRootKind: "rich_text",
+	} as const;
+	const plainNode = { ...richNode, lowercaseExtension: "json", yjsRootKind: "plain_text" } as const;
+	const uploadNode = {
+		kind: "file",
+		lowercaseExtension: "png",
+		assetId: undefined,
+		yjsSnapshotId: undefined,
+		yjsLastSequenceId: undefined,
+		yjsRootKind: undefined,
+	} as const;
+
+	test("refuses class crossings and extension changes on stored files", () => {
+		expect(files_validate_file_rename_class({ node: richNode, destName: "notes.json" })._nay?.message).toBe(
+			"A Markdown file must keep the .md extension",
+		);
+		expect(files_validate_file_rename_class({ node: plainNode, destName: "notes.md" })._nay?.message).toContain(
+			"A plain text file must keep a plain text extension",
+		);
+		expect(files_validate_file_rename_class({ node: uploadNode, destName: "movie.mp4" })._nay?.message).toContain(
+			"keep '.png'",
+		);
+	});
+
+	test("allows plain subtype changes with the destination media type and same-class renames", () => {
+		expect(files_validate_file_rename_class({ node: plainNode, destName: "notes.yaml" })).toEqual({
+			_yay: { contentType: "application/yaml" },
+		});
+		expect(files_validate_file_rename_class({ node: richNode, destName: "notes.md" })).toEqual({
+			_yay: { contentType: "text/markdown;charset=utf-8" },
+		});
+		expect(files_validate_file_rename_class({ node: uploadNode, destName: "picture.png" })).toEqual({
+			_yay: { contentType: null },
+		});
+	});
+
+	test("an extensionless destination claims no class, so a swap can park a file on a folder name", () => {
+		expect(files_validate_file_rename_class({ node: richNode, destName: "swap-temp" })).toEqual({
+			_yay: { contentType: null },
+		});
+		expect(files_validate_file_rename_class({ node: plainNode, destName: "swap-temp" })).toEqual({
+			_yay: { contentType: null },
+		});
+		// A stored upload's extension is the only record of its bytes: it may not be dropped.
+		expect(files_validate_file_rename_class({ node: uploadNode, destName: "photo" })._nay).toBeDefined();
 	});
 });
 
@@ -691,11 +965,12 @@ describe("files_parse_markdown_to_html", () => {
 	});
 });
 
-describe("files_yjs_doc_update_from_markdown", () => {
+describe("files_yjs_doc_update_from_text", () => {
 	test("preserves trailing whitespace at EOF through the Yjs round-trip", () => {
 		const yjsDoc = new YDoc();
-		const updateResult = files_yjs_doc_update_from_markdown({
-			markdown: "hello ",
+		const updateResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
+			text: "hello ",
 			mut_yjsDoc: yjsDoc,
 		});
 
@@ -705,9 +980,7 @@ describe("files_yjs_doc_update_from_markdown", () => {
 			});
 		}
 
-		const markdownResult = files_yjs_doc_get_markdown({
-			yjsDoc,
-		});
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
 		if (markdownResult._nay) {
 			throw new Error("Expected Yjs to markdown conversion to succeed", {
 				cause: markdownResult._nay,
@@ -720,8 +993,9 @@ describe("files_yjs_doc_update_from_markdown", () => {
 
 	test("preserves trailing whitespace-only line at EOF through the Yjs round-trip", () => {
 		const yjsDoc = new YDoc();
-		const updateResult = files_yjs_doc_update_from_markdown({
-			markdown: "# Base\n\n ",
+		const updateResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
+			text: "# Base\n\n ",
 			mut_yjsDoc: yjsDoc,
 		});
 
@@ -731,9 +1005,7 @@ describe("files_yjs_doc_update_from_markdown", () => {
 			});
 		}
 
-		const markdownResult = files_yjs_doc_get_markdown({
-			yjsDoc,
-		});
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
 		if (markdownResult._nay) {
 			throw new Error("Expected Yjs to markdown conversion with trailing whitespace-only line to succeed", {
 				cause: markdownResult._nay,
@@ -797,8 +1069,9 @@ describe("frontmatter round-trip through Yjs", () => {
 		].join("\n");
 
 		const yjsDoc = new YDoc();
-		const updateResult = files_yjs_doc_update_from_markdown({
-			markdown: input,
+		const updateResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
+			text: input,
 			mut_yjsDoc: yjsDoc,
 		});
 		if (updateResult._nay) {
@@ -807,7 +1080,7 @@ describe("frontmatter round-trip through Yjs", () => {
 			});
 		}
 
-		const markdownResult = files_yjs_doc_get_markdown({ yjsDoc });
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
 		if (markdownResult._nay) {
 			throw new Error("Expected Yjs to markdown conversion to succeed", {
 				cause: markdownResult._nay,
@@ -821,8 +1094,9 @@ describe("frontmatter round-trip through Yjs", () => {
 		const input = '---\nfoo: bar\nbaz: "qux"\n---';
 
 		const yjsDoc = new YDoc();
-		const updateResult = files_yjs_doc_update_from_markdown({
-			markdown: input,
+		const updateResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
+			text: input,
 			mut_yjsDoc: yjsDoc,
 		});
 		if (updateResult._nay) {
@@ -831,7 +1105,7 @@ describe("frontmatter round-trip through Yjs", () => {
 			});
 		}
 
-		const markdownResult = files_yjs_doc_get_markdown({ yjsDoc });
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
 		if (markdownResult._nay) {
 			throw new Error("Expected Yjs to markdown conversion to succeed", {
 				cause: markdownResult._nay,
@@ -850,8 +1124,9 @@ describe("frontmatter round-trip through Yjs", () => {
 		const input = "# Heading\n\nBody text\n";
 
 		const yjsDoc = new YDoc();
-		const updateResult = files_yjs_doc_update_from_markdown({
-			markdown: input,
+		const updateResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
+			text: input,
 			mut_yjsDoc: yjsDoc,
 		});
 		if (updateResult._nay) {
@@ -860,7 +1135,7 @@ describe("frontmatter round-trip through Yjs", () => {
 			});
 		}
 
-		const markdownResult = files_yjs_doc_get_markdown({ yjsDoc });
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
 		if (markdownResult._nay) {
 			throw new Error("Expected Yjs to markdown conversion to succeed", {
 				cause: markdownResult._nay,
@@ -874,9 +1149,10 @@ describe("frontmatter round-trip through Yjs", () => {
 describe("media embeds round-trip through Yjs", () => {
 	function round_trip_markdown(markdown: string) {
 		const yjsDoc = new YDoc();
-		const updateResult = files_yjs_doc_update_from_markdown({
-			markdown,
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
 			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
 		});
 		if (updateResult._nay) {
 			throw new Error("Expected media markdown to Yjs conversion to succeed", {
@@ -884,7 +1160,7 @@ describe("media embeds round-trip through Yjs", () => {
 			});
 		}
 
-		const markdownResult = files_yjs_doc_get_markdown({ yjsDoc });
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
 		if (markdownResult._nay) {
 			throw new Error("Expected Yjs to markdown conversion to succeed", {
 				cause: markdownResult._nay,
@@ -1826,3 +2102,571 @@ describe("files_pending_path_overlay", () => {
 		});
 	});
 });
+
+// #region plain text shape bridge
+function plain_doc_from(text: string) {
+	const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind: "plain_text" });
+	if ("_nay" in yjsDoc) {
+		throw new Error("Expected plain-text doc creation to succeed", { cause: yjsDoc._nay });
+	}
+	return yjsDoc;
+}
+
+function plain_text_of(yjsDoc: YDoc) {
+	const result = files_yjs_doc_get_text({ yjsDoc, rootKind: "plain_text" });
+	if (result._nay) {
+		throw new Error("Expected plain-text read to succeed", { cause: result._nay });
+	}
+	return result._yay;
+}
+
+function set_plain_text(mut_yjsDoc: YDoc, text: string) {
+	const result = files_yjs_doc_update_from_text({ text, mut_yjsDoc, rootKind: "plain_text" });
+	if (result._nay) {
+		throw new Error("Expected plain-text write to succeed", { cause: result._nay });
+	}
+}
+
+function clone_doc(yjsDoc: YDoc) {
+	const cloned = new YDoc();
+	applyUpdate(cloned, encodeStateAsUpdate(yjsDoc));
+	return cloned;
+}
+
+/** Re-apply an encoded doc into a fresh doc so roots arrive as bare AbstractTypes (like stored docs do). */
+function reencode_doc(yjsDoc: YDoc) {
+	return clone_doc(yjsDoc);
+}
+
+describe("files_yjs_doc_get_text", () => {
+	// The bridge is byte-transparent: no forced trailing newline, no LF normalization, no BOM
+	// stripping (producers own the BOM policy; the bridge must not hide bytes).
+	test.each([
+		{ title: "simple text", text: "hello world" },
+		{ title: "trailing newline preserved exactly", text: "line one\nline two\n" },
+		{ title: "no trailing newline preserved", text: "line one\nline two" },
+		{ title: "multiple trailing newlines", text: "a\n\n\n" },
+		{ title: "CRLF kept by the transparent bridge", text: "a\r\nb\r\n" },
+		{ title: "lone CR kept by the transparent bridge", text: "progress\rdone\n" },
+		{ title: "leading BOM kept by the transparent bridge", text: "﻿a,b\n1,2\n" },
+		{ title: "astral characters", text: "x😀y\n" },
+		{ title: "empty text", text: "" },
+	])("round-trips byte-exact: $title", ({ text }) => {
+		expect(plain_text_of(plain_doc_from(text))).toBe(text);
+	});
+
+	test("round-trips byte-exact through an encode/apply cycle", () => {
+		const text = "a\nb😀c\r\nd";
+		expect(plain_text_of(reencode_doc(plain_doc_from(text)))).toBe(text);
+	});
+
+	test("refuses to read a document whose text is not addressable", () => {
+		// An XmlFragment named `plain_text` reads "" while `length` counts its children.
+		const attackerDoc = new YDoc();
+		const fragment = attackerDoc.getXmlFragment("plain_text");
+		attackerDoc.transact(() => {
+			fragment.insert(0, [new YXmlElement("p")]);
+		});
+		const victimDoc = reencode_doc(attackerDoc);
+
+		const result = files_yjs_doc_get_text({ yjsDoc: victimDoc, rootKind: "plain_text" });
+		expect(result._nay?.message).toBe(files_yjs_TEXT_NOT_ADDRESSABLE_MESSAGE);
+	});
+
+	test("refuses to read a rich-text document whose only root is the plain-text one", () => {
+		const attackerDoc = new YDoc();
+		attackerDoc.getText("plain_text").insert(0, "smuggled");
+		const victimDoc = reencode_doc(attackerDoc);
+
+		const result = files_yjs_doc_get_text({ yjsDoc: victimDoc, rootKind: "rich_text" });
+		expect(result._nay?.message).toBe(files_yjs_RICH_TEXT_SHAPE_MISMATCH_MESSAGE);
+	});
+
+	test("reads the real root of a both-roots document", () => {
+		const yjsDoc = plain_doc_from("real content\n");
+		// A stale rich-text tab wrote a `default` root beside the plain one.
+		yjsDoc.getXmlFragment("default").insert(0, [new YXmlElement("p")]);
+		const bothRootsDoc = reencode_doc(yjsDoc);
+
+		expect(plain_text_of(bothRootsDoc)).toBe("real content\n");
+	});
+
+	test("reads an empty never-written document as empty text under both shapes", () => {
+		const emptyDoc = new YDoc();
+		expect(plain_text_of(emptyDoc)).toBe("");
+
+		const richResult = files_yjs_doc_get_text({ yjsDoc: new YDoc(), rootKind: "rich_text" });
+		expect(richResult._nay).toBeUndefined();
+	});
+});
+
+describe("files_yjs_doc_check_text_addressable", () => {
+	test.each([
+		{ title: "plain text with content", build: () => plain_doc_from("hello\nworld\n") },
+		{ title: "empty document", build: () => new YDoc() },
+		{
+			title: "emptied by delete-all",
+			build: () => {
+				const yjsDoc = plain_doc_from("content");
+				yjsDoc.getText("plain_text").delete(0, "content".length);
+				return yjsDoc;
+			},
+		},
+		{ title: "astral character", build: () => plain_doc_from("x😀y") },
+		{
+			title: "many lines",
+			build: () => plain_doc_from(Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n")),
+		},
+		{
+			title: "format marks on real text",
+			build: () => {
+				const yjsDoc = plain_doc_from("bold text");
+				yjsDoc.getText("plain_text").format(0, 4, { bold: true });
+				return yjsDoc;
+			},
+		},
+	])("allows: $title", ({ build }) => {
+		const result = files_yjs_doc_check_text_addressable({ yjsDoc: reencode_doc(build()), rootKind: "plain_text" });
+		expect(result._nay).toBeUndefined();
+	});
+
+	test.each([
+		{
+			title: "XmlFragment named plain_text with one child",
+			build: () => {
+				const yjsDoc = new YDoc();
+				yjsDoc.getXmlFragment("plain_text").insert(0, [new YXmlElement("p")]);
+				return yjsDoc;
+			},
+		},
+		{
+			title: "XmlFragment named plain_text with three children",
+			build: () => {
+				const yjsDoc = new YDoc();
+				yjsDoc
+					.getXmlFragment("plain_text")
+					.insert(0, [new YXmlElement("p"), new YXmlElement("p"), new YXmlElement("p")]);
+				return yjsDoc;
+			},
+		},
+		{
+			title: "embed inside a real Y.Text",
+			build: () => {
+				const yjsDoc = plain_doc_from("hello world");
+				yjsDoc.getText("plain_text").insertEmbed(5, { image: "x.png" });
+				return yjsDoc;
+			},
+		},
+		{
+			title: "embed-only Y.Text",
+			build: () => {
+				const yjsDoc = new YDoc();
+				yjsDoc.getText("plain_text").insertEmbed(0, { image: "x.png" });
+				return yjsDoc;
+			},
+		},
+	])("refuses: $title", ({ build }) => {
+		const result = files_yjs_doc_check_text_addressable({ yjsDoc: reencode_doc(build()), rootKind: "plain_text" });
+		expect(result._nay?.message).toBe(files_yjs_TEXT_NOT_ADDRESSABLE_MESSAGE);
+	});
+
+	test("parity does not catch a Y.Map named plain_text; the map-size line does", () => {
+		const attackerDoc = new YDoc();
+		attackerDoc.getMap("plain_text").set("k", "v");
+		const victimDoc = reencode_doc(attackerDoc);
+
+		// Parity is vacuously true (a map's content contributes to neither toString nor length)…
+		const parity = files_yjs_doc_check_text_addressable({ yjsDoc: victimDoc, rootKind: "plain_text" });
+		expect(parity._nay).toBeUndefined();
+		// …which is why door 2 also asserts the plain root's map slots are empty.
+		expect(files_yjs_doc_plain_text_root_map_size({ yjsDoc: victimDoc })).toBe(1);
+		expect(files_yjs_doc_plain_text_root_map_size({ yjsDoc: reencode_doc(plain_doc_from("legal")) })).toBe(0);
+	});
+
+	test("rich branch allows the legal root layouts", () => {
+		// Only the rich root.
+		const richDoc = new YDoc();
+		richDoc.getXmlFragment("default").insert(0, [new YXmlElement("p")]);
+		expect(
+			files_yjs_doc_check_text_addressable({ yjsDoc: reencode_doc(richDoc), rootKind: "rich_text" })._nay,
+		).toBeUndefined();
+
+		// Both roots present: the rich root exists, so the name test allows.
+		const bothDoc = new YDoc();
+		bothDoc.getXmlFragment("default").insert(0, [new YXmlElement("p")]);
+		bothDoc.getText("plain_text").insert(0, "x");
+		expect(
+			files_yjs_doc_check_text_addressable({ yjsDoc: reencode_doc(bothDoc), rootKind: "rich_text" })._nay,
+		).toBeUndefined();
+
+		// Brand-new empty document.
+		expect(files_yjs_doc_check_text_addressable({ yjsDoc: new YDoc(), rootKind: "rich_text" })._nay).toBeUndefined();
+	});
+});
+
+describe("files_yjs_doc_update_from_text plain branch", () => {
+	test("refuses to write into a document whose text is not addressable", () => {
+		const attackerDoc = new YDoc();
+		attackerDoc.getXmlFragment("plain_text").insert(0, [new YXmlElement("p")]);
+		const victimDoc = reencode_doc(attackerDoc);
+
+		const result = files_yjs_doc_update_from_text({ text: "new", mut_yjsDoc: victimDoc, rootKind: "plain_text" });
+		expect(result._nay?.message).toBe(files_yjs_TEXT_NOT_ADDRESSABLE_MESSAGE);
+	});
+
+	// Incremental byte-equality: build from A, run the setter with B, read back B exactly.
+	// This is where the end-to-start offsets and surrogate-safe boundaries actually bite.
+	test.each([
+		{ title: "multi-range edits", source: "aaa\nbbb\nccc\nddd\n", target: "aXa\nbbb\nInserted\ncYc\nddd\n" },
+		{ title: "ranges not in source order", source: "one two three four", target: "one 2 three 4our five" },
+		{ title: "emoji straddling a range boundary", source: "x😀y😀z", target: "x😀q😀z" },
+		{ title: "delete inside astral text", source: "a😀b😀c", target: "a😀c" },
+		{ title: "add trailing newline", source: "tail no nl", target: "tail no nl\n" },
+		{ title: "remove trailing newline", source: "tail with nl\n", target: "tail with nl" },
+		{ title: "delete-all", source: "a\nb\nc\n", target: "" },
+		{ title: "create from empty", source: "", target: "fresh content\n" },
+		{ title: "whole-line replace in repeated block", source: "x\ny\nx\ny\n", target: "x\ny\nz\ny\n" },
+	])("applies the minimal diff byte-exact: $title", ({ source, target }) => {
+		const yjsDoc = plain_doc_from(source);
+		set_plain_text(yjsDoc, target);
+		expect(plain_text_of(yjsDoc)).toBe(target);
+		// And the write survives an encode/apply cycle.
+		expect(plain_text_of(reencode_doc(yjsDoc))).toBe(target);
+	});
+
+	test("a changed text always changes the state vector (under-emission control)", () => {
+		const yjsDoc = plain_doc_from("before text");
+		// Give the doc a deletion first so the delete-set can never stand in for content ops.
+		set_plain_text(yjsDoc, "before");
+		const stateVectorBefore = encodeStateVector(yjsDoc);
+		set_plain_text(yjsDoc, "after");
+		expect(files_u8_equals(encodeStateVector(yjsDoc), stateVectorBefore)).toBe(false);
+		expect(plain_text_of(yjsDoc)).toBe("after");
+	});
+
+	// Objective 12's deterministic merge lane: build D0, clone A and B, run the real setter on
+	// each clone, encode each state-vector diff against D0, apply both diffs to a third clone,
+	// and assert the exact merged text: A's edited line where A edited it, B's where
+	// B edited it, every untouched line in its original place.
+	test.each([
+		{
+			title: "two edits on different lines",
+			base: "l1\nl2\nl3\n",
+			editA: "l1 edited by A\nl2\nl3\n",
+			editB: "l1\nl2\nl3 edited by B\n",
+			merged: "l1 edited by A\nl2\nl3 edited by B\n",
+		},
+		{
+			title: "different character spans on one line of a multiline file",
+			base: "a=1 b=2\nkeep\n",
+			editA: "a=9 b=2\nkeep\n",
+			editB: "a=1 b=7\nkeep\n",
+			merged: "a=9 b=7\nkeep\n",
+		},
+		{
+			title: "concurrent key edits in minified JSON",
+			base: '{"a":1,"b":2}',
+			editA: '{"a":9,"b":2}',
+			editB: '{"a":1,"b":7}',
+			merged: '{"a":9,"b":7}',
+		},
+		{
+			title: "three-line interleaving",
+			base: "l1\nl2\nl3\n",
+			editA: "l1\nA\nl2\nl3\n",
+			editB: "l1\nl2\nB\nl3\n",
+			merged: "l1\nA\nl2\nB\nl3\n",
+		},
+		{
+			title: "A deletes a line while B edits a later one",
+			base: "l1\nl2\nl3\nl4\n",
+			editA: "l1\nl3\nl4\n",
+			editB: "l1\nl2\nl3\nl4 edited\n",
+			merged: "l1\nl3\nl4 edited\n",
+		},
+	])("merges concurrent saves positionally: $title", ({ base, editA, editB, merged }) => {
+		const baseDoc = plain_doc_from(base);
+		const cloneA = clone_doc(baseDoc);
+		const cloneB = clone_doc(baseDoc);
+		set_plain_text(cloneA, editA);
+		set_plain_text(cloneB, editB);
+
+		const diffA = encodeStateAsUpdate(cloneA, encodeStateVector(baseDoc));
+		const diffB = encodeStateAsUpdate(cloneB, encodeStateVector(baseDoc));
+		const mergedDoc = clone_doc(baseDoc);
+		applyUpdate(mergedDoc, diffA);
+		applyUpdate(mergedDoc, diffB);
+
+		expect(plain_text_of(mergedDoc)).toBe(merged);
+	});
+
+	// Diff budget calibration guards. These run the production budgets on purpose: the pass
+	// cases prove ordinary bulk edits stay under the step budget, and the refusal case proves a
+	// genuinely pathological near-cap change still refuses. Step counts are deterministic (same
+	// input, same count, on every machine), so these outcomes do not depend on machine speed;
+	// the explicit test timeouts only give slow machines room to finish the compute.
+	test(
+		"applies a full sort of 1,000 lines (~25 KB) within the diff budgets",
+		() => {
+			// The generated hash-key order is deterministically scrambled, so sorting it is a
+			// full permutation of every line. Measured cost: 132M steps (budget 1,000M).
+			const lines = Array.from({ length: 1000 }, (_, i) => `key_${((i * 2654435761) >>> 0).toString(16)} = value_${i}`);
+			const sortedText = [...lines].sort().join("\n");
+
+			const yjsDoc = plain_doc_from(lines.join("\n"));
+			set_plain_text(yjsDoc, sortedText);
+			expect(plain_text_of(yjsDoc)).toBe(sortedText);
+		},
+		60_000,
+	);
+
+	test(
+		"applies a prettify of a ~40 KB minified JSON within the diff budgets",
+		() => {
+			// Measured cost: 313M steps (budget 1,000M) — the heaviest ordinary edit the budgets
+			// must admit.
+			const obj: Record<string, unknown> = {};
+			for (let i = 0; i < 500; i++) {
+				obj[`key_${((i * 2654435761) >>> 0).toString(16)}`] = {
+					id: i,
+					name: `name ${i}`,
+					tags: [`a${i}`, `b${i}`],
+					active: i % 2 === 0,
+				};
+			}
+			const minifiedText = JSON.stringify(obj);
+			const prettyText = JSON.stringify(obj, null, 2);
+
+			const yjsDoc = plain_doc_from(minifiedText);
+			set_plain_text(yjsDoc, prettyText);
+			expect(plain_text_of(yjsDoc)).toBe(prettyText);
+		},
+		60_000,
+	);
+
+	test(
+		"applies a replace-all with 1,000 hits in a ~66 KB file within the diff budgets",
+		() => {
+			// Measured cost: 52M steps (budget 1,000M).
+			const lines = Array.from({ length: 2000 }, (_, i) =>
+				i % 2 === 0 ? `const value_${i} = oldName.compute(${i});` : `plain line ${i} with text`,
+			);
+			const sourceText = lines.join("\n");
+			const targetText = sourceText.replaceAll("oldName", "newLongerName");
+
+			const yjsDoc = plain_doc_from(sourceText);
+			set_plain_text(yjsDoc, targetText);
+			expect(plain_text_of(yjsDoc)).toBe(targetText);
+		},
+		60_000,
+	);
+
+	test(
+		"refuses a near-cap high-line-count rewrite instead of degrading",
+		() => {
+			// Two unrelated ~890 KB texts: measured cost is over 2,000M steps, so the 1,000M step
+			// budget trips (after ~19 s of compute on the measuring machine) and the Myers bisect
+			// must refuse, never fall back to a coarse whole-document replacement.
+			const sourceText = Array.from({ length: 68500 }, (_, i) => `src ${((i * 2654435761) >>> 0).toString(16)}`).join(
+				"\n",
+			);
+			const targetText = Array.from({ length: 68500 }, (_, i) => `dst ${((i * 40503) >>> 0).toString(16)}`).join("\n");
+
+			const yjsDoc = plain_doc_from(sourceText);
+			const result = files_yjs_doc_update_from_text({
+				text: targetText,
+				mut_yjsDoc: yjsDoc,
+				rootKind: "plain_text",
+			});
+			expect(result._nay?.message).toBe(files_text_diff_TOO_LARGE_MESSAGE);
+
+			// The refusal must leave the document untouched.
+			expect(plain_text_of(yjsDoc)).toBe(sourceText);
+		},
+		120_000,
+	);
+});
+
+describe("files_yjs_doc_create_from_text", () => {
+	test("creates a plain-text document under the plain root", () => {
+		const yjsDoc = plain_doc_from("seeded\n");
+		expect([...reencode_doc(yjsDoc).share.keys()]).toEqual(["plain_text"]);
+		expect(plain_text_of(yjsDoc)).toBe("seeded\n");
+	});
+
+	test("creates an empty plain-text document with no persisted root", () => {
+		const yjsDoc = plain_doc_from("");
+		// An empty root is never persisted: encodeStateAsUpdate writes structs and there are none.
+		expect(encodeStateAsUpdate(yjsDoc).byteLength).toBe(2);
+	});
+
+	test("creates a rich-text document under the rich root", () => {
+		const yjsDoc = files_yjs_doc_create_from_text({ text: "# Title\n", rootKind: "rich_text" });
+		if ("_nay" in yjsDoc) {
+			throw new Error("Expected rich-text doc creation to succeed", { cause: yjsDoc._nay });
+		}
+		expect([...reencode_doc(yjsDoc).share.keys()]).toEqual(["default"]);
+	});
+});
+// #endregion plain text shape bridge
+
+// #region client update scan
+function encoded_state_of(build: (yjsDoc: YDoc) => void) {
+	const yjsDoc = new YDoc();
+	yjsDoc.transact(() => build(yjsDoc));
+	return encodeStateAsUpdate(yjsDoc);
+}
+
+function incremental_update_of(yjsDoc: YDoc, edit: (yjsDoc: YDoc) => void) {
+	const stateVectorBefore = encodeStateVector(yjsDoc);
+	yjsDoc.transact(() => edit(yjsDoc));
+	return encodeStateAsUpdate(yjsDoc, stateVectorBefore);
+}
+
+describe("files_yjs_decode_v1_update", () => {
+	test("allows the canonical two-byte v1 no-op", () => {
+		const update = encodeStateAsUpdate(new YDoc());
+		expect(update.byteLength).toBe(2);
+		expect(files_yjs_decode_v1_update({ update })._nay).toBeUndefined();
+	});
+
+	test("allows a delete-only update", () => {
+		const yjsDoc = plain_doc_from("abc");
+		const update = incremental_update_of(yjsDoc, (d) => d.getText("plain_text").delete(0, 3));
+		expect(files_yjs_decode_v1_update({ update })._nay).toBeUndefined();
+	});
+
+	test("refuses a V2-encoded update by name", () => {
+		const yjsDoc = plain_doc_from("v2 content");
+		const update = encodeStateAsUpdateV2(yjsDoc);
+		expect(files_yjs_decode_v1_update({ update })._nay?.message).toBe(files_yjs_UNSUPPORTED_UPDATE_ENCODING_MESSAGE);
+	});
+
+	test("refuses malformed bytes (catch-and-refuse, never catch-and-continue)", () => {
+		expect(files_yjs_decode_v1_update({ update: new Uint8Array([255, 255, 255, 255]) })._nay?.message).toBe(
+			files_yjs_MALFORMED_UPDATE_MESSAGE,
+		);
+	});
+});
+
+describe("files_yjs_scan_client_update", () => {
+	test.each([
+		{
+			title: "first write",
+			update: () => encoded_state_of((d) => d.getText("plain_text").insert(0, "first")),
+		},
+		{
+			title: "incremental insert",
+			update: () => incremental_update_of(plain_doc_from("base"), (d) => d.getText("plain_text").insert(4, "!")),
+		},
+		{
+			title: "incremental delete",
+			update: () => incremental_update_of(plain_doc_from("base"), (d) => d.getText("plain_text").delete(0, 2)),
+		},
+		{
+			title: "delete-everything",
+			update: () => incremental_update_of(plain_doc_from("wipe me"), (d) => d.getText("plain_text").delete(0, 7)),
+		},
+		{
+			title: "canonical two-byte no-op",
+			update: () => encodeStateAsUpdate(new YDoc()),
+		},
+	])("allows on a plain-text node: $title", ({ update }) => {
+		expect(files_yjs_scan_client_update({ update: update(), rootKind: "plain_text" })._nay).toBeUndefined();
+	});
+
+	test.each([
+		{
+			title: "format mark (ContentFormat), including a hidden payload",
+			update: () =>
+				incremental_update_of(plain_doc_from("styled"), (d) =>
+					d.getText("plain_text").format(0, 3, { hidden: "A".repeat(1000) }),
+				),
+		},
+		{
+			title: "map-slot item (parentSub)",
+			update: () => encoded_state_of((d) => d.getMap("plain_text").set("k", "v")),
+		},
+		{
+			// A deleted map entry keeps `parentSub` while its content becomes the whitelisted
+			// ContentDeleted, so this row is refused by the `parentSub` check alone.
+			title: "map-slot tombstone (parentSub with whitelisted ContentDeleted)",
+			update: () =>
+				encoded_state_of((d) => {
+					d.getMap("plain_text").set("k", "v");
+					d.getMap("plain_text").delete("k");
+				}),
+		},
+		{
+			title: "XmlFragment named plain_text (ContentType)",
+			update: () => encoded_state_of((d) => d.getXmlFragment("plain_text").insert(0, [new YXmlElement("p")])),
+		},
+		{
+			title: "opposite root created (ContentType)",
+			update: () => encoded_state_of((d) => d.getXmlFragment("default").insert(0, [new YXmlElement("p")])),
+		},
+		{
+			title: "embed into an existing root (ContentEmbed)",
+			update: () =>
+				incremental_update_of(plain_doc_from("base"), (d) => d.getText("plain_text").insertEmbed(2, { x: 1 })),
+		},
+		{
+			title: "Y.Array named plain_text (ContentAny without parentSub)",
+			update: () => encoded_state_of((d) => d.getArray("plain_text").insert(0, [1])),
+		},
+	])("refuses on a plain-text node: $title", ({ update }) => {
+		expect(files_yjs_scan_client_update({ update: update(), rootKind: "plain_text" })._nay?.message).toBe(
+			files_yjs_UPDATE_SHAPE_REFUSED_MESSAGE,
+		);
+	});
+
+	test("refuses a Skip struct built by merging across a gap", () => {
+		const yjsDoc = new YDoc();
+		const ytext = yjsDoc.getText("plain_text");
+		ytext.insert(0, "a");
+		const updateA = encodeStateAsUpdate(yjsDoc);
+		ytext.insert(1, "b");
+		const stateVectorAfterB = encodeStateVector(yjsDoc);
+		ytext.insert(2, "c");
+		const updateC = encodeStateAsUpdate(yjsDoc, stateVectorAfterB);
+
+		// Merging A and C without B leaves a hole that mergeUpdates encodes as a Skip struct.
+		const merged = mergeUpdates([updateA, updateC]);
+		expect(files_yjs_scan_client_update({ update: merged, rootKind: "plain_text" })._nay?.message).toBe(
+			files_yjs_UPDATE_SHAPE_REFUSED_MESSAGE,
+		);
+	});
+
+	test("refuses a V2-encoded update with the encoding message and refuses malformed bytes", () => {
+		const update = encodeStateAsUpdateV2(plain_doc_from("v2"));
+		expect(files_yjs_scan_client_update({ update, rootKind: "plain_text" })._nay?.message).toBe(
+			files_yjs_UNSUPPORTED_UPDATE_ENCODING_MESSAGE,
+		);
+		expect(
+			files_yjs_scan_client_update({ update: new Uint8Array([9, 9, 9]), rootKind: "plain_text" })._nay?.message,
+		).toBe(files_yjs_MALFORMED_UPDATE_MESSAGE);
+	});
+
+	test("rich-text node: allows normal Markdown pushes, refuses an update creating the plain-text root", () => {
+		// A first Markdown write carries ContentType structs and names only the rich root.
+		const richDoc = files_yjs_doc_create_from_text({ text: "# Title\n\nBody\n", rootKind: "rich_text" });
+		if ("_nay" in richDoc) {
+			throw new Error("Expected rich-text doc creation to succeed", { cause: richDoc._nay });
+		}
+		const firstWrite = encodeStateAsUpdate(richDoc);
+		expect(files_yjs_scan_client_update({ update: firstWrite, rootKind: "rich_text" })._nay).toBeUndefined();
+
+		// An incremental edit names no root at all.
+		const incremental = incremental_update_of(richDoc, (d) => {
+			d.getXmlFragment("default").insert(0, [new YXmlElement("p")]);
+		});
+		expect(files_yjs_scan_client_update({ update: incremental, rootKind: "rich_text" })._nay).toBeUndefined();
+
+		// Hand-built bytes creating a root named plain_text are refused at the door.
+		const vandal = encoded_state_of((d) => d.getText("plain_text").insert(0, "x"));
+		expect(files_yjs_scan_client_update({ update: vandal, rootKind: "rich_text" })._nay?.message).toBe(
+			files_yjs_UPDATE_SHAPE_REFUSED_MESSAGE,
+		);
+	});
+});
+// #endregion client update scan

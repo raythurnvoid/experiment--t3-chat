@@ -352,6 +352,8 @@ For broad Bash changes, keep two aggregate rows:
 5. Regex path request:
    `Use Bash to search paths matching a regex for readme under <fixture>.`
 
+The `.md`-only phrasing in scenarios 3 and 4 is a fixture choice, not a tool limit: since 2026-08-10 all 20 editable text extensions (`.json`, `.yaml`, `.ts`, ...) are indexed the same way, so `find --extension json` and the `*.json` recovery syntax behave exactly like their `md` forms, and Bash reads/writes those files too.
+
 ### Reliability Scenarios
 
 1. Large-file continuation after cwd change:
@@ -594,8 +596,8 @@ Every evaluation pass should report:
 ## Durable Notes
 
 - `search` is full-text content search: pass one distinctive word or a few plain terms from the document body. The text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. It is implemented with Convex full-text search, but it is not regex/glob/exact grep or path/name search.
-- Single-file `grep [-n] [-i] [-F] PATTERN <file>` scans Markdown chunks with regex matching by default; `-F` / `--fixed-strings` uses literal substring matching.
-- For rendered plain-text chunk scans, use `textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file>` for one app file, or `textgrep -R PATTERN <folder>` for a recursive folder scan via indexed full-text search (not exact recursive regex/fixed-string grep, like `grep -R`). `textgrep` has no `-n` or context flags.
+- Single-file `grep [-n] [-i] [-F] PATTERN <file>` scans the file's indexed chunks with regex matching by default (raw Markdown chunks for a `.md`, the exact text for a plain-text document such as `.json`); `-F` / `--fixed-strings` uses literal substring matching.
+- For rendered plain-text chunk scans, use `textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file>` for one app file, or `textgrep -R PATTERN <folder>` for a recursive folder scan via indexed full-text search (not exact recursive regex/fixed-string grep, like `grep -R`). `textgrep` has no `-n` or context flags. On a plain-text document the rendered text is the file itself, so `grep` and `textgrep` see the same lines there.
 - `find --extension md -type f` is exact indexed extension search.
 - Simple `find -name '*.md'` and `find <dir>/*.md` are recovery syntax for extension search only, not general glob support.
 - General glob and regex behavior should stay unsupported unless they map to a DB-backed query.

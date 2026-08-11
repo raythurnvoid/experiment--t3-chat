@@ -41,13 +41,16 @@ import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
+	files_get_editable_text_content_type,
+	files_get_signed_download_serving,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
+	files_normalize_text_document_input,
 	files_u8_to_array_buffer,
 	type files_ContentType,
 } from "../server/files.ts";
 import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files-yjs.ts";
-import { files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
+import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { encodeStateVector } from "yjs";
 import {
 	files_nodes_db_archive_nodes,
@@ -56,9 +59,9 @@ import {
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
 import {
-	files_nodes_create_yjs_snapshot_update_from_markdown,
-	files_nodes_db_fill_markdown_node_content,
-	files_nodes_db_finalize_markdown_node_creation,
+	files_nodes_create_yjs_snapshot_update_from_text,
+	files_nodes_db_fill_text_node_content,
+	files_nodes_db_finalize_editable_text_node_creation,
 	files_nodes_db_insert_file_content_docs,
 	files_nodes_reconstruct_latest_file_content_from_materialization_state,
 } from "./files_nodes_content.ts";
@@ -73,6 +76,16 @@ import {
 	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
 import { type plugins_runtime_consume_run_api_call_Result } from "./plugins_runtime.ts";
+
+/**
+ * Local structural mirror of `stage_trusted_yjs_update`'s Result. Keep it local instead of
+ * importing the exported Result type: public_api sits deep in the generated-API type graph, and
+ * pulling another registered function's inferred Result type across modules is the shape of
+ * import that has produced whole-API inference collapses before.
+ */
+type stage_trusted_yjs_update_LocalResult =
+	| { _yay: { stageId: Id<"files_yjs_trusted_update_stages"> }; _nay?: undefined }
+	| { _yay?: undefined; _nay: { message: string } };
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -1249,18 +1262,6 @@ function has_same_download_authority(
 	}
 }
 
-/**
- * Builds an `inline` Content-Disposition value with the file name encoded per RFC 5987, so any
- * Unicode name survives the header without breaking it.
- */
-function content_disposition_inline(fileName: string) {
-	const encoded = encodeURIComponent(fileName).replace(
-		/['()*]/g,
-		(char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
-	);
-	return `inline; filename*=UTF-8''${encoded}`;
-}
-
 async function authorize_request<K extends PrincipalKind>(
 	ctx: ActionCtx,
 	request: Request,
@@ -1753,6 +1754,8 @@ export const publish_file_write = internalMutation({
 			nodeId: created._yay,
 			path: stage.path,
 			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			// The public write route is Markdown-only.
+			rootKind: "rich_text",
 			textContent: args.content,
 			readOnly: false,
 			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
@@ -1760,7 +1763,7 @@ export const publish_file_write = internalMutation({
 			now,
 		});
 
-		await files_nodes_db_finalize_markdown_node_creation(ctx, {
+		await files_nodes_db_finalize_editable_text_node_creation(ctx, {
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
 			nodeId: created._yay,
@@ -1812,17 +1815,18 @@ type publish_file_write_Result =
 		: never;
 
 /**
- * Publish a write whose target is an existing editable Markdown file: replace the file's content
- * in place so the nodeId stays stable for open editors and links. The route computed `fillUpdate`
- * (a Yjs diff against the doc state it reconstructed) and PUT only the content snapshot object;
- * the staged Yjs snapshot asset is unused and dropped here.
+ * Publish a write whose target is an existing editable text file: replace the file's content
+ * in place so the nodeId stays stable for open editors and links. The route computed the fill
+ * update (a Yjs diff against the doc state it reconstructed), staged it as a trusted
+ * `public_fill` update, and PUT only the content snapshot object; the staged Yjs snapshot asset
+ * is unused and dropped here.
  */
 export const publish_file_fill = internalMutation({
 	args: {
 		stageId: v.id("public_api_file_write_stages"),
 		content: v.string(),
 		expectedNodeId: v.id("files_nodes"),
-		fillUpdate: v.optional(v.bytes()),
+		fillUpdateStageId: v.optional(v.id("files_yjs_trusted_update_stages")),
 	},
 	returns: v_result({
 		_yay: v.object({ nodeId: v.id("files_nodes") }),
@@ -1903,15 +1907,15 @@ export const publish_file_fill = internalMutation({
 			await ctx.db.delete("files_r2_assets", yjsSnapshotAsset._id);
 		}
 
-		const filled = await files_nodes_db_fill_markdown_node_content(ctx, {
+		const filled = await files_nodes_db_fill_text_node_content(ctx, {
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
 			fileNode,
 			userId: stage.userId,
-			markdownContent: args.content,
+			textContent: args.content,
 			contentSnapshotAssetId: stage.contentSnapshotAssetId,
 			contentSize: contentSnapshotAsset.size,
-			fillUpdate: args.fillUpdate,
+			fillUpdateStageId: args.fillUpdateStageId,
 		});
 		if (filled._nay) {
 			// Throw so Convex rolls back the snapshot and node writes done above.
@@ -2098,6 +2102,8 @@ export const publish_file_touch = internalMutation({
 			nodeId: created._yay,
 			path: stage.path,
 			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			// The public touch route creates Markdown placeholders only.
+			rootKind: "rich_text",
 			textContent: "",
 			readOnly: false,
 			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
@@ -2105,7 +2111,7 @@ export const publish_file_touch = internalMutation({
 			now,
 		});
 
-		await files_nodes_db_finalize_markdown_node_creation(ctx, {
+		await files_nodes_db_finalize_editable_text_node_creation(ctx, {
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
 			nodeId: created._yay,
@@ -2398,7 +2404,10 @@ export const create_file_upload_targets = internalMutation({
 
 			validated.push({
 				path: item.path,
-				contentType: item.contentType,
+				// A recognized text extension stores the classifier's type and ignores the
+				// caller's declared one; anything else keeps the client value (media uploads need
+				// it for plugin routing).
+				contentType: files_get_editable_text_content_type(name) ?? item.contentType,
 				size: item.size,
 				collidingNodeId: existingNode?._id ?? null,
 			});
@@ -2760,13 +2769,16 @@ async function write_one_markdown_file(
 				});
 			}
 
-			// Mirror the snapshot-restore recipe: project the new Markdown into the current
+			// Mirror the snapshot-restore recipe: project the new text into the current
 			// doc and diff against the pre-projection state vector, so open editor sessions
 			// converge on the new content instead of being detached by a node swap.
 			const yjsBeforeStateVector = encodeStateVector(currentContent._yay.yjsDoc);
-			const projectedYjsDoc = files_yjs_doc_update_from_markdown({
+			const projectedYjsDoc = files_yjs_doc_update_from_text({
 				mut_yjsDoc: currentContent._yay.yjsDoc,
-				markdown: args.content,
+				text: args.content,
+				// The node in hand owns the shape (the route's `.md` gate makes it rich text today,
+				// but the shape must come from the node, never from the route).
+				rootKind: activeNode.yjsRootKind,
 			});
 			if (projectedYjsDoc._nay) {
 				console.error("Failed to project public file write content into the Yjs doc", {
@@ -2854,11 +2866,40 @@ async function write_one_markdown_file(
 				});
 			}
 
+			// Move the server-built diff through a 30-minute trusted `public_fill` stage and hand
+			// the publish mutation only its id, so the registered call carries one large value
+			// (the content text). An abandoned stage falls to the TTL sweep.
+			let fillUpdateStageId: Id<"files_yjs_trusted_update_stages"> | undefined;
+			if (fillUpdate) {
+				const staged = (await ctx.runMutation(internal.files_pending_updates.stage_trusted_yjs_update, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					nodeId: activeNode._id,
+					kind: "public_fill",
+					update: files_u8_to_array_buffer(fillUpdate),
+				})) as stage_trusted_yjs_update_LocalResult;
+				if (staged._nay) {
+					console.error("Failed to stage the public file write fill update", {
+						nay: staged._nay,
+						path: args.path,
+					});
+					await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+						stageId: prepared._yay.stageId,
+						orphanedKeys: [contentSnapshotKey],
+					});
+					return Result({
+						_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
+					});
+				}
+				fillUpdateStageId = staged._yay.stageId;
+			}
+
 			const published: publish_file_fill_Result = await ctx.runMutation(internal.public_api.publish_file_fill, {
 				stageId: prepared._yay.stageId,
 				content: args.content,
 				expectedNodeId: activeNode._id,
-				...(fillUpdate ? { fillUpdate: files_u8_to_array_buffer(fillUpdate) } : {}),
+				...(fillUpdateStageId ? { fillUpdateStageId } : {}),
 			});
 			if (published._nay) {
 				// Conflict is the fallback: structural 409s pass their specific message through,
@@ -2884,7 +2925,12 @@ async function write_one_markdown_file(
 		}
 	}
 
-	const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown(args.content);
+	const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
+		text: args.content,
+		// The public write route is `.md`-gated (non-goal 4), so the created document is rich
+		// text by definition.
+		rootKind: "rich_text",
+	});
 	if (snapshotUpdate._nay) {
 		console.error("Failed to build Yjs snapshot for public file write", {
 			nay: snapshotUpdate._nay,
@@ -3159,7 +3205,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							}
 
 							const content = await ctx.runAction(
-								internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
+								internal.files_nodes_content.get_file_last_available_text_content_by_path,
 								{
 									organizationId: principal.organizationId,
 									workspaceId: principal.workspaceId,
@@ -3262,7 +3308,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								requestedPaths.map(async (filePath) => ({
 									path: filePath,
 									content: await ctx.runAction(
-										internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
+										internal.files_nodes_content.get_file_last_available_text_content_by_path,
 										{
 											organizationId: principal.organizationId,
 											workspaceId: principal.workspaceId,
@@ -3442,13 +3488,17 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 							}
-							if (body._yay.content.length === 0) {
+							// Normalize at the request boundary, above the byte count and the fan-out:
+							// the document, the R2 content snapshot, the committed chunks, and the stored size
+							// must all see the same LF-normalized, BOM-stripped string.
+							const content = files_normalize_text_document_input(body._yay.content);
+							if (content.length === 0) {
 								return {
 									status: 400,
 									body: await fail({ status: 400, message: "Content must not be empty.", errorCode: "invalid_input" }),
 								} as const;
 							}
-							const contentBytes = files_get_utf8_byte_size(body._yay.content);
+							const contentBytes = files_get_utf8_byte_size(content);
 							if (contentBytes > files_MAX_TEXT_CONTENT_BYTES) {
 								return {
 									status: 400,
@@ -3492,7 +3542,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								visibilityUserId: public_api_visibility_user_id(principal),
 								principalRef,
 								path: requestedPath,
-								content: body._yay.content,
+								content,
 								contentBytes,
 								overwrite,
 								skipIfUnchanged: body._yay.skipIfUnchanged ?? false,
@@ -3681,10 +3731,13 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 										} as const;
 									}
 								}
-								if (file.content.length === 0) {
+								// Normalize at the request boundary, above the byte count and the fan-out.
+								// the same rule as the single-file write route.
+								const content = files_normalize_text_document_input(file.content);
+								if (content.length === 0) {
 									return { status: 400, body: { message: "Content must not be empty.", path: file.path } } as const;
 								}
-								const contentBytes = files_get_utf8_byte_size(file.content);
+								const contentBytes = files_get_utf8_byte_size(content);
 								if (contentBytes > files_MAX_TEXT_CONTENT_BYTES) {
 									return {
 										status: 400,
@@ -3702,7 +3755,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								seenPaths.add(requestedPath);
 								validatedFiles.push({
 									path: requestedPath,
-									content: file.content,
+									content,
 									contentBytes,
 									overwrite: file.overwrite ?? "replace",
 								});
@@ -3929,7 +3982,11 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							}
 
 							// Every touched file starts as the same empty doc; build its Yjs snapshot once.
-							const emptySnapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown("");
+							// The touch route is `.md`-gated (non-goal 4), so rich text by definition.
+							const emptySnapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
+								text: "",
+								rootKind: "rich_text",
+							});
 							if (emptySnapshotUpdate._nay) {
 								console.error("Failed to build the empty Yjs snapshot for public file touch", {
 									nay: emptySnapshotUpdate._nay,
@@ -4377,17 +4434,20 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 									if (!data || !signKey) {
 										return { fileNodeId, url: null };
 									}
+									// Upload content types are client-supplied, and a presigned R2 GET carries no
+									// nosniff/CSP — the pinned type plus the disposition below is the whole defense.
+									// Both derive from the node NAME: only the literal media map serves inline, and
+									// everything else (text included) downloads as an attachment, so spoofed bytes
+									// can never run as text/html or image/svg+xml on the shared R2 origin.
+									const serving = files_get_signed_download_serving(data.fileNode.name);
 									return {
 										fileNodeId,
-										// Upload content types are client-supplied. Pin the stored type and an inline
-										// disposition into the signed request, so spoofed bytes can never be served as
-										// another type (for example text/html) from the shared R2 origin.
 										url: await r2_get_download_url({
 											key: signKey,
 											options: {
 												expiresIn,
-												responseContentType: data.fileNode.contentType,
-												responseContentDisposition: content_disposition_inline(data.fileNode.name),
+												responseContentType: serving.responseContentType,
+												responseContentDisposition: serving.responseContentDisposition,
 											},
 										}),
 									};

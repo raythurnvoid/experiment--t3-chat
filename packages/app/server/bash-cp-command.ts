@@ -8,9 +8,8 @@ import type {
 } from "../convex/files_nodes.ts";
 import type {
 	files_nodes_create_file_by_path_Result,
-	files_nodes_get_file_last_available_markdown_content_by_path_Result,
+	files_nodes_get_file_last_available_text_content_by_path_Result,
 } from "../convex/files_nodes_content.ts";
-import type { upsert_file_pending_update_internal_action_Result } from "../convex/files_pending_updates.ts";
 import {
 	files_SYNTHETIC_ROOT_FOLDER,
 	files_get_normalized_node_path_segments,
@@ -20,7 +19,7 @@ import { organizations_is_global_organization_id, organizations_is_reserved_work
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { path_join } from "./server-utils.ts";
-import { bash_DbFilesContentUnavailableError, bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_normalize_path, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_TMP_MOUNT, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { files_agent_upsert_file_pending_update, type files_agent_upsert_file_pending_update_Result, bash_DbFilesContentUnavailableError, bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_normalize_path, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_TMP_MOUNT, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
@@ -166,6 +165,9 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					const normalizedDestSegments = files_get_normalized_node_path_segments({
 						kind: "file",
 						nameOrPath: rawDestDbFilesPath,
+						// cp creates editable text destinations: supported extensions pass through and
+						// unknown extensions refuse with the classifier's rule.
+						fileNamePolicy: "editable_text",
 					});
 					if (!normalizedDestSegments || "validationMessage" in normalizedDestSegments) {
 						return {
@@ -226,7 +228,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				// Copy what the agent sees: the last available markdown, including the calling
 				// user's own pending overlay on the source file.
 				const sourceContent = (await ctx.runAction(
-					internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
+					internal.files_nodes_content.get_file_last_available_text_content_by_path,
 					{
 						organizationId,
 						workspaceId,
@@ -234,7 +236,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						path: sourceDbFilesPath,
 						overlayUserId: userId,
 					},
-				)) as files_nodes_get_file_last_available_markdown_content_by_path_Result;
+				)) as files_nodes_get_file_last_available_text_content_by_path_Result;
 				if (!sourceContent) {
 					return {
 						stdout: "",
@@ -327,24 +329,21 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					}
 					return ` — an empty file was left behind at '${destPath}'; remove it in Files if it is not wanted`;
 				};
-				let upserted: upsert_file_pending_update_internal_action_Result;
+				let upserted: files_agent_upsert_file_pending_update_Result;
 				try {
-					upserted = (await ctx.runAction(
-						internal.files_pending_updates.upsert_file_pending_update_internal_action,
-						{
-							organizationId,
-							workspaceId,
-							userId,
-							nodeId: destNodeId,
-							unstagedMarkdown: sourceContent.content,
-							copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath },
-							eagerCreatedCommittedSequence,
-							// Recorded on the pending update doc so Discard/TTL expiry can also remove the
-							// parent folders this cp eagerly created.
-							eagerCreatedAncestorIds: createdAncestorIds,
-							threadId: threadId ?? undefined,
-						},
-					)) as upsert_file_pending_update_internal_action_Result;
+					upserted = await files_agent_upsert_file_pending_update(ctx, {
+						organizationId,
+						workspaceId,
+						userId,
+						nodeId: destNodeId,
+						unstagedText: sourceContent.content,
+						copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath },
+						eagerCreatedCommittedSequence,
+						// Recorded on the pending update doc so Discard/TTL expiry can also remove the
+						// parent folders this cp eagerly created.
+						eagerCreatedAncestorIds: createdAncestorIds,
+						threadId: threadId ?? undefined,
+					});
 				} catch (error) {
 					if (eagerCreatedCommittedSequence === undefined) {
 						throw error;

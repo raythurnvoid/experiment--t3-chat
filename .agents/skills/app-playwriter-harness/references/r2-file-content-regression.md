@@ -51,7 +51,7 @@ Expected result: all commands pass. If the full app test or lint command fails, 
 7. Switch between rich text, plain text, and diff/review modes when available; verify the token stays visible or the review surface opens cleanly.
 8. Reload the page and verify the token is still present after the Yjs snapshot is fetched from R2.
 
-Expected result: the Markdown node opens as an editable file, the server-owned initial content is present, edits persist after save/reload, and no console/page errors mention missing `assetId`, `r2Key`, `snapshotUpdate`, or `markdownContentId`.
+Expected result: the Markdown node opens as an editable file, the server-owned initial content is present, edits persist after save/reload, and no console/page errors mention missing `assetId`, `r2Key`, `snapshotUpdate`, or `markdownContentId`. Since 2026-08-10 Markdown is one of 20 editable text extensions — the other 19 (`.json`, `.yaml`, ...) open in the Monaco plain editor instead of the rich editor — but this flow's rich-editor steps stay `.md`-specific.
 
 ## Duplicate, Rename, Move, Drag/Drop, Archive, Unarchive
 
@@ -76,9 +76,9 @@ Expected result: path operations update the tree and routing without losing edit
 7. Upload the same PDF again in the same folder.
 8. Test `Upload renamed file` and verify the renamed source node appears.
 9. Test `Replace` and verify the active source node is replaced while the previous active source is archived.
-10. Upload `.agents/skills/app-playwriter-harness/assets/files/r2-upload-markdown-sample.md` and verify it becomes a normal editable Markdown node, not a source conversion panel.
+10. Upload `.agents/skills/app-playwriter-harness/assets/files/r2-upload-markdown-sample.md` and verify it becomes a normal editable Markdown node, not a source conversion panel. Since 2026-08-10 the other 19 editable text extensions convert the same way: upload `qa-plain.yaml` (pinned fixture, see `files.md`) and verify it becomes an editable plain-text document in Monaco, not a stored card.
 
-Expected result: source uploads use asset-id R2 keys, event handling creates shadows only for source assets, Markdown uploads route to editable nodes, and duplicate PDF paths follow the collision UI.
+Expected result: source uploads use asset-id R2 keys, event handling creates shadows only for source assets, editable text uploads (Markdown plus the 19 plain-text extensions) route to editable nodes, and duplicate PDF paths follow the collision UI.
 
 ## Comments
 

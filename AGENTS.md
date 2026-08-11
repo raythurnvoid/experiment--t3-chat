@@ -212,6 +212,7 @@ Current spec-style skills include:
 - `.agents/skills/data-deletion/SKILL.md`
 - `.agents/skills/ai-chat-agent/SKILL.md`
 - `.agents/skills/files-agent-pending-updates/SKILL.md`
+- `.agents/skills/files-editable-text/SKILL.md`
 - `.agents/skills/public-api/SKILL.md`
 
 When product requirements or business logic change, update the relevant spec skills in the same pass as the implementation so those files stay accurate.
@@ -246,12 +247,13 @@ Treat code as a liability and keep the implementation as direct as the problem a
 
 ## Clean-slate development
 
-This product is not in production. Build the current design directly instead of preserving obsolete behavior.
+This product is not in production. Build the current design directly instead of preserving obsolete behavior in the final code.
 
-- Do not add backward-compatibility branches, legacy parsers, dual reads or writes, optional old fields, version adapters, migration shims, or fallback routes unless the user explicitly requires continuity with deployed production data.
-- When a breaking schema or contract change conflicts with disposable development data, prefer deleting that data and regenerating the current derived content over carrying compatibility code.
-- For a development reset, load `dev-data-reset` and every supporting skill it requires. For plugin-only recovery, load `plugin-system`. Follow their readback gates rather than improvising deletion order.
-- Never delete a `users` doc whose `clerkUserId` is non-null during a development reset. Use the data-only purge mode so the Clerk identity, profile, Polar customer/billing state, and default tenant remain attached to the same user doc. Anonymous or non-Clerk users may be fully deleted.
+- For each breaking data or schema change, the user decides whether to erase existing data, migrate it, or mix both choices across explicit scopes. If the request does not decide and the outcomes materially differ, ask before coding. Do not infer that data is disposable only because the deployment is not production.
+- Do not leave backward-compatibility branches, legacy parsers, dual reads or writes, optional old fields, version adapters, migration shims, or fallback routes in the final code unless the user explicitly requires ongoing rollout continuity.
+- When the user chooses erasure, delete only the approved scope and regenerate current derived data instead of carrying compatibility code. When the user chooses migration, temporary compatibility code may exist only for the migration phases and should be removed after the migrated data is audited and the strict schema is deployed, unless the user asks to keep a replayable migration.
+- For a full development reset that preserves every Clerk-backed account, load `dev-data-reset` and every supporting skill it requires. For selective keep/delete user scopes, load `convex-admin-ops` plus the owning domain skills. For plugin-only recovery, load `plugin-system`. Follow their readback gates rather than improvising deletion order.
+- During the full `dev-data-reset` workflow, never delete a `users` doc whose `clerkUserId` is non-null. Use the data-only purge mode so the Clerk identity, profile, Polar customer/billing state, and default tenant remain attached to the same user doc. A selective cleanup may delete an explicitly named Clerk-backed user only when the user requests that exact scope and the admin/data-deletion rules are followed. Anonymous or non-Clerk users may be fully deleted.
 - Rebuild plugin registry data from the current source repositories and trusted deployment secrets. Never scrape, print, log, or copy provider tokens from browser pages; use existing deployment environment values, provider-supported credential issuance, or explicit user-provided values.
 
 ## Trust application invariants

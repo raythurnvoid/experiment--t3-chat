@@ -26,8 +26,15 @@ import { files_CommentsExtension } from "./files-tiptap-comments.ts";
 import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
 import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
 import { Result } from "common/errors-as-values-utils.ts";
-import { files_tiptap_empty_doc_json, files_YJS_DOC_KEYS } from "./files.ts";
-import { files_yjs_doc_create_from_tiptap_editor, files_yjs_doc_update_from_tiptap_editor } from "./files-yjs.ts";
+import { files_tiptap_empty_doc_json, files_YJS_DOC_KEYS, type files_YjsRootKind } from "./files.ts";
+import {
+	files_yjs_doc_check_text_addressable,
+	files_yjs_doc_create_from_tiptap_editor,
+	files_yjs_doc_create_plain_text_from_text,
+	files_yjs_doc_get_plain_text,
+	files_yjs_doc_update_from_tiptap_editor,
+	files_yjs_doc_update_plain_text_from_text,
+} from "./files-yjs.ts";
 
 const TRAILING_SPACES_OR_TABS_REGEX = /[ \t]+$/;
 const TRAILING_WHITESPACE_ONLY_LINE_REGEX = /\n([ \t]+)$/;
@@ -227,8 +234,8 @@ function tiptap_markdown_to_html(args: { markdown: string; extensions?: Extensio
 	// Preserve trailing empty lines at EOF (Markdown usually ignores them).
 	// A single final `\n` is a plain line terminator (POSIX file shape), not an empty
 	// line, so only the newlines beyond it become empty paragraphs (2 `\n` each, odd
-	// counts round up). files_yjs_doc_get_markdown mirrors this by ending non-empty
-	// file content with one `\n`, so newline-terminated text round-trips byte-exact.
+	// counts round up). files_yjs_doc_get_text's rich branch mirrors this by ending
+	// non-empty file content with one `\n`, so newline-terminated text round-trips byte-exact.
 	const trailingNewlines = markdown.match(TRAILING_NEWLINES_REGEX)?.[0] ?? "";
 	const newlineCount = trailingNewlines.length;
 	const paragraphCount = Math.ceil(Math.max(0, newlineCount - 1) / 2);
@@ -517,7 +524,23 @@ export function files_tiptap_markdown_to_json(args: {
 	});
 }
 
-export function files_yjs_doc_get_markdown(args: { yjsDoc: YDoc }) {
+/**
+ * Read a file document's text, per the shape stored on the node. The rich branch returns the
+ * document's Markdown. The plain branch returns the `Y.Text` root's string, exactly as stored:
+ * no forced trailing newline (that is rich-text-only behavior).
+ */
+export function files_yjs_doc_get_text(args: { yjsDoc: YDoc; rootKind: files_YjsRootKind }) {
+	// Run the shape guard as the first statement, so every call site checks the shape before any
+	// offset is computed instead of relying on one hand-placed check a refactor can move.
+	const addressable = files_yjs_doc_check_text_addressable({ yjsDoc: args.yjsDoc, rootKind: args.rootKind });
+	if (addressable._nay) {
+		return addressable;
+	}
+
+	if (args.rootKind === "plain_text") {
+		return Result({ _yay: files_yjs_doc_get_plain_text({ yjsDoc: args.yjsDoc }) });
+	}
+
 	const yjsDoc = args.yjsDoc;
 	const fragment = yjsDoc.getXmlFragment(files_YJS_DOC_KEYS.richText);
 
@@ -548,9 +571,24 @@ export function files_yjs_doc_get_markdown(args: { yjsDoc: YDoc }) {
 	}
 }
 
-export function files_yjs_doc_update_from_markdown(args: { markdown: string; mut_yjsDoc: YDoc }) {
+/**
+ * Write `text` into a file document, per the shape stored on the node. The rich branch parses
+ * Markdown through a headless Tiptap editor. The plain branch applies the bounded
+ * character-refining diff and refuses visibly when the diff's budget runs out.
+ */
+export function files_yjs_doc_update_from_text(args: { text: string; mut_yjsDoc: YDoc; rootKind: files_YjsRootKind }) {
+	// Run the shape guard as the first statement, same placement rule as the getter.
+	const addressable = files_yjs_doc_check_text_addressable({ yjsDoc: args.mut_yjsDoc, rootKind: args.rootKind });
+	if (addressable._nay) {
+		return addressable;
+	}
+
+	if (args.rootKind === "plain_text") {
+		return files_yjs_doc_update_plain_text_from_text({ text: args.text, mut_yjsDoc: args.mut_yjsDoc });
+	}
+
 	const editor = files_headless_tiptap_editor_create({
-		initialContent: { markdown: args.markdown },
+		initialContent: { markdown: args.text },
 	});
 
 	if (editor._nay) {
@@ -578,8 +616,17 @@ export function files_yjs_doc_update_from_markdown(args: { markdown: string; mut
 	}
 }
 
-export function files_yjs_doc_create_from_markdown(args: { markdown: string }) {
-	const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: args.markdown } });
+/**
+ * Build a fresh file document from text, per shape. The shape guard cannot fail here because
+ * this function builds the document itself, so the create direction is protected by `rootKind`
+ * alone: a wrong value builds a wrongly shaped document nothing downstream can catch.
+ */
+export function files_yjs_doc_create_from_text(args: { text: string; rootKind: files_YjsRootKind }) {
+	if (args.rootKind === "plain_text") {
+		return files_yjs_doc_create_plain_text_from_text({ text: args.text });
+	}
+
+	const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: args.text } });
 	if (editor._nay) {
 		return editor;
 	}

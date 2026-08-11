@@ -76,7 +76,7 @@ A freshly minted anonymous user now gets an auto-seeded `billing_usage_snapshots
 Owner-side fixture calls:
 
 - `files_nodes.create_folder_node({ membershipId, parentId: "root", path })`
-- `files_nodes_content.create_markdown_node({ membershipId, parentId, path })` (an action, not a mutation)
+- `files_nodes_content.create_text_node({ membershipId, parentId, path })` (an action, not a mutation)
 - `files_sharing.restrict_node({ membershipId, nodeId })`
 - `files_sharing.set_node_share_grant({ membershipId, nodeId, principal: { kind: "user", userId }, level: "read" | "write" | "manage" })` — `nodeId` must be the restricted node itself
 - `files_nodes.move_nodes({ membershipId, itemIds, targetParentId })` — `itemIds` is an array and the target is a single sibling field, not per-item

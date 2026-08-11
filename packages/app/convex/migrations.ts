@@ -81,7 +81,7 @@ type FileNodeReferenceTable =
 	| "files_pending_updates"
 	| "files_pending_updates_last_sequence_saved"
 	| "file_stats"
-	| "files_markdown_chunks"
+	| "files_text_chunks"
 	| "files_plain_text_chunks"
 	| "files_yjs_snapshots"
 	| "files_yjs_updates"
@@ -118,7 +118,7 @@ const rebrand_cleanup_tables = [
 	"data_deletion_requests",
 	"file_stats",
 	"files_content_materialization_jobs",
-	"files_markdown_chunks",
+	"files_text_chunks",
 	"files_metadata_docs",
 	"files_nodes",
 	"files_pending_updates_cleanup_tasks",
@@ -373,8 +373,8 @@ export const rename_file_stats_file_node_id = app_migrations.define({
 	migrateOne: (_ctx, stats) => rename_legacy_node_id_to_file_node_id(stats),
 });
 
-export const rename_markdown_chunks_file_node_id = app_migrations.define({
-	table: "files_markdown_chunks",
+export const rename_text_chunks_file_node_id = app_migrations.define({
+	table: "files_text_chunks",
 	migrateOne: (_ctx, chunk) => rename_legacy_node_id_to_file_node_id(chunk),
 });
 
@@ -814,8 +814,8 @@ export const run_rename_pending_update_sequences_file_node_id = app_migrations.r
 export const run_rename_file_stats_file_node_id = app_migrations.runner(
 	internal.migrations.rename_file_stats_file_node_id,
 );
-export const run_rename_markdown_chunks_file_node_id = app_migrations.runner(
-	internal.migrations.rename_markdown_chunks_file_node_id,
+export const run_rename_text_chunks_file_node_id = app_migrations.runner(
+	internal.migrations.rename_text_chunks_file_node_id,
 );
 export const run_rename_plain_text_chunks_file_node_id = app_migrations.runner(
 	internal.migrations.rename_plain_text_chunks_file_node_id,

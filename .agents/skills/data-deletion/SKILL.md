@@ -39,7 +39,7 @@ Load each companion skill that owns the affected boundary:
 - `db_drain_user_plugin_publisher_docs_batch`: deletes one bounded user-owned publisher phase in child-first order: repository secrets, repository docs, then version reviews. Both user-deletion paths drain these docs to zero before `db_finalize_deleted_user`.
 - `db_drain_user_notifications_batch`: deletes one bounded batch of notifications where the deleted user is the recipient, via `by_user`. Both user-deletion paths drain these to zero before `db_finalize_deleted_user`. The per-user cap sweep in `notifications.cleanup_extra_notifications` walks the `users` table, so without this drain a purged user record would leave its notifications unreachable forever. Notifications that only name the deleted user as `actorUserId` stay in the recipient's inbox with the deleted user's name (product decision 2026-08-09: keep the name, do not anonymize).
 - `prepare_user_for_hard_deletion`: tombstones the user and drains bounded plugin UI session, publisher-doc, and recipient-notification batches before the admin action performs external provider writes. The action reads the current Polar subscription before calling this mutation.
-- `db_finalize_deleted_user`: phase 2 for a tombstoned user. It deletes user-scoped docs and returns organizations that became empty.
+- `db_finalize_deleted_user`: phase 2 for a tombstoned user. It deletes user-scoped docs and returns organizations that became empty. Its user-scoped drains include the paged pending-state family and its operation scaffolding via `by_user`: `files_pending_update_yjs_states` (with their pages), `files_pending_update_text_inputs`, `files_pending_update_operation_batches`, and `files_yjs_trusted_update_stages`.
 - `db_purge_organization_workspace_content_batch`: deletes tenant content for one `(organizationId, workspaceId)` in bounded batches.
 - `db_delete_workspace_structure_batch`: deletes workspace notifications, memberships, active API credential quota docs, access-control docs, and then the workspace doc after content is gone.
 - `db_delete_workspace_batch`: full workspace deletion used by organization deletion and admin reset flows where the workspace doc may still exist.
@@ -149,6 +149,7 @@ Deleted-account recovery is handled in `users.resolve_user`.
 
 Current purge coverage includes:
 
+- `files_pending_update_yjs_state_pages`, `files_pending_update_yjs_states`, `files_pending_update_state_cleanup_tasks`, `files_pending_update_text_inputs`, `files_pending_update_operation_batches`, `files_yjs_trusted_update_stages` — the paged pending-state family and its operation scaffolding, child docs first (pages before states, text inputs before batches), all before the pending-update docs they belong to
 - `files_pending_updates_cleanup_tasks`, `files_pending_updates`
 - `files_pending_updates_last_sequence_saved`
 - `ai_chat_files_content`, `ai_chat_files`
@@ -160,7 +161,7 @@ Current purge coverage includes:
 - `activities` after the plugin passes. The run-retention path normally deletes an activity together with its plugin run, but this purge deletes run docs directly, so it drains the leftover activities by the workspace index. Every activity producer needs a live run doc, so no new rows can appear once the run pass is empty.
 - `chat_messages`
 - `files_metadata_docs`
-- `files_plain_text_chunks`, `files_markdown_chunks`
+- `files_plain_text_chunks`, `files_text_chunks`
 - `files_yjs_snapshots`, `files_yjs_updates`, `files_yjs_docs_last_sequences`
 - `files_snapshots`, `file_stats`
 - `files_content_materialization_jobs` with Workpool job cancellation

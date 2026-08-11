@@ -9,8 +9,8 @@ import { access_control_db_filter_readable_file_nodes } from "./access_control.t
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import {
-	files_metadata_extract_frontmatter,
-	files_metadata_MAX_FRONTMATTER_FIELDS,
+	files_metadata_frontmatter_exceeds_index_caps,
+	files_metadata_preflight_frontmatter,
 	type files_metadata_SearchPlan,
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
@@ -112,11 +112,13 @@ export async function files_metadata_db_insert_committed(
 		throw should_never_happen(errorMessage, errorData);
 	}
 
-	const metadata = files_metadata_extract_frontmatter(args.markdownContent);
-	// Refuse over-cap saves: every field becomes a metadata doc insert in this same transaction,
-	// so unbounded counts would exceed Convex's per-transaction doc-write limit. The throw rolls
-	// back the whole save mutation.
-	if (metadata.fields.length > files_metadata_MAX_FRONTMATTER_FIELDS) {
+	const preflight = files_metadata_preflight_frontmatter(args.markdownContent);
+	const metadata = preflight.metadata;
+	// Impossible backstop only: committed materialization already ran this preflight and settled
+	// a marker instead of calling here. The throw stays so an unexpected over-cap insert still
+	// rolls the whole transaction back rather than exceeding Convex's per-transaction doc-write
+	// limit.
+	if (files_metadata_frontmatter_exceeds_index_caps(preflight)) {
 		throw convex_error({ message: "Too many frontmatter fields" });
 	}
 
@@ -156,7 +158,7 @@ export async function files_metadata_db_replace_pending(
 		userId: string;
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId: Id<"files_pending_updates">;
-		unstagedMarkdown: string;
+		unstagedText: string;
 	},
 ) {
 	await files_metadata_db_delete_pending(ctx, { pendingUpdateId: args.pendingUpdateId });
@@ -173,10 +175,13 @@ export async function files_metadata_db_replace_pending(
 		return;
 	}
 
-	const metadata = files_metadata_extract_frontmatter(args.unstagedMarkdown);
-	// Refuse over-cap saves on the pending path too: the throw rolls back the whole pending save
-	// mutation, including the pending update doc write that ran before this helper.
-	if (metadata.fields.length > files_metadata_MAX_FRONTMATTER_FIELDS) {
+	const preflight = files_metadata_preflight_frontmatter(args.unstagedText);
+	const metadata = preflight.metadata;
+	// Impossible backstop only: the pending commit mutations run the same preflight before any
+	// canonical write and return a visible refusal. The throw stays so an unexpected over-cap
+	// insert still rolls back the whole pending save mutation, including the pending update doc
+	// write that ran before this helper.
+	if (files_metadata_frontmatter_exceeds_index_caps(preflight)) {
 		throw convex_error({ message: "Too many frontmatter fields" });
 	}
 

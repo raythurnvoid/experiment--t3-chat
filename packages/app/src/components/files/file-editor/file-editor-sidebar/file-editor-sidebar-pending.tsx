@@ -31,13 +31,16 @@ import type { AppClassName } from "@/lib/dom-utils.ts";
 import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
 import {
 	files_ROOT_ID,
-	files_fetch_file_yjs_state_and_markdown,
+	files_fetch_file_pending_update_yjs_state,
+	files_fetch_file_yjs_state_and_text,
 	files_format_size,
 	files_node_has_editable_yjs_state,
 	files_pending_update_has_yjs_content,
+	files_upsert_file_pending_update,
+	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../../../../../shared/files-yjs.ts";
-import { files_yjs_doc_get_markdown } from "../../../../../shared/files-tiptap.ts";
+import { files_yjs_doc_get_text } from "../../../../../shared/files-tiptap.ts";
 import { async_all_settled_with_limit, delay } from "@/lib/async.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { APP_FONT_FAMILY } from "@/lib/ui.tsx";
@@ -86,6 +89,11 @@ type FileEditorSidebarPendingRow = {
 	 * file (as a new version) and archives the source. Shown as a "source → target" label.
 	 */
 	replaceSourcePath: string | undefined;
+	/**
+	 * The file node's document shape from `list_tree` (the node owns the shape, never the
+	 * proposal). `null` when the node is missing from the tree; content decode then refuses.
+	 */
+	rootKind: files_YjsRootKind | null;
 };
 
 /**
@@ -197,6 +205,7 @@ function build_pending_rows(
 				replaceSourcePath: copiedFrom?.archivesSourceOnAccept
 					? (nodesById.get(copiedFrom.nodeId)?.path ?? copiedFrom.path)
 					: undefined,
+				rootKind: files_node_has_editable_yjs_state(node) ? node.yjsRootKind : null,
 			};
 		})
 		.sort((left, right) => left.path.localeCompare(right.path));
@@ -283,36 +292,72 @@ const PendingMoveLabel = memo(function PendingMoveLabel(props: { path: string; m
 	);
 });
 
-function decode_staged_unstaged(pendingUpdate: app_convex_Doc<"files_pending_updates">) {
+/**
+ * Load the staged/unstaged branch states of one pending update and read each one's text. The
+ * branch states live in paged `files_pending_update_yjs_states` families, so this fetches each
+ * role page by page; the shape comes from the NODE (via the row), never from the proposal. Every
+ * refusal bubbles so Accept can refuse visibly instead of publishing a decoded empty string.
+ */
+async function decode_staged_unstaged(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	pendingUpdate: app_convex_Doc<"files_pending_updates">;
+	rootKind: files_YjsRootKind | null;
+}) {
+	const { membershipId, pendingUpdate, rootKind } = args;
 	if (!files_pending_update_has_yjs_content(pendingUpdate)) {
 		return Result({ _nay: { message: "Pending update has no content to decode" } });
 	}
+	if (rootKind === null) {
+		return Result({ _nay: { message: "Pending update file is not available" } });
+	}
 
-	const stagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.stagedBranchYjsUpdate);
-	const stagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: stagedYjsDoc });
-	if (stagedMarkdown._nay) return stagedMarkdown;
+	const [stagedBytes, unstagedBytes] = await Promise.all([
+		files_fetch_file_pending_update_yjs_state({
+			membershipId,
+			nodeId: pendingUpdate.fileNodeId,
+			stateId: pendingUpdate.stagedStateId,
+		}),
+		files_fetch_file_pending_update_yjs_state({
+			membershipId,
+			nodeId: pendingUpdate.fileNodeId,
+			stateId: pendingUpdate.unstagedStateId,
+		}),
+	]);
+	if (stagedBytes._nay) return stagedBytes;
+	if (unstagedBytes._nay) return unstagedBytes;
 
-	const unstagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.unstagedBranchYjsUpdate);
-	const unstagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: unstagedYjsDoc });
-	if (unstagedMarkdown._nay) return unstagedMarkdown;
+	const stagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(stagedBytes._yay);
+	const stagedText = files_yjs_doc_get_text({ yjsDoc: stagedYjsDoc, rootKind });
+	if (stagedText._nay) return stagedText;
 
-	return Result({ _yay: { stagedMarkdown: stagedMarkdown._yay, unstagedMarkdown: unstagedMarkdown._yay } });
+	const unstagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(unstagedBytes._yay);
+	const unstagedText = files_yjs_doc_get_text({ yjsDoc: unstagedYjsDoc, rootKind });
+	if (unstagedText._nay) return unstagedText;
+
+	return Result({ _yay: { stagedText: stagedText._yay, unstagedText: unstagedText._yay } });
 }
 
 async function files_pending_accept_and_save(
 	convex: ReturnType<typeof useConvex>,
 	membershipId: app_convex_Id<"organizations_workspaces_users">,
 	pendingUpdate: app_convex_Doc<"files_pending_updates">,
+	rootKind: files_YjsRootKind | null,
 ) {
-	const decoded = decode_staged_unstaged(pendingUpdate);
+	// Accept refuses visibly on any decode `_nay` and never falls through to a decoded "":
+	// publishing a fabricated empty text would commit empty over the user's content.
+	const decoded = await decode_staged_unstaged({ membershipId, pendingUpdate, rootKind });
 	if (decoded._nay) return decoded;
 
-	const upserted = await convex.action(app_convex_api.files_pending_updates.upsert_file_pending_update, {
+	const upserted = await files_upsert_file_pending_update({
 		membershipId,
 		nodeId: pendingUpdate.fileNodeId,
 		pendingUpdateId: pendingUpdate._id,
-		stagedMarkdown: decoded._yay.unstagedMarkdown,
-		unstagedMarkdown: decoded._yay.unstagedMarkdown,
+		// Anchor the publish to the version this click reviewed: if the proposal was revised
+		// between the decode above and the server commit, the server refuses instead of
+		// silently publishing over the revision.
+		reviewedUpdatedAt: pendingUpdate.updatedAt,
+		stagedText: decoded._yay.unstagedText,
+		unstagedText: decoded._yay.unstagedText,
 	});
 	if (upserted._nay) return upserted;
 
@@ -344,6 +389,7 @@ async function files_pending_row_accept(
 	convex: ReturnType<typeof useConvex>,
 	membershipId: app_convex_Id<"organizations_workspaces_users">,
 	pendingUpdate: app_convex_Doc<"files_pending_updates">,
+	rootKind: files_YjsRootKind | null,
 ) {
 	// A delete row never falls through: accept archives the node (a folder with its whole
 	// subtree) and ignores any content branches left on the doc.
@@ -365,7 +411,7 @@ async function files_pending_row_accept(
 		if (moved._nay || !files_pending_update_has_yjs_content(pendingUpdate)) return moved;
 	}
 
-	return await files_pending_accept_and_save(convex, membershipId, pendingUpdate);
+	return await files_pending_accept_and_save(convex, membershipId, pendingUpdate, rootKind);
 }
 
 /**
@@ -850,6 +896,7 @@ type FileEditorSidebarPendingItem_Props = {
 	canPreviewDeleteDiff: boolean;
 	isAddedFile: boolean;
 	replaceSourcePath: string | undefined;
+	rootKind: files_YjsRootKind | null;
 	acceptRequiresAllChanges: boolean;
 	canAccept: boolean;
 	disabled?: boolean;
@@ -869,6 +916,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		canPreviewDeleteDiff,
 		isAddedFile,
 		replaceSourcePath,
+		rootKind,
 		acceptRequiresAllChanges,
 		canAccept,
 		disabled,
@@ -892,14 +940,12 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		setDeletedCommittedMarkdown(undefined);
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const fileContentData = await files_fetch_file_yjs_state_and_markdown({
+			const fileContentData = await files_fetch_file_yjs_state_and_text({
 				membershipId,
 				nodeId: pendingUpdate.fileNodeId,
 			});
 			if (cancelled) return;
-			setDeletedCommittedMarkdown(
-				fileContentData && !fileContentData.markdown._nay ? fileContentData.markdown._yay : null,
-			);
+			setDeletedCommittedMarkdown(fileContentData && !fileContentData.text._nay ? (fileContentData.text._yay ?? null) : null);
 		})().catch((error) => {
 			if (!cancelled) {
 				setDeletedCommittedMarkdown(null);
@@ -914,21 +960,52 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		};
 	}, [kind, canPreviewDeleteDiff, membershipId, pendingUpdate.fileNodeId]);
 
-	// Decode lazily: `files_yjs_doc_get_markdown` spins up a headless Tiptap editor, so only build the
-	// diff once the accordion is open. The pending-update prop ref changes only when the doc data changes.
-	const diffText = useMemo(() => {
-		if (!isOpen) return null;
+	// Decode lazily: the branch states are fetched page by page and the rich branch spins up a
+	// headless Tiptap editor, so only build the diff once the accordion is open. The
+	// pending-update prop ref changes only when the doc data changes.
+	const [diffText, setDiffText] = useState<string | null>(null);
+	useEffect(() => {
+		if (!isOpen) {
+			setDiffText(null);
+			return;
+		}
 		if (kind === "delete") {
 			// The whole committed content shows as removed lines.
-			return typeof deletedCommittedMarkdown === "string" ? createPatch(path, deletedCommittedMarkdown, "") : null;
+			setDiffText(typeof deletedCommittedMarkdown === "string" ? createPatch(path, deletedCommittedMarkdown, "") : null);
+			return;
 		}
-		if (sizeOnlyReplacedNodeId) return null;
-		const decoded = decode_staged_unstaged(pendingUpdate);
-		if (decoded._nay) {
-			return null;
+		if (sizeOnlyReplacedNodeId) {
+			setDiffText(null);
+			return;
 		}
-		return createPatch(path, decoded._yay.stagedMarkdown, decoded._yay.unstagedMarkdown);
-	}, [isOpen, kind, sizeOnlyReplacedNodeId, deletedCommittedMarkdown, pendingUpdate, path]);
+
+		let cancelled = false;
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
+			const decoded = await decode_staged_unstaged({ membershipId, pendingUpdate, rootKind });
+			if (cancelled) return;
+			if (decoded._nay) {
+				console.error("[FileEditorSidebarPending] Failed to decode the pending diff preview", {
+					error: decoded._nay,
+					nodeId: pendingUpdate.fileNodeId,
+				});
+				setDiffText(null);
+				return;
+			}
+			setDiffText(createPatch(path, decoded._yay.stagedText, decoded._yay.unstagedText));
+		})().catch((error) => {
+			console.error("[FileEditorSidebarPending] Unexpected error while decoding the pending diff preview", {
+				error,
+				nodeId: pendingUpdate.fileNodeId,
+			});
+			if (!cancelled) {
+				setDiffText(null);
+			}
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [isOpen, kind, sizeOnlyReplacedNodeId, deletedCommittedMarkdown, pendingUpdate, path, membershipId, rootKind]);
 
 	const handleToggle = useFn((event: { currentTarget: HTMLDetailsElement }) => {
 		setIsOpen(event.currentTarget.open);
@@ -962,7 +1039,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const result = await files_pending_row_accept(convex, membershipId, pendingUpdate);
+			const result = await files_pending_row_accept(convex, membershipId, pendingUpdate, rootKind);
 			if (result._nay) {
 				// "Stale save" means the pending update doc changed under this click (another tab,
 				// the agent); the reactive query already renders the real state — no error.
@@ -1375,7 +1452,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const failures = await files_pending_rows_run_bulk(visibleRows, (row) =>
-				files_pending_row_accept(convex, membershipId, row.pendingUpdate),
+				files_pending_row_accept(convex, membershipId, row.pendingUpdate, row.rootKind),
 			);
 			if (failures > 0) {
 				toast.error(`Failed to accept ${failures} of ${visibleRows.length} pending changes`);
@@ -1504,6 +1581,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							canPreviewDeleteDiff={row.canPreviewDeleteDiff}
 							isAddedFile={row.isAddedFile}
 							replaceSourcePath={row.replaceSourcePath}
+							rootKind={row.rootKind}
 							acceptRequiresAllChanges={acceptRequiresAllChangesIds.has(row.pendingUpdate._id)}
 							canAccept={acceptPermissionQueryResults[row.pendingUpdate.fileNodeId] === true}
 							disabled={isBulkBusy}
@@ -1535,13 +1613,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		({
 			_id: args.id,
 			fileNodeId: args.fileNodeId,
-			// Move-only docs leave all 4 Yjs fields unset, like the server does.
+			// Move-only docs leave the whole canonical content group unset, like the server does.
 			...(args.staged != null && args.unstaged != null
 				? {
 						baseYjsSequence: 0,
-						baseYjsUpdate: "",
-						stagedBranchYjsUpdate: args.staged,
-						unstagedBranchYjsUpdate: args.unstaged,
+						baseLineageGeneration: 0,
+						baseStateId: `${args.id}_base`,
+						stagedStateId: `${args.id}_staged`,
+						unstagedStateId: `${args.id}_unstaged`,
 					}
 				: {}),
 			...(args.pendingMove ? { pendingMove: args.pendingMove } : {}),

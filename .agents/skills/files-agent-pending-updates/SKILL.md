@@ -7,7 +7,9 @@ description: Current `/files` pending-changes system: per-user Yjs content branc
 
 Each `files_pending_updates` doc — the pending update doc — belongs to one user and one file node. It may contain a content proposal, a structural proposal, or both.
 
-A content proposal sets all four Yjs fields together and tracks three states:
+Pending updates work for both document shapes: a Markdown file's `rich_text` (ProseMirror) Yjs document and every other editable text file's `plain_text` (`Y.Text`) document. The node's `yjsRootKind` decides the shape everywhere (see the `files-editable-text` skill). Branch handling is string-level: the same three-branch model, the same rebase, the same diff review.
+
+A content proposal sets the five canonical content fields together and tracks three states:
 
 - `base`: the live file state the pending update was built from.
 - `staged`: the branch that save will persist.
@@ -33,22 +35,32 @@ Main table in `packages/app/convex/schema.ts`:
   - `workspaceId`
   - `userId`
   - `fileNodeId`
-  - optional content fields, always set together:
+  - optional canonical content group, always set together:
     - `baseYjsSequence`
-    - `baseYjsUpdate`
-    - `stagedBranchYjsUpdate`
-    - `unstagedBranchYjsUpdate`
+    - `baseLineageGeneration` (the live document lineage this proposal was built against)
+    - `baseStateId` / `stagedStateId` / `unstagedStateId`, each pointing at one sealed `files_pending_update_yjs_states` doc whose pages hold that branch's full Yjs state. Branch bytes never live on the pending update doc itself.
   - optional `pendingMove`
   - optional `copiedFrom`
   - optional `pendingArchive` (`fromPath` display metadata only; the node id is authoritative)
   - optional `eagerCreated`
   - optional `threadIds` (contributor set: the chat threads that touched this doc, deduped; agent writes append their thread id, client-driven writes leave the field out of their patches so it survives, and it dies with the doc; unset for client-only docs and rows older than the field)
-  - `size` (UTF-8 byte size of current `unstaged` Markdown, or `0` for a structural-only doc)
+  - `size` (UTF-8 byte size of the current `unstaged` text, or `0` for a structural-only doc)
   - `updatedAt`
 
-Unified exact Markdown chunk table:
+Paged pending-state storage (`packages/app/convex/schema.ts`; shared helpers in `packages/app/server/files.ts`):
 
-- `files_markdown_chunks`
+- `files_pending_update_yjs_states` — metadata for one branch state (one role: `base`, `staged`, or `unstaged`). A full Yjs state can be larger than one Convex value, so it never travels or stores as a single value. The `owner` union says who deletes the family: `active` states belong to a pending update doc, `temporary` states to an operation batch (expiry-swept), `retired` states to a durable cleanup task. Each state records `lineageGeneration`, `sealed`, `pageCount`, `totalBytes`, and `digest`.
+- `files_pending_update_yjs_state_pages` — the bytes, in non-empty pages of at most `files_MAX_YJS_WIRE_BYTES` (930,000 bytes), contiguous by `pageIndex` from 0. A state holds at most 5 pages, which covers the 4 MiB state cap.
+- `files_pending_update_state_cleanup_tasks` — durable cleanup task for a retired family. A commit re-owns the previous states to a task doc instead of deleting pages inline; a bounded scheduled continuation drains pages, states, then the task.
+- `files_pending_update_operation_batches` — one in-flight upsert or rebase per user and file. One active batch per user/node; a batch expires after 30 minutes, and a new create by the SAME user takes over a batch idle past 2 minutes (`lastActivityAt`, refreshed by page staging, text-input staging, and the seal), so a crashed client does not lock the user out.
+- `files_pending_update_text_inputs` — one staged text value (role `staged` or `unstaged`) per batch, so no registered call carries two large values at once.
+- `files_yjs_trusted_update_stages` — one server-built Yjs update staged ahead of its commit (pending accept, public fill, snapshot restore), so the commit call carries only ids and one bounded text. 30-minute TTL.
+
+The digest is two FNV-1a 32-bit passes joined as hex (`files_pending_update_yjs_state_digest` in `packages/app/server/files.ts`). It is not cryptographic; it only detects a torn or mixed page family when a state is reassembled.
+
+Unified exact text chunk table:
+
+- `files_text_chunks`
   - `organizationId`
   - `workspaceId`
   - `fileNodeId`
@@ -57,7 +69,7 @@ Unified exact Markdown chunk table:
   - optional `pendingUpdateId` for pending docs
   - optional `yjsSequence` for committed docs
   - `chunkIndex`
-  - `markdownChunk`
+  - `textChunk`
   - `startIndex` / `endIndex` / `lineStart` / `lineEnd` / `chunkFlags`
   - committed yjs-sequence indexes and pending-update indexes for exact reads and regex scans
 
@@ -71,18 +83,18 @@ Unified full-text search table:
   - optional `userId` for pending docs
   - optional `pendingUpdateId` for pending docs
   - optional `yjsSequence` for committed docs
-  - `markdownChunkId`
+  - `textChunkId`
   - denormalized `path`
   - optional `archiveOperationId`
   - `chunkIndex`
   - `plainTextChunk`
-  - `markdownChunk`
+  - `textChunk`
   - `startIndex` / `endIndex` / `lineStart` / `lineEnd` / `chunkFlags`
   - `hasChunkAbove` / `hasChunkBelow`
   - search index `search_by_plainTextChunk` (filter fields `organizationId`, `workspaceId`, `archiveOperationId`)
   - committed replacement, pending replacement, and scope patching indexes
 
-The old separate search and pending chunk tables no longer exist. Bash full-text `search` uses the unified `files_plain_text_chunks` table as a self-contained search-result doc; exact Markdown reads use `files_markdown_chunks`, while plain-text regex search reads line numbers from `files_plain_text_chunks`.
+The old separate search and pending chunk tables no longer exist. Bash full-text `search` uses the unified `files_plain_text_chunks` table as a self-contained search-result doc; exact text reads use `files_text_chunks`, while plain-text regex search reads line numbers from `files_plain_text_chunks`.
 
 Unified Markdown frontmatter metadata docs:
 
@@ -106,11 +118,11 @@ Unified Markdown frontmatter metadata docs:
   - a date-like string value is indexed twice: the normal string value doc plus one `maybe_date` companion doc
   - committed replacement, pending replacement, scope patching, field-existence search, string prefix/equality, numeric and maybe_date range/equality, and boolean equality indexes; maybe_date reuses the number-range index because `valueKind` sorts before `numberValue` in it
 
-Frontmatter field cap: a save whose markdown extracts more than `files_metadata_MAX_FRONTMATTER_FIELDS` (128, in `packages/app/shared/files-metadata.ts`) distinct frontmatter fields is refused. Both metadata insert helpers in `packages/app/convex/files_metadata.ts` (committed and pending) throw the stable `Too many frontmatter fields` ConvexError, which rolls back the whole save mutation. The cap exists because each field becomes one or two metadata doc inserts in the same transaction, and the 900 KB content cap alone would allow thousands.
+Frontmatter caps: there are two, both in `packages/app/shared/files-metadata.ts` — `files_metadata_MAX_FRONTMATTER_FIELDS` (128 distinct fields) and `files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS` (512 index documents; fields plus values, `maybe_date` companions included). The pure preflight `files_metadata_preflight_frontmatter` counts both. All three pending commit mutations (upsert, rebase, save-partial) run `files_pending_update_check_frontmatter_caps` BEFORE any canonical write and return the visible `Too many frontmatter fields` `_nay`; the calling actions answer it by retiring the staged batch. The throws inside the metadata insert helpers in `packages/app/convex/files_metadata.ts` stay as impossible backstops only. The caps exist because each field becomes one or two metadata doc inserts in the same transaction, and the 900 KB content cap alone would allow thousands. Frontmatter indexing is `rich_text`-only: a pending `.yaml` file that starts with `---` is never frontmatter-indexed.
 
 Date-like frontmatter strings: a string shaped like an ISO date (`YYYY-MM-DD`, optionally with a time) also gets a `maybe_date` value doc holding its epoch-milliseconds timestamp, so the agent can range-filter dates that YAML keeps as strings. The shared recognizer is `files_metadata_parse_maybe_date` in `packages/app/shared/files-metadata.ts`. Extraction and `meta search` range-bound parsing must use that same recognizer, or a query bound could ask for timestamps the index never wrote. Only files saved after this feature landed have the companion docs; there is no backfill, so an older file stays string-only until its next save.
 
-There is deliberately no matching cap on value docs. Array items add one value doc per distinct item, and a date-like string adds a second `maybe_date` doc, so a very long array still writes an unbounded number of value docs. That hole predates the `maybe_date` companions and is not closed in the insert helpers: committed inserts run inside the materialization workpool (`maxParallelism: 1`, infinite retries), so a throw there would retry forever and block materialization for every other file. The byte cap in `packages/app/convex/files_nodes_content.ts` shows the pattern to follow instead — warn, mark the file, and return `_nay` from the action rather than throwing from the mutation.
+Value docs are bounded by the 512 index-document cap above: array items add one value doc per distinct item, and a date-like string adds a second `maybe_date` doc, so one field with a long array can blow the cap on its own. Committed materialization must not throw inside the workpool (`maxParallelism: 1`, infinite retries — a throw would retry forever and block every other file), so it settles instead: over-cap frontmatter marks the node with the `contentFrontmatterTooLargeFieldCount` / `contentFrontmatterTooLargeIndexDocumentCount` pair and keeps the committed content at the last sequence that fit. See the `files-editable-text` skill for the marker lifecycle.
 
 Saved-sequence marker table:
 
@@ -131,22 +143,22 @@ Cleanup table:
 
 The authoritative identity is per user and per file node. Two users can each have independent pending updates on the same file.
 
-# Markdown-Backed File Scope
+# Editable-Text File Scope
 
-Pending updates attach to Markdown-backed `files_nodes` docs.
+Pending updates attach to editable text `files_nodes` docs — nodes with Yjs state, in either shape.
 
-- Editable Markdown files participate directly in pending review/edit flows.
+- Editable Markdown files (`rich_text`) and plain-text files such as `.json` or `.yaml` (`plain_text`) participate directly in pending review/edit flows.
 - Plugin-generated Markdown outputs are ordinary files, so they can participate in pending review/edit flows after the plugin creates them.
-- Raw uploaded source file nodes without Markdown Yjs ids do not directly participate in pending Markdown edits today.
-- Uploaded source paths do not alias to generated outputs; pending edits attach to the exact Markdown file node being edited.
+- Raw uploaded source file nodes without Yjs ids (stored blobs) do not directly participate in pending content edits today.
+- Uploaded source paths do not alias to generated outputs; pending edits attach to the exact file node being edited.
 - Move-only and delete-only docs can represent folders and non-content file nodes. Those docs do not carry Yjs branches.
 
 # End-To-End Flow
 
-1. AI tools in `packages/app/server/server-ai-tools.ts` translate visible paths to committed paths through the current user's pending structural overlay, then read file content through `internal.files_nodes_content.get_file_last_available_markdown_content_by_path`, an internal action that can fetch committed Markdown from R2.
+1. AI tools in `packages/app/server/server-ai-tools.ts` translate visible paths to committed paths through the current user's pending structural overlay, then read file content through `internal.files_nodes_content.get_file_last_available_text_content_by_path`, an internal action that can fetch committed Markdown from R2.
 2. That read path overlays the current user's pending `unstaged` branch when content exists. Pending destinations are visible, vacated or replaced paths are hidden, and descendants follow a pending folder move.
-3. `edit_file` and Agent-mode bash shell writes (`bash_DbFilesFs.writeFile`/`appendFile` in `packages/app/server/bash-utils.ts`, reached by `>`/`>>` redirects, heredocs, `tee`, and `touch` on a new path — `touch` on an existing app file is a no-op) normalize CRLF line endings to LF (bash writes are otherwise byte-faithful, like a real shell) and call `internal.files_pending_updates.upsert_file_pending_update_internal_action` so the base Yjs state can be fetched from R2 before the mutation writes.
-4. Agent calls omit `stagedMarkdown`, so the backend preserves the current `staged` branch and updates only `unstaged`.
+3. `edit_file` and Agent-mode bash shell writes (`bash_DbFilesFs.writeFile`/`appendFile` in `packages/app/server/bash-utils.ts`, reached by `>`/`>>` redirects, heredocs, `tee`, and `touch` on a new path — `touch` on an existing app file is a no-op) go through `files_agent_upsert_file_pending_update` in `bash-utils.ts`: create an operation batch, stage the one proposed text, then call the ids-only `internal.files_pending_updates.upsert_file_pending_update_internal_action`. Every staged text crosses `db_stage_operation_batch_text_input`, which drops one leading BOM and normalizes CRLF and lone CR to LF (`files_normalize_text_document_input`) before the byte count, so the branch document, the pending chunks, and the stored size all see the same string. A staging refusal retires the batch first so the user is not locked out.
+4. Agent calls stage no `staged` text, so the backend preserves the current `staged` branch and updates only `unstaged`.
 5. `files_pending_updates` creates or updates a doc for `(organizationId, workspaceId, userId, fileNodeId)`. A missing `edit_file` or bash shell write target may be eagerly created and recorded with `eagerCreated`.
 6. `FileNodeView` queries `list_files_pending_updates`, filters content-bearing docs into the diff queue, and passes that queue to `FileEditor`, which renders the floating banner and pager.
 7. `Review changes` switches the `/files` route to `view=diff_editor`.
@@ -177,32 +189,27 @@ Main module:
 
 - `packages/app/convex/files_pending_updates.ts`
 
-Public and internal functions:
+Public and internal functions, grouped by role:
 
-- `upsert_file_pending_update`
-- `apply_file_pending_move`
-- `apply_file_pending_archive`
-- `discard_file_pending_structural`
-- `discard_file_pending_content`
-- `persist_file_pending_update_rebased_state`
-- `get_file_pending_update`
-- `list_files_pending_updates`
-- `get_file_pending_update_last_sequence_saved`
-- `save_file_pending_update`
-- `get_by_file_node`
-- `remove_file_pending_update_if_expired`
-- `upsert_file_pending_update_in_db`
-- `upsert_file_pending_update_internal_action`
-- `upsert_file_pending_move_in_db`
-- `upsert_file_pending_archive_in_db`
-- `persist_file_pending_update_rebased_state_in_db`
-- `get_file_pending_update_internal`
-- `get_pending_path_overlay_data`
-- `save_file_pending_update_in_db`
+- Staging pipeline: `create_file_pending_update_operation_batch` (+`_internal`), `stage_file_pending_update_state_page` (+`_internal`), `seal_file_pending_update_state` (+`_internal`), `stage_file_pending_update_text_input` (+`_internal`), `retire_file_pending_update_operation_batch`, `stage_trusted_yjs_update`
+- Paged reads: `get_file_pending_update_state_page` (+`_internal`), `get_file_pending_update_text_input_internal`, `get_data_for_pending_content_operation`
+- Upsert and rebase: `upsert_file_pending_update` (action), `upsert_file_pending_update_internal_action`, `commit_file_pending_update_upsert_in_db`, `persist_file_pending_update_rebased_state` (action), `commit_file_pending_update_rebase_in_db`, `settle_file_pending_update_no_change_in_db`, `refresh_file_pending_update_in_db`
+- Structural: `upsert_file_pending_move_in_db`, `upsert_file_pending_archive_in_db`, `apply_file_pending_move`, `apply_file_pending_archive`, `discard_file_pending_structural`, `discard_file_pending_content`
+- Save: `save_file_pending_update` (action), `save_file_pending_update_in_db`
+- Reads: `get_file_pending_update`, `get_file_pending_update_internal`, `get_by_file_node`, `list_files_pending_updates`, `get_pending_path_overlay_data`, `get_file_pending_update_last_sequence_saved`
+- Cleanup: `remove_file_pending_update_if_expired`, `cleanup_expired_pending_state_rows` (15-minute cron)
 
 Important behavior:
 
-- Upsert reconstructs existing branch docs or clones the live file base, applies incoming Markdown to `unstaged`, applies `staged` only when `stagedMarkdown` is provided, and deletes the pending update doc if both branches match base.
+- Every large value moves through the staged pipeline; registered calls carry one page or one text plus ids and scalars. The order is: create a batch (ONE active 30-minute batch per user/node; a second create refuses with a visible "already in progress" `_nay` unless the existing batch is the same user's and idle past 2 minutes, which takes it over), stage pages (each checked non-empty and at most 930,000 bytes BEFORE insert, in order, at most 5 per state, with per-phase envelopes of 3 states and 12 MiB total), then seal each state.
+- The seal is door 2 and the only step that may mark a state valid: it reassembles the pages, checks the whole state (non-empty, at most `files_MAX_YJS_RECONSTRUCTED_STATE_BYTES` = 4 MiB, v1 encoding), reconstructs the document and runs the per-`rootKind` shape rule (plain: parity plus empty root `_map`; rich: the share-name test; one branch, never both), checks the visible projection is at most 900,000 bytes, then records the FNV-1a digest and the current lineage generation.
+- The final commit mutations take sealed state ids plus digests (and at most one bounded `unstagedText`), re-check the digests, and atomically swap the canonical ids on the pending update doc. The previous family is retired into a durable cleanup task instead of being deleted inline; a bounded continuation drains it. Commits never reload pages.
+- Every refusal terminal retires the batch immediately (staging refusals, commit `_nay`s, and thrown commits), so a refused flow does not block the user for the batch TTL. The 15-minute sweeper (`cleanup_expired_pending_state_rows`) drains expired batches, text inputs, temporary states, trusted stages, and retired cleanup tasks; the TTL sweep must bound `by_owner_expiresAt` from below (`gte(0)`) because docs without the field sort before every number.
+- Node `content.write` is enforced at batch creation and re-enforced at every commit that swaps sealed states canonical. Page staging, text-input staging, and the seal check batch ownership only — any future path that commits sealed states MUST re-check `content.write`.
+- Upsert reconstructs existing branch docs or clones the live file base, applies the incoming text to `unstaged`, applies `staged` only when a staged text was staged, and deletes the pending update doc if both branches match base.
+- The base reconstruction reads the materialization header plus one update row per query call. A walk that ends before the frozen target sequence (covered-row cleanup deleted rows mid-walk) is treated as stale and refused with `Failed to load file state` instead of returning a partial base labeled complete — a partial base would let Accept commit duplicated content.
+- Accept can pass `reviewedUpdatedAt` (the sidebar passes the decoded row's `updatedAt`). When the proposal's `updatedAt` moved past that read, the action retires the batch and refuses with `Pending changes were revised, review the latest version`. Chained with the commit's `expectedUpdatedAt` gate, the accepted content is exactly what the user reviewed. Agent flows omit the argument.
+- The agent pending read treats a content group whose `baseLineageGeneration` differs from the node's current `lineageGeneration` as no pending content (the commit gate would refuse that family anyway), so content resolves from the committed tree. The doc keeps its id so the agent's next write rebuilds the family from the live state. An operator Yjs repair bumps the lineage, which is what makes old proposals visibly stale.
 - Rebase persistence rejects stale live bases and only accepts rebased state built from the current live file snapshot.
 - Rebase persistence is update-only and patches only the exact doc id the client synced. When that doc was discarded, fully accepted, or replaced by a newer proposal while the sync was in flight, it returns a benign `Not found` and never recreates or overwrites anything.
 - Two more rebase guards. A sync whose captured base is older than the doc's current base returns a benign `Stale save` (a tab that saved meanwhile wins). A sync against a doc that degraded to move-only returns `Not found` (in-flight syncs cannot resurrect reverted content).
@@ -223,11 +230,11 @@ Important behavior:
 - Save on a doc with `pendingArchive` is rejected with `File has a pending delete` (discard the delete first). Discarding a delete only clears `pendingArchive`: a doc that still has content or copy provenance survives as a content row; a delete-only doc is removed.
 - Keep each public endpoint's current auth, membership, and rate-limit order. Do not infer one shared order: content upsert validates membership before its rate limit, while structural accept/discard and save perform the rate-limit check earlier.
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.
-- Content-bearing doc lifecycle paths maintain pending `files_markdown_chunks`, pending `files_plain_text_chunks`, and pending `files_metadata_docs` in the same mutation. Insert chunks the `unstaged` Markdown and extracts YAML frontmatter. Replacing the `unstaged` Markdown rebuilds those docs; a staged-only change reuses them. Doc deletion removes them. Structural-only docs own no pending indexed docs. If content collapses while `pendingMove` remains, remove the pending indexed docs and retain the structural doc.
-- Committed materialization writes committed `files_markdown_chunks`, committed `files_plain_text_chunks`, and committed metadata docs; committed replacement deletes the old committed Markdown chunks, plain-text chunks, and metadata docs for that file before inserting new docs.
+- Content-bearing doc lifecycle paths maintain pending `files_text_chunks`, pending `files_plain_text_chunks`, and pending `files_metadata_docs` in the same mutation. Chunking dispatches on the node's `yjsRootKind`: the Markdown chunker for `rich_text`, the byte-exact plain-text chunker for `plain_text`. YAML frontmatter is extracted and indexed for `rich_text` only. Replacing the `unstaged` text rebuilds those docs; a staged-only change reuses them. Doc deletion removes them. Structural-only docs own no pending indexed docs. If content collapses while `pendingMove` remains, remove the pending indexed docs and retain the structural doc.
+- Committed materialization writes committed `files_text_chunks`, committed `files_plain_text_chunks`, and committed metadata docs; committed replacement deletes the old committed exact-text chunks, plain-text search chunks, and metadata docs for that file before inserting new docs.
 - If committed chunk replacement fails, the materialization finalizer throws so Convex rolls back the node, snapshot, update, job, and chunk writes together. Returning `_nay` from that branch would commit a partial materialization.
 - Rename, move, archive, and unarchive patch denormalized `path` and `archiveOperationId` on `files_plain_text_chunks`, and `path`, `treePath`, and `archiveOperationId` on `files_metadata_docs`, so full-text and metadata search can filter scope before native pagination.
-- Pending update doc writes also store `size` from the same current `unstaged` Markdown whenever the unstaged branch is created or replaced. Staged-only changes preserve the existing size.
+- Pending update doc writes also store `size` from the same current `unstaged` text whenever the unstaged branch is created or replaced. Staged-only changes preserve the existing size.
 - A chunking failure never fails the pending update doc write: the stale pending Markdown/plain-text chunk docs are already deleted, the failure is logged, and search just misses that file until the next upsert (its committed chunks stay hidden for that user).
 
 # Client Responsibilities
@@ -290,9 +297,11 @@ Important behavior:
 
 - Pending updates are per-user docs keyed by `(organizationId, workspaceId, userId, fileNodeId)`.
 - A content-only doc normally exists while `staged` or `unstaged` differs from `base`. Structural docs, eager-created destinations, and replace-moves may persist even when the content branches match.
+- The `base`, `staged`, `unstaged` and live documents must share the Yjs history used by state-vector diffs. Start each branch from the exact base state and apply text edits to that branch. Never rebuild a branch as a fresh `Y.Doc` from visible Markdown and then diff it against the live document: state vectors compare Yjs structs and client clocks, not visible text, so applying a diff between independent histories can duplicate the document.
+- Rebase and reconciliation are string-level for both shapes: the client and server use the shape-aware dispatchers (`files_yjs_doc_get_text` / `files_yjs_doc_update_from_text`) plus raw state-vector diff updates. The only ProseMirror-touching code on these paths is the `rich_text` branch inside the dispatchers themselves.
 - AI reads must continue to see the current user's pending `unstaged` branch overlay.
-- Only content-bearing docs own pending Markdown chunks, plain-text chunks, and metadata docs. Content insert, `unstaged` Markdown replacement, deletion, save, and expiry keep those docs in sync with the pending update doc; staged-only changes reuse them.
-- Bash `search` (`text_search_files`) uses one Convex full-text search query against `files_plain_text_chunks` with Convex native cursor pagination, and renders directly from those docs without hydrating linked Markdown chunks. It filters pending chunks to the acting user, filters out other users' pending chunks, and hides committed chunks for files that user has pending edits on. Pending-first ordering is not an invariant.
+- Only content-bearing docs own pending exact-text chunks, plain-text search chunks, and metadata docs. Content insert, `unstaged` text replacement, deletion, save, and expiry keep those docs in sync with the pending update doc; staged-only changes reuse them.
+- Bash `search` (`text_search_files`) uses one Convex full-text search query against `files_plain_text_chunks` with Convex native cursor pagination, and renders directly from those docs without hydrating linked exact-text chunks. It filters pending chunks to the acting user, filters out other users' pending chunks, and hides committed chunks for files that user has pending edits on. Pending-first ordering is not an invariant.
 - Bash `meta search` uses one Convex indexed query against `files_metadata_docs` per command. It filters pending metadata to the acting user, filters out other users' pending metadata, and hides committed metadata for files that user has pending edits on. Multi-predicate AND/OR is intentionally outside the command and should be composed by shell tools over path output.
 - Metadata search hides committed metadata only for docs that carry a content proposal (`files_pending_update_content_of` returns non-null), the same rule full-text search uses. A move-only doc does not mask the file's committed metadata.
 - `Review changes` must switch into diff mode.

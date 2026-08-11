@@ -51,7 +51,11 @@ import type {
 	ai_chat_files_load_thread_tmp_files_Result,
 	ai_chat_files_patch_thread_tmp_files_Args,
 } from "../convex/ai_chat_files.ts";
-import { files_ROOT_ID, files_get_utf8_byte_size, files_pending_path_overlay_project_committed_path } from "../shared/files.ts";
+import {
+	files_ROOT_ID,
+	files_get_editable_text_yjs_root_kind,
+	files_pending_path_overlay_project_committed_path,
+} from "../shared/files.ts";
 import type { plugins_list_bash_source_mounts_Result } from "../convex/plugins.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -1695,6 +1699,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const dotIndex = name.lastIndexOf(".");
 			const content = spec.content ?? "";
 			const bytes = new TextEncoder().encode(content);
+			// Editable seeds classify by name, exactly like the production create path.
+			const seedRootKind = files_get_editable_text_yjs_root_kind(name) ?? "rich_text";
 			const fileId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: scope.organizationId,
@@ -1710,6 +1716,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				lowercaseExtension:
 					dotIndex <= 0 || dotIndex === name.length - 1 ? null : name.slice(dotIndex + 1).toLowerCase(),
 				contentType: spec.contentType ?? "text/markdown;charset=utf-8",
+				...(spec.withoutYjsState ? {} : { yjsRootKind: seedRootKind }),
 				updatedAt,
 			});
 			const r2Key = `bash-test${spec.path}`;
@@ -1730,9 +1737,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 			let yjsSnapshotAssetFields: { r2Key?: string; size: number } = { size: 0 };
 			if (spec.withRealYjsSnapshot) {
-				const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
+				const { files_yjs_doc_create_from_text } = await import("../shared/files-tiptap.ts");
 				const { encodeStateAsUpdate } = await import("yjs");
-				const yjsDoc = files_yjs_doc_create_from_markdown({ markdown: content });
+				const yjsDoc = files_yjs_doc_create_from_text({
+					text: content,
+					rootKind: seedRootKind,
+				});
 				if ("_nay" in yjsDoc) {
 					throw new Error(`Seed yjs snapshot failed for ${spec.path}: ${yjsDoc._nay.message}`);
 				}
@@ -1765,8 +1775,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				workspaceId: scope.workspaceId,
 				fileNodeId: fileId,
 				lastSequence: 1,
+				unmaterializedUpdateCount: 0,
+				unmaterializedUpdateBytes: 0,
+				lineageGeneration: 0,
 			});
-			await ctx.db.patch("files_nodes", fileId, { assetId, yjsSnapshotId, yjsLastSequenceId });
+			await ctx.db.patch("files_nodes", fileId, {
+				assetId,
+				yjsSnapshotId,
+				yjsLastSequenceId,
+				yjsRootKind: seedRootKind,
+			});
 			if (spec.materialized === false) {
 				return;
 			}
@@ -1776,7 +1794,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				nodeId: fileId,
 				path: spec.path,
 				yjsSequence: 1,
-				contentType: spec.contentType ?? "text/markdown;charset=utf-8",
+				rootKind: seedRootKind,
 				textContent: content,
 			});
 			if (chunked._nay) {
@@ -1786,7 +1804,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				// Materialization anomaly: break the verbatim chunk tiling so chunk-backed readers
 				// bail out (usable: false) and the bounded R2 window fallback runs instead.
 				const chunks = await ctx.db
-					.query("files_markdown_chunks")
+					.query("files_text_chunks")
 					.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 						q
 							.eq("organizationId", scope.organizationId)
@@ -1798,17 +1816,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					.collect();
 				const second = chunks[1];
 				if (second) {
-					await ctx.db.patch("files_markdown_chunks", second._id, { startIndex: second.startIndex + 1 });
+					await ctx.db.patch("files_text_chunks", second._id, { startIndex: second.startIndex + 1 });
 				} else {
 					const first = chunks[0];
-					await ctx.db.insert("files_markdown_chunks", {
+					await ctx.db.insert("files_text_chunks", {
 						organizationId: scope.organizationId,
 						workspaceId: scope.workspaceId,
 						fileNodeId: fileId,
 						sourceKind: "committed",
 						yjsSequence: 1,
 						chunkIndex: (first?.chunkIndex ?? 0) + 1,
-						markdownChunk: "x",
+						textChunk: "x",
 						startIndex: (first?.endIndex ?? 0) + 7,
 						endIndex: (first?.endIndex ?? 0) + 8,
 						lineStart: first?.lineEnd ?? 1,
@@ -1980,6 +1998,52 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		}
 
+		/**
+		 * Seed one pending content proposal through the real agent flow: stage the text under a
+		 * server-side batch, then run the finishing internal action that carries only ids. The
+		 * target file must be seeded `withRealYjsSnapshot: true`, because the action reconstructs
+		 * the live base state from the stored snapshot.
+		 */
+		async function upsert_pending_update_for_test(
+			runner: Awaited<ReturnType<typeof create_bash_runner>>,
+			args: { nodeId: Id<"files_nodes">; unstagedText: string },
+		) {
+			const batch = await runner.t.mutation(
+				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+				{
+					organizationId: runner.seeded.organizationId,
+					workspaceId: runner.seeded.workspaceId,
+					userId: runner.seeded.userId,
+					nodeId: args.nodeId,
+				},
+			);
+			if (batch._nay) {
+				throw new Error(batch._nay.message);
+			}
+			const operationBatchId = batch._yay.operationBatchId;
+			const staged = await runner.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				userId: runner.seeded.userId,
+				operationBatchId,
+				role: "unstaged",
+				text: args.unstagedText,
+			});
+			if (staged._nay) {
+				throw new Error(staged._nay.message);
+			}
+			const upserted = await runner.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				userId: runner.seeded.userId,
+				nodeId: args.nodeId,
+				operationBatchId,
+			});
+			if (upserted._nay) {
+				throw new Error(upserted._nay.message);
+			}
+		}
+
 		test("runs pwd and persists cd across invocations", async () => {
 			const { run, getCwd } = await create_bash_runner();
 
@@ -2095,7 +2159,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			).toBe(true);
 			expect(
 				runAction.mock.calls.some(
-					([ref]) => function_name_of(ref) === "files_nodes_content:get_file_last_available_markdown_content_by_path",
+					([ref]) => function_name_of(ref) === "files_nodes_content:get_file_last_available_text_content_by_path",
 				),
 			).toBe(false);
 		});
@@ -2159,7 +2223,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).toContain(`${test_db_files_mount}/docs/unmaterialized.md`);
 			expect(
 				runAction.mock.calls.some(
-					([ref]) => function_name_of(ref) === "files_nodes_content:get_file_last_available_markdown_content_by_path",
+					([ref]) => function_name_of(ref) === "files_nodes_content:get_file_last_available_text_content_by_path",
 				),
 			).toBe(false);
 		});
@@ -2205,15 +2269,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("reads current app file byte size after an unsaved edit is created", async () => {
 			const runner = await create_bash_runner({
-				extraFiles: [{ path: "/fresh-size.md", content: "tiny base\n" }],
+				extraFiles: [{ path: "/fresh-size.md", content: "tiny base\n", withRealYjsSnapshot: true }],
 			});
-			const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
-			const { files_u8_to_array_buffer } = await import("./files.ts");
-			const { encodeStateAsUpdate } = await import("yjs");
-			const baseYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "tiny base" });
-			if ("_nay" in baseYjsDoc) {
-				throw new Error(baseYjsDoc._nay.message);
-			}
 			const dbFilesDoc = await get_seeded_node(runner, "/fresh-size.md");
 			const dbFilesDocId = dbFilesDoc._id;
 
@@ -2228,18 +2285,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 			expect(committedSize).toBeLessThan(bash_READ_INLINE_MAX_BYTES);
 
-			const upserted = await runner.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
-				organizationId: runner.seeded.organizationId,
-				workspaceId: runner.seeded.workspaceId,
-				userId: runner.seeded.userId,
+			await upsert_pending_update_for_test(runner, {
 				nodeId: dbFilesDocId,
-				baseYjsSequence: 1,
-				baseYjsUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
-				unstagedMarkdown: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
+				unstagedText: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
 			});
-			if (upserted._nay) {
-				throw new Error(upserted._nay.message);
-			}
 			const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
 				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
@@ -2264,33 +2313,23 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("uses pending update size metadata without reconstructing content", async () => {
 			const runner = await create_bash_runner({
-				extraFiles: [{ path: "/legacy-pending.md", content: "base\n" }],
+				extraFiles: [{ path: "/legacy-pending.md", content: "base\n", withRealYjsSnapshot: true }],
 			});
-			const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
-			const { files_u8_to_array_buffer } = await import("./files.ts");
-			const { encodeStateAsUpdate } = await import("yjs");
-			const baseYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "base" });
-			if ("_nay" in baseYjsDoc) {
-				throw new Error(baseYjsDoc._nay.message);
-			}
-			const yjsUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc));
 			const dbFilesDoc = await get_seeded_node(runner, "/legacy-pending.md");
 			const dbFilesDocId = dbFilesDoc._id;
-			const pendingSize = files_get_utf8_byte_size("base");
-			await runner.t.run(async (ctx) => {
-				await ctx.db.insert("files_pending_updates", {
-					organizationId: runner.seeded.organizationId,
-					workspaceId: runner.seeded.workspaceId,
-					userId: runner.seeded.userId,
-					fileNodeId: dbFilesDocId,
-					baseYjsSequence: 1,
-					baseYjsUpdate: yjsUpdate,
-					stagedBranchYjsUpdate: yjsUpdate,
-					unstagedBranchYjsUpdate: yjsUpdate,
-					size: pendingSize,
-					updatedAt: Date.now(),
-				});
+			await upsert_pending_update_for_test(runner, {
+				nodeId: dbFilesDocId,
+				unstagedText: "pending body\n",
 			});
+			const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				userId: runner.seeded.userId,
+				fileNodeId: dbFilesDocId,
+			});
+			if (pendingUpdate?.size == null) {
+				throw new Error("expected pending update size to be set for /legacy-pending.md");
+			}
 			runner.runQuery.mockClear();
 			runner.runAction.mockClear();
 
@@ -2300,11 +2339,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				dbFilesDoc,
 			});
 
-			expect(size).toBe(pendingSize);
+			expect(size).toBe(pendingUpdate.size);
 			expect(runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "r2:get_asset_by_id")).toBe(false);
 			expect(
 				runner.runAction.mock.calls.some(
-					([ref]) => function_name_of(ref) === "files_nodes_content:get_file_last_available_markdown_content_by_path",
+					([ref]) => function_name_of(ref) === "files_nodes_content:get_file_last_available_text_content_by_path",
 				),
 			).toBe(false);
 		});
@@ -3148,7 +3187,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.metadata.exitCode).toBe(1);
 			expect(result.stdout).toBe("");
 			expect(result.stderr).toContain("content type is 'application/pdf'");
-			expect(result.stderr).toContain("Markdown and plain text files only");
+			expect(result.stderr).toContain("Bash can read editable text files only");
 			expect(result.stderr).toContain(`${test_db_files_mount}/source.pdf.md`);
 			expect(result.stderr).toContain(`${test_db_files_mount}/source.md`);
 			expect(result.stderr).toContain(`${test_db_files_mount}/source.txt`);
@@ -4347,7 +4386,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			for (const unreadable of [unreadableHead, unreadableTail, unreadableWc]) {
 				expect(unreadable.metadata.exitCode).toBe(1);
 				expect(unreadable.stdout).toBe("");
-				expect(unreadable.stderr).toContain("Markdown and plain text files only");
+				expect(unreadable.stderr).toContain("Bash can read editable text files only");
 				expect(unreadable.stderr).toContain(`${test_db_files_mount}/source.pdf.md`);
 			}
 		});
@@ -4441,28 +4480,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("stat reports unsaved edit size before the committed asset size", async () => {
 			const runner = await create_bash_runner({
-				extraFiles: [{ path: "/draft-stat.md", content: "tiny base\n" }],
+				extraFiles: [{ path: "/draft-stat.md", content: "tiny base\n", withRealYjsSnapshot: true }],
 			});
-			const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
-			const { files_u8_to_array_buffer } = await import("./files.ts");
-			const { encodeStateAsUpdate } = await import("yjs");
-			const baseYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "tiny base" });
-			if ("_nay" in baseYjsDoc) {
-				throw new Error(baseYjsDoc._nay.message);
-			}
 			const draftNodeId = await get_seeded_node_id(runner, "/draft-stat.md");
-			const upserted = await runner.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
-				organizationId: runner.seeded.organizationId,
-				workspaceId: runner.seeded.workspaceId,
-				userId: runner.seeded.userId,
+			await upsert_pending_update_for_test(runner, {
 				nodeId: draftNodeId,
-				baseYjsSequence: 1,
-				baseYjsUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
-				unstagedMarkdown: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
+				unstagedText: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
 			});
-			if (upserted._nay) {
-				throw new Error(upserted._nay.message);
-			}
 			const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
 				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
@@ -4863,7 +4887,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.metadata.exitCode).toBe(1);
 			expect(result.stdout).toContain(`3 5 20 ${test_db_files_mount}/wc/a.md`);
 			expect(result.stdout).toContain("3 5 20 total");
-			expect(result.stderr).toContain("Markdown and plain text files only");
+			expect(result.stderr).toContain("Bash can read editable text files only");
 			expect(result.stderr).toContain(`${test_db_files_mount}/source.pdf.md`);
 			expect(result.stderr).toContain(`stat -c %s ${test_db_files_mount}/source.pdf`);
 		});
@@ -4935,28 +4959,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// the committed asset is tiny, but the current unsaved edit is large. The gate must
 			// fire on the edit size, otherwise a multi-MB draft would be pulled inline unguarded.
 			const runner = await create_bash_runner({
-				extraFiles: [{ path: "/draft.md", content: "tiny base\n" }],
+				extraFiles: [{ path: "/draft.md", content: "tiny base\n", withRealYjsSnapshot: true }],
 			});
-			const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
-			const { files_u8_to_array_buffer } = await import("./files.ts");
-			const { encodeStateAsUpdate } = await import("yjs");
-			const baseYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "tiny base" });
-			if ("_nay" in baseYjsDoc) {
-				throw new Error(baseYjsDoc._nay.message);
-			}
 			const draftNodeId = await get_seeded_node_id(runner, "/draft.md");
-			const upserted = await runner.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
-				organizationId: runner.seeded.organizationId,
-				workspaceId: runner.seeded.workspaceId,
-				userId: runner.seeded.userId,
+			await upsert_pending_update_for_test(runner, {
 				nodeId: draftNodeId,
-				baseYjsSequence: 1,
-				baseYjsUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
-				unstagedMarkdown: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
+				unstagedText: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
 			});
-			if (upserted._nay) {
-				throw new Error(upserted._nay.message);
-			}
 			const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
 				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
@@ -5026,7 +5035,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(tmpResult.metadata.exitCode).toBe(0);
 			expect(tmpResult.stdout).toBe("two\n");
 			expect(unreadableResult.metadata.exitCode).toBe(1);
-			expect(unreadableResult.stderr).toContain("Markdown and plain text files only");
+			expect(unreadableResult.stderr).toContain("Bash can read editable text files only");
 			expect(unreadableResult.stderr).toContain(`${test_db_files_mount}/source.pdf.md`);
 			expect(unreadableResult.stderr).not.toContain("No such file or directory");
 			for (const result of [zeroResult, negativeResult]) {
@@ -5331,7 +5340,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(outsideTmp.stderr).toContain("only supports /tmp destinations");
 			expect(outsideTmp.stderr).not.toContain("read-only for cp");
 			expect(unreadable.metadata.exitCode).not.toBe(0);
-			expect(unreadable.stderr).toContain("Markdown and plain text files only");
+			expect(unreadable.stderr).toContain("Bash can read editable text files only");
 			expect(unreadable.stderr).toContain(`${test_db_files_mount}/source.pdf.md`);
 		});
 
@@ -5374,9 +5383,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				size: 0,
 			});
 			expect(rows[0].baseYjsSequence).toBeUndefined();
-			expect(rows[0].baseYjsUpdate).toBeUndefined();
-			expect(rows[0].stagedBranchYjsUpdate).toBeUndefined();
-			expect(rows[0].unstagedBranchYjsUpdate).toBeUndefined();
+			expect(rows[0].baseStateId).toBeUndefined();
+			expect(rows[0].stagedStateId).toBeUndefined();
+			expect(rows[0].unstagedStateId).toBeUndefined();
 
 			// The proposer's later commands see the pending path overlay: the vacated path reads
 			// as gone and the claimed destination serves the moved file.
@@ -5545,7 +5554,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 			expect(targetRows[0].eagerCreated).toBeUndefined();
 			expect(targetRows[0].pendingMove).toBeUndefined();
-			expect(targetRows[0].unstagedBranchYjsUpdate).toBeDefined();
+			expect(targetRows[0].unstagedStateId).toBeDefined();
 			const sourceRows = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_pending_updates")
@@ -5615,7 +5624,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 			let swapped = false;
 			runner.runAction.mockImplementation(async (ref, actionArgs) => {
-				if (!swapped && function_name_of(ref) === "files_nodes_content:get_file_last_available_markdown_content_by_path") {
+				if (!swapped && function_name_of(ref) === "files_nodes_content:get_file_last_available_text_content_by_path") {
 					swapped = true;
 					await runner.t.run(async (ctx) => {
 						await ctx.db.patch("files_nodes", sourceId, {
@@ -5678,7 +5687,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("replaces an earlier move proposal and mixes with pending content", async () => {
-			const runner = await create_bash_runner();
+			const runner = await create_bash_runner({
+				// The content upsert below reconstructs the live base from the stored snapshot.
+				extraFiles: [{ path: "/docs/mixed.md", content: "mixed base\n", withRealYjsSnapshot: true }],
+			});
 			const sourceId = await get_seeded_node_id(runner, "/docs/tutorial.md");
 
 			const firstMove = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/first.md`);
@@ -5699,42 +5711,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(moveRows[0].pendingMove).toMatchObject({ destName: "second.md" });
 
 			// mv after a write_file-style content upsert degrades to one content-plus-move pending update doc.
-			const { files_yjs_doc_create_from_markdown } = await import("../shared/files-tiptap.ts");
-			const { files_u8_to_array_buffer } = await import("./files.ts");
-			const { encodeStateAsUpdate } = await import("yjs");
-			const baseYjsDoc = files_yjs_doc_create_from_markdown({
-				markdown: "# Readme\nunique-token here\nmore unique-token below",
+			const mixedId = await get_seeded_node_id(runner, "/docs/mixed.md");
+			await upsert_pending_update_for_test(runner, {
+				nodeId: mixedId,
+				unstagedText: "edited mixed content\n",
 			});
-			if ("_nay" in baseYjsDoc) {
-				throw new Error(baseYjsDoc._nay.message);
-			}
-			const readmeId = await get_seeded_node_id(runner, "/docs/readme.md");
-			const upserted = await runner.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
-				organizationId: runner.seeded.organizationId,
-				workspaceId: runner.seeded.workspaceId,
-				userId: runner.seeded.userId,
-				nodeId: readmeId,
-				baseYjsSequence: 1,
-				baseYjsUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
-				unstagedMarkdown: "edited readme content\n",
-			});
-			if (upserted._nay) {
-				throw new Error(upserted._nay.message);
-			}
 
 			const mixedMove = await runner.run(
-				`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/renamed-readme.md`,
+				`mv ${test_db_files_mount}/docs/mixed.md ${test_db_files_mount}/docs/renamed-mixed.md`,
 			);
 			expect(mixedMove.metadata.exitCode).toBe(0);
 			const mixedRows = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", readmeId))
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", mixedId))
 					.collect(),
 			);
 			expect(mixedRows).toHaveLength(1);
-			expect(mixedRows[0].pendingMove).toMatchObject({ destName: "renamed-readme.md" });
-			expect(mixedRows[0].unstagedBranchYjsUpdate).toBeDefined();
+			expect(mixedRows[0].pendingMove).toMatchObject({ destName: "renamed-mixed.md" });
+			expect(mixedRows[0].unstagedStateId).toBeDefined();
 			expect(mixedRows[0].size).toBeGreaterThan(0);
 		});
 
@@ -6524,7 +6519,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(written.metadata.exitCode).toBe(0);
 			expect(written.stderr).toBe("");
 			// The chained cat proves resetProposalCaches: the same bash call reads the proposal back.
-			expect(written.stdout).toBe("hello");
+			// A Markdown file's pending content is rendered Markdown text, which POSIX-terminates
+			// non-empty content with one newline; byte-exact storage is the plain-text files' contract.
+			expect(written.stdout).toBe("hello\n");
 
 			// The destination node exists eagerly; the content lives in a pending update doc.
 			const destNode = await get_seeded_node(runner, "/note.md");
@@ -6533,6 +6530,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(pendingRows[0]!.fileNodeId).toBe(destNode._id);
 			expect(pendingRows[0]!.eagerCreated).toBeDefined();
 			expect(pendingRows[0]!.threadIds).toEqual([runner.threadId]);
+			// The .md path keeps its rich text class on the eager-created node.
+			expect(destNode.yjsRootKind).toBe("rich_text");
 		});
 
 		test("redirect overwrite and append on an existing file stay pending proposals", async () => {
@@ -6545,15 +6544,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				`printf replaced > ${test_db_files_mount}/docs/existing.md && cat ${test_db_files_mount}/docs/existing.md`,
 			);
 			expect(overwritten.metadata.exitCode).toBe(0);
-			// Overwrite stores the bytes as written, like a real shell (printf adds no newline).
-			expect(overwritten.stdout).toBe("replaced");
+			// A Markdown file's pending content is rendered Markdown text, which POSIX-terminates
+			// non-empty content with one newline (plain-text files store bytes exactly).
+			expect(overwritten.stdout).toBe("replaced\n");
 
 			const appended = await runner.run(
 				`printf ' extra' >> ${test_db_files_mount}/docs/existing.md && cat ${test_db_files_mount}/docs/existing.md`,
 			);
 			expect(appended.metadata.exitCode).toBe(0);
-			// Append builds on the user's own pending content and stays byte-faithful.
-			expect(appended.stdout).toBe("replaced extra");
+			// Append builds on the user's own pending content, which already carries rich text's
+			// trailing newline, so the appended run starts on a new line.
+			expect(appended.stdout).toBe("replaced\n extra\n");
 
 			const existingNode = await get_seeded_node(runner, "/docs/existing.md");
 			const pendingRows = await list_pending_updates(runner);
@@ -6656,7 +6657,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				`printf replaced > '${test_db_files_mount}/docs/my note.md' && cat ${test_db_files_mount}/docs/my-note.md`,
 			);
 			expect(normalizedHit.metadata.exitCode).toBe(0);
-			expect(normalizedHit.stdout).toBe("replaced");
+			// Rendered Markdown text POSIX-terminates the pending content.
+			expect(normalizedHit.stdout).toBe("replaced\n");
 			const noteNode = await get_seeded_node(runner, "/docs/my-note.md");
 			const pendingRows = await list_pending_updates(runner);
 			expect(pendingRows).toHaveLength(1);
@@ -6674,13 +6676,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const readBack = await runner.run(`cat ${test_db_files_mount}/tee-note.md && cat /tmp/out.txt`);
 			expect(readBack.metadata.exitCode).toBe(0);
-			expect(readBack.stdout).toBe("hihi");
+			// The app file serves rendered Markdown text (POSIX newline); /tmp keeps the raw bytes.
+			expect(readBack.stdout).toBe("hi\nhi");
 
 			const appendTee = await runner.run(`printf ' more' | tee -a ${test_db_files_mount}/tee-note.md`);
 			expect(appendTee.metadata.exitCode).toBe(0);
 			expect(appendTee.stdout).toBe(" more");
 			const appendRead = await runner.run(`cat ${test_db_files_mount}/tee-note.md`);
-			expect(appendRead.stdout).toBe("hi more");
+			expect(appendRead.stdout).toBe("hi\n more\n");
 
 			// A folder target surfaces the real error instead of the builtin's generic message.
 			const folderTee = await runner.run(`printf hi | tee ${test_db_files_mount}/docs`);
@@ -6709,7 +6712,190 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const clustered = await runner.run(`printf ' more' | tee -aa ${test_db_files_mount}/tee-opt.md`);
 			expect(clustered.metadata.exitCode).toBe(0);
 			const readBack = await runner.run(`cat ${test_db_files_mount}/tee-opt.md`);
-			expect(readBack.stdout).toBe("hi more");
+			// The rendered Markdown text's trailing newline puts the appended run on its own line.
+			expect(readBack.stdout).toBe("hi\n more\n");
+		});
+
+		test("redirect into a .json file stores the bytes exactly", async () => {
+			const runner = await create_bash_runner();
+
+			const written = await runner.run(`printf '{"port": 9090}' > ${test_db_files_mount}/data.json`);
+			// The named break-on-purpose line: a re-added Markdown-only write gate refuses here.
+			expect(written.metadata.exitCode).toBe(0);
+			expect(written.stderr).toBe("");
+
+			// Read-back before byte equality: with the fix off, no file exists at this path.
+			const destNode = await get_seeded_node(runner, "/data.json");
+			expect(destNode.contentType).toBe("application/json");
+			expect(destNode.yjsRootKind).toBe("plain_text");
+			const pendingRows = await list_pending_updates(runner);
+			expect(pendingRows).toHaveLength(1);
+			expect(pendingRows[0]!.fileNodeId).toBe(destNode._id);
+
+			// Byte equality: plain text stores bytes exactly, with no added newline.
+			const readBack = await runner.run(`cat ${test_db_files_mount}/data.json`);
+			expect(readBack.metadata.exitCode).toBe(0);
+			expect(readBack.stdout).toBe('{"port": 9090}');
+		});
+
+		test("heredoc and append writes to plain text files stay byte-exact", async () => {
+			const runner = await create_bash_runner();
+
+			const heredoc = await runner.run(
+				[
+					`cat > ${test_db_files_mount}/config.yaml <<'EOF'`,
+					"service: files",
+					"ports:",
+					"  - 8080",
+					"EOF",
+					`cat ${test_db_files_mount}/config.yaml`,
+				].join("\n"),
+			);
+			expect(heredoc.metadata.exitCode).toBe(0);
+			expect(heredoc.stderr).toBe("");
+			expect(heredoc.stdout).toBe("service: files\nports:\n  - 8080\n");
+
+			// `>>` concatenates bytes, so no extra newline appears between the two writes.
+			const appended = await runner.run(
+				`printf 'a,b' > ${test_db_files_mount}/table.csv && printf ',c' >> ${test_db_files_mount}/table.csv && cat ${test_db_files_mount}/table.csv`,
+			);
+			expect(appended.metadata.exitCode).toBe(0);
+			expect(appended.stdout).toBe("a,b,c");
+
+			const yamlNode = await get_seeded_node(runner, "/config.yaml");
+			expect(yamlNode.contentType).toBe("application/yaml");
+			expect(yamlNode.yjsRootKind).toBe("plain_text");
+			const csvNode = await get_seeded_node(runner, "/table.csv");
+			expect(csvNode.contentType).toBe("text/csv");
+			expect(csvNode.yjsRootKind).toBe("plain_text");
+		});
+
+		test("an unwritable extension refuses with the classifier rule and an extensionless name keeps the .md hint", async () => {
+			const runner = await create_bash_runner();
+
+			const exe = await runner.run(`printf x > ${test_db_files_mount}/tool.exe`);
+			expect(exe.metadata.exitCode).not.toBe(0);
+			expect(exe.stderr).toContain("is not an editable text file");
+			expect(exe.stderr).toContain("'.exe' is not supported");
+			expect(exe.stderr).toContain("Writable extensions: .md, .txt");
+
+			// Extensionless targets keep today's behavior: normalized to .md, refused with the hint.
+			const extensionless = await runner.run(`printf x > ${test_db_files_mount}/data`);
+			expect(extensionless.metadata.exitCode).not.toBe(0);
+			expect(extensionless.stderr).toContain("app file names are normalized");
+			expect(extensionless.stderr).toContain(`${test_db_files_mount}/data.md`);
+
+			// Neither refusal reached the create action or left a pending row.
+			expect(
+				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path"),
+			).toBe(false);
+			expect(await list_pending_updates(runner)).toHaveLength(0);
+		});
+
+		test("cp between plain text subtypes proposes the copy and a cross-class cp refuses with the class message", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/data/config.json", content: '{"a": 1}\n' }],
+			});
+
+			// Same class, different subtype: allowed; the destination derives its own media type.
+			const subtypeCopy = await runner.run(
+				`cp ${test_db_files_mount}/data/config.json ${test_db_files_mount}/data/config.yaml && cat ${test_db_files_mount}/data/config.yaml`,
+			);
+			expect(subtypeCopy.metadata.exitCode).toBe(0);
+			expect(subtypeCopy.stderr).toBe("");
+			expect(subtypeCopy.stdout).toContain("pending copy created: /data/config.json -> /data/config.yaml");
+			expect(subtypeCopy.stdout).toContain('{"a": 1}');
+			const yamlNode = await get_seeded_node(runner, "/data/config.yaml");
+			expect(yamlNode.contentType).toBe("application/yaml");
+			expect(yamlNode.yjsRootKind).toBe("plain_text");
+
+			// Cross class: the commit gate refuses, cp surfaces the class message, and the eager
+			// destination node is removed again.
+			const crossClass = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/copy.json`,
+			);
+			expect(crossClass.metadata.exitCode).not.toBe(0);
+			expect(crossClass.stderr).toContain("File classes do not match");
+			expect(crossClass.stderr).toContain("nothing was created at '/data/copy.json'");
+			const orphan = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", runner.seeded.organizationId)
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("path", "/data/copy.json")
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+			);
+			expect(orphan).toBeNull();
+		});
+
+		test("mv renames a plain text file across subtypes and accepting patches the media type", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/data/notes.json", content: '{"note": true}\n' }],
+			});
+			const nodeId = await get_seeded_node_id(runner, "/data/notes.json");
+
+			const moved = await runner.run(`mv ${test_db_files_mount}/data/notes.json ${test_db_files_mount}/data/notes.yaml`);
+			expect(moved.metadata.exitCode).toBe(0);
+			expect(moved.stdout).toBe("pending move created: /data/notes.json -> /data/notes.yaml — review in Files\n");
+
+			const { api } = await import("../convex/_generated/api.js");
+			const asUser = runner.t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-bash-subtype-rename-accept",
+				external_id: runner.seeded.userId,
+				email: "bash-subtype-rename-accept@test.local",
+			});
+			const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+				membershipId: runner.seeded.membershipId,
+				nodeId,
+			});
+			expect(accepted._nay).toBeUndefined();
+
+			// The accept patches name, extension index, and classifier media type together.
+			const renamed = await runner.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+			expect(renamed?.name).toBe("notes.yaml");
+			expect(renamed?.path).toBe("/data/notes.yaml");
+			expect(renamed?.lowercaseExtension).toBe("yaml");
+			expect(renamed?.contentType).toBe("application/yaml");
+			expect(renamed?.yjsRootKind).toBe("plain_text");
+		});
+
+		test("cross-class renames, cross-class mv -f, and upload extension changes refuse", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/data/notes.json", content: '{"note": true}\n' },
+					{ path: "/docs/target.md", content: "target body\n", withRealYjsSnapshot: true },
+				],
+			});
+
+			// The proposal mutation checks a structural rename across content classes.
+			const plainToMd = await runner.run(`mv ${test_db_files_mount}/data/notes.json ${test_db_files_mount}/data/notes.md`);
+			expect(plainToMd.metadata.exitCode).not.toBe(0);
+			expect(plainToMd.stderr).toContain("plain text extension");
+
+			const mdToJson = await runner.run(`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/readme.json`);
+			expect(mdToJson.metadata.exitCode).not.toBe(0);
+			expect(mdToJson.stderr).toContain("must keep the .md extension");
+
+			// mv -f between editable files of different classes: the commit gate answers.
+			const crossReplace = await runner.run(
+				`mv -f ${test_db_files_mount}/data/notes.json ${test_db_files_mount}/docs/target.md`,
+			);
+			expect(crossReplace.metadata.exitCode).not.toBe(0);
+			expect(crossReplace.stderr).toContain("File classes do not match");
+
+			// A stored upload may change its basename, never its extension.
+			const extensionChange = await runner.run(`mv ${test_db_files_mount}/source.pdf ${test_db_files_mount}/video.mp4`);
+			expect(extensionChange.metadata.exitCode).not.toBe(0);
+			expect(extensionChange.stderr).toContain("keep '.pdf'");
+
+			const basenameChange = await runner.run(`mv ${test_db_files_mount}/source.pdf ${test_db_files_mount}/paper.pdf`);
+			expect(basenameChange.metadata.exitCode).toBe(0);
+			expect(basenameChange.stdout).toContain("pending move created: /source.pdf -> /paper.pdf");
 		});
 
 		test("an oversized redirect to a new path removes the eager-created node", async () => {
@@ -6765,7 +6951,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(rows).toHaveLength(1);
 			expect(rows[0].copiedFrom).toMatchObject({ nodeId: sourceId, path: "/docs/readme.md" });
 			expect(rows[0].eagerCreated).toBeDefined();
-			expect(rows[0].unstagedBranchYjsUpdate).toBeDefined();
+			expect(rows[0].unstagedStateId).toBeDefined();
 
 			// Readers overlay the agent's own pending content on the fresh destination node.
 			const overlayRead = await runner.run(`cat ${test_db_files_mount}/docs/readme-copy.md`);
@@ -6932,7 +7118,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(rows).toHaveLength(1);
 			expect(rows[0].pendingMove).toMatchObject({ destName: "guide.md" });
-			expect(rows[0].unstagedBranchYjsUpdate).toBeUndefined();
+			expect(rows[0].unstagedStateId).toBeUndefined();
 
 			// The vacated path still reads as missing; the claimed destination keeps the moved content.
 			const vacatedRead = await runner.run(`cat ${test_db_files_mount}/docs/tutorial.md`);
@@ -7464,7 +7650,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				`cp ${test_db_files_mount}/source.pdf ${test_db_files_mount}/source-copy.md`,
 			);
 			expect(unreadableSource.metadata.exitCode).not.toBe(0);
-			expect(unreadableSource.stderr).toContain("Markdown and plain text files only");
+			expect(unreadableSource.stderr).toContain("Bash can read editable text files only");
 
 			const rows = await runner.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 			expect(rows).toHaveLength(0);
@@ -7810,7 +7996,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(nestedMixed.stderr).toContain("read-only file system");
 			// Nested shells share the outer fs, so app redirects create pending proposals there too.
 			expect(nestedAppWrite.metadata.exitCode).toBe(0);
-			expect(nestedAppWrite.stdout).toBe("nested-app");
+			expect(nestedAppWrite.stdout).toBe("nested-app\n");
 			expect(xargsResult.metadata.exitCode).toBe(0);
 			expect(xargsResult.stdout).toContain("unique-token");
 			expect(xargsParallel.metadata.exitCode).toBe(2);

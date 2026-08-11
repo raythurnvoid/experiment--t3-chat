@@ -5,7 +5,8 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
-import { files_yjs_doc_get_markdown, files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
+import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
+import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { r2_create_asset_key } from "./r2_client.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -159,15 +160,18 @@ async function seed_markdown_file(args: {
 		}
 
 		const baseYjsDoc = new YDoc();
-		const baseYjsDocFromMarkdown = files_yjs_doc_update_from_markdown({
+		// A `.md` fixture builds a rich text document by definition.
+		const baseYjsDocFromMarkdown = files_yjs_doc_update_from_text({
 			mut_yjsDoc: baseYjsDoc,
-			markdown: args.committedMarkdown,
+			text: args.committedMarkdown,
+			rootKind: "rich_text",
 		});
 		if (baseYjsDocFromMarkdown._nay) {
 			throw new Error(baseYjsDocFromMarkdown._nay.message);
 		}
-		const baseMarkdownResult = files_yjs_doc_get_markdown({
+		const baseMarkdownResult = files_yjs_doc_get_text({
 			yjsDoc: baseYjsDoc,
+			rootKind: "rich_text",
 		});
 		if (baseMarkdownResult._nay) {
 			throw new Error(baseMarkdownResult._nay.message);
@@ -224,6 +228,7 @@ async function seed_markdown_file(args: {
 			kind: "file",
 			contentType: "text/markdown;charset=utf-8",
 			assetId: markdownAssetId,
+			yjsRootKind: "rich_text",
 			parentId,
 			createdBy: args.userId,
 			updatedBy: args.userId,
@@ -244,6 +249,9 @@ async function seed_markdown_file(args: {
 			workspaceId: args.workspaceId,
 			fileNodeId,
 			lastSequence: 0,
+			unmaterializedUpdateCount: 0,
+			unmaterializedUpdateBytes: 0,
+			lineageGeneration: 0,
 		});
 		await ctx.db.patch("files_nodes", fileNodeId, {
 			yjsSnapshotId,
@@ -253,25 +261,37 @@ async function seed_markdown_file(args: {
 	});
 
 	if (args.pendingMarkdown != null) {
-		const baseYjsDoc = new YDoc();
-		const baseYjsDocFromMarkdown = files_yjs_doc_update_from_markdown({
-			mut_yjsDoc: baseYjsDoc,
-			markdown: args.committedMarkdown,
-		});
-		if (baseYjsDocFromMarkdown._nay) {
-			throw new Error(baseYjsDocFromMarkdown._nay.message);
+		// Mirror the agent flow: stage the text under a server-side batch, then run the finishing
+		// action that carries only ids; the action reconstructs the base from the seeded snapshot.
+		const batch = await args.t.mutation(
+			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+			{
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				nodeId,
+			},
+		);
+		if (batch._nay) {
+			throw new Error(batch._nay.message);
 		}
-		const baseYjsUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc));
-		baseYjsDoc.destroy();
-
-		const pending = await args.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+		const staged = await args.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			operationBatchId: batch._yay.operationBatchId,
+			role: "unstaged",
+			text: args.pendingMarkdown,
+		});
+		if (staged._nay) {
+			throw new Error(staged._nay.message);
+		}
+		const pending = await args.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			nodeId,
-			baseYjsSequence: 0,
-			baseYjsUpdate,
-			unstagedMarkdown: args.pendingMarkdown,
+			operationBatchId: batch._yay.operationBatchId,
 		});
 		if (pending._nay) {
 			throw new Error(pending._nay.message);
@@ -535,6 +555,120 @@ describe("public files API", () => {
 		// Every published write consumed its stage; nothing is left for the cleanup cron.
 		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
 		expect(stages).toEqual([]);
+	});
+
+	test("POST /api/v1/files/write with CRLF content stores LF everywhere", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-lf" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-lf",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "LF writer",
+			scopes: ["files:read", "files:write", "files:download"],
+		});
+		expect(created._nay).toBeUndefined();
+		const credential = created._yay!.credential;
+
+		// One leading BOM plus CRLF and a lone CR: the request boundary normalizes all of them
+		// BEFORE the byte count and the fan-out, so the document, the R2 snapshot, the chunks and
+		// the stored size all agree on one LF string.
+		const crlfContent = "\uFEFF# Title\r\n\r\nline one\r\nline two\rline three\n";
+		const normalizedContent = "# Title\n\nline one\nline two\nline three\n";
+
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/lf/report.md", content: crlfContent }),
+		});
+		expect(written.status).toBe(200);
+		const writtenBody = (await written.json()) as { nodeId: string };
+
+		// Chunks (the read route serves committed chunks) agree on LF.
+		const readResponse = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/lf/report.md" }),
+		});
+		expect(readResponse.status).toBe(200);
+		expect(((await readResponse.json()) as { content: string }).content).toBe(normalizedContent);
+
+		// The R2 content snapshot holds the same LF bytes.
+		const download = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ fileNodeIds: [writtenBody.nodeId], expiresInSeconds: 60 }),
+		});
+		expect(download.status).toBe(200);
+		const downloadBody = (await download.json()) as { items: Array<{ url: string }> };
+		const downloaded = await fetch(downloadBody.items[0]!.url);
+		expect(await downloaded.text()).toBe(normalizedContent);
+
+		// The stored size is the normalized byte count.
+		const assetSize = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", writtenBody.nodeId as Id<"files_nodes">);
+			const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			return asset?.size;
+		});
+		expect(assetSize).toBe(files_get_utf8_byte_size(normalizedContent));
+
+		// The document holds the LF text. Re-sending the normalized string with skipIfUnchanged
+		// writes it into the reconstructed document, and only an already-LF document makes that
+		// write a no-op.
+		const unchanged = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/lf/report.md", content: normalizedContent, skipIfUnchanged: true }),
+		});
+		expect(unchanged.status).toBe(200);
+		expect((await unchanged.json()) as object).toMatchObject({ nodeId: writtenBody.nodeId, unchanged: true });
+	});
+
+	test("signed download URLs pin the name-derived type and serve non-media as attachments", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-attachment" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-attachment",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Attachment checker",
+			scopes: ["files:write", "files:download"],
+		});
+		expect(created._nay).toBeUndefined();
+		const credential = created._yay!.credential;
+
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/attach/report.md", content: "# Attachment check\n" }),
+		});
+		expect(written.status).toBe(200);
+		const writtenBody = (await written.json()) as { nodeId: string };
+
+		const getUrlSpy = vi.spyOn(R2.prototype, "getUrl");
+		getUrlSpy.mockClear();
+		const download = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ fileNodeIds: [writtenBody.nodeId], expiresInSeconds: 60 }),
+		});
+		expect(download.status).toBe(200);
+
+		// The pinned type and disposition are the whole defense because a presigned R2 GET carries no
+		// nosniff/CSP). Editable text derives its type from the NAME and never serves inline.
+		const signingCall = getUrlSpy.mock.calls.find(([, options]) => options?.responseContentType !== undefined);
+		expect(signingCall?.[1]).toMatchObject({
+			responseContentType: "text/markdown;charset=utf-8",
+			responseContentDisposition: "attachment; filename*=UTF-8''report.md",
+		});
 	});
 
 	test("skipIfUnchanged skips staging when the content did not change", async () => {
@@ -1015,6 +1149,25 @@ describe("public files API", () => {
 		});
 		expect(readEmpty.status).toBe(200);
 		expect(((await readEmpty.json()) as { content: string }).content).toBe("");
+
+		// Producer shape pair for the empty-document case: the node has a shape and the document
+		// has no root at all (an empty root is never encoded), and that pair is legal.
+		const touchedNodeId = touchedBody.files[0]!.nodeId as Id<"files_nodes">;
+		const touchedYjsSnapshotBytes = await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", touchedNodeId);
+			expect(fileNode?.yjsRootKind).toBe("rich_text");
+			if (!fileNode?.yjsSnapshotId) {
+				throw new Error("Expected the touched node to hold a Yjs snapshot pointer");
+			}
+			const yjsSnapshotDoc = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
+			const yjsSnapshotAsset = yjsSnapshotDoc ? await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId) : null;
+			return yjsSnapshotAsset?.r2Key ? r2Objects.get(yjsSnapshotAsset.r2Key) : undefined;
+		});
+		if (!(touchedYjsSnapshotBytes instanceof ArrayBuffer)) {
+			throw new Error("Expected the touched Yjs snapshot bytes to be captured as an ArrayBuffer");
+		}
+		const touchedSnapshotYjsDoc = files_yjs_doc_create_from_array_buffer_update(touchedYjsSnapshotBytes);
+		expect([...touchedSnapshotYjsDoc.share.keys()]).toEqual([]);
 
 		// A repeated touch is an idempotent no-op returning the same nodes.
 		const repeated = await t.fetch("/api/v1/files/touch", {
@@ -2004,7 +2157,7 @@ describe("files upload-urls", () => {
 		expect(finalized?.processingWorkId).toBeNull();
 		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
 			expect.anything(),
-			internal.r2.finalize_uploaded_markdown_file,
+			internal.r2.finalize_uploaded_text_file,
 			expect.anything(),
 		);
 	});
@@ -2045,9 +2198,94 @@ describe("files upload-urls", () => {
 		expect(eventResponse.status).toBe(204);
 		expect(enqueueActionSpy).toHaveBeenCalledWith(
 			expect.anything(),
-			internal.r2.finalize_uploaded_markdown_file,
+			internal.r2.finalize_uploaded_text_file,
 			expect.objectContaining({ assetId: asset!._id }),
 		);
+	});
+
+	// Objective 19(a): what makes /read work for a plain-text file is the upload conversion, so
+	// this test pins the pre-conversion 404 and the post-conversion content together.
+	test("an uploaded plain-text file becomes editable and /files/read returns its content", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_upload_urls_read" as never);
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-read" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "upload-urls-read",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Upload reader",
+			scopes: ["files:read", "files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		const credential = created._yay!.credential;
+
+		// The client media type is deliberately generic: the classifier over the name decides.
+		const content = "key: value\nother: 2\n";
+		const minted = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{
+						path: "/imports/notes.yaml",
+						contentType: "text/plain;charset=utf-8",
+						size: files_get_utf8_byte_size(content),
+					},
+				],
+			}),
+		});
+		expect(minted.status).toBe(200);
+		const mintedBody = (await minted.json()) as { files: Array<{ nodeId: string }> };
+		const asset = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", mintedBody.files[0]!.nodeId as Id<"files_nodes">);
+			return node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		});
+
+		// The pre-conversion pin: a stored upload is not readable, so /read answers 404.
+		const readBefore = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/imports/notes.yaml" }),
+		});
+		expect(readBefore.status).toBe(404);
+
+		r2Objects.set(
+			r2_create_asset_key({
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				assetId: asset!._id,
+			}),
+			content,
+		);
+		const eventResponse = await post_r2_event_for_asset({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: asset!._id,
+			bucket: asset!.r2Bucket,
+			size: files_get_utf8_byte_size(content),
+		});
+		expect(eventResponse.status).toBe(204);
+		// The Workpool enqueue is mocked, so run the conversion action directly.
+		await asUser.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: asset!._id,
+			eventId: "event_upload_urls_read",
+		});
+
+		// The conversion made the node editable, so /read now serves the committed content.
+		const readAfter = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/imports/notes.yaml" }),
+		});
+		expect(readAfter.status).toBe(200);
+		expect(((await readAfter.json()) as { content: string }).content).toBe(content);
 	});
 
 	test("refuses read-only keys and grant tokens", async () => {

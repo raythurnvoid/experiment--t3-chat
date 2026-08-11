@@ -1,7 +1,11 @@
 ---
 name: dev-data-reset
-description: Wipe the dev Convex deployment back to a from-scratch state (preserving Clerk-backed users and their auth/billing) and reseed the first-party plugins (gallery, image, video, pdf, video-player) by republishing and reinstalling them. Use when Ray asks to reset dev data, start from scratch, clean up the database, or erase data ahead of a schema change instead of writing compatibility or migration code.
+description: Perform a full wipe of the dev Convex deployment while preserving every Clerk-backed user and their auth/billing, then reseed the first-party plugins (gallery, image, video, pdf, video-player). Use when Ray explicitly chooses this full-reset behavior. For selective keep/delete users or mixed erase/migrate scopes, use convex-admin-ops and convex-migrations instead.
 ---
+
+# Scope Boundary
+
+Use this skill only for the full reset that preserves every Clerk-backed account. If the user chooses selected users to keep or delete, selected data to migrate, or a mixed erase/migrate scope, stop this workflow and use `convex-admin-ops` plus `convex-migrations`. Do not broaden a selective request into this reset.
 
 # Preserve Accounts And Shared Tenants
 

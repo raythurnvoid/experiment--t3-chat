@@ -253,11 +253,18 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.string(),
 		fileNodeId: v.id("files_nodes"),
-		/** Content proposal branches. The 4 Yjs fields are set together or not at all. */
+		/** Base sequence of the content proposal. Part of the canonical content group below. */
 		baseYjsSequence: v.optional(v.number()),
-		baseYjsUpdate: v.optional(v.bytes()),
-		stagedBranchYjsUpdate: v.optional(v.bytes()),
-		unstagedBranchYjsUpdate: v.optional(v.bytes()),
+		/**
+		 * Canonical paged content group, set together or not at all (and only together with
+		 * `baseYjsSequence`). Each id points at a sealed `files_pending_update_yjs_states` doc
+		 * whose pages hold that branch's full state. Optional at the table level (move-only
+		 * docs have no group); readers and writers require all five content fields together.
+		 */
+		baseLineageGeneration: v.optional(v.number()),
+		baseStateId: v.optional(v.id("files_pending_update_yjs_states")),
+		stagedStateId: v.optional(v.id("files_pending_update_yjs_states")),
+		unstagedStateId: v.optional(v.id("files_pending_update_yjs_states")),
 		/** Pending move/rename proposal. Ids are authoritative; `fromPath` is display/conflict metadata only. */
 		pendingMove: v.optional(
 			v.object({
@@ -360,6 +367,125 @@ const app_convex_schema = defineSchema({
 		scheduledFunctionId: v.id("_scheduled_functions"),
 		expectedUpdatedAt: v.number(),
 	}).index("by_pendingUpdate", ["pendingUpdateId"]),
+
+	/**
+	 * Metadata for one paged pending-update Yjs state (one role: base, staged, or unstaged).
+	 * The state bytes live in `files_pending_update_yjs_state_pages`; a full state can be larger
+	 * than one Convex value, so it never travels or stores as a single value. The owner union says
+	 * who is responsible for deleting the family: an active canonical state belongs to its pending
+	 * update doc, a temporary state to an operation batch (expiry-swept), and a retired state to a
+	 * durable cleanup task.
+	 */
+	files_pending_update_yjs_states: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.string(),
+		fileNodeId: v.id("files_nodes"),
+		owner: v.union(
+			v.object({
+				kind: v.literal("active"),
+				pendingUpdateId: v.id("files_pending_updates"),
+				role: v.union(v.literal("base"), v.literal("staged"), v.literal("unstaged")),
+			}),
+			v.object({
+				kind: v.literal("temporary"),
+				operationBatchId: v.id("files_pending_update_operation_batches"),
+				phase: v.union(v.literal("input"), v.literal("output")),
+				role: v.union(v.literal("base"), v.literal("staged"), v.literal("unstaged")),
+				expiresAt: v.number(),
+			}),
+			v.object({
+				kind: v.literal("retired"),
+				cleanupTaskId: v.id("files_pending_update_state_cleanup_tasks"),
+			}),
+		),
+		/** Lineage generation of the live document this state was built against. */
+		lineageGeneration: v.number(),
+		/** True once every page is written and the totals below describe the complete state. */
+		sealed: v.boolean(),
+		pageCount: v.number(),
+		totalBytes: v.number(),
+		/** Digest of the whole state bytes, so a reassembled state can be checked for torn pages. */
+		digest: v.string(),
+	})
+		.index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"])
+		.index("by_user", ["userId"])
+		.index("by_owner_pendingUpdate", ["owner.pendingUpdateId"])
+		.index("by_owner_operationBatch", ["owner.operationBatchId"])
+		.index("by_owner_cleanupTask", ["owner.cleanupTaskId"])
+		// Only the `temporary` owner variant has `expiresAt`, and Convex sorts docs without the
+		// field BEFORE every number on this index. A TTL sweep must bound the range from below
+		// (`q.gte("owner.expiresAt", 0)`), or it would also return every active and retired state.
+		.index("by_owner_expiresAt", ["owner.expiresAt"]),
+
+	/**
+	 * One bounded page of a paged pending-update Yjs state. Pages are non-empty, at most
+	 * `files_MAX_YJS_WIRE_BYTES`, and contiguous by `pageIndex` starting at 0.
+	 */
+	files_pending_update_yjs_state_pages: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		stateId: v.id("files_pending_update_yjs_states"),
+		pageIndex: v.number(),
+		bytes: v.bytes(),
+	})
+		.index("by_state_pageIndex", ["stateId", "pageIndex"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * Durable cleanup task for a retired pending-state family. The final commit of a rebase
+	 * re-owns the previous states to a task doc instead of deleting their pages inline, and a
+	 * bounded scheduled continuation drains the pages, states, and then the task itself.
+	 */
+	files_pending_update_state_cleanup_tasks: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		createdAt: v.number(),
+	}).index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * One in-flight pending-state operation (upsert or rebase) for one user and file. Input and
+	 * output states and text inputs hang off the batch. One active batch is allowed per
+	 * user/node; a new batch-create by the same user takes over a batch idle past two minutes,
+	 * and abandoned batches expire after 30 minutes so the sweeper deletes the family.
+	 */
+	files_pending_update_operation_batches: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.string(),
+		fileNodeId: v.id("files_nodes"),
+		expiresAt: v.number(),
+		updatedAt: v.number(),
+		/**
+		 * When the batch last staged or sealed something. A new batch-create by the same user
+		 * takes over a batch idle past the takeover window, so a crashed client does not lock
+		 * the user out for the full TTL.
+		 */
+		lastActivityAt: v.number(),
+	})
+		.index("by_organization_workspace_user_fileNode", ["organizationId", "workspaceId", "userId", "fileNodeId"])
+		.index("by_user", ["userId"])
+		.index("by_expiresAt", ["expiresAt"]),
+
+	/**
+	 * One staged text value (staged or unstaged content) for a pending-state operation batch, so
+	 * no registered call has to carry two large values at once. Consumed by the batch's commit;
+	 * expired leftovers are swept with the batch.
+	 */
+	files_pending_update_text_inputs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.string(),
+		fileNodeId: v.id("files_nodes"),
+		operationBatchId: v.id("files_pending_update_operation_batches"),
+		role: v.union(v.literal("staged"), v.literal("unstaged")),
+		text: v.string(),
+		expiresAt: v.number(),
+	})
+		.index("by_operationBatch", ["operationBatchId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_user", ["userId"])
+		.index("by_expiresAt", ["expiresAt"]),
 
 	/**
 	 * Indexed metadata docs for Markdown YAML frontmatter. Field docs support existence search
@@ -489,15 +615,49 @@ const app_convex_schema = defineSchema({
 		yjsLastSequenceId: v.optional(v.id("files_yjs_docs_last_sequences")),
 		/** ID of the last YJS sequence for the file */
 		yjsSnapshotId: v.optional(v.id("files_yjs_snapshots")),
+		/**
+		 * Shape of this file's Yjs document: `rich_text` is the ProseMirror document Markdown
+		 * files use, `plain_text` is a plain `Y.Text` document. Folders, stored blobs, and
+		 * read-only mounts have no Yjs document and leave this unset. Every editable node stores
+		 * this field beside its Yjs pointers.
+		 */
+		yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
 		assetId: v.optional(v.id("files_r2_assets")),
 		/**
-		 * Byte size of the last materialization that produced Markdown over
+		 * Byte size of the last materialization that produced text over
 		 * `files_MAX_TEXT_CONTENT_BYTES`. While set, the committed content stays at the last
 		 * sequence that fit. Search and downloads serve that older text. Bash reads still rebuild
 		 * the newest text from the Yjs log, so they and the committed readers disagree. Cleared by
 		 * the next materialization that fits.
 		 */
 		contentTooLargeByteSize: v.optional(v.number()),
+		/**
+		 * Timestamp of the last materialization that refused because the Yjs document's shape did
+		 * not match the node's `yjsRootKind`. While set, readers report a shape mismatch instead
+		 * of content and the Yjs writers refuse more updates. Cleared by the next materialization
+		 * that succeeds.
+		 */
+		contentShapeMismatchAt: v.optional(v.number()),
+		/**
+		 * Byte size of the last reconstructed Yjs state over
+		 * `files_MAX_YJS_RECONSTRUCTED_STATE_BYTES`. While set, materialization does not advance,
+		 * readers report the failure, and the Yjs writers refuse more updates until the operator
+		 * repair rebuilds the state. Cleared by the next materialization that succeeds.
+		 */
+		contentYjsStateTooLargeByteSize: v.optional(v.number()),
+		/**
+		 * Frontmatter field count of the last materialization that refused because the count was
+		 * over `files_metadata_MAX_FRONTMATTER_FIELDS`. While set, the committed content stays at
+		 * the last sequence that fit. Cleared when the user reduces the metadata and a later
+		 * materialization succeeds.
+		 */
+		contentFrontmatterTooLargeFieldCount: v.optional(v.number()),
+		/**
+		 * Frontmatter index-document count of the last materialization that refused because the
+		 * count was over `files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS`. Same lifecycle as
+		 * `contentFrontmatterTooLargeFieldCount`.
+		 */
+		contentFrontmatterTooLargeIndexDocumentCount: v.optional(v.number()),
 		/** Archive Operation UUID. Undefined means active */
 		archiveOperationId: v.optional(v.string()),
 		/** "root" for root items, otherwise parent folder `_id` */
@@ -584,7 +744,7 @@ const app_convex_schema = defineSchema({
 	/**
 	 * Per-FILE content stats (`wc`), kept off the file node so updating them does not invalidate the
 	 * file-tree / path-resolution queries that read the node. One row per file node; computed at
-	 * materialization from the full markdown (exact). Byte size is NOT duplicated here — it lives on
+	 * materialization from the full text (exact). Byte size is NOT duplicated here — it lives on
 	 * the content asset (`files_r2_assets.size`, per-version). Folders have no row.
 	 */
 	file_stats: defineTable({
@@ -595,7 +755,7 @@ const app_convex_schema = defineSchema({
 			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
 		),
 		fileNodeId: v.id("files_nodes"),
-		/** Newline count (`wc -l`). -1 means the content cannot be processed (non-markdown/binary). */
+		/** Newline count (`wc -l`). -1 means the content cannot be processed (stored blob/binary, not editable text). */
 		lineCount: v.number(),
 		/** Whitespace-delimited word count (`wc -w`). -1 means cannot be processed. */
 		wordCount: v.number(),
@@ -603,11 +763,8 @@ const app_convex_schema = defineSchema({
 		charCount: v.number(),
 	}).index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"]),
 
-	/**
-	 * Exact Markdown chunk docs for committed Yjs materializations and per-user pending updates.
-	 * Plain-text search docs point back here when callers need Markdown text, offsets, or line numbers.
-	 */
-	files_markdown_chunks: defineTable({
+	/** Exact text chunks for committed Yjs materializations and per-user pending updates. */
+	files_text_chunks: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 		workspaceId: v.union(
 			v.id("organizations_workspaces"),
@@ -624,11 +781,11 @@ const app_convex_schema = defineSchema({
 		/** Present only on committed docs; identifies which Yjs snapshot was materialized. */
 		yjsSequence: v.optional(v.number()),
 		chunkIndex: v.number(),
-		markdownChunk: v.string(),
-		/** Character offsets in the full Markdown content. */
+		textChunk: v.string(),
+		/** Character offsets in the full text content. */
 		startIndex: v.number(),
 		endIndex: v.number(),
-		/** 1-based Markdown line range covered by this chunk. */
+		/** 1-based text line range covered by this chunk. */
 		lineStart: v.number(),
 		lineEnd: v.number(),
 		chunkFlags: v.number(),
@@ -686,17 +843,17 @@ const app_convex_schema = defineSchema({
 		userId: v.optional(v.string()),
 		/** Present only on pending docs; used for pending overlay and cleanup. */
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
-		/** Present only on committed docs; mirrors the linked Markdown chunk's materialized snapshot. */
+		/** Present only on committed docs; mirrors the linked text chunk's materialized snapshot. */
 		yjsSequence: v.optional(v.number()),
-		/** Linked exact Markdown chunk for exact reads and integrity checks. */
-		markdownChunkId: v.id("files_markdown_chunks"),
+		/** Linked exact text chunk for exact reads and integrity checks. */
+		textChunkId: v.id("files_text_chunks"),
 		/** Denormalized from files_nodes.path so scoped search can filter before pagination. */
 		path: v.string(),
 		/** Denormalized from files_nodes.archiveOperationId so archived chunks stay out of search pages. */
 		archiveOperationId: v.optional(v.string()),
 		chunkIndex: v.number(),
 		plainTextChunk: v.string(),
-		markdownChunk: v.string(),
+		textChunk: v.string(),
 		startIndex: v.number(),
 		endIndex: v.number(),
 		lineStart: v.number(),
@@ -771,7 +928,38 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		fileNodeId: v.id("files_nodes"),
 		lastSequence: v.number(),
+		/** Count of not-yet-materialized `files_yjs_updates` docs for this file. */
+		unmaterializedUpdateCount: v.number(),
+		/**
+		 * Total `update` bytes of not-yet-materialized `files_yjs_updates` docs for this file.
+		 * Same lifecycle as `unmaterializedUpdateCount`.
+		 */
+		unmaterializedUpdateBytes: v.number(),
+		/**
+		 * Bumped by the operator Yjs repair when it replaces the document's history. Pending
+		 * proposals record the generation they were built against, so a repair makes them visibly
+		 * stale instead of merging onto a rebuilt document.
+		 */
+		lineageGeneration: v.number(),
 	}).index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"]),
+
+	/**
+	 * One server-built Yjs update staged ahead of its commit mutation (pending Accept, public
+	 * fill, snapshot restore), so the commit call carries only ids and one bounded text value.
+	 * Consumed on commit; abandoned stages expire after 30 minutes and the sweeper deletes them.
+	 */
+	files_yjs_trusted_update_stages: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		fileNodeId: v.id("files_nodes"),
+		kind: v.union(v.literal("pending_accept"), v.literal("public_fill"), v.literal("snapshot_restore")),
+		update: v.bytes(),
+		expiresAt: v.number(),
+	})
+		.index("by_organization_workspace_user_fileNode", ["organizationId", "workspaceId", "userId", "fileNodeId"])
+		.index("by_user", ["userId"])
+		.index("by_expiresAt", ["expiresAt"]),
 
 	files_content_materialization_jobs: defineTable({
 		organizationId: v.id("organizations"),

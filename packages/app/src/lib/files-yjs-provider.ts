@@ -17,6 +17,7 @@ import {
 } from "@/lib/app-convex-client.ts";
 import type { files_PresenceStore } from "@/lib/files.ts";
 import { files_u8_to_array_buffer, files_yjs_doc_is_diff_update_empty } from "../../shared/files.ts";
+import { files_yjs_COMPACTION_RETRY_MESSAGE } from "../../shared/files-yjs.ts";
 
 type StreamStateKey = "__root" | (string & {});
 
@@ -37,6 +38,7 @@ type FilesConvexYjsStream_Args = {
 	onOutgoingUpdateSent: () => void;
 	onSync: (currentStateUpdate: Uint8Array) => void;
 	onLoadFailedChange: (failed: boolean) => void;
+	onPushRefusedChange: (refused: boolean) => void;
 };
 
 class FilesConvexYjsStream {
@@ -53,6 +55,7 @@ class FilesConvexYjsStream {
 	private onOutgoingUpdateSent: FilesConvexYjsStream_Args["onOutgoingUpdateSent"];
 	private onSync: FilesConvexYjsStream_Args["onSync"];
 	private onLoadFailedChange: FilesConvexYjsStream_Args["onLoadFailedChange"];
+	private onPushRefusedChange: FilesConvexYjsStream_Args["onPushRefusedChange"];
 
 	private watcher: app_convex_Watch<
 		app_convex_FunctionReturnType<typeof app_convex_api.files_nodes.yjs_get_incremental_updates>
@@ -80,6 +83,7 @@ class FilesConvexYjsStream {
 		this.onOutgoingUpdateSent = args.onOutgoingUpdateSent;
 		this.onSync = args.onSync;
 		this.onLoadFailedChange = args.onLoadFailedChange;
+		this.onPushRefusedChange = args.onPushRefusedChange;
 
 		this.watcher = app_convex.watchQuery(app_convex_api.files_nodes.yjs_get_incremental_updates, {
 			membershipId: args.membershipId,
@@ -167,6 +171,7 @@ class FilesConvexYjsStream {
 
 					// Retry this same sealed Yjs batch until it persists. Later Yjs updates
 					// may depend on earlier structs, so newer edits must not overtake it.
+					let compactionRetryCount = 0;
 					while (!this.disposed) {
 						try {
 							const result = await app_convex.mutation(app_convex_api.files_nodes.yjs_push_update, {
@@ -182,10 +187,26 @@ class FilesConvexYjsStream {
 									await new Promise((resolve) => setTimeout(resolve, 5000));
 									continue;
 								}
+								// The compaction refusal is transient by contract: the server already
+								// enqueued the materialization that frees the budget before answering.
+								// Retry like the rate-limit branch instead of declaring the document
+								// broken and dropping the queued edits; a genuinely stuck file still
+								// reaches the banner below once the attempts run out.
+								if (result._nay.message === files_yjs_COMPACTION_RETRY_MESSAGE && compactionRetryCount < 5) {
+									compactionRetryCount += 1;
+									await new Promise((resolve) => setTimeout(resolve, 5000));
+									continue;
+								}
+								// The server refused this batch for good (permission, size, archived node...).
+								// Tell the UI instead of swallowing it: the user keeps typing into a document
+								// that silently stopped saving otherwise. The batch stays queued, so a later
+								// edit retries it and a success clears the flag.
+								this.onPushRefusedChange(true);
 								return;
 							}
 
 							this.pendingOutgoingUpdates.shift();
+							this.onPushRefusedChange(false);
 							break;
 						} catch (err) {
 							console.warn("[FilesConvexYjsStream] yjs_push_update errored", err);
@@ -398,6 +419,8 @@ type files_yjs_Provider_Events = {
 	status: (status: YjsSyncStatus) => void;
 	/** Fires with true when the initial document load keeps failing, and false once a load succeeds. */
 	loadFailed: (failed: boolean) => void;
+	/** Fires with true when the server refuses a push for a non-transient reason, and false once a push succeeds. */
+	pushRefused: (refused: boolean) => void;
 };
 
 export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> implements IYjsProvider {
@@ -414,6 +437,9 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 
 	/** True while the initial document load keeps failing; read it before the event fires. */
 	public loadFailed = false;
+
+	/** True while the server refuses pushes for a non-transient reason; read it before the event fires. */
+	public pushRefused = false;
 
 	private readonly syncStatusΣ: DerivedSignal<YjsSyncStatus>;
 
@@ -535,6 +561,11 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 				if (failed === this.loadFailed) return;
 				this.loadFailed = failed;
 				this.emit("loadFailed", [failed]);
+			},
+			onPushRefusedChange: (refused) => {
+				if (refused === this.pushRefused) return;
+				this.pushRefused = refused;
+				this.emit("pushRefused", [refused]);
 			},
 		});
 

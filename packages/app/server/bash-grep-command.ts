@@ -3,7 +3,7 @@ import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type {
 	files_nodes_get_by_path_Result,
-	files_nodes_match_markdown_file_lines_Result,
+	files_nodes_match_text_file_lines_Result,
 	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -308,7 +308,7 @@ function build_window_args(window: NonNullable<ReturnType<typeof parse_args>["_y
 
 function build_continuation(args: {
 	parsed: NonNullable<ReturnType<typeof parse_args>["_yay"]>;
-	result: NonNullable<files_nodes_match_markdown_file_lines_Result>;
+	result: NonNullable<files_nodes_match_text_file_lines_Result>;
 	inputPath: string;
 }) {
 	if (args.result.nextStartIndex != null) {
@@ -358,7 +358,7 @@ function build_command(args: {
 
 function build_truncation_stderr(args: {
 	parsed: NonNullable<ReturnType<typeof parse_args>["_yay"]>;
-	result: NonNullable<files_nodes_match_markdown_file_lines_Result>;
+	result: NonNullable<files_nodes_match_text_file_lines_Result>;
 	inputPath: string;
 	mode: "matches" | "count" | "list" | "normal";
 }) {
@@ -414,7 +414,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		}
 
 		// Single app-file grep path:
-		// - reads Markdown chunks for exactly one app file
+		// - reads text chunks for exactly one app file
 		// - treats the pattern as a regex by default
 		// - treats the pattern as a literal substring only when -F/--fixed-strings is set
 		// - supports the bounded grep-like flags handled by the parser above
@@ -475,7 +475,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					}
 				}
 
-				const result = (await ctx.runQuery(internal.files_nodes.match_markdown_file_lines, {
+				const result = (await ctx.runQuery(internal.files_nodes.match_text_file_lines, {
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
@@ -487,7 +487,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					before: parsed._yay.before,
 					after: parsed._yay.after,
 					window: parsed._yay.window,
-				})) as files_nodes_match_markdown_file_lines_Result;
+				})) as files_nodes_match_text_file_lines_Result;
 
 				if (!result) {
 					return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_FAILURE };
@@ -806,14 +806,14 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 								`grep -R over app folders uses indexed full-text search, not exact recursive regex grep.`,
 								`Found ${allItems.length} results under ${scopePath}${bash_search_command_exact_query_summary(
 									exactQueryFilter,
-									allItems.map((item) => item.markdownChunk ?? ""),
+									allItems.map((item) => item.textChunk ?? ""),
 								)}`,
 								"",
 								...allItems.map((item) => {
-									const markdownChunk = item.markdownChunk ?? "";
+									const textChunk = item.textChunk ?? "";
 									return [
-										`${pathResolution.renderShellPath(item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(exactQueryFilter, recursivePattern, markdownChunk)}`,
-										markdownChunk,
+										`${pathResolution.renderShellPath(item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(exactQueryFilter, recursivePattern, textChunk)}`,
+										textChunk,
 									].join("\n");
 								}),
 							]

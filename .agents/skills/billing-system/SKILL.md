@@ -182,7 +182,7 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 
 ### Upload-completed plugin work
 
-[r2.ts](../../../packages/app/convex/r2.ts) converts editable text uploads itself and dispatches non-Markdown upload work to enabled plugin `upload.completed` handlers through `plugins_runtime_db_enqueue_upload_completed_runs`.
+[r2.ts](../../../packages/app/convex/r2.ts) converts editable text uploads itself and dispatches `upload.completed` work to enabled plugin handlers through `plugins_runtime_db_enqueue_upload_completed_runs` for every upload that stays a stored blob — media, unknown types, and editable-text uploads whose conversion fell back. Only a successful conversion suppresses the event.
 
 - Core `r2.ts` does not own image descriptions, video transcription, OpenAI media calls, or core `ai_usage` events for those jobs.
 - Any billing rule for image or video processing belongs to the installed plugin and its host contract. Do not copy the removed core media Workpool assumptions back into `r2.ts`.

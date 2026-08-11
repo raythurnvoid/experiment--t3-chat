@@ -623,6 +623,8 @@ test("edit_file tool surfaces the upsert rejection when the file is archived aft
 
 	let runActionCallCount = 0;
 	const { ctx, runQuery, runAction } = makeCtx(async () => null, {
+		// The upsert flow stages through internal mutations first: batch create, then text input.
+		runMutationImpl: async () => ({ _yay: { operationBatchId: "batch456", expiresAt: Date.now() + 60_000 } }),
 		runActionImpl: async () => {
 			runActionCallCount += 1;
 			if (runActionCallCount === 1) {
@@ -659,10 +661,16 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	};
 
 	let runQueryCallCount = 0;
-	const { ctx, runAction } = makeCtx(async () => {
-		runQueryCallCount += 1;
-		return runQueryCallCount === 1 ? currentContent : { _id: pendingUpdateId };
-	});
+	const { ctx, runAction, runMutation } = makeCtx(
+		async () => {
+			runQueryCallCount += 1;
+			return runQueryCallCount === 1 ? currentContent : { _id: pendingUpdateId };
+		},
+		{
+			// The upsert flow stages through internal mutations: batch create, then text input.
+			runMutationImpl: async () => ({ _yay: { operationBatchId: "batch456", expiresAt: Date.now() + 60_000 } }),
+		},
+	);
 	const tool = ai_chat_tool_create_edit_file(
 		ctx,
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
@@ -694,6 +702,17 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		pendingUpdateId: undefined,
 		overlayUserId: server_ai_tools_test_user_id,
 	});
+	// The modified text is staged as the one bounded text input; the finishing action then
+	// carries only ids.
+	const [, stagedTextArgs] = runMutation.mock.calls[1]!;
+	expect(stagedTextArgs).toMatchObject({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		userId: server_ai_tools_test_user_id,
+		operationBatchId: "batch456",
+		role: "unstaged",
+		text: "Hello team",
+	});
 	const [, pendingArgs] = runAction.mock.calls[1]!;
 	expect(pendingArgs).toEqual({
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
@@ -701,7 +720,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		userId: server_ai_tools_test_user_id,
 		nodeId,
 		pendingUpdateId,
-		unstagedMarkdown: "Hello team",
+		operationBatchId: "batch456",
 		threadId: server_ai_tools_test_thread_id,
 	});
 
@@ -801,10 +820,16 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 	};
 
 	let runQueryCallCount = 0;
-	const { ctx, runAction } = makeCtx(async () => {
-		runQueryCallCount += 1;
-		return runQueryCallCount === 1 ? currentContent : { _id: pendingUpdateId };
-	});
+	const { ctx, runAction, runMutation } = makeCtx(
+		async () => {
+			runQueryCallCount += 1;
+			return runQueryCallCount === 1 ? currentContent : { _id: pendingUpdateId };
+		},
+		{
+			// The upsert flow stages through internal mutations: batch create, then text input.
+			runMutationImpl: async () => ({ _yay: { operationBatchId: "batch789", expiresAt: Date.now() + 60_000 } }),
+		},
+	);
 	const tool = ai_chat_tool_create_edit_file(
 		ctx,
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
@@ -836,18 +861,86 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 		overlayUserId: server_ai_tools_test_user_id,
 	});
 
-	const [, args] = runAction.mock.calls[1]!;
-	expect(args).toEqual({
-		organizationId: test_mocks_hardcoded.organization_id.organization_1,
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		userId: server_ai_tools_test_user_id,
-		nodeId,
-		pendingUpdateId,
-		unstagedMarkdown: "Hello team\n",
-		threadId: server_ai_tools_test_thread_id,
+	// The trailing-newline shape rides on the staged text input, not on the finishing action.
+	const [, stagedTextArgs] = runMutation.mock.calls[1]!;
+	expect(stagedTextArgs).toMatchObject({
+		role: "unstaged",
+		text: "Hello team\n",
 	});
 
 	expect(result.metadata.matcher).toBe("simple");
+});
+
+test("edit_file edits a plain text .json file and stages the exact text", async () => {
+	const nodeId = "p901";
+	const pendingUpdateId = "pending901";
+	const currentContent = {
+		nodeId,
+		displayNodeId: nodeId,
+		content: '{"port": 9090}',
+		pendingUpdateId,
+	};
+
+	let runQueryCallCount = 0;
+	const { ctx, runMutation } = makeCtx(
+		async () => {
+			runQueryCallCount += 1;
+			return runQueryCallCount === 1 ? currentContent : { _id: pendingUpdateId };
+		},
+		{
+			runMutationImpl: async () => ({ _yay: { operationBatchId: "batch901", expiresAt: Date.now() + 60_000 } }),
+		},
+	);
+	const tool = ai_chat_tool_create_edit_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
+	);
+	const result = await tool.execute?.(
+		{
+			path: "/data/config.json",
+			oldString: '"port": 9090',
+			newString: '"port": 8080',
+			replaceAll: false,
+		},
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	// The plain-text contract is byte-exact: the staged text is the edited JSON, with no rewrite and
+	// no appended newline (the baseline had none).
+	const [, stagedTextArgs] = runMutation.mock.calls[1]!;
+	expect(stagedTextArgs).toMatchObject({
+		role: "unstaged",
+		text: '{"port": 8080}',
+	});
+	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
+	expect(result.metadata.matches).toBe(1);
+});
+
+test("edit_file's cross-class refusal names the class, not the path", async () => {
+	const { ctx, runAction } = makeCtx(async () => null);
+	const tool = ai_chat_tool_create_edit_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
+	);
+
+	// A non-text extension must refuse with the classifier's rule, not with "File not found":
+	// the file exists, and a not-found answer sends the model into a wrong retry loop.
+	await expect(
+		tool.execute?.(
+			{ path: "/assets/photo.png", oldString: "a", newString: "b", replaceAll: false },
+			{ toolCallId: "test", messages: [] },
+		),
+	).rejects.toThrow(/is not an editable text file: '\.png' is not supported/);
+
+	// The refusal happens before any read, so the model's wrong path costs no backend call.
+	expect(runAction).not.toHaveBeenCalled();
 });
 
 test("web_search tool: Exa SDK uses fast search, highlights, and returns compact output", async () => {

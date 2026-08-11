@@ -1452,10 +1452,14 @@ describe("plugins Phase 0", () => {
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
+		// A `.txt` upload used to dispatch here; since the plain-text conversion it becomes an
+		// editable document instead. Use an extension the
+		// classifier does not recognize, so the upload stays a stored blob and the client-declared
+		// type keeps driving dispatch.
 		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
 			membershipId: membership.membershipId,
 			parentId: "root",
-			filename: "notes.txt",
+			filename: "notes.dat",
 			contentType: "text/plain",
 			size: 1024,
 		});
@@ -1465,7 +1469,7 @@ describe("plugins Phase 0", () => {
 
 		const processed = await t.mutation(internal.r2.process_uploaded_asset_event, {
 			assetId: upload._yay.assetId,
-			r2Key: "uploads/notes.txt",
+			r2Key: "uploads/notes.dat",
 			size: 1024,
 			eventId: "r2:notes",
 		});
@@ -7413,7 +7417,7 @@ describe("plugins run_installation_on_files", () => {
 			confirmUpload: false,
 		});
 
-		const markdown = await asOwner.action(api.files_nodes_content.create_markdown_node, {
+		const markdown = await asOwner.action(api.files_nodes_content.create_text_node, {
 			membershipId: membership.membershipId,
 			parentId: "root",
 			path: "/notes.md",
@@ -7430,7 +7434,7 @@ describe("plugins run_installation_on_files", () => {
 		}
 
 		expect(result._yay.runs).toEqual([
-			{ nodeId: markdown._yay.nodeId, runId: null, message: "Plugin runs are only supported for uploaded files" },
+			{ nodeId: markdown._yay.nodeId, runId: null, message: "Plugin backfill supports stored upload blobs only" },
 			{ nodeId: upload.nodeId, runId: null, message: "File upload is not ready" },
 		]);
 		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());

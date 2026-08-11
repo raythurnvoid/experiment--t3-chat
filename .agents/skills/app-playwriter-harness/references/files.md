@@ -57,6 +57,64 @@ Deterministic assets in `.agents/skills/app-playwriter-harness/assets/files/`:
 - `speakers.wav` — video-plugin QA (audio path, ~39s): two distinct TTS voices alternating scripted lines about the quarterly budget, a penguin research station, the marketing plan, and a solar bicycle.
 - `speakers.mp4` — video-plugin QA (video path, exercises the Modal audio extractor): the same `speakers.wav` audio muxed over a solid-color video track.
 
+Plain-text document QA fixtures (plain-text-docs §11.5). Upload them in the throwaway non-default org, not the user's workspace. Bytes are pinned — regenerate only with the recorded generator, never by hand:
+
+| Fixture | Purpose | Bytes | Lines | SHA-256 |
+| --- | --- | --- | --- | --- |
+| `qa-plain.json` | Pretty JSON becomes an editable plain-text document; token `BONOBO_QA_PLAIN_JSON_2026`. | 106 | 6 | `983e9aed87de77edbe28410e7351ac063799d69da26bbb1d83022ccc9da8ac89` |
+| `qa-plain.yaml` | Starts with `---` to prove plain-text YAML never enters frontmatter parsing; token `BONOBO_QA_PLAIN_YAML_2026`. | 88 | 7 | `197253fd06f6c2c9e26f30577acff0252c07d9edb3396ed12a55fa973b48909b` |
+| `qa-plain.csv` | CSV upload conversion; token `BONOBO_QA_PLAIN_CSV_2026`. | 65 | 3 | `37493e05d743d87b8a3a3a8c079f54849935423a3b7499da488f19a8f13a9791` |
+| `qa-plain.txt` | Plain `.txt` upload conversion; token `BONOBO_QA_PLAIN_TXT_2026`. | 118 | 3 | `1f437490ce737b637202e432afb01f544ac6361b4d3a3c9fc21727b9fc2d2961` |
+| `qa-plain-bom.csv` | UTF-8 BOM + CRLF bytes; the stored document must be LF text without the BOM; token `BONOBO_QA_PLAIN_BOM_CSV_2026`. | 54 | 2 | `d002e97a17daf90711b1aca0f9d092afd84e60c5772c8b590d4e148fc9956042` |
+| `qa-plain-minified.json` | One line, no trailing newline; token `BONOBO_QA_PLAIN_MINIFIED_JSON_2026`. | 85 | 1 | `dbb7640688394098fbce3383fffe56de03ecb71b83f190a03507275262829fd7` |
+| `qa-plain-invalid-utf8.txt` | Carries one lone `0xFF` byte, so the upload conversion's fatal UTF-8 decode fails: the node keeps the stored blob (no editable conversion), and the fallback settle still dispatches the plugin upload event. | 15 | 1 | `cb1715d56c0e816cbca6f4299a0a3edadc3fc9bf96e337fe49f0f4092d515dca` |
+| `qa-frontmatter-overcap.md` | Markdown with 129 frontmatter keys — one over `files_metadata_MAX_FRONTMATTER_FIELDS` (128); token `BONOBO_QA_FRONTMATTER_OVERCAP_2026`. | 2418 | 135 | `8cb33857771b68cee0dfce80ca73a28214ed3af89f134a0f24db429c28d4d599` |
+| `qa-frontmatter-values-overcap.md` | Markdown with one `tags` array of 600 unique values — over `files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS` (512); token `BONOBO_QA_FRONTMATTER_VALUES_OVERCAP_2026`. | 7295 | 607 | `c3cd45983e3432693a91a9b9270f1a70e8add08c2e6a39948436db3ad3c855aa` |
+
+Generator (records the exact bytes): `../t3-chat-+personal/+ai/plain-text-docs-2026-08-09/generate-qa-fixtures.mjs`.
+
+`qa-plain-invalid-utf8.txt` is not in that generator. Regenerate it with this one-liner from the repo root (a Buffer write, because a text editor would replace the invalid byte):
+
+```powershell
+vp env exec node -e "require('node:fs').writeFileSync('.agents/skills/app-playwriter-harness/assets/files/qa-plain-invalid-utf8.txt', Buffer.from([0x69,0x6e,0x76,0x61,0x6c,0x69,0x64,0x20,0xff,0x20,0x62,0x79,0x74,0x65,0x0a]))"
+```
+
+Do not commit an over-cap text fixture. When a flow needs one, generate it into the personal scratch folder and delete it after the run:
+
+```powershell
+vp env exec node -e "require('node:fs').writeFileSync('../t3-chat-+personal/+ai/<task-folder>/qa-plain-overcap.txt', 'over-cap filler BONOBO_QA_OVERCAP_2026\n'.repeat(140000))"
+```
+
+That is ~5.4 MB. Any text upload over `files_MAX_TEXT_CONTENT_BYTES` (900,000 bytes) keeps the stored blob: the conversion checks the declared asset size before its GET, so it settles without fetching the bucket bytes at all.
+
+The two frontmatter fixtures prove conversion, not refusal: an over-cap frontmatter `.md` still converts to an editable rich-text document — it commits WITHOUT the metadata index and with the `contentFrontmatterTooLarge*` marker pair set. `qa-frontmatter-overcap.md` trips the 128-field cap; `qa-frontmatter-values-overcap.md` trips the 512 index-document cap through one 600-value array. Uploading either requires the upload frontmatter preflight in `convex/r2.ts` (landed 2026-08-10) to be deployed. Without it the conversion throws in the infinite-retry workpool: the upload never publishes and every retry re-uploads both R2 objects. Check the deployment before uploading them.
+
+### Upload Conversion Proof By Bytes
+
+To prove an upload converted byte-exactly, hash the served content instead of reading editor panes (verified 2026-08-10 on `qa-plain.yaml`: hash match, leading `---` intact — which proves conversion, not frontmatter stripping):
+
+```js
+// Call 1 (page context): sign the download as the user, park the URL on state.
+state.dl = await state.page.evaluate(async (nodeId) => {
+	const m = await import("/src/lib/app-convex-client.ts");
+	const membership = await m.app_convex.query(m.app_convex_api.organizations.get_membership_by_organization_workspace_name, {
+		organizationName: "personal",
+		workspaceName: "home",
+	});
+	const r = await m.app_convex.action(m.app_convex_api.r2.create_signed_download_url, {
+		membershipId: membership._id,
+		fileNodeId: nodeId,
+	});
+	return r._yay ? r._yay.url : { err: r._nay.message };
+}, state.nodeId);
+
+// Call 2 (sandbox, so a page reload cannot kill it): fetch and hash.
+const buf = Buffer.from(await (await fetch(state.dl)).arrayBuffer());
+console.log(require("node:crypto").createHash("sha256").update(buf).digest("hex"));
+```
+
+Compare against the table's pinned SHA-256. Two caveats: the comparison holds only for fixtures already stored as LF without a BOM — `qa-plain-bom.csv` deliberately does not round-trip, because the stored document drops the BOM and stores LF. And since 2026-08-10 the signed GET serves editable text as an `attachment` with the name-derived type, so assert on bytes, never on the disposition or the URL string.
+
 ## Common Gotchas
 
 - Editor mode radios are small native inputs. If a radio locator times out, click the matching `#app_main_header_content label`.
@@ -96,6 +154,26 @@ Use this after changing the right sidebar, tabs, panel group, or chat layout.
 - Inside the temp folder, create a file and verify the basename selection for `new-file.md`.
 - Try duplicate deep paths: duplicate file should show `This file already exists.`, duplicate folder should show `This folder already exists.`.
 - Archive the temp folder when done.
+
+### Sidebar Create Then Rename By Id
+
+The sidebar `New file` button creates immediately at root with a generated `new-file*.md` name and no rename mode, so never locate the new row by a guessed name — harvest its id by diffing the `data-file-id` sets (verified 2026-08-10):
+
+```js
+// Call 1: snapshot ids, click New file.
+state.beforeIds = await state.page.evaluate(() => Array.from(document.querySelectorAll("[role=treeitem][data-file-id]")).map((t) => t.getAttribute("data-file-id")));
+await state.page.locator('.FilesSidebarTopSection-actions-icon-button[aria-label="New file"]').click();
+
+// Call 2 (poll): the fresh id is the one not in the snapshot.
+const created = await state.page.evaluate((prev) => {
+	const fresh = Array.from(document.querySelectorAll("[role=treeitem][data-file-id]")).find((t) => !prev.includes(t.getAttribute("data-file-id")));
+	return fresh ? { id: fresh.getAttribute("data-file-id"), label: fresh.getAttribute("aria-label") } : null;
+}, state.beforeIds);
+```
+
+Then rename by id: click `[role="treeitem"][data-file-id="<id>"] .FilesSidebarTreeItemPrimaryAction`, press `F2`, wait until `document.activeElement`'s `aria-label` starts with `Rename`, `fill` the focused input (`state.page.locator(":focus")`), press `Enter`.
+
+Do not press `F2` while the new file's editor is still mounting. The create-then-rename race crashed `FileEditorInner` (`NotFoundError: removeChild`, caught by the route error boundary) twice in ~12 editor mount transitions on 2026-08-10 — a filed app follow-up, not a harness bug. Wait for the editor surface first (`.FileEditorRichText-editor-content` or `.monaco-editor`); if the boundary appears, `Try again` recovers.
 
 ### Sidebar Selection Context
 
@@ -258,7 +336,7 @@ Selectors and a proven flow for the file-content search palette (verified 2026-0
 - Rows are `.FilesSearchPalette-item` (`role=option`); slots: `-item-name`, `-item-path`, `-item-snippet`, `-item-count` (only when a file has 2+ matching chunks). The state line `.FilesSearchPalette-state` shows `Type to search file contents` under 2 chars, a spinner while loading, and `No matches`.
 - Typing auto-highlights the first row (`[data-active-item]`); Enter or a row click navigates to `?nodeId=<id>` and closes. A row `click()` often times out on the post-click actionability check after it already landed — re-read the URL before retrying.
 - Results come from the public `files_nodes.search_content` query (args: `membershipId`, `query`), which searches committed `files_plain_text_chunks` plus the caller's own pending chunks and drops files the member cannot read. Grants apply reactively: adding a `set_node_share_grant` while the palette is open pushes the newly readable file into the visible results with no user action.
-- Fixture recipe: upload a small `.md` with a unique token through the sidebar's hidden file input — markdown uploads are chunked ~8s after upload. `.txt` uploads are stored but never chunked (not searchable, pre-existing pipeline gap), and `.ts` uploads get `contentType: video/mp2t` from the browser, so neither works as a search fixture.
+- Fixture recipe: upload a small file with a unique token through the sidebar's hidden file input. Since 2026-08-10 any of the 20 editable text extensions works, not just `.md`: uploads of `.md`, `.json`, `.yaml`, `.csv`, `.txt`, `.ts`, `.js`, `.css`, ... convert to editable documents, get plain-text chunks, and become searchable (~8s in dev). The classifier derives the stored type from the file NAME and beats the client MIME — `.ts` is TypeScript text now, never `video/mp2t`. The pinned fixtures in the table above are ready-made search fixtures; each carries a unique token.
 
 ### Rich Text Image And Video Embeds
 

@@ -325,17 +325,17 @@ type FileEditorSnapshotsModalPreviewModalDiffBlock_ClassNames =
 	| "FileEditorSnapshotsModalPreviewModalDiffBlock-unchanged";
 
 type FileEditorSnapshotsModalPreviewModalDiffBlockInner_Props = {
-	currentMarkdown: string;
-	snapshotMarkdown: string;
+	currentText: string;
+	snapshotText: string;
 };
 
 const FileEditorSnapshotsModalPreviewModalDiffBlockInner = memo(
 	function FileEditorSnapshotsModalPreviewModalDiffBlockInner(
 		props: FileEditorSnapshotsModalPreviewModalDiffBlockInner_Props,
 	) {
-		const { currentMarkdown, snapshotMarkdown } = props;
+		const { currentText, snapshotText } = props;
 
-		const diffParts = diffWordsWithSpace(currentMarkdown, snapshotMarkdown);
+		const diffParts = diffWordsWithSpace(currentText, snapshotText);
 
 		return (
 			<>
@@ -362,7 +362,7 @@ const FileEditorSnapshotsModalPreviewModalDiffBlockInner = memo(
 );
 
 type FileEditorSnapshotsModalPreviewModalDiffBlock_Props = {
-	currentMarkdown: string;
+	currentText: string;
 	selectedSnapshotContent: FileEditorSnapshotsModal_PreviewSnapshotContent | undefined;
 	showSkeletonWhenLoading: boolean;
 };
@@ -370,7 +370,7 @@ type FileEditorSnapshotsModalPreviewModalDiffBlock_Props = {
 const FileEditorSnapshotsModalPreviewModalDiffBlock = memo(function FileEditorSnapshotsModalPreviewModalDiffBlock(
 	props: FileEditorSnapshotsModalPreviewModalDiffBlock_Props,
 ) {
-	const { currentMarkdown, selectedSnapshotContent, showSkeletonWhenLoading } = props;
+	const { currentText, selectedSnapshotContent, showSkeletonWhenLoading } = props;
 
 	return (
 		<pre
@@ -384,8 +384,8 @@ const FileEditorSnapshotsModalPreviewModalDiffBlock = memo(function FileEditorSn
 				) : null
 			) : (
 				<FileEditorSnapshotsModalPreviewModalDiffBlockInner
-					currentMarkdown={currentMarkdown}
-					snapshotMarkdown={selectedSnapshotContent.content}
+					currentText={currentText}
+					snapshotText={selectedSnapshotContent.content}
 				/>
 			)}
 		</pre>
@@ -417,10 +417,10 @@ type FileEditorSnapshotsModalPreviewModal_Props = {
 	previousSnapshot: FileEditorSnapshotsModal_ListSnapshot | null;
 	selectedSnapshotId: app_convex_Id<"files_snapshots"> | null;
 	usersDict: FileEditorSnapshotsModal_UsersDict;
-	getCurrentMarkdown: () => string;
+	getCurrentText: () => string;
 	setOpen: Dispatch<SetStateAction<boolean>>;
 	onClickCancel: () => void;
-	onClickConfirm: (snapshotMarkdown: string) => void;
+	onClickConfirm: (snapshotText: string) => void;
 	onClickNext: () => void;
 	onClickPrevious: () => void;
 };
@@ -440,7 +440,7 @@ const FileEditorSnapshotsModalPreviewModal = memo(function FileEditorSnapshotsMo
 		previousSnapshot,
 		selectedSnapshotId,
 		usersDict,
-		getCurrentMarkdown,
+		getCurrentText,
 		setOpen,
 		onClickCancel,
 		onClickConfirm,
@@ -528,12 +528,12 @@ const FileEditorSnapshotsModalPreviewModal = memo(function FileEditorSnapshotsMo
 		};
 	}, [convex, membershipId, nodeId, open, selectedSnapshotId]);
 
-	const selectedSnapshotMarkdown = selectedSnapshotContent?.content ?? null;
-	const currentMarkdownForSnapshotDiff = selectedSnapshotContent === undefined ? "" : getCurrentMarkdown();
+	const selectedSnapshotText = selectedSnapshotContent?.content ?? null;
+	const currentTextForSnapshotDiff = selectedSnapshotContent === undefined ? "" : getCurrentText();
 
 	const handleClickConfirm = useFn(() => {
-		if (!editable || selectedSnapshotMarkdown == null) return;
-		onClickConfirm(selectedSnapshotMarkdown);
+		if (!editable || selectedSnapshotText == null) return;
+		onClickConfirm(selectedSnapshotText);
 	});
 
 	return (
@@ -652,7 +652,7 @@ const FileEditorSnapshotsModalPreviewModal = memo(function FileEditorSnapshotsMo
 								) : null}
 							</div>
 							<FileEditorSnapshotsModalPreviewModalDiffBlock
-								currentMarkdown={currentMarkdownForSnapshotDiff}
+								currentText={currentTextForSnapshotDiff}
 								selectedSnapshotContent={selectedSnapshotContent ?? undefined}
 								showSkeletonWhenLoading={
 									open &&
@@ -669,8 +669,8 @@ const FileEditorSnapshotsModalPreviewModal = memo(function FileEditorSnapshotsMo
 						Cancel
 					</MyButton>
 					<MyButton
-						disabled={!editable || selectedSnapshotMarkdown == null || isRestoring}
-						aria-busy={selectedSnapshotMarkdown == null || isRestoring}
+						disabled={!editable || selectedSnapshotText == null || isRestoring}
+						aria-busy={selectedSnapshotText == null || isRestoring}
 						onClick={handleClickConfirm}
 					>
 						Confirm
@@ -704,13 +704,13 @@ type FileEditorSnapshotsModalListModal_Props = {
 	showArchivedId: string;
 	snapshotsQueryResult: FileEditorSnapshotsModal_ListQueryResult | undefined;
 	usersDict: FileEditorSnapshotsModal_UsersDict;
-	getCurrentMarkdown: () => string;
+	getCurrentText: () => string;
 	setIsListOpen: Dispatch<SetStateAction<boolean>>;
 	setIsPreviewOpen: Dispatch<SetStateAction<boolean>>;
 	setShowArchived: Dispatch<SetStateAction<boolean>>;
 	onClickArchive: FileEditorSnapshotsModalList_Props["onClickArchive"];
 	onClickCancel: () => void;
-	onClickConfirm: (snapshotMarkdown: string) => void;
+	onClickConfirm: (snapshotText: string) => void;
 	onClickNextSnapshot: () => void;
 	onClickPreviousSnapshot: () => void;
 	onClickSnapshot: (snapshotId: app_convex_Id<"files_snapshots">) => void;
@@ -736,7 +736,7 @@ const FileEditorSnapshotsModalListModal = memo(function FileEditorSnapshotsModal
 		showArchivedId,
 		snapshotsQueryResult,
 		usersDict,
-		getCurrentMarkdown,
+		getCurrentText,
 		setIsListOpen,
 		setIsPreviewOpen,
 		setShowArchived,
@@ -786,7 +786,7 @@ const FileEditorSnapshotsModalListModal = memo(function FileEditorSnapshotsModal
 					previousSnapshot={previousSnapshot}
 					selectedSnapshotId={selectedSnapshotId}
 					usersDict={usersDict}
-					getCurrentMarkdown={getCurrentMarkdown}
+					getCurrentText={getCurrentText}
 					setOpen={setIsPreviewOpen}
 					onClickCancel={onClickCancel}
 					onClickConfirm={onClickConfirm}
@@ -804,12 +804,12 @@ export type FileEditorSnapshotsModal_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
 	editable: boolean;
-	getCurrentMarkdown: () => string;
-	onApplySnapshotMarkdown?: (markdown: string) => void;
+	getCurrentText: () => string;
+	onApplySnapshotText?: (text: string) => void;
 };
 
 export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(props: FileEditorSnapshotsModal_Props) {
-	const { nodeId, sessionId, editable, getCurrentMarkdown, onApplySnapshotMarkdown } = props;
+	const { nodeId, sessionId, editable, getCurrentText, onApplySnapshotText } = props;
 
 	const convex = useConvex();
 
@@ -882,7 +882,7 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 		setIsPreviewOpen(true);
 	});
 
-	const handleClickConfirm = useFn((selectedSnapshotMarkdown: string) => {
+	const handleClickConfirm = useFn((selectedSnapshotText: string) => {
 		// Permission can change while the preview is open, so guard the restore handler too.
 		if (!editable || !selectedSnapshotId) return;
 
@@ -902,7 +902,7 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 
 			console.debug("Snapshot restored:", selectedSnapshotId);
 
-			onApplySnapshotMarkdown?.(selectedSnapshotMarkdown);
+			onApplySnapshotText?.(selectedSnapshotText);
 
 			setIsPreviewOpen(false);
 			setIsListOpen(false);
@@ -1004,7 +1004,7 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 				showArchivedId={showArchivedId}
 				snapshotsQueryResult={snapshotsQueryResult ?? undefined}
 				usersDict={usersDict}
-				getCurrentMarkdown={getCurrentMarkdown}
+				getCurrentText={getCurrentText}
 				setIsListOpen={setIsListOpen}
 				setIsPreviewOpen={setIsPreviewOpen}
 				setShowArchived={setShowArchived}

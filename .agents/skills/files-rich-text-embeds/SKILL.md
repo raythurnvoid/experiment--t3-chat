@@ -35,6 +35,11 @@ that same shared set, and a node type missing from it is silently dropped from t
 markdown. The client registers the same node objects (`extensions.ts`), and the editor-only
 parts — node views, upload flow, insertion UI — layer on top as separate extensions.
 
+Shape caveat: this serialization story is true for `rich_text` documents only. A `plain_text`
+document (every editable text file that is not `.md`) has no ProseMirror tree and consults no
+extension set — its text projects byte-for-byte from the `Y.Text` root. Do not look for a
+plain-text path in the extension list; it does not exist. See `../files-editable-text/SKILL.md`.
+
 Node attributes: `src`, `alt` (image only), `title` (image only), and `uploadId` with
 `rendered: false`. `uploadId` marks this browser's in-flight upload; it never reaches the
 saved markdown, but it does persist in the Yjs doc until the flow clears it.

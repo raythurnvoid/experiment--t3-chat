@@ -108,6 +108,14 @@ Do not accept subagent output just because it is confident. Read its diff or fin
 
 Concretely: open the cited `file:line` before you act on a finding or repeat it to the user. Subagents misread code, read files while another agent is mid-edit, and sometimes produce whole reviews of code that does not exist, with plausible line numbers attached. When the file does not say what the report says, drop the finding and say you dropped it. Require every finding to carry a citation and a concrete path — which caller, which input, which entry point, in what order — because an uncited finding cannot be checked, and unchecked findings reach the user as fact. Ask each reviewer to state its confidence and what it did not check.
 
+Classify every accepted finding before it changes implementation scope:
+
+- **Current defect:** reproduce it on the unchanged system through a supported user entrypoint.
+- **Planned regression:** show that the proposed design or implementation would introduce it; do not describe it as a bug users have today.
+- **Unverified risk:** source reading, a synthetic state or a standalone probe shows a possible mechanism, but no supported current entrypoint reaches it yet.
+
+A source argument or synthetic probe can prove a mechanism without proving current reachability. Before adding work solely to fix a claimed current defect, reproduce it through the product's native interface with the repository's QA tool. Use normal user inputs and actions; do not seed an impossible database state, call a private function or inject a fabricated protocol packet to manufacture reachability. If the supported flow cannot reproduce it, keep it as an unverified risk or a separate hardening proposal and do not silently expand the current implementation. This gate does not remove safeguards needed by the new feature; describe those honestly as planned-feature requirements.
+
 Give writing subagents disjoint file ownership, or their own worktree. When they share a tree, one agent's half-finished experiment gets read by another as if it were the real code.
 
 Reviewers need the mirror-image protection: pin the diff before spawning review lanes (a commit, `git stash create`, or a worktree) and name that revision in each reviewer prompt. Otherwise they read files you are still editing, and their citations go stale before you can check them.
@@ -157,6 +165,8 @@ Before calling the pass done: would any of this look surprising to someone readi
 # Iterating To A Bar
 
 The workflow above runs once and ends at a checklist. That is right when the user gave a spec. When they gave a bar — "as good as Linear's", "AAA quality", "don't stop until" — one pass cannot decide whether you reached it, because the thing that decides is an attacker, not a checklist.
+
+Before starting an iterate-to-a-bar loop, tell the user that its round count is not fixed. After every loud round, give a short checkpoint: what materially changed, whether the architecture is still moving, what the next round will check, and that the user may stop with the current evidence-backed result. This is a progress update, not a request for permission to continue under an existing instruction. If the user asks to stop, stop the loop immediately and report which exit conditions remain unmet.
 
 In that case, wrap the implementation workflow in rounds. First convert the bar as in the planning workflow — falsifiable claims, plus a fixed reference for judgement residue when the blind-comparison protocol calls for one — even when the bar arrives with the implement message after planning finished in spec mode. Each round:
 

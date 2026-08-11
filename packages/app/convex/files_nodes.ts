@@ -40,17 +40,27 @@ import {
 	files_ROOT_ID,
 	files_IMPORT_MAX_ITEMS_PER_CALL,
 	files_MAX_UPLOADS_BYTES,
+	files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES,
+	files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT,
+	files_MAX_YJS_WIRE_BYTES,
 	files_UPLOAD_PATH_TAKEN_MESSAGE,
+	files_get_editable_text_content_type,
+	files_get_editable_text_yjs_root_kind,
+	files_get_signed_download_serving,
+	files_validate_file_rename_class,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
 	files_pending_update_content_of,
 	files_db_cancel_pending_update_cleanup_tasks,
+	files_db_delete_pending_update_yjs_states,
 	files_db_build_pending_path_overlay,
 	files_db_get_pending_update,
 	files_db_get_visible_node_by_path,
 	files_db_list_pending_updates_for_user,
 	files_pending_path_overlay_project_committed_path,
+	type files_YjsRootKind,
 } from "../server/files.ts";
+import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import {
@@ -1111,18 +1121,18 @@ export async function files_nodes_db_delete_subtree_batch(
 			continue;
 		}
 
-		const remainingMarkdownChunks = args.batchSize - deletedCount;
-		const markdownChunks = await ctx.db
-			.query("files_markdown_chunks")
+		const remainingTextChunks = args.batchSize - deletedCount;
+		const textChunks = await ctx.db
+			.query("files_text_chunks")
 			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
-			.take(remainingMarkdownChunks);
-		for (const chunk of markdownChunks) {
-			await ctx.db.delete("files_markdown_chunks", chunk._id);
+			.take(remainingTextChunks);
+		for (const chunk of textChunks) {
+			await ctx.db.delete("files_text_chunks", chunk._id);
 			deletedCount++;
 		}
-		if (markdownChunks.length > 0) {
+		if (textChunks.length > 0) {
 			continue;
 		}
 
@@ -1280,7 +1290,7 @@ export async function files_nodes_db_hard_delete_node(
 
 	const [
 		plainTextChunks,
-		markdownChunks,
+		textChunks,
 		fileStats,
 		metadataDocs,
 		yjsSnapshots,
@@ -1300,7 +1310,7 @@ export async function files_nodes_db_hard_delete_node(
 			)
 			.collect(),
 		ctx.db
-			.query("files_markdown_chunks")
+			.query("files_text_chunks")
 			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
@@ -1390,9 +1400,38 @@ export async function files_nodes_db_hard_delete_node(
 		),
 	);
 
+	// Delete every pending doc's canonical paged state family beside its other children.
+	await Promise.all(
+		pendingUpdates.map((pendingUpdate) =>
+			files_db_delete_pending_update_yjs_states(ctx, { pendingUpdateId: pendingUpdate._id }),
+		),
+	);
+
+	// Also drain every remaining node-scoped state family (temporary and retired owners included)
+	// — the by-node index reaches them cheaply. Operation batches, text inputs and trusted-update
+	// stages have no by-node index (their indexes lead with the user), so a hard delete leaves
+	// them to the 30-minute TTL sweep on purpose: they carry no committed content, expire on
+	// their own, and a new index only for this path is not worth its write cost.
+	const nodeScopedStates = await ctx.db
+		.query("files_pending_update_yjs_states")
+		.withIndex("by_organization_workspace_fileNode", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+		)
+		.collect();
+	await Promise.all(
+		nodeScopedStates.map(async (stateDoc) => {
+			const pages = await ctx.db
+				.query("files_pending_update_yjs_state_pages")
+				.withIndex("by_state_pageIndex", (q) => q.eq("stateId", stateDoc._id))
+				.collect();
+			await Promise.all(pages.map((page) => ctx.db.delete("files_pending_update_yjs_state_pages", page._id)));
+			await ctx.db.delete("files_pending_update_yjs_states", stateDoc._id);
+		}),
+	);
+
 	await Promise.all([
 		...plainTextChunks.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
-		...markdownChunks.map((chunk) => ctx.db.delete("files_markdown_chunks", chunk._id)),
+		...textChunks.map((chunk) => ctx.db.delete("files_text_chunks", chunk._id)),
 		...fileStats.map((stats) => ctx.db.delete("file_stats", stats._id)),
 		...metadataDocs.map((metadataDoc) => ctx.db.delete("files_metadata_docs", metadataDoc._id)),
 		...yjsSnapshots.map((yjsSnapshot) => ctx.db.delete("files_yjs_snapshots", yjsSnapshot._id)),
@@ -1764,6 +1803,12 @@ export const create_upload_node = mutation({
 			assetId,
 		});
 
+		// When the classifier recognizes the leaf name's extension, store its media type and
+		// ignore the client-declared one, which is unvalidated input. Unrecognized names (media,
+		// pdf, …) keep the client value: the classifier only knows text, and plugin routing and
+		// the details card need a type for media uploads too.
+		const storedContentType = files_get_editable_text_content_type(nameSegments.at(-1) ?? args.filename) ?? args.contentType;
+
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1771,7 +1816,7 @@ export const create_upload_node = mutation({
 			parentId: args.parentId,
 			path: args.filename,
 			kind: "file",
-			contentType: args.contentType,
+			contentType: storedContentType,
 			assetId,
 			now,
 		});
@@ -1780,7 +1825,7 @@ export const create_upload_node = mutation({
 		}
 
 		const signedUpload = await r2_generate_upload_url(assetR2Key);
-		const headers: Record<string, string> = args.contentType ? { "Content-Type": args.contentType } : {};
+		const headers: Record<string, string> = storedContentType ? { "Content-Type": storedContentType } : {};
 
 		return Result({
 			_yay: {
@@ -1951,10 +1996,11 @@ export const create_upload_nodes = mutation({
 				}
 			}
 
-			// Same leaf split as the single-file flow: Markdown names go through the Markdown
-			// normalizer (only `.md` is storable), everything else keeps its real extension.
+			// Use the same leaf split as the single-file flow. Route by extension, never by the
+			// client-declared type: Markdown names go through the Markdown normalizer (only `.md`
+			// is storable), everything else keeps its real extension.
 			const leafName = segments[segments.length - 1];
-			if (item.contentType?.startsWith("text/markdown")) {
+			if (files_get_editable_text_yjs_root_kind(leafName) === "rich_text") {
 				const normalizedLeaf = files_normalize_markdown_name(leafName);
 				if (normalizedLeaf._nay || normalizedLeaf._yay !== leafName) {
 					return Result({
@@ -1986,7 +2032,9 @@ export const create_upload_nodes = mutation({
 				relativePath: item.relativePath,
 				segments,
 				targetPath,
-				contentType: item.contentType,
+				// A recognized text extension stores the classifier's type; anything else
+				// keeps the client value (media uploads need it for plugin routing).
+				contentType: files_get_editable_text_content_type(leafName) ?? item.contentType,
 				size: item.size,
 			});
 		}
@@ -2541,6 +2589,13 @@ export async function files_nodes_db_validate_pending_move_target_for_proposal(
 	}
 	const { node, destParentPath, destPath } = resolved._yay;
 
+	// A move may rename, and a rename may never change the file's content class. The same
+	// rule runs again at accept because the stored destName outlives this validation.
+	const renameClass = files_validate_file_rename_class({ node, destName: args.destName });
+	if (renameClass._nay) {
+		return renameClass;
+	}
+
 	const overlay = await files_db_build_pending_path_overlay(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -2633,6 +2688,13 @@ export async function files_nodes_db_validate_pending_move_target_for_accept(
 	}
 	const { node, destParentPath, destPath } = resolved._yay;
 
+	// Check again at accept time: the stored destName or the node's class can have gone stale
+	// between proposal and accept, and applying a stale crossing would relabel the file's class.
+	const renameClass = files_validate_file_rename_class({ node, destName: args.destName });
+	if (renameClass._nay) {
+		return renameClass;
+	}
+
 	// Check whether an active sibling already owns the destination name.
 	const activeSiblingConflict = await ctx.db
 		.query("files_nodes")
@@ -2691,6 +2753,13 @@ async function db_apply_node_move(
 		now: number;
 	},
 ) {
+	// An allowed plain-text subtype rename (data.json → data.yaml) must change the stored
+	// media type together with the name, in the same patch. The class rule already refused every
+	// crossing, so a null answer here only means an extensionless swap name (keep the stored
+	// type) or a non-editable file (its extension and stored type never change).
+	const renamedContentType = files_node_has_editable_yjs_state(args.node)
+		? files_get_editable_text_content_type(args.destName)
+		: null;
 	await ctx.db.patch("files_nodes", args.node._id, {
 		parentId: args.destParentId,
 		name: args.destName,
@@ -2698,6 +2767,7 @@ async function db_apply_node_move(
 		treePath: derive_tree_path_for_file_node(args.destPath, args.node.kind),
 		pathDepth: files_path_depth(args.destPath),
 		lowercaseExtension: files_lowercase_extension(args.destPath, args.node.kind),
+		...(renamedContentType !== null ? { contentType: renamedContentType } : {}),
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});
@@ -3175,6 +3245,14 @@ export const rename_node = mutation({
 			targetParentPath = parentPath;
 		}
 
+		// A rename never converts file content, so the new leaf may not claim a different
+		// content class. An allowed plain-text subtype rename (data.json → data.yaml) patches the
+		// classifier media type together with the name below.
+		const renameClass = files_validate_file_rename_class({ node: fileNode, destName: leafName });
+		if (renameClass._nay) {
+			return renameClass;
+		}
+
 		const renamedPath = path_join(targetParentPath, leafName);
 		if (fileNode.archiveOperationId === undefined) {
 			// Check whether an active sibling already owns the target name.
@@ -3209,6 +3287,10 @@ export const rename_node = mutation({
 			treePath: derive_tree_path_for_file_node(renamedPath, fileNode.kind),
 			pathDepth: files_path_depth(renamedPath),
 			lowercaseExtension: files_lowercase_extension(renamedPath, fileNode.kind),
+			// An allowed plain-text subtype rename atomically moves the stored media type with the
+			// name; a null answer means "keep the stored type" (extensionless name or non-editable
+			// file).
+			...(renameClass._yay.contentType !== null ? { contentType: renameClass._yay.contentType } : {}),
 			updatedBy: userAuth.id,
 			updatedAt: now,
 		});
@@ -4643,6 +4725,39 @@ export async function db_get_file_content_materialization_db_state(
 	ctx: QueryCtx,
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
 ) {
+	const header = await db_get_file_content_materialization_header(ctx, args);
+	if (!header) {
+		return null;
+	}
+
+	const yjsUpdatesDocs = await ctx.db
+		.query("files_yjs_updates")
+		.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
+		)
+		.order("asc")
+		.collect();
+
+	return {
+		fileNode: header.fileNode,
+		yjsSnapshotDoc: header.yjsSnapshotDoc,
+		yjsLastSequenceDoc: header.yjsLastSequenceDoc,
+		yjsUpdatesDocs,
+		asset: header.asset,
+		yjsSnapshotAsset: header.yjsSnapshotAsset,
+	};
+}
+
+/**
+ * The header half of the materialization state: every doc except the update log. The
+ * materialization action reads the log one update doc at a time through
+ * `get_file_next_yjs_update` instead of collecting it, because one allowed doc may itself be
+ * 930,000 bytes.
+ */
+async function db_get_file_content_materialization_header(
+	ctx: QueryCtx,
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
+) {
 	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
 	if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
 		return null;
@@ -4652,17 +4767,10 @@ export async function db_get_file_content_materialization_db_state(
 		return null;
 	}
 
-	const [asset, yjsSnapshotDoc, yjsLastSequenceDoc, yjsUpdatesDocs] = await Promise.all([
+	const [asset, yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
 		ctx.db.get("files_r2_assets", fileNode.assetId),
 		ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
 		ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
-		ctx.db
-			.query("files_yjs_updates")
-			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-			)
-			.order("asc")
-			.collect(),
 	]);
 
 	// Do not check the asset kind here. node.assetId always holds the file's current bytes, but
@@ -4740,7 +4848,6 @@ export async function db_get_file_content_materialization_db_state(
 		fileNode,
 		yjsSnapshotDoc,
 		yjsLastSequenceDoc,
-		yjsUpdatesDocs,
 		asset,
 		yjsSnapshotAsset,
 	};
@@ -4767,6 +4874,104 @@ export type get_file_content_materialization_state_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+export const file_content_materialization_header_validator = v.object({
+	fileNode: doc(app_convex_schema, "files_nodes"),
+	yjsSnapshotDoc: doc(app_convex_schema, "files_yjs_snapshots"),
+	yjsLastSequenceDoc: doc(app_convex_schema, "files_yjs_docs_last_sequences"),
+	asset: doc(app_convex_schema, "files_r2_assets"),
+	yjsSnapshotAsset: doc(app_convex_schema, "files_r2_assets"),
+	/**
+	 * The frozen upper bound for this materialization run. Every later update-doc read is bounded
+	 * by this exact value, so a concurrent `S+1` push is ignored by the `S` job (the `S+1` job
+	 * covers it) instead of growing this run's work.
+	 */
+	throughSequence: v.number(),
+});
+
+export const get_file_content_materialization_header = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		targetSequence: v.number(),
+	},
+	returns: v.union(file_content_materialization_header_validator, v.null()),
+	handler: async (ctx, args) => {
+		const header = await db_get_file_content_materialization_header(ctx, args);
+		if (!header) {
+			return null;
+		}
+
+		return {
+			...header,
+			throughSequence: args.targetSequence,
+		};
+	},
+});
+
+export type get_file_content_materialization_header_Result =
+	typeof get_file_content_materialization_header extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Read exactly one update doc inside `(afterSequence, throughSequence]`. One doc is the only
+ * safe page size because one allowed doc may itself be 930,000 bytes. The caller passes the
+ * frozen `throughSequence` from the materialization header, so a concurrent `S+1` push never
+ * changes what this run reads. A gap or duplicate in the sequence order is refused instead of
+ * silently skipped: reconstruction from a broken log would commit wrong content.
+ */
+export const get_file_next_yjs_update = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		afterSequence: v.number(),
+		throughSequence: v.number(),
+	},
+	returns: v.union(
+		v.object({ kind: v.literal("row"), row: doc(app_convex_schema, "files_yjs_updates") }),
+		v.object({ kind: v.literal("done") }),
+		v.object({ kind: v.literal("gap"), expectedSequence: v.number(), foundSequence: v.number() }),
+	),
+	handler: async (ctx, args) => {
+		const rows = await ctx.db
+			.query("files_yjs_updates")
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("fileNodeId", args.nodeId)
+					.gt("sequence", args.afterSequence)
+					.lte("sequence", args.throughSequence),
+			)
+			.order("asc")
+			.take(2);
+
+		const row = rows[0];
+		if (!row) {
+			return { kind: "done" as const };
+		}
+		if (row.sequence !== args.afterSequence + 1) {
+			return { kind: "gap" as const, expectedSequence: args.afterSequence + 1, foundSequence: row.sequence };
+		}
+		if (rows[1] && rows[1].sequence === row.sequence) {
+			return { kind: "gap" as const, expectedSequence: row.sequence + 1, foundSequence: rows[1].sequence };
+		}
+
+		return { kind: "row" as const, row };
+	},
+});
+
+export type get_file_next_yjs_update_Result =
+	typeof get_file_next_yjs_update extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 // #region read file
 
 // Bounded reads. DEV-PHASE AGGRESSIVE CAPS: deliberately small so our tiny test files exercise the
@@ -4777,6 +4982,14 @@ export type get_file_content_materialization_state_Result =
 // Exported so the agent-facing bash tool description / system prompt can interpolate the true
 // per-read line cap instead of hardcoding a number that silently drifts when this value changes.
 export const files_READ_RANGE_MAX_LINES = 40;
+
+/**
+ * Size bound (UTF-16 code units) for one chunk-range scan. The line-based stop conditions bound
+ * ordinary files, but every piece of a mid-line-split long line carries the same line number, so
+ * a single huge line would otherwise be collected whole into one query result. A scan that trips
+ * this bound reports "not usable" and the caller falls back to its byte-window read.
+ */
+const files_READ_RANGE_MAX_SCAN_CHARS = 256_000;
 // A single very long line (legitimately minified content, or a deliberate attempt to bypass
 // line-based limits) is truncated for display at this many characters, with a marker, so one
 // line cannot dominate the bounded output. Generous enough not to clip normal prose lines.
@@ -4943,13 +5156,13 @@ async function db_resolve_committed_chunk_source(
  * with a hidden gap.
  */
 export function files_merge_contiguous_chunks(
-	chunks: Array<{ startIndex: number; endIndex: number; markdownChunk: string }>,
+	chunks: Array<{ startIndex: number; endIndex: number; textChunk: string }>,
 ): string | null {
 	let out = "";
 	let prevEnd: number | null = null;
 	for (const chunk of chunks) {
 		if (prevEnd !== null && chunk.startIndex !== prevEnd) return null;
-		out += chunk.markdownChunk;
+		out += chunk.textChunk;
 		prevEnd = chunk.endIndex;
 	}
 	return out;
@@ -4969,7 +5182,7 @@ async function files_read_forward_line_range_from_ordered_chunks(
 		endIndex: number;
 		lineStart: number;
 		lineEnd: number;
-		markdownChunk: string;
+		textChunk: string;
 	}>,
 	args: { startLine: number; maxLines: number },
 ) {
@@ -4981,10 +5194,11 @@ async function files_read_forward_line_range_from_ordered_chunks(
 		endIndex: number;
 		lineStart: number;
 		lineEnd: number;
-		markdownChunk: string;
+		textChunk: string;
 	}> = [];
 	let hasChunks = false;
 	let sawBeyond = false;
+	let overlappingLength = 0;
 
 	for await (const chunk of chunks) {
 		hasChunks = true;
@@ -5000,6 +5214,15 @@ async function files_read_forward_line_range_from_ordered_chunks(
 		if (chunk.lineStart > endLine) {
 			sawBeyond = true;
 			break;
+		}
+
+		// Bound the scan by size as well as by lines. Every piece of a mid-line-split long line
+		// reports that one line's number, so the line-based stop above can never fire inside it
+		// and `head -n 5 huge.json` would otherwise buffer every chunk of the file into one
+		// query. Give up instead; the caller falls back to its bounded byte-window read.
+		overlappingLength += chunk.textChunk.length;
+		if (overlappingLength > files_READ_RANGE_MAX_SCAN_CHARS) {
+			return null;
 		}
 		overlapping.push(chunk);
 	}
@@ -5055,10 +5278,11 @@ export const read_committed_file_chunks_line_range = internalQuery({
 			// tail: stream chunks from the end (descending) only until they cover maxLines distinct
 			// lines, then reorder ascending and slice the last maxLines. The trailing chunks are
 			// consecutive (so contiguous), and reading just enough of them avoids pulling the whole file.
-			const tailChunks: Array<Doc<"files_markdown_chunks">> = [];
+			const tailChunks: Array<Doc<"files_text_chunks">> = [];
 			let lastLineEnd: number | null = null;
+			let tailChunksLength = 0;
 			for await (const chunk of ctx.db
-				.query("files_markdown_chunks")
+				.query("files_text_chunks")
 				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
@@ -5068,6 +5292,13 @@ export const read_committed_file_chunks_line_range = internalQuery({
 				)
 				.order("desc")) {
 				if (lastLineEnd === null) lastLineEnd = chunk.lineEnd; // file's last line (first iterated, desc)
+				// Bound the walk by size as well as by lines: every piece of a mid-line-split long
+				// line shares one line number, so the distinct-line stop below can never fire inside
+				// it and `tail` on that file would otherwise buffer every chunk. Fall back instead.
+				tailChunksLength += chunk.textChunk.length;
+				if (tailChunksLength > files_READ_RANGE_MAX_SCAN_CHARS) {
+					return { usable: false as const };
+				}
 				tailChunks.push(chunk);
 				// Distinct lines covered so far = lastLine - earliestStart + 1 (contiguous chunks share at
 				// most a boundary line, so this counts distinct lines exactly, not a summed over-count).
@@ -5097,7 +5328,7 @@ export const read_committed_file_chunks_line_range = internalQuery({
 		// — we read only the chunks overlapping the range, never the whole file, regardless of depth.
 		const range = await files_read_forward_line_range_from_ordered_chunks(
 			ctx.db
-				.query("files_markdown_chunks")
+				.query("files_text_chunks")
 				.withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
@@ -5114,7 +5345,7 @@ export const read_committed_file_chunks_line_range = internalQuery({
 			// No chunk ends at/after startLine: either startLine is past EOF (a valid empty page on a
 			// materialized file) or the file is not materialized (fall back).
 			const anyChunk = await ctx.db
-				.query("files_markdown_chunks")
+				.query("files_text_chunks")
 				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
@@ -5145,7 +5376,7 @@ export type files_nodes_read_committed_file_chunks_line_range_Result =
  * Read app-file content directly from chunk tables.
  *
  * Pending update chunks win because they are the user's current view of the file.
- * When there is no pending update, the query reads committed Markdown chunks only if
+ * When there is no pending update, the query reads committed text chunks only if
  * the materialized snapshot is current. Returning null means chunks cannot serve this
  * request; callers decide whether to treat that as no content or use an action fallback.
  */
@@ -5259,7 +5490,7 @@ export const read_file_content_from_chunks = internalQuery({
 					// Pending chunks are already the markdown text the user sees. Full reads
 					// still honor maxBytes; line reads stream only the overlapping chunks.
 					const chunks = ctx.db
-						.query("files_markdown_chunks")
+						.query("files_text_chunks")
 						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id));
 
 					if (args.mode.kind === "full") {
@@ -5284,7 +5515,7 @@ export const read_file_content_from_chunks = internalQuery({
 					const startLine = Math.max(1, Math.trunc(args.mode.startLine));
 					const range = await files_read_forward_line_range_from_ordered_chunks(
 						ctx.db
-							.query("files_markdown_chunks")
+							.query("files_text_chunks")
 							.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
 								q.eq("pendingUpdateId", pendingUpdate._id).gte("lineEnd", startLine),
 							),
@@ -5343,7 +5574,7 @@ export const read_file_content_from_chunks = internalQuery({
 			if (byteSize > args.mode.maxBytes) return null;
 
 			const chunks = await ctx.db
-				.query("files_markdown_chunks")
+				.query("files_text_chunks")
 				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
@@ -5366,7 +5597,7 @@ export const read_file_content_from_chunks = internalQuery({
 		const startLine = Math.max(1, Math.trunc(args.mode.startLine));
 		const range = await files_read_forward_line_range_from_ordered_chunks(
 			ctx.db
-				.query("files_markdown_chunks")
+				.query("files_text_chunks")
 				.withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
@@ -5381,7 +5612,7 @@ export const read_file_content_from_chunks = internalQuery({
 		if (range == null) return null;
 		if (!range.hasChunks) {
 			const anyChunk = await ctx.db
-				.query("files_markdown_chunks")
+				.query("files_text_chunks")
 				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
@@ -5468,20 +5699,20 @@ type MatchChunksListTruncatedReason =
 	| "slice_window_ended";
 
 /**
- * Scan ordered Markdown chunks as one logical file.
+ * Scan ordered text chunks as one logical file.
  *
  * This owns the hard part that both grep modes share: stitching ordered chunks,
  * preserving source line numbers, adding context, and stopping at the scan caps.
  * Callers choose either fixed-string substring matching or regex matching.
  */
-async function match_markdown_chunks_list(
+async function match_text_chunks_list(
 	chunks: AsyncIterable<{
 		chunkIndex: number;
 		lineStart?: number;
 		lineEnd?: number;
 		startIndex?: number;
 		endIndex?: number;
-		markdownChunk?: string;
+		textChunk?: string;
 	}>,
 	args: {
 		fileNodeId: Id<"files_nodes">;
@@ -5654,7 +5885,7 @@ async function match_markdown_chunks_list(
 		}
 		previousChunkIndex = chunk.chunkIndex;
 
-		let text = chunk.markdownChunk;
+		let text = chunk.textChunk;
 		if (text == null) {
 			return null;
 		}
@@ -5912,12 +6143,12 @@ async function* db_plain_text_chunks_with_lines(chunks: AsyncIterable<Doc<"files
 }
 
 /**
- * Match lines in Markdown chunks for the Bash `grep` command's single-file path.
+ * Match lines in text chunks for the Bash `grep` command's single-file path.
  *
  * Normal grep uses regex matching over the Markdown representation. `grep -F`
  * uses fixed-string matching through the same chunk scan.
  */
-export const match_markdown_file_lines = internalQuery({
+export const match_text_file_lines = internalQuery({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
@@ -6060,23 +6291,23 @@ export const match_markdown_file_lines = internalQuery({
 			const chunks =
 				window?.kind === "lines"
 					? ctx.db
-							.query("files_markdown_chunks")
+							.query("files_text_chunks")
 							.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
 								q.eq("pendingUpdateId", pendingUpdateId).gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
 							)
 					: window?.kind === "slice"
 						? ctx.db
-								.query("files_markdown_chunks")
+								.query("files_text_chunks")
 								.withIndex("by_pendingUpdate_endIndex_chunkIndex", (q) =>
 									q
 										.eq("pendingUpdateId", pendingUpdateId)
 										.gte("endIndex", Math.max(0, Math.trunc(window.startIndex)) + 1),
 								)
 						: ctx.db
-								.query("files_markdown_chunks")
+								.query("files_text_chunks")
 								.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdateId));
 
-			return await match_markdown_chunks_list(chunks, {
+			return await match_text_chunks_list(chunks, {
 				fileNodeId: fileNode._id,
 				pattern: args.pattern,
 				invert: args.invert,
@@ -6109,7 +6340,7 @@ export const match_markdown_file_lines = internalQuery({
 		const chunks =
 			window?.kind === "lines"
 				? ctx.db
-						.query("files_markdown_chunks")
+						.query("files_text_chunks")
 						.withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
 							q
 								.eq("organizationId", args.organizationId)
@@ -6120,7 +6351,7 @@ export const match_markdown_file_lines = internalQuery({
 						)
 				: window?.kind === "slice"
 					? ctx.db
-							.query("files_markdown_chunks")
+							.query("files_text_chunks")
 							.withIndex("by_organization_workspace_source_fileNode_endIndex_chunk", (q) =>
 								q
 									.eq("organizationId", args.organizationId)
@@ -6130,7 +6361,7 @@ export const match_markdown_file_lines = internalQuery({
 									.gte("endIndex", Math.max(0, Math.trunc(window.startIndex)) + 1),
 							)
 					: ctx.db
-							.query("files_markdown_chunks")
+							.query("files_text_chunks")
 							.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 								q
 									.eq("organizationId", args.organizationId)
@@ -6139,7 +6370,7 @@ export const match_markdown_file_lines = internalQuery({
 									.eq("fileNodeId", fileNode._id),
 							);
 
-		return await match_markdown_chunks_list(chunks, {
+		return await match_text_chunks_list(chunks, {
 			fileNodeId: fileNode._id,
 			pattern: args.pattern,
 			invert: args.invert,
@@ -6151,8 +6382,8 @@ export const match_markdown_file_lines = internalQuery({
 	},
 });
 
-export type files_nodes_match_markdown_file_lines_Result =
-	typeof match_markdown_file_lines extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+export type files_nodes_match_text_file_lines_Result =
+	typeof match_text_file_lines extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -6464,7 +6695,7 @@ export const text_search_files = internalQuery({
 			v.object({
 				nodeId: v.id("files_nodes"),
 				path: v.string(),
-				markdownChunk: v.string(),
+				textChunk: v.string(),
 				chunkIndex: v.number(),
 				startIndex: v.number(),
 				endIndex: v.number(),
@@ -6485,7 +6716,7 @@ export const text_search_files = internalQuery({
 		items: Array<{
 			nodeId: Id<"files_nodes">;
 			path: string;
-			markdownChunk: string;
+			textChunk: string;
 			chunkIndex: number;
 			startIndex: number;
 			endIndex: number;
@@ -6555,7 +6786,7 @@ export const text_search_files = internalQuery({
 			.map((searchChunk) => ({
 				nodeId: searchChunk.fileNodeId,
 				path: searchChunk.path,
-				markdownChunk: searchChunk.markdownChunk,
+				textChunk: searchChunk.textChunk,
 				chunkIndex: searchChunk.chunkIndex,
 				startIndex: searchChunk.startIndex,
 				endIndex: searchChunk.endIndex,
@@ -6593,7 +6824,7 @@ export const search_content = query({
 			v.object({
 				nodeId: v.id("files_nodes"),
 				path: v.string(),
-				markdownChunk: v.string(),
+				textChunk: v.string(),
 				lineStart: v.number(),
 				matchCount: v.number(),
 			}),
@@ -6634,7 +6865,7 @@ export const search_content = query({
 		// until enough distinct files are collected; the budget keeps one call bounded.
 		const resultsByNodeId = new Map<
 			Id<"files_nodes">,
-			{ nodeId: Id<"files_nodes">; path: string; markdownChunk: string; lineStart: number; matchCount: number }
+			{ nodeId: Id<"files_nodes">; path: string; textChunk: string; lineStart: number; matchCount: number }
 		>();
 		let cursor: string | null = null;
 		for (let pageIndex = 0; pageIndex < 3; pageIndex++) {
@@ -6658,7 +6889,7 @@ export const search_content = query({
 					resultsByNodeId.set(item.nodeId, {
 						nodeId: item.nodeId,
 						path: item.path,
-						markdownChunk: item.markdownChunk,
+						textChunk: item.textChunk,
 						lineStart: item.lineStart,
 						matchCount: 1,
 					});
@@ -6859,6 +7090,12 @@ export const get_data_for_create_file_snapshot_content_url = internalQuery({
 			asset: doc(app_convex_schema, "files_r2_assets"),
 			snapshotId: v.id("files_snapshots"),
 			_creationTime: v.number(),
+			/**
+			 * The AUTHORIZED node's name, for the signing rule. The signer must derive the served
+			 * type and disposition from this server-resolved value, never from a caller-supplied
+			 * name.
+			 */
+			fileName: v.string(),
 		}),
 		v.null(),
 	),
@@ -6881,12 +7118,20 @@ export const get_data_for_create_file_snapshot_content_url = internalQuery({
 			return null;
 		}
 
-		return await db_get_file_snapshot_content(ctx, {
+		const snapshotContent = await db_get_file_snapshot_content(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			nodeId: args.nodeId,
 			snapshotId: args.snapshotId,
 		});
+		if (!snapshotContent) {
+			return null;
+		}
+
+		return {
+			...snapshotContent,
+			fileName: authorized._yay.fileNode.name,
+		};
 	},
 });
 
@@ -6939,11 +7184,18 @@ export const create_file_snapshot_content_url = action({
 			throw should_never_happen(errorMessage, errorData);
 		}
 
+		// Version snapshots historically carry the client-declared upload type, and a presigned R2
+		// GET has no nosniff/CSP — the pinned type plus the disposition below is the whole
+		// defense. Derive both from the authorized node name the query returned, never from a
+		// caller-supplied name.
+		const serving = files_get_signed_download_serving(data.fileName);
 		return {
 			url: await r2_get_download_url({
 				key: data.asset.r2Key,
 				options: {
 					expiresIn: 15 * 60,
+					responseContentType: serving.responseContentType,
+					responseContentDisposition: serving.responseContentDisposition,
 				},
 			}),
 			snapshotId: data.snapshotId,
@@ -7111,6 +7363,10 @@ export const yjs_prepare_doc_last_snapshot = action({
 		v.object({
 			snapshot: doc(app_convex_schema, "files_yjs_snapshots"),
 			snapshotUrl: v.string(),
+			// The resolved shape, not the optional schema field: stored absence is legal (absent
+			// means rich_text), response absence is not — the client has no node doc to resolve
+			// the default from.
+			yjsRootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 		}),
 		v.null(),
 	),
@@ -7147,14 +7403,58 @@ export const yjs_prepare_doc_last_snapshot = action({
 					expiresIn: 15 * 60,
 				},
 			}),
+			yjsRootKind: data.fileNode.yjsRootKind,
 		};
 	},
 });
 
-export async function yjs_increment_or_create_last_sequence(
+/**
+ * Refusal message returned while a durable shape/state marker is set on the node. All three
+ * update writers refuse new edits until the operator repair clears the marker.
+ */
+export const files_yjs_NODE_NEEDS_REPAIR_MESSAGE = "File is not accepting new edits until an operator repairs it";
+
+/**
+ * The shared reserve-and-increment gate for the three `files_yjs_updates` writers (door 1,
+ * snapshot restore, public fill). Every sequence increment inserts exactly one update doc, so
+ * this helper also maintains the aggregate unmaterialized counters (absent means 0).
+ *
+ * Refusals happen BEFORE the sequence increment, so a refused write leaves no bumped
+ * `lastSequence` without an update doc:
+ * - empty or over-`files_MAX_YJS_WIRE_BYTES` docs are rejected (the trusted writers skip door
+ *   1's content scan, but every stored doc must stay under the Convex value cap);
+ * - while a durable shape/state marker is set on the node, all writers refuse until repair;
+ * - when the aggregate byte/count budget would be crossed, schedule immediate materialization
+ *   and return a visible retry message without a sequence or update write.
+ */
+export async function yjs_reserve_and_increment_last_sequence(
 	ctx: MutationCtx,
-	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+		userId: Id<"users">;
+		/** Byte size of the `files_yjs_updates.update` value the caller inserts at the new sequence. */
+		updateByteLength: number;
+	},
 ) {
+	if (args.updateByteLength === 0) {
+		return Result({ _nay: { message: "Empty update" } });
+	}
+	if (args.updateByteLength > files_MAX_YJS_WIRE_BYTES) {
+		return Result({ _nay: { message: "Update too large" } });
+	}
+
+	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	if (!fileNode) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	// A durable refusal marker means materialization already refused this file's state and an
+	// operator repair is the only exit; accepting more updates would only grow the broken log.
+	if (fileNode.contentShapeMismatchAt !== undefined || fileNode.contentYjsStateTooLargeByteSize !== undefined) {
+		return Result({ _nay: { message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
+	}
+
 	let lastSequenceData = await ctx.db
 		.query("files_yjs_docs_last_sequences")
 		.withIndex("by_organization_workspace_fileNode", (q) =>
@@ -7163,23 +7463,61 @@ export async function yjs_increment_or_create_last_sequence(
 		.order("desc")
 		.first();
 
+	// Enforce the aggregate budget before the increment. On a would-cross, materialize what is
+	// already stored right away and ask the caller to retry: nothing is written here, so the
+	// refusal cannot leave a bumped sequence behind.
+	if (lastSequenceData) {
+		const nextCount = lastSequenceData.unmaterializedUpdateCount + 1;
+		const nextBytes = lastSequenceData.unmaterializedUpdateBytes + args.updateByteLength;
+		if (nextCount > files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT || nextBytes > files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES) {
+			// A settle marker (too-large text or over-cap frontmatter) means materialization
+			// completes without advancing the committed content, so the counters can never
+			// shrink and "retry in a moment" would be permanently false. The repair path is the
+			// only exit in that state, so return the repair message instead of enqueueing a
+			// materialization that would settle again without freeing budget.
+			if (
+				fileNode.contentTooLargeByteSize !== undefined ||
+				fileNode.contentFrontmatterTooLargeFieldCount !== undefined ||
+				fileNode.contentFrontmatterTooLargeIndexDocumentCount !== undefined
+			) {
+				return Result({ _nay: { message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
+			}
+			await enqueue_file_content_materialization(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: args.nodeId,
+				userId: args.userId,
+				targetSequence: lastSequenceData.lastSequence,
+				delayMs: 0,
+			});
+			return Result({ _nay: { message: files_yjs_COMPACTION_RETRY_MESSAGE } });
+		}
+	}
+
 	const newSequence = lastSequenceData ? lastSequenceData.lastSequence + 1 : 0;
 
 	// Update or create lastSequence tracking
 	if (lastSequenceData) {
-		await ctx.db.patch("files_yjs_docs_last_sequences", lastSequenceData._id, { lastSequence: newSequence });
-		lastSequenceData.lastSequence = newSequence;
+		await ctx.db.patch("files_yjs_docs_last_sequences", lastSequenceData._id, {
+			lastSequence: newSequence,
+			unmaterializedUpdateCount: lastSequenceData.unmaterializedUpdateCount + 1,
+			unmaterializedUpdateBytes: lastSequenceData.unmaterializedUpdateBytes + args.updateByteLength,
+		});
+		lastSequenceData = (await ctx.db.get("files_yjs_docs_last_sequences", lastSequenceData._id))!;
 	} else {
 		const lastSequenceDataId = await ctx.db.insert("files_yjs_docs_last_sequences", {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			fileNodeId: args.nodeId,
 			lastSequence: 0,
+			unmaterializedUpdateCount: 1,
+			unmaterializedUpdateBytes: args.updateByteLength,
+			lineageGeneration: 0,
 		});
 		lastSequenceData = (await ctx.db.get("files_yjs_docs_last_sequences", lastSequenceDataId))!;
 	}
 
-	return lastSequenceData;
+	return Result({ _yay: lastSequenceData });
 }
 
 export async function files_db_yjs_push_update(
@@ -7192,6 +7530,11 @@ export async function files_db_yjs_push_update(
 		sessionId: string;
 		userId: Id<"users">;
 		/**
+		 * The shape stored on the node (`yjsRootKind`). Both callers already hold the node; this
+		 * function does not load it, so the scan below needs the value here.
+		 */
+		rootKind: files_YjsRootKind;
+		/**
 		 * True for one-shot commits (save/accept) so committed chunks refresh right away
 		 * and readers do not see stale content. False for live editor keystreams:
 		 * materialization keeps the 30s debounce (each push reschedules the job).
@@ -7199,13 +7542,45 @@ export async function files_db_yjs_push_update(
 		materializeImmediately: boolean;
 	},
 ) {
+	// Door 1: the byte checks and the content scan are the FIRST statements — above every write.
+	// `yjs_reserve_and_increment_last_sequence` writes, and a returning Convex mutation commits,
+	// so a scan placed between the increment and the insert would commit a bumped `lastSequence`
+	// with no `files_yjs_updates` doc on every refusal. The raw byte checks also run before the
+	// first decode so an oversized payload is never decoded.
+	// Zero bytes are not a legal wire no-op: merging a stored zero-byte update into the next
+	// snapshot throws forever. The canonical two-byte v1 no-op remains legal.
+	if (args.update.byteLength === 0) {
+		return Result({ _nay: { message: "Empty update" } });
+	}
+	if (args.update.byteLength > files_MAX_YJS_WIRE_BYTES) {
+		return Result({ _nay: { message: "Update too large" } });
+	}
+	const scan = files_yjs_scan_client_update({ update: new Uint8Array(args.update), rootKind: args.rootKind });
+	if (scan._nay) {
+		// Log with the node id here: the shared scan has no id to log. Keep the content kinds
+		// only — the update's bytes were refused, so nothing else is safe to log.
+		console.warn("Refused client Yjs update", {
+			nodeId: args.nodeId,
+			rootKind: args.rootKind,
+			message: scan._nay.message,
+			cause: scan._nay.cause,
+		});
+		return scan;
+	}
+
 	const now = Date.now();
 
-	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+	const reserved = await yjs_reserve_and_increment_last_sequence(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		nodeId: args.nodeId,
+		userId: args.userId,
+		updateByteLength: args.update.byteLength,
 	});
+	if (reserved._nay) {
+		return reserved;
+	}
+	const newSequenceData = reserved._yay;
 
 	await ctx.db.insert("files_yjs_updates", {
 		organizationId: args.organizationId,
@@ -7342,10 +7717,21 @@ export const yjs_push_update = mutation({
 			update: args.update,
 			sessionId: args.sessionId,
 			userId: user._id,
+			rootKind: fileNode.yjsRootKind,
 			// Live editor keystream: keep the materialization debounce.
 			materializeImmediately: false,
 		});
 		if (pushResult._nay) {
+			// Log the cause and return a message-only `_nay`; a `cause` field would fail the
+			// `v_result` returns validator this Result crosses.
+			if (pushResult._nay.cause !== undefined) {
+				console.warn("Client Yjs update push refused", {
+					nodeId: args.nodeId,
+					message: pushResult._nay.message,
+					cause: pushResult._nay.cause,
+				});
+				return Result({ _nay: { message: pushResult._nay.message } });
+			}
 			return pushResult;
 		}
 
@@ -7614,7 +8000,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			endIndex: number;
 			lineStart: number;
 			lineEnd: number;
-			markdownChunk: string;
+			textChunk: string;
 		}> = [];
 		let startIndex = 0;
 		for (const [chunkIndex, endIndex] of [...splitIndexes, content.length].entries()) {
@@ -7624,7 +8010,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				endIndex,
 				lineStart: grepTestLineNumberAt(content, startIndex),
 				lineEnd: grepTestLineNumberAt(content, endIndex),
-				markdownChunk: content.slice(startIndex, endIndex),
+				textChunk: content.slice(startIndex, endIndex),
 			});
 			startIndex = endIndex;
 		}
@@ -7638,7 +8024,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			endIndex?: number;
 			lineStart?: number;
 			lineEnd?: number;
-			markdownChunk?: string;
+			textChunk?: string;
 			plainTextChunk?: string;
 		}>,
 	) {
@@ -7653,7 +8039,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			endIndex: number;
 			lineStart: number;
 			lineEnd: number;
-			markdownChunk: string;
+			textChunk: string;
 		}>,
 	) {
 		for (const chunk of chunks) {
@@ -7672,7 +8058,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			splitIndexes?: number[];
 		},
 	) {
-		return await match_markdown_chunks_list(grepTestChunkIterator(grepTestChunks(content, args.splitIndexes)), {
+		return await match_text_chunks_list(grepTestChunkIterator(grepTestChunks(content, args.splitIndexes)), {
 			...matchMarkdownTestScannerOptions,
 			pattern: args.pattern,
 			invert: args.invert ?? false,
@@ -7690,9 +8076,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("line range reads the first page and reports more lines", async () => {
 			const result = await files_read_forward_line_range_from_ordered_chunks(
 				lineRangeTestChunkIterator([
-					{ startIndex: 0, endIndex: 5, lineStart: 1, lineEnd: 2, markdownChunk: "one\nt" },
-					{ startIndex: 5, endIndex: 14, lineStart: 2, lineEnd: 3, markdownChunk: "wo\nthree\n" },
-					{ startIndex: 14, endIndex: 19, lineStart: 4, lineEnd: 4, markdownChunk: "four\n" },
+					{ startIndex: 0, endIndex: 5, lineStart: 1, lineEnd: 2, textChunk: "one\nt" },
+					{ startIndex: 5, endIndex: 14, lineStart: 2, lineEnd: 3, textChunk: "wo\nthree\n" },
+					{ startIndex: 14, endIndex: 19, lineStart: 4, lineEnd: 4, textChunk: "four\n" },
 				]),
 				{ startLine: 1, maxLines: 2 },
 			);
@@ -7703,9 +8089,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("line range reads an offset page across chunk boundaries", async () => {
 			const result = await files_read_forward_line_range_from_ordered_chunks(
 				lineRangeTestChunkIterator([
-					{ startIndex: 0, endIndex: 5, lineStart: 1, lineEnd: 2, markdownChunk: "one\nt" },
-					{ startIndex: 5, endIndex: 14, lineStart: 2, lineEnd: 3, markdownChunk: "wo\nthree\n" },
-					{ startIndex: 14, endIndex: 19, lineStart: 4, lineEnd: 4, markdownChunk: "four\n" },
+					{ startIndex: 0, endIndex: 5, lineStart: 1, lineEnd: 2, textChunk: "one\nt" },
+					{ startIndex: 5, endIndex: 14, lineStart: 2, lineEnd: 3, textChunk: "wo\nthree\n" },
+					{ startIndex: 14, endIndex: 19, lineStart: 4, lineEnd: 4, textChunk: "four\n" },
 				]),
 				{ startLine: 2, maxLines: 2 },
 			);
@@ -7716,17 +8102,37 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("line range returns null for non-contiguous chunks", async () => {
 			const result = await files_read_forward_line_range_from_ordered_chunks(
 				lineRangeTestChunkIterator([
-					{ startIndex: 0, endIndex: 4, lineStart: 1, lineEnd: 1, markdownChunk: "one\n" },
-					{ startIndex: 6, endIndex: 10, lineStart: 2, lineEnd: 2, markdownChunk: "two\n" },
+					{ startIndex: 0, endIndex: 4, lineStart: 1, lineEnd: 1, textChunk: "one\n" },
+					{ startIndex: 6, endIndex: 10, lineStart: 2, lineEnd: 2, textChunk: "two\n" },
 				]),
 				{ startLine: 1, maxLines: 2 },
 			);
 
 			expect(result).toBeNull();
 		});
+
+		test("line range gives up when a split line's pieces exceed the scan size bound", async () => {
+			// Every piece of a mid-line-split long line reports line 1, so the line-based stop can
+			// never fire; only the size bound keeps this read from buffering the whole file.
+			const pieceText = "x".repeat(64_000);
+			const pieces = Array.from({ length: 5 }, (_, index) => ({
+				startIndex: index * pieceText.length,
+				endIndex: (index + 1) * pieceText.length,
+				lineStart: 1,
+				lineEnd: 1,
+				textChunk: pieceText,
+			}));
+
+			const result = await files_read_forward_line_range_from_ordered_chunks(lineRangeTestChunkIterator(pieces), {
+				startLine: 1,
+				maxLines: 5,
+			});
+
+			expect(result).toBeNull();
+		});
 	});
 
-	describe("match_markdown_chunks_list", () => {
+	describe("match_text_chunks_list", () => {
 		test("finds literal substring matches without context", async () => {
 			const content = "alpha\nneedle one\nbeta\nneedle two\n";
 			const result = await grepTestScan(content, { pattern: "needle" });
@@ -7786,10 +8192,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("returns null for non-contiguous chunks", async () => {
-			const result = await match_markdown_chunks_list(
+			const result = await match_text_chunks_list(
 				grepTestChunkIterator([
-					{ chunkIndex: 0, startIndex: 0, endIndex: 5, markdownChunk: "hello" },
-					{ chunkIndex: 1, startIndex: 6, endIndex: 11, markdownChunk: "world" },
+					{ chunkIndex: 0, startIndex: 0, endIndex: 5, textChunk: "hello" },
+					{ chunkIndex: 1, startIndex: 6, endIndex: 11, textChunk: "world" },
 				]),
 				{
 					...matchMarkdownTestScannerOptions,
@@ -7801,9 +8207,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result).toBeNull();
 		});
 
-		test("matches regex over Markdown chunks", async () => {
+		test("matches regex over text chunks", async () => {
 			const content = "intro\ncritical   alert\noutro\n";
-			const result = await match_markdown_chunks_list(grepTestChunkIterator(grepTestChunks(content)), {
+			const result = await match_text_chunks_list(grepTestChunkIterator(grepTestChunks(content)), {
 				...matchMarkdownTestScannerOptions,
 				pattern: String.raw`critical\s+alert`,
 				match: { kind: "regex", regex: /critical\s+alert/u },
@@ -7886,7 +8292,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("starts from a non-zero line window source origin", async () => {
 			const content = "one\ntwo\nthree\nneedle four\nneedle five\n";
 			const chunks = grepTestChunks(content, [14]).filter((chunk) => chunk.lineEnd >= 4);
-			const result = await match_markdown_chunks_list(grepTestChunkIterator(chunks), {
+			const result = await match_text_chunks_list(grepTestChunkIterator(chunks), {
 				...matchMarkdownTestScannerOptions,
 				pattern: "needle",
 				match: { kind: "substring", needle: "needle", ignoreCase: false },
@@ -7944,7 +8350,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("slice window scans inside an oversized line", async () => {
 			const prefix = "x".repeat(files_GREP_MAX_SCAN_BYTES + 10);
 			const content = `${prefix}needle-end\n`;
-			const result = await match_markdown_chunks_list(
+			const result = await match_text_chunks_list(
 				grepTestChunkIterator(grepTestChunks(content, [prefix.length - 5])),
 				{
 					...matchMarkdownTestScannerOptions,

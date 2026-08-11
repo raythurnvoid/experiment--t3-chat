@@ -4,14 +4,16 @@ import {
 	files_u8_to_array_buffer,
 	files_monaco_create_editor_model,
 	files_monaco_execute_edits_with_read_only_fallback,
-	files_fetch_file_yjs_state_and_markdown,
+	files_fetch_file_yjs_state_and_text,
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
+	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../../../../../shared/files-yjs.ts";
+import { files_text_diff_TOO_LARGE_MESSAGE } from "../../../../../shared/files-text-diff.ts";
 import {
-	files_yjs_doc_get_markdown,
-	files_yjs_doc_update_from_markdown,
+	files_yjs_doc_get_text,
+	files_yjs_doc_update_from_text,
 	files_headless_tiptap_editor_create,
 } from "../../../../../shared/files-tiptap.ts";
 import {
@@ -29,6 +31,7 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { usePromiseValue } from "@/lib/async.ts";
+import { app_qa_register_monaco_editor } from "@/lib/app-qa.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
@@ -60,8 +63,8 @@ type FileEditorPlainTextToolbarActions_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
 	toolbarPortalHost: HTMLElement;
-	getCurrentMarkdown: () => string;
-	onApplySnapshotMarkdown: (markdown: string) => void;
+	getCurrentText: () => string;
+	onApplySnapshotText: (text: string) => void;
 	onClickSave: () => void;
 	onClickSync: () => void;
 };
@@ -78,8 +81,8 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 		nodeId,
 		sessionId,
 		toolbarPortalHost,
-		getCurrentMarkdown,
-		onApplySnapshotMarkdown,
+		getCurrentText,
+		onApplySnapshotText,
 		onClickSave,
 		onClickSync,
 	} = props;
@@ -89,7 +92,7 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 	return createPortal(
 		<div
 			role="group"
-			aria-label="Markdown editor actions"
+			aria-label="Text editor actions"
 			className={cn("FileEditorPlainTextToolbarActions" satisfies FileEditorPlainTextToolbarActions_ClassNames)}
 		>
 			<MyButton
@@ -148,8 +151,8 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 				nodeId={nodeId}
 				sessionId={sessionId}
 				editable={editable}
-				getCurrentMarkdown={getCurrentMarkdown}
-				onApplySnapshotMarkdown={onApplySnapshotMarkdown}
+				getCurrentText={getCurrentText}
+				onApplySnapshotText={onApplySnapshotText}
 			/>
 		</div>,
 		toolbarPortalHost,
@@ -235,13 +238,17 @@ function compute_minimal_text_edit(previousText: string, nextText: string) {
 	};
 }
 
-type FileEditorPlainText_ClassNames = "FileEditorPlainText" | "FileEditorPlainText-editor";
+type FileEditorPlainText_ClassNames = "FileEditorPlainText" | "FileEditorPlainText-editor" | "FileEditorPlainText-refusal";
 
 type FileEditorPlainTextInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
+	/** The node's document shape, resolved by the snapshot fetch; Save/Sync dispatch on it. */
+	rootKind: files_YjsRootKind;
+	/** The Monaco language id derived from the node name (`files_get_monaco_language_id`). */
+	monacoLanguageId: string;
 	initialData: {
-		markdown: string;
+		text: string;
 		mut_yjsDoc: YDoc;
 		yjsSequence: number;
 	};
@@ -259,6 +266,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		initialData,
 		nodeId,
 		editable,
+		rootKind,
+		monacoLanguageId,
 		topSafeArea,
 		presenceStore,
 		commentsPortalHost,
@@ -272,16 +281,17 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 	const pushYjsUpdateMutation = useMutation(api.files_nodes.yjs_push_update);
 
-	const [initialEditorModel] = useState(() => files_monaco_create_editor_model(initialData.markdown));
+	const [initialEditorModel] = useState(() => files_monaco_create_editor_model(initialData.text, monacoLanguageId));
 
 	const editorRef = useRef<monaco_editor.IStandaloneCodeEditor | null>(null);
 	const [mountedEditor, setMountedEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
 	const modelRef = useRef<monaco_editor.ITextModel | null>(initialEditorModel);
 	const baselineYjsDocRef = useRef<YDoc>(initialData.mut_yjsDoc);
-	const baselineMarkdownRef = useRef<string>(initialData.markdown);
+	const baselineMarkdownRef = useRef<string>(initialData.text);
 
 	const [commentThreadIds, setCommentThreadIds] = useState<string[]>([]);
 	const commentThreadIdsKeyRef = useRef<string>("");
+	const qaMonacoCleanupRef = useRef<(() => void) | null>(null);
 
 	const [dirtyCheckState, setDirtyCheckState] = useState<"clean" | "checking" | "dirty">("clean");
 	const dirtyCheckTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -291,7 +301,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const [isSyncing, setIsSyncing] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
 
-	const [byteSize, setByteSize] = useState(() => files_get_utf8_byte_size(initialData.markdown));
+	const [byteSize, setByteSize] = useState(() => files_get_utf8_byte_size(initialData.text));
 
 	const isSaveDebouncing = dirtyCheckState === "checking";
 	const isSaveDisabled = !editable || isSaving || isSyncing || dirtyCheckState !== "dirty";
@@ -305,6 +315,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	// option updates and DOM references in these options are cyclic.
 	const [editorOptions] = useState(() => {
 		return {
+			// Screen readers hear which pane this is; the diff editor names its panes separately.
+			ariaLabel: "File content editor",
 			overflowWidgetsDomNode: hoistingContainer ?? undefined,
 			fixedOverflowWidgets: true,
 			fontSize: 16,
@@ -322,6 +334,12 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	});
 
 	const updateThreadIds = (markdown: string) => {
+		// Comment marks only exist in rich text documents, and the Comments tab is hidden for
+		// plain text files, so skip the Markdown comment-mark scan entirely there.
+		if (rootKind !== "rich_text") {
+			return;
+		}
+
 		const headlessEditor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
 		if (headlessEditor._nay) {
 			console.error("[FileEditorPlainText.updateThreadIds] Error while creating headless editor", {
@@ -423,43 +441,46 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		});
 	};
 
-	const getCurrentMarkdown = useFn(() => {
-		return modelRef.current?.getValue() ?? initialData.markdown;
+	const getCurrentText = useFn(() => {
+		return modelRef.current?.getValue() ?? initialData.text;
 	});
 
 	// No `editable` guard here on purpose: this runs only after the backend already committed the
 	// restore, so skipping the refresh when permission was removed mid-restore would leave the
 	// editor showing stale content. The pre-action gate lives in the snapshots modal.
-	const handleApplySnapshotMarkdown = useFn(() => {
+	const handleApplySnapshotText = useFn(() => {
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const remoteData = await files_fetch_file_yjs_state_and_markdown({
+			const remoteData = await files_fetch_file_yjs_state_and_text({
 				membershipId,
 				nodeId,
 			});
 
 			if (!remoteData) {
 				console.error(
-					should_never_happen("[FileEditorPlainText.handleApplySnapshotMarkdown] Missing `remoteData`", {
+					should_never_happen("[FileEditorPlainText.handleApplySnapshotText] Missing `remoteData`", {
 						remoteData,
 					}),
 				);
 				return;
 			}
 
-			if (remoteData.markdown._nay) {
-				console.error("[FileEditorPlainText.handleApplySnapshotMarkdown] Error while fetching remote data", {
-					nay: remoteData.markdown._nay,
+			// Surface the refusal: a silent return would leave the editor showing content
+			// the restore already replaced on the server.
+			if (remoteData.text._nay) {
+				console.error("[FileEditorPlainText.handleApplySnapshotText] Error while fetching remote data", {
+					nay: remoteData.text._nay,
 				});
+				toast.error("Failed to refresh the editor after the restore. Reload the file.");
 				return;
 			}
 
 			// Write into the current model instead of building a new one. A new model starts with an
 			// empty undo stack, and `setModel` also rebuilds the editor view, which drops the top view
 			// zone without re-adding it.
-			pushChangeToEditor(remoteData.markdown._yay);
-			updateDirtyBaseline(remoteData.markdown._yay);
-			updateThreadIds(remoteData.markdown._yay);
+			pushChangeToEditor(remoteData.text._yay);
+			updateDirtyBaseline(remoteData.text._yay);
+			updateThreadIds(remoteData.text._yay);
 			baselineYjsDocRef.current = remoteData.yjsDoc;
 			setWorkingYjsSequence(remoteData.yjsSequence);
 		})()
@@ -503,14 +524,24 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 			const workingYjsDoc = files_yjs_doc_clone({ yjsDoc: baselineYjsDoc });
 
-			const workingYjsDocFromMarkdown = files_yjs_doc_update_from_markdown({
+			const workingYjsDocFromText = files_yjs_doc_update_from_text({
 				mut_yjsDoc: workingYjsDoc,
-				markdown: localMarkdown,
+				text: localMarkdown,
+				rootKind,
 			});
-			if (workingYjsDocFromMarkdown._nay) {
-				console.error("[FileEditorPlainText.handleClickSave] Error while rebuilding Y.Doc from markdown", {
-					nay: workingYjsDocFromMarkdown._nay,
+			// Surface the refusal: a silent return would leave Save looking like a no-op
+			// while the buffer keeps content that will never persist. The diff module defines its
+			// budget message as user-facing, so show it verbatim; other setter refusals keep the
+			// generic message.
+			if (workingYjsDocFromText._nay) {
+				console.error("[FileEditorPlainText.handleClickSave] Error while rebuilding Y.Doc from the buffer", {
+					nay: workingYjsDocFromText._nay,
 				});
+				toast.error(
+					workingYjsDocFromText._nay.message === files_text_diff_TOO_LARGE_MESSAGE
+						? files_text_diff_TOO_LARGE_MESSAGE
+						: "Failed to save: the file content cannot be applied safely",
+				);
 				return;
 			}
 
@@ -587,18 +618,28 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		(async (/* iife */) => {
 			const localMarkdown = model.getValue();
 			const workingYjsDoc = files_yjs_doc_clone({ yjsDoc: baselineYjsDocRef.current });
-			const workingYjsDocFromMarkdown = files_yjs_doc_update_from_markdown({
+			const workingYjsDocFromText = files_yjs_doc_update_from_text({
 				mut_yjsDoc: workingYjsDoc,
-				markdown: localMarkdown,
+				text: localMarkdown,
+				rootKind,
 			});
-			if (workingYjsDocFromMarkdown._nay) {
-				console.error("[FileEditorPlainText.handleClickSync] Error while rebuilding Y.Doc from markdown", {
-					nay: workingYjsDocFromMarkdown._nay,
+			// A setter refusal means the local buffer cannot be represented: tell the user instead
+			// of silently aborting the Sync before its fetch. The diff module defines its
+			// budget message as user-facing, so show it verbatim; other setter refusals keep the
+			// generic message.
+			if (workingYjsDocFromText._nay) {
+				console.error("[FileEditorPlainText.handleClickSync] Error while rebuilding Y.Doc from the buffer", {
+					nay: workingYjsDocFromText._nay,
 				});
+				toast.error(
+					workingYjsDocFromText._nay.message === files_text_diff_TOO_LARGE_MESSAGE
+						? files_text_diff_TOO_LARGE_MESSAGE
+						: "Failed to sync: the editor content cannot be applied safely",
+				);
 				return;
 			}
 
-			const remoteData = await files_fetch_file_yjs_state_and_markdown({
+			const remoteData = await files_fetch_file_yjs_state_and_text({
 				membershipId,
 				nodeId,
 			});
@@ -612,10 +653,13 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				return;
 			}
 
-			if (remoteData.markdown._nay) {
+			// A remote read refusal means the remote state is unreadable: Sync must visibly not run
+			// rather than appear to have run.
+			if (remoteData.text._nay) {
 				console.error("[FileEditorPlainText.handleClickSync] Error while fetching remote data", {
-					nay: remoteData.markdown._nay,
+					nay: remoteData.text._nay,
 				});
+				toast.error("Failed to sync: the file content cannot be read safely");
 				return;
 			}
 
@@ -628,30 +672,31 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			if (diffUpdate) {
 				applyUpdate(workingYjsDoc, diffUpdate);
 			}
-			const mergedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: workingYjsDoc });
-			if (mergedMarkdown._nay) {
-				console.error("[FileEditorPlainText.handleClickSync] Error while getting merged markdown", {
-					nay: mergedMarkdown._nay,
+			const mergedText = files_yjs_doc_get_text({ yjsDoc: workingYjsDoc, rootKind });
+			if (mergedText._nay) {
+				console.error("[FileEditorPlainText.handleClickSync] Error while getting the merged text", {
+					nay: mergedText._nay,
 				});
+				toast.error("Failed to sync: the merged content cannot be read safely");
 				return;
 			}
 
 			// Write the merged content into the model the user has been typing in. Only the part that
 			// actually changed is rewritten, so everything the user did before the sync stays in the
 			// undo stack and one Ctrl+Z undoes the sync alone.
-			pushChangeToEditor(mergedMarkdown._yay);
+			pushChangeToEditor(mergedText._yay);
 
 			// The server content is the new baseline, even though the editor keeps the merged content.
 			baselineYjsDocRef.current = remoteData.yjsDoc;
 			setWorkingYjsSequence(remoteData.yjsSequence);
-			updateDirtyBaseline(remoteData.markdown._yay);
-			updateThreadIds(remoteData.markdown._yay);
+			updateDirtyBaseline(remoteData.text._yay);
+			updateThreadIds(remoteData.text._yay);
 
 			// `updateDirtyBaseline` measured the server content and marked the file clean. The editor
 			// shows the merged content instead, so correct both when the merge kept local edits that
 			// Save still has to push.
-			if (mergedMarkdown._yay !== remoteData.markdown._yay) {
-				setByteSize(files_get_utf8_byte_size(mergedMarkdown._yay));
+			if (mergedText._yay !== remoteData.text._yay) {
+				setByteSize(files_get_utf8_byte_size(mergedText._yay));
 				setDirtyCheckState("dirty");
 			}
 		})()
@@ -671,8 +716,10 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		editor.setModel(initialEditorModel);
 		prevModel?.dispose();
 		modelRef.current = initialEditorModel;
-		updateDirtyBaseline(initialData.markdown);
-		updateThreadIds(initialData.markdown);
+		updateDirtyBaseline(initialData.text);
+		updateThreadIds(initialData.text);
+		qaMonacoCleanupRef.current?.();
+		qaMonacoCleanupRef.current = app_qa_register_monaco_editor("plainText", editor);
 
 		editor.onDidChangeModelContent(() => {
 			scheduleDirtyCheck();
@@ -690,6 +737,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			clearTimeout(dirtyCheckTimeoutRef.current);
 			dirtyCheckTimeoutRef.current = undefined;
 			modelRef.current = null;
+			qaMonacoCleanupRef.current?.();
+			qaMonacoCleanupRef.current = null;
 		};
 	}, []);
 
@@ -705,8 +754,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					nodeId={nodeId}
 					sessionId={presenceStore.localSessionId}
 					toolbarPortalHost={toolbarPortalHost}
-					getCurrentMarkdown={getCurrentMarkdown}
-					onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
+					getCurrentText={getCurrentText}
+					onApplySnapshotText={handleApplySnapshotText}
 					onClickSave={handleClickSave}
 					onClickSync={handleClickSync}
 				/>
@@ -716,7 +765,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 						<>
 							<Editor
 								height="100%"
-								language="markdown"
+								language={monacoLanguageId}
 								theme={app_monaco_THEME_NAME_DARK}
 								options={editorOptions}
 								onMount={handleOnMount}
@@ -737,6 +786,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 export type FileEditorPlainText_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
+	/** The Monaco language id derived from the node name (`files_get_monaco_language_id`). */
+	monacoLanguageId: string;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
@@ -750,6 +801,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 	const {
 		nodeId,
 		editable,
+		monacoLanguageId,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
@@ -762,33 +814,43 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const fileContentDataPromise = useMemo(() => {
-		return files_fetch_file_yjs_state_and_markdown({
+		return files_fetch_file_yjs_state_and_text({
 			membershipId,
 			nodeId,
 		});
 	}, [membershipId, nodeId]);
 	const fileContentData = usePromiseValue(fileContentDataPromise);
 
-	if (fileContentData?.markdown._nay) {
-		console.error("[FileEditorPlainText] Error while fetching file content data", fileContentData.markdown._nay);
+	if (fileContentData?.text._nay) {
+		console.error("[FileEditorPlainText] Error while fetching file content data", fileContentData.text._nay);
 	}
 
+	// On a refused or missing read, do not mount the editor over a stand-in document.
+	// a fabricated empty baseline is legal in shape, so every later Save would diff the user's
+	// typing against emptiness and push it into the real document's log. The refusal state is the
+	// only place this corruption can be stopped. A legitimate `_yay: ""` is NOT a refusal — an
+	// empty file mounts with its real document and server sequence.
 	return fileContentData === undefined ? (
 		<FileEditorPlainTextSkeleton />
+	) : fileContentData === null || fileContentData.text._nay ? (
+		<div className={"FileEditorPlainText" satisfies FileEditorPlainText_ClassNames}>
+			<div role="alert" className={"FileEditorPlainText-refusal" satisfies FileEditorPlainText_ClassNames}>
+				This file's content could not be read safely, so the editor stays closed to protect it. Reload the file or
+				contact support if this keeps happening.
+			</div>
+		</div>
 	) : (
 		<FileEditorPlainTextInner
 			key={nodeId}
 			nodeId={nodeId}
 			editable={editable}
-			initialData={
-				fileContentData?.markdown._yay
-					? {
-							markdown: fileContentData.markdown._yay,
-							mut_yjsDoc: fileContentData.yjsDoc,
-							yjsSequence: fileContentData.yjsSequence,
-						}
-					: { markdown: "", mut_yjsDoc: new YDoc(), yjsSequence: 0 }
-			}
+			rootKind={fileContentData.yjsRootKind}
+			monacoLanguageId={monacoLanguageId}
+			initialData={{
+				text: fileContentData.text._yay,
+				mut_yjsDoc: fileContentData.yjsDoc,
+				yjsSequence: fileContentData.yjsSequence,
+			}}
 			topSafeArea={topSafeArea}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}

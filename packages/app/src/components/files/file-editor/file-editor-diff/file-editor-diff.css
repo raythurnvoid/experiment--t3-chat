@@ -6,6 +6,17 @@
 
 		height: 100%;
 	}
+
+	/* Shown instead of the editor when the pending-state read was refused: mounting fabricated
+	   empty documents would let Save overwrite the real content. */
+	.FileEditorDiff-refusal {
+		margin: 32px auto;
+		max-width: 480px;
+		padding: 16px;
+
+		font-size: 0.95rem;
+		color: var(--color-fg-08);
+	}
 	/* #endregion root */
 
 	/* #region toolbar */

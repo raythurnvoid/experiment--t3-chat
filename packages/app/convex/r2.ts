@@ -46,10 +46,20 @@ import {
 import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
+	files_get_editable_text_content_type,
+	files_get_editable_text_yjs_root_kind,
+	files_get_signed_download_serving,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
+	files_normalize_text_document_input,
 	type files_ContentType,
+	type files_YjsRootKind,
 } from "../server/files.ts";
+import {
+	files_metadata_MAX_FRONTMATTER_FIELDS,
+	files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
+	files_metadata_preflight_frontmatter,
+} from "../shared/files-metadata.ts";
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
@@ -57,7 +67,7 @@ import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schema
 import { db_get_file_content_materialization_db_state } from "./files_nodes.ts";
 import {
 	db_insert_file_text_content,
-	files_nodes_create_yjs_snapshot_update_from_markdown,
+	files_nodes_create_yjs_snapshot_update_from_text,
 } from "./files_nodes_content.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -517,11 +527,18 @@ export const create_signed_download_url = action({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
+		// Stored object types are client input at upload time, and a presigned R2 GET carries no
+		// nosniff/CSP — the pinned type plus the disposition is the whole defense. Both come from
+		// the node NAME: only the literal media map serves inline (the app's <img>/<video> sources
+		// go through here), everything else downloads as an attachment.
+		const serving = files_get_signed_download_serving(fileNode.name);
 		const url = await r2_get_download_url({
 			key: asset.r2Key,
 			options: {
 				// 15 minutes.
 				expiresIn: 15 * 60,
+				responseContentType: serving.responseContentType,
+				responseContentDisposition: serving.responseContentDisposition,
 			},
 		});
 
@@ -601,7 +618,7 @@ type get_file_node_by_asset_id_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-async function db_finalize_markdown_file_node_from_r2_assets(
+async function db_finalize_editable_text_file_node_from_r2_assets(
 	ctx: MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -610,11 +627,21 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 		path: Doc<"files_nodes">["path"];
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		userId: Id<"users">;
+		/**
+		 * The shape of the Yjs document this node gets. Written as `files_nodes.yjsRootKind` in
+		 * the same publish patch as the other Yjs pointers.
+		 */
+		rootKind: files_YjsRootKind;
+		/**
+		 * The media type the node stores from now on. The caller derives it from the node NAME
+		 * with the classifier, never from the client-declared upload type.
+		 */
+		contentType: string;
 		yjsSnapshotAssetId: Id<"files_r2_assets">;
 		yjsSnapshotSize: number;
 		versionSnapshotAssetId: Id<"files_r2_assets">;
 		versionSnapshotSize: number;
-		markdownContent: string;
+		text: string;
 		/**
 		 * Assets that share this conversion job and should become terminal
 		 * when the file is published.
@@ -623,6 +650,20 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 		now: number;
 	},
 ) {
+	// Mirror the materializer's frontmatter preflight (`finalize_file_yjs_repair` uses the same
+	// escape). An uploaded `.md` can carry over-cap frontmatter while the markdown itself is
+	// valid, so it must still convert. Letting the metadata insert helper's over-cap backstop
+	// throw here would wedge the infinite-retry conversion workpool instead: every retry
+	// re-uploads both R2 objects and inserts two more unfinalized asset docs, and the upload
+	// never publishes. Commit the chunks without the metadata index, set the marker pair in the
+	// same publish patch, and publish normally; the user's next fitting edit clears the pair
+	// through normal materialization.
+	const frontmatter = args.rootKind === "rich_text" ? files_metadata_preflight_frontmatter(args.text) : null;
+	const frontmatterOverCap =
+		frontmatter !== null &&
+		(frontmatter.fieldCount > files_metadata_MAX_FRONTMATTER_FIELDS ||
+			frontmatter.indexDocumentCount > files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS);
+
 	// Create editable Yjs metadata for an existing node whose R2 objects were
 	// already written by the caller.
 	const [yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
@@ -641,6 +682,9 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 			workspaceId: args.workspaceId,
 			fileNodeId: args.fileNodeId,
 			lastSequence: 0,
+			unmaterializedUpdateCount: 0,
+			unmaterializedUpdateBytes: 0,
+			lineageGeneration: 0,
 		}),
 		db_insert_file_text_content(ctx, {
 			organizationId: args.organizationId,
@@ -649,19 +693,20 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 			path: args.path,
 			archiveOperationId: args.archiveOperationId,
 			yjsSequence: 0,
-			contentType: "text/markdown;charset=utf-8",
-			textContent: args.markdownContent,
+			rootKind: args.rootKind,
+			textContent: args.text,
+			skipFrontmatterIndex: frontmatterOverCap,
 		}).then((chunks) => {
 			if (chunks._nay) {
 				throw convex_error({
-					message: "Failed to chunk Markdown file",
+					message: "Failed to chunk file content",
 					cause: chunks._nay,
 				});
 			}
 			return chunks;
 		}),
 	] as const).catch((error) => {
-		const errorMessage = "Failed to finalize Markdown file node";
+		const errorMessage = "Failed to finalize editable text file node";
 		console.error(errorMessage, {
 			error,
 			fileNodeId: args.fileNodeId,
@@ -678,9 +723,20 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 	await Promise.all([
 		ctx.db.patch("files_nodes", args.fileNodeId, {
 			assetId: args.versionSnapshotAssetId,
-			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			contentType: args.contentType,
 			yjsSnapshotId,
 			yjsLastSequenceId,
+			// Record the shape beside the other Yjs pointers, in the same publish patch, so the
+			// node and its document can never be born disagreeing.
+			yjsRootKind: args.rootKind,
+			// A node born with over-cap frontmatter carries the marker pair from its first
+			// publish, exactly like a materialization settle would set it.
+			...(frontmatterOverCap
+				? {
+						contentFrontmatterTooLargeFieldCount: frontmatter.fieldCount,
+						contentFrontmatterTooLargeIndexDocumentCount: frontmatter.indexDocumentCount,
+					}
+				: {}),
 			updatedBy: args.userId,
 			updatedAt: args.now,
 		}),
@@ -723,7 +779,10 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 	return Result({ _yay: null });
 }
 
-export const finalize_markdown_file_node_from_r2_assets = internalMutation({
+// The registered name keeps its historical `markdown` spelling on purpose (renaming a registered
+// function changes its generated reference; §14 records the decision). It finalizes every
+// editable text class since the upload conversion generalized.
+export const finalize_text_file_node_from_r2_assets = internalMutation({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
@@ -731,18 +790,20 @@ export const finalize_markdown_file_node_from_r2_assets = internalMutation({
 		path: doc(app_convex_schema, "files_nodes").fields.path,
 		archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
 		userId: v.id("users"),
+		rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
+		contentType: v.string(),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
 		yjsSnapshotSize: v.number(),
 		versionSnapshotAssetId: v.id("files_r2_assets"),
 		versionSnapshotSize: v.number(),
-		markdownContent: v.string(),
+		text: v.string(),
 		processingWorkAssetIds: v.array(v.id("files_r2_assets")),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const now = Date.now();
 		const finalizeScope = r2_require_real_scope(args.organizationId, args.workspaceId);
-		return await db_finalize_markdown_file_node_from_r2_assets(ctx, {
+		return await db_finalize_editable_text_file_node_from_r2_assets(ctx, {
 			...args,
 			organizationId: finalizeScope.organizationId,
 			workspaceId: finalizeScope.workspaceId,
@@ -751,8 +812,8 @@ export const finalize_markdown_file_node_from_r2_assets = internalMutation({
 	},
 });
 
-type finalize_markdown_file_node_from_r2_assets_Result =
-	typeof finalize_markdown_file_node_from_r2_assets extends RegisteredMutation<
+type finalize_text_file_node_from_r2_assets_Result =
+	typeof finalize_text_file_node_from_r2_assets extends RegisteredMutation<
 		infer _Visibility,
 		infer _Args,
 		infer ReturnValue
@@ -774,11 +835,61 @@ export async function get_billed_user_for_media_processing(ctx: ActionCtx, fileN
 	return creditCheck.billedUser;
 }
 
-export const finalize_uploaded_markdown_file = internalAction({
+/**
+ * Settle an upload conversion that fell back to the stored blob. Clears the processing marker
+ * and dispatches the plugin upload event: a stored blob is exactly the state that dispatches
+ * when no conversion applies, and the conversion action runs after
+ * `process_uploaded_asset_event` already returned, so its exits cannot reach that mutation's
+ * dispatch and have to dispatch here themselves.
+ */
+export const settle_upload_conversion_fallback = internalMutation({
+	args: {
+		assetId: v.id("files_r2_assets"),
+		eventId: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const asset = await ctx.db.get("files_r2_assets", args.assetId);
+		if (!asset) {
+			return null;
+		}
+
+		const now = Date.now();
+		await ctx.db.patch("files_r2_assets", asset._id, {
+			processingWorkId: null,
+			updatedAt: now,
+		});
+
+		const fileNode = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_asset", (q) =>
+				q.eq("organizationId", asset.organizationId).eq("workspaceId", asset.workspaceId).eq("assetId", asset._id),
+			)
+			.first();
+		// Mirror the enqueue mutation's suppression states: a missing, archived, or meanwhile
+		// editable node gets no plugin event, exactly like a fresh upload in that state.
+		if (!fileNode || fileNode.archiveOperationId !== undefined || files_node_has_editable_yjs_state(fileNode)) {
+			return null;
+		}
+
+		await plugins_runtime_db_enqueue_upload_completed_runs(ctx, {
+			asset,
+			fileNode,
+			eventId: args.eventId,
+		});
+		return null;
+	},
+});
+
+// The registered name keeps its historical `markdown` spelling on purpose (§14): since the
+// upload conversion generalized, it converts every editable text upload — `.md` to a rich text
+// document, the plain-text allow-list to `Y.Text` documents.
+export const finalize_uploaded_text_file = internalAction({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		assetId: v.id("files_r2_assets"),
+		eventId: v.string(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -798,6 +909,8 @@ export const finalize_uploaded_markdown_file = internalAction({
 			return null;
 		}
 
+		// No node references this upload, so there is nothing to convert and no node to
+		// dispatch a plugin event for.
 		if (!fileNode) {
 			await ctx.runMutation(internal.r2.patch_asset, {
 				assetId: asset._id,
@@ -805,13 +918,22 @@ export const finalize_uploaded_markdown_file = internalAction({
 			});
 			return null;
 		}
-		if (!fileNode.contentType?.startsWith("text/markdown" satisfies files_ContentType)) {
-			await ctx.runMutation(internal.r2.patch_asset, {
+
+		// Classify from the node NAME, like the enqueue gate. A rename between enqueue and this
+		// run can make the name unrecognized; the node then stays a stored blob, which must
+		// dispatch the plugin event like any other stored upload.
+		const rootKind = files_get_editable_text_yjs_root_kind(fileNode.name);
+		const classifierContentType = files_get_editable_text_content_type(fileNode.name);
+		if (rootKind === null || classifierContentType === null) {
+			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
 				assetId: asset._id,
-				processingWorkId: null,
+				eventId: args.eventId,
 			});
 			return null;
 		}
+
+		// A re-upload onto an already editable file keeps the editable document as-is. The node is
+		// not a stored blob, so this exit keeps today's dispatch suppression.
 		if (files_node_has_editable_yjs_state(fileNode)) {
 			await ctx.runMutation(internal.r2.patch_asset, {
 				assetId: asset._id,
@@ -828,36 +950,73 @@ export const finalize_uploaded_markdown_file = internalAction({
 			throw should_never_happen(errorMessage, errorData);
 		}
 
+		// Over-cap uploads stay stored files without downloading them; retrying cannot make
+		// the content smaller, so settle immediately.
 		if (asset.size !== undefined && asset.size > files_MAX_TEXT_CONTENT_BYTES) {
-			// Treat over-limit Markdown uploads as processed stored files without downloading them;
-			// retrying cannot make the content smaller.
-			await ctx.runMutation(internal.r2.patch_asset, {
+			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
 				assetId: asset._id,
-				processingWorkId: null,
+				eventId: args.eventId,
 			});
 			return null;
 		}
 
 		const response = await r2_fetch_object_from_bucket({ key: asset.r2Key });
-		const markdownContent = await response.text();
-		if (files_get_utf8_byte_size(markdownContent) > files_MAX_TEXT_CONTENT_BYTES) {
-			// Treat over-limit Markdown uploads as processed stored files; retrying cannot make the content smaller.
-			await ctx.runMutation(internal.r2.patch_asset, {
+		const rawBytes = await response.arrayBuffer();
+
+		// Decode fatally: `response.text()` would turn invalid UTF-8 into U+FFFD silently and
+		// store corrupted text as an editable document. Invalid bytes, and NUL bytes (valid UTF-8
+		// but a UTF-16/binary tell), are content-deterministic failures — retrying cannot change
+		// the bytes, so the upload stays a stored blob.
+		let decodedText: string;
+		try {
+			decodedText = new TextDecoder("utf-8", { fatal: true }).decode(rawBytes);
+		} catch {
+			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
 				assetId: asset._id,
-				processingWorkId: null,
+				eventId: args.eventId,
+			});
+			return null;
+		}
+		if (decodedText.includes("\u0000")) {
+			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
+				assetId: asset._id,
+				eventId: args.eventId,
 			});
 			return null;
 		}
 
-		const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown(markdownContent);
-		if (snapshotUpdate._nay) {
-			throw convex_error({
-				message: "Failed to create uploaded Markdown snapshot",
-				cause: snapshotUpdate._nay,
+		// At this producer boundary, drop a leading BOM and store LF before
+		// the byte count and before both consumers below (the snapshot builder and the chunker),
+		// so the document, the R2 snapshot, the chunks and the stored size all see one string.
+		const text = files_normalize_text_document_input(decodedText);
+		// Use the same deterministic fallback as the pre-download check when decoded text is over-cap.
+		if (files_get_utf8_byte_size(text) > files_MAX_TEXT_CONTENT_BYTES) {
+			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
+				assetId: asset._id,
+				eventId: args.eventId,
 			});
+			return null;
 		}
 
-		// Turn Markdown uploads into editable files, so later reads treat them the same as
+		const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
+			text,
+			rootKind,
+		});
+		// A refused document build is content-deterministic too: the same text refuses on
+		// every retry, so the upload stays a stored blob.
+		if (snapshotUpdate._nay) {
+			console.error("Upload conversion could not build a document from the decoded text", {
+				assetId: asset._id,
+				nay: snapshotUpdate._nay,
+			});
+			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
+				assetId: asset._id,
+				eventId: args.eventId,
+			});
+			return null;
+		}
+
+		// Turn editable text uploads into editable files, so later reads treat them the same as
 		// app-created files. Only the Yjs snapshot and the first version snapshot are created.
 		// The node points at the version snapshot; the original upload asset stays unchanged as
 		// the upload record.
@@ -873,7 +1032,7 @@ export const finalize_uploaded_markdown_file = internalAction({
 				organizationId: fileNode.organizationId,
 				workspaceId: fileNode.workspaceId,
 				kind: "content_snapshot",
-				size: files_get_utf8_byte_size(markdownContent),
+				size: files_get_utf8_byte_size(text),
 				createdBy: fileNode.createdBy,
 			}),
 		])) as [Id<"files_r2_assets">, Id<"files_r2_assets">];
@@ -897,28 +1056,33 @@ export const finalize_uploaded_markdown_file = internalAction({
 			}),
 			r2_put_object(ctx, {
 				key: versionSnapshotR2Key,
-				body: markdownContent,
-				contentType: fileNode.contentType,
+				body: text,
+				// The classifier over the node NAME, never `fileNode.contentType`: the stored type
+				// is client input at upload time, and the snapshot signer serves whatever type
+				// this object carries.
+				contentType: classifierContentType,
 			}),
 		]);
 
-		const finalized = (await ctx.runMutation(internal.r2.finalize_markdown_file_node_from_r2_assets, {
+		const finalized = (await ctx.runMutation(internal.r2.finalize_text_file_node_from_r2_assets, {
 			organizationId: fileNode.organizationId,
 			workspaceId: fileNode.workspaceId,
 			fileNodeId: fileNode._id,
 			path: fileNode.path,
 			archiveOperationId: fileNode.archiveOperationId,
 			userId: r2_require_real_author(fileNode.createdBy),
+			rootKind,
+			contentType: classifierContentType,
 			yjsSnapshotAssetId,
 			yjsSnapshotSize: snapshotUpdate._yay.byteLength,
 			versionSnapshotAssetId,
-			versionSnapshotSize: files_get_utf8_byte_size(markdownContent),
-			markdownContent,
+			versionSnapshotSize: files_get_utf8_byte_size(text),
+			text,
 			processingWorkAssetIds: [asset._id],
-		})) as finalize_markdown_file_node_from_r2_assets_Result;
+		})) as finalize_text_file_node_from_r2_assets_Result;
 		if (finalized._nay) {
 			throw convex_error({
-				message: "Failed to finalize uploaded Markdown file",
+				message: "Failed to finalize uploaded editable text file",
 				cause: finalized._nay,
 			});
 		}
@@ -993,18 +1157,21 @@ export const process_uploaded_asset_event = internalMutation({
 			return Result({ _yay: null });
 		}
 
-		const fileNodeIsMarkdown =
-			fileNode.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
+		// Route by the classifier over the node NAME, never by the client-declared contentType:
+		// `.md` converts to a rich text document, the plain-text allow-list converts to `Y.Text`
+		// documents, everything else stays a stored blob.
+		const fileNodeIsEditableText = files_get_editable_text_yjs_root_kind(fileNode.name) !== null;
 
 		try {
-			if (fileNodeIsMarkdown) {
+			if (fileNodeIsEditableText) {
 				const workId = await upload_conversion_workpool.enqueueAction(
 					ctx,
-					internal.r2.finalize_uploaded_markdown_file,
+					internal.r2.finalize_uploaded_text_file,
 					{
 						organizationId: asset.organizationId,
 						workspaceId: asset.workspaceId,
 						assetId: asset._id,
+						eventId: args.eventId,
 					},
 				);
 

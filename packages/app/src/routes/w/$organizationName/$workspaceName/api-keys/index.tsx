@@ -88,9 +88,9 @@ const API_KEY_SCOPE_LABELS = {
 // Create-modal row order: read scopes first, then the opt-in download and write scopes.
 const API_KEY_SCOPE_ROWS: Array<{ scope: RouteApiKeys_Scope; description: string }> = [
 	{ scope: "files:list", description: "View file and folder names, paths, and metadata." },
-	{ scope: "files:read", description: "Read committed Markdown content by path." },
+	{ scope: "files:read", description: "Read the committed content of editable text files by path." },
 	{ scope: "files:download", description: "Get temporary download links for files." },
-	{ scope: "files:write", description: "Create and update Markdown files by path." },
+	{ scope: "files:write", description: "Create and update Markdown files by path, and upload other files." },
 ];
 
 // Read scopes start checked; download and write stay opt-in.
@@ -220,7 +220,7 @@ curl --fail-with-body --silent --show-error \\
   --request POST "$T3_API_ORIGIN/api/v1/files/list" \\
   --header "Authorization: Bearer $T3_API_KEY" \\
   --header "Content-Type: application/json" \\
-  --data '{"path":"/","recursive":true,"kind":"file","extension":"md","limit":100}'
+  --data '{"path":"/","recursive":true,"kind":"file","contentTypePrefixes":["text/","application/json","application/yaml"],"limit":100}'
 
 curl --fail-with-body --silent --show-error \\
   --request POST "$T3_API_ORIGIN/api/v1/files/read" \\
@@ -246,23 +246,24 @@ async function post(path, body) {
 }
 
 let cursor = null;
-let firstMarkdownPath;
+let firstTextFilePath;
 do {
   const result = await post("/api/v1/files/list", {
     path: "/",
     cursor,
     recursive: true,
     kind: "file",
-    extension: "md",
+    // Editable text files: Markdown, plain text, and structured text like JSON or YAML.
+    contentTypePrefixes: ["text/", "application/json", "application/yaml"],
     limit: 100,
   });
-  firstMarkdownPath ??= result.items[0]?.path;
+  firstTextFilePath ??= result.items[0]?.path;
   cursor = result.cursor;
   if (result.isDone) break;
 } while (true);
 
-if (!firstMarkdownPath) throw new Error("No Markdown files found");
-const file = await post("/api/v1/files/read", { path: firstMarkdownPath });
+if (!firstTextFilePath) throw new Error("No editable text files found");
+const file = await post("/api/v1/files/read", { path: firstTextFilePath });
 console.log(file.content);`;
 
 	return (
@@ -270,7 +271,7 @@ console.log(file.content);`;
 			<header className={"RouteApiKeysQuickStart-header" satisfies RouteApiKeysQuickStart_ClassNames}>
 				<h2 className={"RouteApiKeysQuickStart-title" satisfies RouteApiKeysQuickStart_ClassNames}>Use an API key</h2>
 				<p className={"RouteApiKeysQuickStart-description" satisfies RouteApiKeysQuickStart_ClassNames}>
-					Send the key as a Bearer token. List files first, then read one committed Markdown file by path.
+					Send the key as a Bearer token. List files first, then read one committed text file by path.
 				</p>
 			</header>
 
@@ -294,12 +295,14 @@ console.log(file.content);`;
 			<div className={"RouteApiKeysQuickStart-notes" satisfies RouteApiKeysQuickStart_ClassNames}>
 				<p className={"RouteApiKeysQuickStart-note" satisfies RouteApiKeysQuickStart_ClassNames}>
 					<Info aria-hidden />
-					API reads return committed Markdown content. Unsaved or pending changes are not returned.
+					API reads return the committed content of editable text files: Markdown plus recognized plain text
+					types like .json, .yaml, or .csv. Unsaved or pending changes are not returned.
 				</p>
 				<p className={"RouteApiKeysQuickStart-note" satisfies RouteApiKeysQuickStart_ClassNames}>
 					<Info aria-hidden />
 					Keys with write access can create and update Markdown files through /api/v1/files/write and
-					/api/v1/files/write-many, and upload binary files through /api/v1/files/upload-urls.
+					/api/v1/files/write-many, and upload files through /api/v1/files/upload-urls. Uploads with a
+					recognized plain text extension are converted into editable documents.
 				</p>
 			</div>
 		</section>

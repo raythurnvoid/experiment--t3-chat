@@ -1,6 +1,6 @@
 ---
 name: convex-migrations
-description: Decide between the repo's clean-slate reset path and a continuity-preserving Convex data/schema migration, then use the safe compatibility, data-run, switch/strip, and tighten rollout when stored data must survive. Use when the user asks to rename fields, change field types, backfill data, remove legacy fields, or create/run migration scripts in packages/app/convex.
+description: Apply the user's case-by-case choice to erase, migrate, or mix explicit data scopes for a Convex data/schema change, then use the safe compatibility, data-run, switch/strip, and tighten rollout where stored data must survive. Use when the user asks to rename fields, change field types, backfill data, remove legacy fields, reset affected development data, or create/run migration scripts in packages/app/convex.
 ---
 
 # Project Defaults
@@ -12,13 +12,14 @@ description: Decide between the repo's clean-slate reset path and a continuity-p
 - Convex app config file: `packages/app/convex/convex.config.ts`
 - Migration file location: `packages/app/convex/migrations.ts`
 
-# Choose Reset Or Migration First
+# Confirm Erase, Migrate, Or Mixed Scope First
 
-This product is not in production. Do not add compatibility fields, dual reads, dual writes, or migration shims unless existing deployment data must remain usable. First decide whether the data must survive:
+The user decides whether existing data survives. Do not infer that development data is disposable only because this product is not in production. If the request does not decide and the paths materially differ, ask before coding.
 
-- If approved development data is disposable, make the current schema and code change directly, then use the `dev-data-reset` workflow. Load that skill before any destructive reset; this skill does not authorize one.
-- If existing data must remain usable during rollout, use the compatibility, run, switch/strip, and tighten phases below.
-- If the user has not made this choice and either path would materially change the work, ask before coding.
+- **Erase:** record the exact approved data scope, delete only that scope through its owning workflow, and build the final schema directly. Use `dev-data-reset` only for a full reset that preserves all Clerk-backed accounts; use `convex-admin-ops` plus the owning domain skills for selective cleanup.
+- **Migrate:** preserve the approved scope through the compatibility, run, switch/strip, and tighten phases below. In a one-time development migration, remove the temporary compatibility and migration code after the audit and strict-schema deployment unless the user asks to keep it replayable.
+- **Mixed:** record separate keep/migrate and erase scopes. Never let a broad reset delete the keep scope, and never keep compatibility code for the erase scope.
+- **Ongoing rollout continuity:** keep replayable migrations or compatibility code only when the user explicitly needs deployment continuity beyond this task.
 
 # Clarify Data Survival Before Coding
 
@@ -26,7 +27,8 @@ This product is not in production. Do not add compatibility fields, dual reads, 
 - Which field is source vs destination?
 - Target type of the new field?
 - Backfill value/rule (constant or derived)?
-- Must existing deployment data remain usable during rollout, or may approved development data be reset?
+- Which data should be erased, migrated, or left untouched? A mixed answer is valid.
+- Must migrated data stay usable during an ongoing rollout, or is this a one-time development migration whose bridge code should be removed after success?
 - Should this be dev-only run now, or just prepare migration code?
 
 # Implementation Workflow
@@ -37,7 +39,8 @@ Copy this checklist and update status while working:
 Migration Progress:
 
 - [ ] Confirm scope and exact field mapping
-- [ ] Confirm whether existing data must survive or may be reset
+- [ ] Record the exact erase, migrate, and untouched scopes chosen by the user
+- [ ] Confirm whether migration code is one-time or must stay replayable
 - [ ] Confirm whether `@convex-dev/migrations` wiring already exists
 - [ ] Add migration definition + runner in `convex/migrations.ts`
 - [ ] Deploy the compatibility schema and matching code for the current phase
@@ -46,6 +49,7 @@ Migration Progress:
 - [ ] Switch reads/writes and make the legacy field optional when the migration needs a strip phase
 - [ ] Run the strip to completion and verify stored docs when applicable
 - [ ] Tighten the schema only after the stored data passes the final shape
+- [ ] Remove temporary migration definitions, runners, casts, tests, and compatibility docs when this is a one-time development migration
 ```
 
 # Compatibility, Run, And Tighten Rollout
@@ -132,11 +136,11 @@ export const run_backfill_example = app_migrations.runner(internal.migrations.ba
 
 ## Legacy Cast Types
 
-Migrations stay in `migrations.ts` permanently, but the schema keeps moving. Never reference a
-legacy field through `Doc<...>` directly — once the field leaves the schema the migration stops
-compiling, and returning `{ old_field: undefined }` from `migrateOne` fails tsc for the same
-reason. Define an Omit-based cast type (see `LegacyVersionReview` / `LegacyPluginsVersion` in
-`migrations.ts`) and strip fields with destructure + `ctx.db.replace`:
+For a migration that must stay replayable, never reference a legacy field through `Doc<...>`
+directly — once the field leaves the schema the migration stops compiling, and returning
+`{ old_field: undefined }` from `migrateOne` fails tsc for the same reason. Define an Omit-based
+cast type (see `LegacyVersionReview` / `LegacyPluginsVersion` in `migrations.ts`) and strip fields
+with destructure + `ctx.db.replace`:
 
 ```ts
 type LegacyPluginsVersion = Omit<Doc<"plugins_versions">, "backend"> & {
@@ -160,6 +164,10 @@ export const remove_plugins_versions_backend = app_migrations.define({
 
 Typing the legacy field as `Doc<...>["<newField>"]` keeps the value shape single-sourced from the
 schema and compiles in every phase.
+
+For a one-time development migration, keep this cast and its migration definitions only until the
+data audit and strict-schema deployment pass. Then delete the definitions, runners, casts, and
+migration-only tests in the same task.
 
 # CLI Workflow
 
@@ -185,7 +193,11 @@ Pop-Location
 ```
 
   Read the dry-run output and verify the target docs did not change before starting the real run.
+  A cross-table migration can insert into another table without the dry-run summary showing a
+  useful source-row change. Treat that summary as a safety check, not proof of the copy. After the
+  real run, compare source and destination counts and audit the per-row mapping and foreign links.
 - A named runner can return `Migration started` or `Migration running` while scheduled batches remain. Poll `convex run --component migrations lib:getStatus` until the target reports `isDone`; do not tighten the schema based on the runner's first response.
+- If an existing `convex dev` watcher auto-deploys local Convex edits, do not edit deployable schema, function, or migration files while a live migration reports `inProgress`. This is only a migration sequencing rule; follow the main Convex guidance for general watcher use.
 - Use `--push` only when you intentionally need to deploy local Convex source before the call.
 - Use `--watch` only for a query whose changing result you need to inspect.
 
@@ -210,10 +222,21 @@ vp env exec pnpm --dir packages/app exec convex run "migrations:run_<migration_n
 - The component status reports `isDone` for the target migration; the named runner's first response is not completion proof.
 - Schema compiles with tightened shape.
 - Updated write paths no longer write legacy field.
+- For a cross-table copy, source and destination counts match the intended mapping and a focused audit verifies every copied row plus foreign references. Do not use a dry-run summary as this proof.
 - No diagnostics in modified files.
 - Keep migration verification separate from regular runtime coverage:
   - Do not make normal feature tests call migration runners or `packages/app/convex/migrations.ts` APIs.
   - Add focused migration-specific tests only when the task actually introduces or changes a migration.
+
+# One-Time Development Migration Cleanup
+
+When the user chooses migration but does not need the migration to remain replayable:
+
+1. Keep the temporary compatibility schema, dual writes, migrations, and audit helpers only while their phase is active.
+2. Require the migration component to report success and complete the live readback or focused audit before moving to the next phase.
+3. Deploy the strict final schema and current-only runtime code.
+4. Remove temporary migration definitions, runners, legacy cast types, migration-only tests, compatibility comments, and dual-write branches.
+5. Run codegen, type-check, affected tests, an obsolete-name search, and the final live readback. Record the executed migration and counts in the task result instead of leaving dead bridge code in the repository.
 
 # Real-Run Lessons
 

@@ -11,6 +11,7 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 - Right sidebar panel: `.FileNodeView-editor-sidebar-panel`.
 - Comments tab: `#app_file_editor_sidebar_tabs_comments`.
 - Agent tab: `#app_file_editor_sidebar_tabs_agent`.
+- Details tab: `#app_file_editor_sidebar_tabs_details` (since 2026-08-10). Rows are `.FileEditorSidebarDetails-row` with `-label` / `-value` slots. Sidebar tabs depend on the node: a plain-text node shows Details and no Comments (and Details is its default), a Markdown node shows Comments; a stored selection naming a hidden tab falls back without being overwritten.
 
 ## Rich Text Editor
 
@@ -18,6 +19,8 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 - Content root: `.FileEditorRichText-editor-content-root`.
 - Editable content: `.FileEditorRichText-editor-content`.
 - Run the destructive typing example below only in a disposable QA file. If the file already has suitable text, select that text instead of replacing the document.
+- A sidebar-created `new-file*.md` opens with template content, and a click into the editor can land the caret mid-word. Select all (`Control+A`) or press `Control+End` before typing a fixture token, or the token lands inside the template text and substring assertions match confusingly (hit in the 2026-08-10 QA run).
+- Split a select from the destructive key that follows it: run `Control+A` and the delete/replacement typing in separate execute calls with an observe between them. Combined in one call, the destructive step can run against a selection that has not landed yet (hit in the 2026-08-10 QA run).
 - To expose the bubble **Comment** button, keep a non-empty selection. Typing after `Control+A` collapses the selection, so reselect text before clicking **Comment**:
 
 ```js
@@ -66,33 +69,36 @@ await state.page.getByRole("form", { name: "Reply to comment" }).waitFor({ state
 
 ## Plain Text Editor
 
-- Switch to the **Markdown** editor mode from the header mode radios.
-- Prefer snapshots after switching modes; the plain editor may expose Monaco-style editor DOM instead of a normal textarea.
-- If a locator times out, first inspect the editor mode radio state and snapshot the content panel before trying editor-specific selectors.
-- Toolbar: `[aria-label="Markdown editor actions"]`, holding `Save`, `Sync`, the size badge, and `Open file snapshots`.
+- Since 2026-08-10 this is a primary editor surface, not just the Markdown source view: the 19 plain-text extensions (`.json`, `.yaml`, `.csv`, `.txt`, `.ts`, `.js`, `.css`, ...) open in it by default, with Monaco language tokenization derived from the extension. `.md` keeps the rich text editor and reaches this surface as the **Markdown** mode radio; on a plain-text node the same radio reads **Code** and there is no **Rich**.
+- Root: `.FileEditorPlainText`, holding a real Monaco editor (`.monaco-editor`), not a textarea. Drive and read it with the Monaco recipes in `known-hazards.md`: the keyed handle (`window.__qa.monaco().plainText`), `trigger`-typing, `executeEdits`, the sorted `.view-line` readback, and the `data-mode-id` language read.
+- Toolbar: `[aria-label="Text editor actions"]` (renamed from `Markdown editor actions` on 2026-08-10), holding `Save`, `Sync`, the size badge, and `Open file snapshots`.
+- Dirty tracking is debounced: after an edit, `Save` shows a `Checking` spinner before it enables. Poll `save.isEnabled()` for a few 300ms rounds instead of clicking right away.
+- Save and Sync refusals surface as toasts; push refusals show the server `_nay` message verbatim, including the "This change is too large to compare safely" diff-budget message. Read `[data-sonner-toast]` in the same execute call as the click.
+- A refused content read renders a closed-editor alert instead of a fabricated empty document. Do not read a missing `.monaco-editor` as "still loading" without checking for that alert.
 - The plain text editor does not live-collaborate. Edits stay local until `Save`, and `Sync` is disabled while `workingYjsDocSequence === serverSequence` — that is, until somebody else moves the server forward.
 
 ### Sync And Undo QA
 
-Use this after changing how the Markdown editor writes content into its Monaco model. It proves that a sync keeps the user's undo history instead of resetting it.
+Use this after changing how the plain editor writes content into its Monaco model. It proves that a sync keeps the user's undo history instead of resetting it. Runnable again since 2026-08-10 through the editor-handle route (synthetic keyboard input still never reaches Monaco — see `known-hazards.md`).
 
-1. Create a disposable file and open it with `view=plain_text_editor`.
-2. Make several local edits, each its own undo step. A pure cursor move ends the current Monaco undo group, so type a chunk and then press a navigation key:
+1. Create a disposable `.md` file and open it with `view=plain_text_editor` (step 4 needs the rich editor, so a plain-text node cannot carry this flow).
+2. Make several local edits, each its own undo step. `ed.trigger("keyboard", "type", ...)` runs the same command path as typing, including the undo stack, and a cursor move ends the current Monaco undo group:
 
 ```js
-await page.locator(".FileEditorPlainText .view-lines").click();
-await page.keyboard.press("Control+End");
-for (const chunk of ["\nlocal-one", "\nlocal-two", "\nlocal-three"]) {
-	await page.keyboard.type(chunk);
-	await page.keyboard.press("ArrowLeft");
-	await page.keyboard.press("End");
-}
+await page.evaluate(() => {
+	const ed = window.__qa.monaco().plainText;
+	for (const chunk of ["\nlocal-one", "\nlocal-two", "\nlocal-three"]) {
+		const end = ed.getModel().getFullModelRange().getEndPosition();
+		ed.setPosition(end); // the cursor move also closes the previous undo group
+		ed.trigger("keyboard", "type", { text: chunk });
+	}
+});
 ```
 
-3. Assert `Save` is enabled and `Sync` is still disabled.
+3. Assert `Save` is enabled and `Sync` is still disabled. `Save` enables after a debounced dirty check, so poll it.
 4. Move the server forward from a second tab on the same `nodeId` with `view=rich_text_editor`, which does sync live. Type anything there. `Control+End` does not reach the document end in TipTap, so expect the text wherever the caret happened to be — the point is only that the sequence advances.
-5. Back in the Markdown tab, `Sync` is now enabled. Click it and confirm the content merges: the remote change and every local edit are present together.
-6. Click `.view-lines`, then press `Control+Z` several times **in the same execute call**, capturing the text after each press. The first undo must revert the sync alone and leave all local edits in place; each later undo must remove one local edit. If the first undo jumps straight to the server content and the second does nothing, the editor is replacing its model instead of editing it.
+5. Back in the plain-editor tab, `Sync` is now enabled. Click it and confirm the content merges: the remote change and every local edit are present together.
+6. Run the undos through the handle **in the same execute call**, capturing `ed.getModel().getValue()` after each `ed.trigger("keyboard", "undo", null)`. The first undo must revert the sync alone and leave all local edits in place; each later undo must remove one local edit. If the first undo jumps straight to the server content and the second does nothing, the editor is replacing its model instead of editing it.
 7. Check `getLatestLogs` is clean, then close both QA tabs.
 
 ## Diff Editor
@@ -104,28 +110,30 @@ for (const chunk of ["\nlocal-one", "\nlocal-two", "\nlocal-three"]) {
 - Save staged changes: `getByRole("button", { name: "Save staged changes" })`.
 - Accept all: `getByRole("button", { name: "Accept all pending changes in this file" })`.
 - Accept all and save: `getByRole("button", { name: "Accept all pending changes and save" })`.
-- Synthetic input cannot drive Monaco at all since `monaco-editor` 0.56.0 — clicks do not focus it, and `keyboard.type` / `keyboard.insertText` / paste never reach the model (see the Monaco section in `known-hazards.md`). To put content in the modified (unstaged) pane, write the draft through the same public action the editor's debounced sync calls, from page context as the user who owns the draft:
+- Synthetic input cannot drive Monaco at all since `monaco-editor` 0.56.0 — clicks do not focus it, and `keyboard.type` / `keyboard.insertText` / paste never reach the model. For local pane edits, use the keyed editor handle route (`window.__qa.monaco().diffModified` + `trigger`/`executeEdits`, see the Monaco section in `known-hazards.md`). To create the draft as server state instead, write it through the client helper the editor's own flows use — it runs the whole staged-page pipeline (operation batch, text inputs, ids-only action), which replaced the old `upsert_file_pending_update({ unstagedMarkdown })` action shape on 2026-08-10. From page context as the user who owns the draft:
 
 ```js
 const m = await import("/src/lib/app-convex-client.ts");
+const f = await import("/src/lib/files.ts");
 const membership = await m.app_convex.query(m.app_convex_api.organizations.get_membership_by_organization_workspace_name, {
 	organizationName,
 	workspaceName,
 });
-await m.app_convex.action(m.app_convex_api.files_pending_updates.upsert_file_pending_update, {
+const result = await f.files_upsert_file_pending_update({
 	membershipId: membership._id,
 	nodeId,
-	unstagedMarkdown, // the full proposed content; staged stays at the committed base when stagedMarkdown is omitted
+	unstagedText, // the full proposed content; staged stays at the committed base when stagedText is omitted
 });
+// result._nay carries the refusal (over-cap, active batch, frontmatter caps, ...); handle it.
 ```
 
-  A fresh diff mount then shows the draft in the modified pane with hunk widgets, and the pending sidebar gets a `Modified` row. A draft equal to the committed content self-cancels and creates no row. Read pane text back with the sorted `.view-line` readback from `known-hazards.md`.
+  A fresh diff mount then shows the draft in the modified pane with hunk widgets, and the pending sidebar gets a `Modified` row. A draft equal to the committed content self-cancels and creates no row. Read pane text back with the sorted `.view-line` readback from `known-hazards.md`. One batch per user/node is active at a time: a refused flow retires its batch immediately, but a crashed runner's batch can block the same user's next draft for up to ~2 minutes (idle takeover) — retry rather than debugging the app.
 
 ### Content Size Cap QA
 
-**Disabled — not currently runnable.** The flow needs over-cap content inside the local Monaco pane, and no supported path creates that state: synthetic clicks and paste never reach Monaco since `monaco-editor` 0.56.0 (see `known-hazards.md`, Monaco section), and the `upsert_file_pending_update` action recipe cannot stand in because the diff editor never sends an over-cap draft and the backend rejects one anyway. The old click-and-paste steps silently did nothing, so they were removed instead of left looking runnable.
+**Runnable again since 2026-08-10** through the keyed editor handle: `window.__qa.monaco().diffModified` (or `.plainText` in the plain editor) plus `executeEdits` puts over-cap content into the local pane — see the Monaco section in `known-hazards.md`. Build the over-cap text by repeating a short line until the total passes 900,000 bytes (`files_MAX_TEXT_CONTENT_BYTES`). Synthetic clicks and paste still never reach Monaco, and the pending-draft helper cannot stand in because the backend rejects an over-cap draft.
 
-What the flow verified, kept for when Monaco input works again: with over-cap text in the unstaged pane, `.FileEditorDiffToolbarActions-size-badge` reads `Over limit`, the `role="status"` live region reads `File is over the size limit. Remove content to save.`, the blocked draft sync stays silent, each of `Save staged changes` / `Accept all pending changes in this file` / `Accept all pending changes and save` toasts `This file would be … over the … limit …` without changing `.editor.original`, and a reload returns both panes to the committed content. The durable server-side over-cap state has its own runnable flow below (`Content Too Large Banner QA`).
+What the flow verifies: with over-cap text in the unstaged pane, `.FileEditorDiffToolbarActions-size-badge` reads `Over limit`, the `role="status"` live region reads `File is over the size limit. Remove content to save.`, the blocked draft sync stays silent, each of `Save staged changes` / `Accept all pending changes in this file` / `Accept all pending changes and save` toasts `This file would be … over the … limit …` without changing `.editor.original`, and a reload returns both panes to the committed content (nothing over-cap ever persists). The durable server-side over-cap state has its own runnable flow below (`Content Too Large Banner QA`).
 
 ### Content Too Large Banner QA
 
@@ -133,14 +141,14 @@ Checks the durable server state: when materialization rebuilds Markdown over the
 
 The editors block over-cap content before it is pushed, so the UI cannot produce this state. Drive it from the CLI instead, in `packages/app`:
 
-1. Open any Markdown file and read its `data-file-id` from the sidebar row. Look up its org and workspace ids with `pnpm exec convex data files_nodes --limit 1000 --order asc`, filtered on that id (there is no per-id filter, so pipe through `Select-String`).
-2. Read the current sequence with `pnpm exec convex run files_nodes:get_file_content_materialization_state '{"organizationId":…,"workspaceId":…,"nodeId":…}'`. `mark_file_content_too_large` only applies when `sequence` equals both `yjsLastSequenceDoc.lastSequence` and `targetSequence`, so pass that one number for both.
+1. Open any Markdown file and read its `data-file-id` from the sidebar row. Look up its org and workspace ids with `vp env exec pnpm exec convex data files_nodes --limit 1000 --order asc`, filtered on that id (there is no per-id filter, so pipe through `Select-String`).
+2. Read the current sequence with `vp env exec pnpm exec convex run files_nodes:get_file_content_materialization_state '{"organizationId":…,"workspaceId":…,"nodeId":…}'`. `mark_file_content_too_large` only applies when `sequence` equals both `yjsLastSequenceDoc.lastSequence` and `targetSequence`, so pass that one number for both.
 3. Prove the banner arrives reactively, without a reload: start a runner that waits on the selector, then run the mutation while it waits.
 
 ```powershell
 Start-Job -ScriptBlock { vp env exec pnpx playwriter -s 13 -f <wait-runner> --timeout 30000 } -Name banner | Out-Null
 Start-Sleep -Seconds 3
-pnpm exec convex run files_nodes:mark_file_content_too_large '{…,"sequence":4,"targetSequence":4,"byteSize":987654}'
+vp env exec pnpm exec convex run files_nodes:mark_file_content_too_large '{…,"sequence":4,"targetSequence":4,"byteSize":987654}'
 Receive-Job -Name banner -Wait
 ```
 
@@ -148,6 +156,10 @@ The wait runner reads the message before and after `waitForSelector`, and logs `
 
 4. Assert the message names the size, the limit and how much to remove, that it is ellipsized with the full text in `title`, and that the icon uses the red token. Do not screenshot it: the floating surface never settles for Playwright's stability check and both page and element screenshots time out.
 5. Clear it the real way: type a few characters in the editor, then wait for `waitForSelector(…, { state: "detached" })`. Materialization runs through the workpool, so allow up to ~90s; it cleared in ~14s in practice. Remove the typed characters afterwards if the file is not disposable.
+
+### Frontmatter Indexing Warning QA
+
+Upload `assets/files/qa-frontmatter-overcap.md` through the sidebar. After conversion, the rich editor stays editable and `.FileNodeViewTopFloating-frontmatter-too-large` appears in the shared top status. Its full message is in the nested span's `title`; assert it reports 129 fields and 258 index entries, with limits of 128 and 512. The node must not show the stored-file card or enter a conversion retry loop. Archive the fixture after the check.
 
 ## Agent Sidebar
 
@@ -215,7 +227,7 @@ async function replyInSidebarThread(page, threadRootText, replyText) {
 ## Known Gotchas
 
 - Do not use `{ force: true }`, `dispatchEvent`, or DOM `element.click()` to bypass editor/sidebar blockers.
-- The keyboard-driven Monaco steps in `Sync And Undo QA` predate `monaco-editor` 0.56.0 and no longer run: synthetic clicks and keys do not reach Monaco (see `known-hazards.md`, Monaco section). Rich-text (TipTap) typing still works. Until that flow is rewritten, drive Monaco content through the Convex actions recipe in the Diff Editor section and use the sorted `.view-line` readback. That recipe cannot stand in for `Content Size Cap QA` — over-cap drafts are rejected server-side — so that flow is disabled in place above.
+- Synthetic clicks and keys still do not reach Monaco (`monaco-editor` 0.56.0, see `known-hazards.md`, Monaco section), but since 2026-08-10 the keyed editor handle drives it from page context: `window.__qa.monaco()` plus `trigger("keyboard", "type", …)` / `executeEdits`, read back with the sorted `.view-line` recipe or `getModel().getValue()`. `Sync And Undo QA` and `Content Size Cap QA` are rewritten above to use it and are runnable again. Rich-text (TipTap) typing still works normally. The pending-draft helper recipe in the Diff Editor section stays the route for creating a draft as server state.
 - The rich-text comment button depends on a live selection. If it is missing, reselect text and snapshot the toolbar/bubble controls.
 - Contenteditable TipTap editors may appear as textboxes in snapshots but still fail `getByRole("textbox")`; use the scoped `contenteditable` + `aria-label` selector above.
 - Right-sidebar content changes with the selected tab. Scope locators to comments or agent contexts after switching tabs.

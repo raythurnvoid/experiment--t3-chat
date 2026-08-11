@@ -12,6 +12,7 @@ import { api } from "@/../convex/_generated/api.js";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, should_never_happen, sx } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
+import { app_qa_register_monaco_editor } from "@/lib/app-qa.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import {
@@ -28,17 +29,21 @@ import { useFn, useStateRef } from "@/hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
+	files_fetch_file_pending_update_yjs_state,
+	files_fetch_file_yjs_state_and_text,
 	files_get_utf8_byte_size,
 	files_monaco_create_editor_model,
 	files_monaco_execute_edits_with_read_only_fallback,
 	files_pending_update_has_yjs_content,
-	files_fetch_file_yjs_state_and_markdown,
+	files_persist_file_pending_update_rebased_state,
 	files_u8_to_array_buffer,
-	files_yjs_reconcile_branch_with_local_markdown,
-	files_yjs_rebase_branch_with_local_markdown,
+	files_upsert_file_pending_update,
+	files_yjs_reconcile_branch_with_local_text,
+	files_yjs_rebase_branch_with_local_text,
+	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { files_yjs_doc_clone, files_yjs_doc_create_from_array_buffer_update } from "../../../../../shared/files-yjs.ts";
-import { files_headless_tiptap_editor_create, files_yjs_doc_get_markdown } from "../../../../../shared/files-tiptap.ts";
+import { files_headless_tiptap_editor_create, files_yjs_doc_get_text } from "../../../../../shared/files-tiptap.ts";
 import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
 import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
@@ -67,8 +72,8 @@ type FileEditorDiffToolbarActions_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
 	toolbarPortalHost: HTMLElement;
-	getCurrentMarkdown: () => string;
-	onApplySnapshotMarkdown: (markdown: string) => void;
+	getCurrentText: () => string;
+	onApplySnapshotText: (markdown: string) => void;
 	onClickSave: () => void;
 	onClickSync: () => void;
 	onClickAcceptAll: () => void;
@@ -90,8 +95,8 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 		nodeId,
 		sessionId,
 		toolbarPortalHost,
-		getCurrentMarkdown,
-		onApplySnapshotMarkdown,
+		getCurrentText,
+		onApplySnapshotText,
 		onClickSave,
 		onClickSync,
 		onClickAcceptAll,
@@ -205,8 +210,8 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				nodeId={nodeId}
 				sessionId={sessionId}
 				editable={editable}
-				getCurrentMarkdown={getCurrentMarkdown}
-				onApplySnapshotMarkdown={onApplySnapshotMarkdown}
+				getCurrentText={getCurrentText}
+				onApplySnapshotText={onApplySnapshotText}
 			/>
 		</div>,
 		toolbarPortalHost,
@@ -524,18 +529,50 @@ function editor_content_states_match(left: RemoteEditorContentState, right: Remo
 	);
 }
 
-function create_editor_content_state_from_pending_update(pendingUpdate: app_convex_Doc<"files_pending_updates">) {
+/**
+ * Load the three canonical branch states of one pending update and read each one's text. The
+ * states live in paged `files_pending_update_yjs_states` families, so each role is fetched page
+ * by page and reassembled locally; the shape comes from the route-resolved node, never from the
+ * proposal.
+ */
+async function create_editor_content_state_from_pending_update(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	pendingUpdate: app_convex_Doc<"files_pending_updates">;
+	rootKind: files_YjsRootKind;
+}) {
+	const { membershipId, pendingUpdate, rootKind } = args;
 	if (!files_pending_update_has_yjs_content(pendingUpdate)) {
 		return Result({ _nay: { message: "Pending update has no content" } });
 	}
 
-	const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.baseYjsUpdate);
-	const stagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.stagedBranchYjsUpdate);
-	const unstagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.unstagedBranchYjsUpdate);
+	const [baseBytes, stagedBytes, unstagedBytes] = await Promise.all([
+		files_fetch_file_pending_update_yjs_state({
+			membershipId,
+			nodeId: pendingUpdate.fileNodeId,
+			stateId: pendingUpdate.baseStateId,
+		}),
+		files_fetch_file_pending_update_yjs_state({
+			membershipId,
+			nodeId: pendingUpdate.fileNodeId,
+			stateId: pendingUpdate.stagedStateId,
+		}),
+		files_fetch_file_pending_update_yjs_state({
+			membershipId,
+			nodeId: pendingUpdate.fileNodeId,
+			stateId: pendingUpdate.unstagedStateId,
+		}),
+	]);
+	if (baseBytes._nay) return baseBytes;
+	if (stagedBytes._nay) return stagedBytes;
+	if (unstagedBytes._nay) return unstagedBytes;
 
-	const baseMarkdown = files_yjs_doc_get_markdown({ yjsDoc: baseYjsDoc });
-	const stagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: stagedYjsDoc });
-	const unstagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: unstagedYjsDoc });
+	const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(baseBytes._yay);
+	const stagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(stagedBytes._yay);
+	const unstagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(unstagedBytes._yay);
+
+	const baseMarkdown = files_yjs_doc_get_text({ yjsDoc: baseYjsDoc, rootKind });
+	const stagedMarkdown = files_yjs_doc_get_text({ yjsDoc: stagedYjsDoc, rootKind });
+	const unstagedMarkdown = files_yjs_doc_get_text({ yjsDoc: unstagedYjsDoc, rootKind });
 
 	if (baseMarkdown._nay) return baseMarkdown;
 	else if (stagedMarkdown._nay) return stagedMarkdown;
@@ -555,24 +592,25 @@ function create_editor_content_state_from_pending_update(pendingUpdate: app_conv
 }
 
 function create_editor_content_state_from_file_content_data(
-	fileContentData: NonNullable<Awaited<ReturnType<typeof files_fetch_file_yjs_state_and_markdown>>>,
+	fileContentData: NonNullable<Awaited<ReturnType<typeof files_fetch_file_yjs_state_and_text>>>,
 ) {
-	if (fileContentData.markdown._nay) {
+	if (fileContentData.text._nay) {
 		return null;
 	}
 
+	const text = fileContentData.text._yay;
 	return {
 		baselineYjsDoc: fileContentData.yjsDoc,
-		baselineMarkdown: fileContentData.markdown._yay,
+		baselineMarkdown: text,
 		stagedYjsDoc: files_yjs_doc_clone({ yjsDoc: fileContentData.yjsDoc }),
-		stagedMarkdown: fileContentData.markdown._yay,
+		stagedMarkdown: text,
 		unstagedYjsDoc: files_yjs_doc_clone({ yjsDoc: fileContentData.yjsDoc }),
-		unstagedMarkdown: fileContentData.markdown._yay,
+		unstagedMarkdown: text,
 		yjsSequence: fileContentData.yjsSequence,
 	} satisfies RemoteEditorContentState;
 }
 
-type FileEditorDiff_ClassNames = "FileEditorDiff" | "FileEditorDiff-editor" | "FileEditorDiff-anchor";
+type FileEditorDiff_ClassNames = "FileEditorDiff" | "FileEditorDiff-editor" | "FileEditorDiff-anchor" | "FileEditorDiff-refusal";
 
 type FileEditorDiff_CssVars = {
 	"--FileEditorDiff-anchor-name": string;
@@ -582,6 +620,13 @@ export type FileEditorDiff_Props = {
 	className?: string;
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
+	/**
+	 * The node's document shape, threaded from the node the ROUTE already resolved — never from
+	 * the nullable content fetch, which has no value in exactly the refused case.
+	 */
+	rootKind: files_YjsRootKind;
+	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
+	monacoLanguageId: string;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	presenceStore: files_PresenceStore;
 	threadId?: string;
@@ -609,6 +654,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		className,
 		nodeId,
 		editable,
+		rootKind,
+		monacoLanguageId,
 		pendingUpdateId,
 		presenceStore,
 		commentsPortalHost,
@@ -630,8 +677,6 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	const id = useId();
 	const anchorName = `${"--FileEditorDiff-anchor-name" satisfies keyof FileEditorDiff_CssVars}-${id}`;
 
-	const convex = useConvex();
-
 	const editorRef = useRef<monaco_editor.IStandaloneDiffEditor | null>(null);
 	const [mountedModifiedEditor, setMountedModifiedEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
 	const pendingUpdateSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -646,6 +691,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 	const [commentThreadIds, setCommentThreadIds] = useState<string[]>([]);
 	const commentThreadIdsKeyRef = useRef<string>("");
+	const qaMonacoCleanupRef = useRef<(() => void) | null>(null);
 
 	/** Content widgets for per-change actions (accept/discard) */
 	const [contentWidgetsRef, setContentWidgets, contentWidgets] = useStateRef<
@@ -716,10 +762,20 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			lineNumbers: "on",
 			renderLineHighlight: "all",
 			renderLineHighlightOnlyWhenFocus: true,
+
+			// Name the two panes for screen readers; both would otherwise announce as bare "Editor".
+			originalAriaLabel: "Original file content",
+			modifiedAriaLabel: "Modified file content",
 		} satisfies NonNullable<DiffEditorProps["options"]>;
 	});
 
 	const updateThreadIds = (markdown: string) => {
+		// Comment threads live in Markdown comment marks, so only a rich-text document can have
+		// them. Skip the headless Tiptap scan for plain-text nodes; their sidebar stays empty.
+		if (rootKind !== "rich_text") {
+			return;
+		}
+
 		const headlessEditor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
 
 		if (headlessEditor._nay) {
@@ -962,14 +1018,13 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 		pendingUpdateSyncStatusRef.current = "mutation_in_flight";
 
-		return convex
-			.action(api.files_pending_updates.upsert_file_pending_update, {
-				membershipId,
-				nodeId,
-				pendingUpdateId,
-				stagedMarkdown,
-				unstagedMarkdown,
-			})
+		return files_upsert_file_pending_update({
+			membershipId,
+			nodeId,
+			pendingUpdateId,
+			stagedText: stagedMarkdown,
+			unstagedText: unstagedMarkdown,
+		})
 			.then((upsertResult) => {
 				if (upsertResult._nay) {
 					console.error("[FileEditorDiff.upsertPendingUpdateNow] Failed to sync pending updates", {
@@ -1105,40 +1160,43 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		onSave({ flushPendingUpdateUpsertIfNeeded });
 	};
 
-	const getCurrentMarkdown = useFn(() => {
+	const getCurrentText = useFn(() => {
 		return editorModelsRef.current?.original.getValue() ?? editorContentState.stagedMarkdown;
 	});
 
 	// No `editable` guard here on purpose: this runs only after the backend already committed the
 	// restore, so skipping the refresh when permission was removed mid-restore would leave the
 	// editor showing stale content. The pre-action gate lives in the snapshots modal.
-	const handleApplySnapshotMarkdown = useFn(() => {
+	const handleApplySnapshotText = useFn(() => {
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const remoteData = await files_fetch_file_yjs_state_and_markdown({
+			const remoteData = await files_fetch_file_yjs_state_and_text({
 				membershipId,
 				nodeId,
 			});
 
 			if (!remoteData) {
 				console.error(
-					should_never_happen("[FileEditorDiff.handleApplySnapshotMarkdown] Missing `remoteData`", {
+					should_never_happen("[FileEditorDiff.handleApplySnapshotText] Missing `remoteData`", {
 						remoteData,
 					}),
 				);
 				return;
 			}
 
-			if (remoteData.markdown._nay) {
-				console.error("[FileEditorDiff.handleApplySnapshotMarkdown] Error while fetching remote data", {
-					nay: remoteData.markdown._nay,
+			// Surface the refusal: a silent return would leave the editor showing content
+			// the restore already replaced on the server.
+			if (remoteData.text._nay) {
+				console.error("[FileEditorDiff.handleApplySnapshotText] Error while fetching remote data", {
+					nay: remoteData.text._nay,
 				});
+				toast.error("Failed to refresh the editor after the restore. Reload the file.");
 				return;
 			}
 
 			updateEditorValues({
-				stagedMarkdown: remoteData.markdown._yay,
-				unstagedMarkdown: remoteData.markdown._yay,
+				stagedMarkdown: remoteData.text._yay,
+				unstagedMarkdown: remoteData.text._yay,
 			});
 		})()
 			.catch((err) => {
@@ -1286,14 +1344,22 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 		const prevModels = [editor.getModel()?.original, editor.getModel()?.modified];
 		const nextModels = {
-			original: files_monaco_create_editor_model(initialOriginalMarkdown),
-			modified: files_monaco_create_editor_model(initialUnstagedMarkdown),
+			original: files_monaco_create_editor_model(initialOriginalMarkdown, monacoLanguageId),
+			modified: files_monaco_create_editor_model(initialUnstagedMarkdown, monacoLanguageId),
 		};
 		setEditorModels(nextModels);
 		editor.setModel(nextModels);
 		prevModels.forEach((model) => model?.dispose());
 
 		updateThreadIds(initialOriginalMarkdown);
+
+		qaMonacoCleanupRef.current?.();
+		const qaOriginalCleanup = app_qa_register_monaco_editor("diffOriginal", editor.getOriginalEditor());
+		const qaModifiedCleanup = app_qa_register_monaco_editor("diffModified", editor.getModifiedEditor());
+		qaMonacoCleanupRef.current = () => {
+			qaOriginalCleanup();
+			qaModifiedCleanup();
+		};
 
 		monacoListenersDisposeAbortControllers.current?.abort();
 		monacoListenersDisposeAbortControllers.current = new AbortController();
@@ -1479,10 +1545,11 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			return;
 		}
 
-		const mergedStagedBranchResult = files_yjs_reconcile_branch_with_local_markdown({
+		const mergedStagedBranchResult = files_yjs_reconcile_branch_with_local_text({
 			previousRemoteYjsDoc: previousRemoteEditorContentState.stagedYjsDoc,
 			nextRemoteYjsDoc: editorContentState.stagedYjsDoc,
-			localMarkdown: editorModels.original.getValue(),
+			localText: editorModels.original.getValue(),
+			rootKind,
 		});
 		if (mergedStagedBranchResult._nay) {
 			console.error("[FileEditorDiff.reconcileRemoteEditorContentState] Failed to reconcile staged branch", {
@@ -1492,10 +1559,11 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			return;
 		}
 
-		const mergedUnstagedBranchResult = files_yjs_reconcile_branch_with_local_markdown({
+		const mergedUnstagedBranchResult = files_yjs_reconcile_branch_with_local_text({
 			previousRemoteYjsDoc: previousRemoteEditorContentState.unstagedYjsDoc,
 			nextRemoteYjsDoc: editorContentState.unstagedYjsDoc,
-			localMarkdown: editorModels.modified.getValue(),
+			localText: editorModels.modified.getValue(),
+			rootKind,
 		});
 		if (mergedUnstagedBranchResult._nay) {
 			console.error("[FileEditorDiff.reconcileRemoteEditorContentState] Failed to reconcile unstaged branch", {
@@ -1506,8 +1574,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		}
 
 		updateEditorValues({
-			stagedMarkdown: mergedStagedBranchResult._yay.mergedMarkdown,
-			unstagedMarkdown: mergedUnstagedBranchResult._yay.mergedMarkdown,
+			stagedMarkdown: mergedStagedBranchResult._yay.mergedText,
+			unstagedMarkdown: mergedUnstagedBranchResult._yay.mergedText,
 		});
 		lastAppliedRemoteEditorContentStateRef.current = editorContentState;
 	}, [editorContentState, editorModels]);
@@ -1549,6 +1617,9 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 				window.clearTimeout(pendingUpdateSyncTimeoutRef.current);
 				pendingUpdateSyncTimeoutRef.current = null;
 			}
+
+			qaMonacoCleanupRef.current?.();
+			qaMonacoCleanupRef.current = null;
 		};
 	}, []);
 
@@ -1572,8 +1643,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					nodeId={nodeId}
 					sessionId={presenceStore.localSessionId}
 					toolbarPortalHost={toolbarPortalHost}
-					getCurrentMarkdown={getCurrentMarkdown}
-					onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
+					getCurrentText={getCurrentText}
+					onApplySnapshotText={handleApplySnapshotText}
 					onClickSave={handleClickSave}
 					onClickSync={handleClickSync}
 					onClickAcceptAll={handleClickAcceptAll}
@@ -1588,8 +1659,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 						onMount={handleOnMount}
 						original={initialOriginalMarkdown}
 						modified={initialUnstagedMarkdown}
-						originalLanguage="markdown"
-						modifiedLanguage="markdown"
+						originalLanguage={monacoLanguageId}
+						modifiedLanguage={monacoLanguageId}
 						// We own our own models, so we need to keep them alive even after the editor is disposed,
 						// because we dispose them manually
 						keepCurrentOriginalModel={true}
@@ -1623,6 +1694,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	const {
 		nodeId,
 		editable,
+		rootKind,
 		pendingUpdateId,
 		presenceStore,
 		commentsPortalHost,
@@ -1654,11 +1726,13 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	);
 
 	const [fileContentData, setFileContentData] = useState<
-		Awaited<ReturnType<typeof files_fetch_file_yjs_state_and_markdown>> | undefined
+		Awaited<ReturnType<typeof files_fetch_file_yjs_state_and_text>> | undefined
 	>(undefined);
-	const [remoteEditorContentState, setRemoteEditorContentState] = useState<RemoteEditorContentState | undefined>(
-		undefined,
-	);
+	// "refused" renders the refusal state instead of the editor: a fabricated empty stand-in
+	// document would let every later Save diff the user's typing against emptiness.
+	const [remoteEditorContentState, setRemoteEditorContentState] = useState<
+		RemoteEditorContentState | "refused" | undefined
+	>(undefined);
 	const [isSaving, setIsSaving] = useState(false);
 	const [isSyncing, setIsSyncing] = useState(false);
 	const currentPendingUpdateId = pendingUpdate?._id ?? pendingUpdateId;
@@ -1666,7 +1740,8 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	const editorBaseYjsSequence = file_editor_diff_editor_base_yjs_sequence({
 		pendingUpdate,
 		fileContentYjsSequence: fileContentData?.yjsSequence,
-		remoteYjsSequence: remoteEditorContentState?.yjsSequence,
+		remoteYjsSequence:
+			remoteEditorContentState === "refused" ? undefined : remoteEditorContentState?.yjsSequence,
 		lastSequenceSaved: pendingUpdateLastSequenceSaved?.lastSequenceSaved,
 	});
 
@@ -1693,6 +1768,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		setRemoteEditorContentState((currentRemoteEditorContentState) => {
 			if (
 				currentRemoteEditorContentState &&
+				currentRemoteEditorContentState !== "refused" &&
 				editor_content_states_match(currentRemoteEditorContentState, nextRemoteEditorContentState)
 			) {
 				return currentRemoteEditorContentState;
@@ -1732,7 +1808,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			}
 
 			const [nextFileContentData] = await Promise.allSettled([
-				files_fetch_file_yjs_state_and_markdown({
+				files_fetch_file_yjs_state_and_text({
 					membershipId,
 					nodeId,
 				}),
@@ -1788,7 +1864,15 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				});
 			}
 
-			const nextFileContentData = await files_fetch_file_yjs_state_and_markdown({
+			if (remoteEditorContentState === "refused") {
+				return Result({
+					_nay: {
+						message: "The file content could not be read safely",
+					},
+				});
+			}
+
+			const nextFileContentData = await files_fetch_file_yjs_state_and_text({
 				membershipId,
 				nodeId,
 			});
@@ -1799,20 +1883,21 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 					},
 				});
 			}
-			if (nextFileContentData.markdown._nay) {
+			if (nextFileContentData.text._nay) {
 				return Result({
 					_nay: {
 						message: "Failed to reconstruct latest file content while syncing",
-						cause: nextFileContentData.markdown._nay,
+						cause: nextFileContentData.text._nay,
 					},
 				});
 			}
 
-			const rebasedStagedBranchResult = files_yjs_rebase_branch_with_local_markdown({
+			const rebasedStagedBranchResult = files_yjs_rebase_branch_with_local_text({
 				previousBaseYjsDoc: remoteEditorContentState.baselineYjsDoc,
 				nextBaseYjsDoc: nextFileContentData.yjsDoc,
 				previousBranchYjsDoc: remoteEditorContentState.stagedYjsDoc,
-				localMarkdown: editorValues.stagedMarkdown,
+				localText: editorValues.stagedMarkdown,
+				rootKind,
 			});
 			if (rebasedStagedBranchResult._nay) {
 				return Result({
@@ -1823,11 +1908,12 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				});
 			}
 
-			const rebasedUnstagedBranchResult = files_yjs_rebase_branch_with_local_markdown({
+			const rebasedUnstagedBranchResult = files_yjs_rebase_branch_with_local_text({
 				previousBaseYjsDoc: remoteEditorContentState.baselineYjsDoc,
 				nextBaseYjsDoc: nextFileContentData.yjsDoc,
 				previousBranchYjsDoc: remoteEditorContentState.unstagedYjsDoc,
-				localMarkdown: editorValues.unstagedMarkdown,
+				localText: editorValues.unstagedMarkdown,
+				rootKind,
 			});
 			if (rebasedUnstagedBranchResult._nay) {
 				return Result({
@@ -1838,22 +1924,20 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				});
 			}
 
-			const persistRebasedStateResult = await convex.action(
-				api.files_pending_updates.persist_file_pending_update_rebased_state,
-				{
-					membershipId,
-					nodeId,
-					pendingUpdateId: currentPendingUpdateId,
-					baseYjsSequence: nextFileContentData.yjsSequence,
-					baseYjsUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(nextFileContentData.yjsDoc)),
-					stagedBranchYjsUpdate: files_u8_to_array_buffer(
-						encodeStateAsUpdate(rebasedStagedBranchResult._yay.rebasedBranchYjsDoc),
-					),
-					unstagedBranchYjsUpdate: files_u8_to_array_buffer(
-						encodeStateAsUpdate(rebasedUnstagedBranchResult._yay.rebasedBranchYjsDoc),
-					),
-				},
-			);
+			// Stage the three rebased states page by page and finish with the ids-only action.
+			const persistRebasedStateResult = await files_persist_file_pending_update_rebased_state({
+				membershipId,
+				nodeId,
+				pendingUpdateId: currentPendingUpdateId,
+				baseYjsSequence: nextFileContentData.yjsSequence,
+				baseYjsUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(nextFileContentData.yjsDoc)),
+				stagedBranchYjsUpdate: files_u8_to_array_buffer(
+					encodeStateAsUpdate(rebasedStagedBranchResult._yay.rebasedBranchYjsDoc),
+				),
+				unstagedBranchYjsUpdate: files_u8_to_array_buffer(
+					encodeStateAsUpdate(rebasedUnstagedBranchResult._yay.rebasedBranchYjsDoc),
+				),
+			});
 			// "Not found" means the pending update doc was discarded, fully accepted, or replaced
 			// by a newer proposal in another tab while this sync was in flight (persistence is
 			// update-only and patches only the exact synced doc). "Stale save" means another tab's
@@ -1916,7 +2000,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const nextFileContentData = await files_fetch_file_yjs_state_and_markdown({
+			const nextFileContentData = await files_fetch_file_yjs_state_and_text({
 				membershipId,
 				nodeId,
 			});
@@ -1950,7 +2034,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const nextFileContentData = await files_fetch_file_yjs_state_and_markdown({
+			const nextFileContentData = await files_fetch_file_yjs_state_and_text({
 				membershipId,
 				nodeId,
 			});
@@ -1972,23 +2056,48 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		};
 	}, [fileContentData, nodeId, pendingUpdate, pendingUpdateLastSequenceSaved]);
 
-	// Bootstrap the remote editor content state once `fileContentData` and `pendingUpdate` are ready
+	// Bootstrap the remote editor content state once `fileContentData` and `pendingUpdate` are
+	// ready. The pending branch loads paged states, so it is async with a cancel guard.
 	useLayoutEffect(() => {
 		if (remoteEditorContentState !== undefined || pendingUpdate === undefined || fileContentData === undefined) {
 			return;
 		}
 
 		if (pendingUpdate) {
-			const pendingUpdateInitialEditorContentState = create_editor_content_state_from_pending_update(pendingUpdate);
-			if (pendingUpdateInitialEditorContentState._yay) {
-				setRemoteEditorContentStateIfNotMatch(pendingUpdateInitialEditorContentState._yay);
-				return;
-			}
+			let didCancel = false;
 
-			console.error("[FileEditorDiff] Failed to reconstruct initial remote editor content state", {
-				error: pendingUpdateInitialEditorContentState._nay,
-				nodeId,
+			// Use an async IIFE because the React compiler has problems with try catch finally blocks
+			(async (/* iife */) => {
+				const pendingUpdateInitialEditorContentState = await create_editor_content_state_from_pending_update({
+					membershipId,
+					pendingUpdate,
+					rootKind,
+				});
+				if (didCancel) return;
+				if (pendingUpdateInitialEditorContentState._yay) {
+					setRemoteEditorContentStateIfNotMatch(pendingUpdateInitialEditorContentState._yay);
+					return;
+				}
+
+				// Refuse instead of falling through to the committed content or a fabricated empty
+				// state: both stand-ins hide the user's proposal and let Save overwrite it.
+				console.error("[FileEditorDiff] Failed to reconstruct initial remote editor content state", {
+					error: pendingUpdateInitialEditorContentState._nay,
+					nodeId,
+				});
+				setRemoteEditorContentState("refused");
+			})().catch((error) => {
+				if (didCancel) return;
+				console.error("[FileEditorDiff.bootstrap] Unexpected error while loading the pending state", {
+					error,
+					nodeId,
+				});
+				setRemoteEditorContentState("refused");
 			});
+
+			return () => {
+				didCancel = true;
+			};
 		}
 
 		if (fileContentData) {
@@ -2000,43 +2109,58 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			}
 		}
 
-		setRemoteEditorContentState(() => {
-			const emptyYjsDoc = new YDoc();
-			return {
-				baselineYjsDoc: emptyYjsDoc,
-				baselineMarkdown: "",
-				stagedYjsDoc: files_yjs_doc_clone({ yjsDoc: emptyYjsDoc }),
-				stagedMarkdown: "",
-				unstagedYjsDoc: files_yjs_doc_clone({ yjsDoc: emptyYjsDoc }),
-				unstagedMarkdown: "",
-				yjsSequence: 0,
-			} satisfies RemoteEditorContentState;
-		});
-	}, [fileContentData, nodeId, pendingUpdate, remoteEditorContentState]);
+		// A missing or refused content read renders the refusal state, never three fabricated
+		// empty documents: every downstream comparison would diff against fabricated emptiness.
+		setRemoteEditorContentState("refused");
+	}, [fileContentData, membershipId, nodeId, pendingUpdate, remoteEditorContentState, rootKind]);
 
 	// Needs to be a layout effect so sync/save convergence updates the remote editor
-	// state before paint, avoiding a brief render with stale button enablement.
+	// state before paint, avoiding a brief render with stale button enablement. The pending
+	// branch loads paged states, so its update lands one frame later with a cancel guard.
 	useLayoutEffect(() => {
-		if (!remoteEditorContentState) {
+		if (!remoteEditorContentState || remoteEditorContentState === "refused") {
 			return;
 		}
+		// Narrow for the closures below: the guard above excluded the refused marker.
+		const currentRemoteEditorContentState = remoteEditorContentState;
 
 		if (pendingUpdate) {
-			const nextRemoteEditorContentState = create_editor_content_state_from_pending_update(pendingUpdate);
-			if (nextRemoteEditorContentState._nay) {
-				console.error("[FileEditorDiff.pendingUpdateReconcile] Failed to reconstruct remote editor content state", {
-					error: nextRemoteEditorContentState._nay,
+			let didCancel = false;
+
+			// Use an async IIFE because the React compiler has problems with try catch finally blocks
+			(async (/* iife */) => {
+				const nextRemoteEditorContentState = await create_editor_content_state_from_pending_update({
+					membershipId,
+					pendingUpdate,
+					rootKind,
+				});
+				if (didCancel) return;
+				if (nextRemoteEditorContentState._nay) {
+					// Keep the last good state: it holds real decoded content, not a stand-in.
+					console.error("[FileEditorDiff.pendingUpdateReconcile] Failed to reconstruct remote editor content state", {
+						error: nextRemoteEditorContentState._nay,
+						nodeId,
+					});
+					setIsSyncing(false);
+					return;
+				}
+				if (!editor_content_states_match(currentRemoteEditorContentState, nextRemoteEditorContentState._yay)) {
+					setRemoteEditorContentState(nextRemoteEditorContentState._yay);
+				}
+
+				setIsSyncing(false);
+			})().catch((error) => {
+				if (didCancel) return;
+				console.error("[FileEditorDiff.pendingUpdateReconcile] Unexpected error while loading the pending state", {
+					error,
 					nodeId,
 				});
 				setIsSyncing(false);
-				return;
-			}
-			if (!editor_content_states_match(remoteEditorContentState, nextRemoteEditorContentState._yay)) {
-				setRemoteEditorContentState(nextRemoteEditorContentState._yay);
-			}
+			});
 
-			setIsSyncing(false);
-			return;
+			return () => {
+				didCancel = true;
+			};
 		}
 
 		if (!fileContentData) {
@@ -2062,7 +2186,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			return;
 		}
 
-		if (!editor_content_states_match(remoteEditorContentState, nextRemoteEditorContentState)) {
+		if (!editor_content_states_match(currentRemoteEditorContentState, nextRemoteEditorContentState)) {
 			setRemoteEditorContentState(nextRemoteEditorContentState);
 		}
 
@@ -2070,21 +2194,32 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	}, [
 		fileContentData,
 		isSaving,
+		membershipId,
 		nodeId,
 		pendingUpdate,
 		pendingUpdateLastSequenceSaved?.lastSequenceSaved,
 		remoteEditorContentState,
+		rootKind,
 	]);
 
 	// Keep this hardcoded while debugging the diff editor loading state.
 	const forceLoading = false;
 
+	// Never mount the editor over a refused read: a fabricated empty state is legal in
+	// shape, so Save would diff the user's typing against emptiness and overwrite real content.
 	return forceLoading ||
 		hoistingContainer == null ||
 		pendingUpdate === undefined ||
 		fileContentData === undefined ||
 		remoteEditorContentState === undefined ? (
 		<FileEditorDiffSkeleton />
+	) : remoteEditorContentState === "refused" ? (
+		<div className={cn("FileEditorDiff" satisfies FileEditorDiff_ClassNames, className)}>
+			<div role="alert" className={"FileEditorDiff-refusal" satisfies FileEditorDiff_ClassNames}>
+				This file's changes could not be read safely, so the diff editor stays closed to protect them. Reload the file
+				or contact support if this keeps happening.
+			</div>
+		</div>
 	) : (
 		<FileEditorDiffInner
 			key={nodeId}
@@ -2110,7 +2245,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 // #endregion root
 
 // #region tests
-if (import.meta.vitest) {
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, expect, test } = import.meta.vitest;
 
 	describe("file_editor_diff_sync_gate", () => {

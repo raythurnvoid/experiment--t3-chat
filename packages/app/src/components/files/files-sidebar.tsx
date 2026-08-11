@@ -128,18 +128,22 @@ import {
 	files_clear_node_path_cached_validation_messages,
 	files_create_tree_items_list_from_nodes,
 	files_get_default_node_name,
+	files_get_editable_text_yjs_root_kind,
 	files_get_node_path_validation,
 	files_IMPORT_MAX_ITEMS_PER_CALL,
 	files_is_node,
 	files_MAX_UPLOADS_BYTES,
 	files_name_input_select_stem,
+	files_node_has_editable_yjs_state,
 	files_normalize_name,
+	files_normalize_file_rename_name,
 	files_normalize_markdown_name,
 	files_normalize_upload_file_name,
-	type files_ContentType,
+	files_validate_file_rename_class,
 	type files_EditorView,
 	type files_TreeItem,
 	type files_VisibleTreeNode,
+	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { format_relative_time } from "@/lib/date.ts";
 import { async_all_settled_with_limit } from "@/lib/async.ts";
@@ -268,6 +272,14 @@ function upload_filename_has_real_extension(filename: string) {
 	return extensionSeparatorIndex > 0 && extensionSeparatorIndex < filename.length - 1;
 }
 
+// Safe on already-normalized upload filenames only; raw browser names go through a normalizer first.
+function upload_filename_extension_of(filename: string) {
+	const extensionSeparatorIndex = filename.lastIndexOf(".");
+	return extensionSeparatorIndex > 0 && extensionSeparatorIndex < filename.length - 1
+		? filename.slice(extensionSeparatorIndex + 1)
+		: null;
+}
+
 // #region folder import
 const FILES_IMPORT_MAX_FILES = 1000;
 const FILES_IMPORT_MAX_CHUNK_BYTES = 1024 * 1024 * 1024;
@@ -382,7 +394,6 @@ function build_import_plan(entries: FilesImportEntry[]) {
 	for (const entry of entries) {
 		const segments = entry.relativePath.split("/");
 		const contentType = entry.file.type || undefined;
-		const isMarkdown = contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
 
 		const normalizedSegments: string[] = [];
 		let skipReason: FilesImportSkipReason | null = null;
@@ -398,8 +409,10 @@ function build_import_plan(entries: FilesImportEntry[]) {
 			}
 
 			// Markdown tooling also saves `.markdown`, but only `.md` is storable as an editable file.
-			const leafInput = isMarkdown ? segment.replace(/\.markdown$/i, ".md") : segment;
-			if (isMarkdown) {
+			// Alias it first, then let the extension classifier, never the browser MIME,
+			// pick the name rule.
+			const leafInput = segment.replace(/\.markdown$/i, ".md");
+			if (files_get_editable_text_yjs_root_kind(leafInput) === "rich_text") {
 				const normalizedLeaf = files_normalize_markdown_name(leafInput);
 				if (normalizedLeaf._nay) {
 					skipReason = "invalid_name";
@@ -3067,7 +3080,8 @@ type FilesSidebarUploadDraft = {
 	parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
 	filename: string;
 	contentType?: string;
-	isMarkdown: boolean;
+	/** The extension classifier's class for `filename`: rich text, plain text, or null for a stored upload. */
+	textClass: files_YjsRootKind | null;
 	reason: "path_conflict" | "missing_extension";
 	conflict?: {
 		nodeId: app_convex_Id<"files_nodes">;
@@ -3095,15 +3109,43 @@ type FilesSidebarUploadConflictModal_Props = {
 };
 
 function get_upload_conflict_modal_state(args: { draft: FilesSidebarUploadDraft | null; filename: string }) {
-	const normalizedFilenameResult = args.draft?.isMarkdown
-		? files_normalize_markdown_name(args.filename)
-		: { _yay: files_normalize_upload_file_name(args.filename) };
+	const draftTextClass = args.draft?.textClass ?? null;
+	const normalizedFilenameResult =
+		draftTextClass === "rich_text"
+			? files_normalize_markdown_name(args.filename)
+			: { _yay: files_normalize_upload_file_name(args.filename) };
 	const normalizedFilename = normalizedFilenameResult?._yay ?? "";
+
+	// Renaming the upload never converts its bytes, so the new name
+	// may not claim a different content class than the draft was classified with. The Markdown
+	// normalizer above already refuses every non-`.md` extension for a rich draft.
+	const classCrossingMessage = ((/* iife */) => {
+		if (!args.draft || normalizedFilenameResult?._nay || !normalizedFilename) {
+			return undefined;
+		}
+		if (draftTextClass === "plain_text") {
+			return files_get_editable_text_yjs_root_kind(normalizedFilename) === "plain_text"
+				? undefined
+				: "This upload becomes a plain text document, so keep a plain text extension.";
+		}
+		if (draftTextClass === null) {
+			// A stored upload's extension is the only record of what its bytes are, so only the
+			// basename may change.
+			const draftExtension = upload_filename_extension_of(args.draft.filename);
+			const typedExtension = upload_filename_extension_of(normalizedFilename);
+			if (draftExtension !== null && typedExtension !== draftExtension) {
+				return `This file's extension cannot be changed: renaming does not convert the file, so keep '.${draftExtension}'`;
+			}
+		}
+		return undefined;
+	})();
+
 	const invalidFilenameMessage =
 		normalizedFilenameResult?._nay?.message ??
-		(!args.draft?.isMarkdown && !upload_filename_has_real_extension(normalizedFilename)
+		(draftTextClass === null && !upload_filename_has_real_extension(normalizedFilename)
 			? "Uploaded files must include a file extension."
-			: undefined);
+			: undefined) ??
+		classCrossingMessage;
 	const pathConflictMessage =
 		args.draft?.reason === "path_conflict" && normalizedFilename === args.draft.filename
 			? args.draft.conflict?.kind === "file"
@@ -4154,20 +4196,21 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
 			filename: string;
 			contentType?: string;
-			isMarkdown: boolean;
+			textClass: files_YjsRootKind | null;
 		}) => {
 			if (!treeItems) {
 				console.error(should_never_happen("[FilesSidebar.uploadFile] missing deps", { treeItems }));
 				return;
 			}
 
-			if (!args.isMarkdown && !upload_filename_has_real_extension(args.filename)) {
+			// A classified text upload always carries an extension; only stored uploads can miss one.
+			if (args.textClass === null && !upload_filename_has_real_extension(args.filename)) {
 				setUploadDraft({
 					file: args.file,
 					parentId: args.parentId,
 					filename: args.filename,
 					contentType: args.contentType,
-					isMarkdown: args.isMarkdown,
+					textClass: args.textClass,
 					reason: "missing_extension",
 				});
 				return;
@@ -4192,7 +4235,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							parentId: args.parentId,
 							filename: args.filename,
 							contentType: args.contentType,
-							isMarkdown: args.isMarkdown,
+							textClass: args.textClass,
 							reason: "path_conflict",
 							conflict: {
 								nodeId: existingNode.nodeId,
@@ -4226,10 +4269,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			}
 
 			const contentType = file.type || undefined;
-			const isMarkdown = contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
-			const filenameResult = isMarkdown
-				? files_normalize_markdown_name(file.name)
-				: { _yay: files_normalize_upload_file_name(file.name) };
+			// The extension classifier, never the browser MIME, picks the name rule.
+			const textClass = files_get_editable_text_yjs_root_kind(file.name);
+			const filenameResult =
+				textClass === "rich_text"
+					? files_normalize_markdown_name(file.name)
+					: { _yay: files_normalize_upload_file_name(file.name) };
 			if (filenameResult._nay) {
 				toast.error(filenameResult._nay.message ?? "Invalid file name");
 				return;
@@ -4240,7 +4285,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				parentId: args.parentId,
 				filename: filenameResult._yay,
 				contentType,
-				isMarkdown,
+				textClass,
 			});
 		},
 	);
@@ -4493,10 +4538,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 
 		const renameData = ((/* iife */) => {
-			if (
-				itemData.assetId &&
-				!(itemData.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false)
-			) {
+			// Route on the node's editable state, not its MIME: a converted `.json` upload has an
+			// asset AND an editable document, and its rename follows the editable-file class rule.
+			if (itemData.assetId && !files_node_has_editable_yjs_state(itemData)) {
 				const renameValidation = get_uploaded_file_rename_validation({
 					treeItemsList: treeItems?.list,
 					nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
@@ -4517,6 +4561,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				parentId: itemData.parentId,
 				kind: itemData.kind,
 				nameOrPath: trimmedValue,
+				// A rename keeps whatever extension was typed; the class check below judges it.
+				fileNamePolicy: "keep_extension",
 			});
 
 			// Keep path-like renames as folder segments, but canonicalize the final file leaf before Convex creates/moves nodes.
@@ -4530,7 +4576,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					}
 
 					if (itemData.kind === "file") {
-						const leafSegmentResult = files_normalize_name(itemData.kind, leafSegment);
+						const leafSegmentResult = files_normalize_file_rename_name(leafSegment);
 						if (leafSegmentResult._nay) {
 							console.error("[FilesSidebar.handleRename] Invalid path leaf value", {
 								result: leafSegmentResult,
@@ -4545,7 +4591,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					return pathSegments.join("/");
 				}
 
-				const normalizedNameResult = files_normalize_name(itemData.kind, trimmedValue);
+				const normalizedNameResult =
+					itemData.kind === "file"
+						? files_normalize_file_rename_name(trimmedValue)
+						: files_normalize_name(itemData.kind, trimmedValue);
 				if (normalizedNameResult._nay) {
 					console.error("[FilesSidebar.handleRename] Invalid rename value", { result: normalizedNameResult, itemId });
 					return null;
@@ -4574,6 +4623,18 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 		if (normalizedName === itemData.name) {
 			return;
+		}
+
+		// Refuse a class-crossing rename with the server's own message before
+		// the mutation round-trip. `rename_node` enforces the same rule as the backstop.
+		if (itemData.kind === "file") {
+			const destLeafName = normalizedName.split("/").at(-1) ?? normalizedName;
+			const renameClass = files_validate_file_rename_class({ node: itemData, destName: destLeafName });
+			if (renameClass._nay) {
+				setRenameError(itemId, renameClass._nay.message);
+				item.setFocused();
+				return;
+			}
 		}
 
 		clearRenameError(itemId);
@@ -4676,9 +4737,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 		const trimmedValue = currentTree.getRenamingValue().trim();
 		if (files_is_node(itemData) && trimmedValue) {
-			const isMarkdown = itemData.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
+			// Mirror `handleRename`: route on the node's editable state, not its MIME.
 			const renameValidation =
-				itemData.assetId && !isMarkdown
+				itemData.assetId && !files_node_has_editable_yjs_state(itemData)
 					? get_uploaded_file_rename_validation({
 							treeItemsList: treeItems?.list,
 							nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
@@ -4692,6 +4753,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							parentId: itemData.parentId,
 							kind: itemData.kind,
 							nameOrPath: trimmedValue,
+							fileNamePolicy: "keep_extension",
 						});
 			const renameError = renameValidation.validationMessage;
 			if (renameError) {
@@ -4700,6 +4762,22 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				setRenameError(itemId, renameError);
 				item.setFocused();
 				return;
+			}
+
+			// Check the content class on Enter so a class-crossing rename refuses before submission.
+			if (itemData.kind === "file") {
+				const leafResult = files_normalize_file_rename_name(
+					path_extract_segments_from(trimmedValue).at(-1) ?? trimmedValue,
+				);
+				const renameClass = leafResult._nay
+					? null
+					: files_validate_file_rename_class({ node: itemData, destName: leafResult._yay });
+				if (renameClass?._nay) {
+					event.preventDefault();
+					setRenameError(itemId, renameClass._nay.message);
+					item.setFocused();
+					return;
+				}
 			}
 		}
 
@@ -5054,7 +5132,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
 						path: nextNodeName,
 					})
-				: convex.action(app_convex_api.files_nodes_content.create_markdown_node, {
+				: convex.action(app_convex_api.files_nodes_content.create_text_node, {
 						membershipId,
 						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
 						path: nextNodeName,
@@ -5378,7 +5456,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			parentId: uploadDraft.parentId,
 			filename,
 			contentType: uploadDraft.contentType,
-			isMarkdown: uploadDraft.isMarkdown,
+			textClass: uploadDraft.textClass,
 		});
 	});
 
@@ -5668,7 +5746,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			parentId: files_ROOT_ID,
 			filename,
 			contentType: "application/pdf",
-			isMarkdown: false,
+			textClass: files_get_editable_text_yjs_root_kind(filename),
 			reason,
 			...(reason === "path_conflict"
 				? {
@@ -6657,6 +6735,49 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				helperText: message,
 				showReplace: false,
 				showAttentionState: true,
+				uploadBlockingMessage: message,
+			});
+		});
+
+		test("refuses a stored upload rename that changes the extension", () => {
+			const message = "This file's extension cannot be changed: renaming does not convert the file, so keep '.pdf'";
+
+			expect(
+				get_upload_conflict_modal_state({
+					draft: test_upload_draft({ filename: "report.pdf" }),
+					filename: "report.txt",
+				}),
+			).toMatchObject({
+				normalizedFilename: "report.txt",
+				invalidFilenameMessage: message,
+				uploadBlockingMessage: message,
+			});
+		});
+
+		test("allows a plain text draft to switch plain text subtypes", () => {
+			expect(
+				get_upload_conflict_modal_state({
+					draft: test_upload_draft({ filename: "data.json" }),
+					filename: "data.yaml",
+				}),
+			).toMatchObject({
+				normalizedFilename: "data.yaml",
+				invalidFilenameMessage: undefined,
+				uploadBlockingMessage: undefined,
+			});
+		});
+
+		test("refuses a plain text draft rename that leaves the plain text class", () => {
+			const message = "This upload becomes a plain text document, so keep a plain text extension.";
+
+			expect(
+				get_upload_conflict_modal_state({
+					draft: test_upload_draft({ filename: "data.json" }),
+					filename: "data.pdf",
+				}),
+			).toMatchObject({
+				normalizedFilename: "data.pdf",
+				invalidFilenameMessage: message,
 				uploadBlockingMessage: message,
 			});
 		});

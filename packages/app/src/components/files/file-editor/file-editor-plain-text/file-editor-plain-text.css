@@ -5,6 +5,17 @@
 		flex-direction: column;
 		height: 100%;
 	}
+
+	/* Shown instead of the editor when the content read was refused: mounting an empty stand-in
+	   document would let Save overwrite the real content. */
+	.FileEditorPlainText-refusal {
+		margin: 32px auto;
+		max-width: 480px;
+		padding: 16px;
+
+		font-size: 0.95rem;
+		color: var(--color-fg-08);
+	}
 	/* #endregion root */
 
 	/* #region toolbar */

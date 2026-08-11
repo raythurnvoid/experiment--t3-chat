@@ -12,7 +12,9 @@ const {
 	useStableQueryMock,
 	actionMock,
 	mutationMock,
-	fetchFileYjsStateAndMarkdownMock,
+	fetchFileYjsStateAndTextMock,
+	fetchPendingStateMock,
+	upsertPendingMock,
 	truncatePathForWidthMock,
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
@@ -21,7 +23,9 @@ const {
 	useStableQueryMock: vi.fn(),
 	actionMock: vi.fn(),
 	mutationMock: vi.fn(),
-	fetchFileYjsStateAndMarkdownMock: vi.fn(),
+	fetchFileYjsStateAndTextMock: vi.fn(),
+	fetchPendingStateMock: vi.fn(),
+	upsertPendingMock: vi.fn(),
 	truncatePathForWidthMock: vi.fn((args: { path: string }) => args.path),
 }));
 
@@ -83,21 +87,15 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 	},
 }));
 
-// Keep the real modules. Fake the expensive headless Tiptap decoders and committed-content fetch
-// so action handlers and delete previews receive deterministic Markdown.
+// Keep the real modules. Fake only the network reads (committed-content fetch, paged pending
+// state fetch) and the batch-staging upsert helper; the byte->text decode below runs the REAL
+// bridge on real encoded states — a stub there would keep objective 16 green while production
+// is wrong.
 vi.mock("@/lib/files.ts", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/files.ts")>()),
-	files_fetch_file_yjs_state_and_markdown: (...args: unknown[]) => fetchFileYjsStateAndMarkdownMock(...args),
-}));
-
-vi.mock("../../../../../shared/files-yjs.ts", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../../../../../shared/files-yjs.ts")>()),
-	files_yjs_doc_create_from_array_buffer_update: (update: unknown) => update,
-}));
-
-vi.mock("../../../../../shared/files-tiptap.ts", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../../../../../shared/files-tiptap.ts")>()),
-	files_yjs_doc_get_markdown: ({ yjsDoc }: { yjsDoc: unknown }) => ({ _yay: yjsDoc as string }),
+	files_fetch_file_yjs_state_and_text: (...args: unknown[]) => fetchFileYjsStateAndTextMock(...args),
+	files_fetch_file_pending_update_yjs_state: (...args: unknown[]) => fetchPendingStateMock(...args),
+	files_upsert_file_pending_update: (...args: unknown[]) => upsertPendingMock(...args),
 }));
 
 // The real implementation measures text with Pretext font metrics that happy-dom cannot provide;
@@ -141,6 +139,25 @@ vi.mock("@/components/my-link.tsx", () => ({
 }));
 
 import { FileEditorSidebarPending } from "./file-editor-sidebar-pending.tsx";
+import { encodeStateAsUpdate } from "yjs";
+import { files_yjs_doc_create_from_text } from "../../../../../shared/files-tiptap.ts";
+import { files_u8_to_array_buffer } from "@/lib/files.ts";
+
+/**
+ * Real encoded branch states per fixture state id. The fetch mock serves these bytes and the
+ * component decodes them through the real byte->text bridge.
+ */
+const pendingStateBytesByStateId = new Map<string, ArrayBuffer>();
+function registerPendingState(stateId: string, text: string) {
+	// Always overwrite: tests reuse fixture ids with different texts.
+	const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind: "rich_text" });
+	if ("_nay" in yjsDoc) {
+		throw new Error(yjsDoc._nay.message);
+	}
+	pendingStateBytesByStateId.set(stateId, files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)));
+	yjsDoc.destroy();
+	return stateId;
+}
 
 function makePendingUpdate(args: {
 	id: string;
@@ -160,13 +177,14 @@ function makePendingUpdate(args: {
 		workspaceId: "workspace_1",
 		userId: "user_1",
 		fileNodeId: args.fileNodeId,
-		// Structural-only rows leave all 4 Yjs fields unset, like the server does.
+		// Structural-only rows leave the whole canonical content group unset, like the server does.
 		...(args.staged != null && args.unstaged != null
 			? {
 					baseYjsSequence: 0,
-					baseYjsUpdate: "" as never,
-					stagedBranchYjsUpdate: args.staged as never,
-					unstagedBranchYjsUpdate: args.unstaged as never,
+					baseLineageGeneration: 0,
+					baseStateId: registerPendingState(`${args.id}_base`, "") as never,
+					stagedStateId: registerPendingState(`${args.id}_staged`, args.staged) as never,
+					unstagedStateId: registerPendingState(`${args.id}_unstaged`, args.unstaged) as never,
 				}
 			: {}),
 		...(args.pendingMove ? { pendingMove: args.pendingMove } : {}),
@@ -220,6 +238,7 @@ function makeNode(args: {
 						: {
 								yjsSnapshotId: `snapshot_${args.id}`,
 								yjsLastSequenceId: `sequence_${args.id}`,
+								yjsRootKind: "rich_text",
 							}),
 				}
 			: {}),
@@ -240,8 +259,15 @@ beforeEach(() => {
 	actionMock.mockResolvedValue({ _yay: null });
 	mutationMock.mockReset();
 	mutationMock.mockResolvedValue({ _yay: null });
-	fetchFileYjsStateAndMarkdownMock.mockReset();
-	fetchFileYjsStateAndMarkdownMock.mockResolvedValue({ markdown: { _yay: "Committed content\n" } });
+	fetchFileYjsStateAndTextMock.mockReset();
+	fetchFileYjsStateAndTextMock.mockResolvedValue({ text: { _yay: "Committed content\n" } });
+	fetchPendingStateMock.mockReset();
+	fetchPendingStateMock.mockImplementation(async (args: { stateId: string }) => {
+		const bytes = pendingStateBytesByStateId.get(args.stateId);
+		return bytes ? { _yay: bytes } : { _nay: { name: "nay", message: "Missing pending state fixture" } };
+	});
+	upsertPendingMock.mockReset();
+	upsertPendingMock.mockResolvedValue({ _yay: null });
 	truncatePathForWidthMock.mockReset();
 	truncatePathForWidthMock.mockImplementation((args: { path: string }) => args.path);
 	useQueryMock.mockReset();
@@ -511,23 +537,22 @@ describe("FileEditorSidebarPending", () => {
 		fireEvent.click(screen.getByRole("option", { name: /^Agent chat/ }));
 		fireEvent.click(screen.getByText("Accept all"));
 
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
-		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
+		// The decoded texts carry rendered Markdown's trailing newline.
+		expect(upsertPendingMock).toHaveBeenCalledWith({
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_agent",
 			pendingUpdateId: "pu_agent",
-			stagedMarkdown: "U_AGENT",
-			unstagedMarkdown: "U_AGENT",
+			reviewedUpdatedAt: 1,
+			stagedText: "U_AGENT\n",
+			unstagedText: "U_AGENT\n",
 		});
 		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_agent",
 			pendingUpdateId: "pu_agent",
 		});
-		expect(actionMock).not.toHaveBeenCalledWith(
-			"upsert_file_pending_update",
-			expect.objectContaining({ nodeId: "node_user" }),
-		);
+		expect(upsertPendingMock).not.toHaveBeenCalledWith(expect.objectContaining({ nodeId: "node_user" }));
 	});
 
 	test("bulk discard affects only the selected source", async () => {
@@ -657,19 +682,43 @@ describe("FileEditorSidebarPending", () => {
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept"));
 
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
-		expect(actionMock).toHaveBeenNthCalledWith(1, "upsert_file_pending_update", {
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
+		expect(upsertPendingMock).toHaveBeenCalledWith({
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_a",
-			stagedMarkdown: "UNSTAGED_MD",
-			unstagedMarkdown: "UNSTAGED_MD",
+			reviewedUpdatedAt: 1,
+			stagedText: "UNSTAGED_MD\n",
+			unstagedText: "UNSTAGED_MD\n",
 		});
-		expect(actionMock).toHaveBeenNthCalledWith(2, "save_file_pending_update", {
+		expect(actionMock).toHaveBeenNthCalledWith(1, "save_file_pending_update", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_a",
 		});
+	});
+
+	test("Accept refuses visibly when the pending decode fails and publishes nothing", async () => {
+		const pendingUpdate = makePendingUpdate({
+			id: "pu_refused",
+			fileNodeId: "node_a",
+			staged: "STAGED_MD",
+			unstaged: "UNSTAGED_MD",
+		});
+		// Break the decode: the state fetch finds no bytes for this row, so the read refuses.
+		pendingStateBytesByStateId.delete("pu_refused_staged");
+		pendingStateBytesByStateId.delete("pu_refused_unstaged");
+		useQueryMock.mockReturnValue([pendingUpdate]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept"));
+
+		// The refusal is visible, and Accept never falls through to publishing a decoded "" —
+		// that would commit empty over the user's content.
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		expect(upsertPendingMock).not.toHaveBeenCalled();
+		expect(actionMock).not.toHaveBeenCalled();
 	});
 
 	test("keeps Accept disabled and Discard enabled while write permission is loading", () => {
@@ -724,12 +773,12 @@ describe("FileEditorSidebarPending", () => {
 		actionMock.mockReset();
 		// The upsert lands, then another tab's save advances the row before this save runs; the
 		// reactive query renders the real state, so no error and no success announcement.
-		actionMock.mockResolvedValueOnce({ _yay: null }).mockResolvedValue({ _nay: { message: "Stale save" } });
+		actionMock.mockResolvedValue({ _nay: { message: "Stale save" } });
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept"));
 
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
 		expect(toast.error).not.toHaveBeenCalled();
 		expect(screen.getByRole("status").textContent).toBe("");
 	});
@@ -765,26 +814,28 @@ describe("FileEditorSidebarPending", () => {
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept all"));
 
-		// 2 rows x (upsert + save) = 4 action calls
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(4));
-		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+		// 2 rows x (staged upsert + save): the saves land on the action mock.
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
+		expect(upsertPendingMock).toHaveBeenCalledWith({
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_a",
-			stagedMarkdown: "UNSTAGED_A",
-			unstagedMarkdown: "UNSTAGED_A",
+			reviewedUpdatedAt: 1,
+			stagedText: "UNSTAGED_A\n",
+			unstagedText: "UNSTAGED_A\n",
 		});
 		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_a",
 		});
-		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+		expect(upsertPendingMock).toHaveBeenCalledWith({
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_b",
 			pendingUpdateId: "pu_b",
-			stagedMarkdown: "UNSTAGED_B",
-			unstagedMarkdown: "UNSTAGED_B",
+			reviewedUpdatedAt: 1,
+			stagedText: "UNSTAGED_B\n",
+			unstagedText: "UNSTAGED_B\n",
 		});
 		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
 			membershipId: MEMBERSHIP_ID,
@@ -948,8 +999,8 @@ describe("FileEditorSidebarPending", () => {
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept all"));
 
-		// 2 rows x (upsert + save) = 4 action calls
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(4));
+		// 2 rows x one save action each; the staged upserts run through the batch helper.
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
 		await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Accepted 2 pending changes"));
 		expect(toast.error).not.toHaveBeenCalled();
 	});
@@ -1020,7 +1071,7 @@ describe("FileEditorSidebarPending", () => {
 		const sizeDiff = screen.getByRole("textbox", { name: "Size difference for /source.mp4" });
 		expect(sizeDiff.textContent).toContain("-Size: 1.0 KB (1030 bytes)");
 		expect(sizeDiff.textContent).toContain("+Size: 1.0 KB (1024 bytes)");
-		expect(fetchFileYjsStateAndMarkdownMock).not.toHaveBeenCalled();
+		expect(fetchFileYjsStateAndTextMock).not.toHaveBeenCalled();
 	});
 
 	test("binary replacement shows when the file sizes are unchanged", () => {
@@ -1066,7 +1117,7 @@ describe("FileEditorSidebarPending", () => {
 		expect(container.querySelector("details")).toBeNull();
 		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-deleted")?.textContent).toBe("/video.mp4");
 		expect(screen.getByRole("link", { name: "/video.mp4" }).getAttribute("href")).not.toContain("view=diff_editor");
-		expect(fetchFileYjsStateAndMarkdownMock).not.toHaveBeenCalled();
+		expect(fetchFileYjsStateAndTextMock).not.toHaveBeenCalled();
 	});
 
 	test("delete with editable Yjs state starts loading committed content before the first expand", async () => {
@@ -1082,7 +1133,7 @@ describe("FileEditorSidebarPending", () => {
 		const { container } = render(<FileEditorSidebarPending />);
 
 		await waitFor(() =>
-			expect(fetchFileYjsStateAndMarkdownMock).toHaveBeenCalledWith({
+			expect(fetchFileYjsStateAndTextMock).toHaveBeenCalledWith({
 				membershipId: MEMBERSHIP_ID,
 				nodeId: "node_text",
 			}),
@@ -1576,15 +1627,16 @@ describe("FileEditorSidebarPending", () => {
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept"));
 
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
-		expect(actionMock).toHaveBeenNthCalledWith(1, "upsert_file_pending_update", {
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
+		expect(upsertPendingMock).toHaveBeenCalledWith({
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_copy",
-			stagedMarkdown: "UNSTAGED_MD",
-			unstagedMarkdown: "UNSTAGED_MD",
+			reviewedUpdatedAt: 1,
+			stagedText: "UNSTAGED_MD\n",
+			unstagedText: "UNSTAGED_MD\n",
 		});
-		expect(actionMock).toHaveBeenNthCalledWith(2, "save_file_pending_update", {
+		expect(actionMock).toHaveBeenNthCalledWith(1, "save_file_pending_update", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_copy",
@@ -1607,25 +1659,26 @@ describe("FileEditorSidebarPending", () => {
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept"));
 
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
 		expect(mutationMock).toHaveBeenCalledTimes(1);
 		expect(mutationMock).toHaveBeenCalledWith("apply_file_pending_move", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 		});
-		expect(actionMock).toHaveBeenNthCalledWith(1, "upsert_file_pending_update", {
+		expect(upsertPendingMock).toHaveBeenCalledWith({
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_mixed",
-			stagedMarkdown: "UNSTAGED_MD",
-			unstagedMarkdown: "UNSTAGED_MD",
+			reviewedUpdatedAt: 1,
+			stagedText: "UNSTAGED_MD\n",
+			unstagedText: "UNSTAGED_MD\n",
 		});
-		expect(actionMock).toHaveBeenNthCalledWith(2, "save_file_pending_update", {
+		expect(actionMock).toHaveBeenNthCalledWith(1, "save_file_pending_update", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_mixed",
 		});
-		expect(mutationMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(actionMock.mock.invocationCallOrder[0] ?? 0);
+		expect(mutationMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(upsertPendingMock.mock.invocationCallOrder[0] ?? 0);
 	});
 
 	test("mixed Discard reverts the content first, then discards the move", async () => {
@@ -1745,19 +1798,20 @@ describe("FileEditorSidebarPending", () => {
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept all"));
 
-		// content row → upsert + save; move row → one mutation
-		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
+		// content row → staged upsert + save; move row → one mutation
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
 		expect(mutationMock).toHaveBeenCalledTimes(1);
 		expect(mutationMock).toHaveBeenCalledWith("apply_file_pending_move", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_b",
 		});
-		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+		expect(upsertPendingMock).toHaveBeenCalledWith({
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_content",
-			stagedMarkdown: "UNSTAGED_A",
-			unstagedMarkdown: "UNSTAGED_A",
+			reviewedUpdatedAt: 1,
+			stagedText: "UNSTAGED_A\n",
+			unstagedText: "UNSTAGED_A\n",
 		});
 		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
 			membershipId: MEMBERSHIP_ID,

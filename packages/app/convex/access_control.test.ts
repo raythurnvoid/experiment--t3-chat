@@ -469,7 +469,7 @@ describe("enforcement", () => {
 		// This action checks the permission through `get_current_user_workspace_permission`, so the test
 		// proves two things: the identity survives `ctx.runQuery`, and the refusal happens before any
 		// R2 work.
-		const created = await fixture.asMember.action(api.files_nodes_content.create_markdown_node, {
+		const created = await fixture.asMember.action(api.files_nodes_content.create_text_node, {
 			membershipId: fixture.memberMembershipId,
 			parentId: files_ROOT_ID,
 			path: "viewer-note.md",
@@ -512,6 +512,7 @@ describe("enforcement", () => {
 				assetId,
 				yjsSnapshotAssetId,
 				textContent: "",
+				rootKind: "rich_text",
 				readOnly: false,
 			});
 
@@ -3702,7 +3703,7 @@ describe("file sharing", () => {
 
 	/**
 	 * One committed searchable file written straight into the database: the node plus both chunk
-	 * kinds. `create_markdown_node` uploads to R2, which these tests do not have, and text search
+	 * kinds. `create_text_node` uploads to R2, which these tests do not have, and text search
 	 * reads only the node and its plain-text chunks.
 	 */
 	async function seed_committed_search_file(
@@ -3750,16 +3751,16 @@ describe("file sharing", () => {
 				lowercaseExtension: "md",
 				...(args.restrictedScopeNodeId ? { restrictedScopeNodeId: args.restrictedScopeNodeId } : {}),
 			});
-			const markdownChunkIds = await Promise.all(
+			const textChunkIds = await Promise.all(
 				chunks._yay.map((chunk) =>
-					ctx.db.insert("files_markdown_chunks", {
+					ctx.db.insert("files_text_chunks", {
 						organizationId: fixture.organizationId,
 						workspaceId,
 						fileNodeId,
 						sourceKind: "committed",
 						yjsSequence: 0,
 						chunkIndex: chunk.chunkIndex,
-						markdownChunk: chunk.markdownChunk,
+						textChunk: chunk.textChunk,
 						startIndex: chunk.startIndex,
 						endIndex: chunk.endIndex,
 						lineStart: chunk.lineStart,
@@ -3776,11 +3777,11 @@ describe("file sharing", () => {
 						fileNodeId,
 						sourceKind: "committed",
 						yjsSequence: 0,
-						markdownChunkId: markdownChunkIds[index]!,
+						textChunkId: textChunkIds[index]!,
 						chunkIndex: chunk.chunkIndex,
 						path: args.path,
 						plainTextChunk: chunk.plainTextChunk,
-						markdownChunk: chunk.markdownChunk,
+						textChunk: chunk.textChunk,
 						startIndex: chunk.startIndex,
 						endIndex: chunk.endIndex,
 						lineStart: chunk.lineStart,
@@ -5738,6 +5739,90 @@ describe("file sharing", () => {
 		expect(sameWorkspace._nay).toBeUndefined();
 	});
 
+	/**
+	 * Run the agent upsert commit the way the action does: stage and seal one sealed output family
+	 * under a server-side batch, then commit by ids. Retire the batch on a commit refusal, exactly
+	 * like the action, so a follow-up call can open a fresh batch.
+	 */
+	async function commit_pending_upsert_for_test(args: {
+		t: ReturnType<typeof test_convex>;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		stateUpdate: ArrayBuffer;
+		unstagedMarkdown: string;
+	}) {
+		const batch = await args.t.mutation(
+			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+			{
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				nodeId: args.nodeId,
+			},
+		);
+		if (batch._nay) {
+			throw new Error(batch._nay.message);
+		}
+		const operationBatchId = batch._yay.operationBatchId;
+
+		const sealedByRole = new Map<"base" | "staged" | "unstaged", { stateId: Id<"files_pending_update_yjs_states">; digest: string }>();
+		for (const role of ["base", "staged", "unstaged"] as const) {
+			const staged = await args.t.mutation(internal.files_pending_updates.stage_file_pending_update_state_page_internal, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				operationBatchId,
+				phase: "output",
+				role,
+				pageIndex: 0,
+				bytes: args.stateUpdate,
+			});
+			if (staged._nay) {
+				throw new Error(staged._nay.message);
+			}
+			const sealed = await args.t.mutation(internal.files_pending_updates.seal_file_pending_update_state_internal, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				operationBatchId,
+				phase: "output",
+				role,
+				expectedTotalBytes: args.stateUpdate.byteLength,
+			});
+			if (sealed._nay) {
+				throw new Error(sealed._nay.message);
+			}
+			sealedByRole.set(role, { stateId: sealed._yay.stateId, digest: sealed._yay.digest });
+		}
+
+		const committed = await args.t.mutation(internal.files_pending_updates.commit_file_pending_update_upsert_in_db, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: args.nodeId,
+			operationBatchId,
+			expectedUpdatedAt: null,
+			baseYjsSequence: 0,
+			baseLineageGeneration: 0,
+			baseStateId: sealedByRole.get("base")!.stateId,
+			stagedStateId: sealedByRole.get("staged")!.stateId,
+			unstagedStateId: sealedByRole.get("unstaged")!.stateId,
+			baseStateDigest: sealedByRole.get("base")!.digest,
+			stagedStateDigest: sealedByRole.get("staged")!.digest,
+			unstagedStateDigest: sealedByRole.get("unstaged")!.digest,
+			unstagedText: args.unstagedMarkdown,
+			unstagedBranchChanged: true,
+		});
+		if (committed._nay) {
+			await args.t.mutation(internal.files_pending_updates.retire_file_pending_update_operation_batch, {
+				operationBatchId,
+			});
+		}
+		return committed;
+	}
+
 	test("a read-only sharee cannot stage an agent change, and can still discard their own", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -5801,8 +5886,15 @@ describe("file sharing", () => {
 				workspaceId: fixture.defaultWorkspaceId,
 				fileNodeId,
 				lastSequence: 0,
+				unmaterializedUpdateCount: 0,
+				unmaterializedUpdateBytes: 0,
+				lineageGeneration: 0,
 			});
-			await ctx.db.patch("files_nodes", fileNodeId, { yjsSnapshotId, yjsLastSequenceId });
+			await ctx.db.patch("files_nodes", fileNodeId, {
+				yjsSnapshotId,
+				yjsLastSequenceId,
+				yjsRootKind: "rich_text",
+			});
 			return fileNodeId;
 		});
 
@@ -5820,15 +5912,15 @@ describe("file sharing", () => {
 		});
 		expect(shared._nay).toBeUndefined();
 
-		// This action is the door the bash tools and the AI edit tool go through. Unlike the client
+		// This commit is the door the bash tools and the AI edit tool go through. Unlike the client
 		// action next to it, it used to reach the write with no node check at all.
-		const staged = await t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+		const staged = await commit_pending_upsert_for_test({
+			t,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
 			userId: fixture.memberId,
 			nodeId,
-			baseYjsSequence: 0,
-			baseYjsUpdate,
+			stateUpdate: baseYjsUpdate,
 			unstagedMarkdown: "# Salaries\nmine now\n",
 		});
 		expect(staged._nay?.message).toBe("Permission denied");
@@ -5848,13 +5940,13 @@ describe("file sharing", () => {
 		});
 		expect(raised._nay).toBeUndefined();
 
-		const stagedAfter = await t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+		const stagedAfter = await commit_pending_upsert_for_test({
+			t,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
 			userId: fixture.memberId,
 			nodeId,
-			baseYjsSequence: 0,
-			baseYjsUpdate,
+			stateUpdate: baseYjsUpdate,
 			unstagedMarkdown: "# Salaries\nmine now\n",
 		});
 		expect(stagedAfter._nay).toBeUndefined();
@@ -6279,7 +6371,7 @@ describe("file sharing", () => {
 			throw new Error(chunks._nay.message);
 		}
 
-		// Written straight into the database: `create_markdown_node` uploads to R2, which these tests do
+		// Written straight into the database: `create_text_node` uploads to R2, which these tests do
 		// not have. The matching queries need a current materialized Yjs snapshot and both chunk kinds.
 		const nodeId = await t.run(async (ctx) => {
 			const now = Date.now();
@@ -6333,19 +6425,26 @@ describe("file sharing", () => {
 				workspaceId: fixture.defaultWorkspaceId,
 				fileNodeId,
 				lastSequence: 0,
+				unmaterializedUpdateCount: 0,
+				unmaterializedUpdateBytes: 0,
+				lineageGeneration: 0,
 			});
-			await ctx.db.patch("files_nodes", fileNodeId, { yjsSnapshotId, yjsLastSequenceId });
+			await ctx.db.patch("files_nodes", fileNodeId, {
+				yjsSnapshotId,
+				yjsLastSequenceId,
+				yjsRootKind: "rich_text",
+			});
 
-			const markdownChunkIds = await Promise.all(
+			const textChunkIds = await Promise.all(
 				chunks._yay.map((chunk) =>
-					ctx.db.insert("files_markdown_chunks", {
+					ctx.db.insert("files_text_chunks", {
 						organizationId: fixture.organizationId,
 						workspaceId: fixture.defaultWorkspaceId,
 						fileNodeId,
 						sourceKind: "committed",
 						yjsSequence: 0,
 						chunkIndex: chunk.chunkIndex,
-						markdownChunk: chunk.markdownChunk,
+						textChunk: chunk.textChunk,
 						startIndex: chunk.startIndex,
 						endIndex: chunk.endIndex,
 						lineStart: chunk.lineStart,
@@ -6362,11 +6461,11 @@ describe("file sharing", () => {
 						fileNodeId,
 						sourceKind: "committed",
 						yjsSequence: 0,
-						markdownChunkId: markdownChunkIds[index]!,
+						textChunkId: textChunkIds[index]!,
 						chunkIndex: chunk.chunkIndex,
 						path: "/closed/notes.md",
 						plainTextChunk: chunk.plainTextChunk,
-						markdownChunk: chunk.markdownChunk,
+						textChunk: chunk.textChunk,
 						startIndex: chunk.startIndex,
 						endIndex: chunk.endIndex,
 						lineStart: chunk.lineStart,
@@ -6403,13 +6502,13 @@ describe("file sharing", () => {
 			invert: false,
 		} as const;
 		const [ownerMarkdownMatch, memberMarkdownMatch, ownerPlainTextMatch, memberPlainTextMatch] = await Promise.all([
-			t.query(internal.files_nodes.match_markdown_file_lines, {
+			t.query(internal.files_nodes.match_text_file_lines, {
 				...matchArgs,
 				userId: fixture.ownerId,
 				before: 0,
 				after: 0,
 			}),
-			t.query(internal.files_nodes.match_markdown_file_lines, {
+			t.query(internal.files_nodes.match_text_file_lines, {
 				...matchArgs,
 				userId: fixture.memberId,
 				before: 0,

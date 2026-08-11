@@ -23,30 +23,44 @@ import {
 	files_INITIAL_CONTENT,
 	files_u8_to_array_buffer,
 	files_MAX_TEXT_CONTENT_BYTES,
+	files_MAX_YJS_RECONSTRUCTED_STATE_BYTES,
+	files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES,
+	files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES,
+	files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT,
+	files_editable_text_refusal_message,
+	files_get_editable_text_content_type,
+	files_get_editable_text_yjs_root_kind,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
 	files_pending_update_content_of,
+	files_db_consume_trusted_yjs_update_stage,
 	files_db_get_visible_node_by_path,
+	files_db_load_pending_update_yjs_state_bytes,
 	type files_ContentType,
 	type files_SpecialFileName,
+	type files_YjsRootKind,
 } from "../server/files.ts";
 import {
 	files_yjs_create_empty_state_update,
+	files_yjs_doc_apply_array_buffer_update,
 	files_yjs_doc_create_from_array_buffer_update,
 	files_yjs_doc_create_from_tiptap_editor,
+	files_yjs_doc_get_plain_text,
 	files_yjs_compute_diff_update_from_state_vector,
 } from "../shared/files-yjs.ts";
 import {
 	files_headless_tiptap_editor_create,
 	files_headless_tiptap_editor_set_content_from_markdown,
-	files_yjs_doc_get_markdown,
-	files_yjs_doc_update_from_markdown,
+	files_yjs_doc_create_from_text,
+	files_yjs_doc_get_text,
+	files_yjs_doc_update_from_text,
 } from "../shared/files-tiptap.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
+import { path_name_of } from "../shared/paths.ts";
 import {
 	organizations_is_global_organization_id,
 	organizations_is_reserved_workspace_id,
@@ -66,6 +80,11 @@ import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_e
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { files_metadata_db_delete_committed, files_metadata_db_insert_committed } from "./files_metadata.ts";
 import {
+	files_metadata_frontmatter_exceeds_index_caps,
+	files_metadata_preflight_frontmatter,
+} from "../shared/files-metadata.ts";
+import type { files_pending_updates_stage_trusted_yjs_update_Result } from "./files_pending_updates.ts";
+import {
 	r2_create_asset_key,
 	r2_delete_object,
 	r2_fetch_object_from_bucket,
@@ -78,17 +97,20 @@ import {
 	db_get_file_snapshot_content,
 	db_upsert_file_stats,
 	enqueue_file_content_materialization,
+	file_content_materialization_header_validator,
 	file_content_materialization_state_validator,
 	files_READ_RANGE_MAX_LINES,
 	files_line_range_from_text,
 	files_merge_contiguous_chunks,
 	files_nodes_db_create_node_recursively_at_path,
 	files_tail_lines_from_text,
-	yjs_increment_or_create_last_sequence,
+	yjs_reserve_and_increment_last_sequence,
 	type files_nodes_read_committed_file_chunk_stats_Result,
 	type files_nodes_read_committed_file_chunks_line_range_Result,
 	type files_nodes_read_file_content_from_chunks_Result,
+	type get_file_content_materialization_header_Result,
 	type get_file_content_materialization_state_Result,
+	type get_file_next_yjs_update_Result,
 } from "./files_nodes.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -96,7 +118,7 @@ import {
 export const experimental_reuseContext = true;
 
 /**
- * Insert a paired set of committed `files_markdown_chunks` + `files_plain_text_chunks` for one file node.
+ * Insert a paired set of committed `files_text_chunks` + `files_plain_text_chunks` for one file node.
  * Editable Markdown materialization passes a real `yjsSequence`; read-only text materialization omits it.
  * Caller supplies the already-computed chunk array and the denormalized `path`/`archiveOperationId` for the
  * plain-text docs. Does not touch `file_stats` or `files_metadata_docs` — callers own those.
@@ -112,7 +134,7 @@ async function db_insert_committed_text_chunks(
 		yjsSequence?: number;
 		chunks: ReadonlyArray<{
 			chunkIndex: number;
-			markdownChunk: string;
+			textChunk: string;
 			plainTextChunk: string;
 			startIndex: number;
 			endIndex: number;
@@ -123,23 +145,23 @@ async function db_insert_committed_text_chunks(
 	},
 ) {
 	// An empty chunk list naturally performs no inserts.
-	const markdownChunkIds = await Promise.all(
-		args.chunks.map((chunk) =>
-			ctx.db.insert("files_markdown_chunks", {
+	const textChunkIds = await Promise.all(
+		args.chunks.map(async (chunk) => {
+			const shared = {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				fileNodeId: args.nodeId,
-				sourceKind: "committed",
+				sourceKind: "committed" as const,
 				...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
 				chunkIndex: chunk.chunkIndex,
-				markdownChunk: chunk.markdownChunk,
 				startIndex: chunk.startIndex,
 				endIndex: chunk.endIndex,
 				lineStart: chunk.lineStart,
 				lineEnd: chunk.lineEnd,
 				chunkFlags: chunk.chunkFlags,
-			}),
-		),
+			};
+			return await ctx.db.insert("files_text_chunks", { ...shared, textChunk: chunk.textChunk });
+		}),
 	);
 
 	await Promise.all(
@@ -150,12 +172,12 @@ async function db_insert_committed_text_chunks(
 				fileNodeId: args.nodeId,
 				sourceKind: "committed",
 				...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
-				markdownChunkId: markdownChunkIds[index],
+				textChunkId: textChunkIds[index]!,
 				chunkIndex: chunk.chunkIndex,
 				path: args.path,
 				archiveOperationId: args.archiveOperationId,
 				plainTextChunk: chunk.plainTextChunk,
-				markdownChunk: chunk.markdownChunk,
+				textChunk: chunk.textChunk,
 				startIndex: chunk.startIndex,
 				endIndex: chunk.endIndex,
 				lineStart: chunk.lineStart,
@@ -177,25 +199,27 @@ export async function db_insert_file_text_content(
 		path: string;
 		archiveOperationId?: string;
 		yjsSequence?: number;
-		contentType: Doc<"files_nodes">["contentType"];
+		/**
+		 * The chunker shape for this content. This argument REPLACES the old `contentType`
+		 * derivation — the branch below is exhaustive on the closed union and on nothing else, so
+		 * an unrecognised media type can never reach a throw inside the infinite-retry workpool.
+		 * Editable nodes read it from `files_nodes.yjsRootKind`; read-only mounts pass the
+		 * `"plain_text"` literal because a mount has no Yjs document to have a shape.
+		 */
+		rootKind: files_YjsRootKind;
 		textContent: string;
+		/**
+		 * Repair-only escape: commit the chunks of a text whose frontmatter is over the index
+		 * caps without inserting metadata docs, so the insert helper's over-cap backstop cannot
+		 * throw mid-repair. The caller keeps the frontmatter marker pair set instead.
+		 */
+		skipFrontmatterIndex?: boolean;
 	},
 ) {
-	const isMarkdown = args.contentType?.startsWith("text/markdown") ?? false;
-	const isPlainText = args.contentType?.startsWith("text/plain") ?? false;
-	if (!isMarkdown && !isPlainText) {
-		const errorMessage = "Unsupported text content type";
-		const errorData = {
-			contentType: args.contentType,
-			nodeId: args.nodeId,
-		};
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-
-	const chunks = isMarkdown
-		? await files_chunk_markdown(args.textContent)
-		: Result({ _yay: files_chunk_plain_text(args.textContent) });
+	const chunks =
+		args.rootKind === "rich_text"
+			? await files_chunk_markdown(args.textContent)
+			: Result({ _yay: files_chunk_plain_text(args.textContent) });
 	if (chunks._nay) {
 		return chunks;
 	}
@@ -210,7 +234,9 @@ export async function db_insert_file_text_content(
 		chunks: chunks._yay,
 	});
 
-	if (isMarkdown) {
+	// Frontmatter is a rich-text (Markdown) concept only: a `.yaml` opening with `---` is plain
+	// text and must not be frontmatter-indexed.
+	if (args.rootKind === "rich_text" && !args.skipFrontmatterIndex) {
 		await files_metadata_db_insert_committed(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -240,7 +266,9 @@ export async function db_replace_file_chunks(
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		nodeId: Id<"files_nodes">;
 		yjsSequence: number;
-		markdownContent: string;
+		textContent: string;
+		/** Forwarded to `db_insert_file_text_content`; see the comment on its declaration. */
+		skipFrontmatterIndex?: boolean;
 	},
 ) {
 	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
@@ -248,7 +276,7 @@ export async function db_replace_file_chunks(
 		!fileNode ||
 		fileNode.organizationId !== args.organizationId ||
 		fileNode.workspaceId !== args.workspaceId ||
-		fileNode.kind !== "file"
+		!files_node_has_editable_yjs_state(fileNode)
 	) {
 		const errorMessage = "db_replace_file_chunks expected a file node in the same organization/workspace";
 		console.error(errorMessage, {
@@ -273,7 +301,7 @@ export async function db_replace_file_chunks(
 			)
 			.collect(),
 		ctx.db
-			.query("files_markdown_chunks")
+			.query("files_text_chunks")
 			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 				q
 					.eq("organizationId", args.organizationId)
@@ -283,10 +311,10 @@ export async function db_replace_file_chunks(
 			)
 			.collect(),
 		files_metadata_db_delete_committed(ctx, args),
-	]).then(([plainTextChunkDocs, markdownChunkDocs]) =>
+	]).then(([plainTextChunkDocs, textChunkDocs]) =>
 		Promise.all([
 			...plainTextChunkDocs.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),
-			...markdownChunkDocs.map((doc) => ctx.db.delete("files_markdown_chunks", doc._id)),
+			...textChunkDocs.map((doc) => ctx.db.delete("files_text_chunks", doc._id)),
 		]),
 	);
 
@@ -297,14 +325,30 @@ export async function db_replace_file_chunks(
 		path: fileNode.path,
 		archiveOperationId: fileNode.archiveOperationId,
 		yjsSequence: args.yjsSequence,
-		contentType: "text/markdown;charset=utf-8",
-		textContent: args.markdownContent,
+		// Every replace targets an editable node, and the node owns the shape.
+		rootKind: fileNode.yjsRootKind,
+		textContent: args.textContent,
+		skipFrontmatterIndex: args.skipFrontmatterIndex,
 	});
 }
 
-export function files_nodes_create_yjs_snapshot_update_from_markdown(markdownContent: string) {
-	if (!markdownContent) {
+export function files_nodes_create_yjs_snapshot_update_from_text(args: {
+	text: string;
+	/** The shape of the Yjs document this snapshot seeds; the body branches on it below. */
+	rootKind: files_YjsRootKind;
+}) {
+	if (!args.text) {
 		return Result({ _yay: files_u8_to_array_buffer(files_yjs_create_empty_state_update()) });
+	}
+
+	// The plain branch never constructs a Tiptap editor: the branch point is here, not inside
+	// the Tiptap-only helpers below (threading `rootKind` through them would be a pass-through).
+	if (args.rootKind === "plain_text") {
+		const yjsDoc = files_yjs_doc_create_from_text({ text: args.text, rootKind: "plain_text" });
+		if ("_nay" in yjsDoc) {
+			return yjsDoc;
+		}
+		return Result({ _yay: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)) });
 	}
 
 	const editor = files_headless_tiptap_editor_create();
@@ -313,7 +357,7 @@ export function files_nodes_create_yjs_snapshot_update_from_markdown(markdownCon
 	}
 
 	const markdownContentSet = files_headless_tiptap_editor_set_content_from_markdown({
-		markdown: markdownContent,
+		markdown: args.text,
 		mut_editor: editor._yay,
 	});
 	if (markdownContentSet._nay) {
@@ -348,6 +392,12 @@ export async function files_nodes_db_insert_file_content_docs(
 		parentId?: Doc<"files_nodes">["parentId"];
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		contentType: Doc<"files_nodes">["contentType"];
+		/**
+		 * The shape of the Yjs document this node will get. Read on the writable branch, which
+		 * writes it as `files_nodes.yjsRootKind`; ignored on the read-only branch, which has no
+		 * Yjs document.
+		 */
+		rootKind: files_YjsRootKind;
 		textContent: string;
 		readOnly: boolean;
 		yjsSnapshotAssetId?: Id<"files_r2_assets">;
@@ -364,7 +414,10 @@ export async function files_nodes_db_insert_file_content_docs(
 			nodeId: args.nodeId,
 			path: args.path,
 			archiveOperationId: args.archiveOperationId,
-			contentType: args.contentType,
+			// Read-only mounts chunk as plain text, to the same boundaries as before the chunker
+			// dispatched on this argument. `args.rootKind` is ignored here: a mount has no Yjs
+			// document to have a shape, so the literal is the mount branch's answer.
+			rootKind: "plain_text",
 			textContent: args.textContent,
 		}).then((chunks) => {
 			if (chunks._nay) {
@@ -429,6 +482,9 @@ export async function files_nodes_db_insert_file_content_docs(
 			workspaceId: args.workspaceId,
 			fileNodeId: args.nodeId,
 			lastSequence: initialYjsSequence,
+			unmaterializedUpdateCount: 0,
+			unmaterializedUpdateBytes: 0,
+			lineageGeneration: 0,
 		}),
 		db_insert_file_text_content(ctx, {
 			organizationId: args.organizationId,
@@ -437,7 +493,7 @@ export async function files_nodes_db_insert_file_content_docs(
 			path: args.path,
 			archiveOperationId: args.archiveOperationId,
 			yjsSequence: initialYjsSequence,
-			contentType: args.contentType,
+			rootKind: args.rootKind,
 			textContent: args.textContent,
 		}).then((chunks) => {
 			if (chunks._nay) {
@@ -468,6 +524,9 @@ export async function files_nodes_db_insert_file_content_docs(
 	await ctx.db.patch("files_nodes", args.nodeId, {
 		yjsLastSequenceId: yjs_last_sequence_id,
 		yjsSnapshotId: yjs_snapshot_id,
+		// Record the shape beside the other Yjs pointers, in the same mutation that created the
+		// document, so the node and its document can never be born disagreeing.
+		yjsRootKind: args.rootKind,
 	});
 }
 
@@ -483,6 +542,11 @@ export const create_file_node = internalMutation({
 		yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
 		archiveOperationId: v.optional(v.string()),
 		textContent: v.string(),
+		/**
+		 * The document shape written on the node for writable files. Read-only mount files have
+		 * no Yjs document, so their callers pass the mount literal and the insert ignores it.
+		 */
+		rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 		readOnly: v.boolean(),
 		mountId: v.optional(v.id("github_mounts")),
 		syncRunId: v.optional(v.string()),
@@ -602,6 +666,7 @@ export const create_file_node = internalMutation({
 			parentId: args.parentId,
 			archiveOperationId: insertedNode.archiveOperationId,
 			contentType: args.contentType,
+			rootKind: args.rootKind,
 			textContent: args.textContent,
 			readOnly: args.readOnly,
 			yjsSnapshotAssetId: args.yjsSnapshotAssetId,
@@ -625,12 +690,13 @@ export const create_file_node = internalMutation({
 });
 
 /**
- * Final step of creating an editable Markdown file. Editable files have no content asset:
- * `node.assetId` points at the first version snapshot. This sets r2Key + size on the Yjs
- * snapshot and version snapshot assets, and inserts the version snapshot in `files_snapshots`.
- * The arg types only accept real org/workspace ids, so reserved scopes cannot reach this.
+ * Final step of creating an editable text file (rich text or plain text). Editable files have no
+ * content asset: `node.assetId` points at the first version snapshot. This sets r2Key + size on
+ * the Yjs snapshot and version snapshot assets, and inserts the version snapshot in
+ * `files_snapshots`. The arg types only accept real org/workspace ids, so reserved scopes
+ * cannot reach this.
  */
-export async function files_nodes_db_finalize_markdown_node_creation(
+export async function files_nodes_db_finalize_editable_text_node_creation(
 	ctx: MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -679,7 +745,7 @@ export async function files_nodes_db_finalize_markdown_node_creation(
 	return Result({ _yay: null });
 }
 
-export const finalize_markdown_node_creation = internalMutation({
+export const finalize_text_node_creation = internalMutation({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -692,7 +758,7 @@ export const finalize_markdown_node_creation = internalMutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		return await files_nodes_db_finalize_markdown_node_creation(ctx, args);
+		return await files_nodes_db_finalize_editable_text_node_creation(ctx, args);
 	},
 });
 
@@ -812,6 +878,9 @@ export const create_file_node_internal = internalAction({
 					assetId,
 					contentType: "text/plain;charset=utf-8" satisfies files_ContentType,
 					textContent: args.rawText,
+					// A mount file has no Yjs document to have a shape; the read-only branch chunks
+					// with its own mount literal and ignores this value.
+					rootKind: "plain_text",
 					readOnly: true,
 					mountId: args.mountId,
 					syncRunId: args.syncRunId,
@@ -869,7 +938,7 @@ export type files_nodes_create_file_node_internal_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-type action_create_markdown_node_Result =
+type action_create_file_node_Result =
 	| {
 			_yay: {
 				nodeId: Id<"files_nodes">;
@@ -889,7 +958,7 @@ type action_create_markdown_node_Result =
 			_yay?: undefined;
 	  };
 
-async function action_create_markdown_node(
+async function action_create_file_node(
 	ctx: ActionCtx,
 	args: {
 		userId: Id<"users">;
@@ -897,11 +966,17 @@ async function action_create_markdown_node(
 		workspaceId: Id<"organizations_workspaces">;
 		parentId: Doc<"files_nodes">["parentId"];
 		path: string;
-		markdownContent: string;
+		textContent: string;
+		/** The stored media type and document shape; callers derive both from the same name. */
+		contentType: files_ContentType;
+		rootKind: files_YjsRootKind;
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 	},
-): Promise<action_create_markdown_node_Result> {
-	const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown(args.markdownContent);
+): Promise<action_create_file_node_Result> {
+	const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
+		text: args.textContent,
+		rootKind: args.rootKind,
+	});
 	if (snapshotUpdate._nay) {
 		return snapshotUpdate;
 	}
@@ -918,7 +993,7 @@ async function action_create_markdown_node(
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			kind: "content_snapshot",
-			size: files_get_utf8_byte_size(args.markdownContent),
+			size: files_get_utf8_byte_size(args.textContent),
 			createdBy: args.userId,
 		}),
 	])) as [Id<"files_r2_assets">, Id<"files_r2_assets">];
@@ -954,13 +1029,14 @@ async function action_create_markdown_node(
 			}),
 			r2_put_object(ctx, {
 				key: versionSnapshotR2Key,
-				body: args.markdownContent,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+				body: args.textContent,
+				// The version snapshot serves downloads, so it stores the classifier-derived type.
+				contentType: args.contentType,
 			}),
 		]);
 	} catch (error) {
 		await cleanupCreatedAssets();
-		console.error("Failed to write initial Markdown file assets", {
+		console.error("Failed to write initial file content assets", {
 			error,
 			yjsSnapshotAssetId,
 			versionSnapshotAssetId,
@@ -974,10 +1050,11 @@ async function action_create_markdown_node(
 		workspaceId: args.workspaceId,
 		parentId: args.parentId,
 		path: args.path,
-		contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+		contentType: args.contentType,
 		assetId: versionSnapshotAssetId,
 		yjsSnapshotAssetId,
-		textContent: args.markdownContent,
+		textContent: args.textContent,
+		rootKind: args.rootKind,
 		readOnly: false,
 		archiveOperationId: args.archiveOperationId,
 	})) as create_file_node_Result;
@@ -986,7 +1063,7 @@ async function action_create_markdown_node(
 		return created;
 	}
 
-	await ctx.runMutation(internal.files_nodes_content.finalize_markdown_node_creation, {
+	await ctx.runMutation(internal.files_nodes_content.finalize_text_node_creation, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		nodeId: created._yay.nodeId,
@@ -994,7 +1071,7 @@ async function action_create_markdown_node(
 		yjsSnapshotAssetId,
 		yjsSnapshotSize: snapshotUpdate._yay.byteLength,
 		versionSnapshotAssetId,
-		versionSnapshotSize: files_get_utf8_byte_size(args.markdownContent),
+		versionSnapshotSize: files_get_utf8_byte_size(args.textContent),
 	});
 
 	return Result({
@@ -1006,7 +1083,7 @@ async function action_create_markdown_node(
 	});
 }
 
-export const create_markdown_node = action({
+export const create_text_node = action({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
@@ -1042,12 +1119,16 @@ export const create_markdown_node = action({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		const created = await action_create_markdown_node(ctx, {
+		// The public create action stays Markdown-only by product rule. Plain text
+		// files enter the workspace by upload or by an agent write only.
+		const created = await action_create_file_node(ctx, {
 			userId: userAuth.id,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			parentId: args.parentId,
-			markdownContent: files_INITIAL_CONTENT,
+			textContent: files_INITIAL_CONTENT,
+			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			rootKind: "rich_text",
 			path: args.path,
 		});
 		if (created._nay) {
@@ -1059,7 +1140,7 @@ export const create_markdown_node = action({
 	},
 });
 
-export const get_file_markdown_content_db_state_by_path = internalQuery({
+export const get_file_text_content_db_state_by_path = internalQuery({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
@@ -1111,7 +1192,7 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 		if (!readableNode) return null;
 
 		// External (reserved) scope: no Yjs/pending/materialization. Read the linked R2 content asset
-		// directly and leave `content` undefined so `get_file_last_available_markdown_content_by_path`
+		// directly and leave `content` undefined so `get_file_last_available_text_content_by_path`
 		// falls into its raw-R2 `.text()` branch.
 		if (
 			organizations_is_global_organization_id(args.organizationId) ||
@@ -1169,30 +1250,69 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 							.first();
 		// Move-only docs carry no content; keep returning their `pendingUpdateId` below so
 		// write_file/edit_file mix onto them, while content resolves from the committed tree.
-		const pendingUpdateContent = pendingUpdate ? files_pending_update_content_of(pendingUpdate) : null;
+		let pendingUpdateContent = pendingUpdate ? files_pending_update_content_of(pendingUpdate) : null;
+		// A stale-generation proposal was built against a document history that a repair has
+		// since replaced. The commit gate refuses it, so its text must not be served as the
+		// file's current pending content either: treat it as no pending content and resolve
+		// from the committed tree. The doc keeps its `pendingUpdateId` below, so the agent's
+		// next write mixes onto it and rebuilds the family from the live state.
+		if (pendingUpdateContent && fileNode.yjsLastSequenceId) {
+			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
+			if (!lastSequenceDoc || lastSequenceDoc.lineageGeneration !== pendingUpdateContent.baseLineageGeneration) {
+				pendingUpdateContent = null;
+			}
+		}
 		if (pendingUpdate && pendingUpdateContent) {
-			// Rebuild the pending branch from its recorded base so readers see the same document
-			// the pending-update save/rebase flow will later persist.
-			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdateContent.baseYjsUpdate, {
-				additionalIncrementalArrayBufferUpdates: [pendingUpdateContent.unstagedBranchYjsUpdate],
-			});
-
-			const markdown = files_yjs_doc_get_markdown({ yjsDoc });
-			if (markdown._yay !== undefined) {
-				return {
-					content: markdown._yay,
-					asset: null,
+			// Rebuild the pending branch from its canonical unstaged paged state (a full state, so
+			// no base merge is needed). On any refusal the pending read is NULL — the agent reports
+			// the file as unavailable — never the committed text: falling through to committed
+			// content is what would make an `edit_file` overwrite the user's whole proposal.
+			const unstagedStateDoc = await ctx.db.get(
+				"files_pending_update_yjs_states",
+				pendingUpdateContent.unstagedStateId,
+			);
+			if (
+				!unstagedStateDoc ||
+				unstagedStateDoc.organizationId !== organizationId ||
+				unstagedStateDoc.workspaceId !== workspaceId
+			) {
+				console.error("Pending update content group points to a missing state doc", {
 					nodeId: fileNode._id,
-					displayNodeId: fileNode._id,
 					pendingUpdateId: pendingUpdate._id,
-					materializationState: null,
-				};
+					unstagedStateId: pendingUpdateContent.unstagedStateId,
+				});
+				return null;
+			}
+			const unstagedBytes = await files_db_load_pending_update_yjs_state_bytes(ctx, {
+				stateDoc: unstagedStateDoc,
+			});
+			if (unstagedBytes._nay) {
+				console.error("Failed to reconstruct pending state from files_pending_update_yjs_state_pages", {
+					nay: { message: unstagedBytes._nay.message },
+					nodeId: fileNode._id,
+					pendingUpdateId: pendingUpdate._id,
+				});
+				return null;
 			}
 
-			console.error("Failed to reconstruct markdown from files_pending_updates", {
-				nay: markdown._nay,
+			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(files_u8_to_array_buffer(unstagedBytes._yay));
+			const text = files_yjs_doc_get_text({ yjsDoc, rootKind: fileNode.yjsRootKind });
+			if (text._nay) {
+				console.error("Failed to reconstruct text from files_pending_updates", {
+					nay: { message: text._nay.message },
+					nodeId: fileNode._id,
+				});
+				return null;
+			}
+
+			return {
+				content: text._yay,
+				asset: null,
 				nodeId: fileNode._id,
-			});
+				displayNodeId: fileNode._id,
+				pendingUpdateId: pendingUpdate._id,
+				materializationState: null,
+			};
 		}
 
 		const asset = fileNode.assetId
@@ -1222,7 +1342,7 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 			(args.maxBytes === undefined || asset.size <= args.maxBytes)
 		) {
 			const chunks = await ctx.db
-				.query("files_markdown_chunks")
+				.query("files_text_chunks")
 				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 					q
 						.eq("organizationId", organizationId)
@@ -1254,8 +1374,8 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 	},
 });
 
-type get_file_markdown_content_db_state_by_path_Result =
-	typeof get_file_markdown_content_db_state_by_path extends RegisteredQuery<
+type get_file_text_content_db_state_by_path_Result =
+	typeof get_file_text_content_db_state_by_path extends RegisteredQuery<
 		infer _Visibility,
 		infer _Args,
 		infer ReturnValue
@@ -1263,14 +1383,14 @@ type get_file_markdown_content_db_state_by_path_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-type get_file_last_available_markdown_content_by_path_Result = {
+type get_file_last_available_text_content_by_path_Result = {
 	content: string;
 	nodeId: Id<"files_nodes">;
 	displayNodeId: Id<"files_nodes">;
 	pendingUpdateId: Id<"files_pending_updates"> | null;
 } | null;
 
-export const get_file_last_available_markdown_content_by_path = internalAction({
+export const get_file_last_available_text_content_by_path = internalAction({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
@@ -1291,8 +1411,8 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 		}),
 		v.null(),
 	),
-	handler: async (ctx, args): Promise<get_file_last_available_markdown_content_by_path_Result> => {
-		const contentState = (await ctx.runQuery(internal.files_nodes_content.get_file_markdown_content_db_state_by_path, {
+	handler: async (ctx, args): Promise<get_file_last_available_text_content_by_path_Result> => {
+		const contentState = (await ctx.runQuery(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -1301,7 +1421,7 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 			includePending: args.includePending,
 			overlayUserId: args.overlayUserId,
 			maxBytes: args.maxBytes,
-		})) as get_file_markdown_content_db_state_by_path_Result;
+		})) as get_file_text_content_db_state_by_path_Result;
 		if (!contentState) {
 			return null;
 		}
@@ -1357,8 +1477,8 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 	},
 });
 
-export type files_nodes_get_file_last_available_markdown_content_by_path_Result =
-	typeof get_file_last_available_markdown_content_by_path extends RegisteredAction<
+export type files_nodes_get_file_last_available_text_content_by_path_Result =
+	typeof get_file_last_available_text_content_by_path extends RegisteredAction<
 		infer _Visibility,
 		infer _Args,
 		infer ReturnValue
@@ -1402,14 +1522,14 @@ async function files_resolve_readable_content_or_window(
 		overlayUserId?: Id<"users">;
 	},
 ): Promise<{ nodeId: Id<"files_nodes">; text: string; fetchedAllBytes: boolean; totalBytes: number } | null> {
-	const state = (await ctx.runQuery(internal.files_nodes_content.get_file_markdown_content_db_state_by_path, {
+	const state = (await ctx.runQuery(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
 		path: args.path,
 		pendingUpdateId: args.pendingUpdateId,
 		overlayUserId: args.overlayUserId,
-	})) as get_file_markdown_content_db_state_by_path_Result;
+	})) as get_file_text_content_db_state_by_path_Result;
 	if (!state) {
 		return null;
 	}
@@ -1573,14 +1693,14 @@ export const read_file_tail_lines = internalAction({
 			return { nodeId: chunked.nodeId, content: chunked.content, moreLines: chunked.moreLines, scanTruncated: false };
 		}
 		// Fallback: in-memory reconstruction (pending/stale) or a bounded trailing R2 window.
-		const state = (await ctx.runQuery(internal.files_nodes_content.get_file_markdown_content_db_state_by_path, {
+		const state = (await ctx.runQuery(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
 			overlayUserId: args.overlayUserId,
-		})) as get_file_markdown_content_db_state_by_path_Result;
+		})) as get_file_text_content_db_state_by_path_Result;
 		if (!state) {
 			return null;
 		}
@@ -1700,9 +1820,12 @@ export type files_nodes_read_file_content_stats_Result =
 		: never;
 
 /**
- * Create a Markdown file at a trusted path.
+ * Create an editable text file at a trusted path, for the agent write flows (bash redirects,
+ * cp, touch). The classifier decides the stored media type and document shape from the path's
+ * file name; unknown extensions refuse with the classifier's rule. The public create action and
+ * the sidebar New-file flow stay Markdown-only on purpose.
  *
- * Trust callers to validate and normalize `path` before calling this mutation.
+ * Trust callers to validate and normalize `path` before calling this action.
  */
 export const create_file_by_path = internalAction({
 	args: {
@@ -1710,7 +1833,7 @@ export const create_file_by_path = internalAction({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		path: v.string(),
-		markdownContent: v.optional(v.string()),
+		textContent: v.optional(v.string()),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -1744,13 +1867,24 @@ export const create_file_by_path = internalAction({
 			return Result({ _yay: { nodeId: activeFileNode._id, created: false, createdAncestorIds: [] } });
 		}
 
-		const created = await action_create_markdown_node(ctx, {
+		// Extension decides everything: the media type and the document shape come from the same
+		// name, so they can never disagree, and an unwritable extension refuses before any write.
+		const fileName = path_name_of(args.path);
+		const contentType = files_get_editable_text_content_type(fileName);
+		const rootKind = files_get_editable_text_yjs_root_kind(fileName);
+		if (contentType === null || rootKind === null) {
+			return Result({ _nay: { message: files_editable_text_refusal_message(fileName) } });
+		}
+
+		const created = await action_create_file_node(ctx, {
 			userId: args.userId,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			parentId: files_ROOT_ID,
 			path: args.path,
-			markdownContent: args.markdownContent ?? "",
+			textContent: args.textContent ?? "",
+			contentType,
+			rootKind,
 		});
 		if (created._nay) {
 			return created;
@@ -1787,14 +1921,16 @@ export const create_home_file = internalAction({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const result = await action_create_markdown_node(ctx, {
+		const result = await action_create_file_node(ctx, {
 			userId: args.userId,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			parentId: files_ROOT_ID,
 			path: "README.md" satisfies files_SpecialFileName,
 			// Keep the auto-created home file consistent with user-created Markdown files.
-			markdownContent: files_INITIAL_CONTENT,
+			textContent: files_INITIAL_CONTENT,
+			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			rootKind: "rich_text",
 		});
 		if (result._nay) {
 			console.error("Failed to create home file", { result, args });
@@ -1837,11 +1973,19 @@ async function db_insert_snapshot_restore_update(
 		restoreUpdate: ArrayBuffer;
 	},
 ) {
-	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+	// Trusted server-built bytes skip door 1's content scan, but every writer goes through the
+	// shared reserve gate: doc byte caps, durable-marker refusal, and the aggregate budget.
+	const reserved = await yjs_reserve_and_increment_last_sequence(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		nodeId: args.nodeId,
+		userId: args.userId,
+		updateByteLength: args.restoreUpdate.byteLength,
 	});
+	if (reserved._nay) {
+		return reserved;
+	}
+	const newSequenceData = reserved._yay;
 
 	await ctx.db.insert("files_yjs_updates", {
 		organizationId: args.organizationId,
@@ -1866,7 +2010,7 @@ async function db_insert_snapshot_restore_update(
 		delayMs: 0,
 	});
 
-	return newSequenceData.lastSequence;
+	return Result({ _yay: newSequenceData.lastSequence });
 }
 
 async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store_version_snapshot_args_schema>) {
@@ -1907,7 +2051,12 @@ export async function files_nodes_reconstruct_latest_file_content_from_materiali
 	]);
 
 	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(snapshotUpdate);
-	const markdown = files_yjs_doc_get_markdown({ yjsDoc });
+	// Read text under the node's stored shape. The getter's first-statement
+	// guard refuses a document whose text is not addressable under that shape.
+	const markdown = files_yjs_doc_get_text({
+		yjsDoc,
+		rootKind: args.state.fileNode.yjsRootKind,
+	});
 
 	if (markdown._nay) {
 		return markdown;
@@ -1924,13 +2073,15 @@ export async function files_nodes_reconstruct_latest_file_content_from_materiali
 }
 
 /**
- * Replace the current content of an editable Markdown file in place, keeping the same nodeId.
+ * Replace the current content of an editable text file in place, keeping the same nodeId.
  * The caller has already validated the node (editable, same scope) and PUT the new content bytes
- * at the content snapshot asset's deterministic key. `fillUpdate` is a Yjs diff update computed
- * against the doc state the caller reconstructed; open editors apply it as a remote change.
- * The caller omits it when the diff is empty (the new content equals the current content).
+ * at the content snapshot asset's deterministic key. `fillUpdateStageId` points at the staged
+ * server-built Yjs diff (kind `public_fill`) computed against the doc state the caller
+ * reconstructed; open editors apply it as a remote change. The caller omits it when the diff is
+ * empty (the new content equals the current content). Staging keeps this mutation's registered
+ * envelope at one large value: the `textContent` text.
  */
-export async function files_nodes_db_fill_markdown_node_content(
+export async function files_nodes_db_fill_text_node_content(
 	ctx: MutationCtx,
 	args: {
 		// Editable files only exist in real tenant scopes, so the caller passes the already
@@ -1943,10 +2094,10 @@ export async function files_nodes_db_fill_markdown_node_content(
 			yjsLastSequenceId: NonNullable<Doc<"files_nodes">["yjsLastSequenceId"]>;
 		};
 		userId: Id<"users">;
-		markdownContent: string;
+		textContent: string;
 		contentSnapshotAssetId: Id<"files_r2_assets">;
 		contentSize: number;
-		fillUpdate?: ArrayBuffer;
+		fillUpdateStageId?: Id<"files_yjs_trusted_update_stages">;
 	},
 ) {
 	const now = Date.now();
@@ -1976,18 +2127,40 @@ export async function files_nodes_db_fill_markdown_node_content(
 	]);
 
 	let yjsSequence: number;
-	if (args.fillUpdate) {
-		const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+	if (args.fillUpdateStageId) {
+		// Consume the staged trusted update, then run the shared reserve gate. Throw, do not
+		// return `_nay`: the writes above already pointed the node at the new content snapshot in
+		// this same mutation, so a returned refusal would commit that state without its Yjs update.
+		const fillUpdate = await files_db_consume_trusted_yjs_update_stage(ctx, {
+			stageId: args.fillUpdateStageId,
+			organizationId,
+			workspaceId,
+			userId: args.userId,
+			nodeId: args.fileNode._id,
+			kind: "public_fill",
+		});
+		if (fillUpdate._nay) {
+			throw convex_error({ message: fillUpdate._nay.message });
+		}
+		// Trusted server-built bytes skip door 1's content scan, but every writer goes through
+		// the shared reserve gate.
+		const reserved = await yjs_reserve_and_increment_last_sequence(ctx, {
 			organizationId,
 			workspaceId,
 			nodeId: args.fileNode._id,
+			userId: args.userId,
+			updateByteLength: fillUpdate._yay.byteLength,
 		});
+		if (reserved._nay) {
+			throw convex_error({ message: reserved._nay.message });
+		}
+		const newSequenceData = reserved._yay;
 		await ctx.db.insert("files_yjs_updates", {
 			organizationId,
 			workspaceId,
 			fileNodeId: args.fileNode._id,
 			sequence: newSequenceData.lastSequence,
-			update: args.fillUpdate,
+			update: fillUpdate._yay,
 			// Non-user origin so open editor sessions apply the update as a remote change.
 			origin: { type: "USER_AI_EDIT" },
 			createdBy: args.userId,
@@ -2021,8 +2194,49 @@ export async function files_nodes_db_fill_markdown_node_content(
 		workspaceId,
 		nodeId: args.fileNode._id,
 		yjsSequence,
-		markdownContent: args.markdownContent,
+		textContent: args.textContent,
 	});
+}
+
+const FILE_CONTENT_CLEANUP_BATCH_SIZE = 32;
+
+async function db_delete_covered_file_content_docs(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+		throughSequence: number;
+	},
+) {
+	const coveredUpdateDocs = await ctx.db
+		.query("files_yjs_updates")
+		.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("fileNodeId", args.nodeId)
+				.lte("sequence", args.throughSequence),
+		)
+		.take(FILE_CONTENT_CLEANUP_BATCH_SIZE);
+	await Promise.all(coveredUpdateDocs.map((doc) => ctx.db.delete("files_yjs_updates", doc._id)));
+
+	if (coveredUpdateDocs.length === FILE_CONTENT_CLEANUP_BATCH_SIZE) {
+		return true;
+	}
+
+	// Delete the settled jobs only after the final update batch so each continuation stays small.
+	const materializationJobDocs = await ctx.db
+		.query("files_content_materialization_jobs")
+		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
+		.collect();
+	await Promise.all(
+		materializationJobDocs
+			.filter((doc) => doc.targetSequence <= args.throughSequence)
+			.map((doc) => ctx.db.delete("files_content_materialization_jobs", doc._id)),
+	);
+
+	return false;
 }
 
 export const finalize_file_content_materialization = internalMutation({
@@ -2033,9 +2247,9 @@ export const finalize_file_content_materialization = internalMutation({
 		userId: v.id("users"),
 		sequence: v.number(),
 		targetSequence: v.number(),
-		markdown: v.string(),
+		text: v.string(),
 		versionSnapshotAssetId: v.id("files_r2_assets"),
-		markdownSize: v.number(),
+		textSize: v.number(),
 		yjsSnapshotSize: v.number(),
 		_errors: v.optional(
 			v.object({
@@ -2045,35 +2259,67 @@ export const finalize_file_content_materialization = internalMutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const state = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
+		// The header carries every doc except the update log. The covered log is never loaded
+		// here: one allowed update doc may itself be 930,000 bytes, and the bounded continuation
+		// scheduled below deletes the covered docs after this transaction commits.
+		const header = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_header, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			nodeId: args.nodeId,
-		})) as get_file_content_materialization_state_Result;
-		if (!state) {
+			targetSequence: args.targetSequence,
+		})) as get_file_content_materialization_header_Result;
+		if (!header) {
 			return Result({ _yay: null });
 		}
 
-		if (state.yjsLastSequenceDoc.lastSequence !== args.sequence || args.sequence !== args.targetSequence) {
+		if (header.yjsLastSequenceDoc.lastSequence !== args.sequence || args.sequence !== args.targetSequence) {
 			return Result({ _yay: null });
 		}
 
 		const now = Date.now();
 
+		// This materialization covers every update up to `args.sequence`. Recompute the aggregate
+		// counters from the docs that stay unmaterialized (pushed while this run was in flight),
+		// so they become exact at every successful finalization even for files whose older
+		// updates were never counted. The writers' reserve budget bounds this read.
+		const remainingUpdatesDocs = await ctx.db
+			.query("files_yjs_updates")
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("fileNodeId", args.nodeId)
+					.gt("sequence", args.sequence),
+			)
+			.collect();
+
 		const dbWriteResult = Result_all(
 			await Promise.all([
 				// Point the node at the new version snapshot. It now holds the file's current
 				// bytes, so downloads sign it and reads use its size as the byte cap.
-				// Reaching here means the content fit, so clear any earlier over-cap marker.
+				// Reaching here means the content fit, its text was read under its declared
+				// shape, and the frontmatter fit its caps — so clear every earlier durable
+				// refusal marker.
 				ctx.db.patch("files_nodes", args.nodeId, {
 					assetId: args.versionSnapshotAssetId,
 					contentTooLargeByteSize: undefined,
+					contentShapeMismatchAt: undefined,
+					contentYjsStateTooLargeByteSize: undefined,
+					contentFrontmatterTooLargeFieldCount: undefined,
+					contentFrontmatterTooLargeIndexDocumentCount: undefined,
 				}),
-				ctx.db.patch("files_r2_assets", state.yjsSnapshotAsset._id, {
+				ctx.db.patch("files_yjs_docs_last_sequences", header.yjsLastSequenceDoc._id, {
+					unmaterializedUpdateCount: remainingUpdatesDocs.length,
+					unmaterializedUpdateBytes: remainingUpdatesDocs.reduce(
+						(total, updateData) => total + updateData.update.byteLength,
+						0,
+					),
+				}),
+				ctx.db.patch("files_r2_assets", header.yjsSnapshotAsset._id, {
 					r2Key: r2_create_asset_key({
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						assetId: state.yjsSnapshotAsset._id,
+						assetId: header.yjsSnapshotAsset._id,
 					}),
 					size: args.yjsSnapshotSize,
 					unfinalizedExpiresAt: undefined,
@@ -2085,24 +2331,21 @@ export const finalize_file_content_materialization = internalMutation({
 						workspaceId: args.workspaceId,
 						assetId: args.versionSnapshotAssetId,
 					}),
-					size: args.markdownSize,
+					size: args.textSize,
 					unfinalizedExpiresAt: undefined,
 					updatedAt: now,
 				}),
-				ctx.db.patch("files_yjs_snapshots", state.yjsSnapshotDoc._id, {
+				ctx.db.patch("files_yjs_snapshots", header.yjsSnapshotDoc._id, {
 					sequence: args.sequence,
 					updatedBy: users_SYSTEM_AUTHOR,
 					updatedAt: now,
 				}),
-				...state.yjsUpdatesDocs
-					.filter((updateData) => updateData.sequence <= args.sequence)
-					.map((updateData) => ctx.db.delete("files_yjs_updates", updateData._id)),
 				db_replace_file_chunks(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					nodeId: args.nodeId,
 					yjsSequence: args.sequence,
-					markdownContent: args.markdown,
+					textContent: args.text,
 				}),
 				store_version_snapshot(ctx, {
 					organizationId: args.organizationId,
@@ -2111,17 +2354,6 @@ export const finalize_file_content_materialization = internalMutation({
 					assetId: args.versionSnapshotAssetId,
 					userId: args.userId,
 				}),
-				ctx.db
-					.query("files_content_materialization_jobs")
-					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
-					.collect()
-					.then((jobs) =>
-						Promise.all(
-							jobs
-								.filter((job) => job.targetSequence <= args.targetSequence)
-								.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
-						),
-					),
 			]),
 		);
 
@@ -2140,6 +2372,16 @@ export const finalize_file_content_materialization = internalMutation({
 			});
 		}
 
+		// The advanced snapshot sequence already hides every covered update doc from readers. They
+		// filter on `sequence > snapshot.sequence`, so bounded batches delete the update docs and
+		// their settled job docs after this commit instead of loading them into this transaction.
+		await ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_materialization_covered_rows, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			throughSequence: args.sequence,
+		});
+
 		return Result({ _yay: null });
 	},
 });
@@ -2154,10 +2396,34 @@ type finalize_file_content_materialization_Result =
 		: never;
 
 /**
- * Settles a materialization that produced Markdown over `files_MAX_TEXT_CONTENT_BYTES`.
+ * Delete the update docs a finalized materialization covered, plus its settled job docs, in
+ * bounded batches. The finalize commit already advanced the snapshot sequence past these docs,
+ * so readers ignore them; this only reclaims storage without loading the whole covered log into
+ * one transaction.
+ */
+export const cleanup_file_materialization_covered_rows = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		throughSequence: v.number(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		if (await db_delete_covered_file_content_docs(ctx, args)) {
+			await ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_materialization_covered_rows, args);
+			return null;
+		}
+
+		return null;
+	},
+});
+
+/**
+ * Settle a materialization that produced text over `files_MAX_TEXT_CONTENT_BYTES`.
  *
  * Retrying cannot make the content smaller. So this records why the node stopped advancing and
- * deletes the job row instead of failing. It does not cancel the workpool item, the same way
+ * deletes the job doc instead of failing. It does not cancel the workpool item, the same way
  * `finalize_file_content_materialization` does not. A later run for the same sequence just marks
  * the node again.
  */
@@ -2205,6 +2471,161 @@ export const mark_file_content_too_large = internalMutation({
 	},
 });
 
+/**
+ * Settle a materialization whose text could not be read under the node's declared shape.
+ *
+ * A returned `_nay` is a successful workpool completion, so nothing retries — without a marker
+ * the snapshot would stay behind `lastSequence` forever and readers would report a missing
+ * file. This records why the node stopped advancing; readers report it and
+ * `repair_file_yjs_state_from_visible_text` is the named recovery. Same staleness gate and job
+ * settlement as `mark_file_content_too_large`; the next successful finalization clears the
+ * marker.
+ */
+export const mark_file_content_shape_mismatch = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		sequence: v.number(),
+		targetSequence: v.number(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const state = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+		})) as get_file_content_materialization_state_Result;
+		if (!state) {
+			return null;
+		}
+
+		// Use the same staleness gate as `finalize_file_content_materialization`. A newer push
+		// already replaced this job; its own materialization decides again.
+		if (state.yjsLastSequenceDoc.lastSequence !== args.sequence || args.sequence !== args.targetSequence) {
+			return null;
+		}
+
+		const jobs = await ctx.db
+			.query("files_content_materialization_jobs")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
+			.collect();
+
+		await Promise.all([
+			ctx.db.patch("files_nodes", args.nodeId, {
+				contentShapeMismatchAt: Date.now(),
+			}),
+			...jobs
+				.filter((job) => job.targetSequence <= args.targetSequence)
+				.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
+		]);
+
+		return null;
+	},
+});
+
+/**
+ * Settles a materialization whose reconstructed Yjs state (or stored snapshot) exceeds the
+ * 4 MiB cap. Retrying cannot make the state smaller; only the operator repair can. Same
+ * staleness gate and clearing rule as the shape marker above.
+ */
+export const mark_file_content_yjs_state_too_large = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		sequence: v.number(),
+		targetSequence: v.number(),
+		byteSize: v.number(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const state = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+		})) as get_file_content_materialization_state_Result;
+		if (!state) {
+			return null;
+		}
+
+		if (state.yjsLastSequenceDoc.lastSequence !== args.sequence || args.sequence !== args.targetSequence) {
+			return null;
+		}
+
+		const jobs = await ctx.db
+			.query("files_content_materialization_jobs")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
+			.collect();
+
+		await Promise.all([
+			ctx.db.patch("files_nodes", args.nodeId, {
+				contentYjsStateTooLargeByteSize: args.byteSize,
+			}),
+			...jobs
+				.filter((job) => job.targetSequence <= args.targetSequence)
+				.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
+		]);
+
+		return null;
+	},
+});
+
+/**
+ * Settle a materialization whose rendered Markdown text carries more frontmatter than the caps
+ * allow (`files_metadata_MAX_FRONTMATTER_FIELDS` fields, or
+ * `files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS` total index documents including `maybe_date`
+ * companions). Retrying cannot shrink the frontmatter, and letting the insert helper throw would
+ * block the infinite-retry workpool for every other file. Same staleness gate and job settlement
+ * as the other markers; the next successful finalization clears both fields.
+ */
+export const mark_file_content_frontmatter_too_large = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		sequence: v.number(),
+		targetSequence: v.number(),
+		fieldCount: v.number(),
+		indexDocumentCount: v.number(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const header = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_header, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			targetSequence: args.targetSequence,
+		})) as get_file_content_materialization_header_Result;
+		if (!header) {
+			return null;
+		}
+
+		// Use the same staleness gate as `finalize_file_content_materialization`. A newer push
+		// already replaced this job; its own materialization decides again.
+		if (header.yjsLastSequenceDoc.lastSequence !== args.sequence || args.sequence !== args.targetSequence) {
+			return null;
+		}
+
+		const jobs = await ctx.db
+			.query("files_content_materialization_jobs")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
+			.collect();
+
+		await Promise.all([
+			ctx.db.patch("files_nodes", args.nodeId, {
+				contentFrontmatterTooLargeFieldCount: args.fieldCount,
+				contentFrontmatterTooLargeIndexDocumentCount: args.indexDocumentCount,
+			}),
+			...jobs
+				.filter((job) => job.targetSequence <= args.targetSequence)
+				.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
+		]);
+
+		return null;
+	},
+});
+
 export const materialize_file_content = internalAction({
 	args: {
 		organizationId: v.id("organizations"),
@@ -2215,30 +2636,161 @@ export const materialize_file_content = internalAction({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const state = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
+		// The header freezes `throughSequence = targetSequence` and returns no update log: one
+		// allowed update doc may itself be 930,000 bytes, so the log is read one doc per call
+		// below. A concurrent `S+1` push is ignored by this run — its own job covers it.
+		const header = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_header, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			nodeId: args.nodeId,
-		})) as get_file_content_materialization_state_Result;
-		if (!state) {
+			targetSequence: args.targetSequence,
+		})) as get_file_content_materialization_header_Result;
+		if (!header) {
 			return Result({ _yay: null });
 		}
 
-		const reconstructed = await files_nodes_reconstruct_latest_file_content_from_materialization_state({ state });
-		if (reconstructed._nay) {
-			return reconstructed;
+		// Snapshot-size preflight before any GET: a stored base over the reconstructed-state cap
+		// cannot materialize, and downloading it first would only pay for the refusal.
+		if (header.yjsSnapshotAsset.size > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES) {
+			await ctx.runMutation(internal.files_nodes_content.mark_file_content_yjs_state_too_large, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: args.nodeId,
+				sequence: header.throughSequence,
+				targetSequence: args.targetSequence,
+				byteSize: header.yjsSnapshotAsset.size,
+			});
+			return Result({
+				_nay: {
+					name: "nay",
+					message: `Yjs state exceeds ${files_MAX_YJS_RECONSTRUCTED_STATE_BYTES}-byte limit`,
+				},
+			});
 		}
 
-		const sequence = reconstructed._yay.sequence;
+		if (!header.yjsSnapshotAsset.r2Key) {
+			const errorMessage = "materialization yjsSnapshotAsset r2Key is not set";
+			const errorData = {
+				nodeId: args.nodeId,
+				yjsSnapshotAssetId: header.yjsSnapshotAsset._id,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+
+		const baseSnapshotUpdate = await r2_fetch_object_from_bucket({ key: header.yjsSnapshotAsset.r2Key }).then(
+			(response) => response.arrayBuffer(),
+		);
+
+		// Apply the covered update docs one at a time, bounded by the frozen `throughSequence`,
+		// and re-check the caps after every applied update so a poisoned log settles instead of
+		// growing without bound.
+		const yjsDoc = files_yjs_doc_create_from_array_buffer_update(baseSnapshotUpdate);
+		let appliedSequence = header.yjsSnapshotDoc.sequence;
+		let aggregateUpdateCount = 0;
+		let aggregateUpdateBytes = 0;
+		while (appliedSequence < header.throughSequence) {
+			const next = (await ctx.runQuery(internal.files_nodes.get_file_next_yjs_update, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: args.nodeId,
+				afterSequence: appliedSequence,
+				throughSequence: header.throughSequence,
+			})) as get_file_next_yjs_update_Result;
+
+			// Rows already compacted behind a newer snapshot mean this run is stale; the newer
+			// job owns the file. Do not finalize a partial reconstruction.
+			if (next.kind === "done") {
+				return Result({ _yay: null });
+			}
+			// A gap or duplicate is a broken log; reconstruction from it would commit wrong
+			// content. No marker: no supported flow produces it. Do not throw — this pool
+			// retries forever and a throw would block every other file.
+			if (next.kind === "gap") {
+				const errorMessage = "files_yjs_updates log has a sequence gap";
+				console.error(errorMessage, {
+					nodeId: args.nodeId,
+					expectedSequence: next.expectedSequence,
+					foundSequence: next.foundSequence,
+				});
+				return Result({ _nay: { name: "nay", message: errorMessage } });
+			}
+
+			files_yjs_doc_apply_array_buffer_update(yjsDoc, next.row.update);
+			appliedSequence = next.row.sequence;
+			aggregateUpdateCount += 1;
+			aggregateUpdateBytes += next.row.update.byteLength;
+
+			// The writers enforce this budget at reserve time; this is the backstop for docs
+			// written before the budget existed. Over budget is not a durable content property,
+			// so no marker: the next push re-enqueues and the operator can repair if it repeats.
+			if (
+				aggregateUpdateCount > files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT ||
+				aggregateUpdateBytes > files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES
+			) {
+				const errorMessage = "Unmaterialized update log exceeds the aggregate budget";
+				console.error(errorMessage, {
+					nodeId: args.nodeId,
+					aggregateUpdateCount,
+					aggregateUpdateBytes,
+				});
+				return Result({ _nay: { name: "nay", message: errorMessage } });
+			}
+
+			// The incremental reconstructed-state cap: tombstones can make a legal full state much
+			// larger than any wire value, and a state past 4 MiB needs the operator repair.
+			const reconstructedStateBytes = encodeStateAsUpdate(yjsDoc).byteLength;
+			if (reconstructedStateBytes > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES) {
+				await ctx.runMutation(internal.files_nodes_content.mark_file_content_yjs_state_too_large, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					nodeId: args.nodeId,
+					sequence: header.throughSequence,
+					targetSequence: args.targetSequence,
+					byteSize: reconstructedStateBytes,
+				});
+				return Result({
+					_nay: {
+						name: "nay",
+						message: `Yjs state exceeds ${files_MAX_YJS_RECONSTRUCTED_STATE_BYTES}-byte limit`,
+					},
+				});
+			}
+		}
+
+		const sequence = appliedSequence;
+		const snapshotUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc));
+
+		// Read text under the node's stored shape. A refusal is durable because retrying cannot
+		// change what the document holds. Settle the shape marker and complete the workpool item.
+		const rootKind = header.fileNode.yjsRootKind;
+		const extractedText = files_yjs_doc_get_text({ yjsDoc, rootKind });
+		if (extractedText._nay) {
+			console.warn("Materialization could not read text from the Yjs document", {
+				nodeId: args.nodeId,
+				rootKind,
+				sequence,
+				message: extractedText._nay.message,
+				cause: extractedText._nay.cause,
+			});
+			await ctx.runMutation(internal.files_nodes_content.mark_file_content_shape_mismatch, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: args.nodeId,
+				sequence,
+				targetSequence: args.targetSequence,
+			});
+			return Result({ _nay: { name: "nay", message: extractedText._nay.message } });
+		}
 
 		// The Yjs path is the one write path the cap cannot cover earlier. `yjs_push_update` only
-		// ever sees a delta, so this is the first point where the whole Markdown exists. Check
+		// ever sees a delta, so this is the first point where the whole text exists. Check
 		// before `insert_asset` and the R2 writes below, so an over-cap run leaves no orphan asset.
 		//
 		// Do not throw for over-cap content. This action runs in a workpool with `maxParallelism: 1`
 		// and infinite retries, so a throw would retry forever and block materialization for every
 		// other file.
-		const markdownByteSize = files_get_utf8_byte_size(reconstructed._yay.markdown);
+		const markdownByteSize = files_get_utf8_byte_size(extractedText._yay);
 		if (markdownByteSize > files_MAX_TEXT_CONTENT_BYTES) {
 			const errorMessage = `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit`;
 			console.warn(errorMessage, {
@@ -2262,6 +2814,33 @@ export const materialize_file_content = internalAction({
 			});
 		}
 
+		// Frontmatter preflight, after reconstruction and before any asset insert or R2 upload:
+		// over-cap frontmatter is a durable content property, so settle the marker and complete
+		// the workpool item instead of letting the insert helper's late throw retry forever.
+		// Only rich text has frontmatter; a `.yaml` starting with `---` is plain text.
+		if (rootKind === "rich_text") {
+			const frontmatter = files_metadata_preflight_frontmatter(extractedText._yay);
+			if (files_metadata_frontmatter_exceeds_index_caps(frontmatter)) {
+				const errorMessage = "Frontmatter exceeds the index caps";
+				console.warn(errorMessage, {
+					nodeId: args.nodeId,
+					sequence,
+					fieldCount: frontmatter.fieldCount,
+					indexDocumentCount: frontmatter.indexDocumentCount,
+				});
+				await ctx.runMutation(internal.files_nodes_content.mark_file_content_frontmatter_too_large, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					nodeId: args.nodeId,
+					sequence,
+					targetSequence: args.targetSequence,
+					fieldCount: frontmatter.fieldCount,
+					indexDocumentCount: frontmatter.indexDocumentCount,
+				});
+				return Result({ _nay: { name: "nay", message: errorMessage } });
+			}
+		}
+
 		const versionSnapshotAssetId = (await ctx.runMutation(internal.r2.insert_asset, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -2270,34 +2849,28 @@ export const materialize_file_content = internalAction({
 			createdBy: args.userId,
 		})) as Id<"files_r2_assets">;
 
-		if (!state.yjsSnapshotAsset.r2Key) {
-			const errorMessage = "materialization yjsSnapshotAsset r2Key is not set";
-			const errorData = {
-				nodeId: args.nodeId,
-				yjsSnapshotAssetId: state.yjsSnapshotAsset._id,
-				versionSnapshotAssetId,
-			};
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
 		const versionSnapshotR2Key = r2_create_asset_key({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			assetId: versionSnapshotAssetId,
 		});
 
-		// The current markdown lives in the committed chunk tables, not in R2. So we only upload
-		// the Yjs snapshot and the new version snapshot here.
+		// The current text lives in the committed chunk tables, not in R2. So we only upload
+		// the Yjs snapshot and the new version snapshot here. The version snapshot's stored type
+		// comes from the classifier over the node NAME — never from the client-declared
+		// `contentType` — because the snapshot signer serves whatever type the object carries.
 		await Promise.all([
 			r2_put_object(ctx, {
-				key: state.yjsSnapshotAsset.r2Key,
-				body: reconstructed._yay.snapshotUpdate,
+				key: header.yjsSnapshotAsset.r2Key,
+				body: snapshotUpdate,
 				contentType: "application/octet-stream" satisfies files_ContentType,
 			}),
 			r2_put_object(ctx, {
 				key: versionSnapshotR2Key,
-				body: reconstructed._yay.markdown,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+				body: extractedText._yay,
+				contentType:
+					files_get_editable_text_content_type(header.fileNode.name) ??
+					("application/octet-stream" satisfies files_ContentType),
 			}),
 		]);
 
@@ -2310,10 +2883,10 @@ export const materialize_file_content = internalAction({
 				userId: args.userId,
 				sequence,
 				targetSequence: args.targetSequence,
-				markdown: reconstructed._yay.markdown,
+				text: extractedText._yay,
 				versionSnapshotAssetId,
-				markdownSize: markdownByteSize,
-				yjsSnapshotSize: reconstructed._yay.snapshotUpdate.byteLength,
+				textSize: markdownByteSize,
+				yjsSnapshotSize: snapshotUpdate.byteLength,
 			},
 		)) as finalize_file_content_materialization_Result;
 		if (finalizationResult._nay) {
@@ -2331,7 +2904,11 @@ export const restore_snapshot = internalMutation({
 		snapshotId: v.id("files_snapshots"),
 		sessionId: v.string(),
 		snapshotMarkdownContent: v.string(),
-		restoreUpdate: v.optional(v.bytes()),
+		/**
+		 * The staged server-built restore update (kind `snapshot_restore`), so this commit call
+		 * carries only one large value (`snapshotMarkdownContent`). Consumed here.
+		 */
+		restoreUpdateStageId: v.optional(v.id("files_yjs_trusted_update_stages")),
 		currentSnapshotAssetId: v.id("files_r2_assets"),
 		currentSnapshotSize: v.number(),
 		restoredSnapshotAssetId: v.id("files_r2_assets"),
@@ -2445,13 +3022,32 @@ export const restore_snapshot = internalMutation({
 			});
 		}
 
+		// Consume the staged restore update. The delete commits even when a later step throws is
+		// not a concern here (a throw rolls the whole transaction back), and a refused consume
+		// happens before any other write.
+		let restoreUpdate: ArrayBuffer | null = null;
+		if (args.restoreUpdateStageId) {
+			const consumed = await files_db_consume_trusted_yjs_update_stage(ctx, {
+				stageId: args.restoreUpdateStageId,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				nodeId: args.nodeId,
+				kind: "snapshot_restore",
+			});
+			if (consumed._nay) {
+				return Result({ _nay: { message: consumed._nay.message } });
+			}
+			restoreUpdate = consumed._yay;
+		}
+
 		const now = Date.now();
 		const userId = userAuth.id;
 
 		// Restoring snapshots can be destructive and we defensively store
 		// the current state as a backup snapshot
 		// so the user can revert to it if needed.
-		const [, , , , , restoredYjsSequence] = await Promise.all([
+		const [, , , , , restoredYjsSequenceResult] = await Promise.all([
 			ctx.db.patch("files_r2_assets", args.currentSnapshotAssetId, {
 				r2Key: r2_create_asset_key({
 					organizationId: membership.organizationId,
@@ -2498,17 +3094,29 @@ export const restore_snapshot = internalMutation({
 				updatedAt: now,
 			}),
 
-			args.restoreUpdate
+			restoreUpdate
 				? db_insert_snapshot_restore_update(ctx, {
 						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
 						userId,
 						nodeId: args.nodeId,
 						snapshotId: args.snapshotId,
-						restoreUpdate: args.restoreUpdate,
+						restoreUpdate,
 					})
 				: Promise.resolve(null),
 		]);
+
+		// Throw, do not return `_nay`: the asset patches above already pointed the node at the
+		// restored snapshot in this same mutation, so a returned refusal would commit that
+		// half-restored state without its Yjs update. The reserve refusal messages are stable and
+		// user-facing, so the thrown message is the one the user should see.
+		let restoredYjsSequence: number | null = null;
+		if (restoredYjsSequenceResult) {
+			if (restoredYjsSequenceResult._nay) {
+				throw convex_error({ message: restoredYjsSequenceResult._nay.message });
+			}
+			restoredYjsSequence = restoredYjsSequenceResult._yay;
+		}
 
 		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
 		if (!yjsLastSequenceDoc) {
@@ -2531,7 +3139,7 @@ export const restore_snapshot = internalMutation({
 					workspaceId: membership.workspaceId,
 					nodeId: args.nodeId,
 					yjsSequence: yjsLastSequenceDoc.lastSequence,
-					markdownContent: args.snapshotMarkdownContent,
+					textContent: args.snapshotMarkdownContent,
 				}),
 			]),
 		);
@@ -2677,7 +3285,14 @@ export const restore_snapshot_r2 = action({
 		sessionId: v.string(),
 	},
 	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args): Promise<restore_snapshot_Result> => {
+	// The annotation breaks same-file generated-API circularity. It also carries the staging
+	// mutation's refusal branch because the action forwards that `_nay` unchanged.
+	handler: async (
+		ctx,
+		args,
+	): Promise<
+		restore_snapshot_Result | Extract<files_pending_updates_stage_trusted_yjs_update_Result, { _nay: object }>
+	> => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
@@ -2752,12 +3367,15 @@ export const restore_snapshot_r2 = action({
 			throw should_never_happen(errorMessage, errorData);
 		}
 		const yjsBeforeStateVector = encodeStateVector(currentContent._yay.yjsDoc);
-		const restoredYjsDocProjection = files_yjs_doc_update_from_markdown({
+		// Shape-aware setter: the shape comes from the node, and the setter's first-statement
+		// guard refuses a document whose text is not addressable under that shape.
+		const restoredYjsDocProjection = files_yjs_doc_update_from_text({
 			mut_yjsDoc: currentContent._yay.yjsDoc,
-			markdown: snapshotMarkdownContent,
+			text: snapshotMarkdownContent,
+			rootKind: materializationState.fileNode.yjsRootKind,
 		});
 		if (restoredYjsDocProjection._nay) {
-			const errorMessage = "Failed to apply the restored snapshot Markdown to the file's Yjs doc";
+			const errorMessage = "Failed to apply the restored snapshot text to the file's Yjs doc";
 			const errorData = {
 				nodeId: args.nodeId,
 				snapshotId: args.snapshotId,
@@ -2770,6 +3388,27 @@ export const restore_snapshot_r2 = action({
 			yjsDoc: restoredYjsDocProjection._yay,
 			yjsBeforeStateVector,
 		});
+
+		// Stage the one server-built restore update so the commit mutation carries only ids plus
+		// the one bounded snapshot text. The stage is consumed on commit; an abandoned stage is
+		// TTL-swept.
+		let restoreUpdateStageId: Id<"files_yjs_trusted_update_stages"> | undefined;
+		if (restoreUpdate) {
+			const restoreUpdateBuffer = files_u8_to_array_buffer(restoreUpdate);
+			const staged = (await ctx.runMutation(internal.files_pending_updates.stage_trusted_yjs_update, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				nodeId: args.nodeId,
+				kind: "snapshot_restore",
+				update: restoreUpdateBuffer,
+			})) as files_pending_updates_stage_trusted_yjs_update_Result;
+			if (staged._nay) {
+				// Return the staging refusal unchanged; the handler annotation carries this branch.
+				return staged;
+			}
+			restoreUpdateStageId = staged._yay.stageId;
+		}
 
 		const [currentSnapshotAssetId, restoredSnapshotAssetId] = (await Promise.all([
 			ctx.runMutation(internal.r2.insert_asset, {
@@ -2821,7 +3460,7 @@ export const restore_snapshot_r2 = action({
 			snapshotId: args.snapshotId,
 			sessionId: args.sessionId,
 			snapshotMarkdownContent,
-			restoreUpdate: restoreUpdate ? files_u8_to_array_buffer(restoreUpdate) : undefined,
+			restoreUpdateStageId,
 			currentSnapshotAssetId,
 			currentSnapshotSize: files_get_utf8_byte_size(currentContent._yay.markdown),
 			restoredSnapshotAssetId,
@@ -2832,3 +3471,551 @@ export const restore_snapshot_r2 = action({
 });
 
 // #endregion snapshots
+
+// #region yjs repair
+// Operator recovery for a file whose materialization refused durably (shape mismatch, a Yjs
+// state past the 4 MiB cap, or over-cap frontmatter whose update budget tripped). Replaces the
+// whole Yjs history with one fresh compact document
+// built from the file's visible text, and every committed representation with it, atomically.
+// Runbook: export the Yjs snapshot/update assets first; run through the convex-admin-ops skill;
+// editors for the node must close/reload before writes resume.
+
+export const get_data_for_yjs_repair = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		authorUserId: v.id("users"),
+	},
+	returns: v.union(file_content_materialization_header_validator, v.null()),
+	handler: async (ctx, args) => {
+		// The author must be a real member of the node's tenant: the repair records them as the
+		// author of the new version, and an id outside the tenant would forge history.
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) =>
+				q
+					.eq("userId", args.authorUserId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("active", true),
+			)
+			.first();
+		if (!membership) {
+			return null;
+		}
+
+		const state = await db_get_file_content_materialization_db_state(ctx, args);
+		if (!state) {
+			return null;
+		}
+
+		return {
+			fileNode: state.fileNode,
+			yjsSnapshotDoc: state.yjsSnapshotDoc,
+			yjsLastSequenceDoc: state.yjsLastSequenceDoc,
+			asset: state.asset,
+			yjsSnapshotAsset: state.yjsSnapshotAsset,
+			// Freeze the repair target at the current last sequence; the final mutation rechecks
+			// it so any concurrent write makes the repair stale instead of merging onto it.
+			throughSequence: state.yjsLastSequenceDoc.lastSequence,
+		};
+	},
+});
+
+type get_data_for_yjs_repair_Result =
+	typeof get_data_for_yjs_repair extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const repair_file_yjs_state_from_visible_text = internalAction({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		/** Recorded as the author of the repair's new version; must be a member of the tenant. */
+		authorUserId: v.id("users"),
+		/**
+		 * `latest_state` (default) reconstructs the current document under the repair-only 16 MiB
+		 * cap and keeps its visible text. `last_committed` discards unmaterialized updates and
+		 * rebuilds from the committed content; it requires the explicit acknowledgement flag and
+		 * never happens automatically.
+		 */
+		source: v.optional(v.union(v.literal("latest_state"), v.literal("last_committed"))),
+		acknowledgeDiscardUnmaterialized: v.optional(v.boolean()),
+	},
+	returns: v_result({
+		_yay: v.object({
+			sequence: v.number(),
+			lineageGeneration: v.number(),
+			textByteSize: v.number(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const source = args.source ?? "latest_state";
+		if (source === "last_committed" && args.acknowledgeDiscardUnmaterialized !== true) {
+			return Result({
+				_nay: { message: "last_committed discards unmaterialized updates and needs the acknowledgement flag" },
+			});
+		}
+
+		const data = (await ctx.runQuery(internal.files_nodes_content.get_data_for_yjs_repair, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			authorUserId: args.authorUserId,
+		})) as get_data_for_yjs_repair_Result;
+		if (!data) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const fileNode = data.fileNode;
+		const rootKind = fileNode.yjsRootKind;
+		// The frontmatter markers qualify too: a frontmatter-marked file whose update budget
+		// tripped can no longer accept the fitting edit that would clear the marker, and its
+		// visible text is under the text cap, so a latest_state repair is lossless. The
+		// too-large-text marker stays out on purpose — its visible text is over the cap, so its
+		// documented exit is `last_committed` with the acknowledgement flag.
+		const hasDurableMarker =
+			fileNode.contentShapeMismatchAt !== undefined ||
+			fileNode.contentYjsStateTooLargeByteSize !== undefined ||
+			fileNode.contentFrontmatterTooLargeFieldCount !== undefined ||
+			fileNode.contentFrontmatterTooLargeIndexDocumentCount !== undefined;
+
+		// The default source requires the matching durable marker: without one, normal
+		// materialization still owns the file and a repair would race it.
+		if (source === "latest_state" && !hasDurableMarker) {
+			return Result({ _nay: { message: "File carries no durable repair marker" } });
+		}
+
+		let visibleText: string;
+		if (source === "latest_state") {
+			// Refuse a base over the repair-only cap before any GET.
+			if (data.yjsSnapshotAsset.size > files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES) {
+				return Result({
+					_nay: {
+						message: `Yjs state exceeds the ${files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES}-byte repair limit; export and repair from last_committed`,
+					},
+				});
+			}
+			if (!data.yjsSnapshotAsset.r2Key) {
+				return Result({ _nay: { message: "Yjs snapshot asset has no stored object" } });
+			}
+
+			const baseSnapshotUpdate = await r2_fetch_object_from_bucket({ key: data.yjsSnapshotAsset.r2Key }).then(
+				(response) => response.arrayBuffer(),
+			);
+			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(baseSnapshotUpdate);
+
+			// Reuse the immutable-sequence reader up to the frozen target, under the repair cap.
+			let appliedSequence = data.yjsSnapshotDoc.sequence;
+			while (appliedSequence < data.throughSequence) {
+				const next = (await ctx.runQuery(internal.files_nodes.get_file_next_yjs_update, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					nodeId: args.nodeId,
+					afterSequence: appliedSequence,
+					throughSequence: data.throughSequence,
+				})) as get_file_next_yjs_update_Result;
+				if (next.kind === "done") {
+					break;
+				}
+				if (next.kind === "gap") {
+					return Result({ _nay: { message: "files_yjs_updates log has a sequence gap; repair from last_committed" } });
+				}
+				files_yjs_doc_apply_array_buffer_update(yjsDoc, next.row.update);
+				appliedSequence = next.row.sequence;
+				if (encodeStateAsUpdate(yjsDoc).byteLength > files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES) {
+					return Result({
+						_nay: {
+							message: `Yjs state exceeds the ${files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES}-byte repair limit; export and repair from last_committed`,
+						},
+					});
+				}
+			}
+
+			// Try the stored shape's normal text reader first. Repair may run because that reader
+			// refuses, so fall back to a plain root's `toString()`; embeds and child types add no
+			// text. A rich document with no rich root has empty visible text.
+			const extractedText = files_yjs_doc_get_text({ yjsDoc, rootKind });
+			if (extractedText._nay) {
+				visibleText =
+					rootKind === "plain_text" ? files_yjs_doc_get_plain_text({ yjsDoc }) : "";
+			} else {
+				visibleText = extractedText._yay;
+			}
+		} else {
+			// last_committed: the newest version snapshot asset holds exactly the committed
+			// chunk text (finalization writes both in one transaction), so read it back instead
+			// of re-merging chunk docs.
+			if (!data.asset.r2Key) {
+				return Result({ _nay: { message: "Committed content asset has no stored object" } });
+			}
+			const committedBytes = await r2_fetch_object_from_bucket({ key: data.asset.r2Key }).then((response) =>
+				response.arrayBuffer(),
+			);
+			// Fatal decoder: repairing from silently replaced bytes would launder corruption.
+			try {
+				visibleText = new TextDecoder("utf-8", { fatal: true }).decode(committedBytes);
+			} catch (error) {
+				console.error("Committed content asset is not valid UTF-8", { nodeId: args.nodeId, error });
+				return Result({ _nay: { message: "Committed content is not valid UTF-8" } });
+			}
+		}
+
+		// The normal visible cap still applies: repair may not commit text a normal save could not.
+		const textByteSize = files_get_utf8_byte_size(visibleText);
+		if (textByteSize > files_MAX_TEXT_CONTENT_BYTES) {
+			return Result({ _nay: { message: `Visible text exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
+		}
+
+		// Build the fresh expected-root document. This is a new lineage on purpose: pending
+		// proposals built against the old history become visibly stale through the generation
+		// bump in the final mutation.
+		const replacementDoc = files_yjs_doc_create_from_text({ text: visibleText, rootKind });
+		if ("_nay" in replacementDoc) {
+			return Result({ _nay: { message: replacementDoc._nay.message } });
+		}
+		const replacementState = encodeStateAsUpdate(replacementDoc);
+		if (replacementState.byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES) {
+			return Result({
+				_nay: { message: `Compact replacement exceeds ${files_MAX_YJS_RECONSTRUCTED_STATE_BYTES}-byte limit` },
+			});
+		}
+
+		// Upload both replacements to fresh unfinalized assets and keys. A stale or refused
+		// final mutation deletes them below; a crash leaves them to the unfinalized-asset sweeper.
+		const [yjsSnapshotAssetId, contentSnapshotAssetId] = (await Promise.all([
+			ctx.runMutation(internal.r2.insert_asset, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				kind: "yjs_snapshot",
+				size: replacementState.byteLength,
+				createdBy: args.authorUserId,
+			}),
+			ctx.runMutation(internal.r2.insert_asset, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				kind: "content_snapshot",
+				size: textByteSize,
+				createdBy: args.authorUserId,
+			}),
+		])) as [Id<"files_r2_assets">, Id<"files_r2_assets">];
+		const yjsSnapshotR2Key = r2_create_asset_key({
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			assetId: yjsSnapshotAssetId,
+		});
+		const contentSnapshotR2Key = r2_create_asset_key({
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			assetId: contentSnapshotAssetId,
+		});
+		await Promise.all([
+			r2_put_object(ctx, {
+				key: yjsSnapshotR2Key,
+				body: files_u8_to_array_buffer(replacementState),
+				contentType: "application/octet-stream" satisfies files_ContentType,
+			}),
+			r2_put_object(ctx, {
+				key: contentSnapshotR2Key,
+				body: visibleText,
+				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			}),
+		]);
+
+		const finalized = (await ctx.runMutation(internal.files_nodes_content.finalize_file_yjs_repair, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			authorUserId: args.authorUserId,
+			source,
+			acknowledgeDiscardUnmaterialized: args.acknowledgeDiscardUnmaterialized ?? false,
+			targetSequence: data.throughSequence,
+			expectedLineageGeneration: data.yjsLastSequenceDoc.lineageGeneration,
+			text: visibleText,
+			textByteSize,
+			yjsSnapshotAssetId,
+			yjsSnapshotSize: replacementState.byteLength,
+			contentSnapshotAssetId,
+			supersededYjsAssetId: data.yjsSnapshotAsset._id,
+		})) as finalize_file_yjs_repair_Result;
+
+		if (finalized._nay) {
+			// Refused or stale: delete the two fresh uploads (docs and objects) so they do not
+			// wait on the unfinalized-asset sweeper. A crash before this line leaves them to it.
+			await ctx.runMutation(internal.files_nodes_content.delete_unfinalized_repair_assets, {
+				assetIds: [yjsSnapshotAssetId, contentSnapshotAssetId],
+			});
+			return finalized;
+		}
+
+		return Result({
+			_yay: {
+				sequence: data.throughSequence,
+				lineageGeneration: finalized._yay.lineageGeneration,
+				textByteSize,
+			},
+		});
+	},
+});
+
+export const finalize_file_yjs_repair = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		authorUserId: v.id("users"),
+		source: v.union(v.literal("latest_state"), v.literal("last_committed")),
+		acknowledgeDiscardUnmaterialized: v.boolean(),
+		targetSequence: v.number(),
+		expectedLineageGeneration: v.number(),
+		/** One bounded text value; every other input travels as ids/scalars. */
+		text: v.string(),
+		textByteSize: v.number(),
+		yjsSnapshotAssetId: v.id("files_r2_assets"),
+		yjsSnapshotSize: v.number(),
+		contentSnapshotAssetId: v.id("files_r2_assets"),
+		supersededYjsAssetId: v.id("files_r2_assets"),
+	},
+	returns: v_result({ _yay: v.object({ lineageGeneration: v.number() }) }),
+	handler: async (ctx, args) => {
+		// Recheck everything the action decided on: tenant, membership, node, marker or
+		// acknowledgement, exact target sequence, lineage generation, asset ownership and sizes.
+		// Any mismatch means the world moved between the action's read and this commit.
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) =>
+				q
+					.eq("userId", args.authorUserId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("active", true),
+			)
+			.first();
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		if (args.textByteSize !== files_get_utf8_byte_size(args.text)) {
+			return Result({ _nay: { message: "Text size does not match" } });
+		}
+
+		const state = await db_get_file_content_materialization_db_state(ctx, args);
+		if (!state) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (state.yjsLastSequenceDoc.lastSequence !== args.targetSequence) {
+			return Result({ _nay: { message: "Stale repair: the file advanced" } });
+		}
+		if (state.yjsLastSequenceDoc.lineageGeneration !== args.expectedLineageGeneration) {
+			return Result({ _nay: { message: "Stale repair: the lineage advanced" } });
+		}
+		// Same eligibility as the action: the frontmatter markers qualify for latest_state.
+		const hasDurableMarker =
+			state.fileNode.contentShapeMismatchAt !== undefined ||
+			state.fileNode.contentYjsStateTooLargeByteSize !== undefined ||
+			state.fileNode.contentFrontmatterTooLargeFieldCount !== undefined ||
+			state.fileNode.contentFrontmatterTooLargeIndexDocumentCount !== undefined;
+		if (args.source === "latest_state" && !hasDurableMarker) {
+			return Result({ _nay: { message: "File carries no durable repair marker" } });
+		}
+		if (args.source === "last_committed" && !args.acknowledgeDiscardUnmaterialized) {
+			return Result({ _nay: { message: "last_committed needs the acknowledgement flag" } });
+		}
+
+		const [yjsSnapshotAsset, contentSnapshotAsset] = await Promise.all([
+			ctx.db.get("files_r2_assets", args.yjsSnapshotAssetId),
+			ctx.db.get("files_r2_assets", args.contentSnapshotAssetId),
+		]);
+		if (
+			!yjsSnapshotAsset ||
+			yjsSnapshotAsset.organizationId !== args.organizationId ||
+			yjsSnapshotAsset.workspaceId !== args.workspaceId ||
+			yjsSnapshotAsset.kind !== "yjs_snapshot" ||
+			yjsSnapshotAsset.size !== args.yjsSnapshotSize ||
+			!contentSnapshotAsset ||
+			contentSnapshotAsset.organizationId !== args.organizationId ||
+			contentSnapshotAsset.workspaceId !== args.workspaceId ||
+			contentSnapshotAsset.kind !== "content_snapshot" ||
+			contentSnapshotAsset.size !== args.textByteSize
+		) {
+			return Result({ _nay: { message: "Repair assets do not match" } });
+		}
+
+		const now = Date.now();
+		const nextLineageGeneration = args.expectedLineageGeneration + 1;
+
+		// Mirror the materializer's frontmatter preflight. A frontmatter-marked file usually
+		// still carries over-cap frontmatter at repair time, and letting the metadata insert
+		// helper's backstop throw would roll the whole repair back and leave the file
+		// deadlocked. When the frontmatter is over the caps, commit the chunks without the
+		// metadata index and keep the marker pair set with the fresh counts; the user's next
+		// fitting edit clears them through normal materialization.
+		const repairRootKind = state.fileNode.yjsRootKind;
+		const frontmatter = repairRootKind === "rich_text" ? files_metadata_preflight_frontmatter(args.text) : null;
+		const frontmatterOverCap = frontmatter !== null && files_metadata_frontmatter_exceeds_index_caps(frontmatter);
+
+		// Reuse the finalization shape: swap the Yjs pointer, finalize both assets, replace the
+		// committed chunks, record the new version, clear the markers, reset the counters and
+		// bump the lineage. Covered update docs and job docs stay out of this transaction — the
+		// scheduled continuation below deletes them, and they are unreachable behind the new
+		// snapshot sequence meanwhile. Pending proposals are untouched: every pending read,
+		// rebase and Accept checks the lineage generation, so old proposals become visibly stale.
+		const repairWriteResult = Result_all(
+			await Promise.all([
+				ctx.db.patch("files_yjs_snapshots", state.yjsSnapshotDoc._id, {
+					sequence: args.targetSequence,
+					assetId: args.yjsSnapshotAssetId,
+					updatedBy: args.authorUserId,
+					updatedAt: now,
+				}),
+				ctx.db.patch("files_yjs_docs_last_sequences", state.yjsLastSequenceDoc._id, {
+					unmaterializedUpdateCount: 0,
+					unmaterializedUpdateBytes: 0,
+					lineageGeneration: nextLineageGeneration,
+				}),
+				ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
+					r2Key: r2_create_asset_key({
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						assetId: args.yjsSnapshotAssetId,
+					}),
+					unfinalizedExpiresAt: undefined,
+					updatedAt: now,
+				}),
+				ctx.db.patch("files_r2_assets", args.contentSnapshotAssetId, {
+					r2Key: r2_create_asset_key({
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						assetId: args.contentSnapshotAssetId,
+					}),
+					unfinalizedExpiresAt: undefined,
+					updatedAt: now,
+				}),
+				ctx.db.patch("files_nodes", args.nodeId, {
+					assetId: args.contentSnapshotAssetId,
+					contentTooLargeByteSize: undefined,
+					contentShapeMismatchAt: undefined,
+					contentYjsStateTooLargeByteSize: undefined,
+					contentFrontmatterTooLargeFieldCount: frontmatterOverCap ? frontmatter.fieldCount : undefined,
+					contentFrontmatterTooLargeIndexDocumentCount: frontmatterOverCap ? frontmatter.indexDocumentCount : undefined,
+					updatedBy: args.authorUserId,
+					updatedAt: now,
+				}),
+				store_version_snapshot(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					nodeId: args.nodeId,
+					assetId: args.contentSnapshotAssetId,
+					userId: args.authorUserId,
+				}),
+				db_replace_file_chunks(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					nodeId: args.nodeId,
+					yjsSequence: args.targetSequence,
+					textContent: args.text,
+					skipFrontmatterIndex: frontmatterOverCap,
+				}),
+			]),
+		);
+		if (repairWriteResult._nay) {
+			// Throw so Convex rolls back every related write above; returning would commit a
+			// half-repaired file.
+			throw convex_error({
+				message: "Failed to finalize the Yjs repair",
+				cause: repairWriteResult._nay,
+			});
+		}
+
+		// The previous content asset stays owned by its files_snapshots history doc under normal
+		// retention. Only the superseded Yjs asset is reference-checked and durably removed, in
+		// the bounded continuation with the covered docs.
+		await ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_yjs_repair_covered_rows, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			throughSequence: args.targetSequence,
+			supersededYjsAssetId: args.supersededYjsAssetId,
+		});
+
+		return Result({ _yay: { lineageGeneration: nextLineageGeneration } });
+	},
+});
+
+type finalize_file_yjs_repair_Result =
+	typeof finalize_file_yjs_repair extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Bounded post-commit cleanup for the repair: delete the covered update docs and job docs in
+ * batches, then reference-check and remove the superseded Yjs snapshot asset. Safe to rerun.
+ */
+export const cleanup_file_yjs_repair_covered_rows = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		throughSequence: v.number(),
+		supersededYjsAssetId: v.id("files_r2_assets"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		if (await db_delete_covered_file_content_docs(ctx, args)) {
+			await ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_yjs_repair_covered_rows, args);
+			return null;
+		}
+
+		// Reference-check the superseded Yjs asset before removal: after the swap no snapshot
+		// doc should point at it, but a stale rerun of this cleanup must not delete a live asset.
+		const supersededAsset = await ctx.db.get("files_r2_assets", args.supersededYjsAssetId);
+		if (supersededAsset) {
+			const referencingSnapshot = await ctx.db
+				.query("files_yjs_snapshots")
+				.withIndex("by_asset", (q) => q.eq("assetId", args.supersededYjsAssetId))
+				.first();
+			if (!referencingSnapshot) {
+				if (supersededAsset.r2Key) {
+					await r2_delete_object(ctx, supersededAsset.r2Key);
+				}
+				await ctx.db.delete("files_r2_assets", args.supersededYjsAssetId);
+			}
+		}
+
+		return null;
+	},
+});
+
+/**
+ * Delete fresh repair assets whose final mutation refused. Guarded to unfinalized docs so a
+ * late duplicate call cannot remove an asset a successful commit finalized. The object delete
+ * uses the deterministic key and is a no-op when nothing was uploaded.
+ */
+export const delete_unfinalized_repair_assets = internalMutation({
+	args: {
+		assetIds: v.array(v.id("files_r2_assets")),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await Promise.all(
+			args.assetIds.map(async (assetId) => {
+				const asset = await ctx.db.get("files_r2_assets", assetId);
+				if (asset && asset.r2Key === undefined) {
+					await r2_delete_object(
+						ctx,
+						r2_create_asset_key({
+							organizationId: asset.organizationId,
+							workspaceId: asset.workspaceId,
+							assetId: asset._id,
+						}),
+					);
+					await ctx.db.delete("files_r2_assets", assetId);
+				}
+			}),
+		);
+		return null;
+	},
+});
+// #endregion yjs repair

@@ -10,7 +10,7 @@ import { r2_get_bucket } from "./r2_client.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
-import { files_yjs_doc_update_from_markdown } from "../shared/files-tiptap.ts";
+import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { plugins_validate_manifest, type plugins_Capability } from "../shared/plugins.ts";
 
 const r2Objects = new Map<string, BodyInit>();
@@ -306,7 +306,11 @@ async function seed_pending_markdown_node(
 	if (created._nay) throw new Error(created._nay.message);
 
 	const yjsDoc = new YDoc();
-	const updated = files_yjs_doc_update_from_markdown({ markdown: "# Pending materialization\n", mut_yjsDoc: yjsDoc });
+	const updated = files_yjs_doc_update_from_text({
+		rootKind: "rich_text",
+		text: "# Pending materialization\n",
+		mut_yjsDoc: yjsDoc,
+	});
 	if (updated._nay) throw new Error(updated._nay.message);
 	await t.run((ctx) =>
 		files_db_yjs_push_update(ctx, {
@@ -316,6 +320,7 @@ async function seed_pending_markdown_node(
 			nodeId: created._yay.nodeId,
 			update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
 			sessionId: `plugin-ui-ttl-${filename}`,
+			rootKind: "rich_text",
 			materializeImmediately: false,
 		}),
 	);

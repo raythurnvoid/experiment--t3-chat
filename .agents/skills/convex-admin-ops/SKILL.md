@@ -89,6 +89,53 @@ Use `"data"` when the user wants to wipe app data while keeping the account usab
 
 The action returns `null`. One successful invocation per user is enough: it schedules the same user and mode when bounded user-local work remains, and it hands queued organization/workspace cleanup to the existing Workpool. If the invocation fails on Clerk, Polar, or another external dependency, correct that problem and retry the same user and mode. Record the reset start time and each successful user/mode invocation. Before writing replacement data, inspect only `hard_delete_user_now` scheduled docs created since that start time. Require no `pending` or `inProgress` doc. A failed doc remains unresolved unless a later explicit invocation for the same user and mode succeeded and left no later pending or running continuation. Scheduled history persists for seven days, so an older or superseded failed doc does not fail the new reset. Verify `data_deletion_requests` is empty and confirm the target tables are still empty on a second readback.
 
+# Selective Development User Cleanup
+
+Use this workflow when the user chooses an explicit keep/delete split instead of the full `dev-data-reset` behavior:
+
+1. Record the exact keep, delete, migrate, and untouched scopes. If the request is unclear, stop before any write and ask the user; do not infer a keep set from who appears active.
+2. Resolve accounts through live `users` and `users_anagraphics` readbacks. Email or display name may find a candidate, but the exact `users` id is the destructive boundary. Require a unique match for every kept account.
+3. Decide with the user whether the operation needs a recovery export. If approved, complete the export workflow below before deletion. A Convex export cannot restore deleted R2 objects or external Clerk/Polar state.
+4. If kept data also needs a schema migration, migrate and audit that keep scope before removing its old representation. Load `convex-migrations` for the phase order.
+5. Preview every account as `{ userId, displayName/email summary, clerkUserId present, purgeUserMod }`. Build the delete list as exact ids after subtracting the exact keep ids. Do not add or call a deployment-wide `delete_all_except` mutation.
+6. Invoke `users:hard_delete_user_now` once per previewed delete id with the approved mode. Track each success and failure explicitly; a failed call does not prove that the user was deleted.
+7. Wait for bounded continuations and tenant deletion work as described above. Do not create replacement or migrated data while a continuation can still delete the same scope.
+8. Read back `users`, `users_anagraphics`, memberships, deletion requests, and the kept data invariants. Require every remaining membership to belong to a kept user. Report kept-user deletion requests instead of deleting or cancelling them without separate approval.
+
+# File Content Refusal Markers And Yjs Repair
+
+Load `../files-editable-text/SKILL.md` first; it owns the marker and door model. This section is the operator view.
+
+Symptoms map to durable marker fields on the `files_nodes` doc:
+
+- The agent or a reader reports a marker-qualified message (shape mismatch, state too large, content too large) instead of "the file does not exist". Check the node doc for `contentShapeMismatchAt`, `contentYjsStateTooLargeByteSize`, `contentFrontmatterTooLargeFieldCount` / `contentFrontmatterTooLargeIndexDocumentCount`, and the settle marker `contentTooLargeByteSize`.
+- Saves refuse with the repair message while `contentShapeMismatchAt` or `contentYjsStateTooLargeByteSize` is set, and also when an update-budget trip hits a settle-marked file (a settled materialization cannot shrink the counters, so "retry in a moment" would be a lie).
+- The frontmatter marker pair alone does not block writes: committed content stays at the last sequence that fit, and the user's next fitting edit clears the pair. An over-cap-frontmatter `.md` UPLOAD is born with the pair set (`convex/r2.ts` commits the chunks with the metadata index skipped instead of retrying forever); that node is published and editable, not stuck.
+
+The ONLY recovery for the durable markers is the operator repair:
+
+```powershell
+$argsJson = @{
+	organizationId = "<organizations id>"
+	workspaceId = "<workspaces id>"
+	nodeId = "<files_nodes id>"
+	authorUserId = "<users id>"
+} | ConvertTo-Json -Compress
+
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable files_nodes_content:repair_file_yjs_state_from_visible_text $argsJson
+```
+
+Rules the action enforces (do not fight them):
+
+- Exact author: `authorUserId` must be an active member of the node's tenant. It is recorded as the author of the repair's new version; an outside id would forge history.
+- The default `source: "latest_state"` requires a durable marker on the node (the four fields above; `contentTooLargeByteSize` deliberately does NOT qualify — its visible text is over the cap). It reconstructs the current document under the repair-only 16 MiB cap (`files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES`), with a pre-GET size refusal on the snapshot asset before any download.
+- `source: "last_committed"` discards unmaterialized updates and rebuilds from the committed content. It requires `acknowledgeDiscardUnmaterialized: true` and never happens automatically. Export the Yjs snapshot/update assets first when the discarded edits may matter.
+- The finalize mutation is staleness-gated: any concurrent write or lineage change between the action's read and the commit makes the repair stale instead of merging onto it. Rerun on a stale refusal.
+
+What a successful repair does: replaces the whole Yjs history with one fresh compact document built from the visible text, swaps every committed representation atomically, clears the markers, resets the update counters, and increments `lineageGeneration` — pending proposals built against the old history become visibly stale instead of merging. The OLD content asset stays under normal snapshot retention (its `files_snapshots` history doc still owns it); only the superseded Yjs snapshot asset is removed, by a bounded continuation. If the repair text still carries over-cap frontmatter, the repair keeps the frontmatter marker pair set with fresh counts and skips the metadata index; everything else still repairs.
+
+After the repair, editors that had the file open must CLOSE or RELOAD the file before writes resume — their in-memory document belongs to the replaced lineage. Readback: confirm the marker fields are gone from the node doc and `lineageGeneration` increased on the `files_yjs_docs_last_sequences` doc.
+
 # Remove A Registered Plugin
 
 Workspace members can uninstall a plugin from its plugin detail page (`plugins.uninstall_version`): that deletes the workspace's event handlers, installation secrets, and installation doc, and keeps event runs/run calls as version-owned history. Registry-level removal remains the internal-only admin flow in `packages/app/convex/plugins.ts`. It targets one plugin name and hard-deletes its versions, reviews (including rejected first publishes with no version), interrupted-upload cleanup attempts and keys, per-version source trees (`/<pluginVersionId>/...` in GLOBAL/PLUGINS), workspace installations and children, version-owned run history, repository claims backing registered versions, and exact R2 artifact objects. Current code does not preview or delete related `activities`; do not describe the result as complete registry cleanup until that gap is fixed.

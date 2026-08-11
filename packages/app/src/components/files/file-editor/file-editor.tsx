@@ -14,6 +14,7 @@ import {
 	files_create_room_id,
 	files_PresenceStore,
 	type files_EditorView,
+	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
 import { MyButton } from "../../my-button.tsx";
@@ -356,6 +357,10 @@ export function FileEditorPresenceSupplier(props: FileEditorPresenceSupplier_Pro
 type FileEditorRender_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	/** The node's document shape, from the route-resolved node; the diff editor dispatches on it. */
+	rootKind: files_YjsRootKind;
+	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
+	monacoLanguageId: string;
 	editorMode: FileEditor_Mode;
 	editable: boolean;
 	topSafeArea?: number;
@@ -372,6 +377,8 @@ function FileEditorRender(props: FileEditorRender_Props) {
 	const {
 		nodeId,
 		pendingUpdateId,
+		rootKind,
+		monacoLanguageId,
 		editorMode,
 		editable,
 		topSafeArea,
@@ -415,6 +422,8 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				key={nodeId}
 				nodeId={nodeId}
 				editable={editable}
+				rootKind={rootKind}
+				monacoLanguageId={monacoLanguageId}
 				pendingUpdateId={pendingUpdateId}
 				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
@@ -432,6 +441,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		<FileEditorPlainText
 			nodeId={nodeId}
 			editable={editable}
+			monacoLanguageId={monacoLanguageId}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
@@ -463,6 +473,8 @@ type FileEditor_CssVars = {
 type FileEditorInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	rootKind: files_YjsRootKind;
+	monacoLanguageId: string;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
 	topSafeArea?: number;
@@ -479,6 +491,8 @@ function FileEditorInner(props: FileEditorInner_Props) {
 	const {
 		nodeId,
 		pendingUpdateId,
+		rootKind,
+		monacoLanguageId,
 		serverSequence,
 		editorMode,
 		topSafeArea,
@@ -501,7 +515,9 @@ function FileEditorInner(props: FileEditorInner_Props) {
 	});
 
 	const handleDiffExit = useFn(() => {
-		onEditorModeChange("rich_text_editor");
+		// Leaving the diff goes back to the node's own default editor, not always the rich editor:
+		// a plain-text node has no rich view.
+		onEditorModeChange(rootKind === "plain_text" ? "plain_text_editor" : "rich_text_editor");
 		onDiffExit?.();
 	});
 
@@ -570,6 +586,8 @@ function FileEditorInner(props: FileEditorInner_Props) {
 						<FileEditorRender
 							nodeId={nodeId}
 							pendingUpdateId={pendingUpdateId}
+							rootKind={rootKind}
+							monacoLanguageId={monacoLanguageId}
 							editorMode={editorMode}
 							editable={canWrite === true}
 							topSafeArea={topSafeArea}
@@ -596,6 +614,10 @@ export type FileEditor_Props = {
 	ref?: Ref<FileEditor_Ref>;
 	nodeId: app_convex_Id<"files_nodes"> | null | undefined;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	/** The node's document shape, from the route-resolved node the caller already holds. */
+	rootKind: files_YjsRootKind;
+	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
+	monacoLanguageId: string;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
 	topSafeArea?: number;
@@ -612,6 +634,8 @@ export function FileEditor(props: FileEditor_Props) {
 		ref,
 		nodeId,
 		pendingUpdateId,
+		rootKind,
+		monacoLanguageId,
 		serverSequence,
 		editorMode,
 		topSafeArea,
@@ -635,6 +659,8 @@ export function FileEditor(props: FileEditor_Props) {
 		<FileEditorInner
 			nodeId={nodeId}
 			pendingUpdateId={pendingUpdateId}
+			rootKind={rootKind}
+			monacoLanguageId={monacoLanguageId}
 			serverSequence={serverSequence}
 			editorMode={editorMode}
 			topSafeArea={topSafeArea}

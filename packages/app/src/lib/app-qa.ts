@@ -1,5 +1,6 @@
 import { app_convex, type app_convex_Id } from "./app-convex-client.ts";
 import type { files_yjs_Provider } from "./files-yjs-provider.ts";
+import type { editor as monaco_editor } from "monaco-editor";
 
 /**
  * Dev-only browser QA hooks, installed on `window.__qa`. Playwriter runners read app state
@@ -18,6 +19,11 @@ type AppQa = {
 		status: ReturnType<files_yjs_Provider["getStatus"]>;
 		loadFailed: boolean;
 	}[];
+	/**
+	 * The live Monaco editors by pane, registered by the editor components on mount. Keyed so
+	 * QA can tell the diff panes apart instead of guessing which editor is "current".
+	 */
+	monaco: () => Partial<Record<AppQaMonacoPaneKey, monaco_editor.ICodeEditor>>;
 };
 
 declare global {
@@ -36,6 +42,25 @@ export function app_qa_register_files_yjs_provider(provider: files_yjs_Provider)
 	active_files_yjs_providers.add(provider);
 	return () => {
 		active_files_yjs_providers.delete(provider);
+	};
+}
+
+type AppQaMonacoPaneKey = "plainText" | "diffOriginal" | "diffModified";
+
+const active_monaco_editors = new Map<AppQaMonacoPaneKey, monaco_editor.ICodeEditor>();
+
+/**
+ * Track a mounted Monaco pane so `window.__qa.monaco()` can hand QA a live editor handle.
+ * The editor components register on mount (no top-level Monaco import here: Vite erases only
+ * the guarded install body, so a value import would pull Monaco into the entry chunk). Returns
+ * the cleanup that removes the same registration; a newer mount for the key wins.
+ */
+export function app_qa_register_monaco_editor(key: AppQaMonacoPaneKey, editor: monaco_editor.ICodeEditor) {
+	active_monaco_editors.set(key, editor);
+	return () => {
+		if (active_monaco_editors.get(key) === editor) {
+			active_monaco_editors.delete(key);
+		}
 	};
 }
 
@@ -62,5 +87,6 @@ export function app_qa_install() {
 				status: provider.getStatus(),
 				loadFailed: provider.loadFailed,
 			})),
+		monaco: () => Object.fromEntries(active_monaco_editors) as Partial<Record<AppQaMonacoPaneKey, monaco_editor.ICodeEditor>>,
 	};
 }

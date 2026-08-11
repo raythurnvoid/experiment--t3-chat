@@ -27,12 +27,11 @@ import type {
 } from "../convex/files_nodes.ts";
 import type {
 	files_nodes_create_file_by_path_Result,
-	files_nodes_get_file_last_available_markdown_content_by_path_Result,
+	files_nodes_get_file_last_available_text_content_by_path_Result,
 } from "../convex/files_nodes_content.ts";
 import type {
 	files_pending_updates_get_by_file_node_Result,
 	files_pending_updates_get_pending_path_overlay_data_Result,
-	upsert_file_pending_update_internal_action_Result,
 } from "../convex/files_pending_updates.ts";
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -511,7 +510,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		// The action fallback reconstructs last-available content; the parallel
 		// db file lookup preserves precise missing/folder/unreadable errors.
 		const fileContentPromise = this.ctx.runAction(
-			internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
+			internal.files_nodes_content.get_file_last_available_text_content_by_path,
 			{
 				organizationId: this.ctxData.organizationId,
 				workspaceId: this.ctxData.workspaceId,
@@ -519,7 +518,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				path: dbFilesPath,
 				overlayUserId: this.overlayUserId,
 			},
-		) as Promise<files_nodes_get_file_last_available_markdown_content_by_path_Result>;
+		) as Promise<files_nodes_get_file_last_available_text_content_by_path_Result>;
 		const dbFilePromise: Promise<files_nodes_get_by_path_Result> =
 			dbFilesPath === "/"
 				? Promise.resolve(null)
@@ -624,6 +623,10 @@ export class bash_DbFilesFs implements IFileSystem {
 			const normalizedSegments = files_get_normalized_node_path_segments({
 				kind: "file",
 				nameOrPath: requestedDbFilesPath,
+				// Agent writes create Markdown and plain text files: supported extensions pass through,
+				// an extensionless name still becomes `<name>.md`, and unknown extensions refuse
+				// with the classifier's rule.
+				fileNamePolicy: "editable_text",
 			});
 			if (!normalizedSegments || "validationMessage" in normalizedSegments) {
 				throw new Error(
@@ -678,7 +681,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		})) as files_nodes_read_file_content_from_chunks_Result;
 		if (!currentContent && entry != null) {
 			currentContent = (await this.ctx.runAction(
-				internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
+				internal.files_nodes_content.get_file_last_available_text_content_by_path,
 				{
 					organizationId,
 					workspaceId,
@@ -686,7 +689,7 @@ export class bash_DbFilesFs implements IFileSystem {
 					path: dbFilesPath,
 					overlayUserId: userId,
 				},
-			)) as files_nodes_get_file_last_available_markdown_content_by_path_Result;
+			)) as files_nodes_get_file_last_available_text_content_by_path_Result;
 		}
 		if (!currentContent && entry?.kind === "file") {
 			throw new Error(
@@ -737,7 +740,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				// A raced creation reused a pre-existing node: re-read so the proposal overwrites
 				// that content instead of pretending the file is new.
 				currentContent = (await this.ctx.runAction(
-					internal.files_nodes_content.get_file_last_available_markdown_content_by_path,
+					internal.files_nodes_content.get_file_last_available_text_content_by_path,
 					{
 						organizationId,
 						workspaceId,
@@ -745,7 +748,7 @@ export class bash_DbFilesFs implements IFileSystem {
 						path: dbFilesPath,
 						overlayUserId: userId,
 					},
-				)) as files_nodes_get_file_last_available_markdown_content_by_path_Result;
+				)) as files_nodes_get_file_last_available_text_content_by_path_Result;
 				if (!currentContent) {
 					throw new Error(
 						`cannot write '${shellPath}': the file changed while the command was running. Re-run the command.`,
@@ -793,21 +796,21 @@ export class bash_DbFilesFs implements IFileSystem {
 				`cannot write '${shellPath}': content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte app file limit${await eager_created_failure_note()}`,
 			);
 		}
-		let upserted: upsert_file_pending_update_internal_action_Result;
+		let upserted: files_agent_upsert_file_pending_update_Result;
 		try {
-			upserted = (await this.ctx.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			upserted = await files_agent_upsert_file_pending_update(this.ctx, {
 				organizationId,
 				workspaceId,
 				userId,
 				nodeId,
 				pendingUpdateId: currentContent?.pendingUpdateId ?? undefined,
-				unstagedMarkdown: newText,
+				unstagedText: newText,
 				eagerCreatedCommittedSequence,
 				// Recorded on the pending update doc so Discard/TTL expiry can also remove the
 				// parent folders this write eagerly created.
 				eagerCreatedAncestorIds: createdAncestorIds,
 				threadId: threadId ?? undefined,
-			})) as upsert_file_pending_update_internal_action_Result;
+			});
 		} catch (error) {
 			if (eagerCreatedCommittedSequence === undefined) {
 				throw error;
@@ -1930,12 +1933,12 @@ export function bash_search_command_exact_query_filter(query: string) {
 export function bash_search_command_exact_query_note(
 	exactQueryFilter: string | null,
 	query: string,
-	markdownChunk: string,
+	textChunk: string,
 ) {
 	if (exactQueryFilter == null) {
 		return "";
 	}
-	return markdownChunk.toLowerCase().includes(exactQueryFilter)
+	return textChunk.toLowerCase().includes(exactQueryFilter)
 		? ` [contains exact '${query}']`
 		: ` [word-level match; chunk does not contain '${query}']`;
 }
@@ -1946,12 +1949,12 @@ export function bash_search_command_exact_query_note(
  * The model relays counts from command output, so give it grounded counts
  * instead of making it count annotated result blocks itself.
  */
-export function bash_search_command_exact_query_summary(exactQueryFilter: string | null, markdownChunks: string[]) {
+export function bash_search_command_exact_query_summary(exactQueryFilter: string | null, textChunks: string[]) {
 	if (exactQueryFilter == null) {
 		return "";
 	}
-	const exactCount = markdownChunks.filter((chunk) => chunk.toLowerCase().includes(exactQueryFilter)).length;
-	const broadCount = markdownChunks.length - exactCount;
+	const exactCount = textChunks.filter((chunk) => chunk.toLowerCase().includes(exactQueryFilter)).length;
+	const broadCount = textChunks.length - exactCount;
 	if (broadCount === 0) {
 		return "";
 	}
@@ -2050,6 +2053,86 @@ export function bash_parse_limit(command: string, value: string | undefined, def
 		return Result({ _nay: { message: `${command}: --limit must be an integer` } });
 	}
 	return Result({ _yay: Math.max(1, Math.min(maxLimit, Number(rawValue))) });
+}
+
+/**
+ * The visible Result shape of the agent upsert flow. Kept as a local structural type on purpose:
+ * this helper sits inside the generated-API type graph (convex/bash.ts → server/bash.ts → here),
+ * so inferring or importing the registered functions' Result types as its return type creates an
+ * inference cycle that collapses the whole generated API to `any`.
+ */
+export type files_agent_upsert_file_pending_update_Result =
+	| { _yay: null; _nay?: undefined }
+	| { _yay?: undefined; _nay: { name?: string; message: string } };
+
+/**
+ * The agent-side upsert flow behind bash writes (`>`, `tee`, `sed -i`, `touch`, `cp`, `mv -f`)
+ * and `edit_file`: create a server-side operation batch, stage the one bounded unstaged text
+ * under it, then run the finishing internal action that carries only ids. A staging refusal
+ * retires the batch first, or the abandoned "already in progress" batch would block this
+ * user/node's next write until the TTL. Refusals return unchanged so every caller keeps its own
+ * `_nay` surfacing.
+ */
+export async function files_agent_upsert_file_pending_update(
+	ctx: ActionCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		pendingUpdateId?: Id<"files_pending_updates">;
+		unstagedText: string;
+		copiedFrom?: { nodeId: Id<"files_nodes">; path: string; archivesSourceOnAccept?: boolean };
+		eagerCreatedCommittedSequence?: number;
+		eagerCreatedAncestorIds?: Id<"files_nodes">[];
+		threadId?: Id<"ai_chat_threads">;
+	},
+): Promise<files_agent_upsert_file_pending_update_Result> {
+	const batch = (await ctx.runMutation(
+		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+		{
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: args.nodeId,
+		},
+	)) as
+		| { _yay: { operationBatchId: Id<"files_pending_update_operation_batches">; expiresAt: number }; _nay?: undefined }
+		| { _yay?: undefined; _nay: { name?: string; message: string } };
+	if (batch._nay) {
+		return { _nay: batch._nay };
+	}
+	const operationBatchId = batch._yay.operationBatchId;
+
+	const staged = (await ctx.runMutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		operationBatchId,
+		role: "unstaged",
+		text: args.unstagedText,
+	})) as files_agent_upsert_file_pending_update_Result;
+	if (staged._nay) {
+		await ctx.runMutation(internal.files_pending_updates.retire_file_pending_update_operation_batch, {
+			operationBatchId,
+		});
+		return staged;
+	}
+
+	return (await ctx.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		nodeId: args.nodeId,
+		operationBatchId,
+		...(args.pendingUpdateId ? { pendingUpdateId: args.pendingUpdateId } : {}),
+		...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+		...(args.eagerCreatedCommittedSequence !== undefined
+			? { eagerCreatedCommittedSequence: args.eagerCreatedCommittedSequence }
+			: {}),
+		...(args.eagerCreatedAncestorIds !== undefined ? { eagerCreatedAncestorIds: args.eagerCreatedAncestorIds } : {}),
+		...(args.threadId ? { threadId: args.threadId } : {}),
+	})) as files_agent_upsert_file_pending_update_Result;
 }
 
 /**
@@ -2490,7 +2573,7 @@ export function bash_build_unreadable_file_advisory(
 	).filter((path) => path !== shellPath);
 	return [
 		`[ADVISORY] Cannot read '${shellPath}' — its content type is '${contentType ?? "unknown"}', which is not readable as text.`,
-		"This message is NOT the file content. Bash can currently read Markdown and plain text files only; binary/media files are not supported.",
+		"This message is NOT the file content. Bash can read editable text files only (Markdown and plain text types such as .txt, .json, .yaml, .csv); binary/media files are not supported.",
 		`To read generated text output for this file, try: ${relatedReadablePaths.map((path) => `cat ${path}`).join(", or ")}`,
 		"If none of those commands return content, run ls on the parent folder to find the correct generated Markdown sibling.",
 		"",
