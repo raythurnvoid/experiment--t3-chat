@@ -83,23 +83,23 @@ const API_KEY_SCOPE_LABELS = {
 	"files:read": "Read file content",
 	"files:download": "Download files",
 	"files:write": "Write files",
-} satisfies Record<RouteApiKeys_Scope, string>;
+} as const satisfies Record<RouteApiKeys_Scope, string>;
 
 // Create-modal row order: read scopes first, then the opt-in download and write scopes.
-const API_KEY_SCOPE_ROWS: Array<{ scope: RouteApiKeys_Scope; description: string }> = [
+const API_KEY_SCOPE_ROWS = [
 	{ scope: "files:list", description: "View file and folder names, paths, and metadata." },
 	{ scope: "files:read", description: "Read the committed content of editable text files by path." },
 	{ scope: "files:download", description: "Get temporary download links for files." },
 	{ scope: "files:write", description: "Create and update Markdown files by path, and upload other files." },
-];
+] as const satisfies ReadonlyArray<{ scope: RouteApiKeys_Scope; description: string }>;
 
 // Read scopes start checked; download and write stay opt-in.
-const API_KEY_SCOPE_DEFAULTS: Record<RouteApiKeys_Scope, boolean> = {
+const API_KEY_SCOPE_DEFAULTS = {
 	"files:list": true,
 	"files:read": true,
 	"files:download": false,
 	"files:write": false,
-};
+} as const satisfies Record<RouteApiKeys_Scope, boolean>;
 
 type RouteApiKeys_CredentialListResult = app_convex_FunctionReturnType<
 	typeof app_convex_api.public_api.api_credentials_list

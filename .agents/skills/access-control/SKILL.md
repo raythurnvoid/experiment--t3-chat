@@ -324,8 +324,8 @@ product decision, so record the answer here before changing the behaviour. An en
   can `cat` it, and every workspace member with `content.read` then sees those bytes in the shared
   thread. Comments solved the same problem by putting one `fileNodeId` on the row, but a thread can
   touch many files, so the fix is either per-tool-result filtering at read time or private threads.
-- **The public API refuses a grant-only user.** Route access is decided by
-  `requiredUserPermission`, which `has_workspace_content_permission` answers about the *workspace*.
+- **The public API refuses a grant-only user.** Each file scope maps to an app permission, which
+  `has_workspace_content_permission` answers about the *workspace*.
   Somebody whose only access is a direct grant on one restricted file gets 403 before any per-file
   check, so their API key cannot use the grant the UI honours. This is under-permission, not a leak.
 - **An outgoing owner keeps nothing.** The owner holds no grant docs anywhere — `restrict_node` skips
@@ -556,19 +556,16 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   directory creation. The internals themselves are still unguarded, so any new caller has to check for
   itself. The agent has one other door onto file content: `execute_code` mints a public-API grant
   token scoped to file list and read, which re-enters through the public API and *is* re-checked there.
-- **Plugin runs skip the content check outright.** `public_api_resolve_live_principal` applies
-  `requiredUserPermission` to every principal kind except `plugin_run`. The skip is structural, not a
+- **Plugin runs skip the content check outright.** `public_api_resolve_live_principal` applies the app
+  permission mapped from each `files:*` scope to every principal kind except `plugin_run`. The skip is
+  structural, not a
   missing branch: the `plugin_run` principal carries no `contentPermissions` field at all — its
   authority is a platform baseline of files download, files write and activities write, plus
   secrets-read and outbound-fetch from the run's accepted capabilities — so the milestone has to give
   it a content-permission source before the check can include it. Note the baseline half: a plugin run
   downloads and writes files having accepted **no** capability, so do not scope this work as "bound
-  plugin authority by what the user consented to". A latent footgun sits next to it:
-  `requiredUserPermission` is optional, so a route that omits it runs no user ACL check for *any*
-  principal kind. The activities route omits it, which costs nothing today because its `allowedKinds`
-  is `["plugin_run"]` and plugin runs skip the check anyway — but the next route that omits it while
-  accepting `user_api_key`, `public_api_grant` or `plugin_ui` is a real hole. Everything else binds on
-  a plugin run — token
+  plugin authority by what the user consented to". File routes cannot omit the user ACL check: the
+  exhaustive scope map supplies it from `requiredScope`. Everything else binds on a plugin run — token
   expiry, quota, `allowedKinds`, `requiredScope`, and the transactional write revalidation — so the gap
   is content-check-only. Restricted files will not hold against a plugin until that changes.
 - **The global presence roster is readable by any account, and the `listRoom` gate does not change

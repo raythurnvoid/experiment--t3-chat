@@ -81,12 +81,13 @@ type api_schemas_<GroupNameInPascalCase>_<api_path_in_snake_case>_body_schema =
 ```
 */
 
-import type { ai_chat_http_routes } from "../convex/ai_chat.ts";
-import type { files_http_routes } from "../convex/files_nodes_ai.ts";
-import type { public_api_http_routes } from "../convex/public_api.ts";
-import type { r2_http_routes } from "../convex/r2.ts";
-import type { plugins_runtime_http_routes } from "../convex/plugins_runtime.ts";
-import type { users_http_routes } from "../convex/users.ts";
+import type { ai_chat_http_routes } from "../convex/ai_chat_http_routes.ts";
+import type { files_nodes_ai_http_routes } from "../convex/files_nodes_ai_http_routes.ts";
+import type { public_api_files_list_http_routes } from "../convex/public_api_files_list_http.ts";
+import type { public_api_http_routes } from "../convex/public_api_http_routes.ts";
+import type { r2_http_routes } from "../convex/r2_http_routes.ts";
+import type { plugins_runtime_http_routes } from "../convex/plugins_runtime_http_routes.ts";
+import type { users_http_routes } from "../convex/users_http_routes.ts";
 
 // #region Schema validation
 /*
@@ -129,7 +130,7 @@ export interface api_schemas_Main {
 
 	"/api/v1/runs/stream": ReturnType<typeof ai_chat_http_routes>["/api/v1/runs/stream"];
 
-	"/api/v1/files/list": ReturnType<typeof public_api_http_routes>["/api/v1/files/list"];
+	"/api/v1/files/list": ReturnType<typeof public_api_files_list_http_routes>["/api/v1/files/list"];
 
 	"/api/v1/files/read": ReturnType<typeof public_api_http_routes>["/api/v1/files/read"];
 
@@ -147,7 +148,7 @@ export interface api_schemas_Main {
 
 	"/api/v1/activities/start": ReturnType<typeof public_api_http_routes>["/api/v1/activities/start"];
 
-	"/api/files/contextual-prompt": ReturnType<typeof files_http_routes>["/api/files/contextual-prompt"];
+	"/api/files/contextual-prompt": ReturnType<typeof files_nodes_ai_http_routes>["/api/files/contextual-prompt"];
 
 	"/api/r2/event": ReturnType<typeof r2_http_routes>["/api/r2/event"];
 

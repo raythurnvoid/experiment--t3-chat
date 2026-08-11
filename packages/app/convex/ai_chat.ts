@@ -12,7 +12,6 @@ import { get_id_generator } from "../shared/generated-ids.ts";
 import {
 	query,
 	mutation,
-	httpAction,
 	internalMutation,
 	internalQuery,
 	type ActionCtx,
@@ -20,12 +19,7 @@ import {
 	type QueryCtx,
 } from "./_generated/server.js";
 import { api, internal } from "./_generated/api.js";
-import {
-	paginationOptsValidator,
-	paginationResultValidator,
-	type RegisteredQuery,
-	type RouteSpec,
-} from "convex/server";
+import { paginationOptsValidator, paginationResultValidator, type RegisteredQuery } from "convex/server";
 import { doc } from "convex-helpers/validators";
 import { v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
@@ -41,14 +35,13 @@ import {
 	TypeValidationError,
 } from "ai";
 import { z } from "zod";
-import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
+import type { access_control_Permission } from "../shared/access-control.ts";
 import { files_READ_RANGE_MAX_LINES } from "./files_nodes.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
@@ -59,7 +52,6 @@ import {
 	ai_chat_WRITE_TOOL_NAMES,
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
-import type { RouterForConvexModules } from "./http.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { billing_event } from "../server/billing.ts";
 import { billing_ingest_events } from "./billing_db.ts";
@@ -67,7 +59,7 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
-// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
+// Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
 export const experimental_reuseContext = true;
 
 export {
@@ -87,7 +79,7 @@ export {
  *
  * Changing somebody else's thread is a different question — see `authorize_thread_mutation`.
  */
-const THREAD_PERMISSION = "content.read" as const;
+const THREAD_PERMISSION = "content.read" as const satisfies access_control_Permission;
 
 /**
  * Threads are shared by the whole workspace: `threads_list` reads them by organization and workspace,
@@ -1295,1088 +1287,1013 @@ export const thread_messages_add = mutation({
 	},
 });
 
-export function ai_chat_http_routes(router: RouterForConvexModules) {
-	return {
-		...((/* iife */ path = "/api/chat" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						/**
-						 * See {@link PrepareSendMessagesRequest}.
-						 *
-						 * See {@link AssistantChatTransport.prepareSendMessagesRequest}.
-						 **/
-						const bodyValidator = z.object({
-							/**
-							 * The messages to append to the thread.
-							 */
-							messages: z.array(z.any()),
-							/**
-							 * Server-allowlisted model.
-							 */
-							model: z.enum(ai_chat_MODEL_IDS),
-							/** Agent mode */
-							mode: z.enum(ai_chat_MODE_IDS),
-							trigger: z.enum(["submit-message", "regenerate-message"]),
-							/**
-							 * The id of the message to which the new message should be appended.
-							 * `null` means root.
-							 */
-							parentId: z.string().nullable().optional(),
-							/**
-							 * The id of the thread to which the new message should be appended.
-							 *
-							 * `undefined` for new threads.
-							 */
-							threadId: z.string().optional(),
-
-							/**
-							 * The client generated id for a new thread.
-							 */
-							clientGeneratedThreadId: z.string().optional(),
-
-							/**
-							 * Authenticated membership scope.
-							 *
-							 * Server derives organization/workspace from this row.
-							 **/
-							membershipId: z.string(),
-						});
-
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
-
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							try {
-								const requestParseResult = await server_request_json_parse_and_validate(request, bodyValidator);
-
-								if (requestParseResult._nay) {
-									return {
-										status: 400,
-										body: requestParseResult._nay,
-									} as const;
-								}
-
-								const now = Date.now();
-
-								const body = requestParseResult._yay;
-
-								const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-								if (!userAuth) {
-									return {
-										status: 401,
-										body: {
-											message: "Unauthenticated",
-										},
-									} as const;
-								}
-								const user = await ctx.runQuery(internal.users.get, {
-									userId: userAuth.id,
-								});
-								if (!user) {
-									return {
-										status: 401,
-										body: {
-											message: "Unauthenticated",
-										},
-									} as const;
-								}
-
-								const membership = await ctx.runQuery(api.organizations.get_membership, {
-									membershipId: body.membershipId,
-								});
-
-								if (!membership) {
-									return {
-										status: 403,
-										body: {
-											message: "Unauthorized",
-										},
-									} as const;
-								}
-								const rateLimit = await rate_limiter_limit_by_key(ctx, {
-									name: "ai_chat_http",
-									key: membership.userId,
-								});
-								if (rateLimit) {
-									return {
-										status: 429,
-										body: {
-											message: rateLimit.message,
-											retryAfterMs: rateLimit.retryAfterMs,
-										},
-									} as const;
-								}
-
-								// In both modes the AI tools read workspace files, and the tools check no permission
-								// themselves — this route is their only check — so `content.read` is always needed.
-								// Agent mode can also edit files, so it asks for `content.write` too.
-								// We ask for both instead of only the stronger one, because a custom role can have
-								// write without read. Such a role was already refused later by the `content.read`
-								// check inside `thread_get` / `thread_create`, but that answers 400, which looks
-								// like a broken request. Checking here lets the route answer 403 itself.
-								// We write the names here instead of reusing `THREAD_PERMISSION`: that one guards
-								// the thread record, these guard file access, so they must not change together.
-								const chatPermissions =
-									body.mode === "agent" ? (["content.read", "content.write"] as const) : (["content.read"] as const);
-								for (const permission of chatPermissions) {
-									const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
-										membershipId: membership._id,
-										permission,
-									});
-									if (!allowed) {
-										return {
-											status: 403,
-											body: {
-												message: "Permission denied",
-											},
-										} as const;
-									}
-								}
-
-								const tenant = await ctx.runQuery(internal.organizations.get_tenant, {
-									organizationId: membership.organizationId,
-									workspaceId: membership.workspaceId,
-								});
-
-								if (body.threadId == null && body.clientGeneratedThreadId == null) {
-									return {
-										status: 400,
-										body: {
-											message: "One of `threadId` or `clientGeneratedThreadId` is required",
-										},
-									} as const;
-								}
-								let threadId: Id<"ai_chat_threads"> | null = null;
-								let createdThreadId = null;
-
-								const { systemPrompt, tools, validationTools, activeTools } = build_agent_configuration({
-									ctx,
-									ctxData: {
-										organizationId: membership.organizationId,
-										workspaceId: membership.workspaceId,
-										organizationName: tenant.organization.name,
-										workspaceName: tenant.workspace.name,
-										// Pass the same user id into file tools so pending overlays and file-create audit fields
-										// use the identity already accepted by this chat action.
-										userId: user._id,
-									},
-									args: {
-										modeId: body.mode,
-									},
-									getThreadId: () => threadId,
-								});
-
-								// Validate the messages if they are present
-								if (body.messages.length > 0) {
-									try {
-										await validateUIMessages<ai_chat_AiSdk5UiMessage>({
-											messages: body.messages,
-											tools: validationTools,
-										});
-									} catch (error) {
-										if (error instanceof TypeValidationError) {
-											return {
-												status: 400,
-												body: {
-													message: "Invalid messages format",
-													cause:
-														error == null
-															? undefined
-															: { message: error instanceof Error ? error.message : String(error) },
-												},
-											} as const;
-										} else {
-											const msg = "Failed to validate chat messages";
-											should_never_happen(msg, {
-												cause:
-													error == null
-														? undefined
-														: { message: error instanceof Error ? error.message : String(error) },
-											});
-											return {
-												status: 500,
-												body: {
-													message: msg,
-													cause:
-														error == null
-															? undefined
-															: { message: error instanceof Error ? error.message : String(error) },
-												},
-											} as const;
-										}
-									}
-								}
-
-								const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
-
-								// Enforce the image-attachment contract on incoming messages. The
-								// client compresses images to fit, but the caps must hold here too:
-								// a file part must be a small base64 data-URL image, because the
-								// whole message is stored as one Convex document (~1 MiB limit) and
-								// a remote URL must never be forwarded to the model provider.
-								for (const requestMessage of requestMessages) {
-									const fileParts = requestMessage.parts.filter((part) => part.type === "file");
-									const totalUrlChars = fileParts.reduce((total, part) => total + part.url.length, 0);
-									const hasInvalidFilePart = fileParts.some(
-										(part) =>
-											!ai_chat_is_message_image_media_type(part.mediaType) ||
-											!part.url.startsWith(`data:${part.mediaType};base64,`),
-									);
-									if (
-										hasInvalidFilePart ||
-										fileParts.length > ai_chat_MESSAGE_IMAGE_MAX_COUNT ||
-										totalUrlChars > ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS
-									) {
-										return {
-											status: 400,
-											body: {
-												message: "Invalid image attachments",
-											},
-										} as const;
-									}
-								}
-
-								const uiMessages: ai_chat_AiSdk5UiMessage[] = [];
-
-								if (body.threadId) {
-									const existingThread = await ctx.runQuery(api.ai_chat.thread_get, {
-										membershipId: membership._id,
-										threadId: body.threadId,
-									});
-									if (!existingThread) {
-										return {
-											status: 400,
-											body: {
-												message: "Not found",
-											},
-										} as const;
-									}
-
-									threadId = existingThread._id;
-								} else {
-									if (!body.clientGeneratedThreadId) {
-										throw should_never_happen(
-											"`body.clientGeneratedThreadId` missing, the request was not properly validated at the top of this handler",
-											{
-												threadId,
-												clientGeneratedThreadId: body.clientGeneratedThreadId,
-											},
-										);
-									}
-
-									if (body.parentId) {
-										// A parent id only makes sense after the optimistic thread has been persisted
-										// and selected from the live query. Reject instead of resolving optimistic
-										// thread ids server-side, which would hide a client sync bug.
-										return {
-											status: 409,
-											body: {
-												message: "Message not found.",
-											},
-										} as const;
-									}
-								}
-
-								// Check credits after cheap request validation but before any LLM work.
-								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
-									userId: user._id,
-									organizationId: membership.organizationId,
-									minimumRequiredCents: 1,
-								});
-								if (!creditCheck.hasCredits) {
-									return {
-										status: 402,
-										body: {
-											message: "Insufficient funds",
-										},
-									} as const;
-								}
-								const billedUser = creditCheck.billedUser;
-								if (!billedUser) {
-									throw should_never_happen("Organization credit check did not return billed user", {
-										userId: user._id,
-										organizationId: membership.organizationId,
-									});
-								}
-
-								if (!threadId) {
-									const created = await ctx.runMutation(api.ai_chat.thread_create, {
-										membershipId: membership._id,
-										// Store the optimistic client thread id on the persisted thread.
-										// This lets the frontend dedupe the optimistic entry as soon as the
-										// thread appears in `threads_list`, even if the SSE `data-thread-id`
-										// mapping arrives slightly later.
-										clientGeneratedId: body.clientGeneratedThreadId ?? get_id_generator("ai_thread")(),
-										lastMessageAt: now,
-									});
-
-									if (created._nay) {
-										return {
-											status: 400,
-											body: {
-												message: created._nay.message,
-											},
-										} as const;
-									}
-
-									createdThreadId = threadId = created._yay.threadId;
-								}
-
-								// FIX(parentId-race-condition): Track the resolved Convex doc ID for `onFinish` persistence.
-								let resolvedParentId: string | null | undefined = body.parentId;
-								let resolvedParentClientGeneratedId: string | null = null;
-
-								if (threadId) {
-									do {
-										const threadMessagesResult = await ctx.runQuery(api.ai_chat.thread_messages_list, {
-											threadId: threadId as Id<"ai_chat_threads">,
-											membershipId: membership._id,
-											order: "asc",
-										});
-
-										if (!threadMessagesResult) {
-											break;
-										}
-
-										// Resolve both Convex ids and client-generated ids. Reject unresolved parents
-										// so the UI can wait for sync instead of creating an accidental root branch.
-										const parentContext = resolve_parent_message_context({
-											messages: threadMessagesResult.messages,
-											parentId: body.parentId,
-										});
-										if (parentContext._nay) {
-											console.warn("AI chat parent message id unresolved; rejecting request", {
-												threadId,
-												parentId: body.parentId,
-												unresolvedParentId: parentContext._nay.data.unresolvedParentId,
-											});
-											return {
-												status: 409,
-												body: {
-													message: parentContext._nay.message,
-												},
-											} as const;
-										}
-
-										resolvedParentId = parentContext._yay.resolvedParentId;
-										resolvedParentClientGeneratedId = parentContext._yay.resolvedParentClientGeneratedId;
-
-										for (let i = parentContext._yay.reconstructedMessages.length - 1; i >= 0; i--) {
-											const msg = parentContext._yay.reconstructedMessages[i];
-											uiMessages.push({
-												...(msg.content as any),
-												id: msg._id,
-											});
-										}
-									} while (0);
-								}
-
-								// Persist user-submitted messages before starting assistant streaming.
-								// This keeps edits durable even when the user stops generation.
-								if (requestMessages.length > 0) {
-									const persistedRequestMessages = await ctx.runMutation(api.ai_chat.thread_messages_add, {
-										membershipId: membership._id,
-										threadId: threadId as Id<"ai_chat_threads">,
-										parentId: resolvedParentId,
-										messages: requestMessages.map((message) => ({
-											clientGeneratedMessageId: message.id,
-											content: message,
-										})),
-									});
-
-									if (persistedRequestMessages._nay) {
-										return {
-											status: 403,
-											body: {
-												message: persistedRequestMessages._nay.message,
-											},
-										} as const;
-									}
-
-									for (let i = 0; i < requestMessages.length; i++) {
-										const requestMessage = requestMessages[i];
-										const persistedMessageId = persistedRequestMessages._yay.ids[i];
-										if (!persistedMessageId) {
-											throw should_never_happen("Failed to map request message to persisted message ID", {
-												threadId,
-												requestMessageId: requestMessage.id,
-												index: i,
-											});
-										}
-
-										uiMessages.push({
-											...requestMessage,
-											id: persistedMessageId,
-										} satisfies ai_chat_AiSdk5UiMessage);
-									}
-
-									resolvedParentId = persistedRequestMessages._yay.ids.at(-1) ?? resolvedParentId;
-									resolvedParentClientGeneratedId = requestMessages.at(-1)?.id ?? resolvedParentClientGeneratedId;
-								}
-
-								const modelMessages = convertToModelMessages(uiMessages, {
-									ignoreIncompleteToolCalls: true,
-								});
-
-								// The AI SDK routes every URL-shaped file part through its download
-								// step, and Convex `fetch` cannot request data: URLs, so the model
-								// call would fail with "Failed to download data:...". Decode the
-								// image data URLs to bytes here so the provider receives them directly.
-								for (const modelMessage of modelMessages) {
-									if (modelMessage.role !== "user" || !Array.isArray(modelMessage.content)) {
-										continue;
-									}
-									for (const part of modelMessage.content) {
-										if (part.type === "file" && typeof part.data === "string" && part.data.startsWith("data:")) {
-											const base64Content = part.data.slice(part.data.indexOf(",") + 1);
-											part.data = Uint8Array.from(atob(base64Content), (char) => char.charCodeAt(0));
-										}
-									}
-								}
-
-								let didStreamError = false;
-								// Captured by `streamText.onFinish` below so `createUIMessageStream.onFinish`
-								// can emit one direct Polar usage event with the actual token cost.
-								let capturedUsage: { inputTokens: number; outputTokens: number } | null = null;
-								let capturedActualCents = 0;
-
-								const stream = createUIMessageStream<ai_chat_AiSdk5UiMessage>({
-									generateId: get_id_generator("ai_message"),
-									execute: async ({ writer }) => {
-										// TODO(ai-chat): If we allocate Convex message docs up front, emit a transient `data-message-ids`
-										// part here (while `writer` is available) so the client can swap optimistic UIMessage ids to
-										// Convex ids and/or drop optimistic messages immediately, without persisting client ids in db.
-										if (createdThreadId) {
-											writer.write({
-												type: "data-thread-id",
-												data: {
-													threadId: createdThreadId,
-												},
-												transient: true,
-											});
-										}
-
-										writer.write({
-											type: "message-metadata",
-											messageMetadata: {
-												convexParentId: uiMessages.at(-1)?.id,
-												parentClientGeneratedId: resolvedParentClientGeneratedId,
-											},
-										});
-
-										const result1 = streamText({
-											model: openai(body.model),
-											system: systemPrompt,
-											messages: modelMessages,
-											maxOutputTokens: 2000,
-											abortSignal: request.signal,
-											activeTools,
-											experimental_repairToolCall: async (failed) => {
-												const lowerToolName = failed.toolCall.toolName.toLowerCase();
-												// `Object.hasOwn`, not `in`: `tools` is a plain object, so `in` also finds
-												// keys from `Object.prototype`. With `in`, the name `"Constructor"` would
-												// be "fixed" to `"constructor"`, which is a built-in function, not a tool.
-												if (lowerToolName !== failed.toolCall.toolName && Object.hasOwn(tools, lowerToolName)) {
-													return {
-														...failed.toolCall,
-														toolName: lowerToolName,
-													};
-												}
-
-												return {
-													...failed.toolCall,
-													input: JSON.stringify({
-														tool: failed.toolCall.toolName,
-														error: failed.error.message,
-													}),
-													toolName: "invalid",
-												};
-											},
-											toolChoice: "auto",
-											stopWhen: stepCountIs(10),
-											tools,
-											onAbort: async () => {
-												console.info("streamText.onAbort", {
-													threadId,
-													parentId: resolvedParentId,
-													requestSignalAborted: request.signal.aborted,
-												});
-											},
-											onFinish: async ({ totalUsage }) => {
-												// Aggregated across all steps; read by createUIMessageStream.onFinish
-												// to emit one response-usage event.
-												capturedUsage = {
-													inputTokens: totalUsage.inputTokens ?? 0,
-													outputTokens: totalUsage.outputTokens ?? 0,
-												};
-												capturedActualCents += compute_token_usage_cost_cents({
-													modelId: body.model,
-													inputTokens: capturedUsage.inputTokens,
-													outputTokens: capturedUsage.outputTokens,
-												});
-											},
-										});
-
-										const ui_message_stream = result1.toUIMessageStream<ai_chat_AiSdk5UiMessage>();
-										writer.merge(ui_message_stream);
-
-										if (request.signal.aborted) {
-											return;
-										}
-
-										const response1 = await result1.response;
-
-										if (request.signal.aborted) {
-											return;
-										}
-
-										const thread = await ctx.runQuery(api.ai_chat.thread_get, {
-											membershipId: membership._id,
-											threadId,
-										});
-										const existingTitle = typeof thread?.title === "string" ? thread.title.trim() : "";
-
-										// Generate a title for the new thread
-										if (thread && !existingTitle) {
-											if (request.signal.aborted) {
-												return;
-											}
-
-											const titleMessages = [...modelMessages, ...response1.messages];
-											let titleInputTokens = 0;
-											let titleOutputTokens = 0;
-											const titleResult = streamText({
-												model: openai(TITLE_MODEL_ID),
-												system: TITLE_SYSTEM_PROMPT,
-												messages: titleMessages,
-												stopWhen: stepCountIs(1),
-												temperature: 0.3,
-												maxOutputTokens: 50,
-												abortSignal: request.signal,
-												onFinish: async ({ totalUsage }) => {
-													// Keep title usage separate from the response event
-													titleInputTokens = totalUsage.inputTokens ?? 0;
-													titleOutputTokens = totalUsage.outputTokens ?? 0;
-												},
-											});
-
-											const reader = titleResult.textStream.getReader();
-											let title = "";
-											while (true) {
-												const { value, done } = await reader.read();
-												if (done) {
-													break;
-												}
-
-												if (value) {
-													title += value;
-												}
-											}
-
-											const trimmedTitle = title.trim();
-											if (trimmedTitle) {
-												writer.write({
-													type: "data-chat-title",
-													data: { title: trimmedTitle },
-													transient: true,
-												});
-
-												const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
-													threadId: thread._id,
-													membershipId: membership._id,
-													title: trimmedTitle,
-												});
-												if (threadUpdateResult._nay) {
-													console.error("Failed to persist generated title", {
-														threadId: thread._id,
-														result: threadUpdateResult,
-													});
-												}
-											}
-
-											if (titleInputTokens + titleOutputTokens > 0) {
-												await billing_ingest_events(ctx, {
-													billedUserEvents: [
-														{
-															billedUser,
-															event: billing_event({
-																name: "ai_usage",
-																externalCustomerId: billedUser._id,
-																externalMemberId: user._id,
-																externalId: composite_id(
-																	"billing",
-																	"ai_usage",
-																	billedUser._id,
-																	user._id,
-																	membership.organizationId,
-																	membership.workspaceId,
-																	String(threadId ?? ""),
-																	// TODO: Evaluate if this is a good idea to pass "title" as messageId
-																	"title",
-																),
-																metadata: {
-																	amount: compute_token_usage_cost_cents({
-																		modelId: TITLE_MODEL_ID,
-																		inputTokens: titleInputTokens,
-																		outputTokens: titleOutputTokens,
-																	}),
-																	actorUserId: user._id,
-																	billedUserId: billedUser._id,
-																	organizationId: membership.organizationId,
-																	workspaceId: membership.workspaceId,
-																	modelId: TITLE_MODEL_ID,
-																	inputTokens: titleInputTokens,
-																	outputTokens: titleOutputTokens,
-																	threadId: String(threadId ?? ""),
-																	messageId: "title",
-																},
-															}),
-														},
-													],
-												});
-											}
-										}
-									},
-									onError: (error: unknown) => {
-										didStreamError = true;
-										console.error("AI chat stream error:", error);
-										return error instanceof Error ? error.message : String(error);
-									},
-									onFinish: async (result) => {
-										if (!result.responseMessage) {
-											return;
-										}
-
-										if (result.isAborted) {
-											console.info("onFinish aborted", {
-												threadId,
-												parentId: resolvedParentId,
-												isAborted: result.isAborted,
-												didStreamError,
-												hasResponseMessage: Boolean(result.responseMessage),
-											});
-											return;
-										}
-
-										if (didStreamError) {
-											console.info("onFinish stream error", {
-												threadId,
-												parentId: resolvedParentId,
-												hasResponseMessage: Boolean(result.responseMessage),
-											});
-											return;
-										}
-
-										const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
-										const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
-										const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
-										if (capturedTotalTokens > 0) {
-											await billing_ingest_events(ctx, {
-												billedUserEvents: [
-													{
-														billedUser,
-														event: billing_event({
-															name: "ai_usage",
-															externalCustomerId: billedUser._id,
-															externalMemberId: user._id,
-															externalId: composite_id(
-																"billing",
-																"ai_usage",
-																billedUser._id,
-																user._id,
-																membership.organizationId,
-																membership.workspaceId,
-																String(threadId ?? ""),
-																String(result.responseMessage.id ?? ""),
-															),
-															metadata: {
-																amount: capturedActualCents,
-																actorUserId: user._id,
-																billedUserId: billedUser._id,
-																organizationId: membership.organizationId,
-																workspaceId: membership.workspaceId,
-																modelId: body.model,
-																inputTokens: capturedInputTokens,
-																outputTokens: capturedOutputTokens,
-																threadId: String(threadId ?? ""),
-																messageId: String(result.responseMessage.id ?? ""),
-															},
-														}),
-													},
-												],
-											});
-										}
-
-										// Persist completed assistant responses below the last persisted request message.
-										const assistantPersistResult = await ctx.runMutation(api.ai_chat.thread_messages_add, {
-											membershipId: membership._id,
-											threadId: threadId as Id<"ai_chat_threads">,
-											parentId: resolvedParentId,
-											messages: [
-												{
-													clientGeneratedMessageId: result.responseMessage.id,
-													content: result.responseMessage,
-												},
-											],
-										});
-
-										if (assistantPersistResult._nay) {
-											throw new Error("Failed to persist assistant message", {
-												cause: assistantPersistResult._nay,
-											});
-										}
-									},
-								});
-
-								return {
-									status: 200,
-									body: stream,
-								} as const;
-							} catch (error) {
-								const errorMessage = "AI chat stream error";
-								console.error(`${errorMessage}:`, error);
-
-								return {
-									status: 500,
-									body: {
-										message: "Internal server error",
-										cause:
-											error == null ? undefined : { message: error instanceof Error ? error.message : String(error) },
-									},
-								} as const;
-							}
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-
-								if (result.status === 200) {
-									return createUIMessageStreamResponse({
-										status: result.status,
-										stream: result.body,
-										consumeSseStream: consumeStream,
-									});
-								}
-
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
+/**
+ * Keep this in sync with the AI SDK `PrepareSendMessagesRequest` shape used by
+ * `AssistantChatTransport.prepareSendMessagesRequest`.
+ */
+const chat_body_validator = z.object({
+	/**
+	 * The messages to append to the thread.
+	 */
+	messages: z.array(z.any()),
+	/**
+	 * Server-allowlisted model.
+	 */
+	model: z.enum(ai_chat_MODEL_IDS),
+	/** Agent mode */
+	mode: z.enum(ai_chat_MODE_IDS),
+	trigger: z.enum(["submit-message", "regenerate-message"]),
+	/**
+	 * The id of the message to which the new message should be appended.
+	 * `null` means root.
+	 */
+	parentId: z.string().nullable().optional(),
+	/**
+	 * The id of the thread to which the new message should be appended.
+	 *
+	 * `undefined` for new threads.
+	 */
+	threadId: z.string().optional(),
+
+	/**
+	 * The client generated id for a new thread.
+	 */
+	clientGeneratedThreadId: z.string().optional(),
+
+	/**
+	 * Authenticated membership scope.
+	 *
+	 * Server derives organization/workspace from this membership doc.
+	 **/
+	membershipId: z.string(),
+});
+
+export type ai_chat_http_chat_Body = z.infer<typeof chat_body_validator>;
+
+export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
+	try {
+		const requestParseResult = await server_request_json_parse_and_validate(request, chat_body_validator);
+
+		if (requestParseResult._nay) {
+			return {
+				status: 400,
+				body: requestParseResult._nay,
+			} as const;
+		}
+
+		const now = Date.now();
+
+		const body = requestParseResult._yay;
+
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return {
+				status: 401,
+				body: {
+					message: "Unauthenticated",
+				},
+			} as const;
+		}
+		const user = await ctx.runQuery(internal.users.get, {
+			userId: userAuth.id,
+		});
+		if (!user) {
+			return {
+				status: 401,
+				body: {
+					message: "Unauthenticated",
+				},
+			} as const;
+		}
+
+		const membership = await ctx.runQuery(api.organizations.get_membership, {
+			membershipId: body.membershipId,
+		});
+
+		if (!membership) {
+			return {
+				status: 403,
+				body: {
+					message: "Unauthorized",
+				},
+			} as const;
+		}
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "ai_chat_http",
+			key: membership.userId,
+		});
+		if (rateLimit) {
+			return {
+				status: 429,
+				body: {
+					message: rateLimit.message,
+					retryAfterMs: rateLimit.retryAfterMs,
+				},
+			} as const;
+		}
+
+		// In both modes the AI tools read workspace files, and the tools check no permission
+		// themselves — this route is their only check — so `content.read` is always needed.
+		// Agent mode can also edit files, so it asks for `content.write` too.
+		// We ask for both instead of only the stronger one, because a custom role can have
+		// write without read. Such a role was already refused later by the `content.read`
+		// check inside `thread_get` / `thread_create`, but that answers 400, which looks
+		// like a broken request. Checking here lets the route answer 403 itself.
+		// We write the names here instead of reusing `THREAD_PERMISSION`: that one guards
+		// the thread record, these guard file access, so they must not change together.
+		const chatPermissions =
+			body.mode === "agent"
+				? (["content.read", "content.write"] as const satisfies readonly access_control_Permission[])
+				: (["content.read"] as const satisfies readonly access_control_Permission[]);
+		for (const permission of chatPermissions) {
+			const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+				membershipId: membership._id,
+				permission,
+			});
+			if (!allowed) {
+				return {
+					status: 403,
+					body: {
+						message: "Permission denied",
+					},
+				} as const;
+			}
+		}
+
+		const tenant = await ctx.runQuery(internal.organizations.get_tenant, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+		});
+
+		if (body.threadId == null && body.clientGeneratedThreadId == null) {
+			return {
+				status: 400,
+				body: {
+					message: "One of `threadId` or `clientGeneratedThreadId` is required",
+				},
+			} as const;
+		}
+		let threadId: Id<"ai_chat_threads"> | null = null;
+		let createdThreadId = null;
+
+		const { systemPrompt, tools, validationTools, activeTools } = build_agent_configuration({
+			ctx,
+			ctxData: {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				organizationName: tenant.organization.name,
+				workspaceName: tenant.workspace.name,
+				// Pass the same user id into file tools so pending overlays and file-create audit fields
+				// use the identity already accepted by this chat action.
+				userId: user._id,
 			},
-		}))(),
+			args: {
+				modeId: body.mode,
+			},
+			getThreadId: () => threadId,
+		});
 
-		...((/* iife */ path = "/api/v1/runs/stream" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						/**
-						 * See {@link PrepareSendMessagesRequest}.
-						 *
-						 * See {@link AssistantChatTransport.prepareSendMessagesRequest}.
-						 **/
-						const bodyValidator = z.object({
-							/**
-							 * Authenticated membership scope.
-							 *
-							 * Server derives organization/workspace from this row.
-							 **/
-							membershipId: z.string(),
-							thread_id: z.string(),
-							assistant_id: z.string(),
-							messages: z.array(z.any()),
-							response_format: z.string().optional(),
+		// Validate the messages if they are present
+		if (body.messages.length > 0) {
+			try {
+				await validateUIMessages<ai_chat_AiSdk5UiMessage>({
+					messages: body.messages,
+					tools: validationTools,
+				});
+			} catch (error) {
+				if (error instanceof TypeValidationError) {
+					return {
+						status: 400,
+						body: {
+							message: "Invalid messages format",
+							cause: error == null ? undefined : { message: error instanceof Error ? error.message : String(error) },
+						},
+					} as const;
+				} else {
+					const msg = "Failed to validate chat messages";
+					should_never_happen(msg, {
+						cause: error == null ? undefined : { message: error instanceof Error ? error.message : String(error) },
+					});
+					return {
+						status: 500,
+						body: {
+							message: msg,
+							cause: error == null ? undefined : { message: error instanceof Error ? error.message : String(error) },
+						},
+					} as const;
+				}
+			}
+		}
+
+		const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
+
+		// Enforce the image-attachment contract on incoming messages. The
+		// client compresses images to fit, but the caps must hold here too:
+		// a file part must be a small base64 data-URL image, because the
+		// whole message is stored as one Convex document (~1 MiB limit) and
+		// a remote URL must never be forwarded to the model provider.
+		for (const requestMessage of requestMessages) {
+			const fileParts = requestMessage.parts.filter((part) => part.type === "file");
+			const totalUrlChars = fileParts.reduce((total, part) => total + part.url.length, 0);
+			const hasInvalidFilePart = fileParts.some(
+				(part) =>
+					!ai_chat_is_message_image_media_type(part.mediaType) ||
+					!part.url.startsWith(`data:${part.mediaType};base64,`),
+			);
+			if (
+				hasInvalidFilePart ||
+				fileParts.length > ai_chat_MESSAGE_IMAGE_MAX_COUNT ||
+				totalUrlChars > ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS
+			) {
+				return {
+					status: 400,
+					body: {
+						message: "Invalid image attachments",
+					},
+				} as const;
+			}
+		}
+
+		const uiMessages: ai_chat_AiSdk5UiMessage[] = [];
+
+		if (body.threadId) {
+			const existingThread = await ctx.runQuery(api.ai_chat.thread_get, {
+				membershipId: membership._id,
+				threadId: body.threadId,
+			});
+			if (!existingThread) {
+				return {
+					status: 400,
+					body: {
+						message: "Not found",
+					},
+				} as const;
+			}
+
+			threadId = existingThread._id;
+		} else {
+			if (!body.clientGeneratedThreadId) {
+				throw should_never_happen(
+					"`body.clientGeneratedThreadId` missing, the request was not properly validated at the top of this handler",
+					{
+						threadId,
+						clientGeneratedThreadId: body.clientGeneratedThreadId,
+					},
+				);
+			}
+
+			if (body.parentId) {
+				// A parent id only makes sense after the optimistic thread has been persisted
+				// and selected from the live query. Reject instead of resolving optimistic
+				// thread ids server-side, which would hide a client sync bug.
+				return {
+					status: 409,
+					body: {
+						message: "Message not found.",
+					},
+				} as const;
+			}
+		}
+
+		// Check credits after cheap request validation but before any LLM work.
+		const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
+			userId: user._id,
+			organizationId: membership.organizationId,
+			minimumRequiredCents: 1,
+		});
+		if (!creditCheck.hasCredits) {
+			return {
+				status: 402,
+				body: {
+					message: "Insufficient funds",
+				},
+			} as const;
+		}
+		const billedUser = creditCheck.billedUser;
+		if (!billedUser) {
+			throw should_never_happen("Organization credit check did not return billed user", {
+				userId: user._id,
+				organizationId: membership.organizationId,
+			});
+		}
+
+		if (!threadId) {
+			const created = await ctx.runMutation(api.ai_chat.thread_create, {
+				membershipId: membership._id,
+				// Store the optimistic client thread id on the persisted thread.
+				// This lets the frontend dedupe the optimistic entry as soon as the
+				// thread appears in `threads_list`, even if the SSE `data-thread-id`
+				// mapping arrives slightly later.
+				clientGeneratedId: body.clientGeneratedThreadId ?? get_id_generator("ai_thread")(),
+				lastMessageAt: now,
+			});
+
+			if (created._nay) {
+				return {
+					status: 400,
+					body: {
+						message: created._nay.message,
+					},
+				} as const;
+			}
+
+			createdThreadId = threadId = created._yay.threadId;
+		}
+
+		// FIX(parentId-race-condition): Track the resolved Convex doc ID for `onFinish` persistence.
+		let resolvedParentId: string | null | undefined = body.parentId;
+		let resolvedParentClientGeneratedId: string | null = null;
+
+		if (threadId) {
+			do {
+				const threadMessagesResult = await ctx.runQuery(api.ai_chat.thread_messages_list, {
+					threadId: threadId as Id<"ai_chat_threads">,
+					membershipId: membership._id,
+					order: "asc",
+				});
+
+				if (!threadMessagesResult) {
+					break;
+				}
+
+				// Resolve both Convex ids and client-generated ids. Reject unresolved parents
+				// so the UI can wait for sync instead of creating an accidental root branch.
+				const parentContext = resolve_parent_message_context({
+					messages: threadMessagesResult.messages,
+					parentId: body.parentId,
+				});
+				if (parentContext._nay) {
+					console.warn("AI chat parent message id unresolved; rejecting request", {
+						threadId,
+						parentId: body.parentId,
+						unresolvedParentId: parentContext._nay.data.unresolvedParentId,
+					});
+					return {
+						status: 409,
+						body: {
+							message: parentContext._nay.message,
+						},
+					} as const;
+				}
+
+				resolvedParentId = parentContext._yay.resolvedParentId;
+				resolvedParentClientGeneratedId = parentContext._yay.resolvedParentClientGeneratedId;
+
+				for (let i = parentContext._yay.reconstructedMessages.length - 1; i >= 0; i--) {
+					const msg = parentContext._yay.reconstructedMessages[i];
+					uiMessages.push({
+						...(msg.content as any),
+						id: msg._id,
+					});
+				}
+			} while (0);
+		}
+
+		// Persist user-submitted messages before starting assistant streaming.
+		// This keeps edits durable even when the user stops generation.
+		if (requestMessages.length > 0) {
+			const persistedRequestMessages = await ctx.runMutation(api.ai_chat.thread_messages_add, {
+				membershipId: membership._id,
+				threadId: threadId as Id<"ai_chat_threads">,
+				parentId: resolvedParentId,
+				messages: requestMessages.map((message) => ({
+					clientGeneratedMessageId: message.id,
+					content: message,
+				})),
+			});
+
+			if (persistedRequestMessages._nay) {
+				return {
+					status: 403,
+					body: {
+						message: persistedRequestMessages._nay.message,
+					},
+				} as const;
+			}
+
+			for (let i = 0; i < requestMessages.length; i++) {
+				const requestMessage = requestMessages[i];
+				const persistedMessageId = persistedRequestMessages._yay.ids[i];
+				if (!persistedMessageId) {
+					throw should_never_happen("Failed to map request message to persisted message ID", {
+						threadId,
+						requestMessageId: requestMessage.id,
+						index: i,
+					});
+				}
+
+				uiMessages.push({
+					...requestMessage,
+					id: persistedMessageId,
+				} satisfies ai_chat_AiSdk5UiMessage);
+			}
+
+			resolvedParentId = persistedRequestMessages._yay.ids.at(-1) ?? resolvedParentId;
+			resolvedParentClientGeneratedId = requestMessages.at(-1)?.id ?? resolvedParentClientGeneratedId;
+		}
+
+		const modelMessages = convertToModelMessages(uiMessages, {
+			ignoreIncompleteToolCalls: true,
+		});
+
+		// The AI SDK routes every URL-shaped file part through its download
+		// step, and Convex `fetch` cannot request data: URLs, so the model
+		// call would fail with "Failed to download data:...". Decode the
+		// image data URLs to bytes here so the provider receives them directly.
+		for (const modelMessage of modelMessages) {
+			if (modelMessage.role !== "user" || !Array.isArray(modelMessage.content)) {
+				continue;
+			}
+			for (const part of modelMessage.content) {
+				if (part.type === "file" && typeof part.data === "string" && part.data.startsWith("data:")) {
+					const base64Content = part.data.slice(part.data.indexOf(",") + 1);
+					part.data = Uint8Array.from(atob(base64Content), (char) => char.charCodeAt(0));
+				}
+			}
+		}
+
+		let didStreamError = false;
+		// Captured by `streamText.onFinish` below so `createUIMessageStream.onFinish`
+		// can emit one direct Polar usage event with the actual token cost.
+		let capturedUsage: { inputTokens: number; outputTokens: number } | null = null;
+		let capturedActualCents = 0;
+
+		const stream = createUIMessageStream<ai_chat_AiSdk5UiMessage>({
+			generateId: get_id_generator("ai_message"),
+			execute: async ({ writer }) => {
+				// TODO(ai-chat): If we allocate Convex message docs up front, emit a transient `data-message-ids`
+				// part here (while `writer` is available) so the client can swap optimistic UIMessage ids to
+				// Convex ids and/or drop optimistic messages immediately, without persisting client ids in db.
+				if (createdThreadId) {
+					writer.write({
+						type: "data-thread-id",
+						data: {
+							threadId: createdThreadId,
+						},
+						transient: true,
+					});
+				}
+
+				writer.write({
+					type: "message-metadata",
+					messageMetadata: {
+						convexParentId: uiMessages.at(-1)?.id,
+						parentClientGeneratedId: resolvedParentClientGeneratedId,
+					},
+				});
+
+				const result1 = streamText({
+					model: openai(body.model),
+					system: systemPrompt,
+					messages: modelMessages,
+					maxOutputTokens: 2000,
+					abortSignal: request.signal,
+					activeTools,
+					experimental_repairToolCall: async (failed) => {
+						const lowerToolName = failed.toolCall.toolName.toLowerCase();
+						// `Object.hasOwn`, not `in`: `tools` is a plain object, so `in` also finds
+						// keys from `Object.prototype`. With `in`, the name `"Constructor"` would
+						// be "fixed" to `"constructor"`, which is a built-in function, not a tool.
+						if (lowerToolName !== failed.toolCall.toolName && Object.hasOwn(tools, lowerToolName)) {
+							return {
+								...failed.toolCall,
+								toolName: lowerToolName,
+							};
+						}
+
+						return {
+							...failed.toolCall,
+							input: JSON.stringify({
+								tool: failed.toolCall.toolName,
+								error: failed.error.message,
+							}),
+							toolName: "invalid",
+						};
+					},
+					toolChoice: "auto",
+					stopWhen: stepCountIs(10),
+					tools,
+					onAbort: async () => {
+						console.info("streamText.onAbort", {
+							threadId,
+							parentId: resolvedParentId,
+							requestSignalAborted: request.signal.aborted,
+						});
+					},
+					onFinish: async ({ totalUsage }) => {
+						// Aggregated across all steps; read by createUIMessageStream.onFinish
+						// to emit one response-usage event.
+						capturedUsage = {
+							inputTokens: totalUsage.inputTokens ?? 0,
+							outputTokens: totalUsage.outputTokens ?? 0,
+						};
+						capturedActualCents += compute_token_usage_cost_cents({
+							modelId: body.model,
+							inputTokens: capturedUsage.inputTokens,
+							outputTokens: capturedUsage.outputTokens,
+						});
+					},
+				});
+
+				const ui_message_stream = result1.toUIMessageStream<ai_chat_AiSdk5UiMessage>();
+				writer.merge(ui_message_stream);
+
+				if (request.signal.aborted) {
+					return;
+				}
+
+				const response1 = await result1.response;
+
+				if (request.signal.aborted) {
+					return;
+				}
+
+				const thread = await ctx.runQuery(api.ai_chat.thread_get, {
+					membershipId: membership._id,
+					threadId,
+				});
+				const existingTitle = typeof thread?.title === "string" ? thread.title.trim() : "";
+
+				// Generate a title for the new thread
+				if (thread && !existingTitle) {
+					if (request.signal.aborted) {
+						return;
+					}
+
+					const titleMessages = [...modelMessages, ...response1.messages];
+					let titleInputTokens = 0;
+					let titleOutputTokens = 0;
+					const titleResult = streamText({
+						model: openai(TITLE_MODEL_ID),
+						system: TITLE_SYSTEM_PROMPT,
+						messages: titleMessages,
+						stopWhen: stepCountIs(1),
+						temperature: 0.3,
+						maxOutputTokens: 50,
+						abortSignal: request.signal,
+						onFinish: async ({ totalUsage }) => {
+							// Keep title usage separate from the response event
+							titleInputTokens = totalUsage.inputTokens ?? 0;
+							titleOutputTokens = totalUsage.outputTokens ?? 0;
+						},
+					});
+
+					const reader = titleResult.textStream.getReader();
+					let title = "";
+					while (true) {
+						const { value, done } = await reader.read();
+						if (done) {
+							break;
+						}
+
+						if (value) {
+							title += value;
+						}
+					}
+
+					const trimmedTitle = title.trim();
+					if (trimmedTitle) {
+						writer.write({
+							type: "data-chat-title",
+							data: { title: trimmedTitle },
+							transient: true,
 						});
 
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
+						const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
+							threadId: thread._id,
+							membershipId: membership._id,
+							title: trimmedTitle,
+						});
+						if (threadUpdateResult._nay) {
+							console.error("Failed to persist generated title", {
+								threadId: thread._id,
+								result: threadUpdateResult,
+							});
+						}
+					}
 
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							try {
-								const requestParseResult = await server_request_json_parse_and_validate(request, bodyValidator);
-
-								if (requestParseResult._nay) {
-									return {
-										status: 400,
-										body: requestParseResult._nay,
-									} as const;
-								}
-
-								const body = requestParseResult._yay;
-
-								if (body.assistant_id !== "system/thread_title") {
-									return {
-										status: 400,
-										body: {
-											message: "Invalid stream ID",
-										},
-									} as const;
-								}
-
-								const membership = await ctx.runQuery(api.organizations.get_membership, {
-									membershipId: body.membershipId,
-								});
-
-								if (!membership) {
-									return {
-										status: 403,
-										body: {
-											message: "Unauthorized",
-										},
-									} as const;
-								}
-
-								const rateLimit = await rate_limiter_limit_by_key(ctx, {
-									name: "ai_chat_http",
-									key: membership.userId,
-								});
-								if (rateLimit) {
-									return {
-										status: 429,
-										body: {
-											message: rateLimit.message,
-											retryAfterMs: rateLimit.retryAfterMs,
-										},
-									} as const;
-								}
-
-								// The only thing this route runs is the thread titler above. It writes a thread
-								// title and never touches a file, so reading is enough.
-								const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
-									membershipId: membership._id,
-									permission: THREAD_PERMISSION,
-								});
-								if (!allowed) {
-									return {
-										status: 403,
-										body: {
-											message: "Permission denied",
-										},
-									} as const;
-								}
-
-								const messages = body.messages || [];
-								const thread_id = body.thread_id;
-
-								// Extract conversation text from messages for title generation
-								const conversation_text = messages
-									.map((msg: any) =>
-										[
-											`${msg.role}:`,
-											Array.isArray(msg.content) ? msg.content.map((part: any) => part.text).join(" ") : msg.content,
-										]
-											.filter(Boolean)
-											.join(" "),
-									)
-									.filter(Boolean)
-									.join("\n");
-
-								const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
-									if (!userAuth) {
-										return null;
-									}
-
-									return ctx.runQuery(internal.users.get, {
-										userId: userAuth.id,
-									});
-								});
-								if (!user) {
-									return {
-										status: 401,
-										body: {
-											message: "Unauthenticated",
-										},
-									} as const;
-								}
-
-								// Check credits before title generation. One title per thread; the literal
-								// "title" discriminator keeps the usage event id stable across HTTP retries.
-								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
-									userId: user._id,
-									organizationId: membership.organizationId,
-									minimumRequiredCents: 1,
-								});
-								if (!creditCheck.hasCredits) {
-									return {
-										status: 402,
-										body: { message: "Insufficient funds" },
-									} as const;
-								}
-								const billedUser = creditCheck.billedUser;
-								if (!billedUser) {
-									throw should_never_happen("Organization credit check did not return billed user", {
-										userId: user._id,
-										organizationId: membership.organizationId,
-									});
-								}
-
-								let titleInputTokens = 0;
-								let titleOutputTokens = 0;
-
-								// Generate title using AI with streaming
-								const result = streamText({
-									model: openai(TITLE_MODEL_ID),
-									system: TITLE_SYSTEM_PROMPT,
-									messages: [
-										{
-											role: "user",
-											content: `Generate a title for this conversation:\n\n${conversation_text}`,
-										},
-									],
-									stopWhen: stepCountIs(1),
-									temperature: 0.3,
-									maxOutputTokens: 50,
-									experimental_transform: smoothStream({
-										delayInMs: 100,
-									}),
-									onFinish: async ({ totalUsage }) => {
-										titleInputTokens = totalUsage.inputTokens ?? 0;
-										titleOutputTokens = totalUsage.outputTokens ?? 0;
-									},
-								});
-
-								// Transform the AI stream to properly encode text chunks
-								let title = "";
-
-								// Trigger mutation when the stream is finished
-								const transform_stream = new TransformStream({
-									transform(chunk, controller) {
-										title += chunk;
-										controller.enqueue(chunk);
-									},
-									flush: async () => {
-										const capturedTotalTokens = titleInputTokens + titleOutputTokens;
-										if (capturedTotalTokens > 0) {
-											const titleCostCents = compute_token_usage_cost_cents({
+					if (titleInputTokens + titleOutputTokens > 0) {
+						await billing_ingest_events(ctx, {
+							billedUserEvents: [
+								{
+									billedUser,
+									event: billing_event({
+										name: "ai_usage",
+										externalCustomerId: billedUser._id,
+										externalMemberId: user._id,
+										externalId: composite_id(
+											"billing",
+											"ai_usage",
+											billedUser._id,
+											user._id,
+											membership.organizationId,
+											membership.workspaceId,
+											String(threadId ?? ""),
+											// TODO: Evaluate if this is a good idea to pass "title" as messageId
+											"title",
+										),
+										metadata: {
+											amount: compute_token_usage_cost_cents({
 												modelId: TITLE_MODEL_ID,
 												inputTokens: titleInputTokens,
 												outputTokens: titleOutputTokens,
-											});
-											await billing_ingest_events(ctx, {
-												billedUserEvents: [
-													{
-														billedUser,
-														event: billing_event({
-															name: "ai_usage",
-															externalCustomerId: billedUser._id,
-															externalMemberId: user._id,
-															externalId: composite_id(
-																"billing",
-																"ai_usage",
-																billedUser._id,
-																user._id,
-																membership.organizationId,
-																membership.workspaceId,
-																thread_id,
-																// TODO: Evaluate if this is a good idea to pass "title" as messageId
-																"title",
-															),
-															metadata: {
-																amount: titleCostCents,
-																actorUserId: user._id,
-																billedUserId: billedUser._id,
-																organizationId: membership.organizationId,
-																workspaceId: membership.workspaceId,
-																modelId: TITLE_MODEL_ID,
-																inputTokens: titleInputTokens,
-																outputTokens: titleOutputTokens,
-																threadId: thread_id,
-																messageId: "title",
-															},
-														}),
-													},
-												],
-											});
-										}
-
-										const trimmedTitle = title.trim();
-										if (!trimmedTitle) {
-											return;
-										}
-
-										const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
-											membershipId: membership._id,
-											threadId: thread_id,
-											title: trimmedTitle,
-										});
-
-										if (threadUpdateResult._nay) {
-											console.error("Failed to persist generated title", {
-												threadId: thread_id,
-												result: threadUpdateResult,
-											});
-										}
-									},
-								});
-
-								// Pipe the AI textStream through the transformer, insprired by ai-sdk's `createTextStreamResponse`
-								const stream = result.textStream.pipeThrough(transform_stream).pipeThrough(new TextEncoderStream());
-
-								void result.consumeStream();
-
-								return {
-									status: 200,
-									body: stream,
-								} as const;
-							} catch (error) {
-								const errorMessage = "Title generation error";
-								console.error(`${errorMessage}:`, error);
-
-								return {
-									status: 500,
-									body: {
-										message: errorMessage,
-										cause:
-											error == null ? undefined : { message: error instanceof Error ? error.message : String(error) },
-									},
-								} as const;
-							}
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-
-								if (result.status === 200) {
-									return new Response(result.body, {
-										status: result.status,
-									});
-								}
-
-								return Response.json(result.body, result);
-							}),
+											}),
+											actorUserId: user._id,
+											billedUserId: billedUser._id,
+											organizationId: membership.organizationId,
+											workspaceId: membership.workspaceId,
+											modelId: TITLE_MODEL_ID,
+											inputTokens: titleInputTokens,
+											outputTokens: titleOutputTokens,
+											threadId: String(threadId ?? ""),
+											messageId: "title",
+										},
+									}),
+								},
+							],
 						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
+					}
+				}
 			},
-		}))(),
-	};
+			onError: (error: unknown) => {
+				didStreamError = true;
+				console.error("AI chat stream error:", error);
+				return error instanceof Error ? error.message : String(error);
+			},
+			onFinish: async (result) => {
+				if (!result.responseMessage) {
+					return;
+				}
+
+				if (result.isAborted) {
+					console.info("onFinish aborted", {
+						threadId,
+						parentId: resolvedParentId,
+						isAborted: result.isAborted,
+						didStreamError,
+						hasResponseMessage: Boolean(result.responseMessage),
+					});
+					return;
+				}
+
+				if (didStreamError) {
+					console.info("onFinish stream error", {
+						threadId,
+						parentId: resolvedParentId,
+						hasResponseMessage: Boolean(result.responseMessage),
+					});
+					return;
+				}
+
+				const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
+				const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
+				const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
+				if (capturedTotalTokens > 0) {
+					await billing_ingest_events(ctx, {
+						billedUserEvents: [
+							{
+								billedUser,
+								event: billing_event({
+									name: "ai_usage",
+									externalCustomerId: billedUser._id,
+									externalMemberId: user._id,
+									externalId: composite_id(
+										"billing",
+										"ai_usage",
+										billedUser._id,
+										user._id,
+										membership.organizationId,
+										membership.workspaceId,
+										String(threadId ?? ""),
+										String(result.responseMessage.id ?? ""),
+									),
+									metadata: {
+										amount: capturedActualCents,
+										actorUserId: user._id,
+										billedUserId: billedUser._id,
+										organizationId: membership.organizationId,
+										workspaceId: membership.workspaceId,
+										modelId: body.model,
+										inputTokens: capturedInputTokens,
+										outputTokens: capturedOutputTokens,
+										threadId: String(threadId ?? ""),
+										messageId: String(result.responseMessage.id ?? ""),
+									},
+								}),
+							},
+						],
+					});
+				}
+
+				// Persist completed assistant responses below the last persisted request message.
+				const assistantPersistResult = await ctx.runMutation(api.ai_chat.thread_messages_add, {
+					membershipId: membership._id,
+					threadId: threadId as Id<"ai_chat_threads">,
+					parentId: resolvedParentId,
+					messages: [
+						{
+							clientGeneratedMessageId: result.responseMessage.id,
+							content: result.responseMessage,
+						},
+					],
+				});
+
+				if (assistantPersistResult._nay) {
+					throw new Error("Failed to persist assistant message", {
+						cause: assistantPersistResult._nay,
+					});
+				}
+			},
+		});
+
+		return {
+			status: 200,
+			body: stream,
+		} as const;
+	} catch (error) {
+		const errorMessage = "AI chat stream error";
+		console.error(`${errorMessage}:`, error);
+
+		return {
+			status: 500,
+			body: {
+				message: "Internal server error",
+				cause: error == null ? undefined : { message: error instanceof Error ? error.message : String(error) },
+			},
+		} as const;
+	}
+}
+
+export async function ai_chat_http_chat_response(ctx: ActionCtx, request: Request) {
+	// Keep the AI SDK response helper behind the lazy route boundary too.
+	const result = await ai_chat_http_chat(ctx, request);
+
+	if (result.status === 200) {
+		return createUIMessageStreamResponse({
+			status: result.status,
+			stream: result.body,
+			consumeSseStream: consumeStream,
+		});
+	}
+
+	return Response.json(result.body, result);
+}
+
+/**
+ * Keep this in sync with the AI SDK `PrepareSendMessagesRequest` shape used by
+ * `AssistantChatTransport.prepareSendMessagesRequest`.
+ */
+const run_stream_body_validator = z.object({
+	/**
+	 * Authenticated membership scope.
+	 *
+	 * Server derives organization/workspace from this membership doc.
+	 **/
+	membershipId: z.string(),
+	thread_id: z.string(),
+	assistant_id: z.string(),
+	messages: z.array(z.any()),
+	response_format: z.string().optional(),
+});
+
+export type ai_chat_http_run_stream_Body = z.infer<typeof run_stream_body_validator>;
+
+export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) {
+	try {
+		const requestParseResult = await server_request_json_parse_and_validate(request, run_stream_body_validator);
+
+		if (requestParseResult._nay) {
+			return {
+				status: 400,
+				body: requestParseResult._nay,
+			} as const;
+		}
+
+		const body = requestParseResult._yay;
+
+		if (body.assistant_id !== "system/thread_title") {
+			return {
+				status: 400,
+				body: {
+					message: "Invalid stream ID",
+				},
+			} as const;
+		}
+
+		const membership = await ctx.runQuery(api.organizations.get_membership, {
+			membershipId: body.membershipId,
+		});
+
+		if (!membership) {
+			return {
+				status: 403,
+				body: {
+					message: "Unauthorized",
+				},
+			} as const;
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "ai_chat_http",
+			key: membership.userId,
+		});
+		if (rateLimit) {
+			return {
+				status: 429,
+				body: {
+					message: rateLimit.message,
+					retryAfterMs: rateLimit.retryAfterMs,
+				},
+			} as const;
+		}
+
+		// This route only runs the thread titler above. It writes a thread
+		// title and never touches a file, so reading is enough.
+		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+			membershipId: membership._id,
+			permission: THREAD_PERMISSION,
+		});
+		if (!allowed) {
+			return {
+				status: 403,
+				body: {
+					message: "Permission denied",
+				},
+			} as const;
+		}
+
+		const messages = body.messages || [];
+		const thread_id = body.thread_id;
+
+		// Extract conversation text from messages for title generation
+		const conversation_text = messages
+			.map((msg: any) =>
+				[`${msg.role}:`, Array.isArray(msg.content) ? msg.content.map((part: any) => part.text).join(" ") : msg.content]
+					.filter(Boolean)
+					.join(" "),
+			)
+			.filter(Boolean)
+			.join("\n");
+
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
+			if (!userAuth) {
+				return null;
+			}
+
+			return ctx.runQuery(internal.users.get, {
+				userId: userAuth.id,
+			});
+		});
+		if (!user) {
+			return {
+				status: 401,
+				body: {
+					message: "Unauthenticated",
+				},
+			} as const;
+		}
+
+		// Check credits before title generation. One title per thread; the literal
+		// "title" discriminator keeps the usage event id stable across HTTP retries.
+		const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
+			userId: user._id,
+			organizationId: membership.organizationId,
+			minimumRequiredCents: 1,
+		});
+		if (!creditCheck.hasCredits) {
+			return {
+				status: 402,
+				body: { message: "Insufficient funds" },
+			} as const;
+		}
+		const billedUser = creditCheck.billedUser;
+		if (!billedUser) {
+			throw should_never_happen("Organization credit check did not return billed user", {
+				userId: user._id,
+				organizationId: membership.organizationId,
+			});
+		}
+
+		let titleInputTokens = 0;
+		let titleOutputTokens = 0;
+
+		// Generate title using AI with streaming
+		const result = streamText({
+			model: openai(TITLE_MODEL_ID),
+			system: TITLE_SYSTEM_PROMPT,
+			messages: [
+				{
+					role: "user",
+					content: `Generate a title for this conversation:\n\n${conversation_text}`,
+				},
+			],
+			stopWhen: stepCountIs(1),
+			temperature: 0.3,
+			maxOutputTokens: 50,
+			experimental_transform: smoothStream({
+				delayInMs: 100,
+			}),
+			onFinish: async ({ totalUsage }) => {
+				titleInputTokens = totalUsage.inputTokens ?? 0;
+				titleOutputTokens = totalUsage.outputTokens ?? 0;
+			},
+		});
+
+		// Transform the AI stream to properly encode text chunks
+		let title = "";
+
+		// Trigger mutation when the stream is finished
+		const transform_stream = new TransformStream({
+			transform(chunk, controller) {
+				title += chunk;
+				controller.enqueue(chunk);
+			},
+			flush: async () => {
+				const capturedTotalTokens = titleInputTokens + titleOutputTokens;
+				if (capturedTotalTokens > 0) {
+					const titleCostCents = compute_token_usage_cost_cents({
+						modelId: TITLE_MODEL_ID,
+						inputTokens: titleInputTokens,
+						outputTokens: titleOutputTokens,
+					});
+					await billing_ingest_events(ctx, {
+						billedUserEvents: [
+							{
+								billedUser,
+								event: billing_event({
+									name: "ai_usage",
+									externalCustomerId: billedUser._id,
+									externalMemberId: user._id,
+									externalId: composite_id(
+										"billing",
+										"ai_usage",
+										billedUser._id,
+										user._id,
+										membership.organizationId,
+										membership.workspaceId,
+										thread_id,
+										// TODO: Evaluate if this is a good idea to pass "title" as messageId
+										"title",
+									),
+									metadata: {
+										amount: titleCostCents,
+										actorUserId: user._id,
+										billedUserId: billedUser._id,
+										organizationId: membership.organizationId,
+										workspaceId: membership.workspaceId,
+										modelId: TITLE_MODEL_ID,
+										inputTokens: titleInputTokens,
+										outputTokens: titleOutputTokens,
+										threadId: thread_id,
+										messageId: "title",
+									},
+								}),
+							},
+						],
+					});
+				}
+
+				const trimmedTitle = title.trim();
+				if (!trimmedTitle) {
+					return;
+				}
+
+				const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
+					membershipId: membership._id,
+					threadId: thread_id,
+					title: trimmedTitle,
+				});
+
+				if (threadUpdateResult._nay) {
+					console.error("Failed to persist generated title", {
+						threadId: thread_id,
+						result: threadUpdateResult,
+					});
+				}
+			},
+		});
+
+		// Pipe the AI textStream through the transformer, insprired by ai-sdk's `createTextStreamResponse`
+		const stream = result.textStream.pipeThrough(transform_stream).pipeThrough(new TextEncoderStream());
+
+		void result.consumeStream();
+
+		return {
+			status: 200,
+			body: stream,
+		} as const;
+	} catch (error) {
+		const errorMessage = "Title generation error";
+		console.error(`${errorMessage}:`, error);
+
+		return {
+			status: 500,
+			body: {
+				message: errorMessage,
+				cause: error == null ? undefined : { message: error instanceof Error ? error.message : String(error) },
+			},
+		} as const;
+	}
 }
 
 // Vitest sets NODE_ENV to "test"; Convex's bundler defines it as "production",

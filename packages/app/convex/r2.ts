@@ -1,12 +1,11 @@
 import { Workpool, vWorkId } from "@convex-dev/workpool";
-import type { RegisteredMutation, RegisteredQuery, RouteSpec } from "convex/server";
+import type { RegisteredMutation, RegisteredQuery } from "convex/server";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import { components, internal } from "./_generated/api.js";
 import {
 	action,
-	httpAction,
 	internalAction,
 	internalMutation,
 	internalQuery,
@@ -61,9 +60,6 @@ import {
 	files_metadata_preflight_frontmatter,
 } from "../shared/files-metadata.ts";
 import app_convex_schema from "./schema.ts";
-import type { RouterForConvexModules } from "./http.ts";
-import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import { db_get_file_content_materialization_db_state } from "./files_nodes.ts";
 import {
 	db_insert_file_text_content,
@@ -71,7 +67,7 @@ import {
 } from "./files_nodes_content.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
-// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
+// Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
 export const experimental_reuseContext = true;
 
 if (!process.env.CLOUDFLARE_EVENTS_SECRET) {
@@ -1145,11 +1141,7 @@ export const process_uploaded_asset_event = internalMutation({
 		if (!shouldStartProcessing) {
 			return Result({ _yay: null });
 		}
-		if (
-			!fileNode ||
-			fileNode.archiveOperationId !== undefined ||
-			files_node_has_editable_yjs_state(fileNode)
-		) {
+		if (!fileNode || fileNode.archiveOperationId !== undefined || files_node_has_editable_yjs_state(fileNode)) {
 			await ctx.db.patch("files_r2_assets", asset._id, {
 				processingWorkId: null,
 				updatedAt: now,
@@ -1164,16 +1156,12 @@ export const process_uploaded_asset_event = internalMutation({
 
 		try {
 			if (fileNodeIsEditableText) {
-				const workId = await upload_conversion_workpool.enqueueAction(
-					ctx,
-					internal.r2.finalize_uploaded_text_file,
-					{
-						organizationId: asset.organizationId,
-						workspaceId: asset.workspaceId,
-						assetId: asset._id,
-						eventId: args.eventId,
-					},
-				);
+				const workId = await upload_conversion_workpool.enqueueAction(ctx, internal.r2.finalize_uploaded_text_file, {
+					organizationId: asset.organizationId,
+					workspaceId: asset.workspaceId,
+					assetId: asset._id,
+					eventId: args.eventId,
+				});
 
 				await ctx.db.patch("files_r2_assets", asset._id, {
 					processingWorkId: workId,
@@ -1310,180 +1298,143 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 	},
 });
 
-export function r2_http_routes(router: RouterForConvexModules) {
-	return {
-		...((/* iife */ path = "/api/r2/event" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						/**
-						 * Cloudflare R2 event notification payload.
-						 *
-						 * @see https://developers.cloudflare.com/r2/buckets/event-notifications/#message-format
-						 */
-						const bodyValidator = z.object({
-							cloudflareMessageId: z.string(),
-							attempts: z.number(),
-							event: z.discriminatedUnion("action", [
-								z.object({
-									account: z.string().optional(),
-									action: z.literal("PutObject"),
-									bucket: z.string(),
-									object: z.object({
-										key: z.string(),
-										size: z.number(),
-										eTag: z.string().optional(),
-									}),
-									eventTime: z.string(),
-								}),
-								z.object({
-									account: z.string().optional(),
-									action: z.literal("CopyObject"),
-									bucket: z.string(),
-									object: z.object({
-										key: z.string(),
-										size: z.number(),
-										eTag: z.string().optional(),
-									}),
-									eventTime: z.string(),
-								}),
-								z.object({
-									account: z.string().optional(),
-									action: z.literal("CompleteMultipartUpload"),
-									bucket: z.string(),
-									object: z.object({
-										key: z.string(),
-										size: z.number(),
-										eTag: z.string().optional(),
-									}),
-									eventTime: z.string(),
-								}),
-								z.object({
-									account: z.string().optional(),
-									action: z.literal("DeleteObject"),
-									bucket: z.string(),
-									object: z.object({
-										key: z.string(),
-										size: z.undefined().optional(),
-										eTag: z.undefined().optional(),
-									}),
-									eventTime: z.string(),
-								}),
-								z.object({
-									account: z.string().optional(),
-									action: z.literal("LifecycleDeletion"),
-									bucket: z.string(),
-									object: z.object({
-										key: z.string(),
-										size: z.undefined().optional(),
-										eTag: z.undefined().optional(),
-									}),
-									eventTime: z.string(),
-								}),
-							]),
-						});
+/**
+ * Cloudflare R2 event notification payload.
+ *
+ * @see https://developers.cloudflare.com/r2/buckets/event-notifications/#message-format
+ */
+const event_body_validator = z.object({
+	cloudflareMessageId: z.string(),
+	attempts: z.number(),
+	event: z.discriminatedUnion("action", [
+		z.object({
+			account: z.string().optional(),
+			action: z.literal("PutObject"),
+			bucket: z.string(),
+			object: z.object({
+				key: z.string(),
+				size: z.number(),
+				eTag: z.string().optional(),
+			}),
+			eventTime: z.string(),
+		}),
+		z.object({
+			account: z.string().optional(),
+			action: z.literal("CopyObject"),
+			bucket: z.string(),
+			object: z.object({
+				key: z.string(),
+				size: z.number(),
+				eTag: z.string().optional(),
+			}),
+			eventTime: z.string(),
+		}),
+		z.object({
+			account: z.string().optional(),
+			action: z.literal("CompleteMultipartUpload"),
+			bucket: z.string(),
+			object: z.object({
+				key: z.string(),
+				size: z.number(),
+				eTag: z.string().optional(),
+			}),
+			eventTime: z.string(),
+		}),
+		z.object({
+			account: z.string().optional(),
+			action: z.literal("DeleteObject"),
+			bucket: z.string(),
+			object: z.object({
+				key: z.string(),
+				size: z.undefined().optional(),
+				eTag: z.undefined().optional(),
+			}),
+			eventTime: z.string(),
+		}),
+		z.object({
+			account: z.string().optional(),
+			action: z.literal("LifecycleDeletion"),
+			bucket: z.string(),
+			object: z.object({
+				key: z.string(),
+				size: z.undefined().optional(),
+				eTag: z.undefined().optional(),
+			}),
+			eventTime: z.string(),
+		}),
+	]),
+});
 
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
+export type r2_http_event_Body = z.infer<typeof event_body_validator>;
 
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							try {
-								// Accept only the trusted Cloudflare event forwarder for R2 notifications.
-								if (request.headers.get("Authorization") !== `Bearer ${CLOUDFLARE_EVENTS_SECRET}`) {
-									return {
-										status: 401,
-										body: {
-											message: "Unauthenticated",
-										},
-									} as const;
-								}
+export async function r2_http_event(ctx: ActionCtx, request: Request) {
+	try {
+		// Accept only the trusted Cloudflare event forwarder for R2 notifications.
+		if (request.headers.get("Authorization") !== `Bearer ${CLOUDFLARE_EVENTS_SECRET}`) {
+			return {
+				status: 401,
+				body: {
+					message: "Unauthenticated",
+				},
+			} as const;
+		}
 
-								const body = await server_request_json_parse_and_validate(request, bodyValidator);
-								if (body._nay) {
-									return {
-										status: 400,
-										body: body._nay,
-									} as const;
-								}
+		const body = await server_request_json_parse_and_validate(request, event_body_validator);
+		if (body._nay) {
+			return {
+				status: 400,
+				body: body._nay,
+			} as const;
+		}
 
-								if (body._yay.event.action === "DeleteObject" || body._yay.event.action === "LifecycleDeletion") {
-									return {
-										status: 204,
-										body: {},
-									} as const;
-								}
+		if (body._yay.event.action === "DeleteObject" || body._yay.event.action === "LifecycleDeletion") {
+			return {
+				status: 204,
+				body: {},
+			} as const;
+		}
 
-								const asset = (await ctx.runQuery(internal.r2.get_asset_by_r2_event_key, {
-									bucket: body._yay.event.bucket,
-									key: body._yay.event.object.key,
-								})) as get_asset_by_r2_event_key_Result;
-								if (asset._nay) {
-									return {
-										status: asset._nay.message === "Not found" ? 404 : 503,
-										body: {
-											message: asset._nay.message,
-										},
-									} as const;
-								}
+		const asset = (await ctx.runQuery(internal.r2.get_asset_by_r2_event_key, {
+			bucket: body._yay.event.bucket,
+			key: body._yay.event.object.key,
+		})) as get_asset_by_r2_event_key_Result;
+		if (asset._nay) {
+			return {
+				status: asset._nay.message === "Not found" ? 404 : 503,
+				body: {
+					message: asset._nay.message,
+				},
+			} as const;
+		}
 
-								if (asset._yay.kind !== "upload") {
-									// The finalizer is upload-oriented. Generated objects are written by Convex actions.
-									return {
-										status: 204,
-										body: {},
-									} as const;
-								}
+		if (asset._yay.kind !== "upload") {
+			// The finalizer is upload-oriented. Generated objects are written by Convex actions.
+			return {
+				status: 204,
+				body: {},
+			} as const;
+		}
 
-								await ctx.runMutation(internal.r2.process_uploaded_asset_event, {
-									assetId: asset._yay._id,
-									r2Key: body._yay.event.object.key,
-									size: body._yay.event.object.size,
-									etag: body._yay.event.object.eTag,
-									eventId: body._yay.cloudflareMessageId,
-								});
+		await ctx.runMutation(internal.r2.process_uploaded_asset_event, {
+			assetId: asset._yay._id,
+			r2Key: body._yay.event.object.key,
+			size: body._yay.event.object.size,
+			etag: body._yay.event.object.eTag,
+			eventId: body._yay.cloudflareMessageId,
+		});
 
-								// The mutation owns idempotency and enqueues any needed upload work.
-								return {
-									status: 204,
-									body: {},
-								} as const;
-							} catch (error: unknown) {
-								console.error("R2 event HTTP route failed", { error });
-								return {
-									status: 500,
-									body: {
-										message: "Internal server error",
-									},
-								} as const;
-							}
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-
-								if (result.status === 204) {
-									return new Response(null, { status: result.status });
-								}
-
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
+		// The mutation owns idempotency and enqueues any needed upload work.
+		return {
+			status: 204,
+			body: {},
+		} as const;
+	} catch (error: unknown) {
+		console.error("R2 event HTTP route failed", { error });
+		return {
+			status: 500,
+			body: {
+				message: "Internal server error",
 			},
-		}))(),
-	};
+		} as const;
+	}
 }

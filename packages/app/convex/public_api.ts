@@ -1,6 +1,5 @@
 import { v, type Infer } from "convex/values";
 import {
-	httpAction,
 	internalMutation,
 	internalQuery,
 	mutation,
@@ -11,9 +10,8 @@ import {
 } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { RegisteredMutation, RegisteredQuery, RouteSpec } from "convex/server";
+import type { RegisteredMutation, RegisteredQuery } from "convex/server";
 import { z } from "zod";
-import type { RouterForConvexModules } from "./http.ts";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
 import {
 	ACTIVITIES_TIMEOUT_MAX_MS,
@@ -22,9 +20,7 @@ import {
 	activities_db_start,
 } from "./activities.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
-import { rate_limiter_limit_by_key, rate_limiter_http_client_key } from "./rate_limiter.ts";
-import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import {
@@ -65,7 +61,7 @@ import {
 	files_nodes_db_insert_file_content_docs,
 	files_nodes_reconstruct_latest_file_content_from_materialization_state,
 } from "./files_nodes_content.ts";
-import type { r2_get_assets_ready_states_Result, r2_get_data_for_public_download_url_Result } from "./r2.ts";
+import type { r2_get_data_for_public_download_url_Result } from "./r2.ts";
 import {
 	r2_create_asset_key,
 	r2_delete_object,
@@ -75,7 +71,18 @@ import {
 	r2_put_object,
 	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
-import { type plugins_runtime_consume_run_api_call_Result } from "./plugins_runtime.ts";
+import {
+	public_api_PLUGIN_RUN_TOKEN_REGEX,
+	public_api_PLUGIN_UI_TOKEN_REGEX,
+	type public_api_Scope,
+} from "../shared/public-api.ts";
+import {
+	public_api_authorize_request,
+	public_api_is_path_inside_prefix,
+	public_api_resolve_live_principal,
+	public_api_settle_plugin_call_best_effort,
+	public_api_visibility_user_id,
+} from "./public_api_http_auth.ts";
 
 /**
  * Local structural mirror of `stage_trusted_yjs_update`'s Result. Keep it local instead of
@@ -88,20 +95,9 @@ type stage_trusted_yjs_update_LocalResult =
 	| { _yay?: undefined; _nay: { message: string } };
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
-// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
+// Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
 export const experimental_reuseContext = true;
 
-export const public_api_SCOPE_FILES_LIST = "files:list";
-export const public_api_SCOPE_FILES_READ = "files:read";
-export const public_api_SCOPE_FILES_WRITE = "files:write";
-export const public_api_SCOPE_FILES_DOWNLOAD = "files:download";
-export const public_api_SCOPE_SECRETS_READ = "secrets:read";
-export const public_api_SCOPE_OUTBOUND_FETCH = "outbound:fetch";
-export const public_api_SCOPE_ACTIVITIES_WRITE = "activities:write";
-
-const FILES_LIST_MAX_ITEMS = 100;
-// Public clients may scan more source docs than AI file tools. The internal query still owns the hard cap.
-const FILES_LIST_DEFAULT_SCAN_LIMIT = 10_000;
 const FILES_READ_MAX_BYTES = 128_000;
 const FILES_READ_MANY_MAX_ITEMS = 50;
 const FILES_READ_MANY_MAX_CONTENT_BYTES = 384_000;
@@ -129,10 +125,6 @@ const CREDENTIAL_SECRET_BYTES = 32;
 const API_CREDENTIAL_NAME_MAX_CHARS = 80;
 // Keep the API key list bounded. The active API credential quota is stored in `quotas`.
 const API_CREDENTIAL_LIST_MAX = 100;
-const API_CREDENTIAL_TOKEN_REGEX = /^pk_[0-9a-f]{32}\.[0-9a-f]{64}$/u;
-const PUBLIC_API_GRANT_TOKEN_REGEX = /^[0-9a-f]{64}$/u;
-const PLUGIN_RUN_TOKEN_REGEX = /^plr_[0-9a-f]{64}$/u;
-const PLUGIN_UI_TOKEN_REGEX = /^plu_[0-9a-f]{64}$/u;
 const PUBLIC_API_GRANT_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_API_GRANT_CLEANUP_BATCH_SIZE = 100;
 // Stages only need to outlive one write action; anything older is a crashed write. Keep this far
@@ -166,73 +158,34 @@ async function read_request_text_bounded(request: Request, maxBytes: number) {
 	return new TextDecoder().decode(bytes);
 }
 
-type Scope =
-	| typeof public_api_SCOPE_FILES_LIST
-	| typeof public_api_SCOPE_FILES_READ
-	| typeof public_api_SCOPE_FILES_WRITE
-	| typeof public_api_SCOPE_FILES_DOWNLOAD
-	| typeof public_api_SCOPE_SECRETS_READ
-	| typeof public_api_SCOPE_OUTBOUND_FETCH
-	| typeof public_api_SCOPE_ACTIVITIES_WRITE;
-type PrincipalKind = "public_api_grant" | "user_api_key" | "plugin_run" | "plugin_ui";
-
 const grant_scopes_validator = v.array(
-	v.union(v.literal(public_api_SCOPE_FILES_LIST), v.literal(public_api_SCOPE_FILES_READ)),
+	v.union(v.literal("files:list" satisfies public_api_Scope), v.literal("files:read" satisfies public_api_Scope)),
 );
 const user_credential_scopes_validator = v.array(
 	v.union(
-		v.literal(public_api_SCOPE_FILES_LIST),
-		v.literal(public_api_SCOPE_FILES_READ),
-		v.literal(public_api_SCOPE_FILES_WRITE),
-		v.literal(public_api_SCOPE_FILES_DOWNLOAD),
+		v.literal("files:list" satisfies public_api_Scope),
+		v.literal("files:read" satisfies public_api_Scope),
+		v.literal("files:write" satisfies public_api_Scope),
+		v.literal("files:download" satisfies public_api_Scope),
 	),
 );
 const plugin_run_scopes_validator = v.array(
 	v.union(
-		v.literal(public_api_SCOPE_FILES_WRITE),
-		v.literal(public_api_SCOPE_FILES_DOWNLOAD),
-		v.literal(public_api_SCOPE_SECRETS_READ),
-		v.literal(public_api_SCOPE_OUTBOUND_FETCH),
-		v.literal(public_api_SCOPE_ACTIVITIES_WRITE),
+		v.literal("files:write" satisfies public_api_Scope),
+		v.literal("files:download" satisfies public_api_Scope),
+		v.literal("secrets:read" satisfies public_api_Scope),
+		v.literal("outbound:fetch" satisfies public_api_Scope),
+		v.literal("activities:write" satisfies public_api_Scope),
 	),
 );
 // Read-only by design: UI sessions never get write, secrets, or outbound scopes.
 const plugin_ui_scopes_validator = v.array(
 	v.union(
-		v.literal(public_api_SCOPE_FILES_LIST),
-		v.literal(public_api_SCOPE_FILES_READ),
-		v.literal(public_api_SCOPE_FILES_DOWNLOAD),
+		v.literal("files:list" satisfies public_api_Scope),
+		v.literal("files:read" satisfies public_api_Scope),
+		v.literal("files:download" satisfies public_api_Scope),
 	),
 );
-
-function normalize_extension(extension: string | undefined) {
-	const normalized = extension?.trim().replace(/^\./u, "").toLowerCase();
-	return normalized ? normalized : undefined;
-}
-
-function is_path_inside_prefix(filePath: string, pathPrefix: string | null) {
-	if (pathPrefix == null) return true;
-	const normalizedPrefix = server_path_normalize(pathPrefix);
-	return normalizedPrefix === "/" || filePath === normalizedPrefix || filePath.startsWith(`${normalizedPrefix}/`);
-}
-
-function get_bearer_token(request: Request) {
-	const authorization = request.headers.get("Authorization");
-	const prefix = "Bearer ";
-	if (!authorization?.startsWith(prefix)) return null;
-	const token = authorization.slice(prefix.length).trim();
-	return token.length > 0 ? token : null;
-}
-
-function is_plausible_bearer_token(token: string) {
-	// Reject malformed bearer tokens before credential/grant/run lookup; well-formed tokens still require DB verification.
-	return (
-		API_CREDENTIAL_TOKEN_REGEX.test(token) ||
-		PUBLIC_API_GRANT_TOKEN_REGEX.test(token) ||
-		PLUGIN_RUN_TOKEN_REGEX.test(token) ||
-		PLUGIN_UI_TOKEN_REGEX.test(token)
-	);
-}
 
 async function create_credential_secret(ctx: MutationCtx) {
 	for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -295,8 +248,8 @@ async function authorize_credential_management(
 	// API keys belong to one user: each user manages their own keys through their own membership.
 	// Nobody manages keys for the whole workspace, so no permission is checked here. `mint_page_session`
 	// checks when the token is created; here we do not need that, because every route that accepts a
-	// `user_api_key` passes `requiredUserPermission`. So a key can never do more than the user who owns
-	// it: a scope they cannot use simply answers 403.
+	// `user_api_key` passes a required scope. File scopes map to an app permission during request auth,
+	// so a key can never do more than the user who owns it: a scope they cannot use simply answers 403.
 	return Result({ _yay: { user, membership, organization, workspace } });
 }
 
@@ -347,9 +300,9 @@ async function has_workspace_content_permission(
 
 /**
  * Reads both content permissions at once. `resolve_principal` returns them instead of deciding the
- * route's `requiredUserPermission` itself, so its answer depends only on the token and can be cached
- * per token. The yes/no decision is made later, in `public_api_resolve_live_principal`. Because this
- * is a Convex query, taking a role away updates the cached answer right away.
+ * route's app permission itself, so its answer depends only on the token and can be cached per token.
+ * The required scope maps to one permission later, in `public_api_resolve_live_principal`. Because
+ * this is a Convex query, taking a role away updates the cached answer right away.
  */
 async function get_workspace_content_permissions(
 	ctx: QueryCtx,
@@ -742,7 +695,7 @@ export const api_credential_rotate = mutation({
 /**
  * Facts only, keyed on the presented token alone so Convex can cache the result: identity,
  * tenancy, scopes, expiry timestamps, and content permissions. The two verdicts that depend on the
- * caller's clock and route — token expiry and requiredUserPermission — are applied by
+ * caller's clock and route — token expiry and the app permission mapped from its scope — are applied by
  * public_api_resolve_live_principal; never call this directly from a route. Liveness checks
  * (revocation, disable, uninstall, membership loss) are writes, so they invalidate the cache.
  */
@@ -814,7 +767,7 @@ export const resolve_principal = internalQuery({
 		),
 	}),
 	handler: async (ctx, args) => {
-		if (PLUGIN_RUN_TOKEN_REGEX.test(args.presented)) {
+		if (public_api_PLUGIN_RUN_TOKEN_REGEX.test(args.presented)) {
 			const apiTokenHash = await crypto_sha256_hex(args.presented);
 			const pluginRun = await ctx.db
 				.query("plugins_event_runs")
@@ -854,16 +807,12 @@ export const resolve_principal = internalQuery({
 
 			// Platform baseline: download the exact triggering asset, write Markdown siblings, and
 			// opt into the workspace activity feed (self-disclosure, so no extra consent).
-			const scopes: Infer<typeof plugin_run_scopes_validator> = [
-				public_api_SCOPE_FILES_DOWNLOAD,
-				public_api_SCOPE_FILES_WRITE,
-				public_api_SCOPE_ACTIVITIES_WRITE,
-			];
+			const scopes: Infer<typeof plugin_run_scopes_validator> = ["files:download", "files:write", "activities:write"];
 			if (pluginRun.acceptedCapabilities.includes("plugin.secrets.read")) {
-				scopes.push(public_api_SCOPE_SECRETS_READ);
+				scopes.push("secrets:read");
 			}
 			if (pluginRun.acceptedCapabilities.includes("outbound.fetch")) {
-				scopes.push(public_api_SCOPE_OUTBOUND_FETCH);
+				scopes.push("outbound:fetch");
 			}
 
 			return Result({
@@ -885,7 +834,7 @@ export const resolve_principal = internalQuery({
 			});
 		}
 
-		if (PLUGIN_UI_TOKEN_REGEX.test(args.presented)) {
+		if (public_api_PLUGIN_UI_TOKEN_REGEX.test(args.presented)) {
 			const tokenHash = await crypto_sha256_hex(args.presented);
 			const session = await ctx.db
 				.query("plugins_ui_sessions")
@@ -937,7 +886,7 @@ export const resolve_principal = internalQuery({
 			const scopes: Infer<typeof plugin_ui_scopes_validator> = installation.acceptedCapabilities.includes(
 				"workspace.files.read",
 			)
-				? [public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ, public_api_SCOPE_FILES_DOWNLOAD]
+				? ["files:list", "files:read", "files:download"]
 				: [];
 
 			return Result({
@@ -1077,164 +1026,15 @@ export type public_api_resolve_principal_Result =
 
 type Principal = NonNullable<public_api_resolve_principal_Result["_yay"]>;
 
-/**
- * The verdict half of principal resolution: resolve_principal returns cacheable facts, this
- * applies the checks that vary per call — token expiry against the caller's clock and the
- * route's required user ACL (plugin runs never use user ACLs). Every route authorization goes
- * through here, except plugins_runtime's runner-host route, which applies the plugin_run
- * expiry inline because a value import from this module would be a runtime cycle.
- */
-/**
- * Whose eyes a public-API call reads files with.
- *
- * A plugin run has no user of its own, so it reads as the person whose upload started it. Without
- * that rule, installing a plugin would be a way around a restricted folder: run it over the folder
- * and read what it writes back. Every other principal kind carries the user it belongs to.
- */
-export function public_api_visibility_user_id(principal: { actorUserId: Id<"users"> } | { userId: Id<"users"> }) {
-	return "actorUserId" in principal ? principal.actorUserId : principal.userId;
-}
-
-export async function public_api_resolve_live_principal(
-	ctx: ActionCtx,
-	args: {
-		presented: string;
-		now: number;
-		requiredUserPermission?: "content.read" | "content.write";
-	},
-) {
-	const resolved: public_api_resolve_principal_Result = await ctx.runQuery(internal.public_api.resolve_principal, {
-		presented: args.presented,
-	});
-	if (resolved._nay) {
-		return resolved;
-	}
-
-	const principal = resolved._yay;
-	const expiresAt =
-		principal.kind === "plugin_run"
-			? principal.apiTokenExpiresAt
-			: principal.kind === "plugin_ui"
-				? principal.sessionExpiresAt
-				: principal.kind === "public_api_grant"
-					? principal.expiresAt
-					: null;
-	if (expiresAt != null && expiresAt <= args.now) {
-		return Result({ _nay: { message: "Unauthenticated" } });
-	}
-
-	if (args.requiredUserPermission && principal.kind !== "plugin_run") {
-		const allowed =
-			args.requiredUserPermission === "content.read"
-				? principal.contentPermissions.read
-				: principal.contentPermissions.write;
-		if (!allowed) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-	}
-
-	return resolved;
-}
-
-// Route authorization
-
-export const mark_credential_used = internalMutation({
-	args: {
-		credentialId: v.id("api_credentials"),
-		now: v.number(),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const credential = await ctx.db.get("api_credentials", args.credentialId);
-		if (credential) {
-			await ctx.db.patch("api_credentials", credential._id, { lastUsedAt: args.now });
-		}
-
-		return null;
-	},
-});
-
-async function mark_credential_used_best_effort(
-	ctx: ActionCtx,
-	args: {
-		credentialId: Id<"api_credentials"> | null;
-		now: number;
-	},
-) {
-	const credentialId = args.credentialId;
-	if (!credentialId) return;
-
-	try {
-		await ctx.runMutation(internal.public_api.mark_credential_used, {
-			credentialId,
-			now: args.now,
-		});
-	} catch (error) {
-		console.warn("Failed to mark API credential used", {
-			error,
-			credentialId,
-		});
-	}
-}
-
-async function limit_bad_auth(ctx: ActionCtx, request: Request, route: string) {
-	return await rate_limiter_limit_by_key(ctx, {
-		name: "public_api_auth",
-		key: `${rate_limiter_http_client_key(request)}:${route}`,
-	});
-}
-
-/**
- * Settle a plugin call created by `authorize_request`. Best-effort: telemetry settlement must
- * never turn an already-decided HTTP response into a failure. Idempotent on the mutation side, so
- * a handler may settle a call the publish mutation already settled transactionally.
- */
-async function settle_plugin_call_best_effort(
-	ctx: ActionCtx,
-	args: {
-		callId: Id<"plugins_event_run_calls"> | null;
-		status: "succeeded" | "failed";
-		responseStatus: number;
-		errorCode?: string;
-		errorMessage?: string;
-		responseBytes?: number;
-	},
-) {
-	const callId = args.callId;
-	if (!callId) return;
-
-	try {
-		await ctx.runMutation(internal.plugins_runtime.finish_run_call, {
-			callId,
-			status: args.status,
-			responseStatus: args.responseStatus,
-			errorCode: args.errorCode,
-			errorMessage: args.errorMessage ?? null,
-			responseBytes: args.responseBytes,
-		});
-	} catch (error) {
-		console.warn("Failed to settle plugin run call", { error, callId });
-	}
-}
-
-function is_principal_kind_allowed<K extends PrincipalKind>(
-	principal: Principal,
-	allowedKinds: readonly K[],
-): principal is Extract<Principal, { kind: K }> {
-	// Widening assignment: every K is a PrincipalKind.
-	const kinds: readonly PrincipalKind[] = allowedKinds;
-	return kinds.includes(principal.kind);
-}
-
 function has_same_download_authority(
 	initial: Extract<Principal, { kind: "user_api_key" | "plugin_run" | "plugin_ui" }>,
 	current: Principal,
 ) {
-	const currentScopes: readonly Scope[] = current.scopes;
+	const currentScopes: readonly public_api_Scope[] = current.scopes;
 	if (
 		initial.organizationId !== current.organizationId ||
 		initial.workspaceId !== current.workspaceId ||
-		!currentScopes.includes(public_api_SCOPE_FILES_DOWNLOAD)
+		!currentScopes.includes("files:download")
 	) {
 		return false;
 	}
@@ -1264,145 +1064,23 @@ function has_same_download_authority(
 	}
 }
 
-async function authorize_request<K extends PrincipalKind>(
-	ctx: ActionCtx,
-	request: Request,
+// Route authorization
+
+export const mark_credential_used = internalMutation({
 	args: {
-		requiredScope: Scope;
-		allowedKinds: readonly K[];
-		/** ACL required from user principals (grants and API keys); plugin runs use scopes only. */
-		requiredUserPermission?: "content.read" | "content.write";
-		route: string;
+		credentialId: v.id("api_credentials"),
+		now: v.number(),
 	},
-) {
-	const token = get_bearer_token(request);
-	if (!token || !is_plausible_bearer_token(token)) {
-		const rateLimit = await limit_bad_auth(ctx, request, args.route);
-		if (rateLimit) {
-			return {
-				_nay: {
-					status: 429,
-					body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs },
-				},
-			} as const;
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const credential = await ctx.db.get("api_credentials", args.credentialId);
+		if (credential) {
+			await ctx.db.patch("api_credentials", credential._id, { lastUsedAt: args.now });
 		}
 
-		return { _nay: { status: 401, body: { message: "Unauthenticated" } } } as const;
-	}
-
-	const resolved = await public_api_resolve_live_principal(ctx, {
-		presented: token,
-		now: Date.now(),
-		requiredUserPermission: args.requiredUserPermission,
-	});
-	if (resolved._nay) {
-		const rateLimit = await limit_bad_auth(ctx, request, args.route);
-		if (rateLimit) {
-			return {
-				_nay: {
-					status: 429,
-					body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs },
-				},
-			} as const;
-		}
-
-		return {
-			_nay: {
-				status: resolved._nay.message === "Permission denied" ? 403 : 401,
-				body: { message: resolved._nay.message },
-			},
-		} as const;
-	}
-
-	const principal = resolved._yay;
-	const now = Date.now();
-	const postAuthRateLimit = await rate_limiter_limit_by_key(ctx, {
-		name: "public_api_principal",
-		key: `${principal.kind}:${principal.principalKey}:${args.route}`,
-	});
-	if (postAuthRateLimit) {
-		console.warn("Public API principal route rate-limited", {
-			route: args.route,
-			principalKind: principal.kind,
-			principalKey: principal.principalKey,
-		});
-		return {
-			_nay: {
-				status: 429,
-				body: { message: postAuthRateLimit.message, retryAfterMs: postAuthRateLimit.retryAfterMs },
-			},
-		} as const;
-	}
-
-	// Consume the quota slot before the kind/scope checks: a valid plugin token burning itself on a
-	// disallowed route is a failed constraint and must still cost a slot and leave a failed call.
-	let pluginCallId: Id<"plugins_event_run_calls"> | null = null;
-	if (principal.kind === "plugin_run") {
-		const consumed: plugins_runtime_consume_run_api_call_Result = await ctx.runMutation(
-			internal.plugins_runtime.consume_run_api_call,
-			{
-				runId: principal.runId,
-				kind: "api_request",
-				route: args.route,
-			},
-		);
-		if (consumed._nay) {
-			return {
-				_nay: {
-					status: consumed._nay.message === "Plugin API call limit exceeded" ? 429 : 401,
-					body: { message: consumed._nay.message },
-				},
-			} as const;
-		}
-		pluginCallId = consumed._yay.callId;
-	}
-
-	// Captured before the generic kind narrowing below: on the narrowed Extract<Principal, ...>
-	// type these property accesses stay deferred and fail to type-check, while on the full union
-	// each arm's scope array widens to Scope[] and the credentialId ternary narrows normally.
-	const principalScopes: readonly Scope[] = principal.scopes;
-	const credentialId = principal.kind === "plugin_run" ? null : principal.credentialId;
-
-	if (!is_principal_kind_allowed(principal, args.allowedKinds)) {
-		console.warn("Public API principal kind rejected", {
-			route: args.route,
-			requiredKinds: args.allowedKinds,
-			principalKind: principal.kind,
-			principalKey: principal.principalKey,
-		});
-		await settle_plugin_call_best_effort(ctx, {
-			callId: pluginCallId,
-			status: "failed",
-			responseStatus: 403,
-			errorCode: "permission_denied",
-			errorMessage: "Permission denied",
-		});
-		return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
-	}
-
-	if (!principalScopes.includes(args.requiredScope)) {
-		console.warn("Public API principal scope rejected", {
-			route: args.route,
-			requiredScope: args.requiredScope,
-			principalKind: principal.kind,
-			principalKey: principal.principalKey,
-		});
-		await settle_plugin_call_best_effort(ctx, {
-			callId: pluginCallId,
-			status: "failed",
-			responseStatus: 403,
-			errorCode: "permission_denied",
-			errorMessage: "Permission denied",
-		});
-		return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
-	}
-
-	await mark_credential_used_best_effort(ctx, {
-		credentialId,
-		now,
-	});
-	return { _yay: { principal, pluginCallId, presentedToken: token } } as const;
-}
+		return null;
+	},
+});
 
 // Staged file writes
 
@@ -3028,1746 +2706,1369 @@ async function write_one_markdown_file(
 
 // HTTP routes
 
-export function public_api_http_routes(router: RouterForConvexModules) {
+const read_file_body_validator = z.object({
+	path: z.string(),
+	maxBytes: z.number().int().min(1).optional(),
+});
+
+export type public_api_http_read_file_Body = z.infer<typeof read_file_body_validator>;
+
+export async function public_api_http_read_file(ctx: ActionCtx, request: Request, path: "/api/v1/files/read") {
+	const auth = await public_api_authorize_request(ctx, request, {
+		requiredScope: "files:read" satisfies public_api_Scope,
+		allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+	const principal = auth._yay.principal;
+
+	const body = await server_request_json_parse_and_validate(request, read_file_body_validator);
+	if (body._nay) {
+		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+
+	const requestedPath = server_path_normalize(body._yay.path);
+	if (requestedPath === "/") {
+		return { status: 400, body: { message: "Path must point to a file." } } as const;
+	}
+	if (!public_api_is_path_inside_prefix(requestedPath, principal.pathPrefix)) {
+		return { status: 403, body: { message: "Permission denied" } } as const;
+	}
+
+	const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+		organizationId: principal.organizationId,
+		workspaceId: principal.workspaceId,
+		userId: principal.userId,
+		path: requestedPath,
+		includePending: principal.kind === "public_api_grant",
+		maxBytes: Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES),
+	});
+	if (!content) {
+		return {
+			status: 404,
+			body: {
+				message: "File not found or exceeds the read limit.",
+			},
+		} as const;
+	}
+
+	console.info("Public API file read", {
+		principalKind: principal.kind,
+		principalKey: principal.principalKey,
+		bytes: TEXT_ENCODER.encode(content.content).length,
+	});
+
 	return {
-		...((/* iife */ path = "/api/v1/files/list" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						const bodyValidator = z.object({
-							path: z.string().optional(),
-							cursor: z.string().nullable().optional(),
-							limit: z.number().int().min(1).optional(),
-							scanLimit: z.number().int().min(1).optional(),
-							recursive: z.boolean().optional(),
-							kind: z.enum(["file", "folder"]).optional(),
-							extension: z.string().optional(),
-							contentTypePrefixes: z.array(z.string().min(1)).min(1).max(8).optional(),
-						});
-
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
-
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await authorize_request(ctx, request, {
-								requiredScope: public_api_SCOPE_FILES_LIST,
-								allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui"],
-								requiredUserPermission: "content.read",
-								route: path,
-							});
-							if (auth._nay) {
-								return auth._nay;
-							}
-							const principal = auth._yay.principal;
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return { status: 400, body: { message: body._nay.message } } as const;
-							}
-
-							const requestedPath = server_path_normalize(body._yay.path ?? "/");
-							if (!is_path_inside_prefix(requestedPath, principal.pathPrefix)) {
-								return { status: 403, body: { message: "Permission denied" } } as const;
-							}
-
-							const lowercaseExtension = normalize_extension(body._yay.extension);
-							const numItems = Math.min(body._yay.limit ?? FILES_LIST_MAX_ITEMS, FILES_LIST_MAX_ITEMS);
-							const result = await ctx.runQuery(internal.files_nodes.list_subtree, {
-								organizationId: principal.organizationId,
-								workspaceId: principal.workspaceId,
-								visibilityUserId: public_api_visibility_user_id(principal),
-								folderPath: requestedPath,
-								numItems,
-								cursor: body._yay.cursor ?? null,
-								kind: body._yay.kind,
-								lowercaseExtension,
-								contentTypePrefixes: body._yay.contentTypePrefixes,
-								minDepth: 1,
-								maxDepth: body._yay.recursive ? undefined : 1,
-								maximumRowsRead: body._yay.scanLimit ?? FILES_LIST_DEFAULT_SCAN_LIMIT,
-							});
-
-							// One readiness query for the whole page, separate from list_subtree so upload
-							// finalization patches do not invalidate the node-listing cache entry.
-							const pageAssetIds = result.page.flatMap((item) =>
-								item.kind === "file" && item.assetId ? [item.assetId] : [],
-							);
-							const assetStates: r2_get_assets_ready_states_Result =
-								pageAssetIds.length > 0
-									? await ctx.runQuery(internal.r2.get_assets_ready_states, { assetIds: pageAssetIds })
-									: {};
-
-							console.info("Public API files listed", {
-								principalKind: principal.kind,
-								principalKey: principal.principalKey,
-								count: result.page.length,
-								isDone: result.isDone,
-							});
-
-							return {
-								status: 200,
-								body: {
-									items: result.page.map((item) => {
-										const assetState = item.assetId ? assetStates[item.assetId] : undefined;
-										return {
-											path: item.path,
-											name: item.name,
-											kind: item.kind,
-											nodeId: item._id,
-											contentType: item.contentType ?? null,
-											updatedAt: item.updatedAt,
-											// A file is "pending" until its R2 object is confirmed. A file whose
-											// upload crashed before finalize stays "pending" forever — that is
-											// accurate, and it is what makes the breakage visible to an importer.
-											// Files without an asset doc have nothing pending, so they are "ready".
-											status:
-												item.kind === "file"
-													? assetState && !assetState.ready
-														? ("pending" as const)
-														: ("ready" as const)
-													: null,
-											size: assetState ? assetState.size : null,
-										};
-									}),
-									cursor: result.continueCursor,
-									isDone: result.isDone,
-								},
-								headers: { "Cache-Control": "no-store" },
-							} as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-
-		...((/* iife */ path = "/api/v1/files/read" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						const bodyValidator = z.object({
-							path: z.string(),
-							maxBytes: z.number().int().min(1).optional(),
-						});
-
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
-
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await authorize_request(ctx, request, {
-								requiredScope: public_api_SCOPE_FILES_READ,
-								allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui"],
-								requiredUserPermission: "content.read",
-								route: path,
-							});
-							if (auth._nay) {
-								return auth._nay;
-							}
-							const principal = auth._yay.principal;
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return { status: 400, body: { message: body._nay.message } } as const;
-							}
-
-							const requestedPath = server_path_normalize(body._yay.path);
-							if (requestedPath === "/") {
-								return { status: 400, body: { message: "Path must point to a file." } } as const;
-							}
-							if (!is_path_inside_prefix(requestedPath, principal.pathPrefix)) {
-								return { status: 403, body: { message: "Permission denied" } } as const;
-							}
-
-							const content = await ctx.runAction(
-								internal.files_nodes_content.get_file_last_available_text_content_by_path,
-								{
-									organizationId: principal.organizationId,
-									workspaceId: principal.workspaceId,
-									userId: principal.userId,
-									path: requestedPath,
-									includePending: principal.kind === "public_api_grant",
-									maxBytes: Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES),
-								},
-							);
-							if (!content) {
-								return {
-									status: 404,
-									body: {
-										message: "File not found or exceeds the read limit.",
-									},
-								} as const;
-							}
-
-							console.info("Public API file read", {
-								principalKind: principal.kind,
-								principalKey: principal.principalKey,
-								bytes: TEXT_ENCODER.encode(content.content).length,
-							});
-
-							return {
-								status: 200,
-								body: {
-									path: requestedPath,
-									nodeId: content.displayNodeId,
-									content: content.content,
-								},
-								headers: { "Cache-Control": "no-store" },
-							} as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-
-		...((/* iife */ path = "/api/v1/files/read-many" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						const bodyValidator = z.object({
-							paths: z.array(z.string()).min(1),
-							maxBytes: z.number().int().min(1).optional(),
-						});
-
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
-
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await authorize_request(ctx, request, {
-								requiredScope: public_api_SCOPE_FILES_READ,
-								allowedKinds: ["user_api_key", "public_api_grant"],
-								requiredUserPermission: "content.read",
-								route: path,
-							});
-							if (auth._nay) {
-								return auth._nay;
-							}
-							const principal = auth._yay.principal;
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return { status: 400, body: { message: body._nay.message } } as const;
-							}
-
-							const requestedPaths = body._yay.paths
-								.slice(0, FILES_READ_MANY_MAX_ITEMS)
-								.map((filePath) => server_path_normalize(filePath));
-							if (requestedPaths.some((filePath) => filePath === "/")) {
-								return { status: 400, body: { message: "Paths must point to files." } } as const;
-							}
-							if (requestedPaths.some((filePath) => !is_path_inside_prefix(filePath, principal.pathPrefix))) {
-								return { status: 403, body: { message: "Permission denied" } } as const;
-							}
-
-							const maxBytes = Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES);
-							const contents = await Promise.all(
-								requestedPaths.map(async (filePath) => ({
-									path: filePath,
-									content: await ctx.runAction(
-										internal.files_nodes_content.get_file_last_available_text_content_by_path,
-										{
-											organizationId: principal.organizationId,
-											workspaceId: principal.workspaceId,
-											userId: principal.userId,
-											path: filePath,
-											includePending: principal.kind === "public_api_grant",
-											maxBytes,
-										},
-									),
-								})),
-							);
-
-							let contentBytes = 0;
-							const pathsTruncated = body._yay.paths.length > requestedPaths.length;
-							let contentTruncated = false;
-							const files: Array<{
-								path: string;
-								nodeId: string;
-								content: string;
-							}> = [];
-							const errors: Array<{ path: string; message: string }> = [];
-
-							for (const item of contents) {
-								if (!item.content) {
-									errors.push({
-										path: item.path,
-										message: "File not found or exceeds the read limit.",
-									});
-									continue;
-								}
-
-								const nextContentBytes = TEXT_ENCODER.encode(item.content.content).length;
-								if (contentBytes + nextContentBytes > FILES_READ_MANY_MAX_CONTENT_BYTES) {
-									contentTruncated = true;
-									break;
-								}
-
-								contentBytes += nextContentBytes;
-								files.push({
-									path: item.path,
-									nodeId: item.content.displayNodeId,
-									content: item.content.content,
-								});
-							}
-
-							console.info("Public API files read", {
-								principalKind: principal.kind,
-								principalKey: principal.principalKey,
-								count: files.length,
-								errorCount: errors.length,
-								truncated: pathsTruncated || contentTruncated,
-								bytes: contentBytes,
-							});
-
-							return {
-								status: 200,
-								body: {
-									files,
-									errors,
-									truncated: pathsTruncated || contentTruncated,
-								},
-								headers: { "Cache-Control": "no-store" },
-							} as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-
-		...((/* iife */ path = "/api/v1/files/write" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						const bodyValidator = z.object({
-							path: z.string(),
-							content: z.string(),
-							overwrite: z.enum(["replace", "fail"]).optional(),
-							skipIfUnchanged: z.boolean().optional(),
-						});
-
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
-
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await authorize_request(ctx, request, {
-								requiredScope: public_api_SCOPE_FILES_WRITE,
-								allowedKinds: ["user_api_key", "plugin_run"],
-								requiredUserPermission: "content.write",
-								route: path,
-							});
-							if (auth._nay) {
-								return auth._nay;
-							}
-							const principal = auth._yay.principal;
-							const pluginCallId = auth._yay.pluginCallId;
-
-							// Settles the consumed plugin call and builds the error body in one step; the
-							// caller supplies the matching literal status so the response union stays narrow.
-							const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
-								await settle_plugin_call_best_effort(ctx, {
-									callId: pluginCallId,
-									status: "failed",
-									responseStatus: failArgs.status,
-									errorCode: failArgs.errorCode,
-									errorMessage: failArgs.message,
-								});
-								return { message: failArgs.message };
-							};
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return {
-									status: 400,
-									body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
-								} as const;
-							}
-
-							if (!body._yay.path.startsWith("/")) {
-								return {
-									status: 400,
-									body: await fail({ status: 400, message: "Path must be absolute.", errorCode: "invalid_input" }),
-								} as const;
-							}
-							const requestedPath = server_path_normalize(body._yay.path);
-							if (requestedPath === "/") {
-								return {
-									status: 400,
-									body: await fail({ status: 400, message: "Path must point to a file.", errorCode: "invalid_input" }),
-								} as const;
-							}
-							// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
-							// validate a different name than the segment the node is created with.
-							const name = path_name_of(requestedPath);
-							const normalizedName = files_normalize_name("file", name);
-							if (!name.toLowerCase().endsWith(".md") || normalizedName._nay || normalizedName._yay !== name) {
-								return {
-									status: 400,
-									body: await fail({
-										status: 400,
-										message: "Path must end in a valid Markdown (.md) file name.",
-										errorCode: "invalid_input",
-									}),
-								} as const;
-							}
-							// Intermediate folders are created verbatim on publish; require already-canonical
-							// names so a user-key write cannot materialize folders (e.g. "..") that the app's
-							// own creation flows would reject.
-							for (const segment of path_extract_segments_from(requestedPath).slice(0, -1)) {
-								const normalizedSegment = files_normalize_name("folder", segment);
-								if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
-									return {
-										status: 400,
-										body: await fail({
-											status: 400,
-											message: "Path contains an invalid folder name.",
-											errorCode: "invalid_input",
-										}),
-									} as const;
-								}
-							}
-							// Normalize at the request boundary, above the byte count and the fan-out:
-							// the document, the R2 content snapshot, the committed chunks, and the stored size
-							// must all see the same LF-normalized, BOM-stripped string.
-							const content = files_normalize_text_document_input(body._yay.content);
-							if (content.length === 0) {
-								return {
-									status: 400,
-									body: await fail({ status: 400, message: "Content must not be empty.", errorCode: "invalid_input" }),
-								} as const;
-							}
-							const contentBytes = files_get_utf8_byte_size(content);
-							if (contentBytes > files_MAX_TEXT_CONTENT_BYTES) {
-								return {
-									status: 400,
-									body: await fail({
-										status: 400,
-										message: `Content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte limit.`,
-										errorCode: "invalid_input",
-									}),
-								} as const;
-							}
-							// Plugins may only create Markdown siblings of their triggering file; the same
-							// constraint is revalidated transactionally at prepare and publish time.
-							if (
-								principal.kind === "plugin_run" &&
-								server_path_parent_of(requestedPath) !== principal.outputParentPath
-							) {
-								return {
-									status: 403,
-									body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
-								} as const;
-							}
-							const overwrite = body._yay.overwrite ?? "replace";
-
-							let principalRef: Infer<typeof file_write_principal_ref_validator>;
-							if (principal.kind === "plugin_run") {
-								if (!pluginCallId) {
-									// Unreachable: authorize_request creates the call for plugin principals.
-									throw should_never_happen("plugin_run write without a consumed call", {
-										runId: principal.runId,
-									});
-								}
-								principalRef = { kind: "plugin_run", runId: principal.runId, callId: pluginCallId };
-							} else {
-								principalRef = { kind: "user_api_key", credentialId: principal.credentialId };
-							}
-
-							const written = await write_one_markdown_file(ctx, {
-								organizationId: principal.organizationId,
-								workspaceId: principal.workspaceId,
-								userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
-								visibilityUserId: public_api_visibility_user_id(principal),
-								principalRef,
-								path: requestedPath,
-								content,
-								contentBytes,
-								overwrite,
-								skipIfUnchanged: body._yay.skipIfUnchanged ?? false,
-							});
-							if (written._nay) {
-								const failBody = await fail({
-									status: written._nay.data.status,
-									message: written._nay.message,
-									errorCode: written._nay.data.errorCode,
-								});
-								// Branch per literal so the response union keeps exact status literals.
-								if (written._nay.data.status === 409) {
-									return { status: 409, body: failBody } as const;
-								}
-								if (written._nay.data.status === 403) {
-									return { status: 403, body: failBody } as const;
-								}
-								if (written._nay.data.status === 401) {
-									return { status: 401, body: failBody } as const;
-								}
-								return { status: 500, body: failBody } as const;
-							}
-
-							// A skipped write is a success for the caller and for a plugin call, but no
-							// publish mutation ran, so settle the plugin call here.
-							if (written._yay.unchanged) {
-								await settle_plugin_call_best_effort(ctx, {
-									callId: pluginCallId,
-									status: "succeeded",
-									responseStatus: 200,
-								});
-								console.info("Public API file write skipped as unchanged", {
-									principalKind: principal.kind,
-									principalKey: principal.principalKey,
-									bytes: contentBytes,
-								});
-								return {
-									status: 200,
-									body: {
-										path: requestedPath,
-										nodeId: written._yay.nodeId,
-										contentType: "text/markdown;charset=utf-8" as const,
-										unchanged: true as const,
-									},
-									headers: { "Cache-Control": "no-store" },
-								} as const;
-							}
-
-							if (written._yay.wroteInPlace) {
-								console.info("Public API file written in place", {
-									principalKind: principal.kind,
-									principalKey: principal.principalKey,
-									bytes: contentBytes,
-								});
-							} else {
-								console.info("Public API file written", {
-									principalKind: principal.kind,
-									principalKey: principal.principalKey,
-									bytes: contentBytes,
-								});
-							}
-
-							return {
-								status: 200,
-								body: {
-									path: requestedPath,
-									nodeId: written._yay.nodeId,
-									contentType: "text/markdown;charset=utf-8" as const,
-								},
-								headers: { "Cache-Control": "no-store" },
-							} as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-
-		...((/* iife */ path = "/api/v1/files/write-many" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						const bodyValidator = z.object({
-							files: z
-								.array(
-									z.object({
-										path: z.string(),
-										content: z.string(),
-										overwrite: z.enum(["replace", "fail"]).optional(),
-									}),
-								)
-								.min(1)
-								.max(FILES_WRITE_MANY_MAX_ITEMS),
-							skipIfUnchanged: z.boolean().optional(),
-						});
-
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
-
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							// Authenticate before buffering: the request cap is large (many files), so only
-							// a valid write credential gets to make the server read that much body.
-							const auth = await authorize_request(ctx, request, {
-								requiredScope: public_api_SCOPE_FILES_WRITE,
-								allowedKinds: ["user_api_key"],
-								requiredUserPermission: "content.write",
-								route: path,
-							});
-							if (auth._nay) {
-								return auth._nay;
-							}
-							const principal = auth._yay.principal;
-
-							const declaredBytes = Number(request.headers.get("content-length"));
-							if (Number.isFinite(declaredBytes) && declaredBytes > FILES_WRITE_MANY_MAX_REQUEST_BYTES) {
-								return { status: 400, body: { message: "Request body is too large" } } as const;
-							}
-							const bodyText = await read_request_text_bounded(request, FILES_WRITE_MANY_MAX_REQUEST_BYTES);
-							if (bodyText === null) {
-								return { status: 400, body: { message: "Request body is too large" } } as const;
-							}
-							let bodyJson: unknown;
-							try {
-								bodyJson = JSON.parse(bodyText);
-							} catch {
-								return { status: 400, body: { message: "Failed to parse request body as JSON" } } as const;
-							}
-							const body = bodyValidator.safeParse(bodyJson);
-							if (!body.success) {
-								return { status: 400, body: { message: "Request body validation failed" } } as const;
-							}
-
-							// Validate every item with the single-route rules before writing anything, so a
-							// bad batch fails whole instead of stopping half-written. Later per-item failures
-							// (permission, conflict, storage) still report per item because they depend on
-							// workspace state, not on the request shape.
-							const validatedFiles: Array<{
-								path: string;
-								content: string;
-								contentBytes: number;
-								overwrite: "replace" | "fail";
-							}> = [];
-							const seenPaths = new Set<string>();
-							for (const file of body.data.files) {
-								if (!file.path.startsWith("/")) {
-									return { status: 400, body: { message: "Path must be absolute.", path: file.path } } as const;
-								}
-								const requestedPath = server_path_normalize(file.path);
-								if (requestedPath === "/") {
-									return { status: 400, body: { message: "Path must point to a file.", path: file.path } } as const;
-								}
-								const name = path_name_of(requestedPath);
-								const normalizedName = files_normalize_name("file", name);
-								if (!name.toLowerCase().endsWith(".md") || normalizedName._nay || normalizedName._yay !== name) {
-									return {
-										status: 400,
-										body: { message: "Path must end in a valid Markdown (.md) file name.", path: file.path },
-									} as const;
-								}
-								// Intermediate folders are created verbatim on publish; require already-canonical
-								// names so a write cannot materialize folders the app's own flows would reject.
-								for (const segment of path_extract_segments_from(requestedPath).slice(0, -1)) {
-									const normalizedSegment = files_normalize_name("folder", segment);
-									if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
-										return {
-											status: 400,
-											body: { message: "Path contains an invalid folder name.", path: file.path },
-										} as const;
-									}
-								}
-								// Normalize at the request boundary, above the byte count and the fan-out.
-								// the same rule as the single-file write route.
-								const content = files_normalize_text_document_input(file.content);
-								if (content.length === 0) {
-									return { status: 400, body: { message: "Content must not be empty.", path: file.path } } as const;
-								}
-								const contentBytes = files_get_utf8_byte_size(content);
-								if (contentBytes > files_MAX_TEXT_CONTENT_BYTES) {
-									return {
-										status: 400,
-										body: {
-											message: `Content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte limit.`,
-											path: file.path,
-										},
-									} as const;
-								}
-								// Compare normalized paths so two spellings of one path cannot race each other
-								// inside the same batch.
-								if (seenPaths.has(requestedPath)) {
-									return { status: 400, body: { message: "Duplicate path in batch", path: file.path } } as const;
-								}
-								seenPaths.add(requestedPath);
-								validatedFiles.push({
-									path: requestedPath,
-									content,
-									contentBytes,
-									overwrite: file.overwrite ?? "replace",
-								});
-							}
-
-							// One up-front charge on the bulk bucket, one token per file, before any write:
-							// an over-budget batch gets a whole-request 429 with zero files staged.
-							const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
-								name: "public_api_files_write_bulk",
-								key: `${principal.kind}:${principal.principalKey}`,
-								count: validatedFiles.length,
-							});
-							if (batchRateLimit) {
-								return {
-									status: 429,
-									body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
-								} as const;
-							}
-
-							const principalRef: Infer<typeof file_write_principal_ref_validator> = {
-								kind: "user_api_key",
-								credentialId: principal.credentialId,
-							};
-
-							// Sequential on purpose: writes into one workspace share ancestor folders, and
-							// concurrent publishes would conflict on creating them.
-							const written: Array<{
-								path: string;
-								nodeId: Id<"files_nodes">;
-								contentType: "text/markdown;charset=utf-8";
-								unchanged?: true;
-							}> = [];
-							const errors: Array<{
-								path: string;
-								message: string;
-								errorCode: "permission_denied" | "conflict" | "storage_failure";
-							}> = [];
-							for (const file of validatedFiles) {
-								const result = await write_one_markdown_file(ctx, {
-									organizationId: principal.organizationId,
-									workspaceId: principal.workspaceId,
-									userId: principal.userId,
-									visibilityUserId: public_api_visibility_user_id(principal),
-									principalRef,
-									path: file.path,
-									content: file.content,
-									contentBytes: file.contentBytes,
-									overwrite: file.overwrite,
-									skipIfUnchanged: body.data.skipIfUnchanged ?? false,
-								});
-								if (result._nay) {
-									// The credential died mid-batch (expired or revoked); every remaining item
-									// would fail the same way, so abort the whole request.
-									if (result._nay.data.errorCode === "unauthenticated") {
-										return { status: 401, body: { message: result._nay.message } } as const;
-									}
-									errors.push({
-										path: file.path,
-										message: result._nay.message,
-										errorCode: result._nay.data.errorCode,
-									});
-									continue;
-								}
-								written.push({
-									path: file.path,
-									nodeId: result._yay.nodeId,
-									contentType: "text/markdown;charset=utf-8" as const,
-									...(result._yay.unchanged ? { unchanged: true as const } : {}),
-								});
-							}
-
-							console.info("Public API files written in batch", {
-								principalKind: principal.kind,
-								principalKey: principal.principalKey,
-								writtenCount: written.length,
-								errorCount: errors.length,
-							});
-
-							return {
-								status: 200,
-								body: { written, errors },
-								headers: { "Cache-Control": "no-store" },
-							} as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-
-		...((/* iife */ path = "/api/v1/files/touch" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						const bodyValidator = z.object({
-							paths: z.array(z.string()).min(1).max(FILES_TOUCH_MAX_PATHS),
-						});
-
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
-
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await authorize_request(ctx, request, {
-								requiredScope: public_api_SCOPE_FILES_WRITE,
-								allowedKinds: ["user_api_key", "plugin_run"],
-								requiredUserPermission: "content.write",
-								route: path,
-							});
-							if (auth._nay) {
-								return auth._nay;
-							}
-							const principal = auth._yay.principal;
-							const pluginCallId = auth._yay.pluginCallId;
-
-							// Settles the consumed plugin call and builds the error body in one step; the
-							// caller supplies the matching literal status so the response union stays narrow.
-							const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
-								await settle_plugin_call_best_effort(ctx, {
-									callId: pluginCallId,
-									status: "failed",
-									responseStatus: failArgs.status,
-									errorCode: failArgs.errorCode,
-									errorMessage: failArgs.message,
-								});
-								return { message: failArgs.message };
-							};
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return {
-									status: 400,
-									body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
-								} as const;
-							}
-
-							// Validate every path with the same rules as /api/v1/files/write before touching
-							// anything, so a bad batch creates no files at all.
-							const requestedPaths: string[] = [];
-							for (const rawPath of body._yay.paths) {
-								if (!rawPath.startsWith("/")) {
-									return {
-										status: 400,
-										body: await fail({ status: 400, message: "Path must be absolute.", errorCode: "invalid_input" }),
-									} as const;
-								}
-								const requestedPath = server_path_normalize(rawPath);
-								if (requestedPath === "/") {
-									return {
-										status: 400,
-										body: await fail({
-											status: 400,
-											message: "Path must point to a file.",
-											errorCode: "invalid_input",
-										}),
-									} as const;
-								}
-								// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
-								// validate a different name than the segment the node is created with.
-								const name = path_name_of(requestedPath);
-								const normalizedName = files_normalize_name("file", name);
-								if (!name.toLowerCase().endsWith(".md") || normalizedName._nay || normalizedName._yay !== name) {
-									return {
-										status: 400,
-										body: await fail({
-											status: 400,
-											message: "Path must end in a valid Markdown (.md) file name.",
-											errorCode: "invalid_input",
-										}),
-									} as const;
-								}
-								// Intermediate folders are created verbatim on publish; require already-canonical
-								// names so a user-key touch cannot materialize folders (e.g. "..") that the app's
-								// own creation flows would reject.
-								for (const segment of path_extract_segments_from(requestedPath).slice(0, -1)) {
-									const normalizedSegment = files_normalize_name("folder", segment);
-									if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
-										return {
-											status: 400,
-											body: await fail({
-												status: 400,
-												message: "Path contains an invalid folder name.",
-												errorCode: "invalid_input",
-											}),
-										} as const;
-									}
-								}
-								// Plugins may only create Markdown siblings of their triggering file; the same
-								// constraint is revalidated transactionally at prepare and publish time.
-								if (
-									principal.kind === "plugin_run" &&
-									server_path_parent_of(requestedPath) !== principal.outputParentPath
-								) {
-									return {
-										status: 403,
-										body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
-									} as const;
-								}
-								requestedPaths.push(requestedPath);
-							}
-							// Compare after normalization: distinct raw paths can collapse to the same file.
-							if (new Set(requestedPaths).size !== requestedPaths.length) {
-								return {
-									status: 400,
-									body: await fail({ status: 400, message: "Paths must be unique.", errorCode: "invalid_input" }),
-								} as const;
-							}
-
-							// Every touched file starts as the same empty doc; build its Yjs snapshot once.
-							// The touch route is `.md`-gated (non-goal 4), so rich text by definition.
-							const emptySnapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
-								text: "",
-								rootKind: "rich_text",
-							});
-							if (emptySnapshotUpdate._nay) {
-								console.error("Failed to build the empty Yjs snapshot for public file touch", {
-									nay: emptySnapshotUpdate._nay,
-								});
-								return {
-									status: 500,
-									body: await fail({ status: 500, message: "Failed to touch files", errorCode: "storage_failure" }),
-								} as const;
-							}
-
-							let principalRef: Infer<typeof file_write_principal_ref_validator>;
-							if (principal.kind === "plugin_run") {
-								if (!pluginCallId) {
-									// Unreachable: authorize_request creates the call for plugin principals.
-									throw should_never_happen("plugin_run touch without a consumed call", {
-										runId: principal.runId,
-									});
-								}
-								principalRef = { kind: "plugin_run", runId: principal.runId, callId: pluginCallId };
-							} else {
-								principalRef = { kind: "user_api_key", credentialId: principal.credentialId };
-							}
-
-							const files: Array<{ path: string; nodeId: Id<"files_nodes">; created: boolean }> = [];
-							// Sequential on purpose: sibling paths usually share missing parent folders, and
-							// concurrent publishes would race on the shared folder creation.
-							for (const requestedPath of requestedPaths) {
-								// An active file already satisfies the touch; skip staging entirely. The publish
-								// mutation re-checks the path transactionally, so this pre-check is only an
-								// optimization for the common already-exists case.
-								const activeNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-									organizationId: principal.organizationId,
-									workspaceId: principal.workspaceId,
-									visibilityUserId: public_api_visibility_user_id(principal),
-									path: requestedPath,
-								})) as files_nodes_get_by_path_Result;
-								if (activeNode) {
-									// This branch answers the touch by itself, so the node question `publish_file_touch`
-									// asks has to be asked here too. `get_by_path` above only filters by what the caller
-									// may read, and a read-only sharee would otherwise be told the file is theirs to
-									// write. Asked before the folder conflict, in the same order as the mutation.
-									if (
-										!(await ctx.runQuery(internal.public_api.can_write_file_node, {
-											organizationId: principal.organizationId,
-											workspaceId: principal.workspaceId,
-											userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
-											nodeId: activeNode._id,
-										}))
-									) {
-										return {
-											status: 403,
-											body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
-										} as const;
-									}
-									if (activeNode.kind === "folder") {
-										return {
-											status: 409,
-											body: await fail({
-												status: 409,
-												message: "A folder already exists at this path",
-												errorCode: "conflict",
-											}),
-										} as const;
-									}
-									files.push({ path: requestedPath, nodeId: activeNode._id, created: false });
-									continue;
-								}
-
-								const prepared: prepare_file_write_Result = await ctx.runMutation(
-									internal.public_api.prepare_file_write,
-									{
-										organizationId: principal.organizationId,
-										workspaceId: principal.workspaceId,
-										userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
-										principalRef,
-										path: requestedPath,
-										overwrite: "fail",
-										contentSize: 0,
-										yjsSnapshotSize: emptySnapshotUpdate._yay.byteLength,
-									},
-								);
-								if (prepared._nay) {
-									if (prepared._nay.message === "Permission denied") {
-										return {
-											status: 403,
-											body: await fail({ status: 403, message: prepared._nay.message, errorCode: "permission_denied" }),
-										} as const;
-									}
-									return {
-										status: 401,
-										body: await fail({ status: 401, message: prepared._nay.message, errorCode: "unauthenticated" }),
-									} as const;
-								}
-
-								const stageId = prepared._yay.stageId;
-								const stageScope = { organizationId: principal.organizationId, workspaceId: principal.workspaceId };
-								const yjsSnapshotKey = r2_create_asset_key({
-									...stageScope,
-									assetId: prepared._yay.yjsSnapshotAssetId,
-								});
-								const contentSnapshotKey = r2_create_asset_key({
-									...stageScope,
-									assetId: prepared._yay.contentSnapshotAssetId,
-								});
-								// Passed to cleanup so objects PUT after run terminalization already swept the
-								// stage (deleting the docs the keys derive from) still get removed from the bucket.
-								const orphanedKeys = [yjsSnapshotKey, contentSnapshotKey];
-								// Every PUT must settle before any cleanup: a fast-failing sibling would otherwise
-								// trigger the key sweep while another PUT is still in flight, and that PUT would
-								// re-create its object after the sweep — an untracked blob no reaper can find.
-								const putResults = await Promise.allSettled([
-									r2_put_object(ctx, {
-										key: yjsSnapshotKey,
-										body: emptySnapshotUpdate._yay,
-										contentType: "application/octet-stream" satisfies files_ContentType,
-									}),
-									r2_put_object(ctx, {
-										key: contentSnapshotKey,
-										body: "",
-										contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-									}),
-								]);
-								const putFailure = putResults.find((result) => result.status === "rejected");
-								if (putFailure) {
-									console.error("Failed to write staged touch objects", {
-										error: putFailure.reason,
-										stageId,
-										path: requestedPath,
-									});
-									const failBody = await fail({
-										status: 500,
-										message: "Failed to touch files",
-										errorCode: "storage_failure",
-									});
-									await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
-									return { status: 500, body: failBody } as const;
-								}
-
-								const published: publish_file_touch_Result = await ctx.runMutation(
-									internal.public_api.publish_file_touch,
-									{ stageId },
-								);
-								if (published._nay) {
-									// Conflict is the fallback: structural 409s pass their specific message through,
-									// while the auth and storage failures use fixed literals.
-									const failedStatus =
-										published._nay.message === "Unauthenticated"
-											? 401
-											: published._nay.message === "Permission denied"
-												? 403
-												: published._nay.message === "Write was not published"
-													? 500
-													: 409;
-									const failBody = await fail({
-										status: failedStatus,
-										message: published._nay.message,
-										errorCode:
-											failedStatus === 409
-												? "conflict"
-												: failedStatus === 403
-													? "permission_denied"
-													: failedStatus === 401
-														? "unauthenticated"
-														: "storage_failure",
-									});
-									await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
-									if (failedStatus === 409) {
-										return { status: 409, body: failBody } as const;
-									}
-									if (failedStatus === 403) {
-										return { status: 403, body: failBody } as const;
-									}
-									if (failedStatus === 401) {
-										return { status: 401, body: failBody } as const;
-									}
-									return { status: 500, body: failBody } as const;
-								}
-
-								files.push({ path: requestedPath, nodeId: published._yay.nodeId, created: published._yay.created });
-							}
-
-							await settle_plugin_call_best_effort(ctx, {
-								callId: pluginCallId,
-								status: "succeeded",
-								responseStatus: 200,
-							});
-
-							console.info("Public API files touched", {
-								principalKind: principal.kind,
-								principalKey: principal.principalKey,
-								count: files.length,
-							});
-
-							return {
-								status: 200,
-								body: { files },
-								headers: { "Cache-Control": "no-store" },
-							} as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-
-		...((/* iife */ path = "/api/v1/files/download-urls" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						const bodyValidator = z.object({
-							fileNodeIds: z.array(z.string().min(1)).min(1).max(FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS),
-							expiresInSeconds: z.number().int().min(1).max(FILES_DOWNLOAD_URL_MAX_TTL_SECONDS).optional(),
-						});
-
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
-
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const declaredBytes = Number(request.headers.get("content-length"));
-							if (Number.isFinite(declaredBytes) && declaredBytes > FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES) {
-								return { status: 400, body: { message: "Request body is too large" } } as const;
-							}
-							const bodyText = await read_request_text_bounded(request, FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES);
-							if (bodyText === null) {
-								return { status: 400, body: { message: "Request body is too large" } } as const;
-							}
-							let bodyJson: unknown;
-							try {
-								bodyJson = JSON.parse(bodyText);
-							} catch {
-								return { status: 400, body: { message: "Failed to parse request body as JSON" } } as const;
-							}
-							const body = bodyValidator.safeParse(bodyJson);
-							if (!body.success) {
-								return { status: 400, body: { message: "Request body validation failed" } } as const;
-							}
-							// Duplicate ids never consume principal capacity or start file work.
-							if (new Set(body.data.fileNodeIds).size !== body.data.fileNodeIds.length) {
-								return { status: 400, body: { message: "fileNodeIds must be unique" } } as const;
-							}
-
-							const auth = await authorize_request(ctx, request, {
-								requiredScope: public_api_SCOPE_FILES_DOWNLOAD,
-								allowedKinds: ["user_api_key", "plugin_run", "plugin_ui"],
-								requiredUserPermission: "content.read",
-								route: path,
-							});
-							if (auth._nay) {
-								return auth._nay;
-							}
-							const principal = auth._yay.principal;
-							const pluginCallId = auth._yay.pluginCallId;
-							const presentedToken = auth._yay.presentedToken;
-
-							const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
-								await settle_plugin_call_best_effort(ctx, {
-									callId: pluginCallId,
-									status: "failed",
-									responseStatus: failArgs.status,
-									errorCode: failArgs.errorCode,
-									errorMessage: failArgs.message,
-								});
-								return { message: failArgs.message };
-							};
-
-							// A backend plugin can request only its triggering upload, but it uses the same
-							// array request and response as every other plugin.
-							if (
-								principal.kind === "plugin_run" &&
-								(body.data.fileNodeIds.length !== 1 || body.data.fileNodeIds[0] !== String(principal.sourceFileNodeId))
-							) {
-								return {
-									status: 404,
-									body: await fail({ status: 404, message: "Not found", errorCode: "not_found" }),
-								} as const;
-							}
-
-							const fileNodeIds = body.data.fileNodeIds.slice(0, FILES_DOWNLOAD_URLS_MAX_ITEMS);
-							const truncated = body.data.fileNodeIds.length > fileNodeIds.length;
-
-							// authorize_request charged one slot for the request; the rest of the batch
-							// charges here so N URLs cost the same principal budget as N single calls.
-							if (fileNodeIds.length > 1) {
-								const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
-									name: "public_api_principal",
-									key: `${principal.kind}:${principal.principalKey}:${path}`,
-									count: fileNodeIds.length - 1,
-								});
-								if (batchRateLimit) {
-									return {
-										status: 429,
-										body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
-									} as const;
-								}
-							}
-
-							// Per-node queries keep each file in its own Convex cache entry, so one changed
-							// file invalidates only its own result.
-							const datas: r2_get_data_for_public_download_url_Result[] = await Promise.all(
-								fileNodeIds.map((fileNodeId) =>
-									ctx.runQuery(internal.r2.get_data_for_public_download_url, {
-										organizationId: principal.organizationId,
-										workspaceId: principal.workspaceId,
-										fileNodeId,
-										visibilityUserId: public_api_visibility_user_id(principal),
-									}),
-								),
-							);
-
-							if (
-								principal.kind === "plugin_run" &&
-								(!datas[0] || datas[0].asset._id !== principal.sourceAssetId || !datas[0].asset.r2Key)
-							) {
-								return {
-									status: 404,
-									body: await fail({ status: 404, message: "Not found", errorCode: "not_found" }),
-								} as const;
-							}
-
-							// For every file, the download signs the asset that node.assetId points at.
-							// For editable files that is the newest version snapshot. Materialize first
-							// when the Yjs log is newer than the snapshot, or when the asset has no r2Key
-							// (old data). Each materialization stores a fresh snapshot and points the
-							// node at it. ReadOnly files (uploads, plugin sources) sign their write-once
-							// content asset.
-							const signKeys: Array<string | null> = await Promise.all(
-								datas.map(async (data) => {
-									if (!data) {
-										return null;
-									}
-									const materializationState = data.materializationState;
-									if (principal.kind === "plugin_run" || !materializationState) {
-										return data.asset.r2Key ?? null;
-									}
-									if (
-										materializationState.yjsLastSequenceDoc.lastSequence >
-											materializationState.yjsSnapshotDoc.sequence ||
-										!data.asset.r2Key
-									) {
-										// Try to store a fresh version snapshot, but still allow downloading the
-										// older one if this fails.
-										const materialized = await ctx.runAction(internal.files_nodes_content.materialize_file_content, {
-											organizationId: principal.organizationId,
-											workspaceId: principal.workspaceId,
-											nodeId: data.fileNode._id,
-											userId: principal.userId,
-											targetSequence: materializationState.yjsLastSequenceDoc.lastSequence,
-										});
-										if (materialized._nay) {
-											console.warn("Failed to materialize Markdown before public download", {
-												fileNodeId: data.fileNode._id,
-												nay: materialized._nay,
-											});
-										}
-										const refreshed: r2_get_data_for_public_download_url_Result = await ctx.runQuery(
-											internal.r2.get_data_for_public_download_url,
-											{
-												organizationId: principal.organizationId,
-												workspaceId: principal.workspaceId,
-												fileNodeId: data.fileNode._id,
-												visibilityUserId: public_api_visibility_user_id(principal),
-											},
-										);
-										return refreshed?.asset.r2Key ?? null;
-									}
-									return data.asset.r2Key ?? null;
-								}),
-							);
-
-							// Materialization can be slow. Resolve the exact bearer again so every URL uses
-							// the authority that remains when this all-or-nothing batch starts signing.
-							const signingAuthority = await public_api_resolve_live_principal(ctx, {
-								presented: presentedToken,
-								now: Date.now(),
-								requiredUserPermission: "content.read",
-							});
-							if (signingAuthority._nay) {
-								const status = signingAuthority._nay.message === "Permission denied" ? 403 : 401;
-								return {
-									status,
-									body: await fail({
-										status,
-										message: signingAuthority._nay.message,
-										errorCode: status === 403 ? "permission_denied" : "unauthenticated",
-									}),
-								} as const;
-							}
-							if (!has_same_download_authority(principal, signingAuthority._yay)) {
-								return {
-									status: 401,
-									body: await fail({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" }),
-								} as const;
-							}
-
-							const preSignAt = Date.now();
-							let expiresIn = Math.min(
-								body.data.expiresInSeconds ?? FILES_DOWNLOAD_URL_MAX_TTL_SECONDS,
-								FILES_DOWNLOAD_URL_MAX_TTL_SECONDS,
-							);
-							const principalAuthorityExpiresAt =
-								signingAuthority._yay.kind === "plugin_run"
-									? signingAuthority._yay.apiTokenExpiresAt
-									: signingAuthority._yay.kind === "plugin_ui"
-										? signingAuthority._yay.sessionExpiresAt
-										: null;
-							if (principalAuthorityExpiresAt != null) {
-								const remainingSeconds =
-									Math.floor((principalAuthorityExpiresAt - preSignAt) / 1000) -
-									FILES_DOWNLOAD_URL_SIGNING_MARGIN_SECONDS;
-								if (remainingSeconds < 1) {
-									return {
-										status: 401,
-										body: await fail({
-											status: 401,
-											message: "Unauthenticated",
-											errorCode: "unauthenticated",
-										}),
-									} as const;
-								}
-								expiresIn = Math.min(expiresIn, remainingSeconds);
-							}
-
-							const signed = await Promise.all(
-								datas.map(async (data, index) => {
-									const fileNodeId = fileNodeIds[index];
-									const signKey = signKeys[index];
-									if (!data || !signKey) {
-										return { fileNodeId, url: null };
-									}
-									// Upload content types are client-supplied, and a presigned R2 GET carries no
-									// nosniff/CSP — the pinned type plus the disposition below is the whole defense.
-									// Both derive from the node NAME: only the literal media map serves inline, and
-									// everything else (text included) downloads as an attachment, so spoofed bytes
-									// can never run as text/html or image/svg+xml on the shared R2 origin.
-									const serving = files_get_signed_download_serving(data.fileNode.name);
-									return {
-										fileNodeId,
-										url: await r2_get_download_url({
-											key: signKey,
-											options: {
-												expiresIn,
-												responseContentType: serving.responseContentType,
-												responseContentDisposition: serving.responseContentDisposition,
-											},
-										}),
-									};
-								}),
-							);
-							const expiresAt = Math.min(
-								preSignAt + expiresIn * 1000,
-								principalAuthorityExpiresAt ?? Number.POSITIVE_INFINITY,
-							);
-							const items: Array<{ fileNodeId: string; url: string; expiresAt: number }> = [];
-							const errors: Array<{ fileNodeId: string; message: string }> = [];
-							for (const entry of signed) {
-								if (entry.url) {
-									items.push({ fileNodeId: entry.fileNodeId, url: entry.url, expiresAt });
-								} else {
-									errors.push({ fileNodeId: entry.fileNodeId, message: "Not found" });
-								}
-							}
-
-							// All URLs share one request authority. Recheck it after signing so an ACL,
-							// tenant, installation, or session change suppresses the whole batch.
-							const revalidated = await public_api_resolve_live_principal(ctx, {
-								presented: presentedToken,
-								now: Date.now(),
-								requiredUserPermission: "content.read",
-							});
-							if (revalidated._nay) {
-								const status = revalidated._nay.message === "Permission denied" ? 403 : 401;
-								return {
-									status,
-									body: await fail({
-										status,
-										message: revalidated._nay.message,
-										errorCode: status === 403 ? "permission_denied" : "unauthenticated",
-									}),
-								} as const;
-							}
-							if (!has_same_download_authority(principal, revalidated._yay)) {
-								return {
-									status: 401,
-									body: await fail({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" }),
-								} as const;
-							}
-
-							await settle_plugin_call_best_effort(ctx, {
-								callId: pluginCallId,
-								status: "succeeded",
-								responseStatus: 200,
-							});
-
-							console.info("Public API download URLs issued", {
-								principalKind: principal.kind,
-								principalKey: principal.principalKey,
-								count: items.length,
-								errorCount: errors.length,
-								truncated,
-							});
-
-							return {
-								status: 200,
-								body: { items, errors, truncated },
-								headers: { "Cache-Control": "no-store" },
-							} as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-
-		...((/* iife */ path = "/api/v1/files/upload-urls" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						const bodyValidator = z.object({
-							files: z
-								.array(
-									z.object({
-										path: z.string(),
-										contentType: z.string().min(1).max(200),
-										size: z.number().int().min(1),
-									}),
-								)
-								.min(1)
-								.max(FILES_UPLOAD_URLS_MAX_ITEMS),
-							skipProcessing: z.boolean().optional(),
-							overwrite: z.enum(["replace", "fail"]).optional(),
-						});
-
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
-
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							// User keys only: plugin runs have their own sibling-write constraints and call
-							// accounting, and grants and UI sessions are read-only by design.
-							const auth = await authorize_request(ctx, request, {
-								requiredScope: public_api_SCOPE_FILES_WRITE,
-								allowedKinds: ["user_api_key"],
-								requiredUserPermission: "content.write",
-								route: path,
-							});
-							if (auth._nay) {
-								return auth._nay;
-							}
-							const principal = auth._yay.principal;
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return { status: 400, body: { message: body._nay.message } } as const;
-							}
-
-							// authorize_request charged one slot for the request; the rest of the batch
-							// charges here so N upload URLs cost the same principal budget as N single calls.
-							if (body._yay.files.length > 1) {
-								const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
-									name: "public_api_principal",
-									key: `${principal.kind}:${principal.principalKey}:${path}`,
-									count: body._yay.files.length - 1,
-								});
-								if (batchRateLimit) {
-									return {
-										status: 429,
-										body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
-									} as const;
-								}
-							}
-
-							const created = (await ctx.runMutation(internal.public_api.create_file_upload_targets, {
-								organizationId: principal.organizationId,
-								workspaceId: principal.workspaceId,
-								userId: principal.userId,
-								principalRef: { kind: "user_api_key", credentialId: principal.credentialId },
-								items: body._yay.files,
-								skipProcessing: body._yay.skipProcessing ?? false,
-								overwrite: body._yay.overwrite ?? "replace",
-							})) as create_file_upload_targets_Result;
-							if (created._nay) {
-								// Mint failures are all-or-nothing: the mutation validates the whole batch
-								// before writing, so no partial targets exist when it returns `_nay`.
-								const failedPath = created._nay.data?.path;
-								const failedStatus =
-									created._nay.message === "Unauthenticated"
-										? 401
-										: created._nay.message === "Permission denied" || created._nay.message === "Upload quota exceeded"
-											? 403
-											: created._nay.message === "A file already exists at this path" ||
-												  created._nay.message === "The path cannot point to a folder" ||
-												  created._nay.message === "An intermediate segment is owned by a file"
-												? 409
-												: 400;
-								if (failedStatus === 401) {
-									return { status: 401, body: { message: created._nay.message } } as const;
-								}
-								if (failedStatus === 403) {
-									return { status: 403, body: { message: created._nay.message, path: failedPath } } as const;
-								}
-								if (failedStatus === 409) {
-									return { status: 409, body: { message: created._nay.message, path: failedPath } } as const;
-								}
-								return { status: 400, body: { message: created._nay.message, path: failedPath } } as const;
-							}
-
-							console.info("Public API upload urls minted", {
-								principalKind: principal.kind,
-								principalKey: principal.principalKey,
-								count: created._yay.length,
-							});
-
-							return {
-								status: 200,
-								body: { files: created._yay },
-								headers: { "Cache-Control": "no-store" },
-							} as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-
-		...((/* iife */ path = "/api/v1/activities/start" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						const bodyValidator = z.object({
-							// "" (after trimming) = no custom title; the host composes one from the plugin's
-							// display name and the triggering file's name.
-							title: z.string().trim().max(ACTIVITIES_TITLE_MAX_CHARS),
-							// The caller must predict how long its work takes; the timeout cron closes the
-							// activity as "timeout" once this much time passes without a finish.
-							timeoutMs: z.number().int().min(1).max(ACTIVITIES_TIMEOUT_MAX_MS),
-						});
-
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = z.infer<typeof bodyValidator>;
-
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await authorize_request(ctx, request, {
-								requiredScope: public_api_SCOPE_ACTIVITIES_WRITE,
-								allowedKinds: ["plugin_run"],
-								route: path,
-							});
-							if (auth._nay) {
-								return auth._nay;
-							}
-							const principal = auth._yay.principal;
-							const pluginCallId = auth._yay.pluginCallId;
-
-							// Settles the consumed plugin call and builds the error body in one step; the
-							// caller supplies the matching literal status so the response union stays narrow.
-							const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
-								await settle_plugin_call_best_effort(ctx, {
-									callId: pluginCallId,
-									status: "failed",
-									responseStatus: failArgs.status,
-									errorCode: failArgs.errorCode,
-									errorMessage: failArgs.message,
-								});
-								return { message: failArgs.message };
-							};
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return {
-									status: 400,
-									body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
-								} as const;
-							}
-
-							const started: start_run_activity_Result = await ctx.runMutation(internal.public_api.start_run_activity, {
-								runId: principal.runId,
-								title: body._yay.title,
-								timeoutMs: body._yay.timeoutMs,
-							});
-							if (started._nay) {
-								if (started._nay.message === "An activity already exists for this run") {
-									return {
-										status: 409,
-										body: await fail({ status: 409, message: started._nay.message, errorCode: "conflict" }),
-									} as const;
-								}
-								if (started._nay.message === "Permission denied") {
-									return {
-										status: 403,
-										body: await fail({ status: 403, message: started._nay.message, errorCode: "permission_denied" }),
-									} as const;
-								}
-								return {
-									status: 401,
-									body: await fail({ status: 401, message: started._nay.message, errorCode: "unauthenticated" }),
-								} as const;
-							}
-
-							await settle_plugin_call_best_effort(ctx, {
-								callId: pluginCallId,
-								status: "succeeded",
-								responseStatus: 200,
-							});
-
-							console.info("Public API run activity started", {
-								principalKind: principal.kind,
-								principalKey: principal.principalKey,
-							});
-
-							return {
-								status: 200,
-								body: { activityId: started._yay.activityId },
-								headers: { "Cache-Control": "no-store" },
-							} as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
+		status: 200,
+		body: {
+			path: requestedPath,
+			nodeId: content.displayNodeId,
+			content: content.content,
+		},
+		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+const read_many_body_validator = z.object({
+	paths: z.array(z.string()).min(1),
+	maxBytes: z.number().int().min(1).optional(),
+});
+
+export type public_api_http_read_many_Body = z.infer<typeof read_many_body_validator>;
+
+export async function public_api_http_read_many(ctx: ActionCtx, request: Request, path: "/api/v1/files/read-many") {
+	const auth = await public_api_authorize_request(ctx, request, {
+		requiredScope: "files:read" satisfies public_api_Scope,
+		allowedKinds: ["user_api_key", "public_api_grant"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+	const principal = auth._yay.principal;
+
+	const body = await server_request_json_parse_and_validate(request, read_many_body_validator);
+	if (body._nay) {
+		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+
+	const requestedPaths = body._yay.paths
+		.slice(0, FILES_READ_MANY_MAX_ITEMS)
+		.map((filePath) => server_path_normalize(filePath));
+	if (requestedPaths.some((filePath) => filePath === "/")) {
+		return { status: 400, body: { message: "Paths must point to files." } } as const;
+	}
+	if (requestedPaths.some((filePath) => !public_api_is_path_inside_prefix(filePath, principal.pathPrefix))) {
+		return { status: 403, body: { message: "Permission denied" } } as const;
+	}
+
+	const maxBytes = Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES);
+	const contents = await Promise.all(
+		requestedPaths.map(async (filePath) => ({
+			path: filePath,
+			content: await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				userId: principal.userId,
+				path: filePath,
+				includePending: principal.kind === "public_api_grant",
+				maxBytes,
+			}),
+		})),
+	);
+
+	let contentBytes = 0;
+	const pathsTruncated = body._yay.paths.length > requestedPaths.length;
+	let contentTruncated = false;
+	const files: Array<{
+		path: string;
+		nodeId: string;
+		content: string;
+	}> = [];
+	const errors: Array<{ path: string; message: string }> = [];
+
+	for (const item of contents) {
+		if (!item.content) {
+			errors.push({
+				path: item.path,
+				message: "File not found or exceeds the read limit.",
+			});
+			continue;
+		}
+
+		const nextContentBytes = TEXT_ENCODER.encode(item.content.content).length;
+		if (contentBytes + nextContentBytes > FILES_READ_MANY_MAX_CONTENT_BYTES) {
+			contentTruncated = true;
+			break;
+		}
+
+		contentBytes += nextContentBytes;
+		files.push({
+			path: item.path,
+			nodeId: item.content.displayNodeId,
+			content: item.content.content,
+		});
+	}
+
+	console.info("Public API files read", {
+		principalKind: principal.kind,
+		principalKey: principal.principalKey,
+		count: files.length,
+		errorCount: errors.length,
+		truncated: pathsTruncated || contentTruncated,
+		bytes: contentBytes,
+	});
+
+	return {
+		status: 200,
+		body: {
+			files,
+			errors,
+			truncated: pathsTruncated || contentTruncated,
+		},
+		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+const write_file_body_validator = z.object({
+	path: z.string(),
+	content: z.string(),
+	overwrite: z.enum(["replace", "fail"]).optional(),
+	skipIfUnchanged: z.boolean().optional(),
+});
+
+export type public_api_http_write_file_Body = z.infer<typeof write_file_body_validator>;
+
+export async function public_api_http_write_file(ctx: ActionCtx, request: Request, path: "/api/v1/files/write") {
+	const auth = await public_api_authorize_request(ctx, request, {
+		requiredScope: "files:write" satisfies public_api_Scope,
+		allowedKinds: ["user_api_key", "plugin_run"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+	const principal = auth._yay.principal;
+	const pluginCallId = auth._yay.pluginCallId;
+
+	// Settles the consumed plugin call and builds the error body in one step; the
+	// caller supplies the matching literal status so the response union stays narrow.
+	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "failed",
+			responseStatus: failArgs.status,
+			errorCode: failArgs.errorCode,
+			errorMessage: failArgs.message,
+		});
+		return { message: failArgs.message };
 	};
+
+	const body = await server_request_json_parse_and_validate(request, write_file_body_validator);
+	if (body._nay) {
+		return {
+			status: 400,
+			body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
+		} as const;
+	}
+
+	if (!body._yay.path.startsWith("/")) {
+		return {
+			status: 400,
+			body: await fail({ status: 400, message: "Path must be absolute.", errorCode: "invalid_input" }),
+		} as const;
+	}
+	const requestedPath = server_path_normalize(body._yay.path);
+	if (requestedPath === "/") {
+		return {
+			status: 400,
+			body: await fail({ status: 400, message: "Path must point to a file.", errorCode: "invalid_input" }),
+		} as const;
+	}
+	// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
+	// validate a different name than the segment the node is created with.
+	const name = path_name_of(requestedPath);
+	const normalizedName = files_normalize_name("file", name);
+	if (!name.toLowerCase().endsWith(".md") || normalizedName._nay || normalizedName._yay !== name) {
+		return {
+			status: 400,
+			body: await fail({
+				status: 400,
+				message: "Path must end in a valid Markdown (.md) file name.",
+				errorCode: "invalid_input",
+			}),
+		} as const;
+	}
+	// Intermediate folders are created verbatim on publish; require already-canonical
+	// names so a user-key write cannot materialize folders (e.g. "..") that the app's
+	// own creation flows would reject.
+	for (const segment of path_extract_segments_from(requestedPath).slice(0, -1)) {
+		const normalizedSegment = files_normalize_name("folder", segment);
+		if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
+			return {
+				status: 400,
+				body: await fail({
+					status: 400,
+					message: "Path contains an invalid folder name.",
+					errorCode: "invalid_input",
+				}),
+			} as const;
+		}
+	}
+	// Normalize at the request boundary, above the byte count and the fan-out:
+	// the document, the R2 content snapshot, the committed chunks, and the stored size
+	// must all see the same LF-normalized, BOM-stripped string.
+	const content = files_normalize_text_document_input(body._yay.content);
+	if (content.length === 0) {
+		return {
+			status: 400,
+			body: await fail({ status: 400, message: "Content must not be empty.", errorCode: "invalid_input" }),
+		} as const;
+	}
+	const contentBytes = files_get_utf8_byte_size(content);
+	if (contentBytes > files_MAX_TEXT_CONTENT_BYTES) {
+		return {
+			status: 400,
+			body: await fail({
+				status: 400,
+				message: `Content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte limit.`,
+				errorCode: "invalid_input",
+			}),
+		} as const;
+	}
+	// Plugins may only create Markdown siblings of their triggering file; the same
+	// constraint is revalidated transactionally at prepare and publish time.
+	if (principal.kind === "plugin_run" && server_path_parent_of(requestedPath) !== principal.outputParentPath) {
+		return {
+			status: 403,
+			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+		} as const;
+	}
+	const overwrite = body._yay.overwrite ?? "replace";
+
+	let principalRef: Infer<typeof file_write_principal_ref_validator>;
+	if (principal.kind === "plugin_run") {
+		if (!pluginCallId) {
+			// Unreachable: public API authorization creates the call for plugin principals.
+			throw should_never_happen("plugin_run write without a consumed call", {
+				runId: principal.runId,
+			});
+		}
+		principalRef = { kind: "plugin_run", runId: principal.runId, callId: pluginCallId };
+	} else {
+		principalRef = { kind: "user_api_key", credentialId: principal.credentialId };
+	}
+
+	const written = await write_one_markdown_file(ctx, {
+		organizationId: principal.organizationId,
+		workspaceId: principal.workspaceId,
+		userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
+		visibilityUserId: public_api_visibility_user_id(principal),
+		principalRef,
+		path: requestedPath,
+		content,
+		contentBytes,
+		overwrite,
+		skipIfUnchanged: body._yay.skipIfUnchanged ?? false,
+	});
+	if (written._nay) {
+		const failBody = await fail({
+			status: written._nay.data.status,
+			message: written._nay.message,
+			errorCode: written._nay.data.errorCode,
+		});
+		// Branch per literal so the response union keeps exact status literals.
+		if (written._nay.data.status === 409) {
+			return { status: 409, body: failBody } as const;
+		}
+		if (written._nay.data.status === 403) {
+			return { status: 403, body: failBody } as const;
+		}
+		if (written._nay.data.status === 401) {
+			return { status: 401, body: failBody } as const;
+		}
+		return { status: 500, body: failBody } as const;
+	}
+
+	// A skipped write is a success for the caller and for a plugin call, but no
+	// publish mutation ran, so settle the plugin call here.
+	if (written._yay.unchanged) {
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "succeeded",
+			responseStatus: 200,
+		});
+		console.info("Public API file write skipped as unchanged", {
+			principalKind: principal.kind,
+			principalKey: principal.principalKey,
+			bytes: contentBytes,
+		});
+		return {
+			status: 200,
+			body: {
+				path: requestedPath,
+				nodeId: written._yay.nodeId,
+				contentType: "text/markdown;charset=utf-8" as const,
+				unchanged: true as const,
+			},
+			headers: { "Cache-Control": "no-store" },
+		} as const;
+	}
+
+	if (written._yay.wroteInPlace) {
+		console.info("Public API file written in place", {
+			principalKind: principal.kind,
+			principalKey: principal.principalKey,
+			bytes: contentBytes,
+		});
+	} else {
+		console.info("Public API file written", {
+			principalKind: principal.kind,
+			principalKey: principal.principalKey,
+			bytes: contentBytes,
+		});
+	}
+
+	return {
+		status: 200,
+		body: {
+			path: requestedPath,
+			nodeId: written._yay.nodeId,
+			contentType: "text/markdown;charset=utf-8" as const,
+		},
+		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+const write_many_body_validator = z.object({
+	files: z
+		.array(
+			z.object({
+				path: z.string(),
+				content: z.string(),
+				overwrite: z.enum(["replace", "fail"]).optional(),
+			}),
+		)
+		.min(1)
+		.max(FILES_WRITE_MANY_MAX_ITEMS),
+	skipIfUnchanged: z.boolean().optional(),
+});
+
+export type public_api_http_write_many_Body = z.infer<typeof write_many_body_validator>;
+
+export async function public_api_http_write_many(ctx: ActionCtx, request: Request, path: "/api/v1/files/write-many") {
+	// Authenticate before buffering: the request cap is large (many files), so only
+	// a valid write credential gets to make the server read that much body.
+	const auth = await public_api_authorize_request(ctx, request, {
+		requiredScope: "files:write" satisfies public_api_Scope,
+		allowedKinds: ["user_api_key"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+	const principal = auth._yay.principal;
+
+	const declaredBytes = Number(request.headers.get("content-length"));
+	if (Number.isFinite(declaredBytes) && declaredBytes > FILES_WRITE_MANY_MAX_REQUEST_BYTES) {
+		return { status: 400, body: { message: "Request body is too large" } } as const;
+	}
+	const bodyText = await read_request_text_bounded(request, FILES_WRITE_MANY_MAX_REQUEST_BYTES);
+	if (bodyText === null) {
+		return { status: 400, body: { message: "Request body is too large" } } as const;
+	}
+	let bodyJson: unknown;
+	try {
+		bodyJson = JSON.parse(bodyText);
+	} catch {
+		return { status: 400, body: { message: "Failed to parse request body as JSON" } } as const;
+	}
+	const body = write_many_body_validator.safeParse(bodyJson);
+	if (!body.success) {
+		return { status: 400, body: { message: "Request body validation failed" } } as const;
+	}
+
+	// Validate every item with the single-route rules before writing anything, so a
+	// bad batch fails whole instead of stopping half-written. Later per-item failures
+	// (permission, conflict, storage) still report per item because they depend on
+	// workspace state, not on the request shape.
+	const validatedFiles: Array<{
+		path: string;
+		content: string;
+		contentBytes: number;
+		overwrite: "replace" | "fail";
+	}> = [];
+	const seenPaths = new Set<string>();
+	for (const file of body.data.files) {
+		if (!file.path.startsWith("/")) {
+			return { status: 400, body: { message: "Path must be absolute.", path: file.path } } as const;
+		}
+		const requestedPath = server_path_normalize(file.path);
+		if (requestedPath === "/") {
+			return { status: 400, body: { message: "Path must point to a file.", path: file.path } } as const;
+		}
+		const name = path_name_of(requestedPath);
+		const normalizedName = files_normalize_name("file", name);
+		if (!name.toLowerCase().endsWith(".md") || normalizedName._nay || normalizedName._yay !== name) {
+			return {
+				status: 400,
+				body: { message: "Path must end in a valid Markdown (.md) file name.", path: file.path },
+			} as const;
+		}
+		// Intermediate folders are created verbatim on publish; require already-canonical
+		// names so a write cannot materialize folders the app's own flows would reject.
+		for (const segment of path_extract_segments_from(requestedPath).slice(0, -1)) {
+			const normalizedSegment = files_normalize_name("folder", segment);
+			if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
+				return {
+					status: 400,
+					body: { message: "Path contains an invalid folder name.", path: file.path },
+				} as const;
+			}
+		}
+		// Normalize at the request boundary, above the byte count and the fan-out.
+		// the same rule as the single-file write route.
+		const content = files_normalize_text_document_input(file.content);
+		if (content.length === 0) {
+			return { status: 400, body: { message: "Content must not be empty.", path: file.path } } as const;
+		}
+		const contentBytes = files_get_utf8_byte_size(content);
+		if (contentBytes > files_MAX_TEXT_CONTENT_BYTES) {
+			return {
+				status: 400,
+				body: {
+					message: `Content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte limit.`,
+					path: file.path,
+				},
+			} as const;
+		}
+		// Compare normalized paths so two spellings of one path cannot race each other
+		// inside the same batch.
+		if (seenPaths.has(requestedPath)) {
+			return { status: 400, body: { message: "Duplicate path in batch", path: file.path } } as const;
+		}
+		seenPaths.add(requestedPath);
+		validatedFiles.push({
+			path: requestedPath,
+			content,
+			contentBytes,
+			overwrite: file.overwrite ?? "replace",
+		});
+	}
+
+	// One up-front charge on the bulk bucket, one token per file, before any write:
+	// an over-budget batch gets a whole-request 429 with zero files staged.
+	const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
+		name: "public_api_files_write_bulk",
+		key: `${principal.kind}:${principal.principalKey}`,
+		count: validatedFiles.length,
+	});
+	if (batchRateLimit) {
+		return {
+			status: 429,
+			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+		} as const;
+	}
+
+	const principalRef: Infer<typeof file_write_principal_ref_validator> = {
+		kind: "user_api_key",
+		credentialId: principal.credentialId,
+	};
+
+	// Sequential on purpose: writes into one workspace share ancestor folders, and
+	// concurrent publishes would conflict on creating them.
+	const written: Array<{
+		path: string;
+		nodeId: Id<"files_nodes">;
+		contentType: "text/markdown;charset=utf-8";
+		unchanged?: true;
+	}> = [];
+	const errors: Array<{
+		path: string;
+		message: string;
+		errorCode: "permission_denied" | "conflict" | "storage_failure";
+	}> = [];
+	for (const file of validatedFiles) {
+		const result = await write_one_markdown_file(ctx, {
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			userId: principal.userId,
+			visibilityUserId: public_api_visibility_user_id(principal),
+			principalRef,
+			path: file.path,
+			content: file.content,
+			contentBytes: file.contentBytes,
+			overwrite: file.overwrite,
+			skipIfUnchanged: body.data.skipIfUnchanged ?? false,
+		});
+		if (result._nay) {
+			// The credential died mid-batch (expired or revoked); every remaining item
+			// would fail the same way, so abort the whole request.
+			if (result._nay.data.errorCode === "unauthenticated") {
+				return { status: 401, body: { message: result._nay.message } } as const;
+			}
+			errors.push({
+				path: file.path,
+				message: result._nay.message,
+				errorCode: result._nay.data.errorCode,
+			});
+			continue;
+		}
+		written.push({
+			path: file.path,
+			nodeId: result._yay.nodeId,
+			contentType: "text/markdown;charset=utf-8" as const,
+			...(result._yay.unchanged ? { unchanged: true as const } : {}),
+		});
+	}
+
+	console.info("Public API files written in batch", {
+		principalKind: principal.kind,
+		principalKey: principal.principalKey,
+		writtenCount: written.length,
+		errorCount: errors.length,
+	});
+
+	return {
+		status: 200,
+		body: { written, errors },
+		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+const touch_files_body_validator = z.object({
+	paths: z.array(z.string()).min(1).max(FILES_TOUCH_MAX_PATHS),
+});
+
+export type public_api_http_touch_files_Body = z.infer<typeof touch_files_body_validator>;
+
+export async function public_api_http_touch_files(ctx: ActionCtx, request: Request, path: "/api/v1/files/touch") {
+	const auth = await public_api_authorize_request(ctx, request, {
+		requiredScope: "files:write" satisfies public_api_Scope,
+		allowedKinds: ["user_api_key", "plugin_run"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+	const principal = auth._yay.principal;
+	const pluginCallId = auth._yay.pluginCallId;
+
+	// Settles the consumed plugin call and builds the error body in one step; the
+	// caller supplies the matching literal status so the response union stays narrow.
+	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "failed",
+			responseStatus: failArgs.status,
+			errorCode: failArgs.errorCode,
+			errorMessage: failArgs.message,
+		});
+		return { message: failArgs.message };
+	};
+
+	const body = await server_request_json_parse_and_validate(request, touch_files_body_validator);
+	if (body._nay) {
+		return {
+			status: 400,
+			body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
+		} as const;
+	}
+
+	// Validate every path with the same rules as /api/v1/files/write before touching
+	// anything, so a bad batch creates no files at all.
+	const requestedPaths: string[] = [];
+	for (const rawPath of body._yay.paths) {
+		if (!rawPath.startsWith("/")) {
+			return {
+				status: 400,
+				body: await fail({ status: 400, message: "Path must be absolute.", errorCode: "invalid_input" }),
+			} as const;
+		}
+		const requestedPath = server_path_normalize(rawPath);
+		if (requestedPath === "/") {
+			return {
+				status: 400,
+				body: await fail({
+					status: 400,
+					message: "Path must point to a file.",
+					errorCode: "invalid_input",
+				}),
+			} as const;
+		}
+		// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
+		// validate a different name than the segment the node is created with.
+		const name = path_name_of(requestedPath);
+		const normalizedName = files_normalize_name("file", name);
+		if (!name.toLowerCase().endsWith(".md") || normalizedName._nay || normalizedName._yay !== name) {
+			return {
+				status: 400,
+				body: await fail({
+					status: 400,
+					message: "Path must end in a valid Markdown (.md) file name.",
+					errorCode: "invalid_input",
+				}),
+			} as const;
+		}
+		// Intermediate folders are created verbatim on publish; require already-canonical
+		// names so a user-key touch cannot materialize folders (e.g. "..") that the app's
+		// own creation flows would reject.
+		for (const segment of path_extract_segments_from(requestedPath).slice(0, -1)) {
+			const normalizedSegment = files_normalize_name("folder", segment);
+			if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
+				return {
+					status: 400,
+					body: await fail({
+						status: 400,
+						message: "Path contains an invalid folder name.",
+						errorCode: "invalid_input",
+					}),
+				} as const;
+			}
+		}
+		// Plugins may only create Markdown siblings of their triggering file; the same
+		// constraint is revalidated transactionally at prepare and publish time.
+		if (principal.kind === "plugin_run" && server_path_parent_of(requestedPath) !== principal.outputParentPath) {
+			return {
+				status: 403,
+				body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+			} as const;
+		}
+		requestedPaths.push(requestedPath);
+	}
+	// Compare after normalization: distinct raw paths can collapse to the same file.
+	if (new Set(requestedPaths).size !== requestedPaths.length) {
+		return {
+			status: 400,
+			body: await fail({ status: 400, message: "Paths must be unique.", errorCode: "invalid_input" }),
+		} as const;
+	}
+
+	// Every touched file starts as the same empty doc; build its Yjs snapshot once.
+	// The touch route is `.md`-gated (non-goal 4), so rich text by definition.
+	const emptySnapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
+		text: "",
+		rootKind: "rich_text",
+	});
+	if (emptySnapshotUpdate._nay) {
+		console.error("Failed to build the empty Yjs snapshot for public file touch", {
+			nay: emptySnapshotUpdate._nay,
+		});
+		return {
+			status: 500,
+			body: await fail({ status: 500, message: "Failed to touch files", errorCode: "storage_failure" }),
+		} as const;
+	}
+
+	let principalRef: Infer<typeof file_write_principal_ref_validator>;
+	if (principal.kind === "plugin_run") {
+		if (!pluginCallId) {
+			// Unreachable: public API authorization creates the call for plugin principals.
+			throw should_never_happen("plugin_run touch without a consumed call", {
+				runId: principal.runId,
+			});
+		}
+		principalRef = { kind: "plugin_run", runId: principal.runId, callId: pluginCallId };
+	} else {
+		principalRef = { kind: "user_api_key", credentialId: principal.credentialId };
+	}
+
+	const files: Array<{ path: string; nodeId: Id<"files_nodes">; created: boolean }> = [];
+	// Sequential on purpose: sibling paths usually share missing parent folders, and
+	// concurrent publishes would race on the shared folder creation.
+	for (const requestedPath of requestedPaths) {
+		// An active file already satisfies the touch; skip staging entirely. The publish
+		// mutation re-checks the path transactionally, so this pre-check is only an
+		// optimization for the common already-exists case.
+		const activeNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			visibilityUserId: public_api_visibility_user_id(principal),
+			path: requestedPath,
+		})) as files_nodes_get_by_path_Result;
+		if (activeNode) {
+			// This branch answers the touch by itself, so the node question `publish_file_touch`
+			// asks has to be asked here too. `get_by_path` above only filters by what the caller
+			// may read, and a read-only sharee would otherwise be told the file is theirs to
+			// write. Asked before the folder conflict, in the same order as the mutation.
+			if (
+				!(await ctx.runQuery(internal.public_api.can_write_file_node, {
+					organizationId: principal.organizationId,
+					workspaceId: principal.workspaceId,
+					userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
+					nodeId: activeNode._id,
+				}))
+			) {
+				return {
+					status: 403,
+					body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+				} as const;
+			}
+			if (activeNode.kind === "folder") {
+				return {
+					status: 409,
+					body: await fail({
+						status: 409,
+						message: "A folder already exists at this path",
+						errorCode: "conflict",
+					}),
+				} as const;
+			}
+			files.push({ path: requestedPath, nodeId: activeNode._id, created: false });
+			continue;
+		}
+
+		const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
+			principalRef,
+			path: requestedPath,
+			overwrite: "fail",
+			contentSize: 0,
+			yjsSnapshotSize: emptySnapshotUpdate._yay.byteLength,
+		});
+		if (prepared._nay) {
+			if (prepared._nay.message === "Permission denied") {
+				return {
+					status: 403,
+					body: await fail({ status: 403, message: prepared._nay.message, errorCode: "permission_denied" }),
+				} as const;
+			}
+			return {
+				status: 401,
+				body: await fail({ status: 401, message: prepared._nay.message, errorCode: "unauthenticated" }),
+			} as const;
+		}
+
+		const stageId = prepared._yay.stageId;
+		const stageScope = { organizationId: principal.organizationId, workspaceId: principal.workspaceId };
+		const yjsSnapshotKey = r2_create_asset_key({
+			...stageScope,
+			assetId: prepared._yay.yjsSnapshotAssetId,
+		});
+		const contentSnapshotKey = r2_create_asset_key({
+			...stageScope,
+			assetId: prepared._yay.contentSnapshotAssetId,
+		});
+		// Passed to cleanup so objects PUT after run terminalization already swept the
+		// stage (deleting the docs the keys derive from) still get removed from the bucket.
+		const orphanedKeys = [yjsSnapshotKey, contentSnapshotKey];
+		// Every PUT must settle before any cleanup: a fast-failing sibling would otherwise
+		// trigger the key sweep while another PUT is still in flight, and that PUT would
+		// re-create its object after the sweep — an untracked blob no reaper can find.
+		const putResults = await Promise.allSettled([
+			r2_put_object(ctx, {
+				key: yjsSnapshotKey,
+				body: emptySnapshotUpdate._yay,
+				contentType: "application/octet-stream" satisfies files_ContentType,
+			}),
+			r2_put_object(ctx, {
+				key: contentSnapshotKey,
+				body: "",
+				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			}),
+		]);
+		const putFailure = putResults.find((result) => result.status === "rejected");
+		if (putFailure) {
+			console.error("Failed to write staged touch objects", {
+				error: putFailure.reason,
+				stageId,
+				path: requestedPath,
+			});
+			const failBody = await fail({
+				status: 500,
+				message: "Failed to touch files",
+				errorCode: "storage_failure",
+			});
+			await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
+			return { status: 500, body: failBody } as const;
+		}
+
+		const published: publish_file_touch_Result = await ctx.runMutation(internal.public_api.publish_file_touch, {
+			stageId,
+		});
+		if (published._nay) {
+			// Conflict is the fallback: structural 409s pass their specific message through,
+			// while the auth and storage failures use fixed literals.
+			const failedStatus =
+				published._nay.message === "Unauthenticated"
+					? 401
+					: published._nay.message === "Permission denied"
+						? 403
+						: published._nay.message === "Write was not published"
+							? 500
+							: 409;
+			const failBody = await fail({
+				status: failedStatus,
+				message: published._nay.message,
+				errorCode:
+					failedStatus === 409
+						? "conflict"
+						: failedStatus === 403
+							? "permission_denied"
+							: failedStatus === 401
+								? "unauthenticated"
+								: "storage_failure",
+			});
+			await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
+			if (failedStatus === 409) {
+				return { status: 409, body: failBody } as const;
+			}
+			if (failedStatus === 403) {
+				return { status: 403, body: failBody } as const;
+			}
+			if (failedStatus === 401) {
+				return { status: 401, body: failBody } as const;
+			}
+			return { status: 500, body: failBody } as const;
+		}
+
+		files.push({ path: requestedPath, nodeId: published._yay.nodeId, created: published._yay.created });
+	}
+
+	await public_api_settle_plugin_call_best_effort(ctx, {
+		callId: pluginCallId,
+		status: "succeeded",
+		responseStatus: 200,
+	});
+
+	console.info("Public API files touched", {
+		principalKind: principal.kind,
+		principalKey: principal.principalKey,
+		count: files.length,
+	});
+
+	return {
+		status: 200,
+		body: { files },
+		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+const download_urls_body_validator = z.object({
+	fileNodeIds: z.array(z.string().min(1)).min(1).max(FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS),
+	expiresInSeconds: z.number().int().min(1).max(FILES_DOWNLOAD_URL_MAX_TTL_SECONDS).optional(),
+});
+
+export type public_api_http_download_urls_Body = z.infer<typeof download_urls_body_validator>;
+
+export async function public_api_http_download_urls(
+	ctx: ActionCtx,
+	request: Request,
+	path: "/api/v1/files/download-urls",
+) {
+	const declaredBytes = Number(request.headers.get("content-length"));
+	if (Number.isFinite(declaredBytes) && declaredBytes > FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES) {
+		return { status: 400, body: { message: "Request body is too large" } } as const;
+	}
+	const bodyText = await read_request_text_bounded(request, FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES);
+	if (bodyText === null) {
+		return { status: 400, body: { message: "Request body is too large" } } as const;
+	}
+	let bodyJson: unknown;
+	try {
+		bodyJson = JSON.parse(bodyText);
+	} catch {
+		return { status: 400, body: { message: "Failed to parse request body as JSON" } } as const;
+	}
+	const body = download_urls_body_validator.safeParse(bodyJson);
+	if (!body.success) {
+		return { status: 400, body: { message: "Request body validation failed" } } as const;
+	}
+	// Duplicate ids never consume principal capacity or start file work.
+	if (new Set(body.data.fileNodeIds).size !== body.data.fileNodeIds.length) {
+		return { status: 400, body: { message: "fileNodeIds must be unique" } } as const;
+	}
+
+	const auth = await public_api_authorize_request(ctx, request, {
+		requiredScope: "files:download" satisfies public_api_Scope,
+		allowedKinds: ["user_api_key", "plugin_run", "plugin_ui"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+	const principal = auth._yay.principal;
+	const pluginCallId = auth._yay.pluginCallId;
+	const presentedToken = auth._yay.presentedToken;
+
+	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "failed",
+			responseStatus: failArgs.status,
+			errorCode: failArgs.errorCode,
+			errorMessage: failArgs.message,
+		});
+		return { message: failArgs.message };
+	};
+
+	// A backend plugin can request only its triggering upload, but it uses the same
+	// array request and response as every other plugin.
+	if (
+		principal.kind === "plugin_run" &&
+		(body.data.fileNodeIds.length !== 1 || body.data.fileNodeIds[0] !== String(principal.sourceFileNodeId))
+	) {
+		return {
+			status: 404,
+			body: await fail({ status: 404, message: "Not found", errorCode: "not_found" }),
+		} as const;
+	}
+
+	const fileNodeIds = body.data.fileNodeIds.slice(0, FILES_DOWNLOAD_URLS_MAX_ITEMS);
+	const truncated = body.data.fileNodeIds.length > fileNodeIds.length;
+
+	// Authorization charged one slot for the request; the rest of the batch
+	// charges here so N URLs cost the same principal budget as N single calls.
+	if (fileNodeIds.length > 1) {
+		const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "public_api_principal",
+			key: `${principal.kind}:${principal.principalKey}:${path}`,
+			count: fileNodeIds.length - 1,
+		});
+		if (batchRateLimit) {
+			return {
+				status: 429,
+				body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+			} as const;
+		}
+	}
+
+	// Per-node queries keep each file in its own Convex cache entry, so one changed
+	// file invalidates only its own result.
+	const datas: r2_get_data_for_public_download_url_Result[] = await Promise.all(
+		fileNodeIds.map((fileNodeId) =>
+			ctx.runQuery(internal.r2.get_data_for_public_download_url, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				fileNodeId,
+				visibilityUserId: public_api_visibility_user_id(principal),
+			}),
+		),
+	);
+
+	if (
+		principal.kind === "plugin_run" &&
+		(!datas[0] || datas[0].asset._id !== principal.sourceAssetId || !datas[0].asset.r2Key)
+	) {
+		return {
+			status: 404,
+			body: await fail({ status: 404, message: "Not found", errorCode: "not_found" }),
+		} as const;
+	}
+
+	// For every file, the download signs the asset that node.assetId points at.
+	// For editable files that is the newest version snapshot. Materialize first
+	// when the Yjs log is newer than the snapshot, or when the asset has no r2Key
+	// (old data). Each materialization stores a fresh snapshot and points the
+	// node at it. ReadOnly files (uploads, plugin sources) sign their write-once
+	// content asset.
+	const signKeys: Array<string | null> = await Promise.all(
+		datas.map(async (data) => {
+			if (!data) {
+				return null;
+			}
+			const materializationState = data.materializationState;
+			if (principal.kind === "plugin_run" || !materializationState) {
+				return data.asset.r2Key ?? null;
+			}
+			if (
+				materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence ||
+				!data.asset.r2Key
+			) {
+				// Try to store a fresh version snapshot, but still allow downloading the
+				// older one if this fails.
+				const materialized = await ctx.runAction(internal.files_nodes_content.materialize_file_content, {
+					organizationId: principal.organizationId,
+					workspaceId: principal.workspaceId,
+					nodeId: data.fileNode._id,
+					userId: principal.userId,
+					targetSequence: materializationState.yjsLastSequenceDoc.lastSequence,
+				});
+				if (materialized._nay) {
+					console.warn("Failed to materialize Markdown before public download", {
+						fileNodeId: data.fileNode._id,
+						nay: materialized._nay,
+					});
+				}
+				const refreshed: r2_get_data_for_public_download_url_Result = await ctx.runQuery(
+					internal.r2.get_data_for_public_download_url,
+					{
+						organizationId: principal.organizationId,
+						workspaceId: principal.workspaceId,
+						fileNodeId: data.fileNode._id,
+						visibilityUserId: public_api_visibility_user_id(principal),
+					},
+				);
+				return refreshed?.asset.r2Key ?? null;
+			}
+			return data.asset.r2Key ?? null;
+		}),
+	);
+
+	// Materialization can be slow. Resolve the exact bearer again so every URL uses
+	// the authority that remains when this all-or-nothing batch starts signing.
+	const signingAuthority = await public_api_resolve_live_principal(ctx, {
+		presented: presentedToken,
+		now: Date.now(),
+		requiredScope: "files:download" satisfies public_api_Scope,
+	});
+	if (signingAuthority._nay) {
+		const status = signingAuthority._nay.message === "Permission denied" ? 403 : 401;
+		return {
+			status,
+			body: await fail({
+				status,
+				message: signingAuthority._nay.message,
+				errorCode: status === 403 ? "permission_denied" : "unauthenticated",
+			}),
+		} as const;
+	}
+	if (!has_same_download_authority(principal, signingAuthority._yay)) {
+		return {
+			status: 401,
+			body: await fail({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" }),
+		} as const;
+	}
+
+	const preSignAt = Date.now();
+	let expiresIn = Math.min(
+		body.data.expiresInSeconds ?? FILES_DOWNLOAD_URL_MAX_TTL_SECONDS,
+		FILES_DOWNLOAD_URL_MAX_TTL_SECONDS,
+	);
+	const principalAuthorityExpiresAt =
+		signingAuthority._yay.kind === "plugin_run"
+			? signingAuthority._yay.apiTokenExpiresAt
+			: signingAuthority._yay.kind === "plugin_ui"
+				? signingAuthority._yay.sessionExpiresAt
+				: null;
+	if (principalAuthorityExpiresAt != null) {
+		const remainingSeconds =
+			Math.floor((principalAuthorityExpiresAt - preSignAt) / 1000) - FILES_DOWNLOAD_URL_SIGNING_MARGIN_SECONDS;
+		if (remainingSeconds < 1) {
+			return {
+				status: 401,
+				body: await fail({
+					status: 401,
+					message: "Unauthenticated",
+					errorCode: "unauthenticated",
+				}),
+			} as const;
+		}
+		expiresIn = Math.min(expiresIn, remainingSeconds);
+	}
+
+	const signed = await Promise.all(
+		datas.map(async (data, index) => {
+			const fileNodeId = fileNodeIds[index];
+			const signKey = signKeys[index];
+			if (!data || !signKey) {
+				return { fileNodeId, url: null };
+			}
+			// Upload content types are client-supplied, and a presigned R2 GET carries no
+			// nosniff/CSP — the pinned type plus the disposition below is the whole defense.
+			// Both derive from the node NAME: only the literal media map serves inline, and
+			// everything else (text included) downloads as an attachment, so spoofed bytes
+			// can never run as text/html or image/svg+xml on the shared R2 origin.
+			const serving = files_get_signed_download_serving(data.fileNode.name);
+			return {
+				fileNodeId,
+				url: await r2_get_download_url({
+					key: signKey,
+					options: {
+						expiresIn,
+						responseContentType: serving.responseContentType,
+						responseContentDisposition: serving.responseContentDisposition,
+					},
+				}),
+			};
+		}),
+	);
+	const expiresAt = Math.min(preSignAt + expiresIn * 1000, principalAuthorityExpiresAt ?? Number.POSITIVE_INFINITY);
+	const items: Array<{ fileNodeId: string; url: string; expiresAt: number }> = [];
+	const errors: Array<{ fileNodeId: string; message: string }> = [];
+	for (const entry of signed) {
+		if (entry.url) {
+			items.push({ fileNodeId: entry.fileNodeId, url: entry.url, expiresAt });
+		} else {
+			errors.push({ fileNodeId: entry.fileNodeId, message: "Not found" });
+		}
+	}
+
+	// All URLs share one request authority. Recheck it after signing so an ACL,
+	// tenant, installation, or session change suppresses the whole batch.
+	const revalidated = await public_api_resolve_live_principal(ctx, {
+		presented: presentedToken,
+		now: Date.now(),
+		requiredScope: "files:download" satisfies public_api_Scope,
+	});
+	if (revalidated._nay) {
+		const status = revalidated._nay.message === "Permission denied" ? 403 : 401;
+		return {
+			status,
+			body: await fail({
+				status,
+				message: revalidated._nay.message,
+				errorCode: status === 403 ? "permission_denied" : "unauthenticated",
+			}),
+		} as const;
+	}
+	if (!has_same_download_authority(principal, revalidated._yay)) {
+		return {
+			status: 401,
+			body: await fail({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" }),
+		} as const;
+	}
+
+	await public_api_settle_plugin_call_best_effort(ctx, {
+		callId: pluginCallId,
+		status: "succeeded",
+		responseStatus: 200,
+	});
+
+	console.info("Public API download URLs issued", {
+		principalKind: principal.kind,
+		principalKey: principal.principalKey,
+		count: items.length,
+		errorCount: errors.length,
+		truncated,
+	});
+
+	return {
+		status: 200,
+		body: { items, errors, truncated },
+		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+const upload_urls_body_validator = z.object({
+	files: z
+		.array(
+			z.object({
+				path: z.string(),
+				contentType: z.string().min(1).max(200),
+				size: z.number().int().min(1),
+			}),
+		)
+		.min(1)
+		.max(FILES_UPLOAD_URLS_MAX_ITEMS),
+	skipProcessing: z.boolean().optional(),
+	overwrite: z.enum(["replace", "fail"]).optional(),
+});
+
+export type public_api_http_upload_urls_Body = z.infer<typeof upload_urls_body_validator>;
+
+export async function public_api_http_upload_urls(ctx: ActionCtx, request: Request, path: "/api/v1/files/upload-urls") {
+	// User keys only: plugin runs have their own sibling-write constraints and call
+	// accounting, and grants and UI sessions are read-only by design.
+	const auth = await public_api_authorize_request(ctx, request, {
+		requiredScope: "files:write" satisfies public_api_Scope,
+		allowedKinds: ["user_api_key"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+	const principal = auth._yay.principal;
+
+	const body = await server_request_json_parse_and_validate(request, upload_urls_body_validator);
+	if (body._nay) {
+		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+
+	// Authorization charged one slot for the request; the rest of the batch
+	// charges here so N upload URLs cost the same principal budget as N single calls.
+	if (body._yay.files.length > 1) {
+		const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "public_api_principal",
+			key: `${principal.kind}:${principal.principalKey}:${path}`,
+			count: body._yay.files.length - 1,
+		});
+		if (batchRateLimit) {
+			return {
+				status: 429,
+				body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+			} as const;
+		}
+	}
+
+	const created = (await ctx.runMutation(internal.public_api.create_file_upload_targets, {
+		organizationId: principal.organizationId,
+		workspaceId: principal.workspaceId,
+		userId: principal.userId,
+		principalRef: { kind: "user_api_key", credentialId: principal.credentialId },
+		items: body._yay.files,
+		skipProcessing: body._yay.skipProcessing ?? false,
+		overwrite: body._yay.overwrite ?? "replace",
+	})) as create_file_upload_targets_Result;
+	if (created._nay) {
+		// Mint failures are all-or-nothing: the mutation validates the whole batch
+		// before writing, so no partial targets exist when it returns `_nay`.
+		const failedPath = created._nay.data?.path;
+		const failedStatus =
+			created._nay.message === "Unauthenticated"
+				? 401
+				: created._nay.message === "Permission denied" || created._nay.message === "Upload quota exceeded"
+					? 403
+					: created._nay.message === "A file already exists at this path" ||
+						  created._nay.message === "The path cannot point to a folder" ||
+						  created._nay.message === "An intermediate segment is owned by a file"
+						? 409
+						: 400;
+		if (failedStatus === 401) {
+			return { status: 401, body: { message: created._nay.message } } as const;
+		}
+		if (failedStatus === 403) {
+			return { status: 403, body: { message: created._nay.message, path: failedPath } } as const;
+		}
+		if (failedStatus === 409) {
+			return { status: 409, body: { message: created._nay.message, path: failedPath } } as const;
+		}
+		return { status: 400, body: { message: created._nay.message, path: failedPath } } as const;
+	}
+
+	console.info("Public API upload urls minted", {
+		principalKind: principal.kind,
+		principalKey: principal.principalKey,
+		count: created._yay.length,
+	});
+
+	return {
+		status: 200,
+		body: { files: created._yay },
+		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+const start_activity_body_validator = z.object({
+	// "" (after trimming) = no custom title; the host composes one from the plugin's
+	// display name and the triggering file's name.
+	title: z.string().trim().max(ACTIVITIES_TITLE_MAX_CHARS),
+	// The caller must predict how long its work takes; the timeout cron closes the
+	// activity as "timeout" once this much time passes without a finish.
+	timeoutMs: z.number().int().min(1).max(ACTIVITIES_TIMEOUT_MAX_MS),
+});
+
+export type public_api_http_start_activity_Body = z.infer<typeof start_activity_body_validator>;
+
+export async function public_api_http_start_activity(
+	ctx: ActionCtx,
+	request: Request,
+	path: "/api/v1/activities/start",
+) {
+	const auth = await public_api_authorize_request(ctx, request, {
+		requiredScope: "activities:write" satisfies public_api_Scope,
+		allowedKinds: ["plugin_run"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+	const principal = auth._yay.principal;
+	const pluginCallId = auth._yay.pluginCallId;
+
+	// Settles the consumed plugin call and builds the error body in one step; the
+	// caller supplies the matching literal status so the response union stays narrow.
+	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "failed",
+			responseStatus: failArgs.status,
+			errorCode: failArgs.errorCode,
+			errorMessage: failArgs.message,
+		});
+		return { message: failArgs.message };
+	};
+
+	const body = await server_request_json_parse_and_validate(request, start_activity_body_validator);
+	if (body._nay) {
+		return {
+			status: 400,
+			body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
+		} as const;
+	}
+
+	const started: start_run_activity_Result = await ctx.runMutation(internal.public_api.start_run_activity, {
+		runId: principal.runId,
+		title: body._yay.title,
+		timeoutMs: body._yay.timeoutMs,
+	});
+	if (started._nay) {
+		if (started._nay.message === "An activity already exists for this run") {
+			return {
+				status: 409,
+				body: await fail({ status: 409, message: started._nay.message, errorCode: "conflict" }),
+			} as const;
+		}
+		if (started._nay.message === "Permission denied") {
+			return {
+				status: 403,
+				body: await fail({ status: 403, message: started._nay.message, errorCode: "permission_denied" }),
+			} as const;
+		}
+		return {
+			status: 401,
+			body: await fail({ status: 401, message: started._nay.message, errorCode: "unauthenticated" }),
+		} as const;
+	}
+
+	await public_api_settle_plugin_call_best_effort(ctx, {
+		callId: pluginCallId,
+		status: "succeeded",
+		responseStatus: 200,
+	});
+
+	console.info("Public API run activity started", {
+		principalKind: principal.kind,
+		principalKey: principal.principalKey,
+	});
+
+	return {
+		status: 200,
+		body: { activityId: started._yay.activityId },
+		headers: { "Cache-Control": "no-store" },
+	} as const;
 }

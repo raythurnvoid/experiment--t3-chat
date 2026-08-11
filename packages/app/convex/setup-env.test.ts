@@ -43,6 +43,10 @@ if (!process.env.POLAR_ORGANIZATION_TOKEN) {
 	process.env.POLAR_ORGANIZATION_TOKEN = "POLAR_ORGANIZATION_TOKEN_TEST";
 }
 
+if (!process.env.POLAR_WEBHOOK_SECRET) {
+	process.env.POLAR_WEBHOOK_SECRET = "POLAR_WEBHOOK_SECRET_TEST";
+}
+
 if (!process.env.MODAL_FILE_CONVERTER_URL) {
 	process.env.MODAL_FILE_CONVERTER_URL = "https://modal.test/convert";
 }

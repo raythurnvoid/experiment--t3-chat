@@ -12,17 +12,15 @@
 
 import { Workpool } from "@convex-dev/workpool";
 import { doc } from "convex-helpers/validators";
-import type { RegisteredMutation, RouteSpec } from "convex/server";
+import type { RegisteredMutation } from "convex/server";
 import { v } from "convex/values";
 import { z } from "zod";
 
 import { components, internal } from "./_generated/api.js";
-import { httpAction, internalAction, internalMutation, type ActionCtx, type MutationCtx } from "./_generated/server.js";
+import { internalAction, internalMutation, type ActionCtx, type MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
-import type { RouterForConvexModules } from "./http.ts";
-import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import { type api_schemas_BuildResponseSpecFromHandler, type pluginRunnerApiSchema } from "common/api-schemas.ts";
+import { type pluginRunnerApiSchema } from "common/api-schemas.ts";
 import { Result, Result_try_promise } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
@@ -47,7 +45,7 @@ import {
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
-// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
+// Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
 export const experimental_reuseContext = true;
 
 // 10 minutes. The real execution ceiling is the Convex action timeout plus the runner request
@@ -1163,267 +1161,197 @@ async function authorize_runner_host_request<Body>(ctx: ActionCtx, request: Requ
 	return Result({ _yay: { principal: resolved._yay, body: body._yay } });
 }
 
-/**
- * Runner-internal routes, callable only by the runner shell (dual auth: PLUGIN_RUNNER_HOST_SECRET
- * plus the run's `plr_` bearer). Plugins themselves talk to the public /api/v1/* routes instead:
- * these three exist for telemetry bracketing around a plugin's outbound fetch and for secret
- * resolution, which never leaves the runner shell. The fetch itself never touches this backend,
- * hence the bracket: claim consumes the quota slot BEFORE the shell performs the fetch (plugin
- * code can't race past the limit), and finish settles the ledger row with the outcome after.
- */
-export function plugins_runtime_http_routes(router: RouterForConvexModules) {
-	return {
-		...((path = "/api/internal/plugins/host/claim-runner-call" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: (() => {
-						const bodyValidator = z
-							.object({
-								requestBytes: z.number().int().min(0).optional(),
-							})
-							.strict();
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await authorize_runner_host_request(ctx, request, bodyValidator);
-							if (auth._nay) {
-								if (auth._nay.message === "Unauthorized") {
-									return { status: 401, body: { message: auth._nay.message } } as const;
-								}
-								return { status: 400, body: { message: auth._nay.message } } as const;
-							}
+// Runner-internal routes are callable only by the runner shell. They use dual auth:
+// PLUGIN_RUNNER_HOST_SECRET plus the run's `plr_` bearer. Plugins use the public /api/v1/* routes.
+// These three routes bracket outbound fetches for telemetry and resolve secrets that never leave
+// the runner shell. Claim consumes the quota slot before the shell fetches, so plugin code cannot
+// race past the limit. Finish then saves the outcome in the ledger doc.
+const claim_runner_call_body_validator = z
+	.object({
+		requestBytes: z.number().int().min(0).optional(),
+	})
+	.strict();
 
-							const consumed: plugins_runtime_consume_run_api_call_Result = await ctx.runMutation(
-								internal.plugins_runtime.consume_run_api_call,
-								{
-									runId: auth._yay.principal.runId,
-									kind: "outbound_fetch",
-									route: OUTBOUND_CALL_ROUTE,
-									requestBytes: auth._yay.body.requestBytes,
-								},
-							);
-							if (consumed._nay) {
-								if (consumed._nay.message === "Plugin API call limit exceeded") {
-									return { status: 429, body: { message: consumed._nay.message } } as const;
-								}
-								return { status: 401, body: { message: consumed._nay.message } } as const;
-							}
+export type plugins_runtime_http_claim_runner_call_Body = z.infer<typeof claim_runner_call_body_validator>;
 
-							if (!auth._yay.principal.scopes.includes("outbound:fetch")) {
-								await ctx.runMutation(internal.plugins_runtime.finish_run_call, {
-									callId: consumed._yay.callId,
-									status: "failed",
-									errorCode: "permission_denied",
-									errorMessage: "Permission denied",
-									responseStatus: 403,
-								});
-								return { status: 403, body: { message: "Permission denied" } } as const;
-							}
+export async function plugins_runtime_http_claim_runner_call(ctx: ActionCtx, request: Request) {
+	const auth = await authorize_runner_host_request(ctx, request, claim_runner_call_body_validator);
+	if (auth._nay) {
+		if (auth._nay.message === "Unauthorized") {
+			return { status: 401, body: { message: auth._nay.message } } as const;
+		}
+		return { status: 400, body: { message: auth._nay.message } } as const;
+	}
 
-							return { status: 200, body: { callId: String(consumed._yay.callId) } } as const;
-						};
+	const consumed: plugins_runtime_consume_run_api_call_Result = await ctx.runMutation(
+		internal.plugins_runtime.consume_run_api_call,
+		{
+			runId: auth._yay.principal.runId,
+			kind: "outbound_fetch",
+			route: OUTBOUND_CALL_ROUTE,
+			requestBytes: auth._yay.body.requestBytes,
+		},
+	);
+	if (consumed._nay) {
+		if (consumed._nay.message === "Plugin API call limit exceeded") {
+			return { status: 429, body: { message: consumed._nay.message } } as const;
+		}
+		return { status: 401, body: { message: consumed._nay.message } } as const;
+	}
 
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
+	if (!auth._yay.principal.scopes.includes("outbound:fetch")) {
+		await ctx.runMutation(internal.plugins_runtime.finish_run_call, {
+			callId: consumed._yay.callId,
+			status: "failed",
+			errorCode: "permission_denied",
+			errorMessage: "Permission denied",
+			responseStatus: 403,
+		});
+		return { status: 403, body: { message: "Permission denied" } } as const;
+	}
 
-						return {} as {
-							pathParams: {};
-							searchParams: {};
-							headers: { Authorization: string; "X-Bonobo-Runner-Authorization": string };
-							body: z.infer<typeof bodyValidator>;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-		...((path = "/api/internal/plugins/host/finish-runner-call" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: (() => {
-						const bodyValidator = z
-							.object({
-								callId: z.string().min(1),
-								status: z.union([z.literal("succeeded"), z.literal("failed")]),
-								errorMessage: z.string().max(1000).nullable().optional(),
-								requestBytes: z.number().int().min(0).optional(),
-								responseBytes: z.number().int().min(0).optional(),
-								responseStatus: z.number().int().min(100).max(599).optional(),
-							})
-							.strict();
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await authorize_runner_host_request(ctx, request, bodyValidator);
-							if (auth._nay) {
-								if (auth._nay.message === "Unauthorized") {
-									return { status: 401, body: { message: auth._nay.message } } as const;
-								}
-								return { status: 400, body: { message: auth._nay.message } } as const;
-							}
+	return { status: 200, body: { callId: String(consumed._yay.callId) } } as const;
+}
 
-							// Settling an already-claimed call consumes no quota slot.
-							const result: finish_runner_call_Result = await ctx.runMutation(
-								internal.plugins_runtime.finish_runner_call,
-								{
-									runId: auth._yay.principal.runId,
-									callId: auth._yay.body.callId,
-									status: auth._yay.body.status,
-									errorMessage: auth._yay.body.errorMessage ?? null,
-									requestBytes: auth._yay.body.requestBytes,
-									responseBytes: auth._yay.body.responseBytes,
-									responseStatus: auth._yay.body.responseStatus,
-								},
-							);
-							if (result._nay) {
-								return { status: 404, body: { message: result._nay.message } } as const;
-							}
+const finish_runner_call_body_validator = z
+	.object({
+		callId: z.string().min(1),
+		status: z.union([z.literal("succeeded"), z.literal("failed")]),
+		errorMessage: z.string().max(1000).nullable().optional(),
+		requestBytes: z.number().int().min(0).optional(),
+		responseBytes: z.number().int().min(0).optional(),
+		responseStatus: z.number().int().min(100).max(599).optional(),
+	})
+	.strict();
 
-							return { status: 200, body: { ok: true } } as const;
-						};
+export type plugins_runtime_http_finish_runner_call_Body = z.infer<typeof finish_runner_call_body_validator>;
 
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
+export async function plugins_runtime_http_finish_runner_call(ctx: ActionCtx, request: Request) {
+	const auth = await authorize_runner_host_request(ctx, request, finish_runner_call_body_validator);
+	if (auth._nay) {
+		if (auth._nay.message === "Unauthorized") {
+			return { status: 401, body: { message: auth._nay.message } } as const;
+		}
+		return { status: 400, body: { message: auth._nay.message } } as const;
+	}
 
-						return {} as {
-							pathParams: {};
-							searchParams: {};
-							headers: { Authorization: string; "X-Bonobo-Runner-Authorization": string };
-							body: z.infer<typeof bodyValidator>;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-		...((path = "/api/internal/plugins/host/secret-get" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: (() => {
-						const bodyValidator = z
-							.object({
-								name: z.string().min(1).max(128),
-							})
-							.strict();
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await authorize_runner_host_request(ctx, request, bodyValidator);
-							if (auth._nay) {
-								if (auth._nay.message === "Unauthorized") {
-									return { status: 401, body: { message: auth._nay.message } } as const;
-								}
-								return { status: 400, body: { message: auth._nay.message } } as const;
-							}
+	// Settling an already-claimed call consumes no quota slot.
+	const result: finish_runner_call_Result = await ctx.runMutation(internal.plugins_runtime.finish_runner_call, {
+		runId: auth._yay.principal.runId,
+		callId: auth._yay.body.callId,
+		status: auth._yay.body.status,
+		errorMessage: auth._yay.body.errorMessage ?? null,
+		requestBytes: auth._yay.body.requestBytes,
+		responseBytes: auth._yay.body.responseBytes,
+		responseStatus: auth._yay.body.responseStatus,
+	});
+	if (result._nay) {
+		return { status: 404, body: { message: result._nay.message } } as const;
+	}
 
-							const consumed: plugins_runtime_consume_run_api_call_Result = await ctx.runMutation(
-								internal.plugins_runtime.consume_run_api_call,
-								{
-									runId: auth._yay.principal.runId,
-									kind: "api_request",
-									route: path,
-								},
-							);
-							if (consumed._nay) {
-								if (consumed._nay.message === "Plugin API call limit exceeded") {
-									return { status: 429, body: { message: consumed._nay.message } } as const;
-								}
-								return { status: 401, body: { message: consumed._nay.message } } as const;
-							}
+	return { status: 200, body: { ok: true } } as const;
+}
 
-							const finish = async (finishArgs: {
-								status: "succeeded" | "failed";
-								responseStatus: number;
-								errorCode?: string;
-								errorMessage: string | null;
-							}) => {
-								await ctx.runMutation(internal.plugins_runtime.finish_run_call, {
-									callId: consumed._yay.callId,
-									status: finishArgs.status,
-									errorCode: finishArgs.errorCode,
-									errorMessage: finishArgs.errorMessage,
-									responseStatus: finishArgs.responseStatus,
-								});
-							};
+const get_secret_body_validator = z
+	.object({
+		name: z.string().min(1).max(128),
+	})
+	.strict();
 
-							if (!auth._yay.principal.scopes.includes("secrets:read")) {
-								await finish({
-									status: "failed",
-									responseStatus: 403,
-									errorCode: "permission_denied",
-									errorMessage: "Permission denied",
-								});
-								return { status: 403, body: { message: "Permission denied" } } as const;
-							}
+export type plugins_runtime_http_get_secret_Body = z.infer<typeof get_secret_body_validator>;
 
-							const name = plugins_validate_secret_name(auth._yay.body.name);
-							if (name._nay) {
-								await finish({
-									status: "failed",
-									responseStatus: 400,
-									errorCode: "invalid_input",
-									errorMessage: name._nay.message,
-								});
-								return { status: 400, body: { message: name._nay.message } } as const;
-							}
+export async function plugins_runtime_http_get_secret(
+	ctx: ActionCtx,
+	request: Request,
+	path: "/api/internal/plugins/host/secret-get",
+) {
+	const auth = await authorize_runner_host_request(ctx, request, get_secret_body_validator);
+	if (auth._nay) {
+		if (auth._nay.message === "Unauthorized") {
+			return { status: 401, body: { message: auth._nay.message } } as const;
+		}
+		return { status: 400, body: { message: auth._nay.message } } as const;
+	}
 
-							const resolved = await ctx.runMutation(internal.plugins.get_secret_for_runtime, {
-								organizationId: auth._yay.principal.organizationId,
-								workspaceId: auth._yay.principal.workspaceId,
-								installationId: auth._yay.principal.installationId,
-								name: name._yay,
-							});
-							if (!resolved) {
-								// A missing secret is a successful lookup, not a failure.
-								await finish({ status: "succeeded", responseStatus: 200, errorMessage: null });
-								return { status: 200, body: { value: null } } as const;
-							}
+	const consumed: plugins_runtime_consume_run_api_call_Result = await ctx.runMutation(
+		internal.plugins_runtime.consume_run_api_call,
+		{
+			runId: auth._yay.principal.runId,
+			kind: "api_request",
+			route: path,
+		},
+	);
+	if (consumed._nay) {
+		if (consumed._nay.message === "Plugin API call limit exceeded") {
+			return { status: 429, body: { message: consumed._nay.message } } as const;
+		}
+		return { status: 401, body: { message: consumed._nay.message } } as const;
+	}
 
-							const decrypted = (await ctx.runAction(internal.plugins.decrypt_secret_for_runtime, {
-								resolved,
-							})) as plugins_decrypt_secret_for_runtime_Result;
-							if (decrypted._nay) {
-								// Curated literal: raw decrypt errors never reach the call or the plugin.
-								await finish({
-									status: "failed",
-									responseStatus: 500,
-									errorCode: "storage_failure",
-									errorMessage: "Failed to read secret",
-								});
-								return { status: 500, body: { message: "Failed to read secret" } } as const;
-							}
-
-							await finish({ status: "succeeded", responseStatus: 200, errorMessage: null });
-							return { status: 200, body: { value: decrypted._yay } } as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: {};
-							searchParams: {};
-							headers: { Authorization: string; "X-Bonobo-Runner-Authorization": string };
-							body: z.infer<typeof bodyValidator>;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
+	const finish = async (finishArgs: {
+		status: "succeeded" | "failed";
+		responseStatus: number;
+		errorCode?: string;
+		errorMessage: string | null;
+	}) => {
+		await ctx.runMutation(internal.plugins_runtime.finish_run_call, {
+			callId: consumed._yay.callId,
+			status: finishArgs.status,
+			errorCode: finishArgs.errorCode,
+			errorMessage: finishArgs.errorMessage,
+			responseStatus: finishArgs.responseStatus,
+		});
 	};
+
+	if (!auth._yay.principal.scopes.includes("secrets:read")) {
+		await finish({
+			status: "failed",
+			responseStatus: 403,
+			errorCode: "permission_denied",
+			errorMessage: "Permission denied",
+		});
+		return { status: 403, body: { message: "Permission denied" } } as const;
+	}
+
+	const name = plugins_validate_secret_name(auth._yay.body.name);
+	if (name._nay) {
+		await finish({
+			status: "failed",
+			responseStatus: 400,
+			errorCode: "invalid_input",
+			errorMessage: name._nay.message,
+		});
+		return { status: 400, body: { message: name._nay.message } } as const;
+	}
+
+	const resolved = await ctx.runMutation(internal.plugins.get_secret_for_runtime, {
+		organizationId: auth._yay.principal.organizationId,
+		workspaceId: auth._yay.principal.workspaceId,
+		installationId: auth._yay.principal.installationId,
+		name: name._yay,
+	});
+	if (!resolved) {
+		// A missing secret is a successful lookup, not a failure.
+		await finish({ status: "succeeded", responseStatus: 200, errorMessage: null });
+		return { status: 200, body: { value: null } } as const;
+	}
+
+	const decrypted = (await ctx.runAction(internal.plugins.decrypt_secret_for_runtime, {
+		resolved,
+	})) as plugins_decrypt_secret_for_runtime_Result;
+	if (decrypted._nay) {
+		// Curated literal: raw decrypt errors never reach the call or the plugin.
+		await finish({
+			status: "failed",
+			responseStatus: 500,
+			errorCode: "storage_failure",
+			errorMessage: "Failed to read secret",
+		});
+		return { status: 500, body: { message: "Failed to read secret" } } as const;
+	}
+
+	await finish({ status: "succeeded", responseStatus: 200, errorMessage: null });
+	return { status: 200, body: { value: decrypted._yay } } as const;
 }
 
 // #endregion runner host routes

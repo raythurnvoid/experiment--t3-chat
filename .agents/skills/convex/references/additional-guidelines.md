@@ -33,9 +33,9 @@ function runner_url() {
 
 # HTTP routes typing pattern (this repo)
 
-This codebase uses a “route builder” pattern for app-owned, exact-path HTTP endpoints that are part of the typed API in `api_schemas_Main`. The pattern keeps runtime behavior and types in one place.
+This codebase uses a “route builder” pattern for app-owned, exact-path HTTP endpoints that are part of the typed API in `api_schemas_Main`. The pattern keeps route registration and API types together.
 
-Use the typed builder for app-owned exact-path contracts that belong in `api_schemas_Main`; the consumer does not need to import that type. Register dynamic `pathPrefix` routes directly with `router.route(...)`, and let vendor components use their own route-registration API.
+Use the typed builder for app-owned exact-path contracts that belong in `api_schemas_Main`; the consumer does not need to import that type. Register dynamic `pathPrefix` routes directly with `router.route(...)`. Let vendor components use their own route-registration API unless the app needs a lazy request boundary; the Polar exception is documented in the billing skill.
 
 For a typed exact-path endpoint, follow this structure:
 
@@ -49,12 +49,14 @@ For a typed exact-path endpoint, follow this structure:
 - Treat the outer path IIFE as a group. Put every method IIFE for that path inside its computed
   `[path]` object, so adding `GET` and `POST` for one path does not repeat the path definition.
 - Use **computed keys** (`[path]`, `[method]`) so the returned object is keyed by the exact path/method.
-- Implement a local `handler` function that returns `{ status, body, headers? }`.
+- For a cheap implementation, keep a local `handler` function that returns `{ status, body, headers? }`.
+- For a heavy implementation, export the plain function from its heavy module. In the small route module, use a type-only `typeof import(...)` reference for the response schema and a literal dynamic import inside `httpAction(...)` for the runtime call.
 - Keep every returned `status` literal narrow with `as const`; widening one status to `number`
   collapses the response schema into a numeric index signature.
 - Register the real endpoint with `router.route({ path, method, handler: httpAction(...) })`.
-- For the type schema, return a typed object whose `response` is derived from the handler:
-  - `response: api_schemas_BuildResponseSpecFromHandler<typeof handler>`
+- For the type schema, return a typed object whose `response` is derived from the plain handler:
+  - local: `response: api_schemas_BuildResponseSpecFromHandler<typeof handler>`
+  - lazy: `response: api_schemas_BuildResponseSpecFromHandler<typeof import("./heavy.ts").handler>`
 - Keep the response-spec helper's small, localized `@ts-expect-error` annotations. They document
   TypeScript's inability to prove the generic handler indexed accesses and are preferable here to
   more complicated conditional-type machinery at every route.
@@ -546,6 +548,17 @@ const joined = results.filter((r): r is NonNullable<typeof r> => r !== null);
 - Map your original list to the joined result using that in-memory map.
 
 This reduces repeated queries for the same key and keeps read patterns predictable.
+
+## Performance: keep the root HTTP import graph small
+
+`convex/http.ts` runs before Convex can dispatch an app HTTP route. Keep its static import graph small.
+
+- Statically import small `*_http_routes.ts` registration modules from `http.ts`. Keep heavy value imports out of those modules; type-only imports are safe.
+- Put one literal dynamic import inside each registered route when its implementation is heavy. This does not make that request itself faster. It stops unrelated requests from evaluating the heavy module.
+- Call registered queries, mutations, and actions through generated `internal` refs. Convex already loads those implementations separately, so they do not need this HTTP import pattern.
+- Several `httpRouter()` objects in the same root module do not isolate static imports. Moving code to another file also does not help when the root still imports it statically.
+- Keep the typed `*_http_routes` builder as the schema source. Call the exported plain implementation after the dynamic import. Do not add a route map, a custom dispatcher, or use Convex function internals such as `_handler`.
+- Update `convex/http.test.ts` when routes change. It pins the complete root route inventory, including CORS `OPTIONS` routes.
 
 ## Performance: prefer `ctx.db.get` over `ctx.db.query` when you have ids
 

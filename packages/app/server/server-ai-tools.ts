@@ -6,7 +6,7 @@ import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
 import { internal } from "../convex/_generated/api.js";
-import { public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ } from "../convex/public_api.ts";
+import type { public_api_Scope } from "../shared/public-api.ts";
 import { files_READ_RANGE_MAX_LINES } from "../convex/files_nodes.ts";
 import { server_path_normalize } from "./server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "./crypto-utils.ts";
@@ -1064,7 +1064,7 @@ export function ai_chat_tool_create_execute_code(
 				threadId: ctxData.getThreadId?.() ?? null,
 				principalKey: executionId,
 				tokenHash: await crypto_sha256_hex(publicApiGrantToken),
-				scopes: [public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ],
+				scopes: ["files:list", "files:read"] satisfies public_api_Scope[],
 				pathPrefix: null,
 				now: Date.now(),
 			});

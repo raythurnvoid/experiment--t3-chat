@@ -1773,7 +1773,7 @@ describe("public files API", () => {
 		}
 	});
 
-	test("requires request-time file read permission", async () => {
+	test("maps every read file scope to request-time content.read permission", async () => {
 		const t = test_convex();
 		const owner = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-owner" });
 		const keyId = `pk_${"4".repeat(32)}`;
@@ -1797,19 +1797,25 @@ describe("public files API", () => {
 				keyId,
 				obfuscatedValue: `${keyId}.****${secret.slice(-4)}`,
 				secretHash: await crypto_sha256_hex(secret),
-				scopes: ["files:list"],
+				scopes: ["files:list", "files:read", "files:download"],
 				createdAt: Date.now(),
 				revokedAt: null,
 				lastUsedAt: null,
 			});
 		});
 
-		const response = await t.fetch("/api/v1/files/list", {
-			method: "POST",
-			headers: auth_headers(credential),
-			body: JSON.stringify({ path: "/" }),
-		});
-		expect(response.status).toBe(403);
+		for (const request of [
+			{ path: "/api/v1/files/list", body: { path: "/" } },
+			{ path: "/api/v1/files/read", body: { path: "/notes.md" } },
+			{ path: "/api/v1/files/download-urls", body: { fileNodeIds: ["missing-node"] } },
+		] as const) {
+			const response = await t.fetch(request.path, {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify(request.body),
+			});
+			expect(response.status).toBe(403);
+		}
 	});
 
 	test("refuses a write to a viewer's API key while still allowing it to read", async () => {
@@ -2559,9 +2565,7 @@ describe("files upload-urls", () => {
 
 		const after = await list("/imports");
 		expect(after.items).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ path: "/imports/pending.bin", status: "ready", size: 512 }),
-			]),
+			expect.arrayContaining([expect.objectContaining({ path: "/imports/pending.bin", status: "ready", size: 512 })]),
 		);
 	});
 
@@ -2803,7 +2807,11 @@ describe("files write-many", () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-revoked" });
-		const { credential, credentialId } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-revoked" });
+		const { credential, credentialId } = await seed_bulk_writer_credential({
+			t,
+			db,
+			clerkSubject: "write-many-revoked",
+		});
 
 		// Revoke the credential while the second file's staged objects upload, after the first
 		// file already published. The publish revalidation then refuses every later item.

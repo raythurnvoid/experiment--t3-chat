@@ -18,7 +18,7 @@
  *   no tenant data and are already public: anyone can browse them as source in GLOBAL/PLUGINS.
  */
 import { ConvexError, v } from "convex/values";
-import { httpAction, internalMutation, internalQuery, mutation, query } from "./_generated/server.js";
+import { internalMutation, internalQuery, mutation, query, type ActionCtx } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
@@ -28,7 +28,6 @@ import { access_control_db_authorize_membership } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2_fetch_object_from_bucket, r2_get_bucket } from "./r2_client.ts";
-import type { RouterForConvexModules } from "./http.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -38,8 +37,6 @@ export const experimental_reuseContext = true;
 // dies fast. On top of this, the resolver rechecks the installation and membership on every call.
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const SESSION_CLEANUP_BATCH_SIZE = 100;
-
-const ASSET_PATH_PREFIX = "/plugins-ui/";
 
 if (!process.env.VITE_CONVEX_HTTP_URL) {
 	throw new Error("VITE_CONVEX_HTTP_URL is not set in Convex env");
@@ -105,8 +102,8 @@ export const mint_page_session = mutation({
 		// Opening an installed page is not managing plugins, so we do not ask for
 		// `workspace.plugins.manage`. But the token created here can read files through the public API,
 		// so it must not go to someone who cannot read the workspace. Checking when the token is
-		// created is the safe order: if a future route accepts a `plugin_ui` token and forgets to pass
-		// `requiredUserPermission`, nothing leaks.
+		// created avoids minting a useless file token. Public file routes also map their scope to an app
+		// permission and recheck it on every request.
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
@@ -601,92 +598,86 @@ export const cleanup_expired_ui_sessions = internalMutation({
  * GETs are navigations/subresources that need no CORS, and the CORS wrapper must not touch their
  * headers.
  */
-export function plugins_ui_http_routes(router: RouterForConvexModules) {
-	router.route({
-		pathPrefix: ASSET_PATH_PREFIX,
-		method: "GET",
-		handler: httpAction(async (ctx, request) => {
-			const pathname = new URL(request.url).pathname;
-			const rest = pathname.slice(ASSET_PATH_PREFIX.length);
-			const slashIndex = rest.indexOf("/");
-			if (slashIndex <= 0) {
-				return Response.json({ message: "Not found" }, { status: 404 });
-			}
-			const pluginVersionId = rest.slice(0, slashIndex);
-			let filePath: string;
-			try {
-				filePath = decodeURIComponent(rest.slice(slashIndex + 1));
-			} catch {
-				// Malformed percent-encoding is a caller error, not an internal one.
-				return Response.json({ message: "Not found" }, { status: 404 });
-			}
-			// Paths were validated at publish; re-check cheaply before matching anyway.
-			if (
-				!filePath.startsWith("dist/") ||
-				filePath.split("/").some((segment) => !segment || segment === "." || segment === "..")
-			) {
-				return Response.json({ message: "Not found" }, { status: 404 });
-			}
+export async function plugins_ui_http_handle_request(ctx: ActionCtx, request: Request, pathPrefix: "/plugins-ui/") {
+	const pathname = new URL(request.url).pathname;
+	const rest = pathname.slice(pathPrefix.length);
+	const slashIndex = rest.indexOf("/");
+	if (slashIndex <= 0) {
+		return Response.json({ message: "Not found" }, { status: 404 });
+	}
+	const pluginVersionId = rest.slice(0, slashIndex);
+	let filePath: string;
+	try {
+		filePath = decodeURIComponent(rest.slice(slashIndex + 1));
+	} catch {
+		// Malformed percent-encoding is a caller error, not an internal one.
+		return Response.json({ message: "Not found" }, { status: 404 });
+	}
+	// Paths were validated at publish; re-check cheaply before matching anyway.
+	if (
+		!filePath.startsWith("dist/") ||
+		filePath.split("/").some((segment) => !segment || segment === "." || segment === "..")
+	) {
+		return Response.json({ message: "Not found" }, { status: 404 });
+	}
 
-			const asset = await ctx.runQuery(internal.plugins_ui.get_ui_asset, { pluginVersionId, path: filePath });
-			if (!asset) {
-				return Response.json({ message: "Not found" }, { status: 404 });
-			}
+	const asset = await ctx.runQuery(internal.plugins_ui.get_ui_asset, { pluginVersionId, path: filePath });
+	if (!asset) {
+		return Response.json({ message: "Not found" }, { status: 404 });
+	}
 
-			// Only the object fetch gets a try/catch: the path checks and get_ui_asset misses above
-			// already return clean 404s, and anything else that throws here is a bug that should
-			// surface.
-			let object: Response;
-			try {
-				object = await r2_fetch_object_from_bucket({ key: asset.r2Key });
-			} catch (error) {
-				// ConvexError's constructor stringifies the whole data payload into .message, and
-				// r2_fetch_object_from_bucket puts the R2 key in data.cause — log only the short
-				// data.message, never the full error or its cause. Plain errors (network-level fetch
-				// failures) can embed the signed R2 URL in .message, so log only their name.
-				const sanitizedMessage =
-					error instanceof ConvexError
-						? typeof error.data === "object" &&
-							error.data !== null &&
-							"message" in error.data &&
-							typeof error.data.message === "string"
-							? error.data.message
-							: "ConvexError"
-						: error instanceof Error
-							? error.name
-							: String(error);
-				console.error("Failed to fetch plugin ui asset object", {
-					pluginVersionId,
-					path: filePath,
-					errorName: error instanceof Error ? error.name : "Error",
-					errorMessage: sanitizedMessage,
-				});
-				// no-store stops Cloudflare from caching this outage response under the immutable
-				// version URL. The 200 path below is cached forever, so a cached 502 would never go
-				// away.
-				return Response.json(
-					{ message: "Temporarily unavailable" },
-					{ status: 502, headers: { "Cache-Control": "no-store", "Retry-After": "3" } },
-				);
-			}
-			const headers = new Headers({
-				"Content-Type": asset.contentType,
-				"X-Content-Type-Options": "nosniff",
-				// The URL embeds the immutable version id, so content never changes under it.
-				"Cache-Control": "public, max-age=31536000, immutable",
-				"Cross-Origin-Resource-Policy": "cross-origin",
-				// The sandboxed page fetches its own module scripts/stylesheets in CORS mode with
-				// Origin: null (Vite emits crossorigin attributes, and module scripts are always
-				// CORS). Dists are public immutable content, so the wildcard gives away nothing
-				// sensitive.
-				"Access-Control-Allow-Origin": "*",
-			});
-			// CSP only matters when a resource is rendered as a document, so setting it on every
-			// response costs nothing for subresources and makes sure no document slips through
-			// without a policy. Without it, a "text/html;charset=..." content type or a scriptable
-			// type like SVG would render with no policy when opened directly.
-			headers.set("Content-Security-Policy", PLUGIN_PAGE_CSP);
-			return new Response(object.body, { status: 200, headers });
-		}),
+	// Only the object fetch gets a try/catch: the path checks and get_ui_asset misses above
+	// already return clean 404s, and anything else that throws here is a bug that should
+	// surface.
+	let object: Response;
+	try {
+		object = await r2_fetch_object_from_bucket({ key: asset.r2Key });
+	} catch (error) {
+		// ConvexError's constructor stringifies the whole data payload into .message, and
+		// r2_fetch_object_from_bucket puts the R2 key in data.cause — log only the short
+		// data.message, never the full error or its cause. Plain errors (network-level fetch
+		// failures) can embed the signed R2 URL in .message, so log only their name.
+		const sanitizedMessage =
+			error instanceof ConvexError
+				? typeof error.data === "object" &&
+					error.data !== null &&
+					"message" in error.data &&
+					typeof error.data.message === "string"
+					? error.data.message
+					: "ConvexError"
+				: error instanceof Error
+					? error.name
+					: String(error);
+		console.error("Failed to fetch plugin ui asset object", {
+			pluginVersionId,
+			path: filePath,
+			errorName: error instanceof Error ? error.name : "Error",
+			errorMessage: sanitizedMessage,
+		});
+		// no-store stops Cloudflare from caching this outage response under the immutable
+		// version URL. The 200 path below is cached forever, so a cached 502 would never go
+		// away.
+		return Response.json(
+			{ message: "Temporarily unavailable" },
+			{ status: 502, headers: { "Cache-Control": "no-store", "Retry-After": "3" } },
+		);
+	}
+	const headers = new Headers({
+		"Content-Type": asset.contentType,
+		"X-Content-Type-Options": "nosniff",
+		// The URL embeds the immutable version id, so content never changes under it.
+		"Cache-Control": "public, max-age=31536000, immutable",
+		"Cross-Origin-Resource-Policy": "cross-origin",
+		// The sandboxed page fetches its own module scripts/stylesheets in CORS mode with
+		// Origin: null (Vite emits crossorigin attributes, and module scripts are always
+		// CORS). Dists are public immutable content, so the wildcard gives away nothing
+		// sensitive.
+		"Access-Control-Allow-Origin": "*",
 	});
+	// CSP only matters when a resource is rendered as a document, so setting it on every
+	// response costs nothing for subresources and makes sure no document slips through
+	// without a policy. Without it, a "text/html;charset=..." content type or a scriptable
+	// type like SVG would render with no policy when opened directly.
+	headers.set("Content-Security-Policy", PLUGIN_PAGE_CSP);
+	return new Response(object.body, { status: 200, headers });
 }

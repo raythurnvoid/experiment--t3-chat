@@ -190,8 +190,8 @@ Git submodule with its own repo (`raythurnvoid/bonobo-plugin-gallery`). `dist/` 
 
 # Releases (SDK + Gallery)
 
-**Plugin runs skip the user content check entirely.** `public_api_resolve_live_principal` applies
-`requiredUserPermission` to every principal kind **except** `plugin_run`, because that principal
+**Plugin runs skip the user content check entirely.** `public_api_resolve_live_principal` applies the
+app permission mapped from each `files:*` scope to every principal kind **except** `plugin_run`, because that principal
 carries no content-permission field at all — its authority is a platform baseline of files download,
 files write and activities write, plus secrets-read / outbound-fetch from the run's accepted
 capabilities. So a plugin run does not respect a user's file permissions, and restricted files will

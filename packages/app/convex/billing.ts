@@ -1,4 +1,3 @@
-import { Polar } from "@convex-dev/polar";
 import { Workpool, vWorkId } from "@convex-dev/workpool";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { customersDelete } from "@polar-sh/sdk/funcs/customersDelete.js";
@@ -17,8 +16,8 @@ import { SubscriptionLocked } from "@polar-sh/sdk/models/errors/subscriptionlock
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { components, internal } from "./_generated/api.js";
-import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
-import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
+import type { ActionCtx, MutationCtx } from "./_generated/server.js";
 import { action, internalAction, internalMutation, internalQuery, query } from "./_generated/server.js";
 import { Result, Result_try_async } from "common/errors-as-values-utils.ts";
 import {
@@ -39,33 +38,11 @@ import {
 import { convertToDatabaseSubscription } from "../vendor/polar/src/component/util.ts";
 import app_convex_schema from "./schema.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { billing_polar } from "./billing_polar.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
-
-if (!process.env.POLAR_SERVER) {
-	throw new Error("POLAR_SERVER is not set");
-}
-
-const POLAR_SERVER = process.env.POLAR_SERVER as "sandbox" | "production";
-
-/**
- * Single Polar client for this app: register webhook routes on this instance only, and use
- * {@link billing_polar.api} exports for Convex functions (see @convex-dev/polar README).
- */
-export const billing_polar = new Polar<DataModel>(components.polar, {
-	getUserInfo: async (ctx) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx as QueryCtx | ActionCtx);
-
-		if (!userAuth || userAuth.kind !== "signed_in") {
-			throw convex_error({ message: "Billing requires a signed-in account" });
-		}
-
-		return { userId: userAuth.id, email: userAuth.email, name: userAuth.name };
-	},
-	server: POLAR_SERVER,
-});
 
 export const is_live_signed_in_user = internalQuery({
 	args: {

@@ -77,9 +77,10 @@ See [Glossary â€” server/billing.ts](#glossary--serverbillingts) and [Glossary â
 
 ## Backend ownership
 
-The backend billing module lives in [billing.ts](../../../packages/app/convex/billing.ts).
+The backend billing functions live in [billing.ts](../../../packages/app/convex/billing.ts). The shared Polar client lives in [billing_polar.ts](../../../packages/app/convex/billing_polar.ts), so billing functions, user bootstrap, and the webhook handler use one configuration without making the root HTTP router import the full billing module.
 
 - `billing_polar` wraps the vendored Polar component and currently allows only signed-in users through `getUserInfo`, returning the Convex user id, email, and app display name for Polar customer creation.
+- [billing_http_routes.ts](../../../packages/app/convex/billing_http_routes.ts) owns the small `/polar/events` route definition. It loads [billing_http.ts](../../../packages/app/convex/billing_http.ts) only when a Polar request runs. Keep the handler's built-in subscription, product, benefit, and customer mirror branches in sync with the vendored `@convex-dev/polar` `registerRoutes` implementation. The app-owned `customer.state_changed` branch still calls `handle_polar_customer_state_update` with the raw payload.
 - `list_products`, `get_current_user_subscription`, and `get_usage_snapshot` provide the billing panel data.
 - `generate_checkout_link` creates Polar checkout sessions and sends the current display name when the vendored Polar helper needs to create a missing customer.
 - `change_current_subscription` handles paid-plan changes, calls Polar with the correct immediate-upgrade or next-period-downgrade behavior, then relies on the subscription webhook to update the local subscription doc. If the current subscription is already pending period-end cancellation, it first uncancels the subscription because Polar rejects product updates while cancellation is pending. If the local mirror write or product update then fails or throws, it asks Polar to restore period-end cancellation and updates the local mirror from that response before returning the plan-change error. If the compensation call or its local mirror write fails, it returns the explicit `Failed to change the subscription and restore its cancellation` error and logs both errors. `Free -> paid` is intentionally not handled there and goes through checkout instead.
@@ -286,9 +287,9 @@ The indicator displays the current user's balance for personal organizations, `"
 
 #### `billing_polar`
 
-- **Module:** [packages/app/convex/billing.ts](../../../packages/app/convex/billing.ts)
+- **Module:** [packages/app/convex/billing_polar.ts](../../../packages/app/convex/billing_polar.ts)
 - **Kind:** `Polar<DataModel>` instance (`export const billing_polar`).
-- **Role:** Vendored `@convex-dev/polar` integration: `getUserInfo` restricts billing to signed-in Convex users; exposes `billing_polar.api()`, `billing_polar.listProducts`, webhook registration, and Polar server mode from `POLAR_SERVER`.
+- **Role:** Vendored `@convex-dev/polar` integration: `getUserInfo` restricts billing to signed-in Convex users; exposes `billing_polar.api()`, `billing_polar.listProducts`, product sync helpers, and Polar server mode from `POLAR_SERVER`. The app-owned route definition in `billing_http_routes.ts` loads the webhook handler from `billing_http.ts` only for Polar requests.
 
 #### `list_products`
 

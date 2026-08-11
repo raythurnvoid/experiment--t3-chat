@@ -1,6 +1,5 @@
 import {
 	action,
-	httpAction,
 	internalAction,
 	internalMutation,
 	internalQuery,
@@ -12,10 +11,7 @@ import {
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
 import { internal } from "./_generated/api.js";
-import { type RegisteredMutation, type RouteSpec } from "convex/server";
-import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
-import type { RouterForConvexModules } from "./http.ts";
+import { type RegisteredMutation } from "convex/server";
 import app_convex_schema from "./schema.ts";
 import { doc } from "convex-helpers/validators";
 import {
@@ -38,12 +34,12 @@ import {
 	billing_db_ensure_anonymous_user_usage_snapshot,
 	billing_action_enqueue_free_subscription_bootstrap,
 	billing_action_schedule_polar_subscription_period_end_cancellation,
-	billing_polar,
 } from "./billing.ts";
+import { billing_polar } from "./billing_polar.ts";
 import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
-// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
+// Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
 export const experimental_reuseContext = true;
 
 if (!process.env.ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM) {
@@ -89,7 +85,7 @@ const ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
  * `aud` of the refresh JWT. Convex only accepts `aud "convex"` (auth.config.ts applicationID), so a
  * refresh JWT can never authenticate a function call. The refresh route requires this audience, and
  * that requirement is what retires pre-split dual-role tokens: they carry `aud "convex"`, so they
- * stop working as refresh credentials even though they still byte-match their stored row.
+ * stop working as refresh credentials even though they still byte-match their stored auth token doc.
  *
  * The whole two-token scheme is the standard OAuth split (RFC 6749 §1.5): only this route reads the
  * token table, every other call verifies a short-lived signed access token. Rotation follows
@@ -99,7 +95,7 @@ const ANONYMOUS_USERS_REFRESH_JWT_AUD = "anonymous-refresh";
 
 /**
  * The access JWT is the revocation window: after a user is tombstoned, already-issued access tokens
- * keep authenticating for at most this long. The refresh route checks the user row (including
+ * keep authenticating for at most this long. The refresh route checks the user doc (including
  * `deletedAt`) on every call, so nothing outlives this window except that route's own 401.
  */
 const ANONYMOUS_USERS_ACCESS_JWT_EXPIRY = "1h";
@@ -164,9 +160,7 @@ async function sign_anonymous_users_jwt(args: {
 		.setSubject(args.subject)
 		.setJti(args.tokenId)
 		.setIssuedAt()
-		.setExpirationTime(
-			args.kind === "access" ? ANONYMOUS_USERS_ACCESS_JWT_EXPIRY : ANONYMOUS_USERS_REFRESH_JWT_EXPIRY,
-		)
+		.setExpirationTime(args.kind === "access" ? ANONYMOUS_USERS_ACCESS_JWT_EXPIRY : ANONYMOUS_USERS_REFRESH_JWT_EXPIRY)
 		.sign(key);
 }
 
@@ -238,7 +232,7 @@ export const set_anonymous_auth_token = internalMutation({
 		tokenId: v.id("users_anon_tokens"),
 		token: v.string(),
 		/**
-		 * Rotation guard: write only when the row still holds this token. Two tabs can pass the
+		 * Rotation guard: write only when the auth token doc still holds this token. Two tabs can pass the
 		 * route's validation with the same old token and both try to rotate; without this guard the
 		 * second write would orphan the first tab's token and the shared localStorage copy could end
 		 * up matching neither. The loser gets the winner's token back and returns that to its client.
@@ -996,384 +990,292 @@ export const delete_current_user_account = action({
 	},
 });
 
-export function users_http_routes(router: RouterForConvexModules) {
+export async function users_http_get_jwks(_ctx: ActionCtx, _request: Request) {
+	const publicXY = await get_anonymous_users_jwt_public_xy();
+	const jwks = ANONYMOUS_USERS_JWT_KID_LIST.map((kid) => {
+		return {
+			kty: "EC",
+			crv: "P-256",
+			x: publicXY.x,
+			y: publicXY.y,
+			kid: kid,
+			use: "sig",
+			alg: "ES256",
+		} as const;
+	});
 	return {
-		...((/* iife */ path = "/.well-known/jwks.json" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "GET" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = never;
+		status: 200,
+		body: {
+			keys: jwks,
+		},
+		headers: {
+			"Cache-Control": "public, max-age=86400", // 1 day
+		},
+	} as const;
+}
 
-						const handler = async (_ctx: ActionCtx, _request: Request) => {
-							const publicXY = await get_anonymous_users_jwt_public_xy();
-							const jwks = ANONYMOUS_USERS_JWT_KID_LIST.map((kid) => {
-								return {
-									kty: "EC",
-									crv: "P-256",
-									x: publicXY.x,
-									y: publicXY.y,
-									kid: kid,
-									use: "sig",
-									alg: "ES256",
-								} as const;
-							});
-							return {
-								status: 200,
-								body: {
-									keys: jwks,
-								},
-								headers: {
-									"Cache-Control": "public, max-age=86400", // 1 day
-								},
-							} as const;
-						};
+export type users_http_create_anonymous_Body = { refreshToken?: string };
 
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
+export async function users_http_create_anonymous(ctx: ActionCtx, request: Request) {
+	const body = (await request.json().catch(() => null)) as null | users_http_create_anonymous_Body;
 
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
+	// Refresh path: validate the refresh JWT against the stored auth token doc, then mint a fresh
+	// short-lived access JWT. The doc itself rotates only near its own expiry.
+	if (body?.refreshToken) {
+		let authFromToken: ReturnType<typeof users_get_user_id_from_jwt>;
+		try {
+			authFromToken = users_get_user_id_from_jwt(body.refreshToken);
+		} catch {
+			return { status: 401, body: { message: "Invalid token" } } as const;
+		}
+		if (!authFromToken.userId) {
+			return { status: 400, body: { message: "Invalid token subject" } } as const;
+		}
+
+		// Load-bearing, not defense in depth: this route never verifies signatures, only
+		// byte-equality with the stored auth token doc. Pre-split dual-role JWTs still byte-match
+		// their doc, and only this audience check retires them (they carry aud "convex").
+		if (!authFromToken.audiences.includes(ANONYMOUS_USERS_REFRESH_JWT_AUD)) {
+			return { status: 401, body: { message: "Invalid token" } } as const;
+		}
+
+		const userWithAnagraphicAndAnonToken = await ctx.runQuery(
+			internal.users.get_with_anagraphic_and_anonymous_auth_token,
+			{
+				userId: authFromToken.userId,
+				tokenId: authFromToken.tokenId ?? "",
 			},
-		}))(),
+		);
+		if (
+			!userWithAnagraphicAndAnonToken ||
+			!authFromToken.tokenId ||
+			!userWithAnagraphicAndAnonToken.user.anonymousAuthToken ||
+			userWithAnagraphicAndAnonToken.anonymousAuthToken._id !==
+				userWithAnagraphicAndAnonToken.user.anonymousAuthToken ||
+			userWithAnagraphicAndAnonToken.anonymousAuthToken.userId !== userWithAnagraphicAndAnonToken.user._id ||
+			// Accept the previous token too: a tab that read localStorage just before a
+			// rotation converges here instead of losing the identity.
+			(userWithAnagraphicAndAnonToken.anonymousAuthToken.token !== body.refreshToken &&
+				userWithAnagraphicAndAnonToken.anonymousAuthToken.previousToken !== body.refreshToken)
+		) {
+			return { status: 401, body: { message: "Invalid token" } } as const;
+		}
 
-		...((/* iife */ path = "/api/auth/anonymous" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = { refreshToken?: string };
+		// Charge validation against the read limiter, not the auth write limiter. Every
+		// page load validates the cached token at least twice, and `auth_http` has
+		// capacity 2. An ordinary reload therefore returned 429, and the client answered
+		// that by minting a new anonymous user. The previous user's workspace became
+		// unreachable.
+		const readRateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "auth_http_refresh",
+			key: userWithAnagraphicAndAnonToken.user._id,
+		});
+		if (readRateLimit) {
+			return {
+				status: 429,
+				body: {
+					message: readRateLimit.message,
+					retryAfterMs: readRateLimit.retryAfterMs,
+				},
+			} as const;
+		}
 
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const body = (await request.json().catch(() => null)) as null | Body;
+		const anonTokenRow = userWithAnagraphicAndAnonToken.anonymousAuthToken;
+		const displayName =
+			userWithAnagraphicAndAnonToken.anagraphic?.displayName ??
+			users_create_anonymouse_user_display_name(userWithAnagraphicAndAnonToken.user._id);
 
-							// Refresh path: validate the refresh JWT against the stored row, then mint a fresh
-							// short-lived access JWT. The row itself rotates only near its own expiry.
-							if (body?.refreshToken) {
-								let authFromToken: ReturnType<typeof users_get_user_id_from_jwt>;
-								try {
-									authFromToken = users_get_user_id_from_jwt(body.refreshToken);
-								} catch {
-									return { status: 401, body: { message: "Invalid token" } } as const;
-								}
-								if (!authFromToken.userId) {
-									return { status: 400, body: { message: "Invalid token subject" } } as const;
-								}
+		// Every refresh call mints a fresh access JWT. Pure signing, no database write, so
+		// the hourly client refresh stays on the read limiter.
+		const accessJwt = await sign_anonymous_users_jwt({
+			kind: "access",
+			subject: userWithAnagraphicAndAnonToken.user._id,
+			tokenId: anonTokenRow._id,
+			name: displayName,
+		});
 
-								// Load-bearing, not defense in depth: this route never verifies signatures, only
-								// byte-equality with the stored row. Pre-split dual-role JWTs still byte-match
-								// their row, and only this audience check retires them (they carry aud "convex").
-								if (!authFromToken.audiences.includes(ANONYMOUS_USERS_REFRESH_JWT_AUD)) {
-									return { status: 401, body: { message: "Invalid token" } } as const;
-								}
+		// The stored refresh JWT rotates only when the presented current token is close to
+		// its expiry. A previous-token match never rotates; the doc already holds a newer
+		// token and the client just needs it back.
+		let refreshTokenForClient = anonTokenRow.token;
+		const presentedIsCurrent = anonTokenRow.token === body.refreshToken;
+		const farFromExpiry =
+			authFromToken.expiresAt && authFromToken.expiresAt > Date.now() + ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS;
+		if (presentedIsCurrent && !farFromExpiry) {
+			// Rotation writes, so it also spends the stricter auth limiter.
+			const rateLimit = await rate_limiter_limit_by_key(ctx, {
+				name: "auth_http",
+				key: userWithAnagraphicAndAnonToken.user._id,
+			});
+			if (rateLimit) {
+				return {
+					status: 429,
+					body: {
+						message: rateLimit.message,
+						retryAfterMs: rateLimit.retryAfterMs,
+					},
+				} as const;
+			}
 
-								const userWithAnagraphicAndAnonToken = await ctx.runQuery(
-									internal.users.get_with_anagraphic_and_anonymous_auth_token,
-									{
-										userId: authFromToken.userId,
-										tokenId: authFromToken.tokenId ?? "",
-									},
-								);
-								if (
-									!userWithAnagraphicAndAnonToken ||
-									!authFromToken.tokenId ||
-									!userWithAnagraphicAndAnonToken.user.anonymousAuthToken ||
-									userWithAnagraphicAndAnonToken.anonymousAuthToken._id !==
-										userWithAnagraphicAndAnonToken.user.anonymousAuthToken ||
-									userWithAnagraphicAndAnonToken.anonymousAuthToken.userId !==
-										userWithAnagraphicAndAnonToken.user._id ||
-									// Accept the previous token too: a tab that read localStorage just before a
-									// rotation converges here instead of losing the identity.
-									(userWithAnagraphicAndAnonToken.anonymousAuthToken.token !== body.refreshToken &&
-										userWithAnagraphicAndAnonToken.anonymousAuthToken.previousToken !== body.refreshToken)
-								) {
-									return { status: 401, body: { message: "Invalid token" } } as const;
-								}
+			const newRefreshJwt = await sign_anonymous_users_jwt({
+				kind: "refresh",
+				subject: userWithAnagraphicAndAnonToken.user._id,
+				tokenId: anonTokenRow._id,
+				name: displayName,
+			});
 
-								// Charge validation against the read limiter, not the auth write limiter. Every
-								// page load validates the cached token at least twice, and `auth_http` has
-								// capacity 2. An ordinary reload therefore returned 429, and the client answered
-								// that by minting a new anonymous user. The previous user's workspace became
-								// unreachable.
-								const readRateLimit = await rate_limiter_limit_by_key(ctx, {
-									name: "auth_http_refresh",
-									key: userWithAnagraphicAndAnonToken.user._id,
-								});
-								if (readRateLimit) {
-									return {
-										status: 429,
-										body: {
-											message: readRateLimit.message,
-											retryAfterMs: readRateLimit.retryAfterMs,
-										},
-									} as const;
-								}
+			// Compare-and-swap: if another tab rotated first, this returns the winner's
+			// token and the client converges on it.
+			refreshTokenForClient = (await ctx.runMutation(internal.users.set_anonymous_auth_token, {
+				tokenId: anonTokenRow._id,
+				token: newRefreshJwt,
+				expectedCurrentToken: anonTokenRow.token,
+			})) as set_anonymous_auth_token_Result;
+		}
 
-								const anonTokenRow = userWithAnagraphicAndAnonToken.anonymousAuthToken;
-								const displayName =
-									userWithAnagraphicAndAnonToken.anagraphic?.displayName ??
-									users_create_anonymouse_user_display_name(userWithAnagraphicAndAnonToken.user._id);
-
-								// Every refresh call mints a fresh access JWT. Pure signing, no database write, so
-								// the hourly client refresh stays on the read limiter.
-								const accessJwt = await sign_anonymous_users_jwt({
-									kind: "access",
-									subject: userWithAnagraphicAndAnonToken.user._id,
-									tokenId: anonTokenRow._id,
-									name: displayName,
-								});
-
-								// The stored refresh JWT rotates only when the presented current token is close to
-								// its expiry. A previous-token match never rotates; the row already holds a newer
-								// token and the client just needs it back.
-								let refreshTokenForClient = anonTokenRow.token;
-								const presentedIsCurrent = anonTokenRow.token === body.refreshToken;
-								const farFromExpiry =
-									authFromToken.expiresAt &&
-									authFromToken.expiresAt > Date.now() + ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS;
-								if (presentedIsCurrent && !farFromExpiry) {
-									// Rotation writes, so it also spends the stricter auth limiter.
-									const rateLimit = await rate_limiter_limit_by_key(ctx, {
-										name: "auth_http",
-										key: userWithAnagraphicAndAnonToken.user._id,
-									});
-									if (rateLimit) {
-										return {
-											status: 429,
-											body: {
-												message: rateLimit.message,
-												retryAfterMs: rateLimit.retryAfterMs,
-											},
-										} as const;
-									}
-
-									const newRefreshJwt = await sign_anonymous_users_jwt({
-										kind: "refresh",
-										subject: userWithAnagraphicAndAnonToken.user._id,
-										tokenId: anonTokenRow._id,
-										name: displayName,
-									});
-
-									// Compare-and-swap: if another tab rotated first, this returns the winner's
-									// token and the client converges on it.
-									refreshTokenForClient = (await ctx.runMutation(internal.users.set_anonymous_auth_token, {
-										tokenId: anonTokenRow._id,
-										token: newRefreshJwt,
-										expectedCurrentToken: anonTokenRow.token,
-									})) as set_anonymous_auth_token_Result;
-								}
-
-								return {
-									status: 200,
-									body: {
-										token: accessJwt,
-										refreshToken: refreshTokenForClient,
-										userId: userWithAnagraphicAndAnonToken.user._id,
-									},
-								} as const;
-							}
-
-							// Create path: no refresh token provided, create new anonymous user
-							const rateLimit = await rate_limiter_limit_by_key(ctx, {
-								name: "auth_http",
-								key: rate_limiter_http_client_key(request),
-							});
-							if (rateLimit) {
-								return {
-									status: 429,
-									body: {
-										message: rateLimit.message,
-										retryAfterMs: rateLimit.retryAfterMs,
-									},
-								} as const;
-							}
-
-							const { accessJwt, refreshJwt, userId } = await action_mint_anonymous_jwt(ctx);
-							return {
-								status: 200,
-								body: {
-									token: accessJwt,
-									refreshToken: refreshJwt,
-									userId: userId,
-								},
-							} as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
+		return {
+			status: 200,
+			body: {
+				token: accessJwt,
+				refreshToken: refreshTokenForClient,
+				userId: userWithAnagraphicAndAnonToken.user._id,
 			},
-		}))(),
+		} as const;
+	}
 
-		...((/* iife */ path = "/api/auth/resolve-user" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = { anonymousUserToken?: string };
-
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const body = (await request.json().catch(() => null)) as null | Body;
-
-							const identity = await ctx.auth.getUserIdentity().catch(() => null);
-							if (!identity) {
-								return {
-									status: 401,
-									body: Result({ _nay: { message: "Unauthorized" } }),
-								} as const;
-							}
-
-							const clerkUserId = identity.subject;
-
-							// Let already-linked Clerk tokens take the read-only fast path so repeated signed-in
-							// bootstraps do not consume the auth write limiter. Only usable accounts can
-							// short-circuit: a tombstoned user or one missing its default tenant pointers
-							// (first sign-in after a data wipe) must fall through to `resolve_user` so
-							// default-tenant and billing-bootstrap repair runs.
-							if (identity.external_id) {
-								const user = await ctx.runQuery(internal.users.get, {
-									userId: identity.external_id,
-								});
-								if (user && user.deletedAt == null && user.defaultOrganizationId && user.defaultWorkspaceId) {
-									return {
-										status: 200,
-										body: Result({ _yay: { userId: user._id, restoredDeletedAccount: false } }),
-									} as const;
-								}
-							}
-
-							const rateLimit = await rate_limiter_limit_by_key(ctx, {
-								name: "auth_http",
-								key: identity.external_id ?? clerkUserId,
-							});
-							if (rateLimit) {
-								return {
-									status: 429,
-									body: {
-										message: rateLimit.message,
-										retryAfterMs: rateLimit.retryAfterMs,
-									},
-								} as const;
-							}
-
-							const displayName = identity.name || identity.nickname || users_create_fallback_display_name(clerkUserId);
-							const resolveUserResult = await ctx.runMutation(internal.users.resolve_user, {
-								clerkUserId: clerkUserId,
-								email: identity.email ?? "",
-								anonymousUserToken: body?.anonymousUserToken,
-								displayName,
-							});
-
-							if (resolveUserResult._nay) {
-								return {
-									status: users_resolve_user_is_bad_request_message(resolveUserResult._nay.message) ? 400 : 401,
-									body: resolveUserResult,
-								} as const;
-							}
-
-							// Ensure Clerk has external_id set to the Convex user id.
-							const clerk_set_external_id_result = await clerk_set_external_id({
-								clerkUserId,
-								userId: resolveUserResult._yay.userId,
-							});
-							if (clerk_set_external_id_result._nay) {
-								const errorMessage = "Failed to set Clerk external_id";
-								console.error(errorMessage, {
-									clerkSetExternalIdResult: clerk_set_external_id_result,
-									clerkUserId,
-									userId: resolveUserResult._yay.userId,
-								});
-								return {
-									status: 401,
-									body: Result({ _nay: { message: errorMessage } }),
-								} as const;
-							}
-
-							if (!identity.email) {
-								console.error("Missing Clerk email for billing bootstrap", {
-									clerkUserId,
-									userId: resolveUserResult._yay.userId,
-								});
-								return {
-									status: 200,
-									body: resolveUserResult,
-								} as const;
-							}
-
-							await billing_action_enqueue_free_subscription_bootstrap(ctx, {
-								userId: resolveUserResult._yay.userId,
-								email: identity.email,
-								name: displayName,
-								...(resolveUserResult._yay.restoredDeletedAccount ? { restoreCanceledSubscription: true } : {}),
-							}).catch((error) => {
-								console.error("Failed to enqueue Free subscription bootstrap", {
-									error,
-									clerkUserId,
-									userId: resolveUserResult._yay.userId,
-								});
-							});
-
-							return {
-								status: 200,
-								body: resolveUserResult,
-							} as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
+	// Create path: no refresh token provided, create new anonymous user
+	const rateLimit = await rate_limiter_limit_by_key(ctx, {
+		name: "auth_http",
+		key: rate_limiter_http_client_key(request),
+	});
+	if (rateLimit) {
+		return {
+			status: 429,
+			body: {
+				message: rateLimit.message,
+				retryAfterMs: rateLimit.retryAfterMs,
 			},
-		}))(),
-	};
+		} as const;
+	}
+
+	const { accessJwt, refreshJwt, userId } = await action_mint_anonymous_jwt(ctx);
+	return {
+		status: 200,
+		body: {
+			token: accessJwt,
+			refreshToken: refreshJwt,
+			userId: userId,
+		},
+	} as const;
+}
+
+export type users_http_resolve_user_Body = { anonymousUserToken?: string };
+
+export async function users_http_resolve_user(ctx: ActionCtx, request: Request) {
+	const body = (await request.json().catch(() => null)) as null | users_http_resolve_user_Body;
+
+	const identity = await ctx.auth.getUserIdentity().catch(() => null);
+	if (!identity) {
+		return {
+			status: 401,
+			body: Result({ _nay: { message: "Unauthorized" } }),
+		} as const;
+	}
+
+	const clerkUserId = identity.subject;
+
+	// Let already-linked Clerk tokens take the read-only fast path so repeated signed-in
+	// bootstraps do not consume the auth write limiter. Only usable accounts can
+	// short-circuit: a tombstoned user or one missing its default tenant pointers
+	// (first sign-in after a data wipe) must fall through to `resolve_user` so
+	// default-tenant and billing-bootstrap repair runs.
+	if (identity.external_id) {
+		const user = await ctx.runQuery(internal.users.get, {
+			userId: identity.external_id,
+		});
+		if (user && user.deletedAt == null && user.defaultOrganizationId && user.defaultWorkspaceId) {
+			return {
+				status: 200,
+				body: Result({ _yay: { userId: user._id, restoredDeletedAccount: false } }),
+			} as const;
+		}
+	}
+
+	const rateLimit = await rate_limiter_limit_by_key(ctx, {
+		name: "auth_http",
+		key: identity.external_id ?? clerkUserId,
+	});
+	if (rateLimit) {
+		return {
+			status: 429,
+			body: {
+				message: rateLimit.message,
+				retryAfterMs: rateLimit.retryAfterMs,
+			},
+		} as const;
+	}
+
+	const displayName = identity.name || identity.nickname || users_create_fallback_display_name(clerkUserId);
+	const resolveUserResult = await ctx.runMutation(internal.users.resolve_user, {
+		clerkUserId: clerkUserId,
+		email: identity.email ?? "",
+		anonymousUserToken: body?.anonymousUserToken,
+		displayName,
+	});
+
+	if (resolveUserResult._nay) {
+		return {
+			status: users_resolve_user_is_bad_request_message(resolveUserResult._nay.message) ? 400 : 401,
+			body: resolveUserResult,
+		} as const;
+	}
+
+	// Ensure Clerk has external_id set to the Convex user id.
+	const clerk_set_external_id_result = await clerk_set_external_id({
+		clerkUserId,
+		userId: resolveUserResult._yay.userId,
+	});
+	if (clerk_set_external_id_result._nay) {
+		const errorMessage = "Failed to set Clerk external_id";
+		console.error(errorMessage, {
+			clerkSetExternalIdResult: clerk_set_external_id_result,
+			clerkUserId,
+			userId: resolveUserResult._yay.userId,
+		});
+		return {
+			status: 401,
+			body: Result({ _nay: { message: errorMessage } }),
+		} as const;
+	}
+
+	if (!identity.email) {
+		console.error("Missing Clerk email for billing bootstrap", {
+			clerkUserId,
+			userId: resolveUserResult._yay.userId,
+		});
+		return {
+			status: 200,
+			body: resolveUserResult,
+		} as const;
+	}
+
+	await billing_action_enqueue_free_subscription_bootstrap(ctx, {
+		userId: resolveUserResult._yay.userId,
+		email: identity.email,
+		name: displayName,
+		...(resolveUserResult._yay.restoredDeletedAccount ? { restoreCanceledSubscription: true } : {}),
+	}).catch((error) => {
+		console.error("Failed to enqueue Free subscription bootstrap", {
+			error,
+			clerkUserId,
+			userId: resolveUserResult._yay.userId,
+		});
+	});
+
+	return {
+		status: 200,
+		body: resolveUserResult,
+	} as const;
 }
 
 // Override default convex auth types

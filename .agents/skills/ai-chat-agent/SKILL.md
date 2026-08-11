@@ -7,6 +7,7 @@ description: Practical guide for the current app chat agent implementation (AI S
 
 Primary:
 
+- `../../../packages/app/convex/ai_chat_http_routes.ts`
 - `../../../packages/app/convex/ai_chat.ts`
 - `../../../packages/app/convex/bash.ts`
 - `../../../packages/app/server/bash.ts`
@@ -48,7 +49,9 @@ The current agent is a Convex-backed AI chat runtime that streams AI SDK 5 UI me
 
 - Main request path: `POST /api/chat`
 - Secondary title path: `POST /api/v1/runs/stream` for `assistant_id = "system/thread_title"`
-- Main runtime owner: `ai_chat_http_routes` in `../../../packages/app/convex/ai_chat.ts`
+- Route definition owner: `ai_chat_http_routes` in `../../../packages/app/convex/ai_chat_http_routes.ts`
+- Heavy runtime owner: `../../../packages/app/convex/ai_chat.ts`
+- Root HTTP registration: `../../../packages/app/convex/http.ts` statically registers the small route module. Each registered route uses a literal dynamic import for its heavy implementation. This keeps the AI SDK and tool graph out of unrelated HTTP requests without a custom dispatcher.
 - Thread/message storage: Convex tables for `ai_chat_threads` and `ai_chat_threads_messages_aisdk_5`
 - Tool implementation: `../../../packages/app/server/server-ai-tools.ts`
 - Files node data/query layer: `../../../packages/app/convex/files_nodes.ts`

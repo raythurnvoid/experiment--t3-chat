@@ -2,7 +2,8 @@ import { describe, expect, test, vi, beforeEach, afterEach, type MockInstance } 
 import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared/billing.ts";
 import { Workpool, type WorkId } from "@convex-dev/workpool";
 import { api, components, internal } from "./_generated/api.js";
-import { billing_polar, billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
+import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
+import { billing_polar } from "./billing_polar.ts";
 import { billing_db_check_credits, billing_ingest_events } from "./billing_db.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
