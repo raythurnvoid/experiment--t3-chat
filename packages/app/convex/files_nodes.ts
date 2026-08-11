@@ -4509,6 +4509,7 @@ export const list_subtree = internalQuery({
 		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
 		kind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
 		lowercaseExtension: v.optional(v.string()),
+		contentTypePrefixes: v.optional(v.array(v.string())),
 		minDepth: v.optional(v.number()),
 		maxDepth: v.optional(v.number()),
 	},
@@ -4567,25 +4568,37 @@ export const list_subtree = internalQuery({
 							)
 							.order(args.order ?? "asc");
 		let filteredQuery = query;
+		const contentTypePrefixes = args.contentTypePrefixes;
+		if (contentTypePrefixes != null) {
+			// Use string ranges because Convex filters have no startsWith. The pagination scan cap below
+			// still bounds sparse matches.
+			filteredQuery = filteredQuery.filter((q) =>
+				q.or(
+					...contentTypePrefixes.map((prefix) =>
+						q.and(q.gte(q.field("contentType"), prefix), q.lt(q.field("contentType"), `${prefix}\uffff`)),
+					),
+				),
+			);
+		}
 		if (minAbsoluteDepth != null && maxAbsoluteDepth != null) {
-			filteredQuery = query.filter((q) =>
+			filteredQuery = filteredQuery.filter((q) =>
 				q.and(q.gte(q.field("pathDepth"), minAbsoluteDepth), q.lte(q.field("pathDepth"), maxAbsoluteDepth)),
 			);
 		} else if (minAbsoluteDepth != null) {
-			filteredQuery = query.filter((q) => q.gte(q.field("pathDepth"), minAbsoluteDepth));
+			filteredQuery = filteredQuery.filter((q) => q.gte(q.field("pathDepth"), minAbsoluteDepth));
 		} else if (maxAbsoluteDepth != null) {
-			filteredQuery = query.filter((q) => q.lte(q.field("pathDepth"), maxAbsoluteDepth));
+			filteredQuery = filteredQuery.filter((q) => q.lte(q.field("pathDepth"), maxAbsoluteDepth));
 		}
 		const result = await filteredQuery.paginate({
 			cursor: args.cursor,
 			numItems: args.numItems,
-			...(minAbsoluteDepth == null && maxAbsoluteDepth == null
+			...(contentTypePrefixes == null && minAbsoluteDepth == null && maxAbsoluteDepth == null
 				? {}
 				: { maximumRowsRead: SUBTREE_FILTER_MAX_ROWS_READ }),
 		});
 
-		// A page can come back shorter once restricted nodes are dropped. The cursor is unchanged, so
-		// paging still walks the whole subtree; only the page size varies.
+		// A bounded query filter or the access check can make a page shorter. The cursor still walks
+		// the whole subtree; only the page size varies.
 		return {
 			...result,
 			page: await access_control_db_filter_readable_file_nodes(ctx, {

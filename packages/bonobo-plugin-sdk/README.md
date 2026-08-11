@@ -174,7 +174,7 @@ Each of the first 20 requested files consumes one call from the route's principa
 bucket. One inaccessible file appears in `errors` without discarding the other successful URLs.
 Duplicate file IDs are rejected with `400` before they consume route capacity or start file work.
 
-Pagination of `/api/v1/files/list` (`{ items, cursor, isDone }`): with `contentTypePrefixes` the server post-filters each page after pagination, so a page may come back short or even empty while `isDone` is still `false` — keep passing `cursor` until `isDone` is `true` or you have enough items. Scan with `limit: 100` and `kind: "file"`, bound the pages advanced per user action, buffer overflow items for the next action, and retry a `429` on the same cursor.
+Pagination of `/api/v1/files/list` (`{ items, cursor, isDone }`): with `contentTypePrefixes` the server scans for matching files inside a bounded source page. A page may come back short or even empty while `isDone` is still `false` — keep passing `cursor` until `isDone` is `true` or you have enough items. Scan with `limit: 100` and `kind: "file"`, bound the pages advanced per user action, buffer overflow items for the next action, and retry a `429` on the same cursor.
 
 ### Frontend page example
 
@@ -187,8 +187,8 @@ if (client.context.kind === "page") {
 	document.title = client.context.pageTitle;
 }
 
-// files:list — contentTypePrefixes is post-filtered per page, so a short or even empty page
-// does not mean the listing is done. Scan wide (limit 100, kind "file"), cap how many source
+// files:list — a bounded contentTypePrefixes scan can return a short or even empty page, so
+// that does not mean the listing is done. Scan wide (limit 100, kind "file"), cap how many source
 // pages one user action advances, and keep the cursor so the next action resumes; anything
 // fetched beyond what is shown stays buffered for that next action.
 let cursor = null;

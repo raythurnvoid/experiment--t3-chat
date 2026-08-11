@@ -3039,7 +3039,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							recursive: z.boolean().optional(),
 							kind: z.enum(["file", "folder"]).optional(),
 							extension: z.string().optional(),
-							contentTypePrefixes: z.array(z.string().min(1)).max(8).optional(),
+							contentTypePrefixes: z.array(z.string().min(1)).min(1).max(8).optional(),
 						});
 
 						type SearchParams = never;
@@ -3080,24 +3080,14 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								cursor: body._yay.cursor ?? null,
 								kind: body._yay.kind,
 								lowercaseExtension,
+								contentTypePrefixes: body._yay.contentTypePrefixes,
 								minDepth: 1,
 								maxDepth: body._yay.recursive ? undefined : 1,
 							});
 
-							// Filtering happens after pagination: cursor and isDone come from the unfiltered
-							// page, so a filtered page can be short or even empty while isDone is still
-							// false. Clients just keep fetching until isDone.
-							const contentTypePrefixes = body._yay.contentTypePrefixes;
-							const pageItems = contentTypePrefixes
-								? result.page.filter((item) => {
-										const contentType = item.contentType;
-										return contentType != null && contentTypePrefixes.some((prefix) => contentType.startsWith(prefix));
-									})
-								: result.page;
-
 							// One readiness query for the whole page, separate from list_subtree so upload
 							// finalization patches do not invalidate the node-listing cache entry.
-							const pageAssetIds = pageItems.flatMap((item) =>
+							const pageAssetIds = result.page.flatMap((item) =>
 								item.kind === "file" && item.assetId ? [item.assetId] : [],
 							);
 							const assetStates: r2_get_assets_ready_states_Result =
@@ -3108,14 +3098,14 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							console.info("Public API files listed", {
 								principalKind: principal.kind,
 								principalKey: principal.principalKey,
-								count: pageItems.length,
+								count: result.page.length,
 								isDone: result.isDone,
 							});
 
 							return {
 								status: 200,
 								body: {
-									items: pageItems.map((item) => {
+									items: result.page.map((item) => {
 										const assetState = item.assetId ? assetStates[item.assetId] : undefined;
 										return {
 											path: item.path,

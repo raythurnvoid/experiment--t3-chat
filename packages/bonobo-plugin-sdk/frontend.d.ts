@@ -116,8 +116,9 @@ export interface BonoboUiFrontendClient {
 	 * refreshes the token and retries exactly once. Ok responses resolve with the parsed JSON
 	 * body; non-ok responses throw an `Error` carrying `status` and `responseText`.
 	 *
-	 * Pagination: with `contentTypePrefixes`, `/api/v1/files/list` filters each page after
-	 * pagination, so a page may come back short or even empty while `isDone` is still `false`.
+	 * Pagination: with `contentTypePrefixes`, `/api/v1/files/list` scans for matching files
+	 * inside a bounded server page. A page may come back short or even empty while `isDone`
+	 * is still `false`.
 	 * Scan with `limit: 100` and `kind: "file"`, advance a bounded number of source pages per
 	 * user action (say 30), keep `cursor` across actions, buffer items fetched beyond what is
 	 * shown, and retry a `429` on the same cursor — the page is not lost.

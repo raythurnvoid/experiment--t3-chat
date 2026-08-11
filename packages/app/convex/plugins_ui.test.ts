@@ -804,41 +804,66 @@ describe("plugin ui sessions", () => {
 		expect(separateRoute.status).not.toBe(429);
 	});
 
-	test("filters by contentTypePrefixes while the cursor still advances", async () => {
+	test("scans past non-matching files before returning a content-type page", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		await seed_upload_node(t, fixture, { filename: "a.png", contentType: "image/png" });
-		await seed_upload_node(t, fixture, { filename: "b.md", contentType: "text/markdown" });
-		await seed_upload_node(t, fixture, { filename: "c.mp4", contentType: "video/mp4" });
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let index = 0; index < 105; index += 1) {
+				const name = `a-${String(index).padStart(3, "0")}.md`;
+				await ctx.db.insert("files_nodes", {
+					organizationId: fixture.membership.organizationId,
+					workspaceId: fixture.membership.workspaceId,
+					path: `/${name}`,
+					treePath: `/${name}`,
+					pathDepth: 1,
+					lowercaseExtension: "md",
+					name,
+					kind: "file",
+					contentType: "text/markdown",
+					parentId: "root",
+					createdBy: fixture.membership.userId,
+					updatedBy: fixture.membership.userId,
+					updatedAt: now,
+				});
+			}
+			for (const [name, contentType] of [
+				["z-photo.png", "image/png"],
+				["z-video.mp4", "video/mp4"],
+			] as const) {
+				await ctx.db.insert("files_nodes", {
+					organizationId: fixture.membership.organizationId,
+					workspaceId: fixture.membership.workspaceId,
+					path: `/${name}`,
+					treePath: `/${name}`,
+					pathDepth: 1,
+					lowercaseExtension: name.slice(name.lastIndexOf(".") + 1),
+					name,
+					kind: "file",
+					contentType,
+					parentId: "root",
+					createdBy: fixture.membership.userId,
+					updatedBy: fixture.membership.userId,
+					updatedAt: now,
+				});
+			}
+		});
 
 		const session = await mint_session_token(fixture);
-		const collected: Array<{ name: string }> = [];
-		let cursor: string | null = null;
-		let pageCount = 0;
-		for (let i = 0; i < 10; i++) {
-			const response = await t.fetch("/api/v1/files/list", {
-				method: "POST",
-				headers: auth_headers(session.token),
-				body: JSON.stringify({
-					recursive: true,
-					limit: 1,
-					cursor,
-					contentTypePrefixes: ["image/", "video/"],
-				}),
-			});
-			expect(response.status).toBe(200);
-			const body = await response.json();
-			collected.push(...body.items);
-			pageCount += 1;
-			if (body.isDone) {
-				break;
-			}
-			cursor = body.cursor;
-		}
+		const response = await t.fetch("/api/v1/files/list", {
+			method: "POST",
+			headers: auth_headers(session.token),
+			body: JSON.stringify({
+				recursive: true,
+				limit: 100,
+				contentTypePrefixes: ["image/", "video/"],
+			}),
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json();
 
-		// One node per page: the markdown page comes back empty but still advances the cursor.
-		expect(pageCount).toBeGreaterThanOrEqual(3);
-		expect(collected.map((item) => item.name)).toEqual(["a.png", "c.mp4"]);
+		expect(body.isDone).toBe(true);
+		expect(body.items.map((item: { name: string }) => item.name)).toEqual(["z-photo.png", "z-video.mp4"]);
 	});
 
 	test("issues download urls whose ttl is clamped to the session expiry", async () => {

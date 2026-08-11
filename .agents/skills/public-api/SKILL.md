@@ -35,6 +35,8 @@ All routes are POST and return JSON. Batch caps are tied to rate-bucket capaciti
 | `/api/v1/files/upload-urls`  | `files:write`    | Up to 20 files, presigned PUT urls, upload pipeline below                          |
 | `/api/v1/activities/start`   | `activities:write` | Plugin-facing activity feed entry; its durable mutation rechecks the live installation/version, active actor membership, and unarchived source file |
 
+`files/list` applies `contentTypePrefixes` inside the Convex query before pagination. `limit` counts matching docs, while `maximumRowsRead: 1000` bounds how many source docs one call scans. A sparse filtered page can therefore be short or empty while `isDone` is false; callers must continue with the returned cursor. The prefix predicate uses lexicographic string ranges because Convex filters do not provide `startsWith`.
+
 # Rate buckets and quota
 
 Buckets live in `packages/app/convex/rate_limiter.ts`:
