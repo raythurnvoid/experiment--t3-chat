@@ -714,8 +714,6 @@
 		grid-column: 2;
 
 		max-width: 12rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
 	}
 
 	.FileNodeViewFolderExplorer-cell-updated {
@@ -755,6 +753,11 @@
 		flex: 0 0 auto;
 
 		color: var(--color-fg-07);
+	}
+
+	.FileNodeViewFolderExplorer-updated-by {
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	.FileNodeViewFolderExplorer-more-action {

@@ -152,6 +152,32 @@ Checks the files-sidebar splitter geometry, grip icon contrast, and cursor at th
 vp env exec pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' }); await state.appPlaywriterHarness.inspectElement({ selector: '.MyPanelResizeHandle', attribute: { name: 'aria-label', value: 'Resize files sidebar' }, computedStyles: [{ name: 'pill', selector: '.MyPanelResizeHandleGrip-pill', properties: ['backgroundColor', 'outlineColor', 'outlineWidth'] }, { name: 'icon', selector: '.MyPanelResizeHandleGrip-icon', properties: ['stroke', 'color', 'zIndex'] }], hitTargets: [{ name: 'grip center', selector: '.MyPanelResizeHandleGrip' }] });"
 ```
 
+## Check Whether A Value Is Truncated Or Just Cut Off
+
+Use this for any "this text should end with …" report. It separates the three states that look alike on screen: fitting, ellipsized, and hard-clipped. `overflowing` is `scrollWidth > clientWidth`; a clipped element with `textOverflow: "clip"` is the bug, `"ellipsis"` on the *overflowing* element is the fix.
+
+```js
+const read = (el) => {
+	if (!el) return null;
+	const cs = getComputedStyle(el);
+	return {
+		text: (el.textContent || "").trim(),
+		display: cs.display,
+		overflow: cs.overflow,
+		textOverflow: cs.textOverflow,
+		whiteSpace: cs.whiteSpace,
+		clientWidth: el.clientWidth,
+		scrollWidth: el.scrollWidth,
+		overflowing: el.scrollWidth > el.clientWidth,
+		childElementCount: el.childElementCount,
+	};
+};
+```
+
+Read `display` and `childElementCount` together, because they name the most common cause. `text-overflow` only works on a block box whose text is a direct child. A bare text node inside a flex or grid container becomes an anonymous item that the container's own `text-overflow` never reaches, so the value is cut off with no `…` while every computed style still reads `ellipsis` — `display: "flex"` plus `childElementCount: 0` is that trap (found 2026-08-11 on the `/files` folder table's "updated by" column). The fix is to give the text its own element; on that element `overflow: hidden` alone is enough, because it already zeroes a flex item's automatic minimum size — `min-width: 0` next to it is dead code (verified by turning it off and re-measuring).
+
+Prove a fix this way rather than by screenshot alone: flip `text-overflow` to `clip` in the CSS, screenshot the same region, and confirm the `…` disappears and comes back. A screenshot on its own cannot tell a working ellipsis from a stale frame.
+
 ## Run A Real axe-core Audit
 
 `auditAccessibility(...)` is only a screen. For rule-level findings, inject axe-core. The dev server sets no CSP that blocks it, so `addScriptTag` works (verified 2026-07-26, axe-core 4.12.1, 572KB).

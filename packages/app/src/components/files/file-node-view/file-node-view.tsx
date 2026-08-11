@@ -2041,6 +2041,7 @@ type FileNodeViewFolderExplorerRow_ClassNames =
 	| "FileNodeViewFolderExplorer-cell-actions"
 	| "FileNodeViewFolderExplorer-link"
 	| "FileNodeViewFolderExplorer-icon"
+	| "FileNodeViewFolderExplorer-updated-by"
 	| "FileNodeViewFolderExplorer-more-action";
 
 type FileNodeViewFolderExplorerRow_Props = {
@@ -2211,7 +2212,11 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 					"FileNodeViewFolderExplorer-cell-updated-by" satisfies FileNodeViewFolderExplorerRow_ClassNames,
 				)}
 			>
-				{child.updatedBy || "Unknown"}
+				{/* The text needs its own element: the cell is a flex container, and a bare text node inside one
+				    becomes an anonymous item that the cell's own `text-overflow` never reaches. */}
+				<span className={"FileNodeViewFolderExplorer-updated-by" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
+					{child.updatedBy || "Unknown"}
+				</span>
 			</MyGridTableCell>
 			<MyGridTableCell
 				className={cn(
