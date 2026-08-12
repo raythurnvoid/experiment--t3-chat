@@ -23,7 +23,7 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | Message | `.AiChatMessage` |
 | Bash tool disclosure | `summary[aria-label^="Bash"]` (`aria-label="Bash: <cmd>"`, `aria-busy` while running) |
 | Bash terminal output | `[aria-label="Bash terminal output"]` (`role=textbox`) |
-| Failed send | `role=alert` containing `Message failed to send.` + a `Retry` button |
+| Failed send | `role=alert` containing `Message failed to send.` + `Show error details` and `Retry` buttons; the details dialog is named `Error details` and its raw message textbox is named `Raw error message` |
 | Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (whole row is a button; clicking switches to the Pending changes tab; counts only docs whose `threadIds` include the open chat, so a fresh chat shows no strip even when the workspace has pending changes) |
 | Pending-changes tab count badge | `.FileEditorSidebarPendingTabBadge` (inside `#app_file_editor_sidebar_tabs_pending`; absent at count 0; always the workspace-wide count) |
 | Composer image attachment badges | `[aria-label="Image attachments"] li` (each has an `<img>` data-URL preview, a name `<span>`, and a `Remove <filename>` button) |

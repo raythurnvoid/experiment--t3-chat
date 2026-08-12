@@ -18,6 +18,7 @@ import {
 	ChevronLeft,
 	ChevronRight,
 	GitBranch,
+	Info,
 	RefreshCw,
 	ShieldQuestion,
 } from "lucide-react";
@@ -48,6 +49,16 @@ import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/
 import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/ai-chat-markdown.tsx";
 import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { MyLink } from "@/components/my-link.tsx";
+import {
+	MyModal,
+	MyModalCloseTrigger,
+	MyModalDescription,
+	MyModalHeader,
+	MyModalHeading,
+	MyModalPopover,
+	MyModalScrollableArea,
+	MyModalTrigger,
+} from "@/components/my-modal.tsx";
 import { cn, json_strigify_ensured, sx } from "@/lib/utils.ts";
 import { path_name_of } from "@/lib/paths.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
@@ -1090,21 +1101,48 @@ const AiChatMessageBubble = memo(function AiChatMessageBubble(props: AiChatMessa
 type AiChatMessageUserSendError_ClassNames =
 	| "AiChatMessageUserSendError"
 	| "AiChatMessageUserSendError-text"
+	| "AiChatMessageUserSendError-details-button"
 	| "AiChatMessageUserSendError-retry";
 
 type AiChatMessageUserSendError_Props = {
 	message: string;
+	details?: string | undefined;
 	onRetry: () => void;
 };
 
 const AiChatMessageUserSendError = memo(function AiChatMessageUserSendError(props: AiChatMessageUserSendError_Props) {
-	const { message, onRetry } = props;
+	const { message, details, onRetry } = props;
 
 	return (
 		<div className={"AiChatMessageUserSendError" satisfies AiChatMessageUserSendError_ClassNames}>
 			<span className={"AiChatMessageUserSendError-text" satisfies AiChatMessageUserSendError_ClassNames} role="alert">
 				{message}
 			</span>
+			{details !== undefined && (
+				<MyModal>
+					<MyModalTrigger>
+						<MyIconButton
+							className={
+								"AiChatMessageUserSendError-details-button" satisfies AiChatMessageUserSendError_ClassNames
+							}
+							variant="outline_destructive"
+							tooltip="Show error details"
+						>
+							<Info />
+						</MyIconButton>
+					</MyModalTrigger>
+					<MyModalPopover unmountOnHide>
+						<MyModalHeader>
+							<MyModalHeading>Error details</MyModalHeading>
+							<MyModalDescription>Raw error message returned while sending this message.</MyModalDescription>
+						</MyModalHeader>
+						<MyModalScrollableArea>
+							<TextMonospaceBlock text={details} aria-label="Raw error message" maxHeight="50vh" />
+						</MyModalScrollableArea>
+						<MyModalCloseTrigger />
+					</MyModalPopover>
+				</MyModal>
+			)}
 			<MyButton
 				className={"AiChatMessageUserSendError-retry" satisfies AiChatMessageUserSendError_ClassNames}
 				variant="outline_destructive"
@@ -1146,6 +1184,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	isEditing: boolean;
 	branchAnchorIds: readonly string[];
 	sendErrorText?: string | undefined;
+	sendErrorDetails?: string | undefined;
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
@@ -1171,6 +1210,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		isEditing,
 		branchAnchorIds,
 		sendErrorText,
+		sendErrorDetails,
 		onToolOutput,
 		onToolResumeStream,
 		onToolStop,
@@ -1397,7 +1437,13 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 					</button>
 				)}
 				<div className={"AiChatMessageUser-actions" satisfies AiChatMessageUser_ClassNames} hidden={isEditing}>
-					{sendErrorText && <AiChatMessageUserSendError message={sendErrorText} onRetry={handleRetrySend} />}
+					{sendErrorText && (
+						<AiChatMessageUserSendError
+							message={sendErrorText}
+							details={sendErrorDetails}
+							onRetry={handleRetrySend}
+						/>
+					)}
 					<div className={"AiChatMessageUser-actions-main" satisfies AiChatMessageUser_ClassNames}>
 						<CopyIconButton
 							className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
@@ -1746,6 +1792,13 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 
 		return "Message failed to send.";
 	});
+	const sendErrorDetails = AiChatController.useStore((state) => {
+		if (!selectedThreadId || state.failedSendUserMessageIdByThreadId.get(selectedThreadId) !== messageId) {
+			return undefined;
+		}
+
+		return state.failedSendErrorMessageByThreadId.get(selectedThreadId) ?? undefined;
+	});
 
 	const handleSelectedModelIdChange = useFn<AiChatComposer_Props["onSelectedModelIdChange"]>((value) => {
 		actions.setSelectedModelId(value);
@@ -1840,6 +1893,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				onMessageRetrySend={handleMessageRetrySend}
 				onSelectBranchAnchor={handleSelectBranchAnchor}
 				sendErrorText={sendErrorText}
+				sendErrorDetails={sendErrorDetails}
 				{...rest}
 			/>
 		);

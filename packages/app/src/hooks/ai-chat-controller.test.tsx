@@ -391,6 +391,9 @@ function RuntimeSendProbe() {
 	const failedSendUserMessageId = AiChatController.useStore((state) =>
 		selectedThreadId ? (state.failedSendUserMessageIdByThreadId.get(selectedThreadId) ?? null) : null,
 	);
+	const failedSendErrorMessage = AiChatController.useStore((state) =>
+		selectedThreadId ? (state.failedSendErrorMessageByThreadId.get(selectedThreadId) ?? null) : null,
+	);
 	const failedMessage = controller.activeBranchMessages.list.find((message) => message.id === failedSendUserMessageId);
 
 	return (
@@ -399,6 +402,7 @@ function RuntimeSendProbe() {
 			<div data-testid="runtime-session">{selectedChat ? "session" : "no-session"}</div>
 			<div data-testid="runtime-latest-message">{latestMessage?.id ?? "null"}</div>
 			<div data-testid="runtime-failed-message">{failedSendUserMessageId ?? "null"}</div>
+			<div data-testid="runtime-failed-error">{failedSendErrorMessage ?? "null"}</div>
 			<button type="button" onClick={() => controller.startNewChat()}>
 				new runtime
 			</button>
@@ -1532,7 +1536,7 @@ describe("AiChatController", () => {
 			messages: [message],
 			branchSiblingIdsByParentId: new Map([[message.metadata.convexParentId, [message.id]]]),
 			isRunning: false,
-			hasError: false,
+			errorMessage: null,
 		});
 
 		const firstState = AiChatController.useStore.getState();
@@ -1547,7 +1551,7 @@ describe("AiChatController", () => {
 			messages: [clonedMessage],
 			branchSiblingIdsByParentId: new Map([[message.metadata.convexParentId, [message.id]]]),
 			isRunning: false,
-			hasError: false,
+			errorMessage: null,
 		});
 
 		const nextState = AiChatController.useStore.getState();
@@ -1668,6 +1672,7 @@ describe("AiChatController", () => {
 
 		await waitFor(() => {
 			expect(screen.getByTestId("runtime-failed-message").textContent).toBe("ai_message_mock_0");
+			expect(screen.getByTestId("runtime-failed-error").textContent).toBe("send failed");
 		});
 
 		fireEvent.click(screen.getByRole("button", { name: "retry latest" }));

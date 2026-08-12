@@ -227,6 +227,12 @@
 		font-size: 0.8125rem;
 		line-height: 1;
 	}
+
+	.AiChatMessageUserSendError-details-button.MyIconButton.MyButton {
+		width: 28px;
+		height: 28px;
+		padding: 4px;
+	}
 	/* #endregion user message send error */
 
 	/* #region text user */

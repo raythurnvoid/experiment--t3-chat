@@ -11,6 +11,7 @@ const hookMocks = vi.hoisted(() => {
 		branchSiblingIdsByMessageId: new Map<string, readonly string[]>(),
 		editingMessageId: null as string | null,
 		sendErrorMessageId: null as string | null,
+		sendErrorDetails: null as string | null,
 		actions: {
 			addToolOutput: vi.fn(),
 			resumeStream: vi.fn(),
@@ -30,6 +31,7 @@ type AiChatControllerStoreMockState = {
 	messageById: Map<string, ai_chat_AiSdk5UiMessage>;
 	branchSiblingIdsByMessageId: Map<string, readonly string[]>;
 	failedSendUserMessageIdByThreadId: Map<string, string | null>;
+	failedSendErrorMessageByThreadId: Map<string, string | null>;
 	editingMessageIdByThreadId: Map<string, string | null>;
 };
 
@@ -37,10 +39,12 @@ vi.mock("@/hooks/ai-chat-controller.tsx", () => ({
 	AiChatController: {
 		useStore: <Result,>(selector: (state: AiChatControllerStoreMockState) => Result) => {
 			const failedSendUserMessageIdByThreadId = new Map<string, string | null>();
+			const failedSendErrorMessageByThreadId = new Map<string, string | null>();
 			const editingMessageIdByThreadId = new Map<string, string | null>();
 
 			if (hookMocks.sendErrorMessageId) {
 				failedSendUserMessageIdByThreadId.set("thread_1", hookMocks.sendErrorMessageId);
+				failedSendErrorMessageByThreadId.set("thread_1", hookMocks.sendErrorDetails);
 			}
 			if (hookMocks.editingMessageId) {
 				editingMessageIdByThreadId.set("thread_1", hookMocks.editingMessageId);
@@ -50,6 +54,7 @@ vi.mock("@/hooks/ai-chat-controller.tsx", () => ({
 				messageById: hookMocks.messageById,
 				branchSiblingIdsByMessageId: hookMocks.branchSiblingIdsByMessageId,
 				failedSendUserMessageIdByThreadId,
+				failedSendErrorMessageByThreadId,
 				editingMessageIdByThreadId,
 			});
 		},
@@ -116,6 +121,7 @@ function createAssistantMessage(args?: { id?: string; text?: string; parentId?: 
 function renderMessage(args: {
 	message: ai_chat_AiSdk5UiMessage;
 	sendError?: boolean | undefined;
+	sendErrorDetails?: string | undefined;
 	branchSiblingIds?: readonly string[] | undefined;
 	isEditing?: boolean | undefined;
 	isRunning?: boolean | undefined;
@@ -124,6 +130,7 @@ function renderMessage(args: {
 	hookMocks.branchSiblingIdsByMessageId.set(args.message.id, args.branchSiblingIds ?? [args.message.id]);
 	hookMocks.editingMessageId = args.isEditing ? args.message.id : null;
 	hookMocks.sendErrorMessageId = args.sendError ? args.message.id : null;
+	hookMocks.sendErrorDetails = args.sendErrorDetails ?? null;
 
 	return render(
 		<AiChatMessage
@@ -148,6 +155,7 @@ describe("AiChatMessage", () => {
 		hookMocks.branchSiblingIdsByMessageId.clear();
 		hookMocks.editingMessageId = null;
 		hookMocks.sendErrorMessageId = null;
+		hookMocks.sendErrorDetails = null;
 	});
 
 	test("shows Thinking without actions before the assistant message exists", () => {
@@ -170,6 +178,25 @@ describe("AiChatMessage", () => {
 		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith("thread_1", "Can you summarize my workspace notes?", {
 			messageId: "msg_user_failed",
 		});
+	});
+
+	test("shows the raw failed-send error in a scrollable details dialog", () => {
+		const rawErrorMessage = JSON.stringify({ type: "error", message: "x".repeat(5_000) });
+		renderMessage({
+			message: createUserMessage(),
+			sendError: true,
+			sendErrorDetails: rawErrorMessage,
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Show error details" }));
+
+		const dialog = screen.getByRole("dialog", { name: "Error details" });
+		const details = screen.getByRole<HTMLPreElement>("textbox", { name: "Raw error message" });
+		expect(details.textContent).toBe(rawErrorMessage);
+		expect(details.style.getPropertyValue("--TextMonospaceBlock-max-height")).toBe("50vh");
+
+		fireEvent.click(screen.getByRole("button", { name: "Close" }));
+		expect(dialog.hasAttribute("inert")).toBe(true);
 	});
 
 	test("renders user message text as plain text, without markdown parsing", () => {

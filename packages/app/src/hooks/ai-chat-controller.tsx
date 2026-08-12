@@ -91,6 +91,7 @@ type StoreState = {
 	activeMessageIdsByThreadId: Map<string, readonly string[]>;
 	branchSiblingIdsByMessageId: Map<string, readonly string[]>;
 	failedSendUserMessageIdByThreadId: Map<string, string | null>;
+	failedSendErrorMessageByThreadId: Map<string, string | null>;
 	editingMessageIdByThreadId: Map<string, string | null>;
 };
 
@@ -521,6 +522,7 @@ const useStore = ((/* iife */) => {
 		activeMessageIdsByThreadId: new Map(),
 		branchSiblingIdsByMessageId: new Map(),
 		failedSendUserMessageIdByThreadId: new Map(),
+		failedSendErrorMessageByThreadId: new Map(),
 		editingMessageIdByThreadId: new Map(),
 	}));
 
@@ -870,6 +872,7 @@ const useStore = ((/* iife */) => {
 					activeMessageIdsByThreadId: new Map(),
 					branchSiblingIdsByMessageId: new Map(),
 					failedSendUserMessageIdByThreadId: new Map(),
+					failedSendErrorMessageByThreadId: new Map(),
 					editingMessageIdByThreadId: new Map(),
 				});
 			},
@@ -878,7 +881,7 @@ const useStore = ((/* iife */) => {
 				messages: readonly ai_chat_AiSdk5UiMessage[];
 				branchSiblingIdsByParentId: Map<string | null, readonly string[]>;
 				isRunning: boolean;
-				hasError: boolean;
+				errorMessage: string | null;
 			}) {
 				const { threadId } = args;
 				if (!threadId) {
@@ -937,7 +940,7 @@ const useStore = ((/* iife */) => {
 					// The backend can persist the user before its assistant stream fails.
 					// Keep the failed turn tied to that user even after Convex assigns its id.
 					const failedSendUserMessage =
-						args.hasError && !args.isRunning
+						args.errorMessage !== null && !args.isRunning
 							? args.messages.findLast((message) => message.role === "user")
 							: undefined;
 					const failedSendUserMessageId = failedSendUserMessage?.id ?? null;
@@ -945,6 +948,15 @@ const useStore = ((/* iife */) => {
 					if ((failedSendUserMessageIdByThreadId.get(threadId) ?? null) !== failedSendUserMessageId) {
 						failedSendUserMessageIdByThreadId = new Map(failedSendUserMessageIdByThreadId);
 						failedSendUserMessageIdByThreadId.set(threadId, failedSendUserMessageId);
+						changed = true;
+					}
+
+					// Keep the raw message here because AI SDK can clear its Error before the failed turn leaves the UI.
+					const failedSendErrorMessage = failedSendUserMessage ? args.errorMessage : null;
+					let failedSendErrorMessageByThreadId = state.failedSendErrorMessageByThreadId;
+					if ((failedSendErrorMessageByThreadId.get(threadId) ?? null) !== failedSendErrorMessage) {
+						failedSendErrorMessageByThreadId = new Map(failedSendErrorMessageByThreadId);
+						failedSendErrorMessageByThreadId.set(threadId, failedSendErrorMessage);
 						changed = true;
 					}
 
@@ -957,6 +969,7 @@ const useStore = ((/* iife */) => {
 						activeMessageIdsByThreadId,
 						branchSiblingIdsByMessageId,
 						failedSendUserMessageIdByThreadId,
+						failedSendErrorMessageByThreadId,
 					};
 				});
 			},
@@ -2848,7 +2861,7 @@ const useThreadRuntimeController = () => {
 			messages: activeBranchMessages.list,
 			branchSiblingIdsByParentId: messageChildIdsByParentId,
 			isRunning,
-			hasError: Boolean(chat.error),
+			errorMessage: chat.error?.message ?? null,
 		});
 	});
 
@@ -2999,7 +3012,7 @@ const useThreadRuntimeController = () => {
 			messages: activeBranchMessages.list,
 			branchSiblingIdsByParentId: messageChildIdsByParentId,
 			isRunning,
-			hasError: Boolean(chat.error),
+			errorMessage: chat.error?.message ?? null,
 		});
 	});
 
