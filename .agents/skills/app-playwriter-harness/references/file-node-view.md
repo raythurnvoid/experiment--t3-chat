@@ -170,7 +170,8 @@ Upload `assets/files/qa-frontmatter-overcap.md` through the sidebar. After conve
 ## Pending Changes Sidebar
 
 - Switch with `#app_file_editor_sidebar_tabs_pending`.
-- Panel region: `getByRole("region", { name: "Pending changes" })` (class `.FileEditorSidebarPending`); empty state is `.FileEditorSidebarPending-empty` ("No pending changes").
+- Panel region: `getByRole("region", { name: "Pending changes" })` (class `.FileEditorSidebarPending`); empty state is `.FileEditorSidebarPending-empty` ("No pending changes"). Since 2026-08-12 the empty state carries the `.FileEditorSidebarPending` root class too, so that class alone does not tell the two states apart — only the populated branch has `role="region"`.
+- The panel is pinned to the viewport like the Agent tab: `.FileNodeView-editor-sidebar-panel` turns sticky and `.FileEditorSidebarPending` is `calc(100dvh - 92px)` tall at `top: 92`, with its own scroller. So on a long page (a folder after `Show more`) the panel height must stay near the viewport height, not the document height — a measured 4000+ px panel means the pinning rule stopped matching. The Comments tab is deliberately NOT pinned; it stays on the shared editor scroll surface for anchored comments.
 - Source selector: `getByRole("combobox", { name: /^Pending changes source:/ })`. It contains `All changes`, `You`, and one option per contributing persisted agent chat, newest activity first. `You` is the threadless group and stays visible at count 0. Archived chats remain available and say `Archived` in their option detail.
 - One pending doc can list several contributor chat ids. The same complete row must appear in each matching chat view. Counts overlap by design and do not need to add up to the All count.
 - Source filtering happens after the full row model is built. This keeps move-aware destination occupancy and replacement captions correct even when a related row belongs to a different source.

@@ -1,19 +1,26 @@
 @layer components {
 	/* #region root */
+	/* Pin this panel to the viewport, the same way `FileEditorSidebarAgent` does. The sidebar column
+	   stretches to the whole editor scroll height. Without a viewport-sized box the panel grows with
+	   the document, so on a long page its header and its empty message sit far below the fold. */
 	.FileEditorSidebarPending {
-		flex: 1;
-		min-height: 0;
-
 		display: flex;
 		flex-direction: column;
+
+		width: 100%;
+		/* 92px is the size of `FileEditorSidebar-toolbar` and the files route header. */
+		height: calc(100dvh - 92px);
+
+		position: sticky;
+		/* 44px is the size of `FileEditorSidebar-toolbar` */
+		top: 44px;
 
 		overflow: hidden auto;
 	}
 
+	/* Keep only the centering here. The empty state also carries the root class above, which gives
+	   it the same pinned box. */
 	.FileEditorSidebarPending-empty {
-		flex: 1;
-
-		display: flex;
 		align-items: center;
 		justify-content: center;
 

@@ -116,8 +116,9 @@
 		}
 	}
 
-	.FileNodeView-editor-sidebar-panel:has(.FileEditorSidebar-panel[data-open="true"] .FileEditorSidebarAgent) {
-		/* Keep only the Agent tab pinned; comments stay on the shared editor scroll surface. */
+	.FileNodeView-editor-sidebar-panel:has(.FileEditorSidebar-panel[data-open="true"] .FileEditorSidebarAgent),
+	.FileNodeView-editor-sidebar-panel:has(.FileEditorSidebar-panel[data-open="true"] .FileEditorSidebarPending) {
+		/* Keep the Agent and Pending changes tabs pinned; comments stay on the shared editor scroll surface. */
 		position: sticky;
 		top: 0;
 		align-self: start;

@@ -1507,7 +1507,14 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		return (
 			<>
 				{statusElement}
-				<div className={cn("FileEditorSidebarPending-empty" satisfies FileEditorSidebarPending_ClassNames)}>
+				<div
+					// Keep the root class here too. It owns the pinned viewport-sized box, and the
+					// sticky rule in `file-node-view.css` matches this one class for both states.
+					className={cn(
+						"FileEditorSidebarPending" satisfies FileEditorSidebarPending_ClassNames,
+						"FileEditorSidebarPending-empty" satisfies FileEditorSidebarPending_ClassNames,
+					)}
+				>
 					No pending changes
 				</div>
 			</>
