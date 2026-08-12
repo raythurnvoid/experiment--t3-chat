@@ -1338,11 +1338,16 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 // #endregion tree item title
 
 // #region tree item primary content
-type FilesSidebarTreeItemPrimaryContent_ClassNames = "FilesSidebarTreeItemPrimaryContent";
+type FilesSidebarTreeItemPrimaryContent_ClassNames =
+	| "FilesSidebarTreeItemPrimaryContent"
+	| "FilesSidebarTreeItemPrimaryContent-added"
+	| "FilesSidebarTreeItemPrimaryContent-processing";
 
 type FilesSidebarTreeItemPrimaryContent_Props = {
 	title: string;
 	kind: files_TreeItem["kind"];
+	nodeId: app_convex_Id<"files_nodes"> | null;
+	isAddedFile: boolean;
 	renameInputProps: ReturnType<FilesSidebarTreeItem_Instance["getRenameInputProps"]>;
 	isRenaming: boolean;
 	isRestricted: boolean;
@@ -1353,7 +1358,21 @@ type FilesSidebarTreeItemPrimaryContent_Props = {
 const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPrimaryContent(
 	props: FilesSidebarTreeItemPrimaryContent_Props,
 ) {
-	const { title, kind, renameInputProps, isRenaming, isRestricted, renameError, onRenameErrorClear } = props;
+	const {
+		title,
+		kind,
+		nodeId,
+		isAddedFile,
+		renameInputProps,
+		isRenaming,
+		isRestricted,
+		renameError,
+		onRenameErrorClear,
+	} = props;
+	const { membershipId } = AppTenantProvider.useContext();
+
+	const activities = useFileNodeActivities({ membershipId, nodeId });
+	const isProcessing = activities.some((activity) => activity.status === "running");
 
 	return (
 		<div className={"FilesSidebarTreeItemPrimaryContent" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}>
@@ -1366,6 +1385,22 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 				renameError={renameError}
 				onRenameErrorClear={onRenameErrorClear}
 			/>
+			{isAddedFile ? (
+				<div
+					className={"FilesSidebarTreeItemPrimaryContent-added" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}
+				>
+					Added
+				</div>
+			) : null}
+			{isProcessing ? (
+				<div
+					className={
+						"FilesSidebarTreeItemPrimaryContent-processing" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames
+					}
+				>
+					Processing
+				</div>
+			) : null}
 		</div>
 	);
 });
@@ -1413,10 +1448,11 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 	} = props;
 
 	// The sharing mark takes no pointer events, so it cannot host its own tooltip; a restricted row
-	// explains itself here instead. The updated-by text stays visible in the row's second line.
+	// explains itself here instead. The row itself shows no updated-when/by text, so this tooltip is
+	// the only place that exposes it.
 	const tooltipContent = isRestricted
 		? "Only chosen people and roles can open this"
-		: `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedByDisplayName}`;
+		: `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the" })} by ${updatedByDisplayName}`;
 
 	return (
 		<MyTooltip timeout={2000} placement="bottom" open={isTreeDragging ? false : undefined}>
@@ -1453,60 +1489,6 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 	);
 });
 // #endregion tree item primary action
-
-// #region tree item secondary content
-type FilesSidebarTreeItemSecondaryContent_ClassNames =
-	| "FilesSidebarTreeItemSecondaryContent"
-	| "FilesSidebarTreeItemSecondaryContent-text"
-	| "FilesSidebarTreeItemSecondaryContent-added"
-	| "FilesSidebarTreeItemSecondaryContent-processing";
-
-type FilesSidebarTreeItemSecondaryContent_Props = {
-	nodeId: app_convex_Id<"files_nodes"> | null;
-	secondaryText: string;
-	isAddedFile: boolean;
-};
-
-const FilesSidebarTreeItemSecondaryContent = memo(function FilesSidebarTreeItemSecondaryContent(
-	props: FilesSidebarTreeItemSecondaryContent_Props,
-) {
-	const { nodeId, secondaryText, isAddedFile } = props;
-	const { membershipId } = AppTenantProvider.useContext();
-
-	const activities = useFileNodeActivities({ membershipId, nodeId });
-	const isProcessing = activities.some((activity) => activity.status === "running");
-
-	return (
-		<div className={"FilesSidebarTreeItemSecondaryContent" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames}>
-			<div
-				className={
-					"FilesSidebarTreeItemSecondaryContent-text" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames
-				}
-			>
-				{secondaryText}
-			</div>
-			{isAddedFile ? (
-				<div
-					className={
-						"FilesSidebarTreeItemSecondaryContent-added" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames
-					}
-				>
-					Added
-				</div>
-			) : null}
-			{isProcessing ? (
-				<div
-					className={
-						"FilesSidebarTreeItemSecondaryContent-processing" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames
-					}
-				>
-					Processing
-				</div>
-			) : null}
-		</div>
-	);
-});
-// #endregion tree item secondary content
 
 // #region tree item actions
 type FilesSidebarTreeItemActions_ClassNames = "FilesSidebarTreeItemActions";
@@ -1815,7 +1797,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	const [isMenuOpen, setIsMenuOpen] = useState(false);
 
 	const updatedByDisplayName = displayNameByUserId.get(itemData.updatedBy) ?? "Unknown";
-	const metaText = `${format_relative_time(itemData.updatedAt)} · ${updatedByDisplayName}`;
 	const shouldRenderPlaceholder = !isSearchActive && itemData.kind === "folder" && !hasChildren && isExpanded;
 
 	// Convex dedupes this subscription across rows; eagerCreated marks files that exist
@@ -2034,6 +2015,8 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 						<FilesSidebarTreeItemPrimaryContent
 							title={itemData.name}
 							kind={itemData.kind}
+							nodeId={files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : null}
+							isAddedFile={isAddedFile}
 							renameInputProps={renameInputProps}
 							isRenaming={isRenaming}
 							isRestricted={isRestricted}
@@ -2056,12 +2039,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 								aria-hidden="true"
 							/>
 						)}
-
-						<FilesSidebarTreeItemSecondaryContent
-							nodeId={files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : null}
-							secondaryText={metaText}
-							isAddedFile={isAddedFile}
-						/>
 
 						<FilesSidebarTreeItemActions
 							label={label}

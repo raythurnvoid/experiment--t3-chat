@@ -97,7 +97,6 @@ Tree-item components:
 - `FilesSidebarTreeItemIcon`
 - `FilesSidebarTreeItemPrimaryContent`
 - `FilesSidebarTreeItemPrimaryAction`
-- `FilesSidebarTreeItemSecondaryContent`
 - `FilesSidebarTreeItemActions`
 - `FilesSidebarTreeItemSecondaryAction`
 - `FilesSidebarTreeItemSecondaryActionCreateFile`
@@ -120,7 +119,6 @@ Tree-item components:
 - Ancestors of matched files/folders remain visible.
 - Search-open snapshots expansion state and auto-expands relevant parents; search-close restores prior expansion.
 - The query shape picks the matched field, so users paste what they copied without learning a prefix syntax. `files_sidebar_parse_search_query` decides: a pasted app link is unwrapped into the `nodeId` search param or the `/files/<path>` splat it carries; a long lowercase alphanumeric string is a node id; anything containing `/` matches `path`; everything else matches `name`. There is no `>`/`#` prefix syntax.
-- Path queries swap the row's secondary line from "edited by" to the node path, so two files with the same name in different folders can be told apart.
 - Enter opens the query's top match: the node whose `path` matched exactly, or the only node that matched at all. The tree's scoped rename `Enter` hotkey is separate and must keep working.
 - `Mod+K` (registered in `FileNodeView`, `ignoreInputs: false`) opens the files sidebar if closed and focuses the search input through the global `app_files_sidebar_search` id on the `MyInput` wrapper. `MyInputControl` owns its own generated id for label wiring, so the global id cannot live on the control.
 - The files route's `q` search param mirrors the search box both ways. It seeds the box on mount (the path route's not-found panel uses that so a failed link lands on a filled, case-insensitive search), and the box writes back to it through `FilesSidebar_Props.onSearchQueryChange` → `FileNodeView.handleSearchQueryChange` → `onNavigateSearch(..., { replace: true })`. The write is already debounced by `FilesSidebarSearch`; do not add a second timer. `replace` keeps a whole typing session on one history entry, and an empty query drops the param instead of leaving `?q=`.
@@ -145,7 +143,8 @@ Tree-item components:
 - File primary action navigates to the file.
 - Folder primary action navigates to the folder screen.
 - The selection anchor drives active-track highlighting.
-- The current route/navigated row uses a stable row-left accent rail instead of bold text. Keep row labels regular weight so selection does not change text metrics. The rail belongs only to navigated rows. Internal Headless Tree focus and pointer hover are not selection and must not paint the selected row surface after pointer clicks; hover can brighten row text, while `:focus-visible` keeps the keyboard interaction surface. Idle non-selected rows use one quieter foreground shade and brighten to the navigated-row lightness on hover, selected, and navigated states. Keyboard focus must stay as the top visual layer: keep the focus ring continuous, keep the rail visible just inside it, and remove idle title input chrome so row names render as plain text outside rename mode. The disabled title input must inherit the row color; otherwise only icons dim while filenames remain too bright.
+- The current route/navigated row uses a stable row-left accent rail instead of bold text. Keep row labels regular weight so selection does not change text metrics. The rail belongs only to navigated rows. The navigated row's fill is a neutral base gradient, not an accent tint: the rail alone carries the accent "current" signal. Internal Headless Tree focus and pointer hover are not selection and must not paint the selected row surface after pointer clicks; hover can brighten row text, while `:focus-visible` keeps the keyboard interaction surface. Idle non-selected rows use one quieter foreground shade and brighten to the navigated-row lightness on hover, selected, and navigated states. Keyboard focus must stay as the top visual layer: keep the focus ring continuous, keep the rail visible just inside it, and remove idle title input chrome so row names render as plain text outside rename mode. The disabled title input must inherit the row color; otherwise only icons dim while filenames remain too bright.
+- Rows are single-line: only the icon, the name, and the inline `Added`/`Processing` badges. The updated-when/by info lives in the row tooltip, not in the row itself.
 
 ## Create, Rename, Archive, Unarchive
 
@@ -252,7 +251,6 @@ Tree-item components:
 - Search keeps ancestor chain for matching files/folders.
 - Search-open expands relevant branches and search-close restores prior expansion.
 - Search matches a name fragment, a path, a node id, and a pasted app link, and Enter opens the top match for each.
-- Path queries show the node path as the row's secondary line, and a sibling-prefix folder such as `/docs-archive` never matches a `/docs` query.
 - `Mod+K` opens the files sidebar when closed and focuses the search input.
 - Renaming a row commits on Enter only while its live write permission still allows it. Losing that permission cancels the active rename.
 - A pasted path URL opens the file, settles on `?nodeId=`, adds one history entry, and never flashes the not-found panel on a cold load.
