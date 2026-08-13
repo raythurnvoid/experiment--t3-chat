@@ -15,10 +15,11 @@ import {
 type FileEditorCommentsSidebarThread_Props = {
 	thread: FileEditorCommentsThread_Props["thread"];
 	hidden: FileEditorCommentsThread_Props["hidden"];
+	canResolve: boolean;
 };
 
 function FileEditorCommentsSidebarThread(props: FileEditorCommentsSidebarThread_Props) {
-	const { thread, hidden } = props;
+	const { thread, hidden, canResolve } = props;
 
 	const [open, setOpen] = useState(false);
 
@@ -41,7 +42,14 @@ function FileEditorCommentsSidebarThread(props: FileEditorCommentsSidebarThread_
 	});
 
 	return (
-		<FileEditorCommentsThread ref={threadEl} thread={thread} open={open} hidden={hidden} onToggle={handleToggle} />
+		<FileEditorCommentsThread
+			ref={threadEl}
+			thread={thread}
+			open={open}
+			hidden={hidden}
+			canResolve={canResolve}
+			onToggle={handleToggle}
+		/>
 	);
 }
 // #endregion thread
@@ -57,10 +65,11 @@ export type FileEditorPlainTextCommentsSidebar_ClassNames =
 
 export type FileEditorCommentsSidebar_Props = {
 	threadIds: string[];
+	canResolve: boolean;
 };
 
 export function FileEditorCommentsSidebar(props: FileEditorCommentsSidebar_Props) {
-	const { threadIds } = props;
+	const { threadIds, canResolve } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -119,6 +128,7 @@ export function FileEditorCommentsSidebar(props: FileEditorCommentsSidebar_Props
 							key={`${thread.id}`}
 							thread={thread}
 							hidden={Boolean(filteredThreadsIds?.has(thread.id)) === false}
+							canResolve={canResolve}
 						/>
 					))
 				)}

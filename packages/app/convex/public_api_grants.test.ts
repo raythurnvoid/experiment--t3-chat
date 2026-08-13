@@ -205,6 +205,7 @@ async function seed_markdown_file(args: {
 		expectedUpdatedAt: null,
 		baseYjsSequence: 0,
 		baseLineageGeneration: 0,
+		expectedSourceNodeIds: [],
 		baseStateId: sealedByRole.get("base")!.stateId,
 		stagedStateId: sealedByRole.get("staged")!.stateId,
 		unstagedStateId: sealedByRole.get("unstaged")!.stateId,

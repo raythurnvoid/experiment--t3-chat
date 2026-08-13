@@ -531,6 +531,14 @@
 		user-select: none;
 	}
 
+	.FilesSidebarTreeItemPrimaryContent-read-only {
+		width: 14px;
+		height: 14px;
+		flex: 0 0 auto;
+		margin-left: 3px;
+		color: var(--color-fg-07);
+	}
+
 	/* #endregion tree item primary content */
 
 	/* #region tree item icon */

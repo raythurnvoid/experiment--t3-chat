@@ -610,7 +610,11 @@ function create_editor_content_state_from_file_content_data(
 	} satisfies RemoteEditorContentState;
 }
 
-type FileEditorDiff_ClassNames = "FileEditorDiff" | "FileEditorDiff-editor" | "FileEditorDiff-anchor" | "FileEditorDiff-refusal";
+type FileEditorDiff_ClassNames =
+	| "FileEditorDiff"
+	| "FileEditorDiff-editor"
+	| "FileEditorDiff-anchor"
+	| "FileEditorDiff-refusal";
 
 type FileEditorDiff_CssVars = {
 	"--FileEditorDiff-anchor-name": string;
@@ -1673,7 +1677,10 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 				</div>
 			</div>
 			{commentsPortalHost &&
-				createPortal(<FileEditorCommentsSidebar threadIds={commentThreadIds} />, commentsPortalHost)}
+				createPortal(
+					<FileEditorCommentsSidebar threadIds={commentThreadIds} canResolve={editable} />,
+					commentsPortalHost,
+				)}
 			{editable
 				? contentWidgets.map((widget) =>
 						createPortal(
@@ -1740,8 +1747,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	const editorBaseYjsSequence = file_editor_diff_editor_base_yjs_sequence({
 		pendingUpdate,
 		fileContentYjsSequence: fileContentData?.yjsSequence,
-		remoteYjsSequence:
-			remoteEditorContentState === "refused" ? undefined : remoteEditorContentState?.yjsSequence,
+		remoteYjsSequence: remoteEditorContentState === "refused" ? undefined : remoteEditorContentState?.yjsSequence,
 		lastSequenceSaved: pendingUpdateLastSequenceSaved?.lastSequenceSaved,
 	});
 

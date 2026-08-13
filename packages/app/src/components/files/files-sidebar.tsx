@@ -28,6 +28,7 @@ import {
 	FolderUp,
 	Hash,
 	Link2,
+	LockKeyhole,
 	Search,
 	Upload,
 	UserRound,
@@ -58,6 +59,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { FilesNameInputControl } from "./files-name-input.tsx";
 import { FilesShareModal } from "./files-share-modal.tsx";
+import { FilesReadOnlyModal } from "./files-read-only-modal.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -126,9 +128,12 @@ import {
 	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
 	files_can_move_node_between_restricted_scopes,
 	files_clear_node_path_cached_validation_messages,
+	files_collect_read_only_ancestor_ids,
 	files_create_tree_items_list_from_nodes,
 	files_get_default_node_name,
 	files_get_editable_text_yjs_root_kind,
+	files_get_read_only_capabilities,
+	files_get_read_only_row_labels,
 	files_get_node_path_validation,
 	files_IMPORT_MAX_ITEMS_PER_CALL,
 	files_is_node,
@@ -215,8 +220,19 @@ function can_write_item(args: {
 	return args.restrictedScopeWritePermissions[args.item.restrictedScopeNodeId] === true;
 }
 
-function can_rename_item(args: { item: files_TreeItem; canWriteItem: (item: files_TreeItem) => boolean }) {
-	return files_is_node(args.item) && args.canWriteItem(args.item);
+function can_rename_item(args: {
+	item: files_TreeItem;
+	canWriteItem: (item: files_TreeItem) => boolean;
+	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
+}) {
+	return (
+		files_is_node(args.item) &&
+		files_get_read_only_capabilities({
+			canWrite: args.canWriteItem(args.item),
+			readOnlyState: args.item.readOnlyState,
+			hasVisibleReadOnlyDescendant: args.readOnlyAncestorIds.has(args.item._id),
+		}).canRelocateOrRename
+	);
 }
 
 /**
@@ -983,6 +999,7 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	onCopyNodeId: () => void;
 	onRename: () => void;
 	onShare: () => void;
+	onReadOnly: () => void;
 	onExpandSubtree: () => void;
 	onCollapseSubtree: () => void;
 	onArchive: () => void;
@@ -1010,6 +1027,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		onCopyNodeId,
 		onRename,
 		onShare,
+		onReadOnly,
 		onExpandSubtree,
 		onCollapseSubtree,
 		onArchive,
@@ -1141,6 +1159,14 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 									<Users />
 								</MyMenuItemContentIcon>
 								<MyMenuItemContentPrimary>Share</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+						<MyMenuItem hideOnClick onClick={onReadOnly}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<LockKeyhole />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Read-only settings</MyMenuItemContentPrimary>
 							</MyMenuItemContent>
 						</MyMenuItem>
 					</MyMenuItemsGroup>
@@ -1341,7 +1367,8 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 type FilesSidebarTreeItemPrimaryContent_ClassNames =
 	| "FilesSidebarTreeItemPrimaryContent"
 	| "FilesSidebarTreeItemPrimaryContent-added"
-	| "FilesSidebarTreeItemPrimaryContent-processing";
+	| "FilesSidebarTreeItemPrimaryContent-processing"
+	| "FilesSidebarTreeItemPrimaryContent-read-only";
 
 type FilesSidebarTreeItemPrimaryContent_Props = {
 	title: string;
@@ -1351,6 +1378,7 @@ type FilesSidebarTreeItemPrimaryContent_Props = {
 	renameInputProps: ReturnType<FilesSidebarTreeItem_Instance["getRenameInputProps"]>;
 	isRenaming: boolean;
 	isRestricted: boolean;
+	readOnlyTooltip: string | null;
 	renameError: string | undefined;
 	onRenameErrorClear: () => void;
 };
@@ -1366,6 +1394,7 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 		renameInputProps,
 		isRenaming,
 		isRestricted,
+		readOnlyTooltip,
 		renameError,
 		onRenameErrorClear,
 	} = props;
@@ -1377,6 +1406,17 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 	return (
 		<div className={"FilesSidebarTreeItemPrimaryContent" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}>
 			<FilesSidebarTreeItemIcon kind={kind} isRestricted={isRestricted} />
+			{readOnlyTooltip ? (
+				<MyIcon
+					className={
+						"FilesSidebarTreeItemPrimaryContent-read-only" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames
+					}
+					title={readOnlyTooltip}
+					aria-hidden="true"
+				>
+					<LockKeyhole />
+				</MyIcon>
+			) : null}
 			<FilesSidebarTreeItemTitle
 				renameInputProps={renameInputProps}
 				isRenaming={isRenaming}
@@ -1687,6 +1727,7 @@ type FilesSidebarTreeItem_Props = {
 	expandedFolderActionsVisible: boolean;
 	canWrite: boolean;
 	canUnarchive: boolean;
+	hasVisibleReadOnlyDescendant: boolean;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -1694,6 +1735,7 @@ type FilesSidebarTreeItem_Props = {
 	onCopyLink: (nodeId: string) => void;
 	onCopyNodeId: (nodeId: string) => void;
 	onShare: (nodeId: string) => void;
+	onReadOnly: (nodeId: app_convex_Id<"files_nodes">, returnFocusElement: HTMLElement | null) => void;
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -1715,6 +1757,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		expandedFolderActionsVisible,
 		canWrite,
 		canUnarchive,
+		hasVisibleReadOnlyDescendant,
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
@@ -1722,6 +1765,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		onCopyLink,
 		onCopyNodeId,
 		onShare,
+		onReadOnly,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -1809,20 +1853,46 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		(pendingUpdates ?? []).some(
 			(pendingUpdate) => pendingUpdate.fileNodeId === itemId && pendingUpdate.eagerCreated != null,
 		);
+	const wrapperElementRef = useRef<HTMLDivElement | null>(null);
+	const handleWrapperRef = useFn((element: HTMLDivElement | null) => {
+		wrapperElementRef.current = element;
+		// Give Headless Tree the wrapper so it can focus the row and scroll it into view.
+		forward_ref(element, itemElementRef);
+	});
 
-	const canRename = files_is_node(itemData) && canWrite;
+	const capabilities = files_get_read_only_capabilities({
+		canWrite,
+		readOnlyState: itemData.readOnlyState,
+		hasVisibleReadOnlyDescendant,
+	});
+	const canRename = files_is_node(itemData) && capabilities.canRelocateOrRename;
+
 	useEffect(() => {
 		if (isRenaming && !canRename) {
 			item.getTree().abortRenaming();
+			queueMicrotask(() => wrapperElementRef.current?.focus());
+
+			if (itemData.readOnlyState !== "writable") {
+				toast.info(`Rename canceled. ${itemData.name} is read-only.`);
+			} else if (hasVisibleReadOnlyDescendant) {
+				toast.info(`Rename canceled. ${itemData.name} contains read-only items.`);
+			} else {
+				toast.info("You no longer have permission to edit this");
+			}
 		}
-	}, [canRename, isRenaming, item]);
+	}, [canRename, hasVisibleReadOnlyDescendant, isRenaming, item, itemData.name, itemData.readOnlyState]);
 	// The synthetic root is not a real node, so there is nothing to share it with. Not gated on
 	// `canWrite`: `get_node_share_state` answers for anybody who may read the node, on purpose, so a
 	// reader can see who else can open it. Gating here would only make this disagree with the header
 	// button in `file-node-view.tsx`, which opens the same dialog and asks nothing.
 	const canShare = files_is_node(itemData);
 
-	const label = `${itemData.name}${isAddedFile ? " added" : ""}${isRestricted ? " restricted" : ""}${isArchived ? " archived" : ""}`;
+	const readOnlyLabels = files_get_read_only_row_labels({
+		readOnlyState: itemData.readOnlyState,
+		readOnlySourcePath: files_is_node(itemData) ? itemData.readOnlySourcePath : undefined,
+		hasVisibleReadOnlyDescendant,
+	});
+	const label = `${itemData.name}${isAddedFile ? " added" : ""}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
 
 	const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 		onCreateNode(itemId, "file");
@@ -1894,6 +1964,12 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		onUnarchive(itemId);
 	});
 
+	const handleReadOnlyClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onReadOnly"]>(() => {
+		if (files_is_node(itemData)) {
+			onReadOnly(itemData._id, wrapperElementRef.current);
+		}
+	});
+
 	const handleRowContextMenu = useFn<MyContextMenuTrigger_Props["onContextMenu"]>((event) => {
 		if (event.shiftKey) {
 			// Native browser menu.
@@ -1901,13 +1977,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		}
 
 		item.setFocused();
-	});
-
-	const wrapperElementRef = useRef<HTMLDivElement | null>(null);
-	const handleWrapperRef = useFn((element: HTMLDivElement | null) => {
-		wrapperElementRef.current = element;
-		// Register the wrapper as the item element so Headless Tree focuses and scrolls the treeitem.
-		forward_ref(element, itemElementRef);
 	});
 
 	const handlePrimaryActionClick = useFn<NonNullable<ComponentProps<"div">["onClick"]>>((event) => {
@@ -2020,6 +2089,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 							renameInputProps={renameInputProps}
 							isRenaming={isRenaming}
 							isRestricted={isRestricted}
+							readOnlyTooltip={readOnlyLabels?.tooltip ?? null}
 							renameError={renameError}
 							onRenameErrorClear={handleRenameErrorClear}
 						/>
@@ -2045,7 +2115,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 							isPending={isPending}
 							isFocused={isFocused}
 							canCreateChildren={itemData.kind === "folder"}
-							canCreate={canWrite}
+							canCreate={capabilities.canReceiveChildren}
 							onCreateFile={handleCreateFileClick}
 							onCreateFolder={handleCreateFolderClick}
 						/>
@@ -2063,10 +2133,10 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					kind={itemData.kind}
 					label={label}
 					archiveOperationId={itemData.archiveOperationId}
-					canCreate={canWrite}
+					canCreate={capabilities.canReceiveChildren}
 					canRename={canRename}
 					canShare={canShare}
-					canArchive={isArchived ? canUnarchive : canWrite}
+					canArchive={capabilities.canArchiveOrRestore && (isArchived ? canUnarchive : true)}
 					canExpandSubtree={canExpandSubtree}
 					canCollapseSubtree={canCollapseSubtree}
 					expandedFolderActionsVisible={expandedFolderActionsVisible}
@@ -2077,6 +2147,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					onCopyNodeId={handleCopyNodeIdClick}
 					onRename={handleRenameClick}
 					onShare={handleShareClick}
+					onReadOnly={handleReadOnlyClick}
 					onExpandSubtree={handleExpandSubtreeClick}
 					onCollapseSubtree={handleCollapseSubtreeClick}
 					onArchive={handleArchiveClick}
@@ -2342,6 +2413,7 @@ type FilesSidebarTree_Props = {
 	renameErrorByNodeId: Map<string, string>;
 	canWriteItem: (item: files_TreeItem) => boolean;
 	canUnarchiveItem: (item: files_TreeItem) => boolean;
+	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -2349,6 +2421,7 @@ type FilesSidebarTree_Props = {
 	onCopyLink: (nodeId: string) => void;
 	onCopyNodeId: (nodeId: string) => void;
 	onShare: (nodeId: string) => void;
+	onReadOnly: FilesSidebarTreeItem_Props["onReadOnly"];
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -2371,6 +2444,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		renameErrorByNodeId,
 		canWriteItem,
 		canUnarchiveItem,
+		readOnlyAncestorIds,
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
@@ -2378,6 +2452,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		onCopyLink,
 		onCopyNodeId,
 		onShare,
+		onReadOnly,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -2568,6 +2643,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 						) : null}
 						{renderedTreeItems.map((item, itemIndex) => {
 							const itemId = item.getId();
+							const itemData = item.getItemData();
 							return (
 								<FilesSidebarTreeItem
 									key={itemId}
@@ -2585,8 +2661,9 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 									isTreeDragging={isTreeDragging}
 									isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
 									expandedFolderActionsVisible={expandedFolderActionsVisible}
-									canWrite={canWriteItem(item.getItemData())}
-									canUnarchive={canUnarchiveItem(item.getItemData())}
+									canWrite={canWriteItem(itemData)}
+									canUnarchive={canUnarchiveItem(itemData)}
+									hasVisibleReadOnlyDescendant={files_is_node(itemData) && readOnlyAncestorIds.has(itemData._id)}
 									onCreateNode={onCreateNode}
 									onStartRename={onStartRename}
 									onRenameErrorClear={onRenameErrorClear}
@@ -2594,6 +2671,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 									onCopyLink={onCopyLink}
 									onCopyNodeId={onCopyNodeId}
 									onShare={onShare}
+									onReadOnly={onReadOnly}
 									onArchive={onArchive}
 									onUnarchive={onUnarchive}
 								/>
@@ -3064,6 +3142,7 @@ type FilesSidebarUploadDraft = {
 		nodeId: app_convex_Id<"files_nodes">;
 		kind: files_TreeItem["kind"];
 		name: string;
+		readOnlyState: files_VisibleTreeNode["readOnlyState"];
 	};
 };
 
@@ -3130,7 +3209,11 @@ function get_upload_conflict_modal_state(args: { draft: FilesSidebarUploadDraft 
 				: "Choose a different filename."
 			: undefined;
 	const helperText =
-		invalidFilenameMessage ?? pathConflictMessage ?? "This file will be uploaded with the specified filename.";
+		invalidFilenameMessage ??
+		(args.draft?.conflict?.readOnlyState !== "writable" && pathConflictMessage
+			? "The existing file is read-only. Choose a different filename."
+			: pathConflictMessage) ??
+		"This file will be uploaded with the specified filename.";
 	const showReplace =
 		args.draft?.reason === "path_conflict" &&
 		args.draft.conflict?.kind === "file" &&
@@ -3278,7 +3361,12 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 							Cancel
 						</MyButton>
 						{showReplace ? (
-							<MyButton type="button" variant="destructive" disabled={isUploading} onClick={onReplace}>
+							<MyButton
+								type="button"
+								variant="destructive"
+								disabled={isUploading || draft.conflict?.readOnlyState !== "writable"}
+								onClick={onReplace}
+							>
 								Replace
 							</MyButton>
 						) : (
@@ -3752,6 +3840,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const [renameErrorByNodeId, setRenameErrorByNodeId] = useState<Map<string, string>>(new Map());
 	/** The node whose share dialog is open, or `null` when it is closed. */
 	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	const [readOnlyNodeId, setReadOnlyNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	const readOnlyReturnFocusRef = useRef<HTMLElement | null>(null);
 	const isImportingFiles = useFilesImportStore((state) => state.phase !== "idle");
 	const importConflicts = useFilesImportStore((state) => state.conflicts);
 	// One gate for every upload affordance: the single-file PUT or a running folder import.
@@ -3769,6 +3859,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const treeNodesList = useQuery(app_convex_api.files_nodes.list_tree, {
 		membershipId,
 	});
+	const readOnlyAncestorIds = useMemo(() => files_collect_read_only_ancestor_ids(treeNodesList ?? []), [treeNodesList]);
 	const treeItemsList = useMemo(
 		() => (treeNodesList ? files_create_tree_items_list_from_nodes(treeNodesList) : undefined),
 		[treeNodesList],
@@ -3843,6 +3934,23 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			workspaceWritePermission,
 			restrictedScopeWritePermissions,
 		});
+
+	const getItemCapabilities = useFn((item: files_TreeItem) =>
+		files_get_read_only_capabilities({
+			canWrite: canWriteItem(item),
+			readOnlyState: item.readOnlyState,
+			hasVisibleReadOnlyDescendant: files_is_node(item) && readOnlyAncestorIds.has(item._id),
+		}),
+	);
+	// Keep this as a normal function. `useFn` has a stable identity, so the React Compiler could
+	// reuse a render result that was calculated before the permission query finished.
+	const getItemCapabilitiesInRender = (item: files_TreeItem) =>
+		files_get_read_only_capabilities({
+			canWrite: canWriteItemInRender(item),
+			readOnlyState: item.readOnlyState,
+			hasVisibleReadOnlyDescendant: files_is_node(item) && readOnlyAncestorIds.has(item._id),
+		});
+
 	const canManageRestrictedScope = useFn((scopeNodeId: app_convex_Id<"files_nodes">) => {
 		const shareState = restrictedScopeShareStates[scopeNodeId];
 		return shareState != null && !(shareState instanceof Error) && shareState.canManage;
@@ -3968,7 +4076,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	}, [treeItemsList, showArchived]);
 	const canWriteParentId = useFn((parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID) => {
 		const parentItem = parentId === files_ROOT_ID ? files_SYNTHETIC_ROOT_FOLDER : treeItems?.itemById.get(parentId);
-		return parentItem ? canWriteItem(parentItem) : false;
+		return parentItem ? getItemCapabilities(parentItem).canReceiveChildren : false;
 	});
 	const canUnarchiveItem = useFn((item: files_TreeItem) =>
 		can_unarchive_item({
@@ -4040,7 +4148,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const canDrag = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDrag"]>>((items) => {
-		return items.every((item) => files_is_node(item.getItemData()) && canWriteItem(item.getItemData()));
+		return items.every(
+			(item) => files_is_node(item.getItemData()) && getItemCapabilities(item.getItemData()).canRelocateOrRename,
+		);
 	});
 
 	const canDrop = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDrop"]>>((items, target) => {
@@ -4049,7 +4159,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		if (targetId !== files_ROOT_ID && targetData.kind !== "folder") {
 			return false;
 		}
-		if (!canWriteItem(targetData)) {
+		if (!getItemCapabilities(targetData).canReceiveChildren) {
 			return false;
 		}
 
@@ -4057,7 +4167,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			const itemData = item.getItemData();
 			if (
 				!files_is_node(itemData) ||
-				!canWriteItem(itemData) ||
+				!getItemCapabilities(itemData).canRelocateOrRename ||
 				!files_can_move_node_between_restricted_scopes({
 					nodeId: itemData._id,
 					sourceRestrictedScopeNodeId: itemData.restrictedScopeNodeId,
@@ -4207,6 +4317,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				})
 				.then((existingNode) => {
 					if (existingNode) {
+						const existingItem = treeItems.itemById.get(existingNode.nodeId);
+						if (!existingItem || !files_is_node(existingItem)) {
+							toast.error("Failed to prepare upload");
+							return;
+						}
 						setUploadDraft({
 							file: args.file,
 							parentId: args.parentId,
@@ -4218,6 +4333,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 								nodeId: existingNode.nodeId,
 								kind: existingNode.kind,
 								name: existingNode.name,
+								readOnlyState: existingItem.readOnlyState,
 							},
 						});
 						return;
@@ -4319,7 +4435,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				target,
 				isBusy,
 				isUploadingFile: isUploadingSingleFile,
-				canWriteTarget: canWriteItem(targetData),
+				canWriteTarget: getItemCapabilities(targetData).canReceiveChildren,
 			})
 		) {
 			return false;
@@ -4337,7 +4453,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					sourceNode._id !== targetParentId &&
 					sourceNode.parentId !== targetParentId &&
 					!target.item.isDescendentOf(sourceNodeId) &&
-					canWriteItem(sourceNode) &&
+					getItemCapabilities(sourceNode).canRelocateOrRename &&
 					files_can_move_node_between_restricted_scopes({
 						nodeId: sourceNode._id,
 						sourceRestrictedScopeNodeId: sourceNode.restrictedScopeNodeId,
@@ -4362,7 +4478,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				target: effectiveTarget,
 				isBusy,
 				isUploadingFile,
-				canWriteTarget: canWriteItem(effectiveTarget.item.getItemData()),
+				canWriteTarget: getItemCapabilities(effectiveTarget.item.getItemData()).canReceiveChildren,
 			}) || canReceiveFileNodeDrop(dataTransfer, effectiveTarget)
 		);
 	});
@@ -4376,7 +4492,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				target,
 				isBusy,
 				isUploadingFile,
-				canWriteTarget: canWriteItem(target.item.getItemData()),
+				canWriteTarget: getItemCapabilities(target.item.getItemData()).canReceiveChildren,
 			}) || canReceiveFileNodeDrop(dataTransfer, target)
 		);
 	});
@@ -4437,7 +4553,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				target,
 				isBusy,
 				isUploadingFile,
-				canWriteTarget: canWriteItem(target.item.getItemData()),
+				canWriteTarget: getItemCapabilities(target.item.getItemData()).canReceiveChildren,
 			})
 		) {
 			toast.error("Drop files onto a folder or the root.");
@@ -4469,7 +4585,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const canRename = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canRename"]>>((item) => {
-		return can_rename_item({ item: item.getItemData(), canWriteItem });
+		return can_rename_item({ item: item.getItemData(), canWriteItem, readOnlyAncestorIds });
 	});
 
 	/**
@@ -4506,7 +4622,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return;
 		}
 		// Permission can change while rename mode is open, so recheck before starting the mutation.
-		if (!can_rename_item({ item: itemData, canWriteItem })) {
+		if (!can_rename_item({ item: itemData, canWriteItem, readOnlyAncestorIds })) {
 			return;
 		}
 
@@ -4707,7 +4823,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const itemData = item.getItemData();
 		const itemId = item.getId();
 		// Abort when live permission changes so Headless Tree cannot submit a stale rename.
-		if (!can_rename_item({ item: itemData, canWriteItem })) {
+		if (!can_rename_item({ item: itemData, canWriteItem, readOnlyAncestorIds })) {
 			event.preventDefault();
 			currentTree.abortRenaming();
 			return;
@@ -5200,6 +5316,19 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		setShareNodeId(null);
 	});
 
+	const handleReadOnly = useFn<FilesSidebarTree_Props["onReadOnly"]>((nodeId, returnFocusElement) => {
+		readOnlyReturnFocusRef.current = returnFocusElement;
+		setReadOnlyNodeId(nodeId);
+	});
+
+	const handleReadOnlyModalClose = useFn(() => {
+		setReadOnlyNodeId(null);
+	});
+
+	const handleReadOnlyNavigateNode = useFn((nodeId: app_convex_Id<"files_nodes">) => {
+		onPrimaryAction(nodeId, "folder");
+	});
+
 	const handleSearchQueryChange = useFn<FilesSidebarTopSection_Props["onSearchQueryChange"]>((nextSearchQuery) => {
 		setSearchQuery(nextSearchQuery);
 		onSearchQueryChange(nextSearchQuery);
@@ -5227,7 +5356,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		if (
 			[...nodeIdsToArchive].some((itemId) => {
 				const item = treeItems?.itemById.get(itemId);
-				return !item || !canWriteItem(item);
+				return !item || !getItemCapabilities(item).canArchiveOrRestore;
 			})
 		) {
 			return;
@@ -5369,7 +5498,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		uploadTargetParentId === files_ROOT_ID
 			? files_SYNTHETIC_ROOT_FOLDER
 			: treeItems?.itemById.get(uploadTargetParentId);
-	const canWriteUploadTarget = uploadTargetParentItem ? canWriteItemInRender(uploadTargetParentItem) : false;
+	const canWriteUploadTarget = uploadTargetParentItem
+		? getItemCapabilitiesInRender(uploadTargetParentItem).canReceiveChildren
+		: false;
 
 	const handleUploadFileClick = useFn(() => {
 		if (!canWriteParentId(resolveSelectedFolderParentId())) {
@@ -5438,7 +5569,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const handleUploadDraftReplace = useFn(() => {
-		if (!uploadDraft?.conflict || uploadDraft.conflict.kind !== "file") {
+		if (
+			!uploadDraft?.conflict ||
+			uploadDraft.conflict.kind !== "file" ||
+			uploadDraft.conflict.readOnlyState !== "writable"
+		) {
 			return;
 		}
 
@@ -5649,6 +5784,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					renameErrorByNodeId={renameErrorByNodeId}
 					canWriteItem={canWriteItem}
 					canUnarchiveItem={canUnarchiveItem}
+					readOnlyAncestorIds={readOnlyAncestorIds}
 					onCreateNode={handleCreateNodeClick}
 					onStartRename={handleStartRename}
 					onRenameErrorClear={clearRenameError}
@@ -5656,12 +5792,22 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					onCopyLink={handleCopyLink}
 					onCopyNodeId={handleCopyNodeId}
 					onShare={handleShare}
+					onReadOnly={handleReadOnly}
 					onArchive={handleArchive}
 					onUnarchive={handleUnarchive}
 				/>
 			</div>
 
 			<FilesShareModal nodeId={shareNodeId} onClose={handleShareModalClose} />
+			<FilesReadOnlyModal
+				nodeId={readOnlyNodeId}
+				nodeName={treeNodesList?.find((node) => node._id === readOnlyNodeId)?.name ?? "file"}
+				nodeKind={treeNodesList?.find((node) => node._id === readOnlyNodeId)?.kind ?? "file"}
+				hasVisibleReadOnlyDescendant={readOnlyNodeId ? readOnlyAncestorIds.has(readOnlyNodeId) : false}
+				returnFocusRef={readOnlyReturnFocusRef}
+				onNavigateNode={handleReadOnlyNavigateNode}
+				onClose={handleReadOnlyModalClose}
+			/>
 		</aside>
 	);
 });
@@ -5679,6 +5825,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		path?: string;
 		archiveOperationId?: string;
 		restrictedScopeNodeId?: string;
+		readOnlyState?: files_VisibleTreeNode["readOnlyState"];
 	}): files_VisibleTreeNode => {
 		const id = args.id as app_convex_Id<"files_nodes">;
 		const path = args.path ?? `/${args.name}`;
@@ -5703,6 +5850,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			createdBy: "test-user" as app_convex_Id<"users">,
 			updatedAt: 1,
 			updatedBy: "test-user" as app_convex_Id<"users">,
+			readOnlyState: args.readOnlyState ?? "writable",
 		};
 	};
 
@@ -5731,6 +5879,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 							nodeId: "conflict_node" as app_convex_Id<"files_nodes">,
 							kind: args?.conflictKind ?? "file",
 							name: args?.conflictName ?? filename,
+							readOnlyState: "writable",
 						},
 					}
 				: {}),
@@ -5793,8 +5942,30 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				name: "file.md",
 			});
 
-			expect(can_rename_item({ item: file, canWriteItem: () => true })).toBe(true);
-			expect(can_rename_item({ item: file, canWriteItem: () => false })).toBe(false);
+			expect(can_rename_item({ item: file, canWriteItem: () => true, readOnlyAncestorIds: new Set() })).toBe(true);
+			expect(can_rename_item({ item: file, canWriteItem: () => false, readOnlyAncestorIds: new Set() })).toBe(false);
+		});
+
+		test("blocks effective locks and writable folders with locked descendants", () => {
+			const lockedFile = test_node({
+				id: "file",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				name: "file.md",
+				readOnlyState: "self",
+			});
+			const folder = test_node({ id: "folder", parentId: files_ROOT_ID, kind: "folder", name: "folder" });
+
+			expect(can_rename_item({ item: lockedFile, canWriteItem: () => true, readOnlyAncestorIds: new Set() })).toBe(
+				false,
+			);
+			expect(
+				can_rename_item({
+					item: folder,
+					canWriteItem: () => true,
+					readOnlyAncestorIds: new Set([folder._id]),
+				}),
+			).toBe(false);
 		});
 	});
 

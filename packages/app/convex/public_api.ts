@@ -49,6 +49,7 @@ import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { encodeStateVector } from "yjs";
 import {
+	files_node_require_writable,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
 	type files_nodes_get_by_path_Result,
@@ -64,11 +65,13 @@ import {
 import type { r2_get_data_for_public_download_url_Result } from "./r2.ts";
 import {
 	r2_create_asset_key,
-	r2_delete_object,
+	r2_create_upload_staging_key,
+	r2_enqueue_object_deletion_job,
 	r2_generate_upload_url,
 	r2_get_bucket,
 	r2_get_download_url,
 	r2_put_object,
+	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
 import {
@@ -112,6 +115,12 @@ const FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES = 32_000;
 const FILES_TOUCH_MAX_PATHS = 8;
 // Must stay <= the public_api_principal bucket capacity: a batch charges one unit per minted URL.
 const FILES_UPLOAD_URLS_MAX_ITEMS = 20;
+
+/**
+ * Keep signed upload URLs valid for 15 minutes. Store the expiry so cleanup knows when the URL can
+ * no longer upload another object.
+ */
+const FILES_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
 // Must stay <= the public_api_files_write_bulk bucket capacity: the batch charges one token per file.
 const FILES_WRITE_MANY_MAX_ITEMS = 20;
 // Whole-request byte cap: 20 files near the per-file content limit plus JSON overhead.
@@ -1220,6 +1229,193 @@ async function db_revalidate_file_write_principal(
 	return Result({ _yay: { pluginRun: null } });
 }
 
+/**
+ * Remember the target at prepare time. Publish uses this to avoid changing a different file.
+ */
+const file_write_target_anchor_validator = v.union(
+	v.object({
+		kind: v.literal("existing"),
+		nodeId: v.id("files_nodes"),
+	}),
+	v.object({ kind: v.literal("create") }),
+);
+
+function file_write_stale_refusal() {
+	return Result({
+		_nay: { name: "stale_write", message: "The file changed during the write" },
+	});
+}
+
+async function db_get_active_node_at_path(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		path: string;
+	},
+) {
+	return await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("path", args.path)
+				.eq("archiveOperationId", undefined),
+		)
+		.first();
+}
+
+/**
+ * Find the nearest existing node above `path`. Return null when only the workspace root exists.
+ */
+async function db_get_deepest_existing_ancestor(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		path: string;
+	},
+) {
+	const segments = path_extract_segments_from(args.path);
+	for (let depth = segments.length - 1; depth >= 1; depth--) {
+		const ancestor = await db_get_active_node_at_path(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			path: `/${segments.slice(0, depth).join("/")}`,
+		});
+		if (ancestor) {
+			return ancestor;
+		}
+	}
+	return null;
+}
+
+/**
+ * Check the target before creating temporary docs. Check access before the read-only lock so a
+ * hidden node's lock stays private. Remember the target so publish cannot change a different file.
+ */
+async function db_preflight_file_write_target(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		path: string;
+	},
+) {
+	const activeNode = await db_get_active_node_at_path(ctx, args);
+	if (activeNode) {
+		if (
+			!(await has_workspace_content_permission(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				permission: "content.write",
+				fileNode: activeNode,
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// Check the lock again at publish time. If the target is writable then, the write can finish.
+		const writable = files_node_require_writable(activeNode);
+		if (writable._nay) {
+			return writable;
+		}
+
+		return Result({
+			_yay: {
+				targetAnchor: { kind: "existing" as const, nodeId: activeNode._id },
+			},
+		});
+	}
+
+	const ancestor = await db_get_deepest_existing_ancestor(ctx, args);
+	if (ancestor) {
+		if (
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNode: ancestor,
+				permission: "content.write",
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// Do not create temporary docs below a read-only node.
+		const writable = files_node_require_writable(ancestor);
+		if (writable._nay) {
+			return writable;
+		}
+	}
+
+	return Result({ _yay: { targetAnchor: { kind: "create" as const } } });
+}
+
+/**
+ * Stop a prepared write after a conflict. Mark its plugin call as failed. Create R2 deletion jobs
+ * before deleting its temporary docs, so a later crash cannot lose the cleanup work.
+ */
+async function db_abandon_file_write_stage_conflict(
+	ctx: MutationCtx,
+	args: {
+		stage: Doc<"public_api_file_write_stages">;
+		/**
+		 * Assets that the action already uploaded to R2. The fill path does not upload its Yjs
+		 * snapshot.
+		 */
+		putAssetIds: Array<Id<"files_r2_assets">>;
+		refusalMessage: string;
+		deletionReason: "read_only_stage" | "failed_create";
+	},
+) {
+	const now = Date.now();
+
+	// Save the same conflict that the route returns. Do not save the refused file content.
+	if (args.stage.callId) {
+		const call = await ctx.db.get("plugins_event_run_calls", args.stage.callId);
+		// Ignore a late or repeated finish. Only a started call can finish.
+		if (call && call.status === "started") {
+			await ctx.db.patch("plugins_event_run_calls", call._id, {
+				status: "failed",
+				errorCode: "conflict",
+				errorMessage: args.refusalMessage,
+				responseStatus: 409,
+				finishedAt: now,
+				elapsedMs: now - call.startedAt,
+				updatedAt: now,
+			});
+		}
+	}
+
+	for (const assetId of [args.stage.yjsSnapshotAssetId, args.stage.contentSnapshotAssetId]) {
+		const asset = await ctx.db.get("files_r2_assets", assetId);
+		if (!asset) {
+			continue;
+		}
+
+		// These internal uploads finished before publish started. Nothing can upload to the key later.
+		if (args.putAssetIds.includes(assetId)) {
+			await r2_enqueue_object_deletion_job(ctx, {
+				organizationId: args.stage.organizationId,
+				workspaceId: args.stage.workspaceId,
+				r2Key: r2_create_asset_key({
+					organizationId: args.stage.organizationId,
+					workspaceId: args.stage.workspaceId,
+					assetId,
+				}),
+				reason: args.deletionReason,
+			});
+		}
+		await ctx.db.delete("files_r2_assets", assetId);
+	}
+
+	await ctx.db.delete("public_api_file_write_stages", args.stage._id);
+}
+
 export const prepare_file_write = internalMutation({
 	args: {
 		organizationId: v.id("organizations"),
@@ -1237,6 +1433,7 @@ export const prepare_file_write = internalMutation({
 			stageId: v.id("public_api_file_write_stages"),
 			yjsSnapshotAssetId: v.id("files_r2_assets"),
 			contentSnapshotAssetId: v.id("files_r2_assets"),
+			targetAnchor: file_write_target_anchor_validator,
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -1251,6 +1448,18 @@ export const prepare_file_write = internalMutation({
 		});
 		if (revalidated._nay) {
 			return revalidated;
+		}
+
+		// Check the current target before creating temporary docs. Publish checks it again before its
+		// first write.
+		const preflight = await db_preflight_file_write_target(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			path: args.path,
+		});
+		if (preflight._nay) {
+			return preflight;
 		}
 
 		// On publish, the staged content snapshot becomes the file's first version snapshot, and
@@ -1286,7 +1495,9 @@ export const prepare_file_write = internalMutation({
 			updatedAt: now,
 		});
 
-		return Result({ _yay: { stageId, yjsSnapshotAssetId, contentSnapshotAssetId } });
+		return Result({
+			_yay: { stageId, yjsSnapshotAssetId, contentSnapshotAssetId, targetAnchor: preflight._yay.targetAnchor },
+		});
 	},
 });
 
@@ -1299,6 +1510,8 @@ export const publish_file_write = internalMutation({
 	args: {
 		stageId: v.id("public_api_file_write_stages"),
 		content: v.string(),
+		/** The target state saved by `prepare_file_write`. Publish requires it to stay the same. */
+		targetAnchor: file_write_target_anchor_validator,
 	},
 	returns: v_result({
 		_yay: v.object({ nodeId: v.id("files_nodes") }),
@@ -1373,6 +1586,31 @@ export const publish_file_write = internalMutation({
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
+
+			// The prepared write must still point to this node. Then check its current lock before the
+			// first write.
+			if (args.targetAnchor.kind !== "existing" || args.targetAnchor.nodeId !== activeNode._id) {
+				const staleRefusal = file_write_stale_refusal();
+				await db_abandon_file_write_stage_conflict(ctx, {
+					stage,
+					putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+					refusalMessage: staleRefusal._nay.message,
+					deletionReason: "failed_create",
+				});
+				return staleRefusal;
+			}
+
+			const writable = files_node_require_writable(activeNode);
+			if (writable._nay) {
+				await db_abandon_file_write_stage_conflict(ctx, {
+					stage,
+					putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+					refusalMessage: writable._nay.message,
+					deletionReason: "read_only_stage",
+				});
+				return writable;
+			}
+
 			if (activeNode.kind !== "file") {
 				return Result({ _nay: { message: "A folder already exists at this path" } });
 			}
@@ -1406,6 +1644,52 @@ export const publish_file_write = internalMutation({
 			}
 
 			await files_nodes_db_archive_nodes(ctx, { nodeIds: [activeNode._id], updatedBy: stage.userId, now });
+		}
+
+		// A create still needs an empty target path. Check the current parent lock before the first
+		// write.
+		if (!activeNode) {
+			if (args.targetAnchor.kind !== "create") {
+				const staleRefusal = file_write_stale_refusal();
+				await db_abandon_file_write_stage_conflict(ctx, {
+					stage,
+					putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+					refusalMessage: staleRefusal._nay.message,
+					deletionReason: "failed_create",
+				});
+				return staleRefusal;
+			}
+			const ancestor = await db_get_deepest_existing_ancestor(ctx, {
+				organizationId: stage.organizationId,
+				workspaceId: stage.workspaceId,
+				path: stage.path,
+			});
+
+			// Check access first. A hidden restricted folder must not reveal its read-only state.
+			if (
+				ancestor &&
+				!(await has_workspace_content_permission(ctx, {
+					organizationId: stage.organizationId,
+					workspaceId: stage.workspaceId,
+					userId: stage.userId,
+					permission: "content.write",
+					fileNode: ancestor,
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+			if (ancestor) {
+				const writable = files_node_require_writable(ancestor);
+				if (writable._nay) {
+					await db_abandon_file_write_stage_conflict(ctx, {
+						stage,
+						putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+						refusalMessage: writable._nay.message,
+						deletionReason: "read_only_stage",
+					});
+					return writable;
+				}
+			}
 		}
 
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
@@ -1573,6 +1857,19 @@ export const publish_file_fill = internalMutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
+		// Check ACL, then check the current lock before the first write. A refusal also cleans up the
+		// stage in this transaction. The fill path uploaded only the content snapshot.
+		const writable = files_node_require_writable(fileNode);
+		if (writable._nay) {
+			await db_abandon_file_write_stage_conflict(ctx, {
+				stage,
+				putAssetIds: [stage.contentSnapshotAssetId],
+				refusalMessage: writable._nay.message,
+				deletionReason: "read_only_stage",
+			});
+			return writable;
+		}
+
 		const contentSnapshotAsset = await ctx.db.get("files_r2_assets", stage.contentSnapshotAssetId);
 		if (!contentSnapshotAsset) {
 			// Unreachable while the stage exists: cleanup deletes the asset docs and the stage together.
@@ -1651,6 +1948,8 @@ type publish_file_fill_Result =
 export const publish_file_touch = internalMutation({
 	args: {
 		stageId: v.id("public_api_file_write_stages"),
+		/** The target state saved by `prepare_file_write`. Publish requires it to stay the same. */
+		targetAnchor: file_write_target_anchor_validator,
 	},
 	returns: v_result({
 		_yay: v.object({ nodeId: v.id("files_nodes"), created: v.boolean() }),
@@ -1714,6 +2013,32 @@ export const publish_file_touch = internalMutation({
 				return Result({ _nay: { message: "Permission denied" } });
 			}
 
+			// An existing target must still be the same node. A target that appeared after prepare can
+			// satisfy touch when it is writable now.
+			if (args.targetAnchor.kind === "existing") {
+				if (args.targetAnchor.nodeId !== activeNode._id) {
+					const staleRefusal = file_write_stale_refusal();
+					await db_abandon_file_write_stage_conflict(ctx, {
+						stage,
+						putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+						refusalMessage: staleRefusal._nay.message,
+						deletionReason: "failed_create",
+					});
+					return staleRefusal;
+				}
+			}
+
+			const writable = files_node_require_writable(activeNode);
+			if (writable._nay) {
+				await db_abandon_file_write_stage_conflict(ctx, {
+					stage,
+					putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+					refusalMessage: writable._nay.message,
+					deletionReason: "read_only_stage",
+				});
+				return writable;
+			}
+
 			if (activeNode.kind !== "file") {
 				return Result({ _nay: { message: "A folder already exists at this path" } });
 			}
@@ -1721,13 +2046,22 @@ export const publish_file_touch = internalMutation({
 			// Another writer created the file between the route's check and this publish: the touch
 			// is satisfied. Drop the staged assets and their already-PUT objects, but do not settle
 			// the plugin call here — the route settles it once for the whole batch.
-			for (const assetId of [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId]) {
+			const stagedAssetIds = [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId];
+			for (const assetId of stagedAssetIds) {
+				await r2_enqueue_object_deletion_job(ctx, {
+					organizationId: stage.organizationId,
+					workspaceId: stage.workspaceId,
+					r2Key: r2_create_asset_key({
+						organizationId: stage.organizationId,
+						workspaceId: stage.workspaceId,
+						assetId,
+					}),
+					reason: "failed_create",
+				});
+			}
+			for (const assetId of stagedAssetIds) {
 				const asset = await ctx.db.get("files_r2_assets", assetId);
 				if (asset) {
-					await r2_delete_object(
-						ctx,
-						r2_create_asset_key({ organizationId: stage.organizationId, workspaceId: stage.workspaceId, assetId }),
-					);
 					await ctx.db.delete("files_r2_assets", assetId);
 				}
 			}
@@ -1743,6 +2077,49 @@ export const publish_file_touch = internalMutation({
 			await ctx.db.delete("public_api_file_write_stages", stage._id);
 
 			return Result({ _yay: { nodeId: activeNode._id, created: false } });
+		}
+
+		// The target is still missing. Touch must have prepared a create.
+		if (args.targetAnchor.kind !== "create") {
+			const staleRefusal = file_write_stale_refusal();
+			await db_abandon_file_write_stage_conflict(ctx, {
+				stage,
+				putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+				refusalMessage: staleRefusal._nay.message,
+				deletionReason: "failed_create",
+			});
+			return staleRefusal;
+		}
+		const ancestor = await db_get_deepest_existing_ancestor(ctx, {
+			organizationId: stage.organizationId,
+			workspaceId: stage.workspaceId,
+			path: stage.path,
+		});
+
+		// Check access first. A hidden restricted folder must not reveal its read-only state.
+		if (
+			ancestor &&
+			!(await has_workspace_content_permission(ctx, {
+				organizationId: stage.organizationId,
+				workspaceId: stage.workspaceId,
+				userId: stage.userId,
+				permission: "content.write",
+				fileNode: ancestor,
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+		if (ancestor) {
+			const writable = files_node_require_writable(ancestor);
+			if (writable._nay) {
+				await db_abandon_file_write_stage_conflict(ctx, {
+					stage,
+					putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+					refusalMessage: writable._nay.message,
+					deletionReason: "read_only_stage",
+				});
+				return writable;
+			}
 		}
 
 		const [yjsSnapshotAsset, contentSnapshotAsset] = await Promise.all([
@@ -1823,9 +2200,9 @@ type publish_file_touch_Result =
 		: never;
 
 /**
- * The node question `publish_file_touch` asks, for the touch route's already-exists shortcut — the
- * one branch that answers without ever reaching that mutation. Without it touch reports success on a
- * file the caller may read but not write, while `/api/v1/files/write` on the same path answers 403.
+ * Check the same access and read-only rules as `publish_file_touch`. The touch route uses this when
+ * the file already exists and it does not call the publish mutation. Check access first so a hidden
+ * node returns `permission_denied` without revealing its lock.
  */
 export const can_write_file_node = internalQuery({
 	args: {
@@ -1834,19 +2211,27 @@ export const can_write_file_node = internalQuery({
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 	},
-	returns: v.boolean(),
+	returns: v.union(v.literal("ok"), v.literal("permission_denied"), v.literal("read_only")),
 	handler: async (ctx, args) => {
 		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
 		if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
-			return false;
+			return "permission_denied";
 		}
-		return await has_workspace_content_permission(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			permission: "content.write",
-			fileNode,
-		});
+		if (
+			!(await has_workspace_content_permission(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				permission: "content.write",
+				fileNode,
+			}))
+		) {
+			return "permission_denied";
+		}
+		if (files_node_require_writable(fileNode)._nay) {
+			return "read_only";
+		}
+		return "ok";
 	},
 });
 
@@ -2074,6 +2459,12 @@ export const create_file_upload_targets = internalMutation({
 				) {
 					return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
 				}
+				// Check access first so a hidden file still returns Permission denied. A read-only target
+				// then stops the whole batch before any upload URL is created.
+				const writable = files_node_require_writable(existingNode);
+				if (writable._nay) {
+					return Result({ _nay: { ...writable._nay, data: { path: item.path } } });
+				}
 				if (existingNode.kind !== "file") {
 					return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
 				}
@@ -2120,11 +2511,8 @@ export const create_file_upload_targets = internalMutation({
 				if (!ancestor) {
 					continue;
 				}
-				if (ancestor.kind !== "folder") {
-					return Result({
-						_nay: { message: "An intermediate segment is owned by a file", data: { path: item.path } },
-					});
-				}
+				// Check access before checking whether this node is a file or folder. This stops a hidden file
+				// from revealing why the path failed.
 				if (
 					!(await access_control_db_can_act_on_file_node(ctx, {
 						organizationId: args.organizationId,
@@ -2135,6 +2523,16 @@ export const create_file_upload_targets = internalMutation({
 					}))
 				) {
 					return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
+				}
+				if (ancestor.kind !== "folder") {
+					return Result({
+						_nay: { message: "An intermediate segment is owned by a file", data: { path: item.path } },
+					});
+				}
+				// A read-only parent folder stops the whole batch before quota is used or URLs are created.
+				const ancestorWritable = files_node_require_writable(ancestor);
+				if (ancestorWritable._nay) {
+					return Result({ _nay: { ...ancestorWritable._nay, data: { path: item.path } } });
 				}
 			}
 		}
@@ -2213,13 +2611,19 @@ export const create_file_upload_targets = internalMutation({
 				throw should_never_happen(errorMessage, errorData);
 			}
 
-			const signedUpload = await r2_generate_upload_url(
-				r2_create_asset_key({
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					assetId,
-				}),
-			);
+			// Save the temporary key and URL expiry before returning the URL. This accepts the upload, so
+			// a later read-only lock does not stop it from finishing.
+			const uploadStagingR2Key = r2_create_upload_staging_key({
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetId,
+			});
+			await ctx.db.patch("files_r2_assets", assetId, {
+				uploadStagingR2Key,
+				uploadUrlExpiresAt: now + FILES_UPLOAD_URL_TTL_MS,
+			});
+
+			const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
 
 			// The header map is the exact set the client must send with the PUT. Content-Type is a
 			// convention, not signature-enforced: it keeps the stored object's metadata matching the
@@ -2242,29 +2646,49 @@ type create_file_upload_targets_Result =
 		: never;
 
 /**
- * Idempotent unpublished-write cleanup: R2 objects first, then the asset docs, then the stage doc,
- * so a crash mid-cleanup leaves the stage behind for a retry. Publication deletes the stage in its
- * own transaction first, so cleanup can never delete a published output.
+ * Clean up a write that did not publish. Create R2 deletion jobs before deleting its temporary
+ * docs. A published write has no stage doc, so this cleanup cannot delete published files.
  */
 export async function public_api_db_cleanup_file_write_stage(
 	ctx: MutationCtx,
 	stage: Doc<"public_api_file_write_stages">,
+	orphanedKeys: string[] = [],
 ) {
-	for (const assetId of [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId]) {
+	const stagedAssetIds = [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId];
+	const keys = new Set(orphanedKeys);
+	for (const assetId of stagedAssetIds) {
+		keys.add(
+			r2_create_asset_key({
+				organizationId: stage.organizationId,
+				workspaceId: stage.workspaceId,
+				assetId,
+			}),
+		);
+	}
+
+	for (const r2Key of keys) {
+		await r2_enqueue_object_deletion_job(ctx, {
+			organizationId: stage.organizationId,
+			workspaceId: stage.workspaceId,
+			r2Key,
+			reason: "failed_create",
+			// The upload action may still be running. Keep the job until the stage expires. Then delete
+			// the R2 file one last time.
+			putMayArriveUntil: stage.expiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+		});
+	}
+
+	for (const assetId of stagedAssetIds) {
 		const asset = await ctx.db.get("files_r2_assets", assetId);
 		if (!asset) {
 			continue;
 		}
-		// Staged asset docs have no r2Key until publication; the object key is deterministic.
-		await r2_delete_object(
-			ctx,
-			r2_create_asset_key({ organizationId: stage.organizationId, workspaceId: stage.workspaceId, assetId }),
-		);
 		await ctx.db.delete("files_r2_assets", assetId);
 	}
+
 	if (stage.callId) {
 		const call = await ctx.db.get("plugins_event_run_calls", stage.callId);
-		// A late or duplicate finish is a no-op: only a started call settles.
+		// Ignore a late or repeated finish. Only a started call can finish.
 		if (call && call.status === "started") {
 			const now = Date.now();
 			await ctx.db.patch("plugins_event_run_calls", call._id, {
@@ -2285,20 +2709,35 @@ export const cleanup_file_write_stage = internalMutation({
 	args: {
 		stageId: v.id("public_api_file_write_stages"),
 		/**
-		 * Object keys the calling action already PUT. When run terminalization cleaned the stage
-		 * while those PUTs were in flight, the stage-derived cleanup saw no objects to delete;
-		 * this fallback removes them so nothing is orphaned in the bucket.
+		 * R2 keys already written by the action. A plugin run may remove the stage while those writes
+		 * are still running. These keys let cleanup delete objects that arrive after the stage is gone.
 		 */
 		orphanedKeys: v.optional(v.array(v.string())),
+		/** Organization and workspace used to clean up R2 keys after the stage doc is gone. */
+		orphanedScope: v.optional(
+			v.object({
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+			}),
+		),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const stage = await ctx.db.get("public_api_file_write_stages", args.stageId);
 		if (stage) {
-			await public_api_db_cleanup_file_write_stage(ctx, stage);
-		} else if (args.orphanedKeys) {
-			for (const key of args.orphanedKeys) {
-				await r2_delete_object(ctx, key);
+			await public_api_db_cleanup_file_write_stage(ctx, stage, args.orphanedKeys);
+		} else if (args.orphanedKeys?.length) {
+			if (!args.orphanedScope) {
+				throw should_never_happen("orphaned file write keys without their stage scope", {
+					stageId: args.stageId,
+				});
+			}
+			for (const r2Key of new Set(args.orphanedKeys)) {
+				await r2_enqueue_object_deletion_job(ctx, {
+					...args.orphanedScope,
+					r2Key,
+					reason: "failed_create",
+				});
 			}
 		}
 
@@ -2344,8 +2783,9 @@ export const cleanup_expired_file_write_stages = internalMutation({
 });
 
 /**
- * Ask the same node-level write question `publish_file_fill` asks at commit time, for the
- * skip-if-unchanged path, which never reaches a publish mutation.
+	 * Ask the same node-level write question `publish_file_fill` asks at commit time, for the
+	 * skip-if-unchanged path, which never reaches a publish mutation. Return false for a read-only file
+	 * so the normal write path returns 409 instead of confirming the file content with a 200 response.
  */
 export const check_file_node_write_permission = internalQuery({
 	args: {
@@ -2366,13 +2806,19 @@ export const check_file_node_write_permission = internalQuery({
 			return false;
 		}
 
-		return await has_workspace_content_permission(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			permission: "content.write",
-			fileNode,
-		});
+		if (
+			!(await has_workspace_content_permission(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				permission: "content.write",
+				fileNode,
+			}))
+		) {
+			return false;
+		}
+
+		return !files_node_require_writable(fileNode)._nay;
 	},
 });
 
@@ -2515,11 +2961,33 @@ async function write_one_markdown_file(
 						},
 					});
 				}
+				// A locked target is a conflict, not a permission error. A permission error would stop the
+				// whole batch. A conflict stops only this item.
+				if (prepared._nay.name === "read_only") {
+					return Result({
+						_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
+					});
+				}
 				return Result({
 					_nay: { name: "nay", message: prepared._nay.message, data: { status: 401, errorCode: "unauthenticated" } },
 				});
 			}
 
+			// The fill diff above belongs to this exact node. If prepare found a different target, the
+			// old diff is not safe to use. Return the same conflict as publish_file_fill.
+			if (prepared._yay.targetAnchor.kind !== "existing" || prepared._yay.targetAnchor.nodeId !== activeNode._id) {
+				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+					stageId: prepared._yay.stageId,
+					orphanedKeys: [],
+				});
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "The file changed during the write",
+						data: { status: 409, errorCode: "conflict" },
+					},
+				});
+			}
 			const contentSnapshotKey = r2_create_asset_key({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -2540,6 +3008,7 @@ async function write_one_markdown_file(
 				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 					stageId: prepared._yay.stageId,
 					orphanedKeys: [contentSnapshotKey],
+					orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
 				});
 				return Result({
 					_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
@@ -2567,6 +3036,7 @@ async function write_one_markdown_file(
 					await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 						stageId: prepared._yay.stageId,
 						orphanedKeys: [contentSnapshotKey],
+						orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
 					});
 					return Result({
 						_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
@@ -2592,10 +3062,15 @@ async function write_one_markdown_file(
 							: published._nay.message === "Write was not published"
 								? { status: 500 as const, errorCode: "storage_failure" as const }
 								: { status: 409 as const, errorCode: "conflict" as const };
-				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
-					stageId: prepared._yay.stageId,
-					orphanedKeys: [contentSnapshotKey],
-				});
+				// A read-only refusal already cleaned up the stage during publish. Running cleanup again
+				// would change the plugin call to the wrong unpublished_write/500 error.
+				if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
+					await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+						stageId: prepared._yay.stageId,
+						orphanedKeys: [contentSnapshotKey],
+						orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
+					});
+				}
 				return Result({
 					_nay: { name: "nay", message: published._nay.message, data: failure },
 				});
@@ -2637,6 +3112,13 @@ async function write_one_markdown_file(
 				_nay: { name: "nay", message: prepared._nay.message, data: { status: 403, errorCode: "permission_denied" } },
 			});
 		}
+		// A locked target or parent is a conflict, not a permission error. A permission error would
+		// stop the whole batch. A conflict stops only this item.
+		if (prepared._nay.name === "read_only") {
+			return Result({
+				_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
+			});
+		}
 		return Result({
 			_nay: { name: "nay", message: prepared._nay.message, data: { status: 401, errorCode: "unauthenticated" } },
 		});
@@ -2649,12 +3131,11 @@ async function write_one_markdown_file(
 		...stageScope,
 		assetId: prepared._yay.contentSnapshotAssetId,
 	});
-	// Passed to cleanup so objects PUT after run terminalization already swept the
-	// stage (deleting the docs the keys derive from) still get removed from the bucket.
+	// A plugin run may remove the stage before these R2 writes finish. Keep the exact keys so cleanup
+	// can still remove objects that arrive after the stage is gone.
 	const orphanedKeys = [yjsSnapshotKey, contentSnapshotKey];
-	// Every PUT must settle before any cleanup: a fast-failing sibling would otherwise
-	// trigger the key sweep while another PUT is still in flight, and that PUT would
-	// re-create its object after the sweep — an untracked blob no reaper can find.
+	// Wait for both writes before cleanup. Otherwise one failed write could start cleanup while the
+	// other write is still running, and the late object would have no remaining cleanup owner.
 	const putResults = await Promise.allSettled([
 		r2_put_object(ctx, {
 			key: yjsSnapshotKey,
@@ -2674,7 +3155,11 @@ async function write_one_markdown_file(
 			stageId,
 			path: args.path,
 		});
-		await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
+		await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+			stageId,
+			orphanedKeys,
+			orphanedScope: stageScope,
+		});
 		return Result({
 			_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
 		});
@@ -2683,6 +3168,7 @@ async function write_one_markdown_file(
 	const published: publish_file_write_Result = await ctx.runMutation(internal.public_api.publish_file_write, {
 		stageId,
 		content: args.content,
+		targetAnchor: prepared._yay.targetAnchor,
 	});
 	if (published._nay) {
 		// Conflict is the fallback: structural 409s pass their specific message through,
@@ -2695,7 +3181,15 @@ async function write_one_markdown_file(
 					: published._nay.message === "Write was not published"
 						? { status: 500 as const, errorCode: "storage_failure" as const }
 						: { status: 409 as const, errorCode: "conflict" as const };
-		await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
+		// A read-only refusal already cleaned up the stage during publish. Running cleanup again
+		// would change the plugin call to the wrong unpublished_write/500 error.
+		if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
+			await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+				stageId,
+				orphanedKeys,
+				orphanedScope: stageScope,
+			});
+		}
 		return Result({
 			_nay: { name: "nay", message: published._nay.message, data: failure },
 		});
@@ -3416,8 +3910,8 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 	}
 
 	const files: Array<{ path: string; nodeId: Id<"files_nodes">; created: boolean }> = [];
-	// Sequential on purpose: sibling paths usually share missing parent folders, and
-	// concurrent publishes would race on the shared folder creation.
+	// Run touches in order because sibling paths may create the same missing folders. One read-only
+	// path ends the request with 409. Earlier touches stay saved, and retrying them is safe.
 	for (const requestedPath of requestedPaths) {
 		// An active file already satisfies the touch; skip staging entirely. The publish
 		// mutation re-checks the path transactionally, so this pre-check is only an
@@ -3433,17 +3927,23 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 			// asks has to be asked here too. `get_by_path` above only filters by what the caller
 			// may read, and a read-only sharee would otherwise be told the file is theirs to
 			// write. Asked before the folder conflict, in the same order as the mutation.
-			if (
-				!(await ctx.runQuery(internal.public_api.can_write_file_node, {
-					organizationId: principal.organizationId,
-					workspaceId: principal.workspaceId,
-					userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
-					nodeId: activeNode._id,
-				}))
-			) {
+			const canWriteNode = (await ctx.runQuery(internal.public_api.can_write_file_node, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
+				nodeId: activeNode._id,
+			})) as "ok" | "permission_denied" | "read_only";
+			if (canWriteNode === "permission_denied") {
 				return {
 					status: 403,
 					body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+				} as const;
+			}
+			// A locked target refuses touch. Return the same conflict as a locked write.
+			if (canWriteNode === "read_only") {
+				return {
+					status: 409,
+					body: await fail({ status: 409, message: "This item is read-only.", errorCode: "conflict" }),
 				} as const;
 			}
 			if (activeNode.kind === "folder") {
@@ -3477,6 +3977,13 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 					body: await fail({ status: 403, message: prepared._nay.message, errorCode: "permission_denied" }),
 				} as const;
 			}
+			// A locked parent is a conflict, not a permission error.
+			if (prepared._nay.name === "read_only") {
+				return {
+					status: 409,
+					body: await fail({ status: 409, message: prepared._nay.message, errorCode: "conflict" }),
+				} as const;
+			}
 			return {
 				status: 401,
 				body: await fail({ status: 401, message: prepared._nay.message, errorCode: "unauthenticated" }),
@@ -3493,12 +4000,11 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 			...stageScope,
 			assetId: prepared._yay.contentSnapshotAssetId,
 		});
-		// Passed to cleanup so objects PUT after run terminalization already swept the
-		// stage (deleting the docs the keys derive from) still get removed from the bucket.
+		// A plugin run may remove the stage before these R2 writes finish. Keep the exact keys so cleanup
+		// can still remove objects that arrive after the stage is gone.
 		const orphanedKeys = [yjsSnapshotKey, contentSnapshotKey];
-		// Every PUT must settle before any cleanup: a fast-failing sibling would otherwise
-		// trigger the key sweep while another PUT is still in flight, and that PUT would
-		// re-create its object after the sweep — an untracked blob no reaper can find.
+		// Wait for both writes before cleanup. Otherwise one failed write could start cleanup while the
+		// other write is still running, and the late object would have no remaining cleanup owner.
 		const putResults = await Promise.allSettled([
 			r2_put_object(ctx, {
 				key: yjsSnapshotKey,
@@ -3523,12 +4029,17 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 				message: "Failed to touch files",
 				errorCode: "storage_failure",
 			});
-			await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
+			await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+				stageId,
+				orphanedKeys,
+				orphanedScope: stageScope,
+			});
 			return { status: 500, body: failBody } as const;
 		}
 
 		const published: publish_file_touch_Result = await ctx.runMutation(internal.public_api.publish_file_touch, {
 			stageId,
+			targetAnchor: prepared._yay.targetAnchor,
 		});
 		if (published._nay) {
 			// Conflict is the fallback: structural 409s pass their specific message through,
@@ -3553,7 +4064,14 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 								? "unauthenticated"
 								: "storage_failure",
 			});
-			await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
+			// A read-only refusal already cleaned up the stage during publish.
+			if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
+				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+					stageId,
+					orphanedKeys,
+					orphanedScope: stageScope,
+				});
+			}
 			if (failedStatus === 409) {
 				return { status: 409, body: failBody } as const;
 			}
@@ -3953,7 +4471,8 @@ export async function public_api_http_upload_urls(ctx: ActionCtx, request: Reque
 				? 401
 				: created._nay.message === "Permission denied" || created._nay.message === "Upload quota exceeded"
 					? 403
-					: created._nay.message === "A file already exists at this path" ||
+					: created._nay.name === "read_only" ||
+						  created._nay.message === "A file already exists at this path" ||
 						  created._nay.message === "The path cannot point to a folder" ||
 						  created._nay.message === "An intermediate segment is owned by a file"
 						? 409

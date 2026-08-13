@@ -324,10 +324,8 @@ const app_convex_schema = defineSchema({
 				 */
 				committedSequence: v.number(),
 				/**
-				 * `_id`s of the folders the eager create committed for this leaf, deepest first
-				 * (`createdAncestorIds` from `create_file_by_path`). After a safe leaf hard-delete,
-				 * discard/expiry remove each one while it is still an empty folder only touched by
-				 * the proposer.
+				 * Parent folders created for this file, starting with the folder closest to the file.
+				 * Cleanup checks whether it can delete these folders after it deletes the file.
 				 */
 				createdAncestorIds: v.optional(v.array(v.id("files_nodes"))),
 			}),
@@ -673,6 +671,13 @@ const app_convex_schema = defineSchema({
 		 * stays right without walking up the tree. See `files_nodes_db_cascade_restricted_scope`.
 		 */
 		restrictedScopeNodeId: v.optional(v.id("files_nodes")),
+		/**
+		 * The lock that makes this node read-only.
+		 *
+		 * Its own id means this node has a direct lock. Another id means a parent folder locked it.
+		 * No value means the node is writable. Permissions are separate from this lock.
+		 */
+		readOnlyScopeNodeId: v.optional(v.id("files_nodes")),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** Updated by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
@@ -996,29 +1001,70 @@ const app_convex_schema = defineSchema({
 		kind: v.union(v.literal("upload"), v.literal("content"), v.literal("yjs_snapshot"), v.literal("content_snapshot")),
 		r2Bucket: v.string(),
 		/**
-		 * Present only after the R2 object
-		 * has been confirmed at this deterministic key.
+		 * The final R2 key. It is set after R2 confirms that the file exists there.
 		 **/
 		r2Key: v.optional(v.string()),
 		size: v.number(),
 		etag: v.optional(v.string()),
 		/**
-		 * Content-processing state: undefined = not decided yet, a work id = processing in
-		 * flight (cancellable), null = settled with nothing pending.
+		 * Upload processing state. Undefined means not started. A work id means running.
+		 * Null means finished.
 		 **/
 		processingWorkId: v.optional(v.union(vWorkId, v.null())),
 		/**
-		 * Orphan-sweep deadline. Every insert site sets it to now + 24h, and the same patch that
-		 * sets `r2Key` clears it, so the field is present exactly while `r2Key` is missing. The
-		 * hourly sweeper in r2.ts deletes expired assets that no node or snapshot doc references.
+		 * When to check an unfinished asset again. New assets get a 24-hour deadline. Clear it only
+		 * after a node or snapshot uses the R2 file, or cleanup confirms the file is deleted. The
+		 * hourly cleanup in r2.ts checks assets after this time.
 		 **/
 		unfinalizedExpiresAt: v.optional(v.number()),
+		/**
+		 * When the signed upload URL stops working. Cleanup uses this time because the URL can
+		 * create the temporary R2 file again until it expires.
+		 */
+		uploadUrlExpiresAt: v.optional(v.number()),
+		/**
+		 * The temporary R2 key used by the signed upload URL. After the upload, the backend copies
+		 * this file to the final `r2Key`. Reusing the URL can only change this temporary file.
+		 */
+		uploadStagingR2Key: v.optional(v.string()),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		updatedAt: v.number(),
 	})
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_unfinalizedExpiresAt", ["unfinalizedExpiresAt"]),
+
+	/**
+	 * Each doc asks the scheduled worker to delete one exact R2 key. The worker retries until R2
+	 * confirms deletion. Increase `generation` when new bytes may have reached the key. A delete
+	 * started for an older generation cannot remove the newer job.
+	 */
+	files_r2_object_deletion_jobs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		r2Key: v.string(),
+		reason: v.union(
+			v.literal("failed_create"),
+			v.literal("read_only_create"),
+			v.literal("upload_staging"),
+			v.literal("read_only_stage"),
+			v.literal("read_only_snapshot_restore"),
+			v.literal("read_only_yjs_repair"),
+			v.literal("untracked_asset_event"),
+		),
+		assetId: v.optional(v.id("files_r2_assets")),
+		generation: v.number(),
+		lastR2EventId: v.optional(v.string()),
+		/**
+		 * The last time another upload may reach this key. Before this time, keep the job after a
+		 * successful delete and delete again later. Leave it empty when no later upload can arrive.
+		 */
+		putMayArriveUntil: v.optional(v.number()),
+		attempts: v.number(),
+		nextAttemptAt: v.number(),
+	})
+		.index("by_r2_key", ["r2Key"])
+		.index("by_next_attempt_at", ["nextAttemptAt"]),
 
 	/**
 	 * Operational status for read-only external mounts (v1: GitHub repo mirrors). This table's own

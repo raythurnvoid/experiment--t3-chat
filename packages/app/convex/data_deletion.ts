@@ -22,7 +22,11 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
 import { files_nodes_db_hard_delete_node, files_nodes_db_is_eager_node_safe_to_hard_delete } from "./files_nodes.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
+import {
+	r2_PUT_MAY_ARRIVE_MARGIN_MS,
+	r2_create_asset_key,
+	r2_enqueue_object_deletion_job,
+} from "./r2_client.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -670,8 +674,8 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: materializationJobs.length };
 	}
 
-	// Delete external R2 objects and cancel upload-conversion jobs before
-	// removing the asset docs that track them.
+	// Stop upload conversion. Create a deletion job for each possible R2 key before deleting the
+	// asset docs that store those keys.
 	const assets = await ctx.db
 		.query("files_r2_assets")
 		.withIndex("by_organization_workspace", (q) =>
@@ -684,20 +688,64 @@ async function db_purge_organization_workspace_content_batch(
 				asset.processingWorkId ? [files_upload_conversion_workpool.cancel(ctx, asset.processingWorkId)] : [],
 			),
 		);
-		// The browser PUT can succeed before its event records `r2Key`. When `r2Key` is still
-		// missing, delete the deterministic key before removing the asset doc that identifies it.
+		const now = Date.now();
 		await Promise.all(
-			assets.map((asset) =>
-				r2.deleteObject(
-					ctx,
+			assets.flatMap((asset) => {
+				const liveR2Key =
 					asset.r2Key ??
-						r2_create_asset_key({
-							organizationId: asset.organizationId,
-							workspaceId: asset.workspaceId,
-							assetId: asset._id,
+					r2_create_asset_key({
+						organizationId,
+						workspaceId,
+						assetId: asset._id,
+					});
+				const uploadPutMayArriveUntil =
+					(asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS;
+				const jobs = [
+					r2_enqueue_object_deletion_job(ctx, {
+						organizationId,
+						workspaceId,
+						r2Key: liveR2Key,
+						reason: "untracked_asset_event",
+						// An old upload URL writes directly to this key. Keep the deletion job until the URL
+						// expires because the URL can create the object again.
+						putMayArriveUntil:
+							asset.kind === "upload" && asset.uploadStagingR2Key === undefined
+								? uploadPutMayArriveUntil
+								: undefined,
+					}),
+				];
+				if (asset.uploadStagingR2Key !== undefined && asset.uploadStagingR2Key !== liveR2Key) {
+					jobs.push(
+						r2_enqueue_object_deletion_job(ctx, {
+							organizationId,
+							workspaceId,
+							r2Key: asset.uploadStagingR2Key,
+							reason: "upload_staging",
+							putMayArriveUntil: uploadPutMayArriveUntil,
 						}),
-				),
-			),
+					);
+				}
+				return jobs;
+			}),
+		);
+		// The jobs retry until R2 confirms deletion. Also start the old delete helper now so most
+		// objects are removed without waiting for the scheduled job.
+		await Promise.all(
+			assets.flatMap((asset) => {
+				const liveR2Key =
+					asset.r2Key ??
+					r2_create_asset_key({
+						organizationId,
+						workspaceId,
+						assetId: asset._id,
+					});
+				return [
+					r2.deleteObject(ctx, liveR2Key),
+					...(asset.uploadStagingR2Key !== undefined && asset.uploadStagingR2Key !== liveR2Key
+						? [r2.deleteObject(ctx, asset.uploadStagingR2Key)]
+						: []),
+				];
+			}),
 		);
 		await Promise.all(assets.map((doc) => ctx.db.delete("files_r2_assets", doc._id)));
 		return { done: false, deletedCount: assets.length };

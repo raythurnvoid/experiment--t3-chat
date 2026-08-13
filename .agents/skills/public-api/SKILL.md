@@ -66,6 +66,18 @@ Buckets live in `packages/app/convex/rate_limiter.ts`:
 - `overwrite: "fail"` returns 409 `A file already exists at this path`; a folder at the path is always 409.
 - `skipIfUnchanged: true`: when projecting the incoming Markdown into the current doc is a semantic no-op (`fillUpdate === null`), the route returns 200 with `unchanged: true` before staging — no stage, no asset docs, no uploads, no new version snapshot. The skip first asks the same node-level write check the publish would ask; a caller the publish would refuse falls through to the normal write path and gets the same refusal, so the unchanged marker cannot confirm content to someone who cannot write the node. Only the fill path can be unchanged; comparison is Yjs-level, not byte-level, because materialized Markdown is not byte-stable. `null` never lies, but the reverse is not guaranteed: some semantically identical rewrites still publish.
 - Failure vocabulary (per-item `errorCode` in `write-many`, plugin settle codes in `write`): `unauthenticated` (401), `permission_denied` (403), `conflict` (409), `storage_failure` (500).
+- A read-only target or destination folder returns 409 `conflict` with `This item is read-only.` It does
+  not return `permission_denied` because the caller may have permission but still be blocked by the
+  lock. `prepare_file_write` checks the lock after auth and ACL. The publish mutation resolves the
+  path again and checks current ACL and lock before its first write. A lock removed before publish
+  does not refuse the write.
+- A stage for an existing target keeps that target's node id. This prevents stale work from
+  overwriting a different node. Refused staged keys go to `files_r2_object_deletion_jobs`. Plugin runs
+  do not bypass locks. Their call settles with `conflict` and writes no output.
+- Stage cleanup also uses `files_r2_object_deletion_jobs`. Plugin completion or tenant deletion may
+  remove a stage while its action still has R2 PUTs in progress. Keep each stage job until
+  `stage.expiresAt` plus five minutes. If the action later finds the stage missing, it advances the
+  same jobs after its PUTs finish. It must not shorten the cleanup window.
 - Frontmatter caps: 128 distinct fields (`files_metadata_MAX_FRONTMATTER_FIELDS`) and 512 index documents (`files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS`), both in `packages/app/shared/files-metadata.ts`. On the CREATE path the metadata insert helper's `Too many frontmatter fields` throw rolls the publish back, and the pipeline does not map that throw, so the API caller sees a generic error instead of a clean 400; the orphaned stage is swept by the hourly stage cleanup cron. On the FILL path the committed chunks refresh through materialization, which settles over-cap frontmatter with the `contentFrontmatterTooLarge*` marker pair instead of failing the request — the write returns 200 and the committed content stays at the last sequence that fit (see `../files-editable-text/SKILL.md`).
 
 `write-many` batch semantics:
@@ -77,7 +89,16 @@ Buckets live in `packages/app/convex/rate_limiter.ts`:
 
 # Binary upload pipeline
 
-`upload-urls` mints, per file: an active `files_nodes` doc, a `files_r2_assets` doc, and a presigned PUT url for the deterministic key `organizations/<org>/workspaces/<ws>/assets/<assetId>`. The whole batch validates before any write (canonical paths, sizes, collisions, per-path ACL including restricted ancestors, quota) — one bad item is a 400/403/409 with the offending `path` and nothing minted.
+For each file, `upload-urls` creates an active `files_nodes` doc, a `files_r2_assets` doc, and a signed
+PUT URL. The URL writes to the temporary key
+`organizations/<org>/workspaces/<ws>/upload-staging/<assetId>`. The R2 finalizer verifies that staging
+event and copies the bytes once to the immutable live key under `assets/<assetId>`.
+
+The whole batch validates before any write. It checks canonical paths, sizes, collisions, per-path
+ACL including restricted ancestors, read-only locks on replacement files and destination ancestors,
+and quota. One bad item returns 400, 403, or 409 with its `path`, and creates nothing. Each asset stores
+`uploadUrlExpiresAt` and `uploadStagingR2Key`, like `create_upload_node`. Creating these docs accepts
+the upload. A later lock does not cancel publication or processing. The finished node stays locked.
 
 - `upload-urls` is the deliberate public CREATE path for plain-text editable documents: an upload whose name has a recognized editable text extension converts into an editable document on finalization. The extension classifier beats the client-declared MIME — a recognized text extension stores the classifier's media type and ignores the caller's declared one; anything else keeps the client value (media uploads need it for plugin routing).
 - `skipProcessing: true` inserts assets with `processingWorkId: null`: the R2 event finalizer records the object (r2Key, real size, etag) but starts no text conversion and no plugin dispatch. Import tools want this; app-like uploads omit it.

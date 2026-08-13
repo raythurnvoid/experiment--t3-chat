@@ -48,6 +48,14 @@ crons.cron(
 	{},
 );
 
+// Each hour, schedule up to 50 R2 deletion jobs whose retry time has passed.
+crons.cron(
+	"process due r2 object deletion jobs",
+	"50 * * * *",
+	internal.r2_client.schedule_due_object_deletion_jobs,
+	{},
+);
+
 // Once daily at 06:30 UTC — delete terminal plugin runs and their call docs past retention.
 crons.cron("cleanup old plugin event runs", "30 6 * * *", internal.plugins_runtime.cleanup_old_event_runs, {});
 

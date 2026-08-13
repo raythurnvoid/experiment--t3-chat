@@ -87,7 +87,7 @@ describe("data_import.create_upload_targets", () => {
 		});
 		expect(docs.videoAsset?.r2Key).toBeUndefined();
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
-			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${created._yay[0]!.assetId}`,
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${created._yay[0]!.assetId}`,
 		);
 	});
 
@@ -108,6 +108,28 @@ describe("data_import.create_upload_targets", () => {
 		const assetId = created._yay[0]!.assetId;
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId));
 		const assetR2Key = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${assetId}`;
+		const uploadStagingR2Key =
+			asset?.uploadStagingR2Key ??
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${assetId}`;
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				if (url === "https://r2.test/upload" && init?.method === "PUT") {
+					return new Response(null, { status: 200 });
+				}
+				if (url === `https://r2.test/object?key=${encodeURIComponent(uploadStagingR2Key)}`) {
+					return new Response(new Uint8Array(64), {
+						status: 200,
+						headers: { "Content-Length": "64", ETag: "etag_data_import_1" },
+					});
+				}
+				return new Response(null, { status: 404 });
+			}),
+		);
 
 		enqueueActionSpy.mockClear();
 		const response = await t.fetch("/api/r2/event", {
@@ -123,7 +145,7 @@ describe("data_import.create_upload_targets", () => {
 					action: "PutObject",
 					bucket: asset!.r2Bucket,
 					object: {
-						key: assetR2Key,
+						key: uploadStagingR2Key,
 						size: 64,
 						eTag: "etag_data_import_1",
 					},
@@ -182,6 +204,128 @@ describe("data_import.create_upload_targets", () => {
 		});
 		expect(docs.oldNode?.archiveOperationId).toBeDefined();
 		expect(docs.activeNode?._id).toBe(second._yay[0]!.nodeId);
+	});
+
+	test("refuses a locked replacement occupant and imports again after unlock", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+
+		const first = await t.mutation(internal.data_import.create_upload_targets, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			items: [{ path: "/documents/report.pdf", contentType: "application/pdf", size: 100 }],
+		});
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
+		const occupantNodeId = first._yay[0]!.nodeId;
+
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", occupantNodeId, {
+				readOnlyScopeNodeId: occupantNodeId,
+			});
+		});
+
+		// This operator import has no bypass for read-only locks.
+		const refused = await t.mutation(internal.data_import.create_upload_targets, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			items: [{ path: "/documents/report.pdf", contentType: "application/pdf", size: 200 }],
+		});
+		expect(refused._nay).toMatchObject({
+			name: "read_only",
+			message: "This item is read-only.",
+			data: { path: "/documents/report.pdf" },
+		});
+
+		const afterRefusal = await t.run(async (ctx) => {
+			const occupant = await ctx.db.get("files_nodes", occupantNodeId);
+			const assets = await ctx.db
+				.query("files_r2_assets")
+				.withIndex("by_organization_workspace", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId),
+				)
+				.collect();
+			return { occupant, assetCount: assets.length };
+		});
+		// The refusal created no node or asset, and the old file stays active.
+		expect(afterRefusal.occupant?.archiveOperationId).toBeUndefined();
+		expect(afterRefusal.assetCount).toBe(1);
+
+		// Unlocking allows the same import to replace the old file.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", occupantNodeId, {
+				readOnlyScopeNodeId: undefined,
+			});
+		});
+		const retried = await t.mutation(internal.data_import.create_upload_targets, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			items: [{ path: "/documents/report.pdf", contentType: "application/pdf", size: 200 }],
+		});
+		if (retried._nay) {
+			throw new Error(retried._nay.message);
+		}
+		expect(retried._yay).toHaveLength(1);
+	});
+
+	test("refuses importing under a locked destination folder", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => {
+			const folder = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				parentId: files_ROOT_ID,
+				path: "locked-dir",
+				kind: "folder",
+				now: Date.now(),
+			});
+			if (folder._nay) {
+				throw new Error(folder._nay.message);
+			}
+			await ctx.db.patch("files_nodes", folder._yay, {
+				readOnlyScopeNodeId: folder._yay,
+			});
+		});
+
+		const created = await t.mutation(internal.data_import.create_upload_targets, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			items: [{ path: "/locked-dir/nested/report.pdf", contentType: "application/pdf", size: 100 }],
+		});
+
+		expect(created._nay).toMatchObject({
+			name: "read_only",
+			message: "This item is read-only.",
+			data: { path: "/locked-dir/nested/report.pdf" },
+		});
+		const after = await t.run(async (ctx) => {
+			const assets = await ctx.db
+				.query("files_r2_assets")
+				.withIndex("by_organization_workspace", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId),
+				)
+				.collect();
+			const nested = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("path", "/locked-dir/nested")
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			return { assetCount: assets.length, nested };
+		});
+		expect(after.assetCount).toBe(0);
+		expect(after.nested).toBeNull();
 	});
 
 	test("rejects a folder occupying the target path before any write", async () => {

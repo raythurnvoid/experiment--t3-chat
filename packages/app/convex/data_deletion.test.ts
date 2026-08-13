@@ -18,7 +18,11 @@ import { billing_PRODUCTS } from "../shared/billing.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { files_create_room_id, files_get_utf8_byte_size } from "../shared/files.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
+import {
+	r2_PUT_MAY_ARRIVE_MARGIN_MS,
+	r2_create_asset_key,
+	r2_create_upload_staging_key,
+} from "./r2_client.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -2312,7 +2316,7 @@ describe("process_workspace_deletion_request", () => {
 		expect(remaining.pendingUpdates).toHaveLength(0);
 	});
 
-	test("deletes the deterministic R2 object for an asset without r2Key", async () => {
+	test("durably deletes live and staging keys for an upload asset without r2Key", async () => {
 		const t = test_convex();
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject");
 		const user = await t.run((ctx) =>
@@ -2322,8 +2326,9 @@ describe("process_workspace_deletion_request", () => {
 			}),
 		);
 
-		const { assetId, requestId } = await t.run(async (ctx) => {
+		const { assetId, requestId, stagingKey, uploadUrlExpiresAt } = await t.run(async (ctx) => {
 			const now = Date.now();
+			const uploadUrlExpiresAt = now + 60_000;
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
@@ -2332,8 +2337,15 @@ describe("process_workspace_deletion_request", () => {
 				size: 12,
 				createdBy: user.userId,
 				unfinalizedExpiresAt: now + 60_000,
+				uploadUrlExpiresAt,
 				updatedAt: now,
 			});
+			const stagingKey = r2_create_upload_staging_key({
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				assetId,
+			});
+			await ctx.db.patch("files_r2_assets", assetId, { uploadStagingR2Key: stagingKey });
 			await ctx.db.insert("files_nodes", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
@@ -2357,7 +2369,7 @@ describe("process_workspace_deletion_request", () => {
 				scope: "workspace",
 			});
 
-			return { assetId, requestId };
+			return { assetId, requestId, stagingKey, uploadUrlExpiresAt };
 		});
 		deleteObjectSpy.mockClear();
 
@@ -2366,15 +2378,84 @@ describe("process_workspace_deletion_request", () => {
 			batchSize: 5,
 		});
 
-		expect(deleteObjectSpy).toHaveBeenCalledWith(
-			expect.anything(),
-			r2_create_asset_key({
-				organizationId: user.defaultOrganizationId,
-				workspaceId: user.defaultWorkspaceId,
-				assetId,
+		const liveKey = r2_create_asset_key({
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			assetId,
+		});
+		const jobs = await t.run(async (ctx) =>
+			await ctx.db
+				.query("files_r2_object_deletion_jobs")
+				.filter((q) => q.or(q.eq(q.field("r2Key"), liveKey), q.eq(q.field("r2Key"), stagingKey)))
+				.collect(),
+		);
+		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), liveKey);
+		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), stagingKey);
+		expect(jobs).toHaveLength(2);
+		expect(jobs.find((job) => job.r2Key === liveKey)).toMatchObject({
+			r2Key: liveKey,
+			reason: "untracked_asset_event",
+		});
+		expect(jobs.find((job) => job.r2Key === liveKey)).not.toHaveProperty("putMayArriveUntil");
+		expect(jobs.find((job) => job.r2Key === stagingKey)).toMatchObject({
+			r2Key: stagingKey,
+			reason: "upload_staging",
+			putMayArriveUntil: uploadUrlExpiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
+	});
+
+	test("keeps a legacy upload target tombstoned through its signed URL lifetime", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-ws-legacy-upload-r2",
+				displayName: "Workspace Legacy Upload R2",
 			}),
 		);
-		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
+
+		const seeded = await t.run(async (ctx) => {
+			const now = Date.now();
+			const uploadUrlExpiresAt = now + 60_000;
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				kind: "upload",
+				r2Bucket: "test-bucket",
+				size: 12,
+				createdBy: user.userId,
+				uploadUrlExpiresAt,
+				updatedAt: now,
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				scope: "workspace",
+			});
+			return { assetId, requestId, uploadUrlExpiresAt };
+		});
+
+		await data_deletion_test_process_workspace_request_until_done(t, {
+			requestId: seeded.requestId,
+			batchSize: 5,
+		});
+
+		const liveKey = r2_create_asset_key({
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			assetId: seeded.assetId,
+		});
+		const job = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_r2_object_deletion_jobs")
+				.withIndex("by_r2_key", (q) => q.eq("r2Key", liveKey))
+				.unique(),
+		);
+		expect(job).toMatchObject({
+			r2Key: liveKey,
+			putMayArriveUntil: seeded.uploadUrlExpiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+		});
 	});
 
 	test("purges plugin installations, secrets, upload event routes, runs, call docs, and activities", async () => {
@@ -2949,6 +3030,164 @@ describe("process_workspace_deletion_request", () => {
 
 		expect(cancelSpy).toHaveBeenCalledWith(expect.anything(), workId);
 		expect(runAfter).toBeNull();
+	});
+
+	test("purges a locked subtree with its assets", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-ws-read-only-purge",
+				displayName: "Workspace Read Only Purge",
+			}),
+		);
+
+		const seeded = await t.run(async (ctx) => {
+			const victimWorkspace = await organizations_db_create_workspace(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				name: "read-only-victim",
+				description: "",
+				now: Date.now(),
+			});
+			if (victimWorkspace._nay) {
+				throw new Error(victimWorkspace._nay.message);
+			}
+			const workspaceId = victimWorkspace._yay.workspaceId;
+			const now = Date.now();
+
+			const folderId = await ctx.db.insert("files_nodes", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				path: "/locked",
+				treePath: "/locked",
+				pathDepth: 1,
+				name: "locked",
+				kind: "folder",
+				lowercaseExtension: null,
+				parentId: "root",
+				createdBy: user.userId,
+				updatedBy: user.userId,
+				updatedAt: now,
+			});
+			await ctx.db.patch("files_nodes", folderId, {
+				readOnlyScopeNodeId: folderId,
+			});
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				kind: "content",
+				r2Bucket: "test-bucket",
+				r2Key: "content/read-only-purge-file",
+				size: 12,
+				createdBy: user.userId,
+				updatedAt: now,
+			});
+			const fileId = await ctx.db.insert("files_nodes", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				path: "/locked/file.md",
+				treePath: "/locked/file.md",
+				pathDepth: 2,
+				name: "file.md",
+				kind: "file",
+				lowercaseExtension: "md",
+				parentId: folderId,
+				readOnlyScopeNodeId: folderId,
+				createdBy: user.userId,
+				updatedBy: user.userId,
+				updatedAt: now,
+				contentType: "text/markdown;charset=utf-8",
+				assetId,
+			});
+
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				scope: "workspace",
+			});
+			return { workspaceId, folderId, fileId, assetId, requestId };
+		});
+
+		// Workspace deletion owns the full lifecycle, so read-only locks must not stop it.
+		await data_deletion_test_process_workspace_request_until_done(t, {
+			requestId: seeded.requestId,
+			batchSize: 5,
+		});
+
+		const after = await t.run(async (ctx) => ({
+			folder: await ctx.db.get("files_nodes", seeded.folderId),
+			file: await ctx.db.get("files_nodes", seeded.fileId),
+			asset: await ctx.db.get("files_r2_assets", seeded.assetId),
+		}));
+		expect(after.folder).toBeNull();
+		expect(after.file).toBeNull();
+		expect(after.asset).toBeNull();
+	});
+
+	test("keeps an outstanding exact-key deletion job until its processor confirms object absence", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-ws-deletion-job",
+				displayName: "Workspace Deletion Job",
+			}),
+		);
+
+		const seeded = await t.run(async (ctx) => {
+			const victimWorkspace = await organizations_db_create_workspace(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				name: "deletion-job-victim",
+				description: "",
+				now: Date.now(),
+			});
+			if (victimWorkspace._nay) {
+				throw new Error(victimWorkspace._nay.message);
+			}
+			const workspaceId = victimWorkspace._yay.workspaceId;
+
+			await data_deletion_test_seed_page(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				tag: "deletion-job-page",
+			});
+
+			// Workspace purge must keep this job. Only its processor can remove it after R2 confirms
+			// that the object is gone.
+			const jobId = await ctx.db.insert("files_r2_object_deletion_jobs", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				r2Key: `organizations/${user.defaultOrganizationId}/workspaces/${workspaceId}/assets/refused-stage`,
+				reason: "read_only_stage",
+				generation: 1,
+				attempts: 0,
+				nextAttemptAt: Date.now() + 60 * 60 * 1000,
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId,
+				scope: "workspace",
+			});
+			return { workspaceId, jobId, requestId };
+		});
+
+		await data_deletion_test_process_workspace_request_until_done(t, {
+			requestId: seeded.requestId,
+			batchSize: 5,
+		});
+
+		const after = await t.run(async (ctx) => ({
+			content: await data_deletion_test_count_workspace_content(ctx, {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: seeded.workspaceId,
+			}),
+			job: await ctx.db.get("files_r2_object_deletion_jobs", seeded.jobId),
+		}));
+		expect(after.content).toBe(0);
+		expect(after.job).not.toBeNull();
 	});
 });
 
@@ -4106,6 +4345,41 @@ describe("hard_delete_user_data", () => {
 		expect(after.sharedWorkspace?._id).toBe(shared.sharedWorkspaceId);
 		expect(after.sharedWorkspaceFiles).toHaveLength(1);
 		expect(after.workspaceQuota?.usedCount).toBe(1);
+	});
+
+	test("purges locked home content", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-read-only",
+				displayName: "Reset Read Only",
+			}),
+		);
+		const seeded = await t.run(async (ctx) => {
+			const page = await data_deletion_test_seed_page(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				tag: "reset-locked-page",
+			});
+			await ctx.db.patch("files_nodes", page.nodeId, {
+				readOnlyScopeNodeId: page.nodeId,
+			});
+			const node = await ctx.db.get("files_nodes", page.nodeId);
+			return { nodeId: page.nodeId, assetId: node?.assetId ?? null };
+		});
+
+		await data_deletion_test_hard_delete_user_data_until_done(t, {
+			userId: user.userId,
+		});
+
+		const after = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", seeded.nodeId),
+			asset: seeded.assetId ? await ctx.db.get("files_r2_assets", seeded.assetId) : null,
+		}));
+		// Data reset owns the full lifecycle, so the read-only lock must not stop deletion.
+		expect(after.node).toBeNull();
+		expect(after.asset).toBeNull();
 	});
 });
 

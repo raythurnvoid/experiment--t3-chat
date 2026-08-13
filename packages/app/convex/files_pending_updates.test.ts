@@ -796,6 +796,28 @@ async function upsert_file_pending_update_internal_for_test(args: {
 
 type TestConvexIdentity = ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
 
+async function set_pending_test_read_only(
+	asUser: TestConvexIdentity,
+	membershipId: Id<"organizations_workspaces_users">,
+	nodeId: Id<"files_nodes">,
+) {
+	const result = await asUser.mutation(api.files_nodes.set_node_read_only, { membershipId, nodeId });
+	if (result._nay) {
+		throw new Error(result._nay.message);
+	}
+}
+
+async function set_pending_test_writable(
+	asUser: TestConvexIdentity,
+	membershipId: Id<"organizations_workspaces_users">,
+	nodeId: Id<"files_nodes">,
+) {
+	const result = await asUser.mutation(api.files_nodes.set_node_writable, { membershipId, nodeId });
+	if (result._nay) {
+		throw new Error(result._nay.message);
+	}
+}
+
 async function upsert_file_pending_update_public_for_test(
 	asIdentity: TestConvexIdentity,
 	args: {
@@ -3183,6 +3205,7 @@ describe("pending update provenance", () => {
 		});
 
 		return {
+			userId: sharee.userId,
 			sourceNodeId: source.nodeId,
 			destNodeId: dest.nodeId,
 			organizationId: source.organizationId,
@@ -3194,18 +3217,31 @@ describe("pending update provenance", () => {
 
 	test("accepting a replace-move does not archive a source the saver may no longer write", async () => {
 		const t = test_convex();
-		const seeded = await seed_cross_scope_replace_move({ t, suffix: "viewer", role: "viewer" });
+		const seeded = await seed_cross_scope_replace_move({ t, suffix: "viewer", role: "member" });
+		await t.run(async (ctx) => {
+			const roleAssignment = await ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("userId", seeded.userId),
+				)
+				.first();
+			if (!roleAssignment) {
+				throw new Error("Missing replace-move role assignment");
+			}
+			await ctx.db.patch("access_control_role_assignments", roleAssignment._id, { role: "viewer" });
+		});
 
 		const saved = await seeded.asSharee.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.destNodeId,
 		});
-		if (saved._nay) {
-			throw new Error(saved._nay.message);
-		}
+		expect(saved._nay?.message).toBe("Permission denied");
 
-		// The save itself went through, so the archive below was skipped on purpose and not because
-		// nothing was published.
+		// Access changed after proposal capture. Accept refuses the whole proposal, so neither the
+		// destination content nor source archive can land.
 		const committedMarkdown = await t.run((ctx) =>
 			read_file_markdown_from_yjs({
 				ctx,
@@ -3214,12 +3250,22 @@ describe("pending update provenance", () => {
 				nodeId: seeded.destNodeId,
 			}),
 		);
-		expect(committedMarkdown).toContain("Moved in");
+		expect(committedMarkdown).not.toContain("Moved in");
 
 		// The grant covers the destination only. The source is open, and this role cannot write open
 		// content, so accepting must not consume it.
 		const sourceNode = await t.run((ctx) => ctx.db.get("files_nodes", seeded.sourceNodeId));
 		expect(sourceNode?.archiveOperationId).toBeUndefined();
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.destNodeId,
+			}),
+		);
+		expect(pendingRow).not.toBeNull();
 	});
 
 	test("accepting a replace-move still archives a source the saver may write", async () => {
@@ -5366,6 +5412,7 @@ describe("save_file_pending_update", () => {
 			expectedUpdatedAt: rowBeforeReplay.updatedAt,
 			baseYjsSequence: originalFileState.yjsSequence,
 			baseLineageGeneration: 0,
+			expectedSourceNodeIds: [],
 		});
 		expect(replayedSave._nay?.message).toBe("Stale save");
 		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
@@ -5480,6 +5527,7 @@ describe("save_file_pending_update", () => {
 			expectedUpdatedAt: rowBeforeStaleSave.updatedAt,
 			baseYjsSequence: actionReadFileState.yjsSequence,
 			baseLineageGeneration: 0,
+			expectedSourceNodeIds: [],
 		});
 		expect(saved._nay?.message).toBe("Stale save");
 		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
@@ -11044,6 +11092,7 @@ describe("apply_file_pending_archive", () => {
 				name: "apply-archive-folder",
 			}),
 		);
+		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { parentId: folderId }));
 		const outsiderSeeded = await t.run(async (ctx) =>
 			seed_file_with_markdown({
 				ctx,
@@ -11170,6 +11219,164 @@ describe("apply_file_pending_archive", () => {
 			});
 			expect(otherChildRow?.pendingArchive).toBeDefined();
 		});
+	});
+
+	test("ignores a locked archived tree when a new active folder reuses its path", async () => {
+		const t = test_convex();
+		const membership = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const archivedTree = await t.run(async (ctx) => {
+			const rootId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				path: "/pending-reused-docs",
+				name: "pending-reused-docs",
+			});
+			const childId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				parentId: rootId,
+				path: "/pending-reused-docs/secret",
+				name: "secret",
+			});
+			return { rootId, childId };
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: membership.userId,
+			name: "Pending Path Reuse User",
+		});
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: membership.membershipId,
+			nodeIds: [archivedTree.rootId],
+		});
+		if (archived._nay) {
+			throw new Error(archived._nay.message);
+		}
+		const archivedOperationId = (
+			await t.run((ctx) => ctx.db.get("files_nodes", archivedTree.rootId))
+		)?.archiveOperationId;
+		expect(archivedOperationId).toBeDefined();
+
+		const activeTree = await t.run(async (ctx) => {
+			const rootId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				path: "/pending-reused-docs",
+				name: "pending-reused-docs",
+			});
+			const childId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				parentId: rootId,
+				path: "/pending-reused-docs/current",
+				name: "current",
+			});
+			return { rootId, childId };
+		});
+		const proposed = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+			nodeId: activeTree.rootId,
+		});
+		if (proposed._nay) {
+			throw new Error(proposed._nay.message);
+		}
+
+		// The lock arrives after the proposal. Accept must still use node lineage rather than
+		// mistaking the archived `/pending-reused-docs` tree for this active one.
+		await set_pending_test_read_only(asUser, membership.membershipId, archivedTree.childId);
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_archive, {
+			membershipId: membership.membershipId,
+			nodeId: activeTree.rootId,
+		});
+		expect(applied._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const activeRoot = await ctx.db.get("files_nodes", activeTree.rootId);
+			const activeChild = await ctx.db.get("files_nodes", activeTree.childId);
+			expect(activeRoot?.archiveOperationId).toBeDefined();
+			expect(activeChild?.archiveOperationId).toBe(activeRoot?.archiveOperationId);
+			expect((await ctx.db.get("files_nodes", archivedTree.rootId))?.archiveOperationId).toBe(archivedOperationId);
+			expect((await ctx.db.get("files_nodes", archivedTree.childId))?.archiveOperationId).toBe(
+				archivedOperationId,
+			);
+		});
+	});
+
+	test("a true archived descendant still blocks a pending folder archive at accept time", async () => {
+		const t = test_convex();
+		const membership = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const tree = await t.run(async (ctx) => {
+			const rootId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				path: "/pending-true-archived",
+				name: "pending-true-archived",
+			});
+			const childId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				parentId: rootId,
+				path: "/pending-true-archived/child",
+				name: "child",
+			});
+			return { rootId, childId };
+		});
+		const proposed = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+			nodeId: tree.rootId,
+		});
+		if (proposed._nay) {
+			throw new Error(proposed._nay.message);
+		}
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: membership.userId,
+			name: "Pending True Descendant User",
+		});
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: membership.membershipId,
+			nodeIds: [tree.childId],
+		});
+		if (archived._nay) {
+			throw new Error(archived._nay.message);
+		}
+		await set_pending_test_read_only(asUser, membership.membershipId, tree.childId);
+
+		const refused = await asUser.mutation(api.files_pending_updates.apply_file_pending_archive, {
+			membershipId: membership.membershipId,
+			nodeId: tree.rootId,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", tree.rootId)))?.archiveOperationId).toBeUndefined();
+		expect(
+			await t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: membership.userId,
+					nodeId: tree.rootId,
+				}),
+			),
+		).not.toBeNull();
 	});
 
 	test("drops the doc quietly when the node was already archived", async () => {
@@ -11399,6 +11606,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 			expectedUpdatedAt: rowWithDelete.updatedAt,
 			baseYjsSequence: 0,
 			baseLineageGeneration: 0,
+			expectedSourceNodeIds: [],
 		});
 		expect(saved._nay?.message).toBe("File has a pending delete");
 	});
@@ -12357,7 +12565,8 @@ describe("discard_file_pending_structural", () => {
 		if (!created._yay.created) {
 			throw new Error("Expected create_file_by_path to create a fresh node");
 		}
-		expect(created._yay.createdAncestorIds).toHaveLength(2);
+		const createdAncestorIds = created._yay.createdAncestorIds;
+		expect(createdAncestorIds).toHaveLength(2);
 
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -12405,7 +12614,7 @@ describe("discard_file_pending_structural", () => {
 		await t.run(async (ctx) => {
 			// Discard removes the untouched leaf and both still-empty created folders.
 			expect(await ctx.db.get("files_nodes", created._yay.nodeId)).toBeNull();
-			for (const ancestorId of created._yay.createdAncestorIds) {
+			for (const ancestorId of createdAncestorIds) {
 				expect(await ctx.db.get("files_nodes", ancestorId)).toBeNull();
 			}
 		});
@@ -14659,7 +14868,8 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 		if (!created._yay.created) {
 			throw new Error("Expected create_file_by_path to create a fresh node");
 		}
-		expect(created._yay.createdAncestorIds).toHaveLength(2);
+		const createdAncestorIds = created._yay.createdAncestorIds;
+		expect(createdAncestorIds).toHaveLength(2);
 
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -14702,7 +14912,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 		await t.run(async (ctx) => {
 			// Expiry removes the untouched leaf and both still-empty created folders.
 			expect(await ctx.db.get("files_nodes", created._yay.nodeId)).toBeNull();
-			for (const ancestorId of created._yay.createdAncestorIds) {
+			for (const ancestorId of createdAncestorIds) {
 				expect(await ctx.db.get("files_nodes", ancestorId)).toBeNull();
 			}
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
@@ -15849,3 +16059,1031 @@ describe("cleanup_expired_pending_state_rows", () => {
 	});
 });
 // #endregion pending state TTL sweep
+
+describe("pending update read-only checks", () => {
+	test("a locked target refuses a new content proposal without creating a row", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-proposal.md",
+				name: "pending-read-only-proposal.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only proposal user",
+		});
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+
+		const proposed = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "# Draft",
+		});
+		expect(proposed._nay?.name).toBe("read_only");
+		expect(
+			await t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+				}),
+			),
+		).toBeNull();
+	});
+
+	test("a proposal survives a lock and accepts after unlock", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-durable.md",
+				name: "pending-read-only-durable.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only durable user",
+		});
+		const proposedMarkdown = "# Accepted after unlock";
+		const proposed = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: proposedMarkdown,
+			unstagedMarkdown: proposedMarkdown,
+		});
+		expect(proposed._nay).toBeUndefined();
+		const pendingBeforeLock = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!pendingBeforeLock) {
+			throw new Error("Missing proposal before lock");
+		}
+
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+		const refused = await asUser.action(api.ai_chat.save_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pendingBeforeLock._id))).not.toBeNull();
+
+		await set_pending_test_writable(asUser, seeded.membershipId, seeded.nodeId);
+		const accepted = await asUser.action(api.ai_chat.save_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(accepted._nay).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pendingBeforeLock._id))).toBeNull();
+		expect(
+			await t.run((ctx) =>
+				read_file_markdown_from_yjs({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					nodeId: seeded.nodeId,
+				}),
+			),
+		).toContain("Accepted after unlock");
+	});
+
+	test("a lock and unlock before the no-change final mutation still settles the batch", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-final-barrier.md",
+				name: "pending-read-only-final-barrier.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only final barrier user",
+		});
+		const batch = await t.mutation(
+			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+			{
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			},
+		);
+		if (batch._nay) {
+			throw new Error(batch._nay.message);
+		}
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+		await set_pending_test_writable(asUser, seeded.membershipId, seeded.nodeId);
+
+		const settled = await t.mutation(
+			internal.files_pending_updates.settle_file_pending_update_no_change_in_db,
+			{
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+				operationBatchId: batch._yay.operationBatchId,
+			},
+		);
+		expect(settled._nay).toBeUndefined();
+		expect(
+			(
+				await t.run((ctx) => ctx.db.get("files_pending_update_operation_batches", batch._yay.operationBatchId))
+			)?.expiresAt,
+		).toBe(0);
+	});
+
+	test("a lock before the no-change final mutation refuses and retires the batch", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-no-change-gap.md",
+				name: "pending-read-only-no-change-gap.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only no-change gap user",
+		});
+		const batch = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		if (batch._nay) {
+			throw new Error(batch._nay.message);
+		}
+		const operationBatchId = batch._yay.operationBatchId;
+		const staged = await asUser.mutation(api.files_pending_updates.stage_file_pending_update_text_input, {
+			membershipId: seeded.membershipId,
+			operationBatchId,
+			role: "unstaged",
+			text: seeded.baseMarkdown,
+		});
+		if (staged._nay) {
+			throw new Error(staged._nay.message);
+		}
+
+		const normalFetch = globalThis.fetch;
+		let releaseSnapshotFetch: (() => void) | undefined;
+		const snapshotFetchBlocked = new Promise<void>((resolve) => {
+			releaseSnapshotFetch = resolve;
+		});
+		let announceSnapshotFetch: (() => void) | undefined;
+		const snapshotFetchStarted = new Promise<void>((resolve) => {
+			announceSnapshotFetch = resolve;
+		});
+		let blocked = false;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				if (!blocked && url.startsWith("https://r2.test/object?key=")) {
+					blocked = true;
+					announceSnapshotFetch?.();
+					await snapshotFetchBlocked;
+				}
+				return await normalFetch(input, init);
+			}),
+		);
+
+		const proposing = asUser.action(api.ai_chat.upsert_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			operationBatchId,
+		});
+		await snapshotFetchStarted;
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+		releaseSnapshotFetch?.();
+		const refused = await proposing;
+		expect(refused._nay?.name).toBe("read_only");
+		expect(
+			(await t.run((ctx) => ctx.db.get("files_pending_update_operation_batches", operationBatchId)))?.expiresAt,
+		).toBe(0);
+		expect(
+			await t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+				}),
+			),
+		).toBeNull();
+	});
+
+	test("a lock and unlock before the refresh final mutation still refreshes the proposal", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-refresh-barrier.md",
+				name: "pending-read-only-refresh-barrier.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only refresh barrier user",
+		});
+		const proposed = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "# Draft",
+		});
+		expect(proposed._nay).toBeUndefined();
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!pendingRow) {
+			throw new Error("Missing proposal before refresh barrier");
+		}
+		const batch = await t.mutation(
+			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+			{
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			},
+		);
+		if (batch._nay) {
+			throw new Error(batch._nay.message);
+		}
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+		await set_pending_test_writable(asUser, seeded.membershipId, seeded.nodeId);
+		const refreshed = await t.mutation(internal.files_pending_updates.refresh_file_pending_update_in_db, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			operationBatchId: batch._yay.operationBatchId,
+			pendingUpdateId: pendingRow._id,
+			expectedUpdatedAt: pendingRow.updatedAt,
+		});
+		expect(refreshed._nay).toBeUndefined();
+		const rowAfter = await t.run((ctx) => ctx.db.get("files_pending_updates", pendingRow._id));
+		expect(rowAfter?.updatedAt).toBeGreaterThan(pendingRow.updatedAt);
+		expect(
+			(
+				await t.run((ctx) => ctx.db.get("files_pending_update_operation_batches", batch._yay.operationBatchId))
+			)?.expiresAt,
+		).toBe(0);
+	});
+
+	test("a lock and unlock in the save action gap still saves the proposal", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-save-gap.md",
+				name: "pending-read-only-save-gap.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only save gap user",
+		});
+		const proposalText = "# Save gap proposal";
+		const proposed = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: proposalText,
+			unstagedMarkdown: proposalText,
+		});
+		expect(proposed._nay).toBeUndefined();
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!pendingRow) {
+			throw new Error("Missing proposal before save gap");
+		}
+		const cleanupTasksBefore = await t.run((ctx) =>
+			list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id }),
+		);
+
+		const normalFetch = globalThis.fetch;
+		let releaseSnapshotFetch: (() => void) | undefined;
+		const snapshotFetchBlocked = new Promise<void>((resolve) => {
+			releaseSnapshotFetch = resolve;
+		});
+		let announceSnapshotFetch: (() => void) | undefined;
+		const snapshotFetchStarted = new Promise<void>((resolve) => {
+			announceSnapshotFetch = resolve;
+		});
+		let blocked = false;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				if (!blocked && url.startsWith("https://r2.test/object?key=")) {
+					blocked = true;
+					announceSnapshotFetch?.();
+					await snapshotFetchBlocked;
+				}
+				return await normalFetch(input, init);
+			}),
+		);
+
+		const saving = asUser.action(api.ai_chat.save_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		await snapshotFetchStarted;
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+		await set_pending_test_writable(asUser, seeded.membershipId, seeded.nodeId);
+		releaseSnapshotFetch?.();
+		const saved = await saving;
+		expect(saved._nay).toBeUndefined();
+		expect(saved._yay?.newSequence).toBeGreaterThan(0);
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
+			const trustedStages = await ctx.db
+				.query("files_yjs_trusted_update_stages")
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
+					q
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("userId", seeded.userId)
+						.eq("fileNodeId", seeded.nodeId),
+				)
+				.collect();
+			expect(trustedStages).toEqual([]);
+			const cleanupTasksAfter = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
+			expect(cleanupTasksBefore).toHaveLength(1);
+			expect(cleanupTasksAfter).toEqual([]);
+			const lastSaved = await ctx.db
+				.query("files_pending_updates_last_sequence_saved")
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
+					q
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("userId", seeded.userId)
+						.eq("fileNodeId", seeded.nodeId),
+				)
+				.first();
+			expect(lastSaved?.lastSequenceSaved).toBe(saved._yay?.newSequence);
+			expect(
+				await read_file_markdown_from_yjs({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					nodeId: seeded.nodeId,
+				}),
+			).toContain("Save gap proposal");
+		});
+	});
+
+	test("a lock and unlock before the rebase final mutation still rebases the proposal", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-rebase-final.md",
+				name: "pending-read-only-rebase-final.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only rebase user",
+		});
+		const proposed = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "# Draft",
+		});
+		expect(proposed._nay).toBeUndefined();
+		const [pendingRow, fileState] = await Promise.all([
+			t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+				}),
+			),
+			t.run((ctx) =>
+				read_file_yjs_state({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					nodeId: seeded.nodeId,
+				}),
+			),
+		]);
+		if (!pendingRow) {
+			throw new Error("Missing proposal before rebase final");
+		}
+		const staged = await stage_and_seal_input_family_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			baseYjsUpdate: fileState.yjsUpdate,
+			stagedBranchYjsUpdate: fileState.yjsUpdate,
+			unstagedBranchYjsUpdate: fileState.yjsUpdate,
+		});
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+		await set_pending_test_writable(asUser, seeded.membershipId, seeded.nodeId);
+		const rebased = await asUser.mutation(internal.files_pending_updates.commit_file_pending_update_rebase_in_db, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: pendingRow._id,
+			operationBatchId: staged.operationBatchId,
+			expectedUpdatedAt: pendingRow.updatedAt,
+			baseYjsSequence: fileState.yjsSequence,
+			baseLineageGeneration: 0,
+			baseStateId: staged.base.stateId,
+			stagedStateId: staged.staged.stateId,
+			unstagedStateId: staged.unstaged.stateId,
+			baseStateDigest: staged.base.digest,
+			stagedStateDigest: staged.staged.digest,
+			unstagedStateDigest: staged.unstaged.digest,
+			unstagedText: seeded.baseMarkdown,
+		});
+		expect(rebased._nay).toBeUndefined();
+		expect(rebased._yay?.pendingUpdate?._id).toBe(pendingRow._id);
+		expect(rebased._yay?.pendingUpdate?.updatedAt).toBeGreaterThan(pendingRow.updatedAt);
+		expect(await t.run((ctx) => ctx.db.get("files_pending_update_operation_batches", staged.operationBatchId))).toBeNull();
+	});
+
+	test("a locked copy source stays readable, but a locked replace source refuses proposal", async () => {
+		const t = test_convex();
+		const source = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-copy-source.md",
+				name: "pending-read-only-copy-source.md",
+				markdown: "# Source",
+			}),
+		);
+		const copyDest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-copy-dest.md",
+				name: "pending-read-only-copy-dest.md",
+				markdown: "# Destination",
+				membership: source,
+			}),
+		);
+		const replaceDest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-replace-dest.md",
+				name: "pending-read-only-replace-dest.md",
+				markdown: "# Destination",
+				membership: source,
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: source.userId,
+			name: "Read-only copy user",
+		});
+		await set_pending_test_read_only(asUser, source.membershipId, source.nodeId);
+
+		const copied = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: source.organizationId,
+			workspaceId: source.workspaceId,
+			userId: source.userId,
+			nodeId: copyDest.nodeId,
+			unstagedMarkdown: source.baseMarkdown,
+			copiedFrom: { nodeId: source.nodeId, path: "/pending-read-only-copy-source.md" },
+		});
+		expect(copied._nay).toBeUndefined();
+
+		const replaced = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: source.organizationId,
+			workspaceId: source.workspaceId,
+			userId: source.userId,
+			nodeId: replaceDest.nodeId,
+			unstagedMarkdown: source.baseMarkdown,
+			copiedFrom: {
+				nodeId: source.nodeId,
+				path: "/pending-read-only-copy-source.md",
+				archivesSourceOnAccept: true,
+			},
+		});
+		expect(replaced._nay?.name).toBe("read_only");
+	});
+
+	test("a changed replace source chain is stale even when every node is writable", async () => {
+		const t = test_convex();
+		const firstSource = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-source-identity-first.md",
+				name: "pending-source-identity-first.md",
+				markdown: "# First source",
+			}),
+		);
+		const secondSource = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/pending-source-identity-second.md",
+				name: "pending-source-identity-second.md",
+				markdown: "# Second source",
+				membership: firstSource,
+			}),
+		);
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/pending-source-identity-dest.md",
+				name: "pending-source-identity-dest.md",
+				markdown: "# Destination",
+				membership: firstSource,
+			}),
+		);
+		const proposed = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: firstSource.organizationId,
+			workspaceId: firstSource.workspaceId,
+			userId: firstSource.userId,
+			nodeId: dest.nodeId,
+			stagedMarkdown: firstSource.baseMarkdown,
+			unstagedMarkdown: firstSource.baseMarkdown,
+			copiedFrom: {
+				nodeId: firstSource.nodeId,
+				path: "/pending-source-identity-first.md",
+				archivesSourceOnAccept: true,
+			},
+		});
+		expect(proposed._nay).toBeUndefined();
+
+		const [pendingRow, fileState] = await Promise.all([
+			t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: firstSource.organizationId,
+					workspaceId: firstSource.workspaceId,
+					userId: firstSource.userId,
+					nodeId: dest.nodeId,
+				}),
+			),
+			t.run((ctx) =>
+				read_file_yjs_state({
+					ctx,
+					organizationId: firstSource.organizationId,
+					workspaceId: firstSource.workspaceId,
+					nodeId: dest.nodeId,
+				}),
+			),
+		]);
+		if (!pendingRow) {
+			throw new Error("Missing replace proposal before source identity change");
+		}
+
+		// Keep the same pending doc version so this call reaches the ordered source-id check.
+		await t.run((ctx) =>
+			ctx.db.patch("files_pending_updates", pendingRow._id, {
+				copiedFrom: {
+					nodeId: secondSource.nodeId,
+					path: "/pending-source-identity-second.md",
+					archivesSourceOnAccept: true,
+				},
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: firstSource.userId,
+			name: "Replace source identity user",
+		});
+		const saved = await asUser.mutation(internal.files_pending_updates.save_file_pending_update_in_db, {
+			membershipId: firstSource.membershipId,
+			nodeId: dest.nodeId,
+			pendingUpdateId: pendingRow._id,
+			expectedUpdatedAt: pendingRow.updatedAt,
+			baseYjsSequence: fileState.yjsSequence,
+			baseLineageGeneration: 0,
+			expectedSourceNodeIds: [firstSource.nodeId],
+		});
+		expect(saved._nay?.message).toBe("Stale save");
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).not.toBeNull();
+			expect((await ctx.db.get("files_nodes", firstSource.nodeId))?.archiveOperationId).toBeUndefined();
+			expect((await ctx.db.get("files_nodes", secondSource.nodeId))?.archiveOperationId).toBeUndefined();
+			expect(
+				await read_file_markdown_from_yjs({
+					ctx,
+					organizationId: dest.organizationId,
+					workspaceId: dest.workspaceId,
+					nodeId: dest.nodeId,
+				}),
+			).toContain("Destination");
+		});
+	});
+
+	test("discard removes eager metadata but keeps a locked leaf and its created folders", async () => {
+		const t = test_convex();
+		const membership = await t.run(async (ctx) => {
+			const seeded = await test_mocks_fill_db_with.membership(ctx);
+			await seed_billing_snapshot_for_user(ctx, seeded.userId);
+			return seeded;
+		});
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+			path: "/pending-read-only-eager/deep/file.md",
+		});
+		if (created._nay || !created._yay.created || created._yay.createdCommittedSequence === undefined) {
+			throw new Error("Expected a fresh eager file");
+		}
+		const proposed = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+			nodeId: created._yay.nodeId,
+			unstagedMarkdown: "# Draft",
+			eagerCreatedCommittedSequence: created._yay.createdCommittedSequence,
+			eagerCreatedAncestorIds: created._yay.createdAncestorIds,
+		});
+		expect(proposed._nay).toBeUndefined();
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: membership.userId,
+			name: "Read-only eager user",
+		});
+		await set_pending_test_read_only(asUser, membership.membershipId, created._yay.nodeId);
+
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
+			membershipId: membership.membershipId,
+			nodeId: created._yay.nodeId,
+		});
+		expect(discarded._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", created._yay.nodeId)).not.toBeNull();
+			for (const ancestorId of created._yay.createdAncestorIds) {
+				expect(await ctx.db.get("files_nodes", ancestorId)).not.toBeNull();
+			}
+			const pendingUpdate = await read_pending_update_row({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				nodeId: created._yay.nodeId,
+			});
+			expect(pendingUpdate).toBeNull();
+		});
+	});
+
+	test("an eager lock and unlock before discard removes the safe leaf and created folders", async () => {
+		const t = test_convex();
+		const membership = await t.run(async (ctx) => {
+			const seeded = await test_mocks_fill_db_with.membership(ctx);
+			await seed_billing_snapshot_for_user(ctx, seeded.userId);
+			return seeded;
+		});
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+			path: "/pending-read-only-eager-aba/deep/file.md",
+		});
+		if (created._nay || !created._yay.created || created._yay.createdCommittedSequence === undefined) {
+			throw new Error("Expected a fresh eager file");
+		}
+		const proposed = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+			nodeId: created._yay.nodeId,
+			unstagedMarkdown: "# Draft",
+			eagerCreatedCommittedSequence: created._yay.createdCommittedSequence,
+			eagerCreatedAncestorIds: created._yay.createdAncestorIds,
+		});
+		expect(proposed._nay).toBeUndefined();
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: membership.userId,
+			name: "Read-only eager ABA user",
+		});
+		await set_pending_test_read_only(asUser, membership.membershipId, created._yay.nodeId);
+		await set_pending_test_writable(asUser, membership.membershipId, created._yay.nodeId);
+
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
+			membershipId: membership.membershipId,
+			nodeId: created._yay.nodeId,
+		});
+		expect(discarded._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", created._yay.nodeId)).toBeNull();
+			for (const ancestorId of created._yay.createdAncestorIds) {
+				expect(await ctx.db.get("files_nodes", ancestorId)).toBeNull();
+			}
+			expect(
+				await read_pending_update_row({
+					ctx,
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: membership.userId,
+					nodeId: created._yay.nodeId,
+				}),
+			).toBeNull();
+		});
+	});
+
+	test("an eager doc without created ancestors deletes only its safe leaf", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-old-eager.md",
+				name: "pending-read-only-old-eager.md",
+				markdown: "# Base",
+			}),
+		);
+		const proposed = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "# Draft",
+			eagerCreatedCommittedSequence: 0,
+		});
+		expect(proposed._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			const pendingUpdate = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			if (!pendingUpdate) {
+				throw new Error("Missing eager pending update");
+			}
+			await ctx.db.patch("files_pending_updates", pendingUpdate._id, { eagerCreated: { committedSequence: 0 } });
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Eager pending update user",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(discarded._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", seeded.nodeId)).toBeNull();
+			expect(
+				await read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+				}),
+			).toBeNull();
+		});
+	});
+
+	test("a locked move participant refuses proposal, while a durable move accepts after unlock", async () => {
+		const t = test_convex();
+		const source = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-move-source.md",
+				name: "pending-read-only-move-source.md",
+				markdown: "# Source",
+			}),
+		);
+		const occupant = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-move-occupant.md",
+				name: "pending-read-only-move-occupant.md",
+				markdown: "# Occupant",
+				membership: source,
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: source.userId,
+			name: "Read-only move user",
+		});
+		await set_pending_test_read_only(asUser, source.membershipId, occupant.nodeId);
+		const blockedReplacement = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: source.organizationId,
+			workspaceId: source.workspaceId,
+			userId: source.userId,
+			nodeId: source.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "pending-read-only-move-occupant.md",
+			replace: true,
+		});
+		expect(blockedReplacement._nay?.name).toBe("read_only");
+		await set_pending_test_writable(asUser, source.membershipId, occupant.nodeId);
+
+		const proposed = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: source.organizationId,
+			workspaceId: source.workspaceId,
+			userId: source.userId,
+			nodeId: source.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "pending-read-only-moved.md",
+		});
+		expect(proposed._nay).toBeUndefined();
+		await set_pending_test_read_only(asUser, source.membershipId, source.nodeId);
+		const refused = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: source.membershipId,
+			nodeId: source.nodeId,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		await set_pending_test_writable(asUser, source.membershipId, source.nodeId);
+		const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: source.membershipId,
+			nodeId: source.nodeId,
+		});
+		expect(accepted._nay).toBeUndefined();
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", source.nodeId)))?.path).toBe(
+			"/pending-read-only-moved.md",
+		);
+	});
+
+	test("a locked descendant refuses a folder archive proposal", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) => {
+			const membership = await test_mocks_fill_db_with.membership(ctx);
+			const folderId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				path: "/pending-read-only-archive-folder",
+				name: "pending-read-only-archive-folder",
+			});
+			const child = await seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-archive-folder/child.md",
+				name: "child.md",
+				markdown: "# Child",
+				membership,
+			});
+			await ctx.db.patch("files_nodes", child.nodeId, { parentId: folderId });
+			return { ...membership, folderId, childNodeId: child.nodeId };
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only archive user",
+		});
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.childNodeId);
+		const proposed = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.folderId,
+		});
+		expect(proposed._nay?.name).toBe("read_only");
+	});
+
+	test("a replace-source lock and unlock in the save action gap still accepts the replacement", async () => {
+		const t = test_convex();
+		const source = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-replace-aba-source.md",
+				name: "pending-read-only-replace-aba-source.md",
+				markdown: "# Source",
+			}),
+		);
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-replace-aba-dest.md",
+				name: "pending-read-only-replace-aba-dest.md",
+				markdown: "# Destination",
+				membership: source,
+			}),
+		);
+		const proposed = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: source.organizationId,
+			workspaceId: source.workspaceId,
+			userId: source.userId,
+			nodeId: dest.nodeId,
+			stagedMarkdown: source.baseMarkdown,
+			unstagedMarkdown: source.baseMarkdown,
+			copiedFrom: {
+				nodeId: source.nodeId,
+				path: "/pending-read-only-replace-aba-source.md",
+				archivesSourceOnAccept: true,
+			},
+		});
+		expect(proposed._nay).toBeUndefined();
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: source.organizationId,
+				workspaceId: source.workspaceId,
+				userId: source.userId,
+				nodeId: dest.nodeId,
+			}),
+		);
+		if (!pendingRow) {
+			throw new Error("Missing replace proposal");
+		}
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: source.userId,
+			name: "Read-only replace ABA user",
+		});
+
+		const normalFetch = globalThis.fetch;
+		let releaseSnapshotFetch: (() => void) | undefined;
+		const snapshotFetchBlocked = new Promise<void>((resolve) => {
+			releaseSnapshotFetch = resolve;
+		});
+		let announceSnapshotFetch: (() => void) | undefined;
+		const snapshotFetchStarted = new Promise<void>((resolve) => {
+			announceSnapshotFetch = resolve;
+		});
+		let blocked = false;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				if (!blocked && url.startsWith("https://r2.test/object?key=")) {
+					blocked = true;
+					announceSnapshotFetch?.();
+					await snapshotFetchBlocked;
+				}
+				return await normalFetch(input, init);
+			}),
+		);
+
+		const saving = asUser.action(api.ai_chat.save_file_pending_update, {
+			membershipId: source.membershipId,
+			nodeId: dest.nodeId,
+		});
+		await snapshotFetchStarted;
+		await set_pending_test_read_only(asUser, source.membershipId, source.nodeId);
+		await set_pending_test_writable(asUser, source.membershipId, source.nodeId);
+		releaseSnapshotFetch?.();
+		const saved = await saving;
+		expect(saved._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
+			expect((await ctx.db.get("files_nodes", source.nodeId))?.archiveOperationId).toBeDefined();
+			expect(
+				await read_file_markdown_from_yjs({
+					ctx,
+					organizationId: dest.organizationId,
+					workspaceId: dest.workspaceId,
+					nodeId: dest.nodeId,
+				}),
+			).toContain("Source");
+		});
+	});
+});

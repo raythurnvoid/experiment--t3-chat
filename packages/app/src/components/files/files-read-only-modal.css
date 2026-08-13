@@ -1,0 +1,40 @@
+@layer components {
+	.FilesReadOnlyModal {
+		width: min(32rem, calc(100vw - 2rem));
+	}
+
+	.FilesReadOnlyModal-body {
+		display: grid;
+		gap: 12px;
+		padding: 16px;
+	}
+
+	.FilesReadOnlyModal-status {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		gap: 12px;
+		align-items: start;
+	}
+
+	.FilesReadOnlyModal-status-icon {
+		color: var(--color-base-1-11);
+	}
+
+	.FilesReadOnlyModal-status-copy {
+		display: grid;
+		gap: 8px;
+
+		& > p {
+			margin: 0;
+		}
+	}
+
+	.FilesReadOnlyModal-error {
+		margin: 0;
+		color: var(--color-red-11);
+	}
+
+	.FilesReadOnlyModal-footer-spacer {
+		flex: 1;
+	}
+}

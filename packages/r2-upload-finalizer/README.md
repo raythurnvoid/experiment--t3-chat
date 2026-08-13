@@ -21,7 +21,7 @@ The Worker posts this body to Convex:
 		"action": "object-create",
 		"bucket": "bucket-name",
 		"object": {
-			"key": "organizations/<organizationId>/workspaces/<workspaceId>/assets/<assetId>",
+			"key": "organizations/<organizationId>/workspaces/<workspaceId>/upload-staging/<assetId>",
 			"size": 123,
 			"eTag": "etag"
 		},
@@ -45,7 +45,16 @@ The Worker retries only network errors and retryable HTTP statuses: `408`, `409`
 
 Convex owns asset lookup, upload-kind filtering, idempotency, conversion queueing, and finalization. The Worker should stay a narrow event forwarder.
 
-All first-party file assets use the `organizations/.../assets/<assetId>` key shape and can flow through this Worker. Convex uses `files_r2_assets.kind` to process only upload assets; generated Markdown, Yjs snapshots, and content snapshots are acknowledged without upload finalization work.
+Creating the file node, asset doc, and signed target accepts the upload. If the node or its folder
+becomes read-only later, Convex still publishes the upload. It also finishes text conversion when
+needed and starts upload-completed plugins. The finished node keeps its lock. New changes stay
+blocked.
+
+User-facing signed PUTs use `organizations/.../upload-staging/<assetId>`. Convex verifies the staging
+event. It then copies the bytes once to the immutable live key at
+`organizations/.../assets/<assetId>` and publishes the upload. The event for the new live key is
+acknowledged without starting upload finalization again. Generated Markdown, Yjs snapshots, and
+content snapshots also use `/assets/<assetId>`. Their events are acknowledged without upload work.
 
 ## Configuration
 

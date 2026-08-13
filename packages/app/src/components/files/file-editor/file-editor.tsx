@@ -31,6 +31,7 @@ import {
 import { CatchBoundary } from "@tanstack/react-router";
 import { FileEditorError } from "./file-editor-error.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
+import type { files_yjs_EditBlockReason } from "@/lib/files-yjs-provider.ts";
 
 // #region pending updates floating
 type FileEditorPendingUpdatesFloating_ClassNames =
@@ -64,7 +65,9 @@ export function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdates
 			className={cn("FileEditorPendingUpdatesFloating" satisfies FileEditorPendingUpdatesFloating_ClassNames)}
 			data-testid="pending-edits-banner"
 		>
-			<MyIcon className={cn("FileEditorPendingUpdatesFloating-icon" satisfies FileEditorPendingUpdatesFloating_ClassNames)}>
+			<MyIcon
+				className={cn("FileEditorPendingUpdatesFloating-icon" satisfies FileEditorPendingUpdatesFloating_ClassNames)}
+			>
 				<Sparkles />
 			</MyIcon>
 			Pending changes
@@ -363,6 +366,7 @@ type FileEditorRender_Props = {
 	monacoLanguageId: string;
 	editorMode: FileEditor_Mode;
 	editable: boolean;
+	editBlockReason: files_yjs_EditBlockReason | null;
 	topSafeArea?: number;
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
@@ -381,6 +385,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		monacoLanguageId,
 		editorMode,
 		editable,
+		editBlockReason,
 		topSafeArea,
 		presenceStore,
 		commentsPortalHost,
@@ -408,6 +413,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 			<FileEditorRichText
 				nodeId={nodeId}
 				editable={editable}
+				editBlockReason={editBlockReason}
 				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
@@ -472,6 +478,7 @@ type FileEditor_CssVars = {
 
 type FileEditorInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
+	readOnlyState: "writable" | "self" | "inherited";
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	rootKind: files_YjsRootKind;
 	monacoLanguageId: string;
@@ -490,6 +497,7 @@ type FileEditorInner_Props = {
 function FileEditorInner(props: FileEditorInner_Props) {
 	const {
 		nodeId,
+		readOnlyState,
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
@@ -505,14 +513,17 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		topViewZoneSlot,
 	} = props;
 
-	// The backend already refuses a read-only role's writes; the editor has to know too, so a viewer
-	// gets contenteditable=false instead of keystrokes that never save. Anything except `true` reads
-	// as read-only, including while the answer loads.
+	// Editing needs write permission and a writable node. Keep editing off while permission loads.
 	const { membershipId } = AppTenantProvider.useContext();
 	const canWrite = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
 		membershipId,
 		nodeId,
 	});
+	// Show the permission reason first when permission and the lock both block editing.
+	// This matches the server check order.
+	const editBlockReason: files_yjs_EditBlockReason | null =
+		canWrite === false ? "permission" : readOnlyState === "writable" ? null : "read_only";
+	const editable = canWrite === true && readOnlyState === "writable";
 
 	const handleDiffExit = useFn(() => {
 		// Leaving the diff goes back to the node's own default editor, not always the rich editor:
@@ -589,7 +600,8 @@ function FileEditorInner(props: FileEditorInner_Props) {
 							rootKind={rootKind}
 							monacoLanguageId={monacoLanguageId}
 							editorMode={editorMode}
-							editable={canWrite === true}
+							editable={editable}
+							editBlockReason={editBlockReason}
 							topSafeArea={topSafeArea}
 							presenceStore={presenceStore}
 							commentsPortalHost={commentsPortalHost}
@@ -613,6 +625,7 @@ export type FileEditor_Ref = {
 export type FileEditor_Props = {
 	ref?: Ref<FileEditor_Ref>;
 	nodeId: app_convex_Id<"files_nodes"> | null | undefined;
+	readOnlyState: "writable" | "self" | "inherited";
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	/** The node's document shape, from the route-resolved node the caller already holds. */
 	rootKind: files_YjsRootKind;
@@ -633,6 +646,7 @@ export function FileEditor(props: FileEditor_Props) {
 	const {
 		ref,
 		nodeId,
+		readOnlyState,
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
@@ -658,6 +672,7 @@ export function FileEditor(props: FileEditor_Props) {
 	return nodeId ? (
 		<FileEditorInner
 			nodeId={nodeId}
+			readOnlyState={readOnlyState}
 			pendingUpdateId={pendingUpdateId}
 			rootKind={rootKind}
 			monacoLanguageId={monacoLanguageId}

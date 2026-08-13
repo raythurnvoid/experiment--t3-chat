@@ -10,6 +10,8 @@ import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { plugins_validate_manifest, type plugins_Capability } from "../shared/plugins.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { files_ROOT_ID } from "../server/files.ts";
+import { r2_create_asset_key, r2_confirmed_object_delete } from "./r2_client.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
@@ -1612,6 +1614,189 @@ describe("plugins Phase 0", () => {
 		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
 	});
 
+	test("refuses plugin output into a locked destination and records the conflict without content", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId);
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const folderId = await t.run(async (ctx) => {
+			const now = Date.now();
+			return await ctx.db.insert("files_nodes", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				parentId: files_ROOT_ID,
+				name: "media",
+				path: "/media",
+				treePath: "/media/",
+				pathDepth: 1,
+				kind: "folder",
+				lowercaseExtension: null,
+				createdBy: membership.userId,
+				updatedBy: membership.userId,
+				updatedAt: now,
+			});
+		});
+		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: membership.membershipId,
+			parentId: folderId,
+			filename: "trigger.png",
+			contentType: "image/png",
+			size: 1024,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const runId = await t.run(async (ctx) => {
+			const installation = await ctx.db.get("plugins_workspace_installations", installed._yay.installationId);
+			if (!installation) {
+				throw new Error("Expected installation");
+			}
+			return await ctx.db.insert("plugins_event_runs", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetId: upload._yay.assetId,
+				fileNodeId: upload._yay.nodeId,
+				actorUserId: membership.userId,
+				installationId: installed._yay.installationId,
+				pluginVersionId: installation.pluginVersionId,
+				event: "files.upload.completed",
+				eventId: "plugin:locked-destination-test",
+				status: "queued",
+				acceptedCapabilities: installation.acceptedCapabilities,
+				expiresAt: Date.now() + 30 * 60 * 1000,
+				apiCallCount: 0,
+				outputWriteCount: 0,
+				errorMessage: null,
+				updatedAt: Date.now(),
+			});
+		});
+		const apiToken = `plr_${"9".repeat(64)}`;
+		await t.mutation(internal.plugins_runtime.start_event_run, {
+			runId,
+			apiTokenHash: await crypto_sha256_hex(apiToken),
+		});
+
+		// First prove that the plugin can write before the folder is locked.
+		const allowed = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ path: "/media/note.md", content: "# Note\n" }),
+		});
+		expect(allowed.status).toBe(200);
+
+		const locked = await asOwner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: membership.membershipId,
+			nodeId: folderId,
+		});
+		expect(locked._nay).toBeUndefined();
+
+		// A plugin cannot bypass the lock. It gets the same conflict as any other writer.
+		const refused = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ path: "/media/locked-note.md", content: "SECRET-PLUGIN-OUTPUT\n" }),
+		});
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+		expect(run?.apiCallCount).toBe(2);
+		// Only the pre-lock control counted as output.
+		expect(run?.outputWriteCount).toBe(1);
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]).toMatchObject({
+			sequence: 2,
+			kind: "api_request",
+			route: "/api/v1/files/write",
+			status: "failed",
+			responseStatus: 409,
+			errorCode: "conflict",
+			errorMessage: "This item is read-only.",
+		});
+		// Telemetry records that the write was refused, never what it tried to write.
+		expect(JSON.stringify(calls)).not.toContain("SECRET-PLUGIN-OUTPUT");
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+		const refusedNode = await t.run((ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("path", "/media/locked-note.md")
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+		expect(refusedNode).toBeNull();
+	});
+
+	test("a locked triggering file still lets the plugin write a sibling output", async () => {
+		const t = test_convex();
+		const fixture = await start_running_plugin_run(t, { tokenSeed: "b", filename: "locked-source.png" });
+
+		// Only the source file is read-only. The destination folder stays writable.
+		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.membership.membershipId,
+			nodeId: fixture.upload.nodeId,
+		});
+		expect(locked._nay).toBeUndefined();
+
+		const response = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${fixture.apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ path: "/locked-source-summary.md", content: "# Summary\n" }),
+		});
+		expect(response.status).toBe(200);
+
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", fixture.runId));
+		expect(run?.outputWriteCount).toBe(1);
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", fixture.runId))
+				.collect(),
+		);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({ status: "succeeded", responseStatus: 200 });
+		const written = await t.run((ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", fixture.membership.organizationId)
+						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("path", "/locked-source-summary.md")
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+		expect(written).not.toBeNull();
+	});
+
 	test("rejects plugin markdown outputs outside a simple markdown filename", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -2137,6 +2322,7 @@ describe("plugins Phase 0", () => {
 		const published = await t.mutation(internal.public_api.publish_file_write, {
 			stageId: prepared._yay.stageId,
 			content: "# New",
+			targetAnchor: prepared._yay.targetAnchor,
 		});
 		expect(published).toMatchObject({ _nay: { message: "Unauthenticated" } });
 
@@ -2160,6 +2346,92 @@ describe("plugins Phase 0", () => {
 		// Cleanup settled the consumed call as failed.
 		const call = await t.run((ctx) => ctx.db.get("plugins_event_run_calls", consumed._yay.callId));
 		expect(call).toMatchObject({ status: "failed", errorCode: "unpublished_write" });
+	});
+
+	test("a destination locked between staging and publish settles the plugin call as a conflict", async () => {
+		const t = test_convex();
+		// Keep deletion jobs in the database so this test can check them.
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(
+			new Error("confirmed delete disabled in this test"),
+		);
+		const fixture = await start_running_plugin_run(t, { tokenSeed: "7" });
+
+		// A stored Markdown occupant at the trigger's sibling path; the staged write replaces it.
+		const occupant = await fixture.asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: fixture.membership.membershipId,
+			parentId: "root",
+			filename: "occupied.md",
+			contentType: "text/markdown;charset=utf-8",
+			size: 3,
+		});
+		if (occupant._nay) {
+			throw new Error(occupant._nay.message);
+		}
+		const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId: fixture.runId,
+			kind: "api_request",
+			route: "/api/v1/files/write",
+		});
+		if (consumed._nay) {
+			throw new Error(consumed._nay.message);
+		}
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: fixture.membership.organizationId,
+			workspaceId: fixture.membership.workspaceId,
+			userId: fixture.membership.userId,
+			principalRef: { kind: "plugin_run", runId: fixture.runId, callId: consumed._yay.callId },
+			path: "/occupied.md",
+			overwrite: "replace",
+			contentSize: 6,
+			yjsSnapshotSize: 6,
+		});
+		if (prepared._nay) {
+			throw new Error(prepared._nay.message);
+		}
+
+		// The race: the lock lands after staging, before publication.
+		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.membership.membershipId,
+			nodeId: occupant._yay.nodeId,
+		});
+		expect(locked._nay).toBeUndefined();
+
+		const published = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: prepared._yay.stageId,
+			content: "# New\n",
+			targetAnchor: prepared._yay.targetAnchor,
+		});
+		expect(published._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });
+
+		// The read-only check marks the plugin call as a 409 conflict. Later cleanup must not replace
+		// this with an unpublished-write 500 error.
+		const call = await t.run((ctx) => ctx.db.get("plugins_event_run_calls", consumed._yay.callId));
+		expect(call).toMatchObject({
+			status: "failed",
+			errorCode: "conflict",
+			responseStatus: 409,
+			errorMessage: "This item is read-only.",
+		});
+		expect(call?.finishedAt).toBeDefined();
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", fixture.runId));
+		expect(run?.outputWriteCount).toBe(0);
+
+		// The temporary docs are gone, and deletion jobs now own their R2 keys.
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+		const stagedKeys = [prepared._yay.yjsSnapshotAssetId, prepared._yay.contentSnapshotAssetId].map((assetId) =>
+			r2_create_asset_key({
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				assetId,
+			}),
+		);
+		const jobs = await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+		expect(jobs.map((job) => job.r2Key).sort()).toEqual([...stagedKeys].sort());
+		for (const job of jobs) {
+			expect(job.reason).toBe("read_only_stage");
+		}
+		const target = await t.run((ctx) => ctx.db.get("files_nodes", occupant._yay.nodeId));
+		expect(target?.archiveOperationId).toBeUndefined();
 	});
 
 	test("refuses to stage a write once the run's actor lost write access", async () => {

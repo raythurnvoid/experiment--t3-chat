@@ -7,7 +7,12 @@ import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
+import {
+	r2_create_asset_key,
+	r2_create_upload_staging_key,
+	r2_confirmed_object_delete,
+	r2_PUT_MAY_ARRIVE_MARGIN_MS,
+} from "./r2_client.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
@@ -21,9 +26,11 @@ import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_lim
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 const r2Objects = new Map<string, string | ArrayBuffer>();
+const r2ObjectMetadata = new Map<string, { size: number; etag: string }>();
 
 function install_r2_object_reads() {
 	r2Objects.clear();
+	r2ObjectMetadata.clear();
 	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (customKey?: string) => {
 		const key = customKey ?? "test-upload-key";
 		return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
@@ -32,13 +39,24 @@ function install_r2_object_reads() {
 		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
 	);
 	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+	vi.spyOn(r2_confirmed_object_delete, "delete_object").mockImplementation(async (_ctx, key) => {
+		r2Objects.delete(key);
+		r2ObjectMetadata.delete(key);
+	});
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
 			if (urlString.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
 				const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
-				r2Objects.set(key, init.body instanceof ArrayBuffer || typeof init.body === "string" ? init.body : "");
+				r2Objects.set(
+					key,
+					init.body instanceof ArrayBuffer || typeof init.body === "string"
+						? init.body
+						: init.body
+							? await new Response(init.body).arrayBuffer()
+							: "",
+				);
 				return new Response(null, { status: 200 });
 			}
 			if (!urlString.startsWith("https://r2.test/object?key=")) {
@@ -47,7 +65,16 @@ function install_r2_object_reads() {
 
 			const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
 			const body = r2Objects.get(key);
-			return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+			const metadata = r2ObjectMetadata.get(key);
+			return body === undefined
+				? new Response(null, { status: 404 })
+				: new Response(body, {
+						status: 200,
+						headers:
+							metadata === undefined
+								? undefined
+								: { "Content-Length": String(metadata.size), ETag: metadata.etag },
+					});
 		}),
 	);
 }
@@ -84,6 +111,49 @@ async function seed_signed_in_membership(args: { t: ReturnType<typeof test_conve
 			clerkUserId: args.clerkUserId,
 		});
 		return await test_mocks_fill_db_with.membership(ctx, { userId });
+	});
+}
+
+async function seed_public_file_write_stage(args: {
+	t: ReturnType<typeof test_convex>;
+	db: Awaited<ReturnType<typeof seed_signed_in_membership>>;
+	path: string;
+	expiresAt: number;
+}) {
+	return await args.t.run(async (ctx) => {
+		const now = Date.now();
+		const insert_asset = async (kind: "yjs_snapshot" | "content_snapshot") =>
+			await ctx.db.insert("files_r2_assets", {
+				organizationId: args.db.organizationId,
+				workspaceId: args.db.workspaceId,
+				kind,
+				r2Bucket: "test-bucket",
+				size: 1,
+				createdBy: args.db.userId,
+				unfinalizedExpiresAt: args.expiresAt,
+				updatedAt: now,
+			});
+		const yjsSnapshotAssetId = await insert_asset("yjs_snapshot");
+		const contentSnapshotAssetId = await insert_asset("content_snapshot");
+		const stageId = await ctx.db.insert("public_api_file_write_stages", {
+			organizationId: args.db.organizationId,
+			workspaceId: args.db.workspaceId,
+			userId: args.db.userId,
+			path: args.path,
+			overwrite: "replace",
+			yjsSnapshotAssetId,
+			contentSnapshotAssetId,
+			expiresAt: args.expiresAt,
+			updatedAt: now,
+		});
+		const keys = [yjsSnapshotAssetId, contentSnapshotAssetId].map((assetId) =>
+			r2_create_asset_key({
+				organizationId: args.db.organizationId,
+				workspaceId: args.db.workspaceId,
+				assetId,
+			}),
+		);
+		return { stageId, yjsSnapshotAssetId, contentSnapshotAssetId, keys };
 	});
 }
 
@@ -559,6 +629,123 @@ describe("public files API", () => {
 		expect(stages).toEqual([]);
 	});
 
+	test("ordinary cleanup ledgers orphaned keys after the stage already vanished", async () => {
+		const t = test_convex();
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("keep jobs pending"));
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-orphaned-stage" });
+		const staged = await seed_public_file_write_stage({
+			t,
+			db,
+			path: "/orphaned.md",
+			expiresAt: Date.now() + 60_000,
+		});
+
+		// A plugin run may finish and remove the stage while its R2 writes are still running. The
+		// action must still create deletion jobs for the exact keys after those writes finish.
+		await t.run(async (ctx) => {
+			await ctx.db.delete("files_r2_assets", staged.yjsSnapshotAssetId);
+			await ctx.db.delete("files_r2_assets", staged.contentSnapshotAssetId);
+			await ctx.db.delete("public_api_file_write_stages", staged.stageId);
+		});
+		await t.mutation(internal.public_api.cleanup_file_write_stage, {
+			stageId: staged.stageId,
+			orphanedKeys: staged.keys,
+			orphanedScope: { organizationId: db.organizationId, workspaceId: db.workspaceId },
+		});
+
+		const jobs = await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+		expect(jobs.map((job) => job.r2Key).sort()).toEqual([...staged.keys].sort());
+		expect(jobs.every((job) => job.reason === "failed_create")).toBe(true);
+		// This fallback runs after the action's R2 writes finish. It must not shorten a later delete
+		// time already saved by earlier cleanup.
+		expect(jobs.every((job) => job.putMayArriveUntil === undefined)).toBe(true);
+	});
+
+	test("stage cleanup keeps a tombstone through a late action PUT after the action crashes", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-late-stage-put" });
+		const now = Date.now();
+		const expiresAt = now + 60_000;
+		const staged = await seed_public_file_write_stage({
+			t,
+			db,
+			path: "/late-stage-put.md",
+			expiresAt,
+		});
+		const [key] = staged.keys;
+		if (!key) {
+			throw new Error("Expected a staged R2 key");
+		}
+
+		// Plugin or tenant cleanup may run while the request still writes to R2. Simulate cleanup
+		// finishing before that late write arrives.
+		await t.mutation(internal.public_api.cleanup_file_write_stage, { stageId: staged.stageId });
+		const job = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_r2_object_deletion_jobs")
+				.withIndex("by_r2_key", (q) => q.eq("r2Key", key))
+				.first(),
+		);
+		if (!job) {
+			throw new Error("Expected a deletion job");
+		}
+		const putMayArriveUntil = expiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS;
+		expect(job.putMayArriveUntil).toBe(putMayArriveUntil);
+		r2Objects.delete(key);
+		await t.mutation(internal.r2_client.settle_object_deletion_job, {
+			jobId: job._id,
+			generation: job.generation,
+			deletedAt: now,
+		});
+		expect(
+			await t.run(async (ctx) => ctx.db.get("files_r2_object_deletion_jobs", job._id)),
+		).toMatchObject({ nextAttemptAt: putMayArriveUntil });
+
+		// The R2 write then arrives and the action crashes. The saved job must delete once more after
+		// no later write can arrive.
+		r2Objects.set(key, "late bytes");
+		vi.spyOn(Date, "now").mockReturnValue(putMayArriveUntil + 1);
+		await t.action(internal.r2_client.process_object_deletion_job, {
+			jobId: job._id,
+			generation: job.generation,
+		});
+		expect(r2Objects.has(key)).toBe(false);
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_object_deletion_jobs", job._id))).toBeNull();
+	});
+
+	test("expired public file write stages hand every exact key to the deletion ledger", async () => {
+		const t = test_convex();
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("keep jobs pending"));
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-expired-stage" });
+		const now = Date.now();
+		const staged = await seed_public_file_write_stage({
+			t,
+			db,
+			path: "/expired.md",
+			expiresAt: now - 1,
+		});
+
+		const cleaned = await t.mutation(internal.public_api.cleanup_expired_file_write_stages, {
+			_test_now: now,
+			batchSize: 10,
+			_test_disableReschedule: true,
+		});
+		expect(cleaned).toEqual({ deletedCount: 1, done: true });
+
+		await t.run(async (ctx) => {
+			const jobs = await ctx.db.query("files_r2_object_deletion_jobs").collect();
+			expect(jobs.map((job) => job.r2Key).sort()).toEqual([...staged.keys].sort());
+			expect(jobs.every((job) => job.reason === "failed_create")).toBe(true);
+			expect(
+				jobs.every((job) => job.putMayArriveUntil === now - 1 + r2_PUT_MAY_ARRIVE_MARGIN_MS),
+			).toBe(true);
+			expect(await ctx.db.get("files_r2_assets", staged.yjsSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", staged.contentSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("public_api_file_write_stages", staged.stageId)).toBeNull();
+		});
+	});
+
 	test("POST /api/v1/files/write with CRLF content stores LF everywhere", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -869,6 +1056,8 @@ describe("public files API", () => {
 		const published = await t.mutation(internal.public_api.publish_file_write, {
 			stageId,
 			content: "# Replacement",
+			// This is the file that `prepare_file_write` would remember.
+			targetAnchor: { kind: "existing", nodeId: targetNodeId },
 		});
 		expect(published._nay?.message).toBe("Permission denied");
 
@@ -2059,6 +2248,24 @@ describe("files upload-urls", () => {
 		bucket: string;
 		size: number;
 	}) {
+		const liveKey = r2_create_asset_key({
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			assetId: args.assetId,
+		});
+		const stagingKey = r2_create_upload_staging_key({
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			assetId: args.assetId,
+		});
+		const seededBytes = r2Objects.get(liveKey);
+		if (seededBytes !== undefined) {
+			r2Objects.delete(liveKey);
+			r2Objects.set(stagingKey, seededBytes);
+		} else if (!r2Objects.has(stagingKey)) {
+			r2Objects.set(stagingKey, "");
+		}
+		r2ObjectMetadata.set(stagingKey, { size: args.size, etag: `etag_${args.assetId}` });
 		return await args.t.fetch("/api/r2/event", {
 			method: "POST",
 			headers: {
@@ -2072,11 +2279,7 @@ describe("files upload-urls", () => {
 					action: "PutObject",
 					bucket: args.bucket,
 					object: {
-						key: r2_create_asset_key({
-							organizationId: args.organizationId,
-							workspaceId: args.workspaceId,
-							assetId: args.assetId,
-						}),
+						key: stagingKey,
 						size: args.size,
 						eTag: `etag_${args.assetId}`,
 					},
@@ -2404,10 +2607,26 @@ describe("files upload-urls", () => {
 		expect(quota).toBeNull();
 	});
 
-	test("refuses minting under a restricted ancestor folder the key owner cannot write", async () => {
+	test("checks restricted ancestor nodes before reporting their kind", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-restricted-owner" });
+		const hiddenFileId = await seed_markdown_file({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/hidden-file.md",
+			committedMarkdown: "# Hidden",
+		});
+		await seed_markdown_file({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/visible-file.md",
+			committedMarkdown: "# Visible",
+		});
 
 		// A normal member, not the organization owner: the owner passes every node check by
 		// definition, so an owner-held key would prove nothing here.
@@ -2428,6 +2647,7 @@ describe("files upload-urls", () => {
 				updatedAt: now,
 			});
 			await ctx.db.patch("files_nodes", outerId, { restrictedScopeNodeId: outerId });
+			await ctx.db.patch("files_nodes", hiddenFileId, { restrictedScopeNodeId: hiddenFileId });
 
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-upload-urls-restricted-writer" });
 			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
@@ -2476,6 +2696,36 @@ describe("files upload-urls", () => {
 		});
 		expect(refused.status).toBe(403);
 		expect(await refused.json()).toEqual({ message: "Permission denied", path: "/outer/media/photo.png" });
+
+		// A hidden intermediate file gets the same denial as a hidden folder. Its kind must not
+		// turn the response into the visible structural 409 below.
+		const hiddenFileRefused = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [{ path: "/hidden-file.md/photo.png", contentType: "image/png", size: 64 }],
+			}),
+		});
+		expect(hiddenFileRefused.status).toBe(403);
+		expect(await hiddenFileRefused.json()).toEqual({
+			message: "Permission denied",
+			path: "/hidden-file.md/photo.png",
+		});
+
+		// Control: an intermediate file the key owner may write still reports the structural
+		// conflict importers use.
+		const visibleFileConflict = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [{ path: "/visible-file.md/photo.png", contentType: "image/png", size: 64 }],
+			}),
+		});
+		expect(visibleFileConflict.status).toBe(409);
+		expect(await visibleFileConflict.json()).toEqual({
+			message: "An intermediate segment is owned by a file",
+			path: "/visible-file.md/photo.png",
+		});
 
 		// Control: the same key mints outside the restricted folder. Without this, a broken key or
 		// missing membership would give the same 403 and the test would prove nothing.
@@ -3075,5 +3325,1233 @@ describe("files write-many", () => {
 		expect(await find_active_node({ t, db, path: "/blocked/file-0.md" })).toBeNull();
 		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
 		expect(stages).toEqual([]);
+	});
+});
+
+describe("files read-only locks", () => {
+	async function seed_locks_writer(args: { t: ReturnType<typeof test_convex>; clerkUserId: string }) {
+		const db = await seed_signed_in_membership({ t: args.t, clerkUserId: args.clerkUserId });
+		const asUser = args.t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: args.clerkUserId,
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Lock writer",
+			scopes: ["files:read", "files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		return { db, asUser, credential: created._yay!.credential, credentialId: created._yay!.credentialId };
+	}
+
+	async function seed_locks_member_writer(args: { t: ReturnType<typeof test_convex>; clerkUserId: string }) {
+		const db = await seed_signed_in_membership({ t: args.t, clerkUserId: `${args.clerkUserId}-owner` });
+		const member = await args.t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: args.clerkUserId });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				now,
+			});
+			return { userId, membershipId };
+		});
+
+		const asUser = args.t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: args.clerkUserId,
+			external_id: member.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: member.membershipId,
+			name: "Lock race writer",
+			scopes: ["files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		const owner = args.t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: `${args.clerkUserId}-owner`,
+			external_id: db.userId,
+		});
+		return {
+			db,
+			owner,
+			userId: member.userId,
+			credential: created._yay!.credential,
+			credentialId: created._yay!.credentialId,
+		};
+	}
+
+	async function find_active_node(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof seed_signed_in_membership>>;
+		path: string;
+	}) {
+		return await args.t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.db.organizationId)
+						.eq("workspaceId", args.db.workspaceId)
+						.eq("path", args.path)
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+	}
+
+	async function set_lock(args: {
+		writer: Awaited<ReturnType<typeof seed_locks_writer>>;
+		nodeId: Id<"files_nodes">;
+		locked: boolean;
+	}) {
+		const result = args.locked
+			? await args.writer.asUser.mutation(api.files_nodes.set_node_read_only, {
+					membershipId: args.writer.db.membershipId,
+					nodeId: args.nodeId,
+				})
+			: await args.writer.asUser.mutation(api.files_nodes.set_node_writable, {
+					membershipId: args.writer.db.membershipId,
+					nodeId: args.nodeId,
+				});
+		expect(result._nay).toBeUndefined();
+	}
+
+	/**
+	 * Keep every enqueued deletion-ledger job row visible to assertions: a rejected confirmed
+	 * delete records a failed attempt instead of settling the job away.
+	 */
+	function stub_confirmed_deletes() {
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(
+			new Error("confirmed delete disabled in this test"),
+		);
+	}
+
+	function defer_file_stage_puts() {
+		const installedFetch = globalThis.fetch;
+		let startedPutCount = 0;
+		let markPutsStarted: () => void = () => {};
+		let releasePuts: () => void = () => {};
+		const putsStarted = new Promise<void>((resolve) => {
+			markPutsStarted = resolve;
+		});
+		const putsReleased = new Promise<void>((resolve) => {
+			releasePuts = resolve;
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				if (url.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
+					startedPutCount += 1;
+					if (startedPutCount === 2) {
+						markPutsStarted();
+					}
+					await putsReleased;
+				}
+				return await installedFetch(input, init);
+			}),
+		);
+		return { putsStarted, releasePuts };
+	}
+
+	async function seed_restricted_root_folder(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof seed_signed_in_membership>>;
+		name: string;
+	}) {
+		return await args.t.run(async (ctx) => {
+			const now = Date.now();
+			const nodeId = await ctx.db.insert("files_nodes", {
+				organizationId: args.db.organizationId,
+				workspaceId: args.db.workspaceId,
+				parentId: files_ROOT_ID,
+				name: args.name,
+				path: `/${args.name}`,
+				treePath: `/${args.name}/`,
+				pathDepth: 1,
+				kind: "folder",
+				lowercaseExtension: null,
+				createdBy: args.db.userId,
+				updatedBy: args.db.userId,
+				updatedAt: now,
+			});
+			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+			return nodeId;
+		});
+	}
+
+	async function write_file(args: {
+		t: ReturnType<typeof test_convex>;
+		credential: string;
+		path: string;
+		content: string;
+		overwrite?: "replace" | "fail";
+		skipIfUnchanged?: boolean;
+	}) {
+		return await args.t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(args.credential),
+			body: JSON.stringify({
+				path: args.path,
+				content: args.content,
+				...(args.overwrite ? { overwrite: args.overwrite } : {}),
+				...(args.skipIfUnchanged === undefined ? {} : { skipIfUnchanged: args.skipIfUnchanged }),
+			}),
+		});
+	}
+
+	async function read_file_content(args: { t: ReturnType<typeof test_convex>; credential: string; path: string }) {
+		const response = await args.t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(args.credential),
+			body: JSON.stringify({ path: args.path }),
+		});
+		expect(response.status).toBe(200);
+		return ((await response.json()) as { content: string }).content;
+	}
+
+	test("a locked file answers the public write with a 409 conflict while the internal name stays read_only", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-write" });
+		const nodeId = await seed_markdown_file({
+			t,
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			path: "/locks/doc.md",
+			committedMarkdown: "# Original\n",
+		});
+
+		await set_lock({ writer, nodeId, locked: true });
+
+		const refused = await write_file({ t, credential: writer.credential, path: "/locks/doc.md", content: "# Change\n" });
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+
+		// The public vocabulary is 409/conflict; the internal refusal keeps its `read_only` name.
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+			path: "/locks/doc.md",
+			overwrite: "replace",
+			contentSize: 9,
+			yjsSnapshotSize: 0,
+		});
+		expect(prepared._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });
+
+		// The first check refused the write before it created temporary docs.
+		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+		expect(await read_file_content({ t, credential: writer.credential, path: "/locks/doc.md" })).toContain("# Original");
+
+		// Unlock the file and prove the same write now works.
+		await set_lock({ writer, nodeId, locked: false });
+		const allowed = await write_file({ t, credential: writer.credential, path: "/locks/doc.md", content: "# Change\n" });
+		expect(allowed.status).toBe(200);
+		expect(await read_file_content({ t, credential: writer.credential, path: "/locks/doc.md" })).toContain("# Change");
+	});
+
+	test("a locked destination folder refuses new files under it until unlocked", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-folder" });
+
+		const seeded = await write_file({ t, credential: writer.credential, path: "/locked-dir/seed.md", content: "# Seed\n" });
+		expect(seeded.status).toBe(200);
+		const folder = await find_active_node({ t, db: writer.db, path: "/locked-dir" });
+		expect(folder).not.toBeNull();
+
+		await set_lock({ writer, nodeId: folder!._id, locked: true });
+
+		// Direct child, and a deeper path whose deepest existing ancestor is the locked folder.
+		for (const path of ["/locked-dir/other.md", "/locked-dir/deep/nested.md"]) {
+			const refused = await write_file({ t, credential: writer.credential, path, content: "# Nope\n" });
+			expect(refused.status).toBe(409);
+			expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		}
+		expect(await find_active_node({ t, db: writer.db, path: "/locked-dir/other.md" })).toBeNull();
+		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+
+		// Unlock the folder and prove the same write now works.
+		await set_lock({ writer, nodeId: folder!._id, locked: false });
+		const allowed = await write_file({ t, credential: writer.credential, path: "/locked-dir/other.md", content: "# Yes\n" });
+		expect(allowed.status).toBe(200);
+	});
+
+	test("write-many reports a locked item as a per-item conflict and still writes the others", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-write-many" });
+
+		const seeded = await write_file({ t, credential: writer.credential, path: "/bulk-lock/locked.md", content: "# Keep\n" });
+		expect(seeded.status).toBe(200);
+		const lockedNode = await find_active_node({ t, db: writer.db, path: "/bulk-lock/locked.md" });
+		await set_lock({ writer, nodeId: lockedNode!._id, locked: true });
+
+		const response = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/bulk-lock/a.md", content: "# A\n" },
+					{ path: "/bulk-lock/locked.md", content: "# Overwrite attempt\n" },
+					{ path: "/bulk-lock/b.md", content: "# B\n" },
+				],
+			}),
+		});
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as {
+			written: Array<{ path: string; nodeId: string; contentType: string }>;
+			errors: Array<{ path: string; message: string; errorCode: string }>;
+		};
+		// The locked item is a per-item conflict; the item after it still ran and succeeded.
+		expect(body.errors).toEqual([
+			{ path: "/bulk-lock/locked.md", message: "This item is read-only.", errorCode: "conflict" },
+		]);
+		expect(body.written).toEqual([
+			{ path: "/bulk-lock/a.md", nodeId: expect.any(String), contentType: "text/markdown;charset=utf-8" },
+			{ path: "/bulk-lock/b.md", nodeId: expect.any(String), contentType: "text/markdown;charset=utf-8" },
+		]);
+		expect(await read_file_content({ t, credential: writer.credential, path: "/bulk-lock/locked.md" })).toContain(
+			"# Keep",
+		);
+	});
+
+	test("skipIfUnchanged answers 409 on a locked target instead of confirming the content", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-skip" });
+
+		const seeded = await write_file({ t, credential: writer.credential, path: "/skip-lock/doc.md", content: "# Same\n" });
+		expect(seeded.status).toBe(200);
+
+		// First prove an unchanged write returns 200 while the file is writable.
+		const skipped = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/skip-lock/doc.md",
+			content: "# Same\n",
+			skipIfUnchanged: true,
+		});
+		expect(skipped.status).toBe(200);
+		expect(((await skipped.json()) as { unchanged?: boolean }).unchanged).toBe(true);
+
+		const node = await find_active_node({ t, db: writer.db, path: "/skip-lock/doc.md" });
+		await set_lock({ writer, nodeId: node!._id, locked: true });
+
+		// A 200 here would confirm the exact content of a file the caller cannot write.
+		const refused = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/skip-lock/doc.md",
+			content: "# Same\n",
+			skipIfUnchanged: true,
+		});
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+	});
+
+	test("touch refuses locked targets and locked destinations and keeps earlier touches committed", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-touch" });
+
+		// Locked existing target: the already-exists shortcut answers the conflict itself.
+		const seeded = await write_file({ t, credential: writer.credential, path: "/touch-locked.md", content: "# Hold\n" });
+		expect(seeded.status).toBe(200);
+		const lockedFile = await find_active_node({ t, db: writer.db, path: "/touch-locked.md" });
+		await set_lock({ writer, nodeId: lockedFile!._id, locked: true });
+		const refusedExisting = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: ["/touch-locked.md"] }),
+		});
+		expect(refusedExisting.status).toBe(409);
+		expect(await refusedExisting.json()).toEqual({ message: "This item is read-only." });
+
+		// Locked destination folder: the batch refuses at the locked path, but the touch a loop
+		// turn earlier already committed and stays.
+		const dirSeed = await write_file({ t, credential: writer.credential, path: "/touch-dir/seed.md", content: "# S\n" });
+		expect(dirSeed.status).toBe(200);
+		const folder = await find_active_node({ t, db: writer.db, path: "/touch-dir" });
+		await set_lock({ writer, nodeId: folder!._id, locked: true });
+		const refusedBatch = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: ["/touch-fresh.md", "/touch-dir/new.md"] }),
+		});
+		expect(refusedBatch.status).toBe(409);
+		expect(await refusedBatch.json()).toEqual({ message: "This item is read-only." });
+		expect(await find_active_node({ t, db: writer.db, path: "/touch-fresh.md" })).not.toBeNull();
+		expect(await find_active_node({ t, db: writer.db, path: "/touch-dir/new.md" })).toBeNull();
+		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+
+		// Unlock the folder and prove the same touch now works.
+		await set_lock({ writer, nodeId: folder!._id, locked: false });
+		const allowed = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: ["/touch-dir/new.md"] }),
+		});
+		expect(allowed.status).toBe(200);
+		const allowedBody = (await allowed.json()) as { files: Array<{ path: string; created: boolean }> };
+		expect(allowedBody.files).toEqual([{ path: "/touch-dir/new.md", nodeId: expect.any(String), created: true }]);
+	});
+
+	test("upload-urls refuses a locked occupant or ancestor before minting anything", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-upload-urls" });
+
+		const seeded = await write_file({ t, credential: writer.credential, path: "/up/occupied.md", content: "# Keep\n" });
+		expect(seeded.status).toBe(200);
+		const occupant = await find_active_node({ t, db: writer.db, path: "/up/occupied.md" });
+		await set_lock({ writer, nodeId: occupant!._id, locked: true });
+
+		const countsBefore = await t.run(async (ctx) => ({
+			assets: (await ctx.db.query("files_r2_assets").collect()).length,
+			nodes: (await ctx.db.query("files_nodes").collect()).length,
+		}));
+
+		// One locked replacement occupant refuses the whole batch and names the offending path.
+		const refusedOccupant = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/up/fresh.bin", contentType: "application/octet-stream", size: 10 },
+					{ path: "/up/occupied.md", contentType: "text/markdown;charset=utf-8", size: 5 },
+				],
+			}),
+		});
+		expect(refusedOccupant.status).toBe(409);
+		expect(await refusedOccupant.json()).toEqual({ message: "This item is read-only.", path: "/up/occupied.md" });
+
+		// A locked ancestor folder refuses the batch the same way.
+		const folder = await find_active_node({ t, db: writer.db, path: "/up" });
+		await set_lock({ writer, nodeId: folder!._id, locked: true });
+		const refusedAncestor = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({
+				files: [{ path: "/up/sub/data.bin", contentType: "application/octet-stream", size: 7 }],
+			}),
+		});
+		expect(refusedAncestor.status).toBe(409);
+		expect(await refusedAncestor.json()).toEqual({ message: "This item is read-only.", path: "/up/sub/data.bin" });
+
+		// Nothing was minted: no asset docs, no nodes, no quota consumption.
+		const countsAfter = await t.run(async (ctx) => ({
+			assets: (await ctx.db.query("files_r2_assets").collect()).length,
+			nodes: (await ctx.db.query("files_nodes").collect()).length,
+		}));
+		expect(countsAfter).toEqual(countsBefore);
+		expect(await find_active_node({ t, db: writer.db, path: "/up/fresh.bin" })).toBeNull();
+		// No quota doc was even seeded: the refusal ran before the quota ensure/charge step.
+		const quota = await t.run(async (ctx) =>
+			(await ctx.db.query("quotas").collect()).find((doc) => doc.quotaName === "public_api_upload_bytes"),
+		);
+		expect(quota?.usedCount ?? 0).toBe(0);
+
+		// Unlock the folder and prove a new upload URL can be created. The asset stores the staging
+		// key and URL deadline that the accepted upload needs.
+		await set_lock({ writer, nodeId: folder!._id, locked: false });
+		const allowed = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({
+				files: [{ path: "/up/fresh.bin", contentType: "application/octet-stream", size: 10 }],
+			}),
+		});
+		expect(allowed.status).toBe(200);
+		const allowedBody = (await allowed.json()) as { files: Array<{ path: string; nodeId: string }> };
+		const mintedAsset = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", allowedBody.files[0]!.nodeId as Id<"files_nodes">);
+			return node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		});
+		expect(mintedAsset?.uploadStagingR2Key).toContain(`/upload-staging/${mintedAsset?._id}`);
+		expect(mintedAsset?.uploadUrlExpiresAt).toBeGreaterThan(Date.now());
+	});
+
+	test("a lock taken while a write is staged refuses the publish and ledgers the staged objects", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-stage-race" });
+
+		// A stored (non-editable) Markdown occupant keeps the write on the archive-and-recreate
+		// door, which is the door this stage publishes through.
+		const occupant = await writer.asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: writer.db.membershipId,
+			parentId: "root",
+			filename: "race.md",
+			contentType: "text/markdown;charset=utf-8",
+			size: 3,
+		});
+		expect(occupant._nay).toBeUndefined();
+		const occupantNodeId = occupant._yay!.nodeId;
+
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+			path: "/race.md",
+			overwrite: "replace",
+			contentSize: 7,
+			yjsSnapshotSize: 7,
+		});
+		expect(prepared._nay).toBeUndefined();
+		expect(prepared._yay!.targetAnchor).toEqual({
+			kind: "existing",
+			nodeId: occupantNodeId,
+		});
+
+		// The race: the lock lands after staging, before publication.
+		await set_lock({ writer, nodeId: occupantNodeId, locked: true });
+
+		const published = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: prepared._yay!.stageId,
+			content: "# New\n",
+			targetAnchor: prepared._yay!.targetAnchor,
+		});
+		expect(published._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });
+
+		// The refusal abandoned the stage in the same transaction: staged keys are in the durable
+		// deletion ledger, the stage and asset docs are gone, and the target is untouched.
+		const stagedKeys = [prepared._yay!.yjsSnapshotAssetId, prepared._yay!.contentSnapshotAssetId].map((assetId) =>
+			r2_create_asset_key({
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				assetId,
+			}),
+		);
+		const jobs = await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+		expect(jobs.map((job) => job.r2Key).sort()).toEqual([...stagedKeys].sort());
+		for (const job of jobs) {
+			expect(job.reason).toBe("read_only_stage");
+			expect(job.putMayArriveUntil).toBeUndefined();
+		}
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_r2_assets", prepared._yay!.yjsSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", prepared._yay!.contentSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
+			const target = await ctx.db.get("files_nodes", occupantNodeId);
+			expect(target?.archiveOperationId).toBeUndefined();
+		});
+
+		// Unlock the file and prove the same write now works.
+		await set_lock({ writer, nodeId: occupantNodeId, locked: false });
+		const prepared2 = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+			path: "/race.md",
+			overwrite: "replace",
+			contentSize: 7,
+			yjsSnapshotSize: 7,
+		});
+		expect(prepared2._nay).toBeUndefined();
+		expect(prepared2._yay!.targetAnchor).toMatchObject({ kind: "existing" });
+		const published2 = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: prepared2._yay!.stageId,
+			content: "# New\n",
+			targetAnchor: prepared2._yay!.targetAnchor,
+		});
+		expect(published2._nay).toBeUndefined();
+		const replaced = await find_active_node({ t, db: writer.db, path: "/race.md" });
+		expect(replaced?._id).toBe(published2._yay!.nodeId);
+	});
+
+	test("a staged write publishes after the lock is removed", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-aba" });
+
+		const occupant = await writer.asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: writer.db.membershipId,
+			parentId: "root",
+			filename: "aba.md",
+			contentType: "text/markdown;charset=utf-8",
+			size: 3,
+		});
+		expect(occupant._nay).toBeUndefined();
+		const occupantNodeId = occupant._yay!.nodeId;
+
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+			path: "/aba.md",
+			overwrite: "replace",
+			contentSize: 7,
+			yjsSnapshotSize: 7,
+		});
+		expect(prepared._nay).toBeUndefined();
+
+		// Only the lock state in the final mutation matters.
+		await set_lock({ writer, nodeId: occupantNodeId, locked: true });
+		await set_lock({ writer, nodeId: occupantNodeId, locked: false });
+
+		const published = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: prepared._yay!.stageId,
+			content: "# New\n",
+			targetAnchor: prepared._yay!.targetAnchor,
+		});
+		expect(published._nay).toBeUndefined();
+		expect(await find_active_node({ t, db: writer.db, path: "/aba.md" })).toMatchObject({
+			_id: published._yay!.nodeId,
+		});
+		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+	});
+
+	test("a lock taken while a fill is staged refuses publish_file_fill and ledgers only the content object", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-fill-race" });
+		const nodeId = await seed_markdown_file({
+			t,
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			path: "/fill-race/doc.md",
+			committedMarkdown: "# Original\n",
+		});
+
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+			path: "/fill-race/doc.md",
+			overwrite: "replace",
+			contentSize: 9,
+			yjsSnapshotSize: 0,
+		});
+		expect(prepared._nay).toBeUndefined();
+		expect(prepared._yay!.targetAnchor).toEqual({ kind: "existing", nodeId });
+
+		await set_lock({ writer, nodeId, locked: true });
+
+		const published = await t.mutation(internal.public_api.publish_file_fill, {
+			stageId: prepared._yay!.stageId,
+			content: "# Change\n",
+			expectedNodeId: nodeId,
+		});
+		expect(published._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });
+
+		// The fill path wrote only the content snapshot to R2, so only that key needs a deletion job.
+		// Both temporary asset docs and the stage are gone.
+		const contentKey = r2_create_asset_key({
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			assetId: prepared._yay!.contentSnapshotAssetId,
+		});
+		await t.run(async (ctx) => {
+			const jobs = await ctx.db.query("files_r2_object_deletion_jobs").collect();
+			expect(jobs.map((job) => ({ r2Key: job.r2Key, reason: job.reason }))).toEqual([
+				{ r2Key: contentKey, reason: "read_only_stage" },
+			]);
+			expect(await ctx.db.get("files_r2_assets", prepared._yay!.yjsSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", prepared._yay!.contentSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
+		});
+		expect(await read_file_content({ t, credential: writer.credential, path: "/fill-race/doc.md" })).toContain(
+			"# Original",
+		);
+
+		// Unlock the file and prove a new stage can publish.
+		await set_lock({ writer, nodeId, locked: false });
+		const prepared2 = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+			path: "/fill-race/doc.md",
+			overwrite: "replace",
+			contentSize: 9,
+			yjsSnapshotSize: 0,
+		});
+		expect(prepared2._yay!.targetAnchor).toMatchObject({ kind: "existing" });
+		const published2 = await t.mutation(internal.public_api.publish_file_fill, {
+			stageId: prepared2._yay!.stageId,
+			content: "# Change\n",
+			expectedNodeId: nodeId,
+		});
+		expect(published2._nay).toBeUndefined();
+	});
+
+	test("a create stage anchors the deepest existing ancestor and refuses when the target appears", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-anchor" });
+
+		const seeded = await write_file({ t, credential: writer.credential, path: "/anchor/seed.md", content: "# S\n" });
+		expect(seeded.status).toBe(200);
+
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+			path: "/anchor/sub/new.md",
+			overwrite: "replace",
+			contentSize: 9,
+			yjsSnapshotSize: 9,
+		});
+		expect(prepared._nay).toBeUndefined();
+		// The target does not exist yet.
+		expect(prepared._yay!.targetAnchor).toEqual({ kind: "create" });
+
+		// The expected-absent target appears while the write is staged: the stale stage must not
+		// clobber it.
+		const winner = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/anchor/sub/new.md",
+			content: "# Winner\n",
+		});
+		expect(winner.status).toBe(200);
+
+		const published = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: prepared._yay!.stageId,
+			content: "# Loser\n",
+			targetAnchor: prepared._yay!.targetAnchor,
+		});
+		expect(published._nay).toMatchObject({ name: "stale_write" });
+		expect(await read_file_content({ t, credential: writer.credential, path: "/anchor/sub/new.md" })).toContain(
+			"# Winner",
+		);
+		await t.run(async (ctx) => {
+			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
+			expect((await ctx.db.query("files_r2_object_deletion_jobs").collect()).length).toBe(2);
+		});
+	});
+
+	test("a staged create refuses a current intermediate lock and succeeds after it is removed", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-epoch" });
+
+		const seeded = await write_file({ t, credential: writer.credential, path: "/aba-dir/seed.md", content: "# S\n" });
+		expect(seeded.status).toBe(200);
+		const folder = await find_active_node({ t, db: writer.db, path: "/aba-dir" });
+
+		const prepare_stage = async () =>
+			await t.mutation(internal.public_api.prepare_file_write, {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				userId: writer.db.userId,
+				principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+				path: "/aba-dir/mid/new.md",
+				overwrite: "replace",
+				contentSize: 7,
+				yjsSnapshotSize: 7,
+			});
+		// Two stages start while /aba-dir/mid does not exist.
+		const stage1 = await prepare_stage();
+		const stage3 = await prepare_stage();
+		expect(stage1._nay).toBeUndefined();
+		expect(stage3._nay).toBeUndefined();
+
+		// The missing intermediate folder appears and locks while the writes are staged.
+		const midId = await t.run(async (ctx) => {
+			const now = Date.now();
+			return await ctx.db.insert("files_nodes", {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				parentId: folder!._id,
+				name: "mid",
+				path: "/aba-dir/mid",
+				treePath: "/aba-dir/mid/",
+				pathDepth: 2,
+				kind: "folder",
+				lowercaseExtension: null,
+				createdBy: writer.db.userId,
+				updatedBy: writer.db.userId,
+				updatedAt: now,
+			});
+		});
+		await set_lock({ writer, nodeId: midId, locked: true });
+
+		// Stage 1 sees the current lock and refuses.
+		const published1 = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: stage1._yay!.stageId,
+			content: "# One\n",
+			targetAnchor: stage1._yay!.targetAnchor,
+		});
+		expect(published1._nay).toMatchObject({ name: "read_only" });
+
+		// Stage 3 succeeds after the folder is unlocked and deleted.
+		await set_lock({ writer, nodeId: midId, locked: false });
+		await t.run(async (ctx) => ctx.db.delete("files_nodes", midId));
+
+		const published3 = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: stage3._yay!.stageId,
+			content: "# Three\n",
+			targetAnchor: stage3._yay!.targetAnchor,
+		});
+		expect(published3._nay).toBeUndefined();
+		expect(await find_active_node({ t, db: writer.db, path: "/aba-dir/mid/new.md" })).not.toBeNull();
+	});
+
+	test("write hides a restricted ancestor that appears while the stage uploads", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-lock-write-hidden-ancestor" });
+		const deferred = defer_file_stage_puts();
+
+		const writePromise = write_file({
+			t,
+			credential: writer.credential,
+			path: "/write-hidden/new.md",
+			content: "# New\n",
+		});
+		await deferred.putsStarted;
+		const stage = await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").first());
+		expect(stage?.path).toBe("/write-hidden/new.md");
+		const stagedKeys = [stage!.yjsSnapshotAssetId, stage!.contentSnapshotAssetId].map((assetId) =>
+			r2_create_asset_key({
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				assetId,
+			}),
+		);
+
+		const hiddenFolderId = await seed_restricted_root_folder({ t, db: writer.db, name: "write-hidden" });
+		deferred.releasePuts();
+
+		const response = await writePromise;
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await find_active_node({ t, db: writer.db, path: "/write-hidden/new.md" })).toBeNull();
+		await t.run(async (ctx) => {
+			const hiddenFolder = await ctx.db.get("files_nodes", hiddenFolderId);
+			expect(hiddenFolder?.archiveOperationId).toBeUndefined();
+			expect(hiddenFolder?.restrictedScopeNodeId).toBe(hiddenFolderId);
+			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
+			expect(await ctx.db.get("files_r2_assets", stage!.yjsSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", stage!.contentSnapshotAssetId)).toBeNull();
+			const jobs = await ctx.db.query("files_r2_object_deletion_jobs").collect();
+			expect(jobs.map((job) => job.r2Key).sort()).toEqual([...stagedKeys].sort());
+			expect(jobs.every((job) => job.reason === "failed_create")).toBe(true);
+		});
+	});
+
+	test("touch hides a restricted ancestor that appears while the stage uploads", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-lock-touch-hidden-ancestor" });
+		const deferred = defer_file_stage_puts();
+
+		const touchPromise = t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: ["/touch-hidden/new.md"] }),
+		});
+		await deferred.putsStarted;
+		const stage = await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").first());
+		expect(stage?.path).toBe("/touch-hidden/new.md");
+		const stagedKeys = [stage!.yjsSnapshotAssetId, stage!.contentSnapshotAssetId].map((assetId) =>
+			r2_create_asset_key({
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				assetId,
+			}),
+		);
+
+		const hiddenFolderId = await seed_restricted_root_folder({ t, db: writer.db, name: "touch-hidden" });
+		deferred.releasePuts();
+
+		const response = await touchPromise;
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await find_active_node({ t, db: writer.db, path: "/touch-hidden/new.md" })).toBeNull();
+		await t.run(async (ctx) => {
+			const hiddenFolder = await ctx.db.get("files_nodes", hiddenFolderId);
+			expect(hiddenFolder?.archiveOperationId).toBeUndefined();
+			expect(hiddenFolder?.restrictedScopeNodeId).toBe(hiddenFolderId);
+			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
+			expect(await ctx.db.get("files_r2_assets", stage!.yjsSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", stage!.contentSnapshotAssetId)).toBeNull();
+			const jobs = await ctx.db.query("files_r2_object_deletion_jobs").collect();
+			expect(jobs.map((job) => job.r2Key).sort()).toEqual([...stagedKeys].sort());
+			expect(jobs.every((job) => job.reason === "failed_create")).toBe(true);
+		});
+	});
+
+	test("touch succeeds when the current appeared target is writable", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-lock-touch-revoked-ancestor" });
+		const outerId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const nodeId = await ctx.db.insert("files_nodes", {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				parentId: files_ROOT_ID,
+				name: "outer",
+				path: "/outer",
+				treePath: "/outer/",
+				pathDepth: 1,
+				kind: "folder",
+				lowercaseExtension: null,
+				createdBy: writer.db.userId,
+				updatedBy: writer.db.userId,
+				updatedAt: now,
+			});
+			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				resourceKind: "file",
+				resourceId: String(nodeId),
+				principalKind: "user",
+				userId: writer.userId,
+				permission: "content.write",
+				createdAt: now,
+				updatedAt: now,
+			});
+			return nodeId;
+		});
+		const deferred = defer_file_stage_puts();
+		const touchPromise = t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: ["/outer/inner/new.md"] }),
+		});
+		await deferred.putsStarted;
+		const stage = await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").first());
+		expect(stage?.path).toBe("/outer/inner/new.md");
+		const stagedKeys = [stage!.yjsSnapshotAssetId, stage!.contentSnapshotAssetId].map((assetId) =>
+			r2_create_asset_key({
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				assetId,
+			}),
+		);
+
+		const innerId = await t.run(async (ctx) => {
+			const grants = await ctx.db.query("access_control_permission_grants").collect();
+			for (const grant of grants) {
+				if (grant.resourceId === String(outerId) && grant.userId === writer.userId) {
+					await ctx.db.delete("access_control_permission_grants", grant._id);
+				}
+			}
+			const now = Date.now();
+			const nodeId = await ctx.db.insert("files_nodes", {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				parentId: outerId,
+				name: "inner",
+				path: "/outer/inner",
+				treePath: "/outer/inner/",
+				pathDepth: 2,
+				kind: "folder",
+				lowercaseExtension: null,
+				createdBy: writer.db.userId,
+				updatedBy: writer.db.userId,
+				updatedAt: now,
+			});
+			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				resourceKind: "file",
+				resourceId: String(nodeId),
+				principalKind: "user",
+				userId: writer.userId,
+				permission: "content.write",
+				createdAt: now,
+				updatedAt: now,
+			});
+			return nodeId;
+		});
+		const targetId = await seed_markdown_file({
+			t,
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			path: "/outer/inner/new.md",
+			committedMarkdown: "# Winner\n",
+		});
+		await t.run(async (ctx) => ctx.db.patch("files_nodes", targetId, { restrictedScopeNodeId: innerId }));
+		const locked = await writer.owner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: writer.db.membershipId,
+			nodeId: outerId,
+		});
+		expect(locked._nay).toBeUndefined();
+		const unlocked = await writer.owner.mutation(api.files_nodes.set_node_writable, {
+			membershipId: writer.db.membershipId,
+			nodeId: outerId,
+		});
+		expect(unlocked._nay).toBeUndefined();
+		deferred.releasePuts();
+
+		const response = await touchPromise;
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			files: [{ path: "/outer/inner/new.md", nodeId: targetId, created: false }],
+		});
+		await t.run(async (ctx) => {
+			expect((await ctx.db.get("files_nodes", targetId))?.archiveOperationId).toBeUndefined();
+			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
+			expect(await ctx.db.get("files_r2_assets", stage!.yjsSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", stage!.contentSnapshotAssetId)).toBeNull();
+			const jobs = await ctx.db.query("files_r2_object_deletion_jobs").collect();
+			expect(jobs.map((job) => job.r2Key).sort()).toEqual([...stagedKeys].sort());
+		});
+	});
+
+	test("publish_file_touch refuses a destination locked during staging and a locked appeared target", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-touch-publish" });
+
+		const seeded = await write_file({ t, credential: writer.credential, path: "/tlock/seed.md", content: "# S\n" });
+		expect(seeded.status).toBe(200);
+		const folder = await find_active_node({ t, db: writer.db, path: "/tlock" });
+
+		// Create branch: the destination folder locks between staging and publish.
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+			path: "/tlock/new.md",
+			overwrite: "fail",
+			contentSize: 0,
+			yjsSnapshotSize: 7,
+		});
+		expect(prepared._nay).toBeUndefined();
+		await set_lock({ writer, nodeId: folder!._id, locked: true });
+		const published = await t.mutation(internal.public_api.publish_file_touch, {
+			stageId: prepared._yay!.stageId,
+			targetAnchor: prepared._yay!.targetAnchor,
+		});
+		expect(published._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });
+		expect(await find_active_node({ t, db: writer.db, path: "/tlock/new.md" })).toBeNull();
+		await set_lock({ writer, nodeId: folder!._id, locked: false });
+
+		// Exists branch: the target appears during staging and is locked. The touch must refuse
+		// instead of answering satisfied on a locked file.
+		const prepared2 = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+			path: "/tlock/appeared.md",
+			overwrite: "fail",
+			contentSize: 0,
+			yjsSnapshotSize: 7,
+		});
+		expect(prepared2._nay).toBeUndefined();
+		const appeared = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/tlock/appeared.md",
+			content: "# Here\n",
+		});
+		expect(appeared.status).toBe(200);
+		const appearedNode = await find_active_node({ t, db: writer.db, path: "/tlock/appeared.md" });
+		await set_lock({ writer, nodeId: appearedNode!._id, locked: true });
+		const published2 = await t.mutation(internal.public_api.publish_file_touch, {
+			stageId: prepared2._yay!.stageId,
+			targetAnchor: prepared2._yay!.targetAnchor,
+		});
+		expect(published2._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });
+		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+
+		// Unlock the folder and prove the same staged touch can create the file.
+		const prepared3 = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+			path: "/tlock/new.md",
+			overwrite: "fail",
+			contentSize: 0,
+			yjsSnapshotSize: 7,
+		});
+		const published3 = await t.mutation(internal.public_api.publish_file_touch, {
+			stageId: prepared3._yay!.stageId,
+			targetAnchor: prepared3._yay!.targetAnchor,
+		});
+		expect(published3._nay).toBeUndefined();
+		expect(published3._yay).toMatchObject({ created: true });
+	});
+
+	test("touch succeeds when an appeared target is unlocked before publish", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-touch-appeared-aba" });
+
+		// Hold both staged PUTs after prepare. This gives another writer time to create the target
+		// and take it through a lock → unlock cycle before the touch publish transaction starts.
+		const installedFetch = globalThis.fetch;
+		let startedWriteCount = 0;
+		let markWritesStarted: () => void = () => {};
+		let releaseWrites: () => void = () => {};
+		const writesStarted = new Promise<void>((resolve) => {
+			markWritesStarted = resolve;
+		});
+		const writesReleased = new Promise<void>((resolve) => {
+			releaseWrites = resolve;
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				if (url.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
+					startedWriteCount += 1;
+					if (startedWriteCount === 2) {
+						markWritesStarted();
+					}
+					await writesReleased;
+				}
+				return await installedFetch(input, init);
+			}),
+		);
+
+		const touchPromise = t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: ["/appeared-aba.md"] }),
+		});
+		await writesStarted;
+		const stage = await t.run(async (ctx) =>
+			ctx.db
+				.query("public_api_file_write_stages")
+				.withIndex("by_organization_workspace", (q) =>
+					q.eq("organizationId", writer.db.organizationId).eq("workspaceId", writer.db.workspaceId),
+				)
+				.first(),
+		);
+		expect(stage?.path).toBe("/appeared-aba.md");
+		const stagedKeys = [stage!.yjsSnapshotAssetId, stage!.contentSnapshotAssetId].map((assetId) =>
+			r2_create_asset_key({
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				assetId,
+			}),
+		);
+
+		const appearedNodeId = await seed_markdown_file({
+			t,
+			organizationId: writer.db.organizationId,
+			workspaceId: writer.db.workspaceId,
+			userId: writer.db.userId,
+			path: "/appeared-aba.md",
+			committedMarkdown: "# Winner\n",
+		});
+		await set_lock({ writer, nodeId: appearedNodeId, locked: true });
+		await set_lock({ writer, nodeId: appearedNodeId, locked: false });
+		releaseWrites();
+
+		const response = await touchPromise;
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			files: [{ path: "/appeared-aba.md", nodeId: appearedNodeId, created: false }],
+		});
+		expect(await read_file_content({ t, credential: writer.credential, path: "/appeared-aba.md" })).toContain(
+			"# Winner",
+		);
+		await t.run(async (ctx) => {
+			const activeNodes = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", writer.db.organizationId)
+						.eq("workspaceId", writer.db.workspaceId)
+						.eq("path", "/appeared-aba.md")
+						.eq("archiveOperationId", undefined),
+				)
+				.collect();
+			expect(activeNodes.map((node) => node._id)).toEqual([appearedNodeId]);
+			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
+			expect(await ctx.db.get("files_r2_assets", stage!.yjsSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", stage!.contentSnapshotAssetId)).toBeNull();
+			const jobs = await ctx.db.query("files_r2_object_deletion_jobs").collect();
+			expect(jobs.map((job) => job.r2Key).sort()).toEqual([...stagedKeys].sort());
+		});
+	});
+
+	test("a locked stored file refuses overwrite=replace until unlocked", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-replace" });
+
+		// This stored Markdown file is not editable, so replace is its only write path.
+		const occupant = await writer.asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: writer.db.membershipId,
+			parentId: "root",
+			filename: "stored.md",
+			contentType: "text/markdown;charset=utf-8",
+			size: 3,
+		});
+		expect(occupant._nay).toBeUndefined();
+		const occupantNodeId = occupant._yay!.nodeId;
+		await set_lock({ writer, nodeId: occupantNodeId, locked: true });
+
+		const refused = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/stored.md",
+			content: "# Replace\n",
+			overwrite: "replace",
+		});
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		await t.run(async (ctx) => {
+			const target = await ctx.db.get("files_nodes", occupantNodeId);
+			expect(target?.archiveOperationId).toBeUndefined();
+		});
+
+		// Unlock the stored file and prove the same replace can archive and recreate it.
+		await set_lock({ writer, nodeId: occupantNodeId, locked: false });
+		const allowed = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/stored.md",
+			content: "# Replace\n",
+			overwrite: "replace",
+		});
+		expect(allowed.status).toBe(200);
+		const replaced = await find_active_node({ t, db: writer.db, path: "/stored.md" });
+		expect(replaced).not.toBeNull();
+		expect(replaced!._id).not.toBe(occupantNodeId);
 	});
 });

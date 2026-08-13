@@ -12,11 +12,12 @@ import {
 	internalQuery,
 	type ActionCtx,
 	type MutationCtx,
+	type QueryCtx,
 } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type RegisteredAction, type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import type { Editor } from "@tiptap/core";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { v, type Infer } from "convex/values";
 import {
 	files_ROOT_ID,
@@ -60,7 +61,7 @@ import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
-import { path_name_of } from "../shared/paths.ts";
+import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import {
 	organizations_is_global_organization_id,
 	organizations_is_reserved_workspace_id,
@@ -87,6 +88,7 @@ import type { files_pending_updates_stage_trusted_yjs_update_Result } from "./fi
 import {
 	r2_create_asset_key,
 	r2_delete_object,
+	r2_enqueue_object_deletion_job,
 	r2_fetch_object_from_bucket,
 	r2_fetch_object_range_from_bucket,
 	r2_put_object,
@@ -102,6 +104,7 @@ import {
 	files_READ_RANGE_MAX_LINES,
 	files_line_range_from_text,
 	files_merge_contiguous_chunks,
+	files_node_require_writable,
 	files_nodes_db_create_node_recursively_at_path,
 	files_tail_lines_from_text,
 	yjs_reserve_and_increment_last_sequence,
@@ -530,6 +533,224 @@ export async function files_nodes_db_insert_file_content_docs(
 	});
 }
 
+/**
+ * Create a deletion job for each unpublished R2 asset. Then delete the asset docs.
+ * Do both in the transaction that refuses the write, so a crash cannot lose the cleanup work.
+ * The action already finished each R2 upload to its known key, even when `r2Key` is not set.
+ * Keep missing or published assets. No upload can arrive later, so the deletion job needs no wait time.
+ */
+async function db_hand_unpublished_assets_to_deletion_ledger(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		assetIds: ReadonlyArray<Id<"files_r2_assets">>;
+		reason: "failed_create" | "read_only_create" | "read_only_snapshot_restore" | "read_only_yjs_repair";
+	},
+) {
+	for (const assetId of args.assetIds) {
+		const asset = await ctx.db.get("files_r2_assets", assetId);
+		if (!asset || asset.r2Key !== undefined) {
+			continue;
+		}
+
+		// Add the job before deleting the doc. Both changes save together.
+		// The deletion job now owns this R2 file.
+		await r2_enqueue_object_deletion_job(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			r2Key: r2_create_asset_key({
+				organizationId: asset.organizationId,
+				workspaceId: asset.workspaceId,
+				assetId: asset._id,
+			}),
+			reason: args.reason,
+		});
+		await ctx.db.delete("files_r2_assets", asset._id);
+	}
+}
+
+/**
+ * Find the current lock for a new file path.
+ * Walk active children under `parentId`, like the create function does.
+ *
+ * - `anchorNode` is the deepest existing parent. It stores the nearest lock.
+ * - `targetNode` is the active node at the final path, if one exists.
+ * - `prefixPaths` contains every path part from root to the final path.
+ *
+ * Return null when the parent is missing or the path is empty. The create would also fail.
+ */
+async function db_resolve_create_destination_read_only_state(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		parentId: Doc<"files_nodes">["parentId"];
+		path: string;
+	},
+) {
+	const pathSegments = path_extract_segments_from(args.path);
+	if (pathSegments.length === 0) {
+		return null;
+	}
+
+	let anchorNode: Doc<"files_nodes"> | null = null;
+	let currentParentPath: string;
+	if (args.parentId === files_ROOT_ID) {
+		currentParentPath = "/";
+	} else {
+		const parentNode = await ctx.db.get("files_nodes", args.parentId);
+		if (
+			!parentNode ||
+			parentNode.organizationId !== args.organizationId ||
+			parentNode.workspaceId !== args.workspaceId ||
+			parentNode.kind !== "folder"
+		) {
+			return null;
+		}
+		anchorNode = parentNode;
+		currentParentPath = parentNode.path;
+	}
+
+	let currentParentId: Doc<"files_nodes">["parentId"] = args.parentId;
+	const prefixPaths: string[] = [];
+	let targetNode: Doc<"files_nodes"> | null = null;
+
+	// After one path part is missing, every deeper part is also missing.
+	// Only build their paths after that.
+	let missingSegments = false;
+
+	for (const [i, name] of pathSegments.entries()) {
+		const isLeaf = i === pathSegments.length - 1;
+		let existing: Doc<"files_nodes"> | null = null;
+		if (!missingSegments) {
+			existing = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("parentId", currentParentId)
+						.eq("name", name)
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+		}
+
+		if (existing) {
+			prefixPaths.push(existing.path);
+			currentParentPath = existing.path;
+			if (isLeaf) {
+				targetNode = existing;
+			} else if (existing.kind === "folder") {
+				anchorNode = existing;
+				currentParentId = existing._id;
+			} else {
+				// This path part is a file. Nothing can exist below it, so the create will fail.
+				missingSegments = true;
+			}
+		} else {
+			missingSegments = true;
+			currentParentPath = path_join(currentParentPath, name);
+			prefixPaths.push(currentParentPath);
+		}
+	}
+
+	return { anchorNode, targetNode, prefixPaths };
+}
+
+/**
+ * Check the destination before the action writes R2 files.
+ * `create_file_node` checks the destination and its lock again in the final transaction.
+ */
+export const get_create_file_node_write_preflight = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+		path: v.string(),
+	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			anchorReadOnlyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
+			targetNodeId: v.union(v.id("files_nodes"), v.null()),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!membership) {
+			return null;
+		}
+
+		// Check access on the parent before reading deeper path data.
+		// Do not reveal a hidden child or its lock.
+		const authorized = await authorize_file_write(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			nodeId: args.parentId,
+		});
+		if (authorized._nay) {
+			return null;
+		}
+
+		const destination = await db_resolve_create_destination_read_only_state(ctx, args);
+		if (!destination) {
+			return null;
+		}
+
+		// Check access on every existing path part before returning lock or conflict data.
+		// The final create walks the same path again.
+		for (const prefixPath of destination.prefixPaths) {
+			const segment = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("path", prefixPath)
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			if (!segment) {
+				break;
+			}
+			const segmentAuthorized = await authorize_file_write(ctx, {
+				userAuth: { id: args.userId },
+				membership,
+				nodeId: segment._id,
+			});
+			if (segmentAuthorized._nay) {
+				return null;
+			}
+		}
+
+		return {
+			anchorReadOnlyScopeNodeId: destination.anchorNode?.readOnlyScopeNodeId ?? null,
+			targetNodeId: destination.targetNode?._id ?? null,
+		};
+	},
+});
+
+type get_create_file_node_write_preflight_Result =
+	typeof get_create_file_node_write_preflight extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
 export const create_file_node = internalMutation({
 	args: {
 		userId: doc(app_convex_schema, "files_nodes").fields.createdBy,
@@ -550,6 +771,8 @@ export const create_file_node = internalMutation({
 		readOnly: v.boolean(),
 		mountId: v.optional(v.id("github_mounts")),
 		syncRunId: v.optional(v.string()),
+		/** Tenant assets already uploaded to R2. Add deletion jobs when this mutation refuses them. */
+		unpublishedAssetIds: v.optional(v.array(v.id("files_r2_assets"))),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -562,17 +785,42 @@ export const create_file_node = internalMutation({
 			 */
 			createdCommittedSequence: v.optional(v.number()),
 			/**
-			 * `_id`s of the intermediate folders this mutation created (reused folders are
-			 * skipped), ordered deepest first; empty when no folder was created. Eager-create
-			 * callers hand them to the compensation mutation so a failed proposal upsert can
-			 * remove them too.
+			 * Folders created by this mutation, deepest first. Reused folders are not included.
 			 */
 			createdAncestorIds: v.array(v.id("files_nodes")),
 		}),
 	}),
 	handler: async (ctx, args) => {
+		const authorUserId = args.userId === users_SYSTEM_AUTHOR ? null : args.userId;
+		const authorOrganizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
+		const authorWorkspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
+		let authorMembership: Doc<"organizations_workspaces_users"> | null = null;
+
+		// Reserved scopes use other cleanup and never pass tenant asset ids.
+		if (args.unpublishedAssetIds && (!authorOrganizationId || !authorWorkspaceId)) {
+			const errorMessage = "create_file_node unpublishedAssetIds requires a tenant scope";
+			const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId, path: args.path };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+
+		// The action uploaded the R2 files before this mutation.
+		// If this mutation refuses them, save their deletion jobs before deleting their asset docs.
+		// A later crash cannot lose those jobs.
+		const refuse = async (nay: { name?: string; message: string }) => {
+			if (args.unpublishedAssetIds && authorOrganizationId && authorWorkspaceId) {
+				await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+					organizationId: authorOrganizationId,
+					workspaceId: authorWorkspaceId,
+					assetIds: args.unpublishedAssetIds,
+					reason: "read_only_create",
+				});
+			}
+			return Result({ _nay: nay });
+		};
+
 		if ((args.mountId == null) !== (args.syncRunId == null)) {
-			return Result({ _nay: { message: "External mount sync run requires mountId and syncRunId" } });
+			return await refuse({ message: "External mount sync run requires mountId and syncRunId" });
 		}
 		if (args.mountId != null && args.syncRunId != null) {
 			// Recheck inside the node-creation transaction. The mount may be replaced
@@ -585,7 +833,7 @@ export const create_file_node = internalMutation({
 				mount.pendingCommitSha == null ||
 				!args.path.startsWith(`/${mount.name}/${mount.pendingCommitSha}/`)
 			) {
-				return Result({ _nay: { message: "External mount sync was superseded" } });
+				return await refuse({ message: "External mount sync was superseded" });
 			}
 		}
 		// Every caller here is an action: it proved this permission in an earlier transaction and then
@@ -597,11 +845,8 @@ export const create_file_node = internalMutation({
 		//
 		// The reserved global scopes (mount mirrors, plugin sources) have no memberships to ask about,
 		// so they are skipped here the same way the node check skips them.
-		const authorUserId = args.userId === users_SYSTEM_AUTHOR ? null : args.userId;
-		const authorOrganizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
-		const authorWorkspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
 		if (authorUserId && authorOrganizationId && authorWorkspaceId) {
-			const membership = await ctx.db
+			authorMembership = await ctx.db
 				.query("organizations_workspaces_users")
 				.withIndex("by_active_user_organization_workspace", (q) =>
 					q
@@ -611,17 +856,72 @@ export const create_file_node = internalMutation({
 						.eq("workspaceId", authorWorkspaceId),
 				)
 				.first();
-			if (!membership) {
-				return Result({ _nay: { message: "Permission denied" } });
+			if (!authorMembership) {
+				return await refuse({ message: "Permission denied" });
 			}
 
 			const authorized = await authorize_file_write(ctx, {
 				userAuth: { id: authorUserId },
-				membership,
+				membership: authorMembership,
 				nodeId: args.parentId,
 			});
 			if (authorized._nay) {
-				return Result({ _nay: { message: "Permission denied" } });
+				return await refuse({ message: "Permission denied" });
+			}
+		}
+
+		// Check the current destination again before the first insert.
+		if (args.unpublishedAssetIds && authorOrganizationId && authorWorkspaceId) {
+			const destination = await db_resolve_create_destination_read_only_state(ctx, {
+				organizationId: authorOrganizationId,
+				workspaceId: authorWorkspaceId,
+				parentId: args.parentId,
+				path: args.path,
+			});
+			if (!destination) {
+				return await refuse({ message: "Not found" });
+			}
+
+			// Check access on every existing path part again.
+			// A path part may have become restricted during the upload. Keep it hidden.
+			if (!authorUserId || !authorMembership) {
+				return await refuse({ message: "Permission denied" });
+			}
+			for (const prefixPath of destination.prefixPaths) {
+				const segment = await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", authorOrganizationId)
+							.eq("workspaceId", authorWorkspaceId)
+							.eq("path", prefixPath)
+							.eq("archiveOperationId", undefined),
+					)
+					.first();
+				if (!segment) {
+					break;
+				}
+				const segmentAuthorized = await authorize_file_write(ctx, {
+					userAuth: { id: authorUserId },
+					membership: authorMembership,
+					nodeId: segment._id,
+				});
+				if (segmentAuthorized._nay) {
+					return await refuse({ message: "Permission denied" });
+				}
+			}
+
+			const anchorWritable = files_node_require_writable({
+				readOnlyScopeNodeId: destination.anchorNode?.readOnlyScopeNodeId,
+			});
+			if (anchorWritable._nay) {
+				return await refuse(anchorWritable._nay);
+			}
+
+			// A normal create needs an empty target path.
+			// An archived replacement may share its path with an active node.
+			if (destination.targetNode !== null && args.archiveOperationId === undefined) {
+				return await refuse({ name: "nay", message: "This file already exists." });
 			}
 		}
 
@@ -641,9 +941,12 @@ export const create_file_node = internalMutation({
 			now,
 			mut_createdAncestorIds: createdAncestorIds,
 		});
+		// The walk finds any conflict, access error, or lock before its first insert.
+		// The refusal cannot leave part of a new folder tree behind.
 		if (nodeIdResult._nay) {
-			return nodeIdResult;
+			return await refuse(nodeIdResult._nay);
 		}
+
 		// The helper records shallowest first; compensation walks deepest first.
 		createdAncestorIds.reverse();
 
@@ -674,6 +977,41 @@ export const create_file_node = internalMutation({
 			now,
 		});
 
+		// Publish all editable-file data in the same transaction that creates the node.
+		// A crash leaves either no file or one complete file with its first version snapshot.
+		if (!args.readOnly) {
+			if (!args.yjsSnapshotAssetId || !authorOrganizationId || !authorWorkspaceId || !authorUserId) {
+				const errorMessage = "Editable file creation requires tenant asset ids and author";
+				const errorData = { nodeId: insertedNode._id, yjsSnapshotAssetId: args.yjsSnapshotAssetId };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			const [yjsSnapshotAsset, versionSnapshotAsset] = await Promise.all([
+				ctx.db.get("files_r2_assets", args.yjsSnapshotAssetId),
+				ctx.db.get("files_r2_assets", args.assetId),
+			]);
+			if (!yjsSnapshotAsset || !versionSnapshotAsset) {
+				const errorMessage = "Editable file creation asset id points to a missing files_r2_assets doc";
+				const errorData = {
+					nodeId: insertedNode._id,
+					yjsSnapshotAssetId: args.yjsSnapshotAssetId,
+					versionSnapshotAssetId: args.assetId,
+				};
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			await files_nodes_db_finalize_editable_text_node_creation(ctx, {
+				organizationId: authorOrganizationId,
+				workspaceId: authorWorkspaceId,
+				nodeId: insertedNode._id,
+				userId: authorUserId,
+				yjsSnapshotAssetId: args.yjsSnapshotAssetId,
+				yjsSnapshotSize: yjsSnapshotAsset.size,
+				versionSnapshotAssetId: args.assetId,
+				versionSnapshotSize: versionSnapshotAsset.size,
+			});
+		}
+
 		// Capture the committed last sequence inside the creating transaction: no save can land
 		// between the node creation and this read, so the value is the true creation-time state.
 		let createdCommittedSequence: number | undefined;
@@ -685,16 +1023,21 @@ export const create_file_node = internalMutation({
 			}
 		}
 
-		return Result({ _yay: { nodeId: nodeIdResult._yay, createdCommittedSequence, createdAncestorIds } });
+		return Result({
+			_yay: {
+				nodeId: nodeIdResult._yay,
+				createdCommittedSequence,
+				createdAncestorIds,
+			},
+		});
 	},
 });
 
 /**
- * Final step of creating an editable text file (rich text or plain text). Editable files have no
- * content asset: `node.assetId` points at the first version snapshot. This sets r2Key + size on
- * the Yjs snapshot and version snapshot assets, and inserts the version snapshot in
- * `files_snapshots`. The arg types only accept real org/workspace ids, so reserved scopes
- * cannot reach this.
+ * Publish an editable text file and its first version snapshot.
+ * `node.assetId` points to the first version snapshot. Editable files have no current-content asset.
+ * Set `r2Key` and size on both assets, then add the snapshot doc.
+ * Call this inside the final publish mutation. Reserved scopes cannot call it.
  */
 export async function files_nodes_db_finalize_editable_text_node_creation(
 	ctx: MutationCtx,
@@ -745,30 +1088,29 @@ export async function files_nodes_db_finalize_editable_text_node_creation(
 	return Result({ _yay: null });
 }
 
-export const finalize_text_node_creation = internalMutation({
-	args: {
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		nodeId: v.id("files_nodes"),
-		userId: v.id("users"),
-		yjsSnapshotAssetId: v.id("files_r2_assets"),
-		yjsSnapshotSize: v.number(),
-		versionSnapshotAssetId: v.id("files_r2_assets"),
-		versionSnapshotSize: v.number(),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		return await files_nodes_db_finalize_editable_text_node_creation(ctx, args);
-	},
-});
-
 export const cleanup_file_node_creation_assets = internalMutation({
 	args: {
 		assetIds: v.array(v.id("files_r2_assets")),
 		r2Keys: v.array(v.string()),
+		durableTenantScope: v.optional(
+			v.object({
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+			}),
+		),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		if (args.durableTenantScope) {
+			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+				...args.durableTenantScope,
+				assetIds: args.assetIds,
+				reason: "failed_create",
+			});
+			return null;
+		}
+
+		// Reserved mount assets cannot use deletion jobs that need a tenant.
 		for (const r2Key of args.r2Keys) {
 			await r2_delete_object(ctx, r2Key);
 		}
@@ -973,6 +1315,32 @@ async function action_create_file_node(
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 	},
 ): Promise<action_create_file_node_Result> {
+	// Check the destination before writing any asset doc or R2 file.
+	const preflight = (await ctx.runQuery(internal.files_nodes_content.get_create_file_node_write_preflight, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		parentId: args.parentId,
+		path: args.path,
+	})) as get_create_file_node_write_preflight_Result;
+	if (!preflight) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+
+	// Refuse a locked destination before there is anything to clean up.
+	// The deepest existing parent stores the nearest lock.
+	const anchorWritable = files_node_require_writable({
+		readOnlyScopeNodeId: preflight.anchorReadOnlyScopeNodeId ?? undefined,
+	});
+	if (anchorWritable._nay) {
+		return anchorWritable;
+	}
+
+	// Refuse an occupied target here so no R2 work is needed.
+	if (preflight.targetNodeId !== null && args.archiveOperationId === undefined) {
+		return Result({ _nay: { name: "nay", message: "This file already exists." } });
+	}
+
 	const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
 		text: args.textContent,
 		rootKind: args.rootKind,
@@ -1014,30 +1382,36 @@ async function action_create_file_node(
 		await ctx.runMutation(internal.files_nodes_content.cleanup_file_node_creation_assets, {
 			assetIds,
 			r2Keys: [yjsSnapshotR2Key, versionSnapshotR2Key],
+			durableTenantScope: {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+			},
 		});
 	};
 
 	// Editable files do not store their current content in R2. Reads use the committed chunks.
 	// We only upload the Yjs snapshot and the first version snapshot. The node points at the
 	// version snapshot: the newest snapshot always holds the file's current bytes.
-	try {
-		await Promise.all([
-			r2_put_object(ctx, {
-				key: yjsSnapshotR2Key,
-				body: snapshotUpdate._yay,
-				contentType: "application/octet-stream" satisfies files_ContentType,
-			}),
-			r2_put_object(ctx, {
-				key: versionSnapshotR2Key,
-				body: args.textContent,
-				// The version snapshot serves downloads, so it stores the classifier-derived type.
-				contentType: args.contentType,
-			}),
-		]);
-	} catch (error) {
+	const putResults = await Promise.allSettled([
+		r2_put_object(ctx, {
+			key: yjsSnapshotR2Key,
+			body: snapshotUpdate._yay,
+			contentType: "application/octet-stream" satisfies files_ContentType,
+		}),
+		r2_put_object(ctx, {
+			key: versionSnapshotR2Key,
+			body: args.textContent,
+			// Downloads use this version snapshot, so store the file type on it.
+			contentType: args.contentType,
+		}),
+	]);
+	const failedPut = putResults.find((result) => result.status === "rejected");
+	if (failedPut?.status === "rejected") {
+		// Wait for both PUTs before starting cleanup.
+		// Otherwise, a late PUT could recreate an R2 file after its asset doc and deletion job are gone.
 		await cleanupCreatedAssets();
 		console.error("Failed to write initial file content assets", {
-			error,
+			error: failedPut.reason,
 			yjsSnapshotAssetId,
 			versionSnapshotAssetId,
 		});
@@ -1057,22 +1431,13 @@ async function action_create_file_node(
 		rootKind: args.rootKind,
 		readOnly: false,
 		archiveOperationId: args.archiveOperationId,
+		unpublishedAssetIds: assetIds,
 	})) as create_file_node_Result;
+	// The mutation already added deletion jobs and deleted both asset docs when it refused.
+	// Do not start the same cleanup again here.
 	if (created._nay) {
-		await cleanupCreatedAssets();
 		return created;
 	}
-
-	await ctx.runMutation(internal.files_nodes_content.finalize_text_node_creation, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		nodeId: created._yay.nodeId,
-		userId: args.userId,
-		yjsSnapshotAssetId,
-		yjsSnapshotSize: snapshotUpdate._yay.byteLength,
-		versionSnapshotAssetId,
-		versionSnapshotSize: files_get_utf8_byte_size(args.textContent),
-	});
 
 	return Result({
 		_yay: {
@@ -1846,10 +2211,7 @@ export const create_file_by_path = internalAction({
 			 */
 			createdCommittedSequence: v.optional(v.number()),
 			/**
-			 * `_id`s of the intermediate folders created for this path (reused folders are
-			 * skipped), ordered deepest first; empty when no folder was created. Eager-create
-			 * callers hand them to `remove_eager_created_node_if_safe` so a failed proposal
-			 * upsert also removes the folders it committed.
+			 * Folders created with this file, deepest first. Reused folders are not included.
 			 */
 			createdAncestorIds: v.array(v.id("files_nodes")),
 		}),
@@ -2976,6 +3338,20 @@ export const restore_snapshot = internalMutation({
 			});
 		}
 
+		// Check read-only after access and before every write.
+		// If the file is read-only, add deletion jobs for both uploaded snapshots and delete their asset docs.
+		// The staged restore update expires through its normal cleanup.
+		const writable = files_node_require_writable(fileNode);
+		if (writable._nay) {
+			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetIds: [args.currentSnapshotAssetId, args.restoredSnapshotAssetId],
+				reason: "read_only_snapshot_restore",
+			});
+			return writable;
+		}
+
 		const userDoc = await ctx.db.get("users", userAuth.id);
 		if (!userDoc) {
 			return Result({ _nay: { message: "Unauthenticated" } });
@@ -3321,6 +3697,12 @@ export const restore_snapshot_r2 = action({
 			return Result({ _nay: { name: "nay", message: "Not found" } });
 		}
 
+		// Check the current lock before staging or writing assets and R2 files.
+		// The final mutation checks it again.
+		const nodeWritable = files_node_require_writable(materializationState.fileNode);
+		if (nodeWritable._nay) {
+			return nodeWritable;
+		}
 		const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 			userId: userAuth.id,
 			organizationId: membership.organizationId,
@@ -3571,6 +3953,13 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 
 		const fileNode = data.fileNode;
 		const rootKind = fileNode.yjsRootKind;
+
+		// Repair changes user content, so the operator must unlock the file first.
+		// Check before writing assets and R2 files, then check again in the final mutation.
+		const nodeWritable = files_node_require_writable(fileNode);
+		if (nodeWritable._nay) {
+			return nodeWritable;
+		}
 		// The frontmatter markers qualify too: a frontmatter-marked file whose update budget
 		// tripped can no longer accept the fitting edit that would clear the marker, and its
 		// visible text is under the text cap, so a latest_state repair is lossless. The
@@ -3742,11 +4131,13 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 		})) as finalize_file_yjs_repair_Result;
 
 		if (finalized._nay) {
-			// Refused or stale: delete the two fresh uploads (docs and objects) so they do not
-			// wait on the unfinalized-asset sweeper. A crash before this line leaves them to it.
-			await ctx.runMutation(internal.files_nodes_content.delete_unfinalized_repair_assets, {
-				assetIds: [yjsSnapshotAssetId, contentSnapshotAssetId],
-			});
+			// A read-only refusal already added deletion jobs and deleted both asset docs.
+			// Other refusals delete both new uploads here. A crash leaves them for normal cleanup.
+			if (finalized._nay.name !== "read_only") {
+				await ctx.runMutation(internal.files_nodes_content.delete_unfinalized_repair_assets, {
+					assetIds: [yjsSnapshotAssetId, contentSnapshotAssetId],
+				});
+			}
 			return finalized;
 		}
 
@@ -3805,6 +4196,21 @@ export const finalize_file_yjs_repair = internalMutation({
 		if (!state) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+
+		// Repair changes user content, so refuse a read-only file before the first write.
+		// The repair files are already in R2. Add deletion jobs and delete the asset docs
+		// in this transaction, so a later crash cannot lose cleanup.
+		const writable = files_node_require_writable(state.fileNode);
+		if (writable._nay) {
+			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetIds: [args.yjsSnapshotAssetId, args.contentSnapshotAssetId],
+				reason: "read_only_yjs_repair",
+			});
+			return writable;
+		}
+
 		if (state.yjsLastSequenceDoc.lastSequence !== args.targetSequence) {
 			return Result({ _nay: { message: "Stale repair: the file advanced" } });
 		}
@@ -3978,7 +4384,21 @@ export const cleanup_file_yjs_repair_covered_rows = internalMutation({
 				.first();
 			if (!referencingSnapshot) {
 				if (supersededAsset.r2Key) {
-					await r2_delete_object(ctx, supersededAsset.r2Key);
+					if (
+						organizations_is_global_organization_id(supersededAsset.organizationId) ||
+						organizations_is_reserved_workspace_id(supersededAsset.workspaceId)
+					) {
+						await r2_delete_object(ctx, supersededAsset.r2Key);
+					} else {
+						// Add a deletion job before deleting the last doc that tracks this exact key.
+						// The component retry cannot confirm that the old R2 file is gone.
+						await r2_enqueue_object_deletion_job(ctx, {
+							organizationId: supersededAsset.organizationId,
+							workspaceId: supersededAsset.workspaceId,
+							r2Key: supersededAsset.r2Key,
+							reason: "untracked_asset_event",
+						});
+					}
 				}
 				await ctx.db.delete("files_r2_assets", args.supersededYjsAssetId);
 			}
@@ -3989,9 +4409,10 @@ export const cleanup_file_yjs_repair_covered_rows = internalMutation({
 });
 
 /**
- * Delete fresh repair assets whose final mutation refused. Guarded to unfinalized docs so a
- * late duplicate call cannot remove an asset a successful commit finalized. The object delete
- * uses the deterministic key and is a no-op when nothing was uploaded.
+ * Delete new repair assets after the final mutation refuses.
+ * Delete only unpublished assets, so a late repeated call cannot delete a published asset.
+ * Add tenant asset keys to the deletion jobs before deleting their docs.
+ * Reserved scopes use the component cleanup because deletion jobs need real tenant ids.
  */
 export const delete_unfinalized_repair_assets = internalMutation({
 	args: {
@@ -4003,14 +4424,24 @@ export const delete_unfinalized_repair_assets = internalMutation({
 			args.assetIds.map(async (assetId) => {
 				const asset = await ctx.db.get("files_r2_assets", assetId);
 				if (asset && asset.r2Key === undefined) {
-					await r2_delete_object(
-						ctx,
-						r2_create_asset_key({
+					const r2Key = r2_create_asset_key({
+						organizationId: asset.organizationId,
+						workspaceId: asset.workspaceId,
+						assetId: asset._id,
+					});
+					if (
+						organizations_is_global_organization_id(asset.organizationId) ||
+						organizations_is_reserved_workspace_id(asset.workspaceId)
+					) {
+						await r2_delete_object(ctx, r2Key);
+					} else {
+						await r2_enqueue_object_deletion_job(ctx, {
 							organizationId: asset.organizationId,
 							workspaceId: asset.workspaceId,
-							assetId: asset._id,
-						}),
-					);
+							r2Key,
+							reason: "failed_create",
+						});
+					}
 					await ctx.db.delete("files_r2_assets", assetId);
 				}
 			}),

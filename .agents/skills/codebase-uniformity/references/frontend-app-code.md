@@ -42,6 +42,8 @@ Use this reference for `packages/app/src/**` React components and frontend lib u
 
 - Inline one-off callback and object types at the parameter or local declaration. Do not add a private alias such as `Fits` just to shorten a single function signature.
 - Use named types for exported API, repeated prop/class-name/context/result shapes, recursive structures, derived external API types, or app concepts that are clearer with a concrete name.
+- Keep React props in clear groups. Put refs and normal values first. Put `on...` callbacks after the values. Put render slots and `children` last when the component has them. Follow a stronger nearby order when one exists.
+- Use the same prop order in the prop type, the `props` destructuring, and the JSX call. Do not append a new value after the callbacks only to make the diff smaller.
 
 ## Comments
 

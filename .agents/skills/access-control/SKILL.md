@@ -21,6 +21,11 @@ Membership says where you are. Access control says what you may do there.
   2. **Role** — one `access_control_role_assignments` doc per `(organizationId, workspaceId, userId)`.
   3. **Direct grant** — an `access_control_permission_grants` doc for per-file sharing.
 - Grants are allow-only. There are no deny grants.
+- A file or folder read-only lock is not an ACL deny. ACL answers who may act first. The intrinsic
+  lock then answers whether the node may change at all. Owners do not bypass it. A caller needs
+  `content.permissions.manage` to use the dedicated lock controls, but that permission does not make
+  ordinary writes bypass a lock. Sharing and comment-sidecar permissions stay separate; see
+  `../files-read-only/SKILL.md`.
 
 ## Where a role binds
 
@@ -556,18 +561,14 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   directory creation. The internals themselves are still unguarded, so any new caller has to check for
   itself. The agent has one other door onto file content: `execute_code` mints a public-API grant
   token scoped to file list and read, which re-enters through the public API and *is* re-checked there.
-- **Plugin runs skip the content check outright.** `public_api_resolve_live_principal` applies the app
-  permission mapped from each `files:*` scope to every principal kind except `plugin_run`. The skip is
-  structural, not a
-  missing branch: the `plugin_run` principal carries no `contentPermissions` field at all — its
-  authority is a platform baseline of files download, files write and activities write, plus
-  secrets-read and outbound-fetch from the run's accepted capabilities — so the milestone has to give
-  it a content-permission source before the check can include it. Note the baseline half: a plugin run
-  downloads and writes files having accepted **no** capability, so do not scope this work as "bound
-  plugin authority by what the user consented to". File routes cannot omit the user ACL check: the
-  exhaustive scope map supplies it from `requiredScope`. Everything else binds on a plugin run — token
-  expiry, quota, `allowedKinds`, `requiredScope`, and the transactional write revalidation — so the gap
-  is content-check-only. Restricted files will not hold against a plugin until that changes.
+- **Plugin runs have platform file scopes, but writes still answer to the actor and source file.** A
+  run gets the platform baseline needed to download its exact triggering upload and write Markdown
+  siblings. `db_revalidate_file_write_principal` then reloads the run, installation, source node, and
+  actor's active membership in both the prepare and publish transactions. It requires the actor's
+  current `content.write` on the source node before output can land. The separate intrinsic
+  read-only check also blocks the output destination, even for an owner-backed run. This does not turn
+  accepted plugin capabilities into ACL permissions; it is a live actor/source ceiling on the
+  platform baseline.
 - **The global presence roster is readable by any account, and the `listRoom` gate does not change
   that.** Read this bullet as one fact, not two: `listRoom` refuses a caller with no identity and
   refuses `app_presence_GLOBAL_ROOM_ID` outright, and **that closes one door of two**. The other door

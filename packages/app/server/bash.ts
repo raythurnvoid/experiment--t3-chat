@@ -6965,6 +6965,76 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(folderDest.stdout).toBe("pending copy created: /docs/readme.md -> /reports/readme.md — review in Files\n");
 		});
 
+		test("blocks writes in a read-only subtree but lets cp read its source", async () => {
+			const runner = await create_bash_runner();
+
+			const docsId = await get_seeded_node_id(runner, "/docs");
+			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
+
+			await runner.t.run(async (ctx) => {
+				const nodes = await ctx.db.query("files_nodes").collect();
+				for (const node of nodes) {
+					if (
+						node.organizationId === runner.seeded.organizationId &&
+						node.workspaceId === runner.seeded.workspaceId &&
+						(node.path === "/docs" || node.path.startsWith("/docs/"))
+					) {
+						await ctx.db.patch("files_nodes", node._id, {
+							readOnlyScopeNodeId: docsId,
+						});
+					}
+				}
+			});
+
+			const refusedCommands = [
+				`printf changed > ${test_db_files_mount}/docs/readme.md`,
+				`mkdir ${test_db_files_mount}/docs/new-folder`,
+				`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports/moved.md`,
+				`mv ${test_db_files_mount}/reports/summary.md ${test_db_files_mount}/docs/moved-in.md`,
+				`rm ${test_db_files_mount}/docs/tutorial.md`,
+				`cp ${test_db_files_mount}/reports/summary.md ${test_db_files_mount}/docs/readme.md`,
+				`cp ${test_db_files_mount}/reports/summary.md ${test_db_files_mount}/docs/copied.md`,
+			];
+			for (const command of refusedCommands) {
+				const result = await runner.run(command);
+				expect(result.metadata.exitCode, command).not.toBe(0);
+				expect(result.stderr, command).toContain("read-only");
+			}
+
+			const copiedOut = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports/copied-out.md`,
+			);
+			expect(copiedOut.metadata.exitCode).toBe(0);
+			expect(copiedOut.stderr).toBe("");
+
+			const activePaths = await runner.t.run(async (ctx) =>
+				(await ctx.db.query("files_nodes").collect())
+					.filter(
+						(node) =>
+							node.organizationId === runner.seeded.organizationId &&
+							node.workspaceId === runner.seeded.workspaceId &&
+							node.archiveOperationId === undefined,
+					)
+					.map((node) => node.path),
+			);
+			expect(activePaths).toContain("/docs/readme.md");
+			expect(activePaths).toContain("/docs/tutorial.md");
+			expect(activePaths).toContain("/reports/copied-out.md");
+			expect(activePaths).toContain("/reports/summary.md");
+			expect(activePaths).not.toContain("/docs/new-folder");
+			expect(activePaths).not.toContain("/docs/copied.md");
+			expect(activePaths).not.toContain("/docs/moved-in.md");
+			expect(activePaths).not.toContain("/reports/moved.md");
+
+			const readBack = await runner.run(`cat ${test_db_files_mount}/docs/readme.md`);
+			expect(readBack.stdout).toContain("# Readme");
+			expect(readBack.stdout).not.toContain("changed");
+
+			const pendingRows = await list_pending_updates(runner);
+			expect(pendingRows).toHaveLength(1);
+			expect(pendingRows[0].copiedFrom).toMatchObject({ nodeId: sourceId, path: "/docs/readme.md" });
+		});
+
 		test("cp into a new deep path records the created ancestor ids on the pending row", async () => {
 			const runner = await create_bash_runner();
 
@@ -6985,7 +7055,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					.collect(),
 			);
 			expect(rows).toHaveLength(1);
-			expect(rows[0].eagerCreated).toMatchObject({ createdAncestorIds: [deepFolderId, newFolderId] });
+			expect(rows[0].eagerCreated).toMatchObject({
+				createdAncestorIds: [deepFolderId, newFolderId],
+			});
 		});
 
 		test("cp onto an existing file proposes replacing its content", async () => {

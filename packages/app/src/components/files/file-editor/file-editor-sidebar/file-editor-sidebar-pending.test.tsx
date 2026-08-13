@@ -221,6 +221,7 @@ function makeNode(args: {
 	kind?: "file" | "folder";
 	parentId?: string;
 	hasEditableYjsState?: boolean;
+	readOnlyState?: "writable" | "self" | "inherited";
 }): app_convex_Doc<"files_nodes"> {
 	const kind = args.kind ?? "file";
 	return {
@@ -230,6 +231,7 @@ function makeNode(args: {
 		name: args.path.split("/").pop() ?? args.path,
 		kind,
 		parentId: args.parentId ?? "root",
+		readOnlyState: args.readOnlyState ?? "writable",
 		...(kind === "file"
 			? {
 					assetId: `asset_${args.id}`,
@@ -734,6 +736,26 @@ describe("FileEditorSidebarPending", () => {
 
 		expect(screen.getByText("Accept").closest("button")?.hasAttribute("disabled")).toBe(true);
 		expect(screen.getByText("Discard").closest("button")?.hasAttribute("disabled")).toBe(false);
+	});
+
+	test("keeps Accept disabled and Discard working for a read-only file", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md", readOnlyState: "self" })]);
+
+		render(<FileEditorSidebarPending />);
+
+		expect(screen.getByText("Accept").closest("button")?.hasAttribute("disabled")).toBe(true);
+		fireEvent.click(screen.getByText("Discard"));
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_content", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_a",
+		});
+		expect(actionMock).not.toHaveBeenCalled();
 	});
 
 	test("disables Accept all while any visible row lacks write permission", () => {
@@ -1678,7 +1700,9 @@ describe("FileEditorSidebarPending", () => {
 			nodeId: "node_a",
 			pendingUpdateId: "pu_mixed",
 		});
-		expect(mutationMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(upsertPendingMock.mock.invocationCallOrder[0] ?? 0);
+		expect(mutationMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(
+			upsertPendingMock.mock.invocationCallOrder[0] ?? 0,
+		);
 	});
 
 	test("mixed Discard reverts the content first, then discards the move", async () => {

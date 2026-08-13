@@ -13,6 +13,25 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 - Agent tab: `#app_file_editor_sidebar_tabs_agent`.
 - Details tab: `#app_file_editor_sidebar_tabs_details` (since 2026-08-10). Rows are `.FileEditorSidebarDetails-row` with `-label` / `-value` slots. Sidebar tabs depend on the node: a plain-text node shows Details and no Comments (and Details is its default), a Markdown node shows Comments; a stored selection naming a hidden tab falls back without being overwritten.
 
+## Read-Only Selected Node
+
+- The selected-node header has a separate lock control; Share remains separate. Exercise all five
+  states: writable, direct, direct below an outer lock, inherited with a visible source, and inherited
+  with a protected source. On mutation failure the modal stays open and shows the server message.
+  Escape closes, focus returns to the trigger, and a pending submit cannot run twice.
+- The top floating status says exactly `This file is read-only.`, `Read-only because /docs is locked.`,
+  or `This folder contains read-only items. It cannot be renamed, moved, or archived.` as applicable.
+- Rich text must expose `contenteditable=false`. Plain and diff Monaco models must report read-only.
+  Keep selection, copy, search, mode changes, snapshots browse/download, and existing-comment replies.
+  Disable Save, Sync where it would write, Accept, anchored comment create/resolve, media insert/upload,
+  and diff hunk/model discard. The Pending panel's dedicated whole-proposal Discard stays enabled.
+- To prove stale Yjs work is gone, queue a local rich-text edit, lock and unlock from the other
+  identity, wait for the persistent unsaved-changes warning and committed resync, then make one fresh
+  edit. The old text must never appear after the fresh edit or a reload.
+- Start an upload, lock its node or parent from another session, then finish the PUT. Assert the
+  normal waiting/processing state becomes ready, Download works, and the file keeps its direct or
+  inherited read-only state. A reused signed URL must not replace the immutable live bytes.
+
 ## Rich Text Editor
 
 - Toolbar: `[role="toolbar"][aria-label="Toolbar"]`.

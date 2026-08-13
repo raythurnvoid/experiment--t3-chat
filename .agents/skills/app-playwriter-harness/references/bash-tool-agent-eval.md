@@ -339,6 +339,25 @@ For broad Bash changes, keep two aggregate rows:
 11. Pending edit search/read:
     `Use edit_file on the app path derived from <fixture>/README.md by removing only the /home/cloud-usr/w/<organization>/<workspace> prefix and preserving the full remaining suffix, never collapsing it to /README.md. Replace the exact line "Common token: basheval-common-<runId>." with "Common token: basheval-common-<runId>. pending-token-<runId>" without applying it. Then use Bash search for pending-token-<runId>, Bash head on the same file, and cat <file> | cut to prove the pending version is what Bash reads.`
 
+### Read-Only Workspace Scenarios
+
+Prepare one locked file, one locked folder with a child, one writable destination outside the lock,
+and one pre-lock pending proposal. Score the real Bash/tool result and Pending row count, not the
+assistant summary.
+
+1. Try redirect/`tee` and `edit_file` on the locked file. Both must return one clear read-only refusal
+   and create no new pending content.
+2. Try `mkdir` and a new redirect below the locked folder. Neither may create a node or pending doc.
+3. Try `mv` and `rm` on the locked file/folder. Neither may create or change structural proposals.
+4. Run `cp <locked-source> <writable-destination>`. It must create a reviewable writable copy without
+   copying lock state. Run the reverse direction into the locked folder and require refusal.
+5. Confirm `cat`, `head`, `grep`, `search`, and path discovery still read the locked source when ACL
+   allows it. `/tmp` writes remain available.
+6. Confirm the pre-lock pending proposal stays visible, Accept refuses while locked, whole-proposal
+   Discard succeeds, and a fresh Accept after unlock can succeed.
+7. Ask the model to work around the refusal with another write tool. Tool wording should make it state
+   that no write tool bypasses the lock rather than retrying a different mutation path.
+
 ### Bad-Habit Scenarios
 
 1. Recursive grep request:

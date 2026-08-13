@@ -540,6 +540,7 @@ export function ai_chat_tool_create_bash(
 		description: dedent`\
 			Run a non-interactive shell command in the user's cloud file environment. Familiar Bash command names are available; /tmp has the safe Just Bash native-style scratch command surface, while app files are db-backed and do not have full POSIX/GNU filesystem semantics.
 			Bash starts in the current workspace path at ~/w/${ctxData.organizationName}/${ctxData.workspaceName} (${currentWorkspacePath}). ~ is ${HOME}, the app mount is ${appMountPath}, and /tmp is durable scratch scoped to this chat thread.
+			A read-only app file or folder can still be read, searched, downloaded, shared, and copied OUT to a writable destination. cp may read a read-only source, but its destination and any replaced item must be writable. If a write, mkdir, mv, rm, cp destination, redirect, tee, or edit_file call says an app path is read-only, do not retry that path with another write tool; it cannot change until the user makes it writable.
 			/tmp persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone. It is not shared with new chats and is not app file storage; use app file tools for durable user-visible files.
 			Do not call /tmp ephemeral or temporary in a way that implies same-chat data loss. If a fresh chat cannot read a /tmp path created in another chat, that is expected evidence of per-chat isolation, not a global Bash failure.
 			Bash cwd persists across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating cd.
@@ -643,6 +644,7 @@ export function ai_chat_tool_create_edit_file(
 			- If copying from numbered output such as cat -n, do NOT include the line-number prefix.
 			- If copying a path from bash, remove the /home/cloud-usr/w/<organization>/<workspace> current workspace path prefix before passing it here.
 			- Preserve the full remaining suffix after that prefix; /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.
+			- A read-only refusal is terminal for this edit. Do not retry the path with bash redirects, tee, cp, mv, or another write tool; it cannot change until the user makes it writable.
 			- For a .md file the text must be valid GitHub Flavored Markdown; preserve valid Markdown structure (headings, code fences, lists). For any other text file, match the file's own format exactly (for example valid JSON in a .json file) and do not reformat the rest of the file.
 			- This tool does not apply changes directly; it saves a pending update for human review.`,
 
@@ -726,6 +728,12 @@ export function ai_chat_tool_create_edit_file(
 			// The node can be archived or deleted between the read above and this upsert;
 			// reporting success would let the model believe the proposal exists.
 			if (upserted._nay) {
+				if (upserted._nay.name === "read_only") {
+					throw new Error(
+						`Cannot edit ${normalizedPath}: ${upserted._nay.message} Do not retry this path with another write tool.`,
+						{ cause: upserted._nay },
+					);
+				}
 				throw new Error(
 					`Cannot edit ${normalizedPath}: the file is gone or archived, so the proposal was not recorded. Re-check the path and try again.`,
 					{ cause: upserted._nay },

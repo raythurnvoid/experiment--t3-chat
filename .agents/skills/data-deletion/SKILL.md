@@ -21,6 +21,9 @@ Load each companion skill that owns the affected boundary:
 - Organization/workspace deletion is also split: UI-facing mutations remove structure/access immediately where needed, then the data deletion worker purges heavy tenant content in batches.
 - Admin data reset is not account deletion. It preserves the account and default tenant while deleting reset-owned content.
 - Large deletes must remain retryable, bounded, and idempotent. Keep limited indexed reads and leave queue docs in place while work remains.
+- Tenant, workspace, and account purge are named read-only bypasses. These flows delete the whole
+  lifecycle scope, so they do not call normal writable guards. They delete locked subtrees like other
+  content. See [files-read-only](../files-read-only/SKILL.md).
 
 # Primary Files
 
@@ -165,9 +168,18 @@ Current purge coverage includes:
 - `files_yjs_snapshots`, `files_yjs_updates`, `files_yjs_docs_last_sequences`
 - `files_snapshots`, `file_stats`
 - `files_content_materialization_jobs` with Workpool job cancellation
-- `files_r2_assets` with upload-conversion job cancellation and R2 object deletion. When `r2Key` is not set, derive the deterministic asset key because the browser PUT may have landed before its event updated the asset doc.
+- `files_r2_assets` with upload-conversion job cancellation and durable exact-key R2 cleanup. Before
+  deleting an asset doc, create a deletion job for the stored live key or its deterministic live key.
+  Also create one for `uploadStagingR2Key` when present. The staging job keeps
+  `putMayArriveUntil` through `uploadUrlExpiresAt` plus the normal margin. An older upload without a
+  staging key uses the same tombstone on its live key because its signed URL wrote there directly.
 - `access_control_permission_grants` before their file scope nodes. This purge step also runs for data-only reset, where the preserved home workspace never reaches structure deletion.
 - `files_nodes` last
+
+The asset pass creates or advances `files_r2_object_deletion_jobs` before deleting an asset doc. Keep
+existing job docs and advance them through the normal exact-key helper. The processor does not need
+tenant or asset docs. Each job stays until its processor confirms the R2 file is absent after the
+signed URL can no longer be used.
 
 During the retention window, tombstoning an anonymous user also does not revoke every anonymous access path. See the current security gap in [auth-system](../auth-system/SKILL.md#known-anonymous-deletion-gap).
 
@@ -227,7 +239,11 @@ For data-only reset, treat missing or inconsistent default tenant state as an in
 - Do not mask broken invariants with fallback repair code unless the relevant producer path is identified and the product rule explicitly wants repair.
 - Preserve child-before-parent deletion ordering.
 - Cancel Workpool jobs before deleting their tracking docs when a purge owns that job lifecycle.
-- Delete R2 objects before deleting `files_r2_assets`. Use `r2Key` when set; otherwise derive the deterministic asset key.
+- Hand every possible R2 key to the durable deletion ledger before deleting `files_r2_assets`. Use `r2Key` when set; otherwise derive the deterministic live key. Include the upload staging key and its signed-URL arrival window when present.
+- Never delete a `files_r2_object_deletion_jobs` doc during purge. Only its processor may remove it.
+  The processor first confirms deletion after the signed URL expires.
+- Do not add read-only checks to tenant, workspace, or account purge. These deletion lifecycles are
+  named bypasses.
 - Keep queue docs scoped; user restore removes only user-scope requests.
 - Keep billing snapshot deletion tied to full user-record purge, not normal account deletion or data reset.
 - Keep public/user-facing mutations responsible for phase-1 permissions, rate limits, quota release, and immediate access removal.

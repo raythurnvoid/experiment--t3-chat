@@ -226,7 +226,7 @@ Important behavior:
 - Save guards the target node before any write: a missing, out-of-scope, non-file, or archived target returns `Not found` and the doc survives.
 - A save whose action-read base sequence no longer matches the file's CURRENT committed last sequence returns `Stale save` before any write or billing. This one check covers two races: a second tab replaying an old save (no double billing), and another user committing between the action's read and the mutation (the doc's new base can never silently hide that commit).
 - A replace-move save (`copiedFrom.archivesSourceOnAccept`) archives the replace source and deletes the acting user's leftover doc on it. When that doc is itself a replace-move (chained `mv -f`), the walk continues down the replace chain to the deeper replace sources, so accepting the head of a chain consumes every hop in either accept order.
-- `apply_file_pending_archive` re-validates at accept time: a missing doc or one without `pendingArchive` no-ops; a missing/out-of-scope/already-archived node just drops the doc. A folder computes its subtree by path prefix at accept time (nodes added after the proposal are archived too) and everything gets ONE `archiveOperationId`, so Unarchive restores the delete as one unit. The acting user's docs on all archived nodes are removed; other users' docs stay and go inert through the existing archived-node filters. Accepting a delete never runs the mv‑f replace-source chain.
+- `apply_file_pending_archive` re-validates at accept time: a missing doc or one without `pendingArchive` no-ops; a missing/out-of-scope/already-archived node just drops the doc. A folder computes its subtree by following stored `parentId` links at accept time (nodes added after the proposal are archived too, while an archived tree that reuses the path stays separate) and everything gets ONE `archiveOperationId`, so Unarchive restores the delete as one unit. The acting user's docs on all archived nodes are removed; other users' docs stay and go inert through the existing archived-node filters. Accepting a delete never runs the mv‑f replace-source chain.
 - Save on a doc with `pendingArchive` is rejected with `File has a pending delete` (discard the delete first). Discarding a delete only clears `pendingArchive`: a doc that still has content or copy provenance survives as a content row; a delete-only doc is removed.
 - Keep each public endpoint's current auth, membership, and rate-limit order. Do not infer one shared order: content upsert validates membership before its rate limit, while structural accept/discard and save perform the rate-limit check earlier.
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.
@@ -280,6 +280,30 @@ Important behavior:
 - both switch the sidebar to the Pending changes tab by writing `app_state::files_last_tab` (the strip on click; the badge is display-only)
 - the shared `FILE_EDITOR_SIDEBAR_TAB_ID_PENDING` constant (moved here so the sidebar tabs, the strip, and the agent panel import it without a cycle)
 
+# Read-Only Locks
+
+Read-only protects both proposal creation and proposal commit. The full contract lives in
+`../files-read-only/SKILL.md`.
+
+- New content, move, replace, archive, and delete proposals require every node they would change to
+  be writable. Copy may read a locked source, but its destination and replacement occupant must be
+  writable.
+- Proposal creation, rebase, Save, and Accept may check locks before their action work. The final
+  mutation checks the current locks again before its first write. It checks the destination,
+  replacement occupant, and every source in an `archivesSourceOnAccept` chain.
+- The final mutation uses only the current lock state. A proposal created before a lock stays visible.
+  Accept and Save refuse while an affected node is locked. They may finish after every affected node
+  is writable again. There is no lock history counter.
+- A replace flow also stores the ordered source node ids. This is not lock history. It stops Accept
+  from changing different files from the ones the user reviewed.
+- Whole-proposal Discard and Discard all stay available. They delete only the caller's pending docs.
+  Diff hunk discard and editor-level discard that rewrite the pending Yjs model remain blocked.
+- `eagerCreated.createdAncestorIds` stores the ids of missing folders created with the new file. The
+  ids are stored deepest first so cleanup can delete empty folders from the inside out.
+- Discard, expiry, and failed-write cleanup check the current lock on the eager-created file and each
+  created ancestor before the first delete. If one is locked, delete the pending docs but keep the
+  committed file and folders. A past lock that is now removed does not block safe cleanup.
+
 # Cleanup And Expiry Model
 
 - Every write that leaves a pending update doc alive refreshes its four-hour cleanup task. This includes content upserts, move upserts, rebases, partial saves, and structural accept/discard paths that preserve part of a content-plus-move doc.
@@ -289,7 +313,8 @@ Important behavior:
 - Expiry hard-deletes the file node only when every check passes: the doc has an `eagerCreated` stamp, the node's committed sequence still matches that stamp, the node's `updatedBy` is still the proposer, and no other pending update doc uses the node. The `updatedBy` check exists because a committed rename or move by another user never advances the Yjs sequence, so the stamp alone cannot catch it; `rename_node` and `move_nodes` both stamp `updatedBy`.
 - An ancestor-folder move does not restamp descendants and does not block the hard delete — removing the eager-created node does not undo the ancestor's move.
 - When the node is not eligible, expiry deletes only the pending update doc and its pending indexes/task, and the node stays active. Expiry never hard-deletes a pre-existing node targeted by a replace proposal. A delete-only doc expires the same way: the doc goes, the node is untouched.
-- Eager creates commit missing parent folders, and the doc's `eagerCreated.createdAncestorIds` remembers them (deepest first).
+- Eager creates commit missing parent folders. `eagerCreated.createdAncestorIds` remembers their ids,
+  deepest first.
 - Every path that safely hard-deletes the eager-created leaf — discard, expiry, and the failed-upsert compensation — then removes those folders too, but only while each folder is provably untouched: created AND last updated by the proposer, zero children in any archive state, no pending update doc ON the folder (`by_fileNode`), and no pending move TARGETING it as a destination (`by_pendingMove_destParentId` — another user's proposed move into the folder keeps it alive).
 - The first kept folder stops the walk (everything shallower contains it).
 

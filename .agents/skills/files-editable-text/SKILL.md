@@ -44,6 +44,18 @@ Door 1 — `files_db_yjs_push_update` (`packages/app/convex/files_nodes.ts`) che
 
 Door 2 — the pending-state seal (`packages/app/convex/files_pending_updates.ts`) checks every whole document state a client stages: non-empty, at most 4 MiB, v1 encoding, then the per-`rootKind` shape rule. The plain branch runs the parity check AND requires the plain root's `_map.size === 0` (`files_yjs_doc_plain_text_root_map_size`) — this is the root-map-size rule that closes the `Y.Map` hole parity cannot see. A whole state legitimately carries content an incremental plain diff never should, so door 1's content whitelist must not run on door 2's input.
 
+# Read-Only Check
+
+The file lock is checked after ACL and before both content-write doors. `yjs_push_update`, snapshot
+restore, and operator Yjs repair check the current lock in their final mutation before any node,
+asset, chunk, snapshot, or Yjs write. A current lock returns `read_only`. A past lock that was removed
+before the final mutation does not refuse the write.
+
+When the editor becomes read-only, the Yjs provider removes queued local updates. It reloads the saved
+document and shows a warning that the local changes were not saved. The server does not keep lock
+history. Materialization still processes Yjs updates committed before the lock. This work finishes
+already saved content; it does not accept a new user edit.
+
 # Limits
 
 Constants in `packages/app/shared/files.ts`:
@@ -94,10 +106,11 @@ There is deliberately NO in-app create path: the sidebar New-file flow creates M
 
 # Generic Text Function Names
 
-These seven Convex functions serve both rich Markdown and plain-text files. Their generic names match that shared role:
+Editable create publishes the node, Yjs pointers, both live asset references, and the first version snapshot in one `create_file_node` mutation. The action waits for both initial R2 PUTs before failure cleanup, then hands every possibly written exact key to the durable deletion ledger. There is no second creation-finalizer mutation and no committed half-published editable file.
+
+These six Convex functions serve both rich Markdown and plain-text files. Their generic names match that shared role:
 
 - `create_text_node` (`files_nodes_content.ts`, the only public one)
-- `finalize_text_node_creation` (`files_nodes_content.ts`)
 - `get_file_text_content_db_state_by_path` (`files_nodes_content.ts`)
 - `get_file_last_available_text_content_by_path` (`files_nodes_content.ts`)
 - `finalize_text_file_node_from_r2_assets` (`r2.ts`)

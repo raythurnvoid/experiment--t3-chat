@@ -15,6 +15,7 @@ import {
 } from "@/components/files/file-editor/file-editor.tsx";
 import { FilesSidebarToggle } from "../files-sidebar-toggle.tsx";
 import { FilesShareModal } from "../files-share-modal.tsx";
+import { FilesReadOnlyModal } from "../files-read-only-modal.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -71,9 +72,12 @@ import {
 	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
 	files_can_move_node_between_restricted_scopes,
 	files_clear_node_path_cached_validation_messages,
+	files_collect_read_only_ancestor_ids,
 	files_download_blob,
 	files_find_file_stem_end_index,
 	files_format_size,
+	files_get_read_only_capabilities,
+	files_get_read_only_row_labels,
 	files_get_default_node_name,
 	files_get_monaco_language_id,
 	files_get_node_path_validation,
@@ -94,6 +98,7 @@ import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { Link } from "@tanstack/react-router";
 import { useConvex, useQueries, useQuery } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import {
 	Archive,
 	BookOpen,
@@ -108,6 +113,7 @@ import {
 	Home,
 	Link2,
 	Lock,
+	LockKeyhole,
 	Users,
 } from "lucide-react";
 import React, {
@@ -130,6 +136,10 @@ import {
 } from "../../../../shared/files-metadata.ts";
 import { plugins_list_file_view_matches } from "../../../../shared/plugins.ts";
 import { users_SYSTEM_AUTHOR } from "../../../../shared/users.ts";
+
+type FileNodeViewResolvedNode = NonNullable<
+	FunctionReturnType<typeof app_convex_api.files_nodes.get_file_node_for_membership>
+>;
 
 function get_breadcrumb_path(fileNodesList: files_VisibleTreeNode[] | undefined, nodeId: string | null | undefined) {
 	if (!fileNodesList || !nodeId || nodeId === files_ROOT_ID) {
@@ -250,6 +260,7 @@ type FileNodeViewHeader_ClassNames =
 type FileNodeViewHeader_Props = {
 	selectedNodeId: string | null | undefined;
 	fileNodesList: files_VisibleTreeNode[] | undefined;
+	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	editorMode: FileEditor_Mode;
 	/** The active editor document shape; the view switch offers only views that shape supports. */
 	rootKind: files_YjsRootKind;
@@ -257,18 +268,21 @@ type FileNodeViewHeader_Props = {
 	showFileControls: boolean;
 	onlineUsers: FileEditor_OnlineUser[];
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onNavigateNode: (nodeId: app_convex_Id<"files_nodes">) => void;
 };
 
 const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewHeader_Props) {
 	const {
 		selectedNodeId,
 		fileNodesList,
+		readOnlyAncestorIds,
 		editorMode,
 		rootKind,
 		filesSidebarOpen,
 		showFileControls,
 		onlineUsers,
 		onEditorModeChange,
+		onNavigateNode,
 	} = props;
 
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
@@ -292,6 +306,8 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 				: "inherited";
 
 	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	const [readOnlyNodeId, setReadOnlyNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	const readOnlyTriggerRef = useRef<HTMLButtonElement>(null);
 
 	const handleEditorModeChange = useFn((mode: string) => {
 		onEditorModeChange(mode as FileEditor_Mode);
@@ -305,6 +321,16 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 
 	const handleShareModalClose = useFn(() => {
 		setShareNodeId(null);
+	});
+
+	const handleReadOnlyClick = useFn(() => {
+		if (currentNode) {
+			setReadOnlyNodeId(currentNode._id);
+		}
+	});
+
+	const handleReadOnlyModalClose = useFn(() => {
+		setReadOnlyNodeId(null);
 	});
 
 	return (
@@ -336,6 +362,20 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 										<Home />
 									</MyLinkIcon>
 								</MyLink>
+							</li>
+							<li>
+								<MyIconButton
+									ref={readOnlyTriggerRef}
+									variant="ghost-highlightable"
+									tooltip={currentNode?.readOnlyState === "writable" ? "Read-only settings" : "Read-only"}
+									aria-label={`Read-only settings for ${currentNode?.name}`}
+									data-file-read-only={currentNode?.readOnlyState ?? undefined}
+									onClick={handleReadOnlyClick}
+								>
+									<MyIconButtonIcon>
+										<LockKeyhole aria-hidden />
+									</MyIconButtonIcon>
+								</MyIconButton>
 							</li>
 							{/* Separators are list items too: an `ol` may own only `li`, and a screen reader
 							    should not read the slashes out. */}
@@ -417,13 +457,24 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 						{/* A plain text document has no rich view, so hide that switch entry and call the
 						    Monaco view "Code" instead of "Markdown". */}
 						{rootKind === "rich_text" && <MyButtonGroupItem value="rich_text_editor">Rich</MyButtonGroupItem>}
-						<MyButtonGroupItem value="plain_text_editor">{rootKind === "rich_text" ? "Markdown" : "Code"}</MyButtonGroupItem>
+						<MyButtonGroupItem value="plain_text_editor">
+							{rootKind === "rich_text" ? "Markdown" : "Code"}
+						</MyButtonGroupItem>
 						<MyButtonGroupItem value="diff_editor">Diff</MyButtonGroupItem>
 					</MyButtonGroup>
 				)}
 			</div>
 
 			<FilesShareModal nodeId={shareNodeId} onClose={handleShareModalClose} />
+			<FilesReadOnlyModal
+				nodeId={readOnlyNodeId}
+				nodeName={currentNode?.name ?? "file"}
+				nodeKind={currentNode?.kind ?? "file"}
+				hasVisibleReadOnlyDescendant={currentNode ? readOnlyAncestorIds.has(currentNode._id) : false}
+				returnFocusRef={readOnlyTriggerRef}
+				onNavigateNode={onNavigateNode}
+				onClose={handleReadOnlyModalClose}
+			/>
 		</div>
 	);
 });
@@ -449,13 +500,17 @@ type FileNodeViewTopFloating_ClassNames =
 	| "FileNodeViewTopFloating-content-too-large-message"
 	| "FileNodeViewTopFloating-frontmatter-too-large"
 	| "FileNodeViewTopFloating-frontmatter-too-large-icon"
-	| "FileNodeViewTopFloating-frontmatter-too-large-message";
+	| "FileNodeViewTopFloating-frontmatter-too-large-message"
+	| "FileNodeViewTopFloating-read-only"
+	| "FileNodeViewTopFloating-read-only-icon"
+	| "FileNodeViewTopFloating-read-only-message";
 
 type FileNodeViewTopFloating_Props = {
 	nodeId: app_convex_Id<"files_nodes"> | null;
 	/** Byte size recorded by `files_nodes.contentTooLargeByteSize`, or `null` while the content fits. */
 	contentTooLargeByteSize: number | null;
 	frontmatterTooLarge: { fieldCount: number; indexDocumentCount: number } | null;
+	readOnlyMessage: string | null;
 	pendingSlot: React.ReactNode;
 };
 
@@ -463,7 +518,7 @@ type FileNodeViewTopFloating_Props = {
 // warnings and the pending-updates controls, split by separators like the toolbar. Subscribes to
 // one node's activities slice, so the parent view never re-renders on feed traffic.
 const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: FileNodeViewTopFloating_Props) {
-	const { nodeId, contentTooLargeByteSize, frontmatterTooLarge, pendingSlot } = props;
+	const { nodeId, contentTooLargeByteSize, frontmatterTooLarge, readOnlyMessage, pendingSlot } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const convex = useConvex();
 	const activityArchivePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
@@ -512,7 +567,7 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 		? `Frontmatter is not indexed: ${frontmatterTooLarge.fieldCount} fields and ${frontmatterTooLarge.indexDocumentCount} index entries. The limits are ${files_metadata_MAX_FRONTMATTER_FIELDS} fields and ${files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS} index entries.`
 		: null;
 
-	if (!activity && !contentTooLargeMessage && !frontmatterTooLargeMessage && !pendingSlot) {
+	if (!activity && !contentTooLargeMessage && !frontmatterTooLargeMessage && !readOnlyMessage && !pendingSlot) {
 		return null;
 	}
 
@@ -534,6 +589,17 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 			role="status"
 			aria-live="polite"
 		>
+			{readOnlyMessage ? (
+				<div className={"FileNodeViewTopFloating-read-only" satisfies FileNodeViewTopFloating_ClassNames}>
+					<MyIcon className={"FileNodeViewTopFloating-read-only-icon" satisfies FileNodeViewTopFloating_ClassNames}>
+						<LockKeyhole aria-hidden />
+					</MyIcon>
+					<span className={"FileNodeViewTopFloating-read-only-message" satisfies FileNodeViewTopFloating_ClassNames}>
+						{readOnlyMessage}
+					</span>
+				</div>
+			) : null}
+			{readOnlyMessage && activity ? <MySeparator orientation="vertical" /> : null}
 			{activity ? (
 				<div className={"FileNodeViewTopFloating-activity" satisfies FileNodeViewTopFloating_ClassNames}>
 					{activity.status === "running" ? (
@@ -576,7 +642,7 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 					) : null}
 				</div>
 			) : null}
-			{activity && contentTooLargeMessage ? <MySeparator orientation="vertical" /> : null}
+			{(readOnlyMessage || activity) && contentTooLargeMessage ? <MySeparator orientation="vertical" /> : null}
 			{contentTooLargeMessage ? (
 				<div className={"FileNodeViewTopFloating-content-too-large" satisfies FileNodeViewTopFloating_ClassNames}>
 					<MyIcon
@@ -592,7 +658,9 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 					</span>
 				</div>
 			) : null}
-			{contentTooLargeMessage && frontmatterTooLargeMessage ? <MySeparator orientation="vertical" /> : null}
+			{(readOnlyMessage || activity || contentTooLargeMessage) && frontmatterTooLargeMessage ? (
+				<MySeparator orientation="vertical" />
+			) : null}
 			{frontmatterTooLargeMessage ? (
 				<div className={"FileNodeViewTopFloating-frontmatter-too-large" satisfies FileNodeViewTopFloating_ClassNames}>
 					<MyIcon
@@ -612,7 +680,7 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 					</span>
 				</div>
 			) : null}
-			{(activity || contentTooLargeMessage || frontmatterTooLargeMessage) && pendingSlot ? (
+			{(readOnlyMessage || activity || contentTooLargeMessage || frontmatterTooLargeMessage) && pendingSlot ? (
 				<MySeparator orientation="vertical" />
 			) : null}
 			{pendingSlot}
@@ -624,6 +692,7 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 // #region file editor
 type FileNodeViewFileEditor_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
+	readOnlyState: files_VisibleTreeNode["readOnlyState"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	rootKind: FileEditor_Props["rootKind"];
 	monacoLanguageId: FileEditor_Props["monacoLanguageId"];
@@ -640,6 +709,7 @@ type FileNodeViewFileEditor_Props = {
 const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileNodeViewFileEditor_Props) {
 	const {
 		nodeId,
+		readOnlyState,
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
@@ -656,6 +726,7 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 	return (
 		<FileEditor
 			nodeId={nodeId}
+			readOnlyState={readOnlyState}
 			pendingUpdateId={pendingUpdateId}
 			rootKind={rootKind}
 			monacoLanguageId={monacoLanguageId}
@@ -672,9 +743,10 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 });
 
 type FileNodeViewFile_Props = {
-	node: app_convex_Doc<"files_nodes"> & { yjsRootKind: files_YjsRootKind };
+	node: FileNodeViewResolvedNode & { yjsRootKind: files_YjsRootKind };
 	editorNodeId?: app_convex_Id<"files_nodes">;
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
+	readOnlyAncestorIds: FileNodeViewHeader_Props["readOnlyAncestorIds"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
 	topSafeArea: number;
@@ -685,6 +757,7 @@ type FileNodeViewFile_Props = {
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
 };
 
 const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_Props) {
@@ -692,6 +765,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		node,
 		editorNodeId,
 		fileNodesList,
+		readOnlyAncestorIds,
 		pendingUpdateId,
 		serverSequence,
 		topSafeArea,
@@ -702,6 +776,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		commentsPortalHost,
 		toolbarPortalHost,
 		onEditorModeChange,
+		onNavigateNode,
 	} = props;
 
 	return (
@@ -709,15 +784,18 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 			<FileNodeViewHeaderPortal
 				selectedNodeId={node._id}
 				fileNodesList={fileNodesList}
+				readOnlyAncestorIds={readOnlyAncestorIds}
 				editorMode={editorMode}
 				rootKind={node.yjsRootKind}
 				filesSidebarOpen={filesSidebarOpen}
 				showFileControls={true}
 				onlineUsers={onlineUsers}
 				onEditorModeChange={onEditorModeChange}
+				onNavigateNode={onNavigateNode}
 			/>
 			<FileNodeViewFileEditor
 				nodeId={editorNodeId ?? node._id}
+				readOnlyState={node.readOnlyState}
 				pendingUpdateId={pendingUpdateId}
 				rootKind={node.yjsRootKind}
 				monacoLanguageId={files_get_monaco_language_id(node.name)}
@@ -760,15 +838,17 @@ function stored_file_view_tab_id(match: { plugin: { pluginName: string }; fileVi
 }
 
 type FileNodeViewStoredFile_Props = {
-	node: app_convex_Doc<"files_nodes">;
+	node: FileNodeViewResolvedNode;
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
+	readOnlyAncestorIds: FileNodeViewHeader_Props["readOnlyAncestorIds"];
 	editorMode: FileEditor_Mode;
 	filesSidebarOpen: boolean;
 	onlineUsers: FileEditor_OnlineUser[];
+	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
 };
 
 const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileNodeViewStoredFile_Props) {
-	const { node, fileNodesList, editorMode, filesSidebarOpen, onlineUsers } = props;
+	const { node, fileNodesList, readOnlyAncestorIds, editorMode, filesSidebarOpen, onlineUsers, onNavigateNode } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const asset = useQuery(app_convex_api.r2.get_asset, {
@@ -966,6 +1046,7 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 			<FileNodeViewHeaderPortal
 				selectedNodeId={node._id}
 				fileNodesList={fileNodesList}
+				readOnlyAncestorIds={readOnlyAncestorIds}
 				editorMode={editorMode}
 				// No file controls render for a stored file, so the shape value is inert here.
 				rootKind="rich_text"
@@ -973,6 +1054,7 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 				showFileControls={false}
 				onlineUsers={onlineUsers}
 				onEditorModeChange={() => {}}
+				onNavigateNode={onNavigateNode}
 			/>
 			{fileViewMatches.length > 0 && uploadPipelineComplete ? (
 				// The caller keys this component by node id, so the selected tab resets to the details
@@ -1135,6 +1217,7 @@ type FileNodeViewFolder_ClassNames = "FileNodeViewFolder" | "FileNodeViewFolder-
 type FileNodeViewFolder_Props = {
 	folderItemId: app_convex_Doc<"files_nodes">["parentId"];
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
+	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
 	topSafeArea: number;
@@ -1149,6 +1232,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const {
 		folderItemId,
 		fileNodesList,
+		readOnlyAncestorIds,
 		pendingUpdateId,
 		serverSequence,
 		topSafeArea,
@@ -1164,6 +1248,9 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		membershipId,
 		nodeId: folderItemId,
 	});
+	const folderNode = fileNodesList?.find((node) => node._id === folderItemId);
+	const folderCanReceiveChildren =
+		canWriteFolder === true && (folderItemId === files_ROOT_ID || folderNode?.readOnlyState === "writable");
 	// Moving a child out of a restricted folder needs Can manage on its source scope.
 	// Keep manual `useMemo` in this group. Convex `useQueries` re-subscribes with a
 	// render-phase setState whenever the queries object identity changes, and the React
@@ -1216,6 +1303,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		: childItems.slice(0, FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT);
 	const hiddenChildItemsCount = childItems.length - visibleChildItems.length;
 	const readmeNodeId = get_folder_readme_node_id(fileNodesList, folderItemId);
+	const readmeNode = fileNodesList?.find((node) => node._id === readmeNodeId);
 
 	const handleShowMoreClick = useFn(() => {
 		setShowAllItems(true);
@@ -1226,7 +1314,9 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	});
 
 	const handleCreateReadmeClick = useFn(() => {
-		if (canWriteFolder !== true) return;
+		if (!folderCanReceiveChildren) {
+			return;
+		}
 
 		setIsCreatingReadme(true);
 		convex
@@ -1286,6 +1376,19 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	const handleCanMoveFileNodeToParent = useFn(
 		(args: { fileNodeId: app_convex_Id<"files_nodes">; targetParentId: app_convex_Doc<"files_nodes">["parentId"] }) => {
+			const sourceNode = fileNodesList?.find((node) => node._id === args.fileNodeId);
+			const targetNode = fileNodesList?.find((node) => node._id === args.targetParentId);
+
+			// Moving a folder also changes every node inside it. Block a read-only source,
+			// a source with a read-only child, or a read-only destination.
+			if (
+				!sourceNode ||
+				sourceNode.readOnlyState !== "writable" ||
+				readOnlyAncestorIds.has(sourceNode._id) ||
+				(args.targetParentId !== files_ROOT_ID && targetNode?.readOnlyState !== "writable")
+			) {
+				return false;
+			}
 			return can_move_file_node_to_parent({
 				fileNodesList,
 				fileNodeId: args.fileNodeId,
@@ -1358,6 +1461,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 				organizationName={organizationName}
 				workspaceName={workspaceName}
 				pendingActionNodeIds={pendingActionNodeIds}
+				readOnlyAncestorIds={readOnlyAncestorIds}
 				canMoveFileNodeToParent={handleCanMoveFileNodeToParent}
 				onArchiveNode={handleArchiveNode}
 				onMoveFileNodesToParent={handleMoveFileNodesToParent}
@@ -1368,7 +1472,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			<FileNodeViewFolderReadme
 				readmeNodeId={readmeNodeId}
 				fileNodesList={fileNodesList}
-				canWrite={canWriteFolder === true}
+				canWrite={folderCanReceiveChildren}
 				isCreatingReadme={isCreatingReadme}
 				onCreateReadmeClick={handleCreateReadmeClick}
 			/>
@@ -1378,6 +1482,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const readmeEditor = readmeNodeId ? (
 		<FileNodeViewFolderReadmeEditor
 			readmeNodeId={readmeNodeId}
+			readOnlyState={readmeNode?.readOnlyState ?? "writable"}
 			pendingUpdateId={pendingUpdateId}
 			serverSequence={serverSequence}
 			editorMode={editorMode}
@@ -1476,7 +1581,7 @@ type FileNodeViewToolbarFileDownloadAction_ClassNames =
 	| "FileNodeViewToolbarFileDownloadAction-button-icon";
 
 type FileNodeViewToolbarFileDownloadAction_Props = {
-	node: app_convex_Doc<"files_nodes"> | null | undefined;
+	node: FileNodeViewResolvedNode | null | undefined;
 };
 
 const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarFileDownloadAction(
@@ -1681,6 +1786,7 @@ type FileNodeViewFolderCreateNodeModal_Props = {
 	fileNodesList: FileNodeViewFolder_Props["fileNodesList"];
 	siblingNames: Iterable<string>;
 	canWrite: boolean;
+	unavailableMessage: string | null;
 	isCreatingNode: boolean;
 	onCreateNode: (args: { kind: app_convex_Doc<"files_nodes">["kind"]; path: string }) => Promise<string | null>;
 };
@@ -1688,13 +1794,26 @@ type FileNodeViewFolderCreateNodeModal_Props = {
 const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreateNodeModal(
 	props: FileNodeViewFolderCreateNodeModal_Props,
 ) {
-	const { ref, membershipId, folderItemId, fileNodesList, siblingNames, canWrite, isCreatingNode, onCreateNode } =
-		props;
+	const {
+		ref,
+		membershipId,
+		folderItemId,
+		fileNodesList,
+		siblingNames,
+		canWrite,
+		unavailableMessage,
+		isCreatingNode,
+		onCreateNode,
+	} = props;
 
 	const [kind, setKind] = useState<app_convex_Doc<"files_nodes">["kind"] | null>(null);
 	const [name, setName] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const inputRef = useRef<HTMLInputElement | null>(null);
+	const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+	const submitButtonRef = useRef<HTMLButtonElement | null>(null);
+	const wasWritableRef = useRef(canWrite);
+	const helperId = `FileNodeViewFolderCreateNodeModal-${useId()}-helper`;
 	const renderPromise = useRenderPromise();
 
 	const kindLabel = kind === "folder" ? "folder" : "file";
@@ -1706,6 +1825,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 		nameOrPath: name,
 	});
 	const displayedValidationMessage = error ?? nodePathValidation.validationMessage;
+	const displayedHelperMessage = unavailableMessage ?? displayedValidationMessage;
 	const isSubmitBlocked = Boolean(nodePathValidation.validationMessage);
 
 	const closeModal = useFn(() => {
@@ -1829,6 +1949,19 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 		};
 	}, [displayedValidationMessage, inputRef, kind]);
 
+	useLayoutEffect(() => {
+		const becameUnavailable = wasWritableRef.current && !canWrite;
+		wasWritableRef.current = canWrite;
+		if (!kind || !becameUnavailable || isCreatingNode) {
+			return;
+		}
+
+		// If the focused field becomes disabled, move focus to the enabled Cancel button.
+		if (document.activeElement === inputRef.current || document.activeElement === submitButtonRef.current) {
+			cancelButtonRef.current?.focus();
+		}
+	}, [canWrite, isCreatingNode, kind]);
+
 	return (
 		<MyModal open={kind !== null} setOpen={handleOpenChange}>
 			<MyModalPopover
@@ -1854,6 +1987,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 									required
 									value={name}
 									disabled={!canWrite || isCreatingNode}
+									aria-describedby={displayedHelperMessage ? helperId : undefined}
 									onChange={handleNameChange}
 								/>
 							</MyInputArea>
@@ -1864,16 +1998,23 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 								}
 								aria-live="polite"
 							>
-								{displayedValidationMessage}
+								<span id={helperId}>{displayedHelperMessage}</span>
 							</MyInputHelperText>
 						</MyInput>
 					</div>
 					<MyModalFooter>
 						{/* Do not wrap Cancel in MyModalCloseTrigger — that class is absolute top-right for the X. */}
-						<MyButton type="button" variant="ghost" disabled={isCreatingNode} onClick={closeModal}>
+						<MyButton
+							ref={cancelButtonRef}
+							type="button"
+							variant="ghost"
+							disabled={isCreatingNode}
+							onClick={closeModal}
+						>
 							Cancel
 						</MyButton>
 						<MyButton
+							ref={submitButtonRef}
 							type="submit"
 							disabled={!canWrite || !name.trim() || isSubmitBlocked || isCreatingNode}
 							aria-busy={isCreatingNode}
@@ -1905,6 +2046,15 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 		app_convex_api.files_nodes.get_current_user_file_write_permission,
 		folderItemId ? { membershipId, nodeId: folderItemId } : "skip",
 	);
+	const folderNode = fileNodesList?.find((node) => node._id === folderItemId);
+	const canReceiveChildren =
+		canWrite === true && (folderItemId === files_ROOT_ID || folderNode?.readOnlyState === "writable");
+	const createUnavailableMessage =
+		canWrite === false
+			? "You don't have permission to create files here."
+			: folderItemId !== files_ROOT_ID && folderNode && folderNode.readOnlyState !== "writable"
+				? "This folder is read-only."
+				: null;
 
 	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
 	const [isCreatingNode, setIsCreatingNode] = useState(false);
@@ -1917,7 +2067,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 			: [];
 
 	const handleCreateNodeModalOpen = useFn((kind: app_convex_Doc<"files_nodes">["kind"]) => {
-		if (!folderItemId || canWrite !== true) {
+		if (!folderItemId || !canReceiveChildren) {
 			return;
 		}
 
@@ -1931,6 +2081,9 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 		}
 		if (canWrite !== true) {
 			return Promise.resolve("You don't have permission to create files here.");
+		}
+		if (!canReceiveChildren) {
+			return Promise.resolve("This folder is read-only.");
 		}
 
 		setIsCreatingNode(true);
@@ -1975,7 +2128,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 
 	const folderActionsSlot = folderItemId ? (
 		<FileNodeViewToolbarFolderActions
-			disabled={canWrite !== true || isCreatingNode}
+			disabled={!canReceiveChildren || isCreatingNode}
 			onCreateNode={handleCreateNodeModalOpen}
 		/>
 	) : null;
@@ -1989,7 +2142,8 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 					folderItemId={folderItemId}
 					fileNodesList={fileNodesList}
 					siblingNames={siblingNames}
-					canWrite={canWrite === true}
+					canWrite={canReceiveChildren}
+					unavailableMessage={createUnavailableMessage}
 					isCreatingNode={isCreatingNode}
 					onCreateNode={handleCreateNodeSubmit}
 				/>
@@ -2046,6 +2200,7 @@ type FileNodeViewFolderExplorerRow_ClassNames =
 
 type FileNodeViewFolderExplorerRow_Props = {
 	child: files_VisibleTreeNode;
+	hasVisibleReadOnlyDescendant: boolean;
 	organizationName: string;
 	workspaceName: string;
 	isPendingAction: boolean;
@@ -2065,6 +2220,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 ) {
 	const {
 		child,
+		hasVisibleReadOnlyDescendant,
 		organizationName,
 		workspaceName,
 		isPendingAction,
@@ -2077,10 +2233,26 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 		membershipId,
 		nodeId: child._id,
 	});
+	const capabilities = files_get_read_only_capabilities({
+		canWrite: canWrite === true,
+		readOnlyState: child.readOnlyState,
+		hasVisibleReadOnlyDescendant,
+	});
+	const readOnlyLabels = files_get_read_only_row_labels({
+		readOnlyState: child.readOnlyState,
+		readOnlySourcePath: child.readOnlySourcePath,
+		hasVisibleReadOnlyDescendant,
+	});
 
 	const rowRef = useRef<HTMLDivElement | null>(null);
 	const [isDragging, setIsDragging] = useState(false);
 	const [isDropTarget, setIsDropTarget] = useState(false);
+
+	const handleArchiveClick = useFn(() => {
+		if (capabilities.canArchiveOrRestore) {
+			onArchiveNode(child._id);
+		}
+	});
 
 	useEffect(() => {
 		const element = rowRef.current;
@@ -2090,7 +2262,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 
 		const cleanupFns: Array<() => void> = [];
 
-		if (canWrite === true && !isPendingAction) {
+		if (capabilities.canRelocateOrRename && !isPendingAction) {
 			cleanupFns.push(
 				draggable({
 					element,
@@ -2112,7 +2284,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 			);
 		}
 
-		if (canWrite === true && child.kind === "folder" && !isPendingAction) {
+		if (capabilities.canReceiveChildren && child.kind === "folder" && !isPendingAction) {
 			cleanupFns.push(
 				dropTargetForElements({
 					element,
@@ -2168,7 +2340,15 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 		}
 
 		return combine(...cleanupFns);
-	}, [canMoveFileNodeToParent, canWrite, child._id, child.kind, isPendingAction, onMoveFileNodesToParent]);
+	}, [
+		canMoveFileNodeToParent,
+		capabilities.canReceiveChildren,
+		capabilities.canRelocateOrRename,
+		child._id,
+		child.kind,
+		isPendingAction,
+		onMoveFileNodesToParent,
+	]);
 
 	return (
 		<MyGridTableRow
@@ -2191,7 +2371,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 				    may only own cells, and a link sitting directly under it is an invalid tree for a
 				    screen reader. The CSS still stretches it across the whole row. */}
 				<Link
-					aria-label={`Open ${child.name}`}
+					aria-label={`Open ${child.name}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}`}
 					className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
 					to="/w/$organizationName/$workspaceName/files"
 					params={{ organizationName, workspaceName }}
@@ -2202,6 +2382,14 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 				<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
 					{child.kind === "folder" ? <Folder /> : <FileText />}
 				</MyIcon>
+				{readOnlyLabels ? (
+					<MyIcon
+						className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+						title={readOnlyLabels.tooltip}
+					>
+						<LockKeyhole aria-hidden />
+					</MyIcon>
+				) : null}
 				<span className={"FileNodeViewFolderExplorer-link" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
 					{child.name}
 				</span>
@@ -2250,11 +2438,9 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 						<MyMenuPopoverContent>
 							<MyMenuItem
 								variant="destructive"
-								disabled={canWrite !== true || isPendingAction}
+								disabled={!capabilities.canArchiveOrRestore || isPendingAction}
 								hideOnClick
-								onClick={() => {
-									if (canWrite === true) onArchiveNode(child._id);
-								}}
+								onClick={handleArchiveClick}
 							>
 								<MyMenuItemContent>
 									<MyMenuItemContentIcon>
@@ -2286,6 +2472,7 @@ type FileNodeViewFolderExplorer_Props = {
 	organizationName: string;
 	workspaceName: string;
 	pendingActionNodeIds: ReadonlySet<string>;
+	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	canMoveFileNodeToParent: (args: {
 		fileNodeId: app_convex_Id<"files_nodes">;
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
@@ -2307,6 +2494,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		organizationName,
 		workspaceName,
 		pendingActionNodeIds,
+		readOnlyAncestorIds,
 		canMoveFileNodeToParent,
 		onArchiveNode,
 		onMoveFileNodesToParent,
@@ -2334,6 +2522,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 								<FileNodeViewFolderExplorerRow
 									key={child._id}
 									child={child}
+									hasVisibleReadOnlyDescendant={readOnlyAncestorIds.has(child._id)}
 									organizationName={organizationName}
 									workspaceName={workspaceName}
 									isPendingAction={isPendingAction}
@@ -2445,6 +2634,7 @@ type FileNodeViewFolderReadmeEditor_ClassNames = "FileNodeViewFolderReadmeEditor
 
 type FileNodeViewFolderReadmeEditor_Props = {
 	readmeNodeId: app_convex_Id<"files_nodes">;
+	readOnlyState: files_VisibleTreeNode["readOnlyState"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
@@ -2460,6 +2650,7 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 ) {
 	const {
 		readmeNodeId,
+		readOnlyState,
 		pendingUpdateId,
 		serverSequence,
 		editorMode,
@@ -2475,6 +2666,7 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 			<FileNodeViewFileEditor
 				key={readmeNodeId}
 				nodeId={readmeNodeId}
+				readOnlyState={readOnlyState}
 				pendingUpdateId={pendingUpdateId}
 				// This embedded editor only ever targets a folder's README.md, which is a rich
 				// text document by definition.
@@ -2496,8 +2688,9 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 // #region content
 type FileNodeViewContent_Props = {
 	selectedNodeId: string | null | undefined;
-	node: app_convex_Doc<"files_nodes"> | null | undefined;
+	node: FileNodeViewResolvedNode | null | undefined;
 	fileNodesList: files_VisibleTreeNode[] | undefined;
+	readOnlyAncestorIds: FileNodeViewHeader_Props["readOnlyAncestorIds"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
 	topSafeArea: number;
@@ -2508,6 +2701,7 @@ type FileNodeViewContent_Props = {
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
 };
 
 const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeViewContent_Props) {
@@ -2515,6 +2709,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		selectedNodeId,
 		node,
 		fileNodesList,
+		readOnlyAncestorIds,
 		pendingUpdateId,
 		serverSequence,
 		topSafeArea,
@@ -2525,6 +2720,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		commentsPortalHost,
 		toolbarPortalHost,
 		onEditorModeChange,
+		onNavigateNode,
 	} = props;
 
 	if (selectedNodeId === files_ROOT_ID) {
@@ -2533,6 +2729,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 				<FileNodeViewHeaderPortal
 					selectedNodeId={files_ROOT_ID}
 					fileNodesList={fileNodesList}
+					readOnlyAncestorIds={readOnlyAncestorIds}
 					editorMode={editorMode}
 					// The folder view's editor is the README.md, a rich text document by definition.
 					rootKind="rich_text"
@@ -2540,10 +2737,12 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					showFileControls={true}
 					onlineUsers={onlineUsers}
 					onEditorModeChange={onEditorModeChange}
+					onNavigateNode={onNavigateNode}
 				/>
 				<FileNodeViewFolder
 					folderItemId={files_ROOT_ID}
 					fileNodesList={fileNodesList}
+					readOnlyAncestorIds={readOnlyAncestorIds}
 					pendingUpdateId={pendingUpdateId}
 					serverSequence={serverSequence}
 					topSafeArea={topSafeArea}
@@ -2567,6 +2766,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 				<FileNodeViewHeaderPortal
 					selectedNodeId={node._id}
 					fileNodesList={fileNodesList}
+					readOnlyAncestorIds={readOnlyAncestorIds}
 					editorMode={editorMode}
 					// The folder view's editor is the README.md, a rich text document by definition.
 					rootKind="rich_text"
@@ -2574,10 +2774,12 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					showFileControls={true}
 					onlineUsers={onlineUsers}
 					onEditorModeChange={onEditorModeChange}
+					onNavigateNode={onNavigateNode}
 				/>
 				<FileNodeViewFolder
 					folderItemId={node._id}
 					fileNodesList={fileNodesList}
+					readOnlyAncestorIds={readOnlyAncestorIds}
 					pendingUpdateId={pendingUpdateId}
 					serverSequence={serverSequence}
 					topSafeArea={topSafeArea}
@@ -2598,9 +2800,11 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 				key={node._id}
 				node={node}
 				fileNodesList={fileNodesList}
+				readOnlyAncestorIds={readOnlyAncestorIds}
 				editorMode={editorMode}
 				filesSidebarOpen={filesSidebarOpen}
 				onlineUsers={onlineUsers}
+				onNavigateNode={onNavigateNode}
 			/>
 		);
 	}
@@ -2609,6 +2813,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		<FileNodeViewFile
 			node={node}
 			fileNodesList={fileNodesList}
+			readOnlyAncestorIds={readOnlyAncestorIds}
 			pendingUpdateId={pendingUpdateId}
 			serverSequence={serverSequence}
 			topSafeArea={topSafeArea}
@@ -2619,6 +2824,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
 			onEditorModeChange={onEditorModeChange}
+			onNavigateNode={onNavigateNode}
 		/>
 	);
 });
@@ -2701,6 +2907,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
 
 	const fileNodesList = useStableQuery(app_convex_api.files_nodes.list_tree, { membershipId });
+	const readOnlyAncestorIds = useMemo(() => files_collect_read_only_ancestor_ids(fileNodesList ?? []), [fileNodesList]);
 
 	const resolvedNode = useStableQuery(
 		app_convex_api.files_nodes.get_file_node_for_membership,
@@ -2813,6 +3020,19 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		? `${activePendingUpdateIndex + 1} of ${pendingUpdates.length}`
 		: "Review pending updates";
 
+	// The server hides the lock source path when the user cannot read that folder.
+	const readOnlyMessage = resolvedNode
+		? resolvedNode.readOnlyState === "self"
+			? `This ${resolvedNode.kind} is read-only.`
+			: resolvedNode.readOnlyState === "inherited"
+				? resolvedNode.readOnlySourcePath
+					? `Read-only because ${resolvedNode.readOnlySourcePath} is locked.`
+					: "Read-only from a protected folder."
+				: resolvedNode.kind === "folder" && readOnlyAncestorIds.has(resolvedNode._id)
+					? "This folder contains read-only items. It cannot be renamed, moved, or archived."
+					: null
+		: null;
+
 	const handleReviewPendingUpdates = useFn(() => {
 		navigateToView("diff_editor");
 	});
@@ -2877,6 +3097,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 						}
 					: null
 			}
+			readOnlyMessage={readOnlyMessage}
 			pendingSlot={
 				hasPendingUpdates ? (
 					<FileEditorPendingUpdatesFloating
@@ -3024,6 +3245,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				selectedNodeId={searchNodeId}
 				node={resolvedNode}
 				fileNodesList={fileNodesList}
+				readOnlyAncestorIds={readOnlyAncestorIds}
 				pendingUpdateId={currentPendingUpdate?._id}
 				serverSequence={activeEditorServerSequenceData?.lastSequence}
 				topSafeArea={topSafeArea}
@@ -3034,6 +3256,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
 				onEditorModeChange={navigateToView}
+				onNavigateNode={navigateToNode}
 			/>
 		) : searchNodeId ? (
 			<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>

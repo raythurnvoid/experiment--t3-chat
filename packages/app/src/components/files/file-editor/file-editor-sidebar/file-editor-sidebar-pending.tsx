@@ -31,13 +31,16 @@ import type { AppClassName } from "@/lib/dom-utils.ts";
 import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
 import {
 	files_ROOT_ID,
+	files_collect_read_only_ancestor_ids,
 	files_fetch_file_pending_update_yjs_state,
 	files_fetch_file_yjs_state_and_text,
 	files_format_size,
+	files_get_read_only_capabilities,
 	files_node_has_editable_yjs_state,
 	files_pending_update_has_yjs_content,
 	files_upsert_file_pending_update,
 	type files_YjsRootKind,
+	type files_VisibleTreeNode,
 } from "@/lib/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../../../../../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../../../../../shared/files-tiptap.ts";
@@ -945,7 +948,9 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 				nodeId: pendingUpdate.fileNodeId,
 			});
 			if (cancelled) return;
-			setDeletedCommittedMarkdown(fileContentData && !fileContentData.text._nay ? (fileContentData.text._yay ?? null) : null);
+			setDeletedCommittedMarkdown(
+				fileContentData && !fileContentData.text._nay ? (fileContentData.text._yay ?? null) : null,
+			);
 		})().catch((error) => {
 			if (!cancelled) {
 				setDeletedCommittedMarkdown(null);
@@ -971,7 +976,9 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		}
 		if (kind === "delete") {
 			// The whole committed content shows as removed lines.
-			setDiffText(typeof deletedCommittedMarkdown === "string" ? createPatch(path, deletedCommittedMarkdown, "") : null);
+			setDiffText(
+				typeof deletedCommittedMarkdown === "string" ? createPatch(path, deletedCommittedMarkdown, "") : null,
+			);
 			return;
 		}
 		if (sizeOnlyReplacedNodeId) {
@@ -1373,10 +1380,62 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		),
 	);
 
-	const rows = ((/* iife */) => {
-		const nodesById = new Map((fileNodesList ?? []).map((node) => [node._id, node] as const));
-		return build_pending_rows(pendingUpdates ?? [], nodesById);
-	})();
+	const nodesById = new Map((fileNodesList ?? []).map((node) => [node._id, node] as const));
+	const rows = build_pending_rows(pendingUpdates ?? [], nodesById);
+	const readOnlyAncestorIds = files_collect_read_only_ancestor_ids(fileNodesList ?? []);
+
+	// The permission query is checked first. These render helpers add the visible read-only checks.
+	// The server checks hidden nodes and the current locks again when Accept runs.
+	const getNodeCapabilities = (node: files_VisibleTreeNode | undefined) =>
+		node
+			? files_get_read_only_capabilities({
+					canWrite: true,
+					readOnlyState: node.readOnlyState,
+					hasVisibleReadOnlyDescendant: readOnlyAncestorIds.has(node._id),
+				})
+			: null;
+
+	const canAcceptRow = (row: FileEditorSidebarPendingRow) => {
+		if (acceptPermissionQueryResults[row.pendingUpdate.fileNodeId] !== true) {
+			return false;
+		}
+
+		const node = nodesById.get(row.pendingUpdate.fileNodeId);
+		const capabilities = getNodeCapabilities(node);
+
+		if (!node || !capabilities?.canEditContent) {
+			return false;
+		}
+
+		if (row.kind === "delete" && !capabilities.canArchiveOrRestore) {
+			return false;
+		}
+		if ((row.kind === "move" || row.kind === "content_and_move") && !capabilities.canRelocateOrRename) {
+			return false;
+		}
+
+		const destinationParentId = row.pendingUpdate.pendingMove?.destParentId;
+		if (destinationParentId && destinationParentId !== files_ROOT_ID) {
+			if (!getNodeCapabilities(nodesById.get(destinationParentId))?.canReceiveChildren) {
+				return false;
+			}
+		}
+
+		for (const affectedNodeId of [row.replacedNodeId, row.sizeOnlyReplacedNodeId]) {
+			if (affectedNodeId && !getNodeCapabilities(nodesById.get(affectedNodeId))?.canArchiveOrRestore) {
+				return false;
+			}
+		}
+
+		if (row.pendingUpdate.copiedFrom?.archivesSourceOnAccept) {
+			if (!getNodeCapabilities(nodesById.get(row.pendingUpdate.copiedFrom.nodeId))?.canArchiveOrRestore) {
+				return false;
+			}
+		}
+
+		return true;
+	};
+
 	const sortedThreadIds = [...threadIds].sort((leftThreadId, rightThreadId) => {
 		const leftThread = threadQueryResults[leftThreadId];
 		const rightThread = threadQueryResults[rightThreadId];
@@ -1421,9 +1480,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	];
 	// Sources with no pending changes are hidden (only All changes always stays), so a selected
 	// source that empties falls back to All changes.
-	const sourceOptions = allSourceOptions.filter(
-		(option) => option.value === PENDING_SOURCE_ALL || option.count > 0,
-	);
+	const sourceOptions = allSourceOptions.filter((option) => option.value === PENDING_SOURCE_ALL || option.count > 0);
 	// Build every row before filtering so move-aware occupancy and replacement captions use the
 	// complete pending set. One complete row can still appear under several contributing chats.
 	const activeSource = sourceOptions.some((option) => option.value === selectedSource)
@@ -1431,9 +1488,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		: PENDING_SOURCE_ALL;
 	const visibleRows = rows.filter((row) => pending_row_matches_source(row, activeSource));
 	const acceptRequiresAllChangesIds = files_pending_rows_get_accept_requires_all_changes_ids(rows, visibleRows);
-	const canAcceptAllVisibleRows = visibleRows.every(
-		(row) => acceptPermissionQueryResults[row.pendingUpdate.fileNodeId] === true,
-	);
+	const canAcceptAllVisibleRows = visibleRows.every((row) => canAcceptRow(row));
 
 	useEffect(() => {
 		if (selectedSource !== activeSource) {
@@ -1590,7 +1645,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							replaceSourcePath={row.replaceSourcePath}
 							rootKind={row.rootKind}
 							acceptRequiresAllChanges={acceptRequiresAllChangesIds.has(row.pendingUpdate._id)}
-							canAccept={acceptPermissionQueryResults[row.pendingUpdate.fileNodeId] === true}
+							canAccept={canAcceptRow(row)}
 							disabled={isBulkBusy}
 							onActionSuccess={announceActionSuccess}
 						/>
@@ -1939,10 +1994,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			];
 			const rows = build_pending_rows(
 				updates,
-				makeNodesById([
-					makeNode({ id: "node_a", path: "/a.md" }),
-					makeNode({ id: "node_b", path: "/b.md" }),
-				]),
+				makeNodesById([makeNode({ id: "node_a", path: "/a.md" }), makeNode({ id: "node_b", path: "/b.md" })]),
 			);
 			const shownRow = rows.find((row) => row.pendingUpdate.fileNodeId === "node_a");
 			if (!shownRow) throw new Error("Expected the shown move row");

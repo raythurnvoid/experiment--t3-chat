@@ -238,7 +238,10 @@ function compute_minimal_text_edit(previousText: string, nextText: string) {
 	};
 }
 
-type FileEditorPlainText_ClassNames = "FileEditorPlainText" | "FileEditorPlainText-editor" | "FileEditorPlainText-refusal";
+type FileEditorPlainText_ClassNames =
+	| "FileEditorPlainText"
+	| "FileEditorPlainText-editor"
+	| "FileEditorPlainText-refusal";
 
 type FileEditorPlainTextInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
@@ -778,7 +781,10 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				</div>
 			</div>
 			{commentsPortalHost &&
-				createPortal(<FileEditorCommentsSidebar threadIds={commentThreadIds} />, commentsPortalHost)}
+				createPortal(
+					<FileEditorCommentsSidebar threadIds={commentThreadIds} canResolve={editable} />,
+					commentsPortalHost,
+				)}
 		</>
 	);
 });

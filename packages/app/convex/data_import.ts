@@ -14,9 +14,13 @@ import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import { files_normalize_name, files_normalize_upload_file_name } from "../shared/files.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { server_path_normalize } from "../server/server-utils.ts";
-import { files_nodes_db_archive_nodes, files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
 import {
-	r2_create_asset_key,
+	files_node_require_writable,
+	files_nodes_db_archive_nodes,
+	files_nodes_db_create_node_recursively_at_path,
+} from "./files_nodes.ts";
+import {
+	r2_create_upload_staging_key,
 	r2_generate_upload_url,
 	r2_get_bucket,
 	r2_UNFINALIZED_ASSET_TTL_MS,
@@ -124,8 +128,16 @@ export const create_upload_targets = internalMutation({
 						.eq("archiveOperationId", undefined),
 				)
 				.first();
-			if (existingNode && existingNode.kind !== "file") {
-				return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
+			if (existingNode) {
+				// Normal imports must respect read-only locks. Only a named migration or repair may
+				// bypass a lock, and this import has no bypass.
+				const writable = files_node_require_writable(existingNode);
+				if (writable._nay) {
+					return Result({ _nay: { ...writable._nay, data: { path: item.path } } });
+				}
+				if (existingNode.kind !== "file") {
+					return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
+				}
 			}
 
 			validated.push({
@@ -160,6 +172,13 @@ export const create_upload_targets = internalMutation({
 					.first();
 				if (ancestor && ancestor.kind !== "folder") {
 					return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
+				}
+				// A read-only parent folder stops the whole batch before its first write.
+				if (ancestor) {
+					const ancestorWritable = files_node_require_writable(ancestor);
+					if (ancestorWritable._nay) {
+						return Result({ _nay: { ...ancestorWritable._nay, data: { path: item.path } } });
+					}
 				}
 			}
 		}
@@ -209,9 +228,8 @@ export const create_upload_targets = internalMutation({
 				assetId,
 				now,
 			});
-			// The validation pass cleared every failure this helper can hit (collisions, ancestor
-			// conflicts; the owner passes permission checks). Throw so a surprise failure rolls the
-			// whole batch back instead of leaving earlier items half-imported.
+			// Validation already checked name conflicts, parent conflicts, locks, and owner permission.
+			// Throw on any later error so Convex rolls back the whole batch.
 			if (nodeIdResult._nay) {
 				const errorMessage = "create_node_recursively_at_path failed after batch validation";
 				const errorData = { path: item.path, nay: nodeIdResult._nay };
@@ -219,14 +237,20 @@ export const create_upload_targets = internalMutation({
 				throw should_never_happen(errorMessage, errorData);
 			}
 
-			const signedUpload = await r2_generate_upload_url(
-				r2_create_asset_key({
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					assetId,
-				}),
-			);
+			const uploadStagingR2Key = r2_create_upload_staging_key({
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetId,
+			});
 
+			// Save the temporary key and URL expiry before returning the signed URL. The backend later
+			// copies the uploaded object to its final key.
+			await ctx.db.patch("files_r2_assets", assetId, {
+				uploadStagingR2Key,
+				uploadUrlExpiresAt: now + 15 * 60 * 1000,
+			});
+
+			const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
 			targets.push({
 				path: item.path,
 				assetId,

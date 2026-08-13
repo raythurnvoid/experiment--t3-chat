@@ -222,6 +222,37 @@ Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restri
 - The owner bypasses every permission check, so owner-only runs prove **no over-refusal**, never that the refusal works. The refusal needs a second member holding a `content.write` grant on the folder. Get that member without any sign-in by following `references/second-user-fixtures.md`: an anonymous user in a scratch browser, invited by `userIdToAdd` into a throwaway non-default org. Verified end to end — a `member` with only `write` archives the folder fine, is refused on restoring the child alone with `You need Can manage on the shared folder to move this out of it.`, and still restores the scope-carrying folder itself.
 - A `write`-only member **can** archive the restricted folder. The hole this guards is the pair: archive the folder, then restore one file out of it. With the leaving check removed, that same click succeeds and clears the child's `restrictedScopeNodeId` to `null` at root — the file becomes readable by the whole workspace. Count that pointer, not the toast, when proving the guard.
 
+### Read-Only File And Folder Locks
+
+Use a throwaway non-default organization and follow `second-user-fixtures.md` for a normal member who
+does not hold `content.permissions.manage`. Keep owner and member sessions open together so live races
+do not depend on signing in or out.
+
+- Fixture: one directly locked file, one locked folder with rich/plain/nested descendants, one free
+  folder, and one unlocked outer folder with a locked child plus writable sibling. Create one pending
+  content proposal before locking.
+- Drive `Make read-only`, `Make writable`, `Add direct lock`, and `Remove direct lock` through normal
+  row/header controls. The member must not get management controls. Query `list_tree` as each identity
+  and assert projected `readOnlyState` and source visibility; never inspect the raw pointer from
+  a public result.
+- Assert the exact accessible row descriptions for a direct lock, a visible inherited lock, a hidden
+  inherited lock, and an unlocked folder that contains read-only items. Locked rows must still open,
+  expand, search, and expose safe Copy and Share actions.
+- Try F2/menu rename, source drag, folder drops, archive/restore, mixed-selection archive, New file,
+  New folder, Create README, Upload, and Import folder. Check the tree and pending rows after each
+  refusal; a toast alone does not prove zero writes. Copy a locked source out and confirm the new copy
+  is writable.
+- Start rename, create/upload UI, drag, and a dirty editor in the member session. Lock from the owner
+  session. Assert each UI cancels or disables live, keeps useful draft text copyable, announces why,
+  and returns or moves focus as documented in the plan.
+- For a signed-upload race, mint the target first, lock the parent, then finish the PUT. The existing
+  node must publish normally, become downloadable, and keep its inherited lock. Read back the live
+  `r2Key`, cleared `unfinalizedExpiresAt`, normal processing completion, and the expected upload plugin
+  run. Reuse the signed staging URL and prove the immutable live bytes do not change.
+- Run `auditAccessibility({ selector: "body", minTargetSize: 24 })`, then separately audit the lock
+  modal and Pending panel. Also check keyboard focus, Escape/focus return, 200% zoom, 360 px width,
+  contrast, target sizes, and reduced motion.
+
 ### Folder Import
 
 Use this after changing the bulk import flow (`run_folder_import` in `files-sidebar.tsx`, `files_nodes.create_upload_nodes`).

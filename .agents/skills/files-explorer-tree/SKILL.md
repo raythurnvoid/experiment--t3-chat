@@ -49,8 +49,15 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Clicking a folder opens its folder screen. `FileNodeView` decides whether the selected node renders the folder explorer or the file editor, and folder screens embed an editable child `README.md` when present.
 - Editable file nodes have `assetId`, the classifier's media type (`text/markdown` for `.md`, e.g. `application/json` for `.json`), a `yjsRootKind`, Yjs snapshot and update docs, exact text chunks, plain-text search chunks, and snapshots. `assetId` points at the newest content snapshot asset (each materialization/restore re-points it), while committed current reads use the chunks. If an editable node came from an upload, R2 also retains the original upload object.
 - User-created Markdown files and the auto-created home `README.md` are seeded by the Convex create action with `files_INITIAL_CONTENT`; the rich-text editor must not bootstrap initial Yjs content on the client.
-- Uploaded source file nodes create an upload asset immediately and get `r2Key` on the asset after the R2 object-create event confirms the source object exists. A recognized text extension stores the classifier's media type on the node; other uploads keep the client-declared source `contentType`.
-- Every upload goes directly to R2 through the signed PUT path. The R2 event finalizer classifies from the node NAME and promotes editable text uploads (all 20 extensions) into the ordinary editable shape — Yjs snapshot in the name's `yjsRootKind`, chunks, first version snapshot — and re-points the node at that version snapshot (the upload asset stays as the untouched upload record). The decoded text is normalized first: one leading BOM dropped, CRLF/lone CR to LF.
+- Uploaded source file nodes create an upload asset immediately. The signed PUT writes to
+  `uploadStagingR2Key`. The R2 event finalizer verifies that staging file, copies it once to the
+  immutable live key, and then stores the live `r2Key`. A recognized text extension stores the
+  classifier's media type on the node. Other uploads keep the client-declared source `contentType`.
+- After publication, the finalizer classifies the file from its NAME. It converts editable text
+  uploads into the normal editable shape: a Yjs snapshot in the name's `yjsRootKind`, chunks, and the
+  first version snapshot. It then points the node at that version snapshot. The upload asset stays as
+  the original upload record. Before conversion, it drops one leading BOM and changes CRLF or lone CR
+  to LF.
 - Uploads that stay stored blobs — non-editable types, and editable-text uploads whose conversion failed deterministically (over-cap, invalid UTF-8, NUL bytes) — are marked terminal and dispatch `files.upload.completed` to eligible enabled plugins; only a successful conversion suppresses the event. Plugins, not R2 event processing, create any sibling Markdown files.
 - Assets are the single R2 object metadata record for source binaries, compacted Yjs snapshots, and version snapshot Markdown. Editable files keep no content-kind asset row: the node's `assetId` is the newest version snapshot asset, whose size doubles as the committed byte size for read caps. Owners point to assets; assets do not own relationships between source files and generated outputs.
 - Source/conversion metadata stays in DB/R2 metadata, not visible generated Markdown.
@@ -176,6 +183,27 @@ Tree-item components:
 - Classify files by NAME with the shared extension classifier (`files_get_editable_text_yjs_root_kind` / `files_get_editable_text_content_type` in `shared/files.ts`), never by the browser MIME — the sidebar's own upload prepare does this.
 - Use `"text/markdown;charset=utf-8" satisfies files_ContentType` when writing the canonical Markdown content type at an md-by-definition site.
 
+## Read-Only Files And Folders
+
+- `list_tree` returns `readOnlyState` and only the lock-source details the caller may see. It never
+  returns the stored lock pointer. When the full tree result changes, derive one set of visible
+  ancestors that contain locked nodes. Do not scan a subtree for every rendered row.
+- Keep locked rows selectable, openable, searchable, and expandable. Add the lock mark beside, not in
+  place of, the restricted-access icon. Use the exact row descriptions and status text from
+  `../files-read-only/SKILL.md`.
+- Disable Rename, Archive/Restore, source drag, and locked-folder drop targets. An unlocked ancestor
+  with a visible locked descendant may receive a new sibling, but it cannot itself be renamed, moved,
+  or archived. A mixed selection is blocked when any affected node is blocked.
+- A locked folder disables New file, New folder, Create README, Upload file, Import folder, and
+  external drops. A drop over a locked file still resolves to its writable parent under the normal
+  file-row rule. Upload conflicts keep rename-upload available while Replace is disabled for a locked
+  occupant.
+- The row menu and selected-node header use a separate read-only control. Labels are `Make read-only`,
+  `Make writable`, `Remove direct lock`, `Manage <source>`, and `Add direct lock` as described by the
+  lock management query. Share remains a separate control.
+- Archived explicit locks stay marked and manageable. Restore remains blocked until the affected lock
+  is removed.
+
 ## Drag And Drop
 
 - In-tree DnD uses headless-tree `onDrop` -> `files.move_nodes`.
@@ -197,8 +225,10 @@ Tree-item components:
 1. The Upload file menu action and a single bare-file drop receive one file. Folder drops, multi-file drops, and the Import folder picker run the folder import flow, which ends in the same per-file lifecycle below.
 2. The client prepares static images, classifies the file from its name with the extension classifier, normalizes the path, and opens the draft/conflict modal when needed (single file) or the import conflict modal once for the whole batch (folder import).
 3. `files_nodes.create_upload_node` (single) or `files_nodes.create_upload_nodes` (batch) validates the request and creates the upload asset plus visible source node. After batch validation, per-item problems are reported as skips, never whole-call failures. `create_upload_node` takes `onConflict: "replace" | "fail"`: `"replace"` (the sidebar's choice after the conflict modal) archives the existing file, `"fail"` answers `_nay` with the path-taken message so the caller can pick another name — the rich-text editor always uses `"fail"` because the existing file may be another document's embed.
-4. The browser uploads the binary through the signed R2 PUT URL.
-5. The R2 event patches the source asset's key, size, and optional ETag.
+4. The browser uploads the binary to `uploadStagingR2Key` through the signed R2 PUT URL.
+5. The R2 event verifies the staging file, copies it once to the immutable live key, and publishes the
+   live key, size, and optional ETag. If the node became read-only after step 3, this accepted upload
+   still finishes and the node keeps its lock.
 6. Editable text uploads (classified from the node NAME) run the host conversion, which creates the Yjs document in the name's shape, chunks, and a content snapshot on the uploaded node. Oversized or undecodable text stays a stored file.
 7. Uploads that stay stored blobs — non-editable types and fallback-settled text — become terminal source files and dispatch eligible `files.upload.completed` plugin runs.
 8. Installed first-party plugins own PDF, image, video, and audio-derived outputs plus their external provider calls.

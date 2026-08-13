@@ -16,12 +16,17 @@ export const files_ROOT_ID = "root" as const;
 
 export type files_VisibleTreeNode = Omit<
 	app_convex_Doc<"files_nodes">,
-	"organizationId" | "workspaceId" | "createdBy" | "updatedBy"
+	"organizationId" | "workspaceId" | "createdBy" | "updatedBy" | "readOnlyScopeNodeId"
 > & {
 	organizationId: app_convex_Id<"organizations">;
 	workspaceId: app_convex_Id<"organizations_workspaces">;
 	createdBy: app_convex_Id<"users">;
 	updatedBy: app_convex_Id<"users">;
+	// Safe read-only fields for the client. Send the lock source only when the caller can read it.
+	// Never send the raw `readOnlyScopeNodeId` because it may name a hidden folder.
+	readOnlyState: "writable" | "self" | "inherited";
+	readOnlySourceNodeId?: app_convex_Id<"files_nodes">;
+	readOnlySourcePath?: string;
 };
 
 export const files_SYNTHETIC_ROOT_FOLDER = {
@@ -45,6 +50,7 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 	updatedBy: "",
 	createdBy: "",
 	updatedAt: 0,
+	readOnlyState: "writable",
 } as const satisfies Merge<
 	files_VisibleTreeNode,
 	{
@@ -81,6 +87,91 @@ export function files_can_move_node_between_restricted_scopes(args: {
 		args.sourceRestrictedScopeNodeId === args.targetRestrictedScopeNodeId ||
 		args.canManageRestrictedScope(args.sourceRestrictedScopeNodeId)
 	);
+}
+
+/**
+ * Find every visible ancestor of a read-only node. Those ancestors cannot be renamed, moved, or
+ * archived because that would also change the read-only node.
+ *
+ * Run this once for the whole visible tree instead of searching again for every row.
+ */
+export function files_collect_read_only_ancestor_ids(
+	nodes: Array<Pick<files_VisibleTreeNode, "_id" | "parentId" | "readOnlyState">>,
+) {
+	// The map also accepts "root", which has no node.
+	const nodesById = new Map<files_VisibleTreeNode["parentId"], (typeof nodes)[number]>();
+	for (const node of nodes) {
+		nodesById.set(node._id, node);
+	}
+
+	const ancestorIds = new Set<files_VisibleTreeNode["_id"]>();
+	for (const node of nodes) {
+		if (node.readOnlyState === "writable") {
+			continue;
+		}
+
+		// Walk toward the root. Stop at a parent that was already handled.
+		let parent = nodesById.get(node.parentId);
+		while (parent && !ancestorIds.has(parent._id)) {
+			ancestorIds.add(parent._id);
+			parent = nodesById.get(parent.parentId);
+		}
+	}
+
+	return ancestorIds;
+}
+
+/**
+ * Get the read-only label and tooltip for one file-tree row. Return null when no label is needed.
+ *
+ * Never name a hidden lock source. Say "a protected folder" instead.
+ */
+export function files_get_read_only_row_labels(args: {
+	readOnlyState: files_VisibleTreeNode["readOnlyState"];
+	readOnlySourcePath: string | undefined;
+	/** True when a writable row contains a visible read-only child. */
+	hasVisibleReadOnlyDescendant: boolean;
+}) {
+	if (args.readOnlyState === "self") {
+		return { description: "read-only", tooltip: "Read-only" };
+	}
+	if (args.readOnlyState === "inherited") {
+		if (args.readOnlySourcePath !== undefined) {
+			return {
+				description: `read-only from ${args.readOnlySourcePath}`,
+				tooltip: `Read-only from ${args.readOnlySourcePath}`,
+			};
+		}
+
+		return { description: "read-only from a protected folder", tooltip: "Read-only from a protected folder" };
+	}
+	if (args.hasVisibleReadOnlyDescendant) {
+		return { description: "contains read-only items", tooltip: "Contains read-only items" };
+	}
+
+	return null;
+}
+
+/**
+ * Combine write permission with the current read-only state.
+ *
+ * A folder with a read-only child can still receive new children. It cannot be renamed, moved, or
+ * archived because those actions would also change the read-only child.
+ */
+export function files_get_read_only_capabilities(args: {
+	canWrite: boolean;
+	readOnlyState: files_VisibleTreeNode["readOnlyState"];
+	hasVisibleReadOnlyDescendant: boolean;
+}) {
+	const isWritable = args.canWrite && args.readOnlyState === "writable";
+	const canChangeSubtree = isWritable && !args.hasVisibleReadOnlyDescendant;
+
+	return {
+		canEditContent: isWritable,
+		canReceiveChildren: isWritable,
+		canRelocateOrRename: canChangeSubtree,
+		canArchiveOrRestore: canChangeSubtree,
+	};
 }
 
 export const files_YJS_DOC_KEYS = {

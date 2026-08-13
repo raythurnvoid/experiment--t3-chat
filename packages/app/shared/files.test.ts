@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+	files_collect_read_only_ancestor_ids,
 	files_find_file_stem_end_index,
+	files_get_read_only_capabilities,
+	files_get_read_only_row_labels,
 	files_get_editable_text_content_type,
 	files_get_editable_text_yjs_root_kind,
 	files_get_monaco_language_id,
@@ -24,6 +27,7 @@ import {
 	files_ROOT_ID,
 	type files_PendingPathOverlayNode,
 	type files_PendingPathOverlayRow,
+	type files_VisibleTreeNode,
 } from "./files.ts";
 import {
 	files_headless_tiptap_editor_create,
@@ -223,6 +227,176 @@ describe("files_find_file_stem_end_index", () => {
 		["", 0],
 	])("finds the stem end in %s", (fileName, expected) => {
 		expect(files_find_file_stem_end_index({ fileName })).toBe(expected);
+	});
+});
+
+function read_only_test_node(args: {
+	id: string;
+	parentId?: string;
+	readOnlyState?: files_VisibleTreeNode["readOnlyState"];
+}) {
+	return {
+		_id: args.id as files_VisibleTreeNode["_id"],
+		parentId: (args.parentId ?? "root") as files_VisibleTreeNode["parentId"],
+		readOnlyState: args.readOnlyState ?? "writable",
+	};
+}
+
+function read_only_test_id(value: string) {
+	return value as files_VisibleTreeNode["_id"];
+}
+
+describe("files_collect_read_only_ancestor_ids", () => {
+	test("marks every visible ancestor of a locked node and nothing else", () => {
+		const ancestorIds = files_collect_read_only_ancestor_ids([
+			read_only_test_node({ id: "a" }),
+			read_only_test_node({ id: "b", parentId: "a" }),
+			read_only_test_node({ id: "f", parentId: "b", readOnlyState: "inherited" }),
+			read_only_test_node({ id: "c", parentId: "a" }),
+			read_only_test_node({ id: "g", parentId: "c" }),
+		]);
+
+		expect(ancestorIds).toEqual(new Set([read_only_test_id("a"), read_only_test_id("b")]));
+	});
+
+	test("marks both branches when two locked nodes share an ancestor", () => {
+		const ancestorIds = files_collect_read_only_ancestor_ids([
+			read_only_test_node({ id: "a" }),
+			read_only_test_node({ id: "b", parentId: "a" }),
+			read_only_test_node({ id: "f1", parentId: "b", readOnlyState: "self" }),
+			read_only_test_node({ id: "c", parentId: "a" }),
+			read_only_test_node({ id: "f2", parentId: "c", readOnlyState: "inherited" }),
+		]);
+
+		expect(ancestorIds).toEqual(new Set([read_only_test_id("a"), read_only_test_id("b"), read_only_test_id("c")]));
+	});
+
+	test("a locked root-level node has no visible ancestors", () => {
+		const ancestorIds = files_collect_read_only_ancestor_ids([
+			read_only_test_node({ id: "d", readOnlyState: "self" }),
+		]);
+
+		expect(ancestorIds).toEqual(new Set());
+	});
+
+	test("a parent missing from the visible list ends the walk", () => {
+		const ancestorIds = files_collect_read_only_ancestor_ids([
+			read_only_test_node({ id: "a" }),
+			// The locked node's direct parent is not visible to this caller, so the chain above it
+			// cannot be walked. `a` is not related to the locked node here.
+			read_only_test_node({ id: "f", parentId: "hidden", readOnlyState: "inherited" }),
+		]);
+
+		expect(ancestorIds).toEqual(new Set());
+	});
+
+	test("an all-writable tree yields an empty set", () => {
+		const ancestorIds = files_collect_read_only_ancestor_ids([
+			read_only_test_node({ id: "a" }),
+			read_only_test_node({ id: "b", parentId: "a" }),
+		]);
+
+		expect(ancestorIds).toEqual(new Set());
+	});
+});
+
+describe("files_get_read_only_row_labels", () => {
+	test("a direct lock reads read-only and ignores the source fields", () => {
+		// The projection points a self lock's source at the node itself, so the label must not
+		// name it.
+		expect(
+			files_get_read_only_row_labels({
+				readOnlyState: "self",
+				readOnlySourcePath: "/docs/plan.md",
+				hasVisibleReadOnlyDescendant: false,
+			}),
+		).toEqual({ description: "read-only", tooltip: "Read-only" });
+	});
+
+	test("an inherited lock names its visible source path", () => {
+		expect(
+			files_get_read_only_row_labels({
+				readOnlyState: "inherited",
+				readOnlySourcePath: "/docs",
+				hasVisibleReadOnlyDescendant: false,
+			}),
+		).toEqual({ description: "read-only from /docs", tooltip: "Read-only from /docs" });
+	});
+
+	test("an inherited lock with a hidden source never names it", () => {
+		expect(
+			files_get_read_only_row_labels({
+				readOnlyState: "inherited",
+				readOnlySourcePath: undefined,
+				hasVisibleReadOnlyDescendant: false,
+			}),
+		).toEqual({
+			description: "read-only from a protected folder",
+			tooltip: "Read-only from a protected folder",
+		});
+	});
+
+	test("a writable ancestor of a locked node says it contains read-only items", () => {
+		expect(
+			files_get_read_only_row_labels({
+				readOnlyState: "writable",
+				readOnlySourcePath: undefined,
+				hasVisibleReadOnlyDescendant: true,
+			}),
+		).toEqual({ description: "contains read-only items", tooltip: "Contains read-only items" });
+	});
+
+	test("a plain writable row gets no annotation", () => {
+		expect(
+			files_get_read_only_row_labels({
+				readOnlyState: "writable",
+				readOnlySourcePath: undefined,
+				hasVisibleReadOnlyDescendant: false,
+			}),
+		).toBe(null);
+	});
+});
+
+describe("files_get_read_only_capabilities", () => {
+	test("keeps destination writes separate from subtree-changing writes", () => {
+		expect(
+			files_get_read_only_capabilities({
+				canWrite: true,
+				readOnlyState: "writable",
+				hasVisibleReadOnlyDescendant: true,
+			}),
+		).toEqual({
+			canEditContent: true,
+			canReceiveChildren: true,
+			canRelocateOrRename: false,
+			canArchiveOrRestore: false,
+		});
+	});
+
+	test.each(["self", "inherited"] as const)("an effective %s lock blocks every write capability", (readOnlyState) => {
+		expect(
+			files_get_read_only_capabilities({ canWrite: true, readOnlyState, hasVisibleReadOnlyDescendant: false }),
+		).toEqual({
+			canEditContent: false,
+			canReceiveChildren: false,
+			canRelocateOrRename: false,
+			canArchiveOrRestore: false,
+		});
+	});
+
+	test("ACL refusal blocks every write capability", () => {
+		expect(
+			files_get_read_only_capabilities({
+				canWrite: false,
+				readOnlyState: "writable",
+				hasVisibleReadOnlyDescendant: false,
+			}),
+		).toEqual({
+			canEditContent: false,
+			canReceiveChildren: false,
+			canRelocateOrRename: false,
+			canArchiveOrRestore: false,
+		});
 	});
 });
 

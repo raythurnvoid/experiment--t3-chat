@@ -16,6 +16,8 @@ import { api, components, internal } from "./_generated/api.js";
 import {
 	files_db_yjs_push_update,
 	files_line_range_from_text,
+	files_node_require_writable,
+	files_nodes_db_apply_pending_move,
 	files_tail_lines_from_text,
 	yjs_reserve_and_increment_last_sequence,
 } from "./files_nodes.ts";
@@ -40,15 +42,22 @@ import {
 	files_get_utf8_byte_size,
 	files_u8_to_array_buffer,
 } from "../server/files.ts";
-import { files_yjs_doc_create_from_text, files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
+import {
+	files_yjs_doc_create_from_text,
+	files_yjs_doc_get_text,
+	files_yjs_doc_update_from_text,
+} from "../shared/files-tiptap.ts";
 import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../shared/files-yjs.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
+import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { files_metadata_MAX_FRONTMATTER_FIELDS, type files_metadata_SearchPlan } from "../shared/files-metadata.ts";
-import { organizations_GLOBAL_ORGANIZATION_ID, organizations_GLOBAL_GITHUB_WORKSPACE_ID } from "../shared/organizations.ts";
+import {
+	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+} from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
@@ -144,7 +153,6 @@ describe("bounded read line helpers", () => {
 		expect(out.content).toContain("[line truncated to 8000 chars");
 		expect(out.content.length).toBeLessThan(20000);
 	});
-
 });
 
 async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
@@ -1550,20 +1558,29 @@ test("create_text_node seeds initial Yjs content on the server", async () => {
 			ctx.db
 				.query("files_yjs_updates")
 				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", createdFile._yay.nodeId),
 				)
 				.order("asc")
 				.collect(),
 			ctx.db
 				.query("files_text_chunks")
 				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", createdFile._yay.nodeId),
 				)
 				.collect(),
 			ctx.db
 				.query("files_plain_text_chunks")
 				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", createdFile._yay.nodeId),
 				)
 				.collect(),
 		]);
@@ -1665,7 +1682,10 @@ test("create_text_node writes server-seeded initial content to R2", async () => 
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const versionSnapshot = await ctx.db
@@ -1727,16 +1747,46 @@ test("create_text_node does not publish a file node when initial R2 writes fail"
 		name: "Initial R2 Failure User",
 	});
 	const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+	let releaseSecondPut: (() => void) | undefined;
+	const secondPutBlocked = new Promise<void>((resolve) => {
+		releaseSecondPut = resolve;
+	});
+	let announceSecondPut: (() => void) | undefined;
+	const secondPutStarted = new Promise<void>((resolve) => {
+		announceSecondPut = resolve;
+	});
+	let putCount = 0;
 	vi.stubGlobal(
 		"fetch",
-		vi.fn(async () => new Response(null, { status: 500 })),
+		vi.fn(async () => {
+			putCount += 1;
+			if (putCount === 1) {
+				return new Response(null, { status: 500 });
+			}
+			announceSecondPut?.();
+			await secondPutBlocked;
+			return new Response(null, { status: 200 });
+		}),
 	);
 
-	const createdFile = await asUser.action(api.files_nodes_content.create_text_node, {
+	const creatingFile = asUser.action(api.files_nodes_content.create_text_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "broken.md",
 	});
+	await secondPutStarted;
+	// Give an early-rejecting Promise.all path time to start cleanup while its sibling PUT is
+	// still blocked. The fixed path waits for both results, so both asset docs remain owned here.
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	const preparedAssetIds = await t.run(async (ctx) =>
+		(await ctx.db.query("files_r2_assets").collect()).map((asset) => asset._id),
+	);
+	expect(preparedAssetIds).toHaveLength(2);
+	expect(await read_deletion_jobs(t)).toEqual([]);
+	expect(deleteObjectSpy).not.toHaveBeenCalled();
+
+	releaseSecondPut?.();
+	const createdFile = await creatingFile;
 
 	expect(createdFile._nay?.message).toBe("Failed to create file");
 	const saved = await t.run(async (ctx) => {
@@ -1756,8 +1806,10 @@ test("create_text_node does not publish a file node when initial R2 writes fail"
 	});
 	expect(saved.fileNode).toBeNull();
 	expect(saved.assets).toHaveLength(0);
-	// Only the Yjs snapshot and the version snapshot are uploaded: there is no current-content object.
-	expect(deleteObjectSpy).toHaveBeenCalledTimes(2);
+	expect(deleteObjectSpy).not.toHaveBeenCalled();
+	const jobs = await read_deletion_jobs(t);
+	expect(jobs.map((job) => job.reason)).toEqual(["failed_create", "failed_create"]);
+	expect(jobs.map((job) => job.r2Key).sort()).toEqual(expected_ledger_keys(db, preparedAssetIds));
 });
 
 test("create_text_node cleans up R2 objects when initial metadata sync fails", async () => {
@@ -1770,11 +1822,7 @@ test("create_text_node cleans up R2 objects when initial metadata sync fails", a
 	});
 	const r2Writes = test_setup_r2_capture();
 	vi.spyOn(R2.prototype, "syncMetadata").mockRejectedValueOnce(new Error("sync failed"));
-	const deleteObjectSpy = vi
-		.spyOn(R2.prototype, "deleteObject")
-		.mockImplementation(async (_ctx, key) => {
-			r2Writes.delete(key);
-		});
+	const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 
 	const createdFile = await asUser.action(api.files_nodes_content.create_text_node, {
 		membershipId: db.membershipId,
@@ -1800,12 +1848,13 @@ test("create_text_node cleans up R2 objects when initial metadata sync fails", a
 	});
 	expect(saved.fileNode).toBeNull();
 	expect(saved.assets).toHaveLength(0);
-	expect(r2Writes.size).toBe(0);
-	// Only the Yjs snapshot and the version snapshot are uploaded: there is no current-content object.
-	expect(deleteObjectSpy).toHaveBeenCalledTimes(2);
+	expect(deleteObjectSpy).not.toHaveBeenCalled();
+	const jobs = await read_deletion_jobs(t);
+	expect(jobs.map((job) => job.reason)).toEqual(["failed_create", "failed_create"]);
+	expect(jobs.map((job) => job.r2Key).sort()).toEqual(Array.from(r2Writes.keys()).sort());
 });
 
-test("create_text_node cleans up R2 assets when duplicate path rejects after uploads", async () => {
+test("create_text_node refuses a duplicate path at capture, before any upload", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({
@@ -1814,11 +1863,9 @@ test("create_text_node cleans up R2 assets when duplicate path rejects after upl
 		name: "Duplicate R2 Cleanup User",
 	});
 	const r2Writes = test_setup_r2_capture();
-	const deleteObjectSpy = vi
-		.spyOn(R2.prototype, "deleteObject")
-		.mockImplementation(async (_ctx, key) => {
-			r2Writes.delete(key);
-		});
+	const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockImplementation(async (_ctx, key) => {
+		r2Writes.delete(key);
+	});
 
 	const createdFile = await asUser.action(api.files_nodes_content.create_text_node, {
 		membershipId: db.membershipId,
@@ -1854,7 +1901,7 @@ test("create_text_node cleans up R2 assets when duplicate path rejects after upl
 		path: "duplicate.md",
 	});
 
-	expect(duplicate._nay).toBeDefined();
+	expect(duplicate._nay?.message).toBe("This file already exists.");
 	const afterDuplicate = await t.run(async (ctx) => {
 		return {
 			assetCount: (await ctx.db.query("files_r2_assets").collect()).length,
@@ -1875,8 +1922,10 @@ test("create_text_node cleans up R2 assets when duplicate path rejects after upl
 
 	expect(afterDuplicate).toEqual(beforeDuplicate);
 	expect(Array.from(r2Writes.keys()).sort()).toEqual(baselineKeys);
-	// Only the Yjs snapshot and the version snapshot are uploaded: there is no current-content object.
-	expect(deleteObjectSpy).toHaveBeenCalledTimes(2);
+	// The preflight sees the occupied target before any asset doc or R2 upload exists.
+	// A separate test covers a target that appears after the uploads.
+	expect(deleteObjectSpy).not.toHaveBeenCalled();
+	expect(await read_deletion_jobs(t)).toEqual([]);
 });
 
 test("create_folder_node creates missing folders for nested folder paths", async () => {
@@ -2021,7 +2070,9 @@ test("create_file_by_path can reuse an existing active file", async () => {
 	if (createdFile._nay) {
 		throw new Error("Expected initial file creation to succeed");
 	}
-	expect(createdFile._yay.created).toBe(true);
+	if (!createdFile._yay.created) {
+		throw new Error("Expected initial file creation to create a node");
+	}
 
 	const reusedFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
@@ -2031,6 +2082,9 @@ test("create_file_by_path can reuse an existing active file", async () => {
 	});
 	if (reusedFile._nay) {
 		throw new Error("Expected existing file reuse to succeed");
+	}
+	if (reusedFile._yay.created) {
+		throw new Error("Expected existing file reuse not to create a node");
 	}
 
 	expect(reusedFile._yay.nodeId).toBe(createdFile._yay.nodeId);
@@ -2053,7 +2107,9 @@ test("create_file_by_path reports created ancestor folders deepest-first", async
 	if (created._nay) {
 		throw new Error(created._nay.message);
 	}
-	expect(created._yay.created).toBe(true);
+	if (!created._yay.created) {
+		throw new Error("Expected create_file_by_path to create a fresh node");
+	}
 	expect(created._yay.createdAncestorIds).toHaveLength(2);
 
 	const [deepAncestorId, shallowAncestorId] = created._yay.createdAncestorIds;
@@ -2688,13 +2744,19 @@ describe("files_nodes.create_upload_node", () => {
 				ctx.db
 					.query("files_text_chunks")
 					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", upload._yay.nodeId),
+						q
+							.eq("organizationId", db.organizationId)
+							.eq("workspaceId", db.workspaceId)
+							.eq("fileNodeId", upload._yay.nodeId),
 					)
 					.collect(),
 				ctx.db
 					.query("files_plain_text_chunks")
 					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", upload._yay.nodeId),
+						q
+							.eq("organizationId", db.organizationId)
+							.eq("workspaceId", db.workspaceId)
+							.eq("fileNodeId", upload._yay.nodeId),
 					)
 					.collect(),
 			]);
@@ -2727,7 +2789,7 @@ describe("files_nodes.create_upload_node", () => {
 		expect(docs.textChunks).toEqual([]);
 		expect(docs.plainTextChunks).toEqual([]);
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
-			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${upload._yay.assetId}`,
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${upload._yay.assetId}`,
 		);
 	});
 
@@ -2765,7 +2827,9 @@ describe("files_nodes.create_upload_node", () => {
 				.then((assets) =>
 					assets.filter(
 						(asset) =>
-							asset.organizationId === db.organizationId && asset.workspaceId === db.workspaceId && asset.kind === "upload",
+							asset.organizationId === db.organizationId &&
+							asset.workspaceId === db.workspaceId &&
+							asset.kind === "upload",
 					),
 				);
 			const uploadedSources = await ctx.db
@@ -2774,7 +2838,9 @@ describe("files_nodes.create_upload_node", () => {
 				.then((fileNodes) =>
 					fileNodes.filter(
 						(fileNode) =>
-							fileNode.organizationId === db.organizationId && fileNode.workspaceId === db.workspaceId && fileNode.assetId,
+							fileNode.organizationId === db.organizationId &&
+							fileNode.workspaceId === db.workspaceId &&
+							fileNode.assetId,
 					),
 				);
 			return { uploadAssets, uploadedSources };
@@ -2808,7 +2874,9 @@ describe("files_nodes.create_upload_node", () => {
 				.then((fileNodes) =>
 					fileNodes.filter(
 						(fileNode) =>
-							fileNode.organizationId === db.organizationId && fileNode.workspaceId === db.workspaceId && fileNode.assetId,
+							fileNode.organizationId === db.organizationId &&
+							fileNode.workspaceId === db.workspaceId &&
+							fileNode.assetId,
 					),
 				),
 		);
@@ -2895,7 +2963,7 @@ describe("files_nodes.create_upload_node", () => {
 			size: 2048,
 		});
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
-			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${replacement._yay.assetId}`,
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${replacement._yay.assetId}`,
 		);
 	});
 
@@ -2937,7 +3005,9 @@ describe("files_nodes.create_upload_node", () => {
 				.then((assets) =>
 					assets.filter(
 						(asset) =>
-							asset.organizationId === db.organizationId && asset.workspaceId === db.workspaceId && asset.kind === "upload",
+							asset.organizationId === db.organizationId &&
+							asset.workspaceId === db.workspaceId &&
+							asset.kind === "upload",
 					),
 				);
 			return { firstSource, uploadAssets };
@@ -2947,7 +3017,6 @@ describe("files_nodes.create_upload_node", () => {
 		expect(docs.uploadAssets).toHaveLength(1);
 		expect(docs.uploadAssets[0]?._id).toBe(firstUpload._yay.assetId);
 	});
-
 });
 
 describe("files_nodes.create_upload_nodes", () => {
@@ -3028,7 +3097,7 @@ describe("files_nodes.create_upload_nodes", () => {
 		expect(docs.docsFolder).toMatchObject({ kind: "folder" });
 		expect(docs.imgFolder).toMatchObject({ kind: "folder" });
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
-			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${imported._yay.created[0]!.assetId}`,
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${imported._yay.created[0]!.assetId}`,
 		);
 
 		const second = await asUser.mutation(api.files_nodes.create_upload_nodes, {
@@ -3210,7 +3279,9 @@ describe("files_nodes.create_upload_nodes", () => {
 				.then((fileNodes) =>
 					fileNodes.filter(
 						(fileNode) =>
-							fileNode.organizationId === db.organizationId && fileNode.workspaceId === db.workspaceId && fileNode.assetId,
+							fileNode.organizationId === db.organizationId &&
+							fileNode.workspaceId === db.workspaceId &&
+							fileNode.assetId,
 					),
 				);
 			const uploadAssets = await ctx.db
@@ -3219,7 +3290,9 @@ describe("files_nodes.create_upload_nodes", () => {
 				.then((assets) =>
 					assets.filter(
 						(asset) =>
-							asset.organizationId === db.organizationId && asset.workspaceId === db.workspaceId && asset.kind === "upload",
+							asset.organizationId === db.organizationId &&
+							asset.workspaceId === db.workspaceId &&
+							asset.kind === "upload",
 					),
 				);
 			return { uploadedSources, uploadAssets };
@@ -3397,7 +3470,9 @@ describe("files_nodes.create_upload_nodes", () => {
 				.then((assets) =>
 					assets.filter(
 						(asset) =>
-							asset.organizationId === db.organizationId && asset.workspaceId === db.workspaceId && asset.kind === "upload",
+							asset.organizationId === db.organizationId &&
+							asset.workspaceId === db.workspaceId &&
+							asset.kind === "upload",
 					),
 				),
 		);
@@ -3472,7 +3547,9 @@ describe("files_nodes.create_upload_nodes", () => {
 				.then((fileNodes) =>
 					fileNodes.filter(
 						(fileNode) =>
-							fileNode.organizationId === db.organizationId && fileNode.workspaceId === db.workspaceId && fileNode.assetId,
+							fileNode.organizationId === db.organizationId &&
+							fileNode.workspaceId === db.workspaceId &&
+							fileNode.assetId,
 					),
 				),
 		);
@@ -3504,9 +3581,21 @@ describe("files_nodes.create_upload_nodes", () => {
 			throw new Error(imported._nay.message);
 		}
 
-		expect(checkSpy).toHaveBeenCalledWith(expect.anything(), "files_bulk_import", expect.objectContaining({ count: 3 }));
-		expect(limitSpy).toHaveBeenCalledWith(expect.anything(), "files_bulk_import", expect.objectContaining({ count: 3 }));
-		expect(limitSpy).toHaveBeenCalledWith(expect.anything(), "files_tree_write", expect.objectContaining({ key: db.userId }));
+		expect(checkSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			"files_bulk_import",
+			expect.objectContaining({ count: 3 }),
+		);
+		expect(limitSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			"files_bulk_import",
+			expect.objectContaining({ count: 3 }),
+		);
+		expect(limitSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			"files_tree_write",
+			expect.objectContaining({ key: db.userId }),
+		);
 		// Charge tree-write before the bulk bucket: swapped, a tree-write refusal after a
 		// successful bulk charge would burn bulk tokens on every retry.
 		expect(limitSpy.mock.calls.map((call) => call[1])).toEqual(["files_tree_write", "files_bulk_import"]);
@@ -3557,6 +3646,28 @@ describe("files_nodes.create_upload_nodes", () => {
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId));
 		expect(asset?.processingWorkId).toBeUndefined();
 		const assetR2Key = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${assetId}`;
+		const uploadStagingR2Key =
+			asset?.uploadStagingR2Key ??
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${assetId}`;
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				if (url === "https://r2.test/upload" && init?.method === "PUT") {
+					return new Response(null, { status: 200 });
+				}
+				if (url === `https://r2.test/object?key=${encodeURIComponent(uploadStagingR2Key)}`) {
+					return new Response(new Uint8Array(64), {
+						status: 200,
+						headers: { "Content-Length": "64", ETag: "etag_browser_import_1" },
+					});
+				}
+				return new Response(null, { status: 404 });
+			}),
+		);
 
 		enqueueActionSpy.mockClear();
 		const response = await t.fetch("/api/r2/event", {
@@ -3572,7 +3683,7 @@ describe("files_nodes.create_upload_nodes", () => {
 					action: "PutObject",
 					bucket: asset!.r2Bucket,
 					object: {
-						key: assetR2Key,
+						key: uploadStagingR2Key,
 						size: 64,
 						eTag: "etag_browser_import_1",
 					},
@@ -3649,7 +3760,7 @@ describe("files_nodes.get_upload_conflicts", () => {
 });
 
 describe("files_nodes.discard_failed_upload_node", () => {
-	test("removes an unfinalized upload node and deletes the R2 object", async () => {
+	test("removes an unfinalized upload after a copy crash and ledgers both possible objects", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -3670,7 +3781,11 @@ describe("files_nodes.discard_failed_upload_node", () => {
 		}
 		const nodeId = imported._yay.created[0]!.nodeId;
 		const assetId = imported._yay.created[0]!.assetId;
+		const stagingKey = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${assetId}`;
+		const liveKey = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${assetId}`;
 
+		// Simulate a crash after staging was copied to the immutable key but before the event
+		// mutation stored `r2Key`. The database still looks like an unfinished upload.
 		const discarded = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
 			membershipId: db.membershipId,
 			nodeId,
@@ -3686,11 +3801,19 @@ describe("files_nodes.discard_failed_upload_node", () => {
 		}));
 		expect(docs.node).toBeNull();
 		expect(docs.asset).toBeNull();
-		// R2 may hold bytes from a PUT the browser saw fail, so the object is deleted either way.
-		expect(deleteObjectSpy).toHaveBeenCalledWith(
-			expect.anything(),
-			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${assetId}`,
-		);
+		const cleanupJobs = await t.run(async (ctx) => await ctx.db.query("files_r2_object_deletion_jobs").collect());
+		expect(cleanupJobs).toHaveLength(2);
+		expect(cleanupJobs.find((job) => job.r2Key === stagingKey)).toMatchObject({
+			reason: "upload_staging",
+			generation: 1,
+			putMayArriveUntil: expect.any(Number),
+		});
+		expect(cleanupJobs.find((job) => job.r2Key === liveKey)).toMatchObject({
+			reason: "untracked_asset_event",
+			generation: 1,
+		});
+		expect(cleanupJobs.find((job) => job.r2Key === liveKey)?.putMayArriveUntil).toBeUndefined();
+		expect(deleteObjectSpy).not.toHaveBeenCalled();
 	});
 
 	test("keeps the node once the R2 event recorded the object", async () => {
@@ -4774,7 +4897,10 @@ test("materialize_file_content writes empty version and Yjs snapshots to R2 and 
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const versionSnapshots = await ctx.db
@@ -4929,7 +5055,10 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const versionSnapshots = await ctx.db
@@ -5324,7 +5453,11 @@ test("materialize_file_content settles over-cap frontmatter with the marker pair
 	// the live document's own lineage: pushing a fresh doc's whole state would MERGE with the
 	// over-cap frontmatter instead of replacing it.
 	const fittingDoc = files_yjs_doc_clone({ yjsDoc: overCapYjsDoc });
-	const fitted = files_yjs_doc_update_from_text({ mut_yjsDoc: fittingDoc, text: "# Small again\n", rootKind: "rich_text" });
+	const fitted = files_yjs_doc_update_from_text({
+		mut_yjsDoc: fittingDoc,
+		text: "# Small again\n",
+		rootKind: "rich_text",
+	});
 	if (fitted._nay) {
 		throw new Error(fitted._nay.message);
 	}
@@ -6434,7 +6567,11 @@ test("text_search_files searches pending unstaged content instead of stale commi
 		const pendingDoc = await ctx.db
 			.query("files_pending_updates")
 			.withIndex("by_organization_workspace_user_fileNode", (q) =>
-				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("userId", db.userId).eq("fileNodeId", nodeId),
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("userId", db.userId)
+					.eq("fileNodeId", nodeId),
 			)
 			.first();
 		if (!pendingDoc) throw new Error("Expected pending doc");
@@ -6619,7 +6756,11 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 		fields: expect.arrayContaining(["frontmatter.cc", "frontmatter.amountString"]),
 		values: expect.arrayContaining([
 			expect.objectContaining({ qualifiedField: "frontmatter.amount", valueKind: "number", numberValue: 120.5 }),
-			expect.objectContaining({ qualifiedField: "frontmatter.amountString", valueKind: "string", stringValue: "120.5" }),
+			expect.objectContaining({
+				qualifiedField: "frontmatter.amountString",
+				valueKind: "string",
+				stringValue: "120.5",
+			}),
 			expect.objectContaining({
 				qualifiedField: "frontmatter.sentAt",
 				valueKind: "string",
@@ -6652,9 +6793,14 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 		asUser,
 		db,
 		path,
-		["---", "from: committed@example.com", "subject: Committed subject", "sentAt: 2026-06-01", "---", "Committed body"].join(
-			"\n",
-		),
+		[
+			"---",
+			"from: committed@example.com",
+			"subject: Committed subject",
+			"sentAt: 2026-06-01",
+			"---",
+			"Committed body",
+		].join("\n"),
 	);
 
 	const pending = await upsert_pending_update_internal_for_test(t, {
@@ -6662,9 +6808,14 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 		workspaceId: db.workspaceId,
 		userId: db.userId,
 		nodeId,
-		unstagedMarkdown: ["---", "from: pending@example.com", "subject: Pending subject", "sentAt: 2026-07-29", "---", "Pending body"].join(
-			"\n",
-		),
+		unstagedMarkdown: [
+			"---",
+			"from: pending@example.com",
+			"subject: Pending subject",
+			"sentAt: 2026-07-29",
+			"---",
+			"Pending body",
+		].join("\n"),
 	});
 	if (pending._nay) throw new Error(pending._nay.message);
 
@@ -7654,13 +7805,19 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 		const updates = await ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const lastSequence = await ctx.db
 			.query("files_yjs_docs_last_sequences")
 			.withIndex("by_organization_workspace_fileNode", (q) =>
-				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.first();
 		return {
@@ -7816,7 +7973,10 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 		ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect(),
 	);
@@ -7899,7 +8059,9 @@ test("/api/files/contextual-prompt gives every executed model call a server-owne
 		},
 	} as never);
 	streamTextMock.mockImplementation(
-		(options: { onFinish?: (event: { totalUsage: { inputTokens: number; outputTokens: number } }) => PromiseLike<void> | void }) =>
+		(options: {
+			onFinish?: (event: { totalUsage: { inputTokens: number; outputTokens: number } }) => PromiseLike<void> | void;
+		}) =>
 			({
 				toUIMessageStreamResponse: async () => {
 					await options.onFinish?.({
@@ -8118,7 +8280,10 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 			yjsUpdates: await ctx.db
 				.query("files_yjs_updates")
 				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", createdFile._yay.nodeId),
 				)
 				.collect(),
 		};
@@ -8634,7 +8799,9 @@ describe("external/system mount text materialization (Phase D)", () => {
 			const assets = await ctx.db
 				.query("files_r2_assets")
 				.withIndex("by_organization_workspace", (q) =>
-					q.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID).eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+					q
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 				)
 				.collect();
 			return { node, assetCount: assets.length };
@@ -8888,10 +9055,7 @@ describe("plain text file stats and delete-all", () => {
 		return { nodeId, plainDoc };
 	}
 
-	async function read_file_stats(
-		t: ReturnType<typeof test_convex>,
-		nodeId: Id<"files_nodes">,
-	) {
+	async function read_file_stats(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
 		return await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
 			return node?.statsId ? await ctx.db.get("file_stats", node.statsId) : null;
@@ -8973,15 +9137,16 @@ describe("plain text file stats and delete-all", () => {
 		if (firstMaterialize._nay) {
 			throw new Error(firstMaterialize._nay.message);
 		}
-		const chunkCountBefore = await t.run(async (ctx) =>
-			(
-				await ctx.db
-					.query("files_plain_text_chunks")
-					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
-					)
-					.collect()
-			).length,
+		const chunkCountBefore = await t.run(
+			async (ctx) =>
+				(
+					await ctx.db
+						.query("files_plain_text_chunks")
+						.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+							q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+						)
+						.collect()
+				).length,
 		);
 		expect(chunkCountBefore).toBeGreaterThan(0);
 
@@ -9156,18 +9321,21 @@ describe("files_db_yjs_push_update door 1", () => {
 			},
 			message: "Unsupported update encoding",
 		},
-	])("refuses $title into a plain-text node, inserts no row, and leaves lastSequence unchanged", async ({ update, message }) => {
-		const t = test_convex();
-		const { db, nodeId } = await create_door_fixture(t, `/door-refusal-${Math.random().toString(36).slice(2)}.md`);
-		const before = await read_log_state(t, db, nodeId);
+	])(
+		"refuses $title into a plain-text node, inserts no row, and leaves lastSequence unchanged",
+		async ({ update, message }) => {
+			const t = test_convex();
+			const { db, nodeId } = await create_door_fixture(t, `/door-refusal-${Math.random().toString(36).slice(2)}.md`);
+			const before = await read_log_state(t, db, nodeId);
 
-		const result = await push_bytes(t, db, nodeId, update(), "plain_text");
+			const result = await push_bytes(t, db, nodeId, update(), "plain_text");
 
-		expect(result._nay?.message).toBe(message);
-		const after = await read_log_state(t, db, nodeId);
-		expect(after.rowCount).toBe(before.rowCount);
-		expect(after.lastSequence).toBe(before.lastSequence);
-	});
+			expect(result._nay?.message).toBe(message);
+			const after = await read_log_state(t, db, nodeId);
+			expect(after.rowCount).toBe(before.rowCount);
+			expect(after.lastSequence).toBe(before.lastSequence);
+		},
+	);
 
 	test("refuses zero bytes before decode with no sequence or update write", async () => {
 		const t = test_convex();
@@ -9191,7 +9359,13 @@ describe("files_db_yjs_push_update door 1", () => {
 		// "Malformed update" instead of the size message. Fill with 0xff — zero-filled bytes
 		// decode cleanly as a v1 no-op, which would let the reserve gate's row cap answer
 		// "Update too large" even with the pre-decode check gone.
-		const result = await push_bytes(t, db, nodeId, new Uint8Array(files_MAX_YJS_WIRE_BYTES + 1).fill(255), "plain_text");
+		const result = await push_bytes(
+			t,
+			db,
+			nodeId,
+			new Uint8Array(files_MAX_YJS_WIRE_BYTES + 1).fill(255),
+			"plain_text",
+		);
 
 		expect(result._nay?.message).toBe("Update too large");
 		const after = await read_log_state(t, db, nodeId);
@@ -9356,13 +9530,14 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 				contentFrontmatterTooLargeIndexDocumentCount: files_metadata_MAX_FRONTMATTER_FIELDS + 2,
 			});
 		});
-		const jobCountBefore = await t.run(async (ctx) =>
-			(
-				await ctx.db
-					.query("files_content_materialization_jobs")
-					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
-					.collect()
-			).length,
+		const jobCountBefore = await t.run(
+			async (ctx) =>
+				(
+					await ctx.db
+						.query("files_content_materialization_jobs")
+						.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+						.collect()
+				).length,
 		);
 
 		const result = await t.run(async (ctx) =>
@@ -9378,13 +9553,14 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 		expect(result._nay?.message).toBe("File is not accepting new edits until an operator repairs it");
 
 		// The honest branch enqueues no materialization: it would settle again without freeing budget.
-		const jobCountAfter = await t.run(async (ctx) =>
-			(
-				await ctx.db
-					.query("files_content_materialization_jobs")
-					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
-					.collect()
-			).length,
+		const jobCountAfter = await t.run(
+			async (ctx) =>
+				(
+					await ctx.db
+						.query("files_content_materialization_jobs")
+						.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+						.collect()
+				).length,
 		);
 		expect(jobCountAfter).toBe(jobCountBefore);
 
@@ -9854,9 +10030,9 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		expect(getUrlSpy).not.toHaveBeenCalled();
 	});
 
-	test("finalize refuses a stale target sequence, and refused fresh assets are deleted", async () => {
+	test("finalize refuses a stale target sequence, and cleanup durably owns the fresh assets", async () => {
 		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: db.organizationId,
@@ -9926,7 +10102,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		});
 		expect(finalized._nay?.message).toBe("Stale repair: the file advanced");
 
-		// The refused fresh uploads are deleted; the node's real assets are untouched.
+		// The refused fresh uploads move to durable cleanup; the node's real assets are untouched.
 		await t.mutation(internal.files_nodes_content.delete_unfinalized_repair_assets, {
 			assetIds: [yjsSnapshotAssetId, contentSnapshotAssetId],
 		});
@@ -9934,6 +10110,12 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			expect(await ctx.db.get("files_r2_assets", yjsSnapshotAssetId)).toBeNull();
 			expect(await ctx.db.get("files_r2_assets", contentSnapshotAssetId)).toBeNull();
 		});
+		const cleanupJobs = await read_deletion_jobs(t);
+		expect(cleanupJobs.map((job) => job.reason)).toEqual(["failed_create", "failed_create"]);
+		expect(cleanupJobs.map((job) => job.r2Key).sort()).toEqual(
+			expected_ledger_keys(db, [yjsSnapshotAssetId, contentSnapshotAssetId]),
+		);
+		expect(deleteObjectSpy).not.toHaveBeenCalled();
 	});
 
 	test("default repair rebuilds the document from its visible text, bumps the lineage, clears markers, and records the author", async () => {
@@ -10154,7 +10336,9 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			// The visible text still carries over-cap frontmatter, so the marker pair stays set
 			// with the fresh counts. Clearing it would hide the deliberately empty metadata index.
 			expect(node.contentFrontmatterTooLargeFieldCount).toBe(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
-			expect(node.contentFrontmatterTooLargeIndexDocumentCount).toBeGreaterThan(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
+			expect(node.contentFrontmatterTooLargeIndexDocumentCount).toBeGreaterThan(
+				files_metadata_MAX_FRONTMATTER_FIELDS + 1,
+			);
 
 			// The deadlock is resolved: the counters reset, so the user can push the fitting edit.
 			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId);
@@ -10296,5 +10480,3411 @@ describe("files_nodes.yjs_prepare_doc_last_snapshot", () => {
 		// A node written before the field existed resolves to rich_text; the response value is
 		// required, never absent.
 		expect(prepared?.yjsRootKind).toBe("rich_text");
+	});
+});
+
+/**
+ * A small tree for the read-only pointer tests:
+ * /outer, /outer/inner, /outer/inner/deep, /outer/sibling, plus /outer/frozen archived before any
+ * lock exists, so the cascade tests can prove archived descendants are covered too.
+ */
+async function seed_read_only_lock_tree(t: ReturnType<typeof test_convex>) {
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Read Only Test User",
+	});
+
+	const outer = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		path: "outer",
+	});
+	if (outer._nay) {
+		throw new Error(outer._nay.message);
+	}
+	const inner = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: outer._yay.nodeId,
+		path: "inner",
+	});
+	if (inner._nay) {
+		throw new Error(inner._nay.message);
+	}
+	const deep = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: inner._yay.nodeId,
+		path: "deep",
+	});
+	if (deep._nay) {
+		throw new Error(deep._nay.message);
+	}
+	const sibling = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: outer._yay.nodeId,
+		path: "sibling",
+	});
+	if (sibling._nay) {
+		throw new Error(sibling._nay.message);
+	}
+	const frozen = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: outer._yay.nodeId,
+		path: "frozen",
+	});
+	if (frozen._nay) {
+		throw new Error(frozen._nay.message);
+	}
+	const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+		membershipId: db.membershipId,
+		nodeIds: [frozen._yay.nodeId],
+	});
+	if (archived._nay) {
+		throw new Error(archived._nay.message);
+	}
+
+	return {
+		db,
+		asUser,
+		outerId: outer._yay.nodeId,
+		innerId: inner._yay.nodeId,
+		deepId: deep._yay.nodeId,
+		siblingId: sibling._yay.nodeId,
+		frozenId: frozen._yay.nodeId,
+	};
+}
+
+/**
+ * Create an archived `/docs` tree with a locked, restricted child, then create a new active
+ * `/docs` tree. The two roots share paths but not parent lineage.
+ */
+async function seed_reused_read_only_path_tree(t: ReturnType<typeof test_convex>) {
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Read Only Path Reuse Owner",
+	});
+
+	const archivedRoot = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		path: "docs",
+	});
+	if (archivedRoot._nay) {
+		throw new Error(archivedRoot._nay.message);
+	}
+	const archivedChild = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: archivedRoot._yay.nodeId,
+		path: "secret",
+	});
+	if (archivedChild._nay) {
+		throw new Error(archivedChild._nay.message);
+	}
+	const restricted = await asUser.mutation(api.files_sharing.restrict_node, {
+		membershipId: db.membershipId,
+		nodeId: archivedChild._yay.nodeId,
+	});
+	if (restricted._nay) {
+		throw new Error(restricted._nay.message);
+	}
+	const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+		membershipId: db.membershipId,
+		nodeIds: [archivedRoot._yay.nodeId],
+	});
+	if (archived._nay) {
+		throw new Error(archived._nay.message);
+	}
+	await set_read_only_or_throw(asUser, db.membershipId, archivedChild._yay.nodeId);
+
+	const activeRoot = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		path: "docs",
+	});
+	if (activeRoot._nay) {
+		throw new Error(activeRoot._nay.message);
+	}
+	const activeChild = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: activeRoot._yay.nodeId,
+		path: "current",
+	});
+	if (activeChild._nay) {
+		throw new Error(activeChild._nay.message);
+	}
+	const target = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		path: "target",
+	});
+	if (target._nay) {
+		throw new Error(target._nay.message);
+	}
+
+	return {
+		db,
+		asUser,
+		archivedRootId: archivedRoot._yay.nodeId,
+		archivedChildId: archivedChild._yay.nodeId,
+		activeRootId: activeRoot._yay.nodeId,
+		activeChildId: activeChild._yay.nodeId,
+		targetId: target._yay.nodeId,
+	};
+}
+
+function read_lock_node(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
+	return t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
+}
+
+describe("files_nodes.set_node_read_only", () => {
+	test("locks a folder and cascades over active and archived descendants", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId, deepId, siblingId, frozenId } = await seed_read_only_lock_tree(t);
+
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+		});
+		expect(locked._nay).toBeUndefined();
+
+		const outer = await read_lock_node(t, outerId);
+		expect(outer?.readOnlyScopeNodeId).toBe(outerId);
+
+		for (const nodeId of [innerId, deepId, siblingId]) {
+			const node = await read_lock_node(t, nodeId);
+			expect(node?.readOnlyScopeNodeId).toBe(outerId);
+		}
+
+		// The archived child is repointed too: a folder lock covers archived descendants (RO-05).
+		const frozen = await read_lock_node(t, frozenId);
+		expect(frozen?.archiveOperationId).toBeDefined();
+		expect(frozen?.readOnlyScopeNodeId).toBe(outerId);
+	});
+
+	test("a nested explicit lock keeps its own pointer and the cascade stops there", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
+
+		const innerLocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: innerId,
+		});
+		expect(innerLocked._nay).toBeUndefined();
+		const outerLocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+		});
+		expect(outerLocked._nay).toBeUndefined();
+
+		const outer = await read_lock_node(t, outerId);
+		expect(outer?.readOnlyScopeNodeId).toBe(outerId);
+		const sibling = await read_lock_node(t, siblingId);
+		expect(sibling?.readOnlyScopeNodeId).toBe(outerId);
+
+		// The nested explicit root and its subtree keep their own pointer.
+		const inner = await read_lock_node(t, innerId);
+		expect(inner?.readOnlyScopeNodeId).toBe(innerId);
+		const deep = await read_lock_node(t, deepId);
+		expect(deep?.readOnlyScopeNodeId).toBe(innerId);
+	});
+
+	test("an inherited node may take its own explicit lock that survives the outer unlock", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
+
+		const outerLocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+		});
+		expect(outerLocked._nay).toBeUndefined();
+		const innerLocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: innerId,
+		});
+		expect(innerLocked._nay).toBeUndefined();
+
+		// The inherited node's pointer becomes itself, and its subtree repoints at it.
+		const innerAfterLock = await read_lock_node(t, innerId);
+		expect(innerAfterLock?.readOnlyScopeNodeId).toBe(innerId);
+		const deepAfterLock = await read_lock_node(t, deepId);
+		expect(deepAfterLock?.readOnlyScopeNodeId).toBe(innerId);
+
+		const outerUnlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+		});
+		expect(outerUnlocked._nay).toBeUndefined();
+
+		const outer = await read_lock_node(t, outerId);
+		expect(outer?.readOnlyScopeNodeId).toBeUndefined();
+		const sibling = await read_lock_node(t, siblingId);
+		expect(sibling?.readOnlyScopeNodeId).toBeUndefined();
+
+		// The direct lock survives the outer unlock.
+		const inner = await read_lock_node(t, innerId);
+		expect(inner?.readOnlyScopeNodeId).toBe(innerId);
+		const deep = await read_lock_node(t, deepId);
+		expect(deep?.readOnlyScopeNodeId).toBe(innerId);
+	});
+
+	test("locking is idempotent", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId } = await seed_read_only_lock_tree(t);
+
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+		});
+		expect(locked._nay).toBeUndefined();
+		const lockedAgain = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+		});
+		expect(lockedAgain._nay).toBeUndefined();
+
+		const outer = await read_lock_node(t, outerId);
+		expect(outer?.readOnlyScopeNodeId).toBe(outerId);
+		const inner = await read_lock_node(t, innerId);
+		expect(inner?.readOnlyScopeNodeId).toBe(outerId);
+	});
+
+	test("locks an archived explicit root", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Test User",
+		});
+
+		const cold = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "cold",
+		});
+		if (cold._nay) {
+			throw new Error(cold._nay.message);
+		}
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [cold._yay.nodeId],
+		});
+		expect(archived._nay).toBeUndefined();
+
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: cold._yay.nodeId,
+		});
+		expect(locked._nay).toBeUndefined();
+
+		const coldNode = await read_lock_node(t, cold._yay.nodeId);
+		expect(coldNode?.readOnlyScopeNodeId).toBe(cold._yay.nodeId);
+	});
+
+	test("locking a new active folder ignores a restricted archived tree with the same path", async () => {
+		const t = test_convex();
+		const { db, asUser, archivedChildId, activeRootId, activeChildId } =
+			await seed_reused_read_only_path_tree(t);
+		const manager = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_read_only_path_reuse_manager" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			return { userId, membershipId };
+		});
+		const role = await asUser.mutation(api.access_control.create_role, {
+			organizationId: db.organizationId,
+			name: "Path Reuse Lock Manager",
+			description: "",
+			permissions: ["content.read", "content.write", "content.permissions.manage"],
+		});
+		if (role._nay) {
+			throw new Error(role._nay.message);
+		}
+		const assigned = await asUser.mutation(api.access_control.set_user_role, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: manager.userId,
+			role: role._yay.roleId,
+		});
+		if (assigned._nay) {
+			throw new Error(assigned._nay.message);
+		}
+		const asManager = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: manager.userId,
+			name: "Read Only Path Reuse Manager",
+		});
+
+		const locked = await asManager.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: manager.membershipId,
+			nodeId: activeRootId,
+		});
+		expect(locked._nay).toBeUndefined();
+		expect((await read_lock_node(t, activeRootId))?.readOnlyScopeNodeId).toBe(activeRootId);
+		expect((await read_lock_node(t, activeChildId))?.readOnlyScopeNodeId).toBe(activeRootId);
+		expect((await read_lock_node(t, archivedChildId))?.readOnlyScopeNodeId).toBe(archivedChildId);
+	});
+});
+
+describe("files_nodes.set_node_writable", () => {
+	test("unlocks an explicit root and clears the subtree", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId, deepId, siblingId, frozenId } = await seed_read_only_lock_tree(t);
+
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+		});
+		expect(locked._nay).toBeUndefined();
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+		});
+		expect(unlocked._nay).toBeUndefined();
+
+		// Every affected node, including the archived child, is writable again.
+		for (const nodeId of [outerId, innerId, deepId, siblingId, frozenId]) {
+			const node = await read_lock_node(t, nodeId);
+			expect(node?.readOnlyScopeNodeId).toBeUndefined();
+		}
+	});
+
+	test("unlocking an explicit root under an outer lock falls back to the outer pointer", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId, deepId } = await seed_read_only_lock_tree(t);
+
+		for (const nodeId of [outerId, innerId]) {
+			const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+				membershipId: db.membershipId,
+				nodeId,
+			});
+			expect(locked._nay).toBeUndefined();
+		}
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+			membershipId: db.membershipId,
+			nodeId: innerId,
+		});
+		expect(unlocked._nay).toBeUndefined();
+
+		// The direct lock is gone, but the outer lock still covers the subtree, so the node stays
+		// effectively read-only through the inherited pointer.
+		const inner = await read_lock_node(t, innerId);
+		expect(inner?.readOnlyScopeNodeId).toBe(outerId);
+		const deep = await read_lock_node(t, deepId);
+		expect(deep?.readOnlyScopeNodeId).toBe(outerId);
+	});
+
+	test("unlocking an inherited node is refused and changes nothing", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId } = await seed_read_only_lock_tree(t);
+
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+		});
+		expect(locked._nay).toBeUndefined();
+
+		const refused = await asUser.mutation(api.files_nodes.set_node_writable, {
+			membershipId: db.membershipId,
+			nodeId: innerId,
+		});
+		expect(refused._nay?.message).toBe("This is not directly read-only");
+
+		const inner = await read_lock_node(t, innerId);
+		expect(inner?.readOnlyScopeNodeId).toBe(outerId);
+
+		// Use the same path to prove the direct lock can be removed.
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+		});
+		expect(unlocked._nay).toBeUndefined();
+	});
+
+	test("unlocking a writable node is an idempotent no-op", async () => {
+		const t = test_convex();
+		const { db, asUser, siblingId } = await seed_read_only_lock_tree(t);
+
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+			membershipId: db.membershipId,
+			nodeId: siblingId,
+		});
+		expect(unlocked._nay).toBeUndefined();
+
+		const sibling = await read_lock_node(t, siblingId);
+		expect(sibling?.readOnlyScopeNodeId).toBeUndefined();
+	});
+
+	test("locks and unlocks an archived root", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Test User",
+		});
+
+		const cold = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "cold",
+		});
+		if (cold._nay) {
+			throw new Error(cold._nay.message);
+		}
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [cold._yay.nodeId],
+		});
+		expect(archived._nay).toBeUndefined();
+
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: cold._yay.nodeId,
+		});
+		expect(locked._nay).toBeUndefined();
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+			membershipId: db.membershipId,
+			nodeId: cold._yay.nodeId,
+		});
+		expect(unlocked._nay).toBeUndefined();
+
+		const coldNode = await read_lock_node(t, cold._yay.nodeId);
+		expect(coldNode?.readOnlyScopeNodeId).toBeUndefined();
+	});
+});
+
+describe("files_node_require_writable", () => {
+	test("a node with no pointer is writable", () => {
+		expect(files_node_require_writable({ readOnlyScopeNodeId: undefined })._nay).toBeUndefined();
+	});
+
+	test("a locked node refuses with the stable read_only classification", () => {
+		const refused = files_node_require_writable({
+			readOnlyScopeNodeId: "read_only_scope_node" as Id<"files_nodes">,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+	});
+});
+
+describe("new-node read-only inheritance", () => {
+	test("a normal creation starts unlocked", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Test User",
+		});
+
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "fresh",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+
+		// Normal tenant creation starts unlocked: only a named migration/repair caller may opt
+		// into inheriting a lock pointer at insert time.
+		const node = await read_lock_node(t, folder._yay.nodeId);
+		expect(node?.readOnlyScopeNodeId).toBeUndefined();
+	});
+});
+
+/** Lock a node through the public mutation. Fail the test when the mutation refuses. */
+async function set_read_only_or_throw(
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	membershipId: Id<"organizations_workspaces_users">,
+	nodeId: Id<"files_nodes">,
+) {
+	const locked = await asUser.mutation(api.files_nodes.set_node_read_only, { membershipId, nodeId });
+	if (locked._nay) {
+		throw new Error(locked._nay.message);
+	}
+}
+
+/** Unlock a node through the public mutation. Fail the test when the mutation refuses. */
+async function set_writable_or_throw(
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	membershipId: Id<"organizations_workspaces_users">,
+	nodeId: Id<"files_nodes">,
+) {
+	const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, { membershipId, nodeId });
+	if (unlocked._nay) {
+		throw new Error(unlocked._nay.message);
+	}
+}
+
+/** The active child with this name under the parent, or null when none exists. */
+function read_active_child(
+	t: ReturnType<typeof test_convex>,
+	db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+	parentId: Id<"files_nodes"> | typeof files_ROOT_ID,
+	name: string,
+) {
+	return t.run(async (ctx) =>
+		ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("parentId", parentId)
+					.eq("name", name)
+					.eq("archiveOperationId", undefined),
+			)
+			.first(),
+	);
+}
+
+describe("files_nodes.create_folder_node read-only gates", () => {
+	test("creating inside a locked folder is refused, writes nothing, and succeeds after unlock", async () => {
+		const t = test_convex();
+		const { db, asUser, innerId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+
+		// The caller is the organization owner: locks bind owners too (RO-03).
+		const refused = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: innerId,
+			path: "blocked",
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+		expect(await read_active_child(t, db, innerId, "blocked")).toBeNull();
+
+		await set_writable_or_throw(asUser, db.membershipId, innerId);
+		const created = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: innerId,
+			path: "blocked",
+		});
+		expect(created._nay).toBeUndefined();
+		expect(await read_active_child(t, db, innerId, "blocked")).not.toBeNull();
+	});
+
+	test("an unlocked folder with a locked descendant still accepts a new sibling", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+
+		const created = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: outerId,
+			path: "fresh-sib",
+		});
+		expect(created._nay).toBeUndefined();
+		expect(await read_active_child(t, db, outerId, "fresh-sib")).not.toBeNull();
+	});
+
+	test("a nested path through a locked segment is refused before any intermediate folder exists", async () => {
+		const t = test_convex();
+		const { db, asUser, innerId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+
+		// The path crosses unlocked `/outer`, then stops at read-only `/outer/inner`.
+		const refusedThroughSegment = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "outer/inner/deep2",
+		});
+		expect(refusedThroughSegment._nay?.name).toBe("read_only");
+		expect(await read_active_child(t, db, innerId, "deep2")).toBeNull();
+
+		// A missing chain directly under the locked parent is refused before the first insert, so no
+		// partial "a" folder is committed.
+		const refusedMissingChain = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: innerId,
+			path: "a/b",
+		});
+		expect(refusedMissingChain._nay?.name).toBe("read_only");
+		expect(await read_active_child(t, db, innerId, "a")).toBeNull();
+	});
+
+	test("the internal mkdir door refuses a locked path segment", async () => {
+		const t = test_convex();
+		const { db, asUser, innerId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+
+		const refused = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/outer/inner/made-by-agent",
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(await read_active_child(t, db, innerId, "made-by-agent")).toBeNull();
+	});
+});
+
+describe("files_nodes destination conflict privacy", () => {
+	test("rename and move authorize a restricted destination occupant before reporting its conflict", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const fixture = await t.run(async (ctx) => {
+			const now = Date.now();
+			const memberUserId = await ctx.db.insert("users", {
+				clerkUserId: "clerk_destination_conflict_member",
+			});
+			const memberMembershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: memberUserId,
+				active: true,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: memberUserId,
+				role: "member",
+				createdAt: now,
+				updatedAt: now,
+			});
+
+			const commonFile = {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				kind: "file" as const,
+				lowercaseExtension: "md",
+				contentType: "text/markdown;charset=utf-8",
+				updatedAt: now,
+			};
+			const renameSourceId = await ctx.db.insert("files_nodes", {
+				...commonFile,
+				parentId: files_ROOT_ID,
+				name: "rename-source.md",
+				path: "/rename-source.md",
+				treePath: "/rename-source.md",
+				pathDepth: 1,
+			});
+			const renameConflictId = await ctx.db.insert("files_nodes", {
+				...commonFile,
+				parentId: files_ROOT_ID,
+				name: "rename-hidden.md",
+				path: "/rename-hidden.md",
+				treePath: "/rename-hidden.md",
+				pathDepth: 1,
+			});
+			const moveTargetId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				parentId: files_ROOT_ID,
+				name: "move-target",
+				kind: "folder",
+				path: "/move-target",
+				treePath: "/move-target/",
+				pathDepth: 1,
+				lowercaseExtension: null,
+				updatedAt: now,
+			});
+			const moveSourceId = await ctx.db.insert("files_nodes", {
+				...commonFile,
+				parentId: files_ROOT_ID,
+				name: "move-source.md",
+				path: "/move-source.md",
+				treePath: "/move-source.md",
+				pathDepth: 1,
+			});
+			const moveConflictId = await ctx.db.insert("files_nodes", {
+				...commonFile,
+				parentId: moveTargetId,
+				name: "move-source.md",
+				path: "/move-target/move-source.md",
+				treePath: "/move-target/move-source.md",
+				pathDepth: 2,
+			});
+			await ctx.db.patch("files_nodes", renameConflictId, { restrictedScopeNodeId: renameConflictId });
+			await ctx.db.patch("files_nodes", moveConflictId, { restrictedScopeNodeId: moveConflictId });
+
+			return {
+				memberUserId,
+				memberMembershipId,
+				renameSourceId,
+				renameConflictId,
+				moveTargetId,
+				moveSourceId,
+				moveConflictId,
+			};
+		});
+		const asMember = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.memberUserId,
+			name: "Destination Conflict Member",
+		});
+
+		const hiddenRename = await asMember.mutation(api.files_nodes.rename_node, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: fixture.renameSourceId,
+			path: "rename-hidden.md",
+		});
+		expect(hiddenRename._nay).toMatchObject({ name: "nay", message: "Permission denied" });
+
+		const hiddenMove = await asMember.mutation(api.files_nodes.move_nodes, {
+			membershipId: fixture.memberMembershipId,
+			itemIds: [fixture.moveSourceId],
+			targetParentId: fixture.moveTargetId,
+		});
+		expect(hiddenMove._nay).toMatchObject({ name: "nay", message: "Permission denied" });
+		expect(await read_lock_node(t, fixture.renameSourceId)).toMatchObject({ path: "/rename-source.md" });
+		expect(await read_lock_node(t, fixture.moveSourceId)).toMatchObject({
+			parentId: files_ROOT_ID,
+			path: "/move-source.md",
+		});
+
+		// Once both conflicting nodes are visible, rename and move return the normal path conflict.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", fixture.renameConflictId, { restrictedScopeNodeId: undefined });
+			await ctx.db.patch("files_nodes", fixture.moveConflictId, { restrictedScopeNodeId: undefined });
+		});
+		const visibleRename = await asMember.mutation(api.files_nodes.rename_node, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: fixture.renameSourceId,
+			path: "rename-hidden.md",
+		});
+		expect(visibleRename._nay).toMatchObject({ name: "nay", message: "Path already exists" });
+
+		const visibleMove = await asMember.mutation(api.files_nodes.move_nodes, {
+			membershipId: fixture.memberMembershipId,
+			itemIds: [fixture.moveSourceId],
+			targetParentId: fixture.moveTargetId,
+		});
+		expect(visibleMove._nay).toMatchObject({ name: "nay", message: "Path already exists" });
+	});
+});
+
+describe("files_nodes.rename_node read-only gates", () => {
+	test("a locked node cannot be renamed and renames after unlock (owner gets no bypass)", async () => {
+		const t = test_convex();
+		const { db, asUser, innerId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+
+		const refused = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: innerId,
+			path: "inner2",
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		const innerAfterRefusal = await read_lock_node(t, innerId);
+		expect(innerAfterRefusal?.name).toBe("inner");
+		expect(innerAfterRefusal?.path).toBe("/outer/inner");
+
+		await set_writable_or_throw(asUser, db.membershipId, innerId);
+		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: innerId,
+			path: "inner2",
+		});
+		expect(renamed._nay).toBeUndefined();
+		expect((await read_lock_node(t, innerId))?.path).toBe("/outer/inner2");
+	});
+
+	test("an inherited lock refuses the rename too", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, siblingId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+
+		const refused = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: siblingId,
+			path: "sibling2",
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect((await read_lock_node(t, siblingId))?.path).toBe("/outer/sibling");
+	});
+
+	test("a locked descendant blocks renaming its ancestor folder", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+
+		const refused = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+			path: "outer2",
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect((await read_lock_node(t, outerId))?.path).toBe("/outer");
+		expect((await read_lock_node(t, deepId))?.path).toBe("/outer/inner/deep");
+
+		// A folder whose subtree holds no lock still renames while the sibling lock exists.
+		const renamedSibling = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: siblingId,
+			path: "sibling2",
+		});
+		expect(renamedSibling._nay).toBeUndefined();
+		expect((await read_lock_node(t, siblingId))?.path).toBe("/outer/sibling2");
+	});
+
+	test("a locked archived descendant also blocks renaming the folder", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, frozenId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, frozenId);
+
+		const refused = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+			path: "outer3",
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect((await read_lock_node(t, outerId))?.path).toBe("/outer");
+		const frozen = await read_lock_node(t, frozenId);
+		expect(frozen?.path).toBe("/outer/frozen");
+		expect(frozen?.archiveOperationId).toBeDefined();
+	});
+
+	test("a locked archived tree with the same path does not block renaming the new active tree", async () => {
+		const t = test_convex();
+		const { db, asUser, archivedChildId, activeRootId, activeChildId } =
+			await seed_reused_read_only_path_tree(t);
+
+		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: activeRootId,
+			path: "docs-renamed",
+		});
+		expect(renamed._nay).toBeUndefined();
+		expect((await read_lock_node(t, activeRootId))?.path).toBe("/docs-renamed");
+		expect((await read_lock_node(t, activeChildId))?.path).toBe("/docs-renamed/current");
+		expect((await read_lock_node(t, archivedChildId))?.path).toBe("/docs/secret");
+	});
+
+	test("renaming into a locked destination folder is refused", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId, siblingId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+
+		const refused = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: siblingId,
+			path: "inner/sibling",
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		const sibling = await read_lock_node(t, siblingId);
+		expect(sibling?.parentId).toBe(outerId);
+		expect(sibling?.path).toBe("/outer/sibling");
+	});
+
+	test("a refused rename leaves no partially created intermediate folder", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId, deepId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+
+		// The path needs a new `made` folder under `/outer`.
+		// Check the locked descendant before creating that folder.
+		const refused = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: innerId,
+			path: "made/inner2",
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(await read_active_child(t, db, outerId, "made")).toBeNull();
+		expect((await read_lock_node(t, innerId))?.path).toBe("/outer/inner");
+	});
+});
+
+describe("files_nodes.move_nodes read-only gates", () => {
+	test("one locked node in the batch refuses the whole move and nothing moves", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, siblingId);
+
+		const refused = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [deepId, siblingId],
+			targetParentId: files_ROOT_ID,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		const deep = await read_lock_node(t, deepId);
+		expect(deep?.parentId).toBe(innerId);
+		expect(deep?.path).toBe("/outer/inner/deep");
+		const sibling = await read_lock_node(t, siblingId);
+		expect(sibling?.parentId).toBe(outerId);
+		expect(sibling?.path).toBe("/outer/sibling");
+	});
+
+	test("moving into a locked destination folder is refused", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId, siblingId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+
+		const refused = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [siblingId],
+			targetParentId: innerId,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		const sibling = await read_lock_node(t, siblingId);
+		expect(sibling?.parentId).toBe(outerId);
+		expect(sibling?.path).toBe("/outer/sibling");
+	});
+
+	test("a locked descendant blocks moving its ancestor folder", async () => {
+		const t = test_convex();
+		const { db, asUser, deepId, innerId, siblingId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+
+		const refused = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [innerId],
+			targetParentId: files_ROOT_ID,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect((await read_lock_node(t, innerId))?.path).toBe("/outer/inner");
+		expect((await read_lock_node(t, deepId))?.path).toBe("/outer/inner/deep");
+
+		// A folder with no locked subtree member still moves while the other lock exists.
+		const movedSibling = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [siblingId],
+			targetParentId: files_ROOT_ID,
+		});
+		expect(movedSibling._nay).toBeUndefined();
+		expect((await read_lock_node(t, siblingId))?.path).toBe("/sibling");
+	});
+
+	test("a locked archived descendant blocks moving the folder", async () => {
+		const t = test_convex();
+		const { db, asUser, innerId, deepId } = await seed_read_only_lock_tree(t);
+
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [deepId],
+		});
+		expect(archived._nay).toBeUndefined();
+		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+
+		const refused = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [innerId],
+			targetParentId: files_ROOT_ID,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect((await read_lock_node(t, innerId))?.path).toBe("/outer/inner");
+		const deep = await read_lock_node(t, deepId);
+		expect(deep?.path).toBe("/outer/inner/deep");
+		expect(deep?.archiveOperationId).toBeDefined();
+	});
+
+	test("a locked archived tree with the same path does not block moving the new active tree", async () => {
+		const t = test_convex();
+		const { db, asUser, archivedChildId, activeRootId, activeChildId, targetId } =
+			await seed_reused_read_only_path_tree(t);
+
+		const moved = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [activeRootId],
+			targetParentId: targetId,
+		});
+		expect(moved._nay).toBeUndefined();
+		expect((await read_lock_node(t, activeRootId))?.path).toBe("/target/docs");
+		expect((await read_lock_node(t, activeChildId))?.path).toBe("/target/docs/current");
+		expect((await read_lock_node(t, archivedChildId))?.path).toBe("/docs/secret");
+	});
+});
+
+describe("files_nodes.archive_nodes read-only gates", () => {
+	test("archiving a locked node is refused and archives after unlock", async () => {
+		const t = test_convex();
+		const { db, asUser, siblingId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, siblingId);
+
+		const refused = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [siblingId],
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect((await read_lock_node(t, siblingId))?.archiveOperationId).toBeUndefined();
+
+		await set_writable_or_throw(asUser, db.membershipId, siblingId);
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [siblingId],
+		});
+		expect(archived._nay).toBeUndefined();
+		expect((await read_lock_node(t, siblingId))?.archiveOperationId).toBeDefined();
+	});
+
+	test("a locked active descendant blocks archiving the folder", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+
+		const refused = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [outerId],
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		for (const nodeId of [outerId, innerId, deepId, siblingId]) {
+			expect((await read_lock_node(t, nodeId))?.archiveOperationId).toBeUndefined();
+		}
+	});
+
+	test("a locked archived tree with the same path does not block archiving the new active tree", async () => {
+		const t = test_convex();
+		const { db, asUser, archivedRootId, archivedChildId, activeRootId, activeChildId } =
+			await seed_reused_read_only_path_tree(t);
+		const archivedRootBefore = await read_lock_node(t, archivedRootId);
+		const archivedChildBefore = await read_lock_node(t, archivedChildId);
+
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [activeRootId],
+		});
+		expect(archived._nay).toBeUndefined();
+		const activeRoot = await read_lock_node(t, activeRootId);
+		const activeChild = await read_lock_node(t, activeChildId);
+		expect(activeRoot?.archiveOperationId).toBeDefined();
+		expect(activeChild?.archiveOperationId).toBe(activeRoot?.archiveOperationId);
+		expect((await read_lock_node(t, archivedRootId))?.archiveOperationId).toBe(
+			archivedRootBefore?.archiveOperationId,
+		);
+		expect((await read_lock_node(t, archivedChildId))?.archiveOperationId).toBe(
+			archivedChildBefore?.archiveOperationId,
+		);
+	});
+
+	test("archived descendants: hidden unlocked ignored, visible locked refused, hidden locked stays hidden", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Owner",
+		});
+
+		// Three parents, each with one archived child in a different lock/visibility state.
+		const parentIds: Array<Id<"files_nodes">> = [];
+		const childIds: Array<Id<"files_nodes">> = [];
+		for (const index of [1, 2, 3]) {
+			const parent = await asOwner.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				path: `arch${index}`,
+			});
+			if (parent._nay) {
+				throw new Error(parent._nay.message);
+			}
+			const child = await asOwner.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId,
+				parentId: parent._yay.nodeId,
+				path: `c${index}`,
+			});
+			if (child._nay) {
+				throw new Error(child._nay.message);
+			}
+			parentIds.push(parent._yay.nodeId);
+			childIds.push(child._yay.nodeId);
+		}
+		const [arch1Id, arch2Id, arch3Id] = parentIds;
+		const [c1Id, c2Id, c3Id] = childIds;
+		if (!arch1Id || !arch2Id || !arch3Id || !c1Id || !c2Id || !c3Id) {
+			throw new Error("Expected three parents and three children");
+		}
+
+		const archivedChildren = await asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [c1Id, c2Id, c3Id],
+		});
+		expect(archivedChildren._nay).toBeUndefined();
+		await set_read_only_or_throw(asOwner, db.membershipId, c2Id);
+		await set_read_only_or_throw(asOwner, db.membershipId, c3Id);
+
+		// Restrict c1 and c3 so a plain member cannot read them. The member has no grant on these
+		// scopes, so both children are hidden to them.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", c1Id, { restrictedScopeNodeId: c1Id });
+			await ctx.db.patch("files_nodes", c3Id, { restrictedScopeNodeId: c3Id });
+		});
+
+		const other = await t.run(async (ctx) => {
+			const otherUserId = await ctx.db.insert("users", {
+				clerkUserId: "clerk_read_only_archived_member",
+			});
+			const now = Date.now();
+			const otherMembershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: otherUserId,
+				active: true,
+				updatedAt: now,
+			});
+			// Archiving needs `content.write`, which comes from the member role.
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: otherUserId,
+				role: "member",
+				createdAt: now,
+				updatedAt: now,
+			});
+			return { otherUserId, otherMembershipId };
+		});
+		const asMember = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: other.otherUserId,
+			name: "Read Only Member",
+		});
+
+		// Hidden but unlocked: the archive call will not write the archived child, so it is ignored
+		// and the ordinary ACL scope does not widen.
+		const c1Before = await read_lock_node(t, c1Id);
+		const archivedArch1 = await asMember.mutation(api.files_nodes.archive_nodes, {
+			membershipId: other.otherMembershipId,
+			nodeIds: [arch1Id],
+		});
+		expect(archivedArch1._nay).toBeUndefined();
+		expect((await read_lock_node(t, arch1Id))?.archiveOperationId).toBeDefined();
+		expect((await read_lock_node(t, c1Id))?.archiveOperationId).toBe(c1Before?.archiveOperationId);
+
+		// Visible and locked: the precise read-only refusal, and no write happened.
+		const refusedVisible = await asMember.mutation(api.files_nodes.archive_nodes, {
+			membershipId: other.otherMembershipId,
+			nodeIds: [arch2Id],
+		});
+		expect(refusedVisible._nay?.name).toBe("read_only");
+		expect(refusedVisible._nay?.message).toBe("This item is read-only.");
+		expect((await read_lock_node(t, arch2Id))?.archiveOperationId).toBeUndefined();
+
+		// Hidden and locked: the same generic denial hidden restricted content uses, never naming
+		// the node (RO-10).
+		const refusedHidden = await asMember.mutation(api.files_nodes.archive_nodes, {
+			membershipId: other.otherMembershipId,
+			nodeIds: [arch3Id],
+		});
+		expect(refusedHidden._nay?.message).toBe("Permission denied");
+		expect(refusedHidden._nay?.name).not.toBe("read_only");
+		expect((await read_lock_node(t, arch3Id))?.archiveOperationId).toBeUndefined();
+	});
+});
+
+describe("files_nodes.unarchive_nodes read-only gates", () => {
+	test("restoring one archived lineage ignores a locked archived tree that reused its path", async () => {
+		const t = test_convex();
+		const { db, asUser, archivedRootId, archivedChildId, activeRootId, activeChildId } =
+			await seed_reused_read_only_path_tree(t);
+
+		const archivedSecondTree = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [activeRootId],
+		});
+		expect(archivedSecondTree._nay).toBeUndefined();
+		const secondArchiveOperationId = (await read_lock_node(t, activeRootId))?.archiveOperationId;
+		expect(secondArchiveOperationId).toBeDefined();
+
+		const restoredSecondTree = await asUser.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [activeRootId],
+		});
+		expect(restoredSecondTree._nay).toBeUndefined();
+		expect((await read_lock_node(t, activeRootId))?.archiveOperationId).toBeUndefined();
+		expect((await read_lock_node(t, activeChildId))?.archiveOperationId).toBeUndefined();
+
+		// The first archived `/docs` tree has different parent ids.
+		// Its lock does not block this restore, and none of its nodes are restored.
+		const firstRoot = await read_lock_node(t, archivedRootId);
+		const firstChild = await read_lock_node(t, archivedChildId);
+		expect(firstRoot?.archiveOperationId).toBeDefined();
+		expect(firstChild?.archiveOperationId).toBeDefined();
+		expect(firstChild?.readOnlyScopeNodeId).toBe(archivedChildId);
+	});
+
+	test("a locked node anywhere in the restored subtree blocks the restore until unlock", async () => {
+		const t = test_convex();
+		const { db, asUser, innerId, deepId } = await seed_read_only_lock_tree(t);
+
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [innerId],
+		});
+		expect(archived._nay).toBeUndefined();
+		const innerArchivedOperationId = (await read_lock_node(t, innerId))?.archiveOperationId;
+		expect(innerArchivedOperationId).toBeDefined();
+
+		// A locked archived descendant blocks restoring its ancestor.
+		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+		const refusedByDescendant = await asUser.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [innerId],
+		});
+		expect(refusedByDescendant._nay?.name).toBe("read_only");
+		expect((await read_lock_node(t, innerId))?.archiveOperationId).toBe(innerArchivedOperationId);
+		expect((await read_lock_node(t, deepId))?.archiveOperationId).toBe(innerArchivedOperationId);
+
+		// The named node's own lock blocks too.
+		await set_writable_or_throw(asUser, db.membershipId, deepId);
+		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+		const refusedByNamedNode = await asUser.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [innerId],
+		});
+		expect(refusedByNamedNode._nay?.name).toBe("read_only");
+		expect((await read_lock_node(t, innerId))?.archiveOperationId).toBe(innerArchivedOperationId);
+
+		await set_writable_or_throw(asUser, db.membershipId, innerId);
+		const restored = await asUser.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [innerId],
+		});
+		expect(restored._nay).toBeUndefined();
+		const inner = await read_lock_node(t, innerId);
+		expect(inner?.archiveOperationId).toBeUndefined();
+		expect(inner?.path).toBe("/outer/inner");
+		const deep = await read_lock_node(t, deepId);
+		expect(deep?.archiveOperationId).toBeUndefined();
+		expect(deep?.path).toBe("/outer/inner/deep");
+	});
+});
+
+/**
+ * A file node with one stored snapshot for the snapshot archive-state gates. `archivedAt` seeds the
+ * snapshot's starting state. Each caller gets a fresh convex-test instance because the
+ * `files_snapshot_write` bucket only allows two writes per window, and every gate test spends both.
+ */
+async function seed_read_only_snapshot(t: ReturnType<typeof test_convex>, archivedAt: number) {
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Read Only Snapshot User",
+	});
+	const snapshotId = await t.run(async (ctx) => {
+		const assetId = await ctx.db.insert("files_r2_assets", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			kind: "content_snapshot",
+			r2Bucket: "test-bucket",
+			r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/read-only-snapshot`,
+			size: 0,
+			createdBy: db.userId,
+			updatedAt: Date.now(),
+		});
+		return await ctx.db.insert("files_snapshots", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			fileNodeId: db.files.file_root_1._id,
+			assetId,
+			createdBy: db.userId,
+			archivedAt,
+		});
+	});
+
+	return { db, asUser, snapshotId, fileNodeId: db.files.file_root_1._id };
+}
+
+describe("files_nodes.archive_snapshot and unarchive_snapshot read-only gates", () => {
+	test("archiving a snapshot of a locked file is refused while browsing stays allowed", async () => {
+		const t = test_convex();
+		const { db, asUser, snapshotId, fileNodeId } = await seed_read_only_snapshot(t, 0);
+
+		await set_read_only_or_throw(asUser, db.membershipId, fileNodeId);
+		const refused = await asUser.mutation(api.files_nodes.archive_snapshot, {
+			membershipId: db.membershipId,
+			snapshotId,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect((await t.run(async (ctx) => ctx.db.get("files_snapshots", snapshotId)))?.archivedAt).toBe(0);
+
+		// Browsing the version list stays allowed on a read-only file.
+		const listed = await asUser.query(api.files_nodes.get_file_snapshots_list, {
+			membershipId: db.membershipId,
+			nodeId: fileNodeId,
+			showArchived: false,
+		});
+		expect(listed.snapshots).toHaveLength(1);
+
+		await set_writable_or_throw(asUser, db.membershipId, fileNodeId);
+		const archivedSnapshot = await asUser.mutation(api.files_nodes.archive_snapshot, {
+			membershipId: db.membershipId,
+			snapshotId,
+		});
+		expect(archivedSnapshot._nay).toBeUndefined();
+		expect((await t.run(async (ctx) => ctx.db.get("files_snapshots", snapshotId)))?.archivedAt).toBeGreaterThan(0);
+	});
+
+	test("restoring a snapshot of a locked file is refused and succeeds after unlock", async () => {
+		const t = test_convex();
+		const seededArchivedAt = Date.now();
+		const { db, asUser, snapshotId, fileNodeId } = await seed_read_only_snapshot(t, seededArchivedAt);
+
+		await set_read_only_or_throw(asUser, db.membershipId, fileNodeId);
+		const refused = await asUser.mutation(api.files_nodes.unarchive_snapshot, {
+			membershipId: db.membershipId,
+			snapshotId,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect((await t.run(async (ctx) => ctx.db.get("files_snapshots", snapshotId)))?.archivedAt).toBe(seededArchivedAt);
+
+		await set_writable_or_throw(asUser, db.membershipId, fileNodeId);
+		const restoredSnapshot = await asUser.mutation(api.files_nodes.unarchive_snapshot, {
+			membershipId: db.membershipId,
+			snapshotId,
+		});
+		expect(restoredSnapshot._nay).toBeUndefined();
+		expect((await t.run(async (ctx) => ctx.db.get("files_snapshots", snapshotId)))?.archivedAt).toBe(0);
+	});
+});
+
+describe("files_nodes.yjs_push_update read-only gates", () => {
+	async function seed_yjs_push_file(t: ReturnType<typeof test_convex>, path: string) {
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Yjs User",
+		});
+		const createdFile = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path,
+		});
+		if (createdFile._nay) {
+			throw new Error(createdFile._nay.message);
+		}
+		return { db, asUser, nodeId: createdFile._yay.nodeId };
+	}
+
+	/** The file's Yjs write state: stored update docs and the reserved sequence counter. */
+	function read_yjs_write_state(
+		t: ReturnType<typeof test_convex>,
+		db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+		nodeId: Id<"files_nodes">,
+	) {
+		return t.run(async (ctx) => {
+			const updates = await ctx.db
+				.query("files_yjs_updates")
+				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+				)
+				.collect();
+			const lastSequence = await ctx.db
+				.query("files_yjs_docs_last_sequences")
+				.withIndex("by_organization_workspace_fileNode", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+				)
+				.first();
+			return { updateCount: updates.length, lastSequence: lastSequence?.lastSequence ?? null };
+		});
+	}
+
+	test("a direct lock refuses the push before any sequence reserve and unlock lets it through", async () => {
+		const t = test_convex();
+		const { db, asUser, nodeId } = await seed_yjs_push_file(t, "read-only-push-direct.md");
+		await set_read_only_or_throw(asUser, db.membershipId, nodeId);
+
+		const before = await read_yjs_write_state(t, db, nodeId);
+		// The current lock refuses the write.
+		const refused = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId,
+			update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
+			sessionId: "read-only-push-direct",
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+		// The refusal reserved no sequence and stored no update doc.
+		expect(await read_yjs_write_state(t, db, nodeId)).toEqual(before);
+
+		await set_writable_or_throw(asUser, db.membershipId, nodeId);
+		const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId,
+			update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
+			sessionId: "read-only-push-direct",
+		});
+		if (pushed._nay) {
+			throw new Error(pushed._nay.message);
+		}
+		expect(pushed._yay.newSequence).toBe(1);
+	});
+
+	test("an inherited lock from a parent folder refuses the push", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Yjs User",
+		});
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "locked-folder",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+		const createdFile = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay.nodeId,
+			path: "inside.md",
+		});
+		if (createdFile._nay) {
+			throw new Error(createdFile._nay.message);
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
+
+		const before = await read_yjs_write_state(t, db, createdFile._yay.nodeId);
+		const refused = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId: createdFile._yay.nodeId,
+			update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
+			sessionId: "read-only-push-inherited",
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(await read_yjs_write_state(t, db, createdFile._yay.nodeId)).toEqual(before);
+	});
+
+	test("a push succeeds after a lock is removed", async () => {
+		const t = test_convex();
+		const { db, asUser, nodeId } = await seed_yjs_push_file(t, "read-only-push-stale.md");
+		await set_read_only_or_throw(asUser, db.membershipId, nodeId);
+		await set_writable_or_throw(asUser, db.membershipId, nodeId);
+
+		const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId,
+			update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
+			sessionId: "read-only-push-stale",
+		});
+		if (pushed._nay) {
+			throw new Error(pushed._nay.message);
+		}
+		expect(pushed._yay.newSequence).toBe(1);
+	});
+});
+
+/** Every unfinalized upload asset doc in the workspace. */
+function read_upload_assets(
+	t: ReturnType<typeof test_convex>,
+	db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+) {
+	return t.run(async (ctx) =>
+		ctx.db
+			.query("files_r2_assets")
+			.collect()
+			.then((assets) =>
+				assets.filter(
+					(asset) =>
+						asset.organizationId === db.organizationId &&
+						asset.workspaceId === db.workspaceId &&
+						asset.kind === "upload",
+				),
+			),
+	);
+}
+
+describe("files_nodes.create_upload_node read-only gates", () => {
+	test("refuses a locked destination folder before any asset or node write", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+
+		const refused = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: outerId,
+			filename: "report.pdf",
+			contentType: "application/pdf",
+			size: 10,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+		expect(await read_active_child(t, db, outerId, "report.pdf")).toBeNull();
+		expect(await read_upload_assets(t, db)).toHaveLength(0);
+
+		await set_writable_or_throw(asUser, db.membershipId, outerId);
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: outerId,
+			filename: "report.pdf",
+			contentType: "application/pdf",
+			size: 10,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		// The accepted upload stores its temporary R2 key and the upload URL expiry time.
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		expect(asset?.uploadStagingR2Key).toContain(`/upload-staging/${upload._yay.assetId}`);
+		expect(asset?.uploadUrlExpiresAt).toEqual(expect.any(Number));
+	});
+
+	test("refuses a filename that walks through a locked existing folder", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+
+		const refused = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "outer/nested.pdf",
+			contentType: "application/pdf",
+			size: 10,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(await read_upload_assets(t, db)).toHaveLength(0);
+	});
+
+	test("refuses replacing a locked occupant and leaves it active", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Upload User",
+		});
+
+		const first = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "taken.pdf",
+			contentType: "application/pdf",
+			size: 1,
+		});
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, first._yay.nodeId);
+
+		const refused = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "taken.pdf",
+			contentType: "application/pdf",
+			size: 1,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		// The locked occupant kept its path and no second asset doc was written.
+		const occupant = await t.run(async (ctx) => ctx.db.get("files_nodes", first._yay.nodeId));
+		expect(occupant?.archiveOperationId).toBeUndefined();
+		expect(await read_upload_assets(t, db)).toHaveLength(1);
+
+		await set_writable_or_throw(asUser, db.membershipId, first._yay.nodeId);
+		const replaced = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "taken.pdf",
+			contentType: "application/pdf",
+			size: 1,
+		});
+		if (replaced._nay) {
+			throw new Error(replaced._nay.message);
+		}
+		const docs = await t.run(async (ctx) => ({
+			oldNode: await ctx.db.get("files_nodes", first._yay.nodeId),
+			newAsset: await ctx.db.get("files_r2_assets", replaced._yay.assetId),
+		}));
+		expect(docs.oldNode?.archiveOperationId).toBeDefined();
+		expect(docs.newAsset?.uploadStagingR2Key).toContain(`/upload-staging/${replaced._yay.assetId}`);
+	});
+});
+
+describe("files_nodes.create_upload_nodes read-only gates", () => {
+	test("a locked common destination refuses the whole call before any write", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+
+		const refused = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: outerId,
+			onConflict: "skip",
+			items: [
+				{ relativePath: "a.pdf", contentType: "application/pdf", size: 1 },
+				{ relativePath: "b.pdf", contentType: "application/pdf", size: 1 },
+			],
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+		expect(await read_upload_assets(t, db)).toHaveLength(0);
+	});
+
+	test("locked occupants and locked folders skip their items without archiving while others import", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
+
+		const occupant = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "taken.pdf",
+			contentType: "application/pdf",
+			size: 1,
+		});
+		if (occupant._nay) {
+			throw new Error(occupant._nay.message);
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, occupant._yay.nodeId);
+		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "replace",
+			items: [
+				{ relativePath: "taken.pdf", contentType: "application/pdf", size: 1 },
+				{ relativePath: "outer/blocked.pdf", contentType: "application/pdf", size: 1 },
+				{ relativePath: "fresh.pdf", contentType: "application/pdf", size: 1 },
+			],
+		});
+		if (imported._nay) {
+			throw new Error(imported._nay.message);
+		}
+		// Locked items report the same generic conflict as restricted ones, and only they skip.
+		expect(imported._yay.skipped).toEqual([
+			{ relativePath: "taken.pdf", reason: "conflict" },
+			{ relativePath: "outer/blocked.pdf", reason: "conflict" },
+		]);
+		expect(imported._yay.created).toHaveLength(1);
+		expect(imported._yay.created[0]).toMatchObject({ relativePath: "fresh.pdf" });
+
+		const docs = await t.run(async (ctx) => ({
+			occupantNode: await ctx.db.get("files_nodes", occupant._yay.nodeId),
+			freshAsset: await ctx.db.get("files_r2_assets", imported._yay.created[0]!.assetId),
+		}));
+		// The locked occupant was skipped, not archived.
+		expect(docs.occupantNode?.archiveOperationId).toBeUndefined();
+		expect(docs.freshAsset?.uploadStagingR2Key).toContain(`/upload-staging/${imported._yay.created[0]!.assetId}`);
+		expect(docs.freshAsset?.uploadUrlExpiresAt).toEqual(expect.any(Number));
+	});
+});
+
+describe("files_nodes.discard_failed_upload_node read-only gates", () => {
+	test("a direct lock keeps the failed placeholder and unlock lets the creator discard it", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Discard User",
+		});
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "failed.pdf",
+			contentType: "application/pdf",
+			size: 1,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, upload._yay.nodeId);
+
+		const refused = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
+			membershipId: db.membershipId,
+			nodeId: upload._yay.nodeId,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		const kept = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", upload._yay.nodeId),
+			asset: await ctx.db.get("files_r2_assets", upload._yay.assetId),
+		}));
+		expect(kept.node).not.toBeNull();
+		expect(kept.asset).not.toBeNull();
+
+		await set_writable_or_throw(asUser, db.membershipId, upload._yay.nodeId);
+		const discarded = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
+			membershipId: db.membershipId,
+			nodeId: upload._yay.nodeId,
+		});
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+		expect(discarded._yay.removed).toBe(true);
+	});
+
+	test("an inherited lock keeps the failed placeholder", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Discard User",
+		});
+
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "uploads",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay.nodeId,
+			filename: "refused.pdf",
+			contentType: "application/pdf",
+			size: 1,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
+		const refused = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
+			membershipId: db.membershipId,
+			nodeId: upload._yay.nodeId,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		// Discard deletes the node, so the inherited lock keeps both docs in place.
+		const kept = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", upload._yay.nodeId),
+			asset: await ctx.db.get("files_r2_assets", upload._yay.assetId),
+		}));
+		expect(kept.node).not.toBeNull();
+		expect(kept.asset).not.toBeNull();
+	});
+});
+
+describe("files_nodes.remove_eager_created_node_if_safe read-only gates", () => {
+	async function seed_eager_branch(t: ReturnType<typeof test_convex>, path: string) {
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Eager User",
+		});
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path,
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		if (!created._yay.created || created._yay.createdCommittedSequence === undefined) {
+			throw new Error("Expected create_file_by_path to create a fresh node");
+		}
+		return {
+			db,
+			asUser,
+			nodeId: created._yay.nodeId,
+			eagerCreatedCommittedSequence: created._yay.createdCommittedSequence,
+			createdAncestorIds: created._yay.createdAncestorIds,
+		};
+	}
+
+	test("a lock after the eager create keeps the leaf and its created ancestors", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, asUser, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } =
+			await seed_eager_branch(t, "/ro-eager/deep/x.md");
+		// Ancestors come deepest-first, so the last one is the shallow /ro-eager folder. Locking
+		// it cascades over the whole created branch.
+		const shallowAncestorId = createdAncestorIds[createdAncestorIds.length - 1];
+		if (!shallowAncestorId) {
+			throw new Error("Expected created ancestor folder ids");
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, shallowAncestorId);
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+			createdAncestorIds,
+		});
+		expect(removed._yay).toEqual({ removed: false, ancestorsLeft: 2 });
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).not.toBeNull();
+			for (const ancestorId of createdAncestorIds) {
+				expect(await ctx.db.get("files_nodes", ancestorId)).not.toBeNull();
+			}
+		});
+	});
+
+	test("a lock then unlock lets cleanup remove the writable branch", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, asUser, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } =
+			await seed_eager_branch(t, "/ro-eager-cycle/deep/x.md");
+		const shallowAncestorId = createdAncestorIds[createdAncestorIds.length - 1];
+		if (!shallowAncestorId) {
+			throw new Error("Expected created ancestor folder ids");
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, shallowAncestorId);
+		await set_writable_or_throw(asUser, db.membershipId, shallowAncestorId);
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+			createdAncestorIds,
+		});
+		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 0 });
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
+			for (const ancestorId of createdAncestorIds) {
+				expect(await ctx.db.get("files_nodes", ancestorId)).toBeNull();
+			}
+		});
+	});
+
+	test("an unchanged writable branch is removed", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await seed_eager_branch(
+			t,
+			"/ro-eager-control/deep/x.md",
+		);
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+			createdAncestorIds,
+		});
+		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 0 });
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
+			for (const ancestorId of createdAncestorIds) {
+				expect(await ctx.db.get("files_nodes", ancestorId)).toBeNull();
+			}
+		});
+	});
+});
+
+describe("files_nodes_db_apply_pending_move read-only gates", () => {
+	async function seed_apply_move_file(t: ReturnType<typeof test_convex>, path: string) {
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Apply Move User",
+		});
+		const createdFile = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path,
+		});
+		if (createdFile._nay) {
+			throw new Error(createdFile._nay.message);
+		}
+		return { db, asUser, nodeId: createdFile._yay.nodeId };
+	}
+
+	test("a locked source refuses the apply and unlock lets the same move through", async () => {
+		const t = test_convex();
+		const { db, asUser, nodeId } = await seed_apply_move_file(t, "pending-src.md");
+		await set_read_only_or_throw(asUser, db.membershipId, nodeId);
+
+		const applied = await t.run(async (ctx) =>
+			files_nodes_db_apply_pending_move(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId,
+				destParentId: files_ROOT_ID,
+				destName: "pending-src-moved.md",
+				userId: db.userId,
+				updatedBy: db.userId,
+				authorizeCycleMember: async () => true,
+			}),
+		);
+		expect(applied._nay).toMatchObject({ name: "read_only" });
+		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/pending-src.md");
+
+		await set_writable_or_throw(asUser, db.membershipId, nodeId);
+		const appliedAfterUnlock = await t.run(async (ctx) =>
+			files_nodes_db_apply_pending_move(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId,
+				destParentId: files_ROOT_ID,
+				destName: "pending-src-moved.md",
+				userId: db.userId,
+				updatedBy: db.userId,
+				authorizeCycleMember: async () => true,
+			}),
+		);
+		expect(appliedAfterUnlock._nay).toBeUndefined();
+		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/pending-src-moved.md");
+	});
+
+	test("a locked destination folder refuses the apply", async () => {
+		const t = test_convex();
+		const { db, asUser, nodeId } = await seed_apply_move_file(t, "pending-src-dest.md");
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "pending-dest",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
+
+		const applied = await t.run(async (ctx) =>
+			files_nodes_db_apply_pending_move(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId,
+				destParentId: folder._yay.nodeId,
+				destName: "pending-src-dest.md",
+				userId: db.userId,
+				updatedBy: db.userId,
+				authorizeCycleMember: async () => true,
+			}),
+		);
+		expect(applied._nay).toMatchObject({ name: "read_only" });
+		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/pending-src-dest.md");
+	});
+
+	test("a locked replacement occupant refuses the apply and stays active", async () => {
+		const t = test_convex();
+		const { db, asUser, nodeId } = await seed_apply_move_file(t, "pending-src-replace.md");
+		const occupant = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "occupied.md",
+		});
+		if (occupant._nay) {
+			throw new Error(occupant._nay.message);
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, occupant._yay.nodeId);
+
+		const applied = await t.run(async (ctx) =>
+			files_nodes_db_apply_pending_move(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId,
+				destParentId: files_ROOT_ID,
+				destName: "occupied.md",
+				userId: db.userId,
+				updatedBy: db.userId,
+				authorizeCycleMember: async () => true,
+			}),
+		);
+		expect(applied._nay).toMatchObject({ name: "read_only" });
+		const docs = await t.run(async (ctx) => ({
+			source: await ctx.db.get("files_nodes", nodeId),
+			occupantNode: await ctx.db.get("files_nodes", occupant._yay.nodeId),
+		}));
+		expect(docs.source?.path).toBe("/pending-src-replace.md");
+		expect(docs.occupantNode?.archiveOperationId).toBeUndefined();
+	});
+});
+
+describe("files_nodes public read-only projection", () => {
+	/**
+	 * A workspace where a second member holds a grant on the nested restricted folder but has no
+	 * workspace-wide read. The outer folder is both unreadable for them and the lock root.
+	 */
+	async function seed_hidden_lock_root(t: ReturnType<typeof test_convex>) {
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Projection Owner",
+		});
+
+		const outer = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "outer",
+		});
+		if (outer._nay) {
+			throw new Error(outer._nay.message);
+		}
+		const inner = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: outer._yay.nodeId,
+			path: "inner",
+		});
+		if (inner._nay) {
+			throw new Error(inner._nay.message);
+		}
+		const file = await asOwner.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: inner._yay.nodeId,
+			path: "secret.md",
+		});
+		if (file._nay) {
+			throw new Error(file._nay.message);
+		}
+
+		// The nested folder becomes a restricted scope and the second member gets a direct grant
+		// on it. File sharing does not write these grants yet, so the test inserts the docs.
+		const member = await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", inner._yay.nodeId, { restrictedScopeNodeId: inner._yay.nodeId });
+			await ctx.db.patch("files_nodes", file._yay.nodeId, { restrictedScopeNodeId: inner._yay.nodeId });
+
+			const memberUserId = await ctx.db.insert("users", { clerkUserId: "clerk_projection_member" });
+			const now = Date.now();
+			const memberMembershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: memberUserId,
+				active: true,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				resourceKind: "file",
+				resourceId: String(inner._yay.nodeId),
+				principalKind: "user",
+				userId: memberUserId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			return { memberUserId, memberMembershipId };
+		});
+		const asMember = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: member.memberUserId,
+			name: "Projection Member",
+		});
+
+		// Lock the outer folder: the lock root sits above the member's readable scope.
+		await set_read_only_or_throw(asOwner, db.membershipId, outer._yay.nodeId);
+
+		return {
+			db,
+			asOwner,
+			asMember,
+			memberMembershipId: member.memberMembershipId,
+			outerId: outer._yay.nodeId,
+			innerId: inner._yay.nodeId,
+			fileId: file._yay.nodeId,
+		};
+	}
+
+	test("list_tree reports inherited state without naming a lock root the member cannot read", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_lock_root(t);
+
+		const memberTree = await f.asMember.query(api.files_nodes.list_tree, { membershipId: f.memberMembershipId });
+		// Only the granted scope is listed; the outer lock root itself never appears.
+		expect(memberTree.map((node) => node.path).sort()).toEqual(["/outer/inner", "/outer/inner/secret.md"]);
+		for (const node of memberTree) {
+			expect(node.readOnlyState).toBe("inherited");
+			expect(node.readOnlySourceNodeId).toBeUndefined();
+			expect(node.readOnlySourcePath).toBeUndefined();
+			// The raw pointer must not leave the backend: it would name the hidden outer folder.
+			expect("readOnlyScopeNodeId" in node).toBe(false);
+		}
+
+		// The owner can read the lock root, so each returned node may name it.
+		const ownerTree = await f.asOwner.query(api.files_nodes.list_tree, { membershipId: f.db.membershipId });
+		const outerRow = ownerTree.find((node) => node._id === f.outerId);
+		const innerRow = ownerTree.find((node) => node._id === f.innerId);
+		expect(outerRow).toMatchObject({
+			readOnlyState: "self",
+			readOnlySourceNodeId: f.outerId,
+			readOnlySourcePath: "/outer",
+		});
+		expect(innerRow).toMatchObject({
+			readOnlyState: "inherited",
+			readOnlySourceNodeId: f.outerId,
+			readOnlySourcePath: "/outer",
+		});
+	});
+
+	test("get_file_node_for_membership omits the source for a hidden lock root and names it for the owner", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_lock_root(t);
+
+		const memberView = await f.asMember.query(api.files_nodes.get_file_node_for_membership, {
+			membershipId: f.memberMembershipId,
+			fileNodeId: f.fileId,
+		});
+		expect(memberView).toMatchObject({ readOnlyState: "inherited" });
+		expect(memberView?.readOnlySourceNodeId).toBeUndefined();
+		expect(memberView?.readOnlySourcePath).toBeUndefined();
+		expect(memberView !== null && "readOnlyScopeNodeId" in memberView).toBe(false);
+
+		const ownerView = await f.asOwner.query(api.files_nodes.get_file_node_for_membership, {
+			membershipId: f.db.membershipId,
+			fileNodeId: f.fileId,
+		});
+		expect(ownerView).toMatchObject({
+			readOnlyState: "inherited",
+			readOnlySourceNodeId: f.outerId,
+			readOnlySourcePath: "/outer",
+		});
+
+		// A self-locked node names itself as the source.
+		const outerView = await f.asOwner.query(api.files_nodes.get_file_node_for_membership, {
+			membershipId: f.db.membershipId,
+			fileNodeId: f.outerId,
+		});
+		expect(outerView).toMatchObject({
+			readOnlyState: "self",
+			readOnlySourceNodeId: f.outerId,
+			readOnlySourcePath: "/outer",
+		});
+	});
+
+	test("a writable node projects writable state with no source", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Projection Writable User",
+		});
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "plain",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+
+		const view = await asUser.query(api.files_nodes.get_file_node_for_membership, {
+			membershipId: db.membershipId,
+			fileNodeId: folder._yay.nodeId,
+		});
+		expect(view).toMatchObject({ readOnlyState: "writable" });
+		expect(view?.readOnlySourceNodeId).toBeUndefined();
+		expect(view?.readOnlySourcePath).toBeUndefined();
+	});
+});
+
+/**
+ * Two unpublished asset docs for R2 uploads that already finished.
+ * Their `r2Key` is not set yet, and their normal cleanup time is still set.
+ */
+async function seed_unpublished_asset_pair(
+	t: ReturnType<typeof test_convex>,
+	db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
+) {
+	return await t.run(async (ctx) => {
+		const now = Date.now();
+		const [yjsSnapshotAssetId, contentSnapshotAssetId] = await Promise.all([
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "yjs_snapshot",
+				r2Bucket: "test-files-bucket",
+				size: 2,
+				createdBy: db.userId,
+				unfinalizedExpiresAt: now + 1000,
+				updatedAt: now,
+			}),
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-files-bucket",
+				size: 2,
+				createdBy: db.userId,
+				unfinalizedExpiresAt: now + 1000,
+				updatedAt: now,
+			}),
+		]);
+		return { yjsSnapshotAssetId, contentSnapshotAssetId };
+	});
+}
+
+function read_deletion_jobs(t: ReturnType<typeof test_convex>) {
+	return t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+}
+
+/** The R2 keys that deletion jobs must own for these assets, sorted for comparison. */
+function expected_ledger_keys(
+	db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+	assetIds: ReadonlyArray<Id<"files_r2_assets">>,
+) {
+	return assetIds
+		.map((assetId) =>
+			r2_create_asset_key({ organizationId: db.organizationId, workspaceId: db.workspaceId, assetId }),
+		)
+		.sort();
+}
+
+describe("files_nodes_content.create_file_node read-only barrier", () => {
+	test("the create mutation publishes both assets and the first version snapshot atomically", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const textContent = "# Atomic create";
+		const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
+			text: textContent,
+			rootKind: "rich_text",
+		});
+		if (snapshotUpdate._nay) {
+			throw new Error(snapshotUpdate._nay.message);
+		}
+		const assets = await seed_unpublished_asset_pair(t, db);
+		await t.run(async (ctx) => {
+			await Promise.all([
+				ctx.db.patch("files_r2_assets", assets.yjsSnapshotAssetId, {
+					size: snapshotUpdate._yay.byteLength,
+				}),
+				ctx.db.patch("files_r2_assets", assets.contentSnapshotAssetId, {
+					size: files_get_utf8_byte_size(textContent),
+				}),
+			]);
+		});
+
+		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
+			userId: db.userId,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			parentId: files_ROOT_ID,
+			path: "atomic-create.md",
+			contentType: "text/markdown;charset=utf-8",
+			assetId: assets.contentSnapshotAssetId,
+			yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
+			textContent,
+			rootKind: "rich_text",
+			readOnly: false,
+			unpublishedAssetIds: [assets.yjsSnapshotAssetId, assets.contentSnapshotAssetId],
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", created._yay.nodeId);
+			if (!files_node_has_editable_yjs_state(node)) {
+				throw new Error("Expected an editable created node");
+			}
+			const [contentAsset, yjsSnapshot, snapshots] = await Promise.all([
+				ctx.db.get("files_r2_assets", assets.contentSnapshotAssetId),
+				ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId),
+				ctx.db
+					.query("files_snapshots")
+					.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+						q
+							.eq("organizationId", db.organizationId)
+							.eq("workspaceId", db.workspaceId)
+							.eq("fileNodeId", created._yay.nodeId),
+					)
+					.collect(),
+			]);
+			const yjsAsset = yjsSnapshot ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
+			expect(contentAsset).toMatchObject({
+				r2Key: r2_create_asset_key({
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					assetId: assets.contentSnapshotAssetId,
+				}),
+			});
+			expect(contentAsset?.unfinalizedExpiresAt).toBeUndefined();
+			expect(yjsAsset).toMatchObject({
+				r2Key: r2_create_asset_key({
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					assetId: assets.yjsSnapshotAssetId,
+				}),
+			});
+			expect(yjsAsset?.unfinalizedExpiresAt).toBeUndefined();
+			expect(snapshots).toHaveLength(1);
+			expect(snapshots[0]?.assetId).toBe(assets.contentSnapshotAssetId);
+		});
+	});
+
+	test("a fresh barrier publishes the file and clears both creation deadlines", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Barrier Positive User",
+		});
+
+		// The public action checks the path, uploads both files, then checks the path again before saving.
+		const created = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "barrier-positive.md",
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", created._yay.nodeId);
+			if (!files_node_has_editable_yjs_state(node)) {
+				throw new Error("Expected an editable created node");
+			}
+
+			// The successful final mutation published both assets and cleared both deadlines.
+			const contentAsset = node.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			expect(contentAsset?.r2Key).toBeTruthy();
+			expect(contentAsset?.unfinalizedExpiresAt).toBeUndefined();
+			const yjsSnapshotDoc = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
+			const yjsAsset = yjsSnapshotDoc ? await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId) : null;
+			expect(yjsAsset?.r2Key).toBeTruthy();
+			expect(yjsAsset?.unfinalizedExpiresAt).toBeUndefined();
+
+			// The initial version snapshot exists.
+			const snapshots = await ctx.db
+				.query("files_snapshots")
+				.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", created._yay.nodeId),
+				)
+				.collect();
+			expect(snapshots.length).toBeGreaterThan(0);
+		});
+		expect(await read_deletion_jobs(t)).toEqual([]);
+	});
+
+	test("a newly hidden locked segment returns permission denied before its lock state", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Create Privacy Owner",
+		});
+		const outer = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "privacy-outer",
+		});
+		if (outer._nay) {
+			throw new Error(outer._nay.message);
+		}
+		const hidden = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: outer._yay.nodeId,
+			path: "hidden",
+		});
+		if (hidden._nay) {
+			throw new Error(hidden._nay.message);
+		}
+
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_create_privacy_member" });
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				createdAt: now,
+				updatedAt: now,
+			});
+			return { userId };
+		});
+		const preflight = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: member.userId,
+			parentId: files_ROOT_ID,
+			path: "privacy-outer/hidden/leaf.md",
+		});
+		if (!preflight) {
+			throw new Error("Expected the member to capture the open destination");
+		}
+		const assets = await seed_unpublished_asset_pair(t, { ...db, userId: member.userId });
+
+		// The segment becomes a hidden restricted scope and is locked while the action uploads.
+		// The final mutation must check access before returning any lock or path conflict.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", hidden._yay.nodeId, {
+				restrictedScopeNodeId: hidden._yay.nodeId,
+			});
+		});
+		await set_read_only_or_throw(asOwner, db.membershipId, hidden._yay.nodeId);
+
+		const refused = await t.mutation(internal.files_nodes_content.create_file_node, {
+			userId: member.userId,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			parentId: files_ROOT_ID,
+			path: "privacy-outer/hidden/leaf.md",
+			contentType: "text/markdown;charset=utf-8",
+			assetId: assets.contentSnapshotAssetId,
+			yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
+			textContent: "hidden",
+			rootKind: "rich_text",
+			readOnly: false,
+			unpublishedAssetIds: [assets.yjsSnapshotAssetId, assets.contentSnapshotAssetId],
+		});
+		expect(refused._nay?.message).toBe("Permission denied");
+		expect(refused._nay?.name).not.toBe("read_only");
+		expect(await read_active_child(t, db, hidden._yay.nodeId, "leaf.md")).toBeNull();
+		expect((await read_deletion_jobs(t)).map((job) => job.reason)).toEqual([
+			"read_only_create",
+			"read_only_create",
+		]);
+	});
+
+	test("a create publishes when a lock is removed before the final mutation", async () => {
+		const t = test_convex();
+		const { db, asUser, innerId } = await seed_read_only_lock_tree(t);
+
+		const preflight = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			parentId: innerId,
+			path: "mid-lock.md",
+		});
+		if (!preflight) {
+			throw new Error("Expected the current destination preflight to pass");
+		}
+
+		const assets = await seed_unpublished_asset_pair(t, db);
+		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+		await set_writable_or_throw(asUser, db.membershipId, innerId);
+
+		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
+			userId: db.userId,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			parentId: innerId,
+			path: "mid-lock.md",
+			contentType: "text/markdown",
+			assetId: assets.contentSnapshotAssetId,
+			yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
+			textContent: "mid lock",
+			rootKind: "rich_text",
+			readOnly: false,
+			unpublishedAssetIds: [assets.yjsSnapshotAssetId, assets.contentSnapshotAssetId],
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		expect((await read_active_child(t, db, innerId, "mid-lock.md"))?._id).toBe(created._yay.nodeId);
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_r2_assets", assets.yjsSnapshotAssetId)).not.toBeNull();
+			expect(await ctx.db.get("files_r2_assets", assets.contentSnapshotAssetId)).not.toBeNull();
+		});
+		expect(await read_deletion_jobs(t)).toEqual([]);
+	});
+
+	test("a currently locked destination refuses the prepared create and the action refuses before any upload", async () => {
+		const t = test_convex();
+		const { db, asUser, siblingId } = await seed_read_only_lock_tree(t);
+
+		const preflight = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			parentId: siblingId,
+			path: "prepared.md",
+		});
+		if (!preflight) {
+			throw new Error("Expected a barrier for an existing destination");
+		}
+		const assets = await seed_unpublished_asset_pair(t, db);
+		await set_read_only_or_throw(asUser, db.membershipId, siblingId);
+
+		// The full action refuses at capture time, before creating any asset docs.
+		const assetCountBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
+		const actionRefused = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: siblingId,
+			path: "action-blocked.md",
+		});
+		expect(actionRefused._nay?.name).toBe("read_only");
+		expect(actionRefused._nay?.message).toBe("This item is read-only.");
+		expect(await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length)).toBe(
+			assetCountBefore,
+		);
+
+		// The prepared create (captured before the lock) refuses on the current lock in the final
+		// mutation and hands its uploads to the ledger.
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("simulated R2 outage"));
+		const refused = await t.mutation(internal.files_nodes_content.create_file_node, {
+			userId: db.userId,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			parentId: siblingId,
+			path: "prepared.md",
+			contentType: "text/markdown",
+			assetId: assets.contentSnapshotAssetId,
+			yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
+			textContent: "prepared",
+			rootKind: "rich_text",
+			readOnly: false,
+			unpublishedAssetIds: [assets.yjsSnapshotAssetId, assets.contentSnapshotAssetId],
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+		await t.finishInProgressScheduledFunctions();
+
+		expect(await read_active_child(t, db, siblingId, "prepared.md")).toBeNull();
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_r2_assets", assets.yjsSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", assets.contentSnapshotAssetId)).toBeNull();
+		});
+		const jobs = await read_deletion_jobs(t);
+		expect(jobs.map((job) => job.reason)).toEqual(["read_only_create", "read_only_create"]);
+	});
+
+	test("a file created at the target during the action refuses the prepared create and hands the uploads to the ledger", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Raced Target User",
+		});
+
+		const barrier = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			parentId: files_ROOT_ID,
+			path: "raced.md",
+		});
+		if (!barrier) {
+			throw new Error("Expected a barrier for an absent target");
+		}
+		expect(barrier.targetNodeId).toBeNull();
+		const assets = await seed_unpublished_asset_pair(t, db);
+
+		// Another writer publishes the same path while the action is uploading.
+		const winner = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "raced.md",
+		});
+		if (winner._nay) {
+			throw new Error(winner._nay.message);
+		}
+
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("simulated R2 outage"));
+		const refused = await t.mutation(internal.files_nodes_content.create_file_node, {
+			userId: db.userId,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			parentId: files_ROOT_ID,
+			path: "raced.md",
+			contentType: "text/markdown",
+			assetId: assets.contentSnapshotAssetId,
+			yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
+			textContent: "raced",
+			rootKind: "rich_text",
+			readOnly: false,
+			unpublishedAssetIds: [assets.yjsSnapshotAssetId, assets.contentSnapshotAssetId],
+		});
+		// The broken expectation is target absence, not a lock: this is a plain conflict.
+		expect(refused._nay?.name).toBe("nay");
+		expect(refused._nay?.message).toBe("This file already exists.");
+		await t.finishInProgressScheduledFunctions();
+
+		// The winner's file survives; only the loser's uploads went to the ledger.
+		expect(await read_active_child(t, db, files_ROOT_ID, "raced.md")).not.toBeNull();
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_r2_assets", assets.yjsSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", assets.contentSnapshotAssetId)).toBeNull();
+		});
+		const jobs = await read_deletion_jobs(t);
+		expect(jobs.map((job) => job.reason)).toEqual(["read_only_create", "read_only_create"]);
+		expect(jobs.map((job) => job.r2Key).sort()).toEqual(
+			expected_ledger_keys(db, [assets.yjsSnapshotAssetId, assets.contentSnapshotAssetId]),
+		);
+	});
+
+	test("a create publishes after an old prefix lock is removed and archived", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "ABA Epoch User",
+		});
+
+		const preflight = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			parentId: files_ROOT_ID,
+			path: "aba/mid/leaf.md",
+		});
+		if (!preflight) {
+			throw new Error("Expected the current destination preflight to pass");
+		}
+
+		const assets = await seed_unpublished_asset_pair(t, db);
+
+		// While the action uploads, another writer creates, locks, unlocks, and archives the prefix.
+		const aba = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "aba",
+		});
+		if (aba._nay) {
+			throw new Error(aba._nay.message);
+		}
+		const mid = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: aba._yay.nodeId,
+			path: "mid",
+		});
+		if (mid._nay) {
+			throw new Error(mid._nay.message);
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, mid._yay.nodeId);
+		await set_writable_or_throw(asUser, db.membershipId, mid._yay.nodeId);
+		for (const nodeId of [mid._yay.nodeId, aba._yay.nodeId]) {
+			const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+				membershipId: db.membershipId,
+				nodeIds: [nodeId],
+			});
+			if (archived._nay) {
+				throw new Error(archived._nay.message);
+			}
+		}
+		expect(await read_active_child(t, db, files_ROOT_ID, "aba")).toBeNull();
+
+		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
+			userId: db.userId,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			parentId: files_ROOT_ID,
+			path: "aba/mid/leaf.md",
+			contentType: "text/markdown",
+			assetId: assets.contentSnapshotAssetId,
+			yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
+			textContent: "aba",
+			rootKind: "rich_text",
+			readOnly: false,
+			unpublishedAssetIds: [assets.yjsSnapshotAssetId, assets.contentSnapshotAssetId],
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const node = await t.run(async (ctx) => ctx.db.get("files_nodes", created._yay.nodeId));
+		expect(node?.path).toBe("/aba/mid/leaf.md");
+		expect(await read_deletion_jobs(t)).toEqual([]);
+	});
+
+	test("the pending-create policy publishes after a completed lock cycle", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Current Lock Create User",
+		});
+		const assets = await seed_unpublished_asset_pair(t, db);
+
+		// Simulate a prefix that appeared, locked, unlocked, and disappeared while the pending
+		// create prepared its assets. Only the lock state in the final mutation matters here.
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "pending-cycle",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
+		await set_writable_or_throw(asUser, db.membershipId, folder._yay.nodeId);
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [folder._yay.nodeId],
+		});
+		if (archived._nay) {
+			throw new Error(archived._nay.message);
+		}
+
+		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
+			userId: db.userId,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			parentId: files_ROOT_ID,
+			path: "pending-cycle/deep/leaf.md",
+			contentType: "text/markdown",
+			assetId: assets.contentSnapshotAssetId,
+			yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
+			textContent: "pending",
+			rootKind: "rich_text",
+			readOnly: false,
+			unpublishedAssetIds: [assets.yjsSnapshotAssetId, assets.contentSnapshotAssetId],
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const node = await t.run(async (ctx) => ctx.db.get("files_nodes", created._yay.nodeId));
+		expect(node?.path).toBe("/pending-cycle/deep/leaf.md");
+		expect(await read_deletion_jobs(t)).toEqual([]);
+	});
+
+	test("lock cycles on an archived folder do not stale creates that reuse its path", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, frozenId } = await seed_read_only_lock_tree(t);
+
+		// /outer/frozen is archived, so the create walks past it and would recreate the folder.
+		const preflight = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			parentId: outerId,
+			path: "frozen/nested.md",
+		});
+		if (!preflight) {
+			throw new Error("Expected the current destination preflight to pass");
+		}
+
+		const assets = await seed_unpublished_asset_pair(t, db);
+		// A lock on an archived copy does not affect the new active path after it is removed.
+		await set_read_only_or_throw(asUser, db.membershipId, frozenId);
+		await set_writable_or_throw(asUser, db.membershipId, frozenId);
+
+		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
+			userId: db.userId,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			parentId: outerId,
+			path: "frozen/nested.md",
+			contentType: "text/markdown",
+			assetId: assets.contentSnapshotAssetId,
+			yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
+			textContent: "nested",
+			rootKind: "rich_text",
+			readOnly: false,
+			unpublishedAssetIds: [assets.yjsSnapshotAssetId, assets.contentSnapshotAssetId],
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", created._yay.nodeId);
+			expect(node?.path).toBe("/outer/frozen/nested.md");
+		});
+		expect(await read_deletion_jobs(t)).toEqual([]);
+	});
+});
+
+/**
+ * A file with one restorable snapshot and the two unpublished snapshot assets a restore action
+ * would have uploaded. The published snapshot asset keeps its r2Key; the current/restored pair
+ * has none and still carries the insert-time cleanup deadline.
+ */
+async function seed_snapshot_restore_target(
+	t: ReturnType<typeof test_convex>,
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+	path: string,
+) {
+	const createdFile = await t.action(internal.files_nodes_content.create_file_by_path, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId: db.userId,
+		path,
+	});
+	if (createdFile._nay) {
+		throw new Error(createdFile._nay.message);
+	}
+	const nodeId = createdFile._yay.nodeId;
+
+	return await t.run(async (ctx) => {
+		const now = Date.now();
+		const [snapshotAssetId, currentSnapshotAssetId, restoredSnapshotAssetId] = await Promise.all([
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/restore-gate-snapshot`,
+				size: 4,
+				createdBy: db.userId,
+				updatedAt: now,
+			}),
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: 0,
+				createdBy: db.userId,
+				unfinalizedExpiresAt: now + 1000,
+				updatedAt: now,
+			}),
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: 4,
+				createdBy: db.userId,
+				unfinalizedExpiresAt: now + 1000,
+				updatedAt: now,
+			}),
+		]);
+		const snapshotId = await ctx.db.insert("files_snapshots", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			fileNodeId: nodeId,
+			assetId: snapshotAssetId,
+			createdBy: db.userId,
+			archivedAt: 0,
+		});
+		return { nodeId, snapshotId, currentSnapshotAssetId, restoredSnapshotAssetId };
+	});
+}
+
+/** Read every value that a refused restore must leave unchanged. */
+function read_restore_write_surfaces(
+	t: ReturnType<typeof test_convex>,
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+	nodeId: Id<"files_nodes">,
+) {
+	return t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", nodeId);
+		const snapshots = await ctx.db
+			.query("files_snapshots")
+			.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+			)
+			.collect();
+		const yjsUpdates = await ctx.db
+			.query("files_yjs_updates")
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+			)
+			.collect();
+		const chunks = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+			)
+			.collect();
+		return {
+			assetId: node?.assetId,
+			snapshotCount: snapshots.length,
+			yjsUpdateCount: yjsUpdates.length,
+			chunkText: chunks.map((chunk) => chunk.plainTextChunk).join(""),
+		};
+	});
+}
+
+describe("files_nodes_content.restore_snapshot read-only gates", () => {
+	test("a locked file refuses the prepared restore before any write and hands both keys to the ledger", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Restore Lock User",
+		});
+		const seeded = await seed_snapshot_restore_target(t, db, "/restore-lock.md");
+		const before = await read_restore_write_surfaces(t, db, seeded.nodeId);
+
+		await set_read_only_or_throw(asUser, db.membershipId, seeded.nodeId);
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("simulated R2 outage"));
+
+		// The live lock refuses the restore.
+		const refused = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
+			membershipId: db.membershipId,
+			nodeId: seeded.nodeId,
+			snapshotId: seeded.snapshotId,
+			sessionId: "restore-lock-test",
+			snapshotMarkdownContent: "# restored\n",
+			currentSnapshotAssetId: seeded.currentSnapshotAssetId,
+			currentSnapshotSize: 0,
+			restoredSnapshotAssetId: seeded.restoredSnapshotAssetId,
+			restoredSnapshotSize: 4,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+		await t.finishInProgressScheduledFunctions();
+
+		// Nothing was written: node pointer, snapshot history, Yjs updates, and chunks are as before.
+		expect(await read_restore_write_surfaces(t, db, seeded.nodeId)).toEqual(before);
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_r2_assets", seeded.currentSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", seeded.restoredSnapshotAssetId)).toBeNull();
+		});
+		const jobs = await read_deletion_jobs(t);
+		expect(jobs.map((job) => job.reason)).toEqual(["read_only_snapshot_restore", "read_only_snapshot_restore"]);
+		expect(jobs.map((job) => job.r2Key).sort()).toEqual(
+			expected_ledger_keys(db, [seeded.currentSnapshotAssetId, seeded.restoredSnapshotAssetId]),
+		);
+	});
+
+	test("handed-off ledger jobs survive failing delete attempts with attempts recorded", async () => {
+		// Fake timers make the runAfter(0) processors start deterministically before the readback.
+		vi.useFakeTimers();
+		try {
+			const t = test_convex();
+			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				external_id: db.userId,
+				name: "Restore Retry User",
+			});
+			const seeded = await seed_snapshot_restore_target(t, db, "/restore-retry.md");
+			await set_read_only_or_throw(asUser, db.membershipId, seeded.nodeId);
+
+			// Every confirmed delete fails: the exact keys must stay in the ledger for the retry
+			// backoff and the hourly sweep, never silently dropped.
+			vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("simulated R2 outage"));
+			const refused = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
+				membershipId: db.membershipId,
+				nodeId: seeded.nodeId,
+				snapshotId: seeded.snapshotId,
+				sessionId: "restore-retry-test",
+				snapshotMarkdownContent: "# restored\n",
+				currentSnapshotAssetId: seeded.currentSnapshotAssetId,
+				currentSnapshotSize: 0,
+				restoredSnapshotAssetId: seeded.restoredSnapshotAssetId,
+				restoredSnapshotSize: 4,
+			});
+			expect(refused._nay?.name).toBe("read_only");
+
+			// Fire the runAfter(0) processors, then wait for their failure records to land.
+			vi.advanceTimersByTime(1);
+			await t.finishInProgressScheduledFunctions();
+
+			const jobs = await read_deletion_jobs(t);
+			expect(jobs.length).toBe(2);
+			for (const job of jobs) {
+				expect(job.reason).toBe("read_only_snapshot_restore");
+				expect(job.attempts).toBe(1);
+				expect(job.nextAttemptAt).toBeGreaterThan(Date.now());
+			}
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("restore succeeds after unlock and clears both deadlines", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", {
+				clerkUserId: "clerk-restore-readonly-user",
+			});
+			return await test_mocks_fill_db_with.membership(ctx, { userId });
+		});
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Restore Unlocked User",
+			email: "restore-readonly-user@example.com",
+		});
+		const seeded = await seed_snapshot_restore_target(t, db, "/restore-unlocked.md");
+
+		// Only the lock state in the final mutation matters.
+		await set_read_only_or_throw(asUser, db.membershipId, seeded.nodeId);
+		await set_writable_or_throw(asUser, db.membershipId, seeded.nodeId);
+
+		const restoredMarkdown = "# restored content\n";
+		const restoreStage = await t.mutation(internal.files_pending_updates.stage_trusted_yjs_update, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId: seeded.nodeId,
+			kind: "snapshot_restore",
+			update: files_u8_to_array_buffer(
+				encodeStateAsUpdate(
+					(() => {
+						const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: restoredMarkdown });
+						if ("_nay" in yjsDoc) {
+							throw new Error("Expected restored markdown to produce a Yjs doc");
+						}
+
+						return yjsDoc;
+					})(),
+				),
+			),
+		});
+		if (restoreStage._nay) {
+			throw new Error(restoreStage._nay.message);
+		}
+
+		const restored = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
+			membershipId: db.membershipId,
+			nodeId: seeded.nodeId,
+			snapshotId: seeded.snapshotId,
+			sessionId: "restore-unlocked-test",
+			snapshotMarkdownContent: restoredMarkdown,
+			currentSnapshotAssetId: seeded.currentSnapshotAssetId,
+			currentSnapshotSize: 0,
+			restoredSnapshotAssetId: seeded.restoredSnapshotAssetId,
+			restoredSnapshotSize: files_get_utf8_byte_size(restoredMarkdown),
+			restoreUpdateStageId: restoreStage._yay.stageId,
+		});
+		if (restored._nay) {
+			throw new Error(`Expected restore to succeed, got: ${restored._nay.message}`);
+		}
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.assetId).toBe(seeded.restoredSnapshotAssetId);
+			// The success path published both assets and cleared both cleanup deadlines.
+			const currentAsset = await ctx.db.get("files_r2_assets", seeded.currentSnapshotAssetId);
+			expect(currentAsset?.r2Key).toBeTruthy();
+			expect(currentAsset?.unfinalizedExpiresAt).toBeUndefined();
+			const restoredAsset = await ctx.db.get("files_r2_assets", seeded.restoredSnapshotAssetId);
+			expect(restoredAsset?.r2Key).toBeTruthy();
+			expect(restoredAsset?.unfinalizedExpiresAt).toBeUndefined();
+		});
+		expect(await read_deletion_jobs(t)).toEqual([]);
+	});
+});
+
+/**
+ * A durably marked file plus the three asset docs a repair action hands to its final mutation:
+ * the two fresh unpublished uploads and the superseded Yjs snapshot asset.
+ */
+async function seed_repair_finalize_target(
+	t: ReturnType<typeof test_convex>,
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+	path: string,
+) {
+	const created = await t.action(internal.files_nodes_content.create_file_by_path, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId: db.userId,
+		path,
+	});
+	if (created._nay) {
+		throw new Error(created._nay.message);
+	}
+	const nodeId = created._yay.nodeId;
+	await t.run(async (ctx) => {
+		await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
+	});
+
+	const [yjsSnapshotAssetId, contentSnapshotAssetId, supersededYjsAssetId] = await t.run(async (ctx) => {
+		const now = Date.now();
+		return await Promise.all([
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "yjs_snapshot",
+				r2Bucket: "test-files-bucket",
+				size: 2,
+				createdBy: db.userId,
+				unfinalizedExpiresAt: now + 1000,
+				updatedAt: now,
+			}),
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-files-bucket",
+				size: 6,
+				createdBy: db.userId,
+				unfinalizedExpiresAt: now + 1000,
+				updatedAt: now,
+			}),
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "yjs_snapshot",
+				r2Bucket: "test-files-bucket",
+				size: 2,
+				createdBy: db.userId,
+				updatedAt: now,
+			}),
+		]);
+	});
+	return { nodeId, yjsSnapshotAssetId, contentSnapshotAssetId, supersededYjsAssetId };
+}
+
+describe("files_nodes_content.cleanup_file_yjs_repair_covered_rows", () => {
+	test("durably deletes the superseded Yjs object after a confirmed delete retry", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/repair-superseded-cleanup.md",
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const superseded = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", created._yay.nodeId);
+			if (!files_node_has_editable_yjs_state(node)) {
+				throw new Error("Expected an editable repair target");
+			}
+			const snapshot = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
+			if (!snapshot) {
+				throw new Error("Expected a Yjs snapshot");
+			}
+			const asset = await ctx.db.get("files_r2_assets", snapshot.assetId);
+			if (!asset?.r2Key) {
+				throw new Error("Expected a published Yjs snapshot asset");
+			}
+
+			const replacementAssetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "yjs_snapshot",
+				r2Bucket: "test-files-bucket",
+				size: 2,
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			});
+			await ctx.db.patch("files_yjs_snapshots", snapshot._id, { assetId: replacementAssetId });
+
+			return { assetId: asset._id, key: asset.r2Key, throughSequence: snapshot.sequence };
+		});
+
+		const finiteDeleteSpy = vi.spyOn(R2.prototype, "deleteObject");
+		const confirmedDeleteSpy = vi
+			.spyOn(r2_confirmed_object_delete, "delete_object")
+			.mockRejectedValueOnce(new Error("simulated R2 outage"));
+
+		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_repair_covered_rows, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId: created._yay.nodeId,
+			throughSequence: superseded.throughSequence,
+			supersededYjsAssetId: superseded.assetId,
+		});
+		expect(finiteDeleteSpy).not.toHaveBeenCalled();
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", superseded.assetId))).toBeNull();
+
+		const [job] = await read_deletion_jobs(t);
+		expect(job).toMatchObject({ r2Key: superseded.key, reason: "untracked_asset_event", generation: 1 });
+		if (!job) {
+			throw new Error("Expected a superseded-object deletion job");
+		}
+		await t.action(internal.r2_client.process_object_deletion_job, {
+			jobId: job._id,
+			generation: job.generation,
+		});
+		expect((await read_deletion_jobs(t))[0]).toMatchObject({
+			r2Key: superseded.key,
+			attempts: 1,
+		});
+
+		confirmedDeleteSpy.mockResolvedValue(undefined);
+		await t.action(internal.r2_client.process_object_deletion_job, {
+			jobId: job._id,
+			generation: job.generation,
+		});
+		expect(await read_deletion_jobs(t)).toEqual([]);
+	});
+});
+
+describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
+	test("a locked file refuses finalize before the staleness checks and hands both keys to the ledger", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Repair Lock User",
+		});
+		const seeded = await seed_repair_finalize_target(t, db, "/repair-gate-lock.md");
+		await set_read_only_or_throw(asUser, db.membershipId, seeded.nodeId);
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("simulated R2 outage"));
+
+		// `targetSequence` is deliberately stale. A `read_only` result proves the lock check runs
+		// before the staleness checks, so no later check can publish first.
+		const refused = await t.mutation(internal.files_nodes_content.finalize_file_yjs_repair, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId: seeded.nodeId,
+			authorUserId: db.userId,
+			source: "latest_state",
+			acknowledgeDiscardUnmaterialized: false,
+			targetSequence: 999,
+			expectedLineageGeneration: 0,
+			text: "repair.",
+			textByteSize: files_get_utf8_byte_size("repair."),
+			yjsSnapshotAssetId: seeded.yjsSnapshotAssetId,
+			yjsSnapshotSize: 2,
+			contentSnapshotAssetId: seeded.contentSnapshotAssetId,
+			supersededYjsAssetId: seeded.supersededYjsAssetId,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+		await t.finishInProgressScheduledFunctions();
+
+		// The fresh uploads went to the ledger; the node, its markers, and the superseded asset
+		// are untouched.
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_r2_assets", seeded.yjsSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", seeded.contentSnapshotAssetId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", seeded.supersededYjsAssetId)).not.toBeNull();
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.contentShapeMismatchAt).toBeDefined();
+			if (!files_node_has_editable_yjs_state(node)) {
+				throw new Error("Expected the node to stay editable");
+			}
+			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId);
+			expect(lastSequenceDoc?.lineageGeneration).toBe(0);
+		});
+		const jobs = await read_deletion_jobs(t);
+		expect(jobs.map((job) => job.reason)).toEqual(["read_only_yjs_repair", "read_only_yjs_repair"]);
+		expect(jobs.map((job) => job.r2Key).sort()).toEqual(
+			expected_ledger_keys(db, [seeded.yjsSnapshotAssetId, seeded.contentSnapshotAssetId]),
+		);
+	});
+
+	test("the repair action refuses a locked file before creating any assets", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Repair Early Refusal User",
+		});
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/repair-early-refusal.md",
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", created._yay.nodeId, { contentShapeMismatchAt: Date.now() });
+		});
+		await set_read_only_or_throw(asUser, db.membershipId, created._yay.nodeId);
+
+		const assetCountBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
+		const refused = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId: created._yay.nodeId,
+			authorUserId: db.userId,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+
+		expect(await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length)).toBe(
+			assetCountBefore,
+		);
+		expect(await read_deletion_jobs(t)).toEqual([]);
+	});
+
+	test("repair succeeds after unlock and clears both upload deadlines", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Repair Unlocked User",
+		});
+		const r2Writes = new Map<string, BodyInit>();
+		generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
+			const key = customKey ?? "test-upload-key";
+			return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
+		});
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+				const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+				if (urlString.startsWith("https://r2.test/upload") && init?.method === "PUT") {
+					const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+					r2Writes.set(key, init.body ?? "");
+					return new Response(null, { status: 200 });
+				}
+				if (urlString.startsWith("https://r2.test/object?key=")) {
+					const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
+					const body = r2Writes.get(key);
+					return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+				}
+				return new Response(null, { status: 404 });
+			}),
+		);
+
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/repair-unlocked.md",
+			textContent: "# Repair me\n\nBody text\n",
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const nodeId = created._yay.nodeId;
+
+		const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			userId: db.userId,
+			targetSequence: 0,
+		});
+		if (materialized._nay) {
+			throw new Error(materialized._nay.message);
+		}
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
+		});
+
+		// The operator unlocked before repairing, so the final mutation accepts it.
+		await set_read_only_or_throw(asUser, db.membershipId, nodeId);
+		await set_writable_or_throw(asUser, db.membershipId, nodeId);
+
+		const repaired = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			authorUserId: db.userId,
+		});
+		if (repaired._nay) {
+			throw new Error(repaired._nay.message);
+		}
+		expect(repaired._yay.lineageGeneration).toBe(1);
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			if (!files_node_has_editable_yjs_state(node)) {
+				throw new Error("Expected the repaired node to stay editable");
+			}
+			expect(node.contentShapeMismatchAt).toBeUndefined();
+
+			// The repair's published uploads carry keys and no cleanup deadline.
+			const yjsSnapshotDoc = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
+			const yjsAsset = yjsSnapshotDoc ? await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId) : null;
+			expect(yjsAsset?.r2Key).toBeTruthy();
+			expect(yjsAsset?.unfinalizedExpiresAt).toBeUndefined();
+			const contentAsset = node.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			expect(contentAsset?.r2Key).toBeTruthy();
+			expect(contentAsset?.unfinalizedExpiresAt).toBeUndefined();
+		});
+		expect(await read_deletion_jobs(t)).toEqual([]);
 	});
 });

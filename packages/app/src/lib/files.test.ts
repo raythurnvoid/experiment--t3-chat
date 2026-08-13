@@ -50,6 +50,7 @@ const createTreeItem = (args: {
 		createdBy: "test-user" as Id<"users">,
 		updatedAt: 0,
 		updatedBy: "test-user" as Id<"users">,
+		readOnlyState: "writable",
 	} satisfies files_TreeItem;
 };
 

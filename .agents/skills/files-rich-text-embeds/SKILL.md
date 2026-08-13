@@ -124,6 +124,19 @@ component-owned callbacks in `FileEditorRichTextInner` (the file-input click mus
 the user gesture). The picker pins `value=""` because Ariakit adopts the first item's value on
 mount when no value is given, which would fire `setValue` and insert an unpicked embed.
 
+# Read-Only Documents
+
+- Hide or disable paste, drop, picker, slash upload, external embed, and existing-file embed actions
+  when the document is read-only. Check the document again before `create_upload_node`. This prevents
+  a locked document from creating a separate asset file. The `assets` destination must also be
+  writable.
+- Creating the asset node accepts the upload. If the asset destination locks before its R2 event, the
+  upload still finishes and the asset file stays locked. Adding the embed to the document is a
+  separate write. If the document locks before that write, keep the visible asset file and explain
+  that the file uploaded but was not inserted.
+- Creating or resolving an anchored comment is disabled because it changes a Yjs mark. Reading and
+  replying to an existing sidecar thread stays available under the comment ACL.
+
 # Out Of Scope (decided)
 
 Youtube/Twitter markdown persistence, content-hash dedupe, Monaco inline previews,

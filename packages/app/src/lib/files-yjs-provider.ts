@@ -29,6 +29,9 @@ type FilesConvexIncrementalUpdates = NonNullable<
 	app_convex_FunctionReturnType<typeof app_convex_api.files_nodes.yjs_get_incremental_updates>
 >;
 
+export type files_yjs_EditBlockReason = "read_only" | "permission";
+export type files_yjs_PushRefusalReason = files_yjs_EditBlockReason | "other";
+
 type FilesConvexYjsStream_Args = {
 	nodeId: app_convex_Id<"files_nodes">;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -38,7 +41,13 @@ type FilesConvexYjsStream_Args = {
 	onOutgoingUpdateSent: () => void;
 	onSync: (currentStateUpdate: Uint8Array) => void;
 	onLoadFailedChange: (failed: boolean) => void;
-	onPushRefusedChange: (refused: boolean) => void;
+	onPushRefusedChange: (reason: files_yjs_PushRefusalReason | null, persistent?: boolean) => void;
+};
+
+type FilesConvexYjsOutgoingBatch = {
+	update: Uint8Array;
+	sealed: boolean;
+	dropped: boolean;
 };
 
 class FilesConvexYjsStream {
@@ -63,7 +72,7 @@ class FilesConvexYjsStream {
 	private unsubscribe: () => void;
 	private disposed = false;
 
-	private pendingOutgoingUpdates: Uint8Array[] = [];
+	private pendingOutgoingBatches: FilesConvexYjsOutgoingBatch[] = [];
 	private outgoingUpdatesDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private outgoingUpdateInFlight = false;
 
@@ -142,9 +151,18 @@ class FilesConvexYjsStream {
 		if (this.disposed) return;
 		if (files_yjs_doc_is_diff_update_empty(update)) return;
 
-		// Keep one FIFO queue: the in-flight batch stays at index 0, and any edits
-		// made while it retries append behind it.
-		this.pendingOutgoingUpdates.push(update);
+		// Merge quick edits into one unsent batch. Keep a sent batch fixed so each
+		// retry sends the same Yjs update.
+		const tailBatch = this.pendingOutgoingBatches.at(-1);
+		if (tailBatch && !tailBatch.sealed) {
+			tailBatch.update = mergeUpdates([tailBatch.update, update]);
+		} else {
+			this.pendingOutgoingBatches.push({
+				update,
+				sealed: false,
+				dropped: false,
+			});
+		}
 
 		// Let the active pump own retries and follow-up batches. Enqueueing during
 		// an in-flight send should only append to the queue.
@@ -155,14 +173,16 @@ class FilesConvexYjsStream {
 			this.outgoingUpdateInFlight = true;
 
 			void Promise.try(async () => {
-				while (!this.disposed && this.pendingOutgoingUpdates.length > 0) {
-					// Seal the current idle debounce window into one batch. New edits that
-					// arrive after this point wait behind the sealed head batch.
-					const merged = mergeUpdates(this.pendingOutgoingUpdates);
-					this.pendingOutgoingUpdates = files_yjs_doc_is_diff_update_empty(merged) ? [] : [merged];
-
-					const outgoingUpdate = this.pendingOutgoingUpdates[0];
-					if (!outgoingUpdate) continue;
+				while (!this.disposed && this.pendingOutgoingBatches.length > 0) {
+					// Stop adding edits to this batch before sending it. New edits go into a new
+					// batch. A retry sends this same batch again.
+					const outgoingBatch = this.pendingOutgoingBatches[0];
+					if (!outgoingBatch) continue;
+					outgoingBatch.sealed = true;
+					if (files_yjs_doc_is_diff_update_empty(outgoingBatch.update)) {
+						this.pendingOutgoingBatches.shift();
+						continue;
+					}
 
 					// Keep the sent batch at the head of the queue until Convex accepts it.
 					// Notify sync status once for this batch; retries must not create extra
@@ -177,45 +197,69 @@ class FilesConvexYjsStream {
 							const result = await app_convex.mutation(app_convex_api.files_nodes.yjs_push_update, {
 								membershipId: this.args.membershipId,
 								nodeId: this.args.nodeId,
-								update: files_u8_to_array_buffer(outgoingUpdate),
+								update: files_u8_to_array_buffer(outgoingBatch.update),
 								sessionId: this.args.presenceStore.localSessionId,
 							});
 
+							// Access may change while this request runs. Ignore the result if that change
+							// already dropped this batch. The result must not remove a newer batch.
+							if (outgoingBatch.dropped) {
+								break;
+							}
+
 							if (result._nay) {
 								console.warn("[FilesConvexYjsStream] yjs_push_update failed", result._nay);
+
+								// A read-only refusal is final. Drop the queued edits and show the warning now.
+								// Do not retry these edits after the file is unlocked.
+								if (result._nay.name === "read_only") {
+									this.dropPendingUpdates();
+									this.onPushRefusedChange("read_only", true);
+									break;
+								}
+
+								// A rate limit is temporary. Keep retrying every 5 seconds.
+								// Do not show the final warning for this case.
 								if (result._nay.message === "Rate limit exceeded") {
 									await new Promise((resolve) => setTimeout(resolve, 5000));
 									continue;
 								}
-								// The compaction refusal is transient by contract: the server already
-								// enqueued the materialization that frees the budget before answering.
-								// Retry like the rate-limit branch instead of declaring the document
-								// broken and dropping the queued edits; a genuinely stuck file still
-								// reaches the banner below once the attempts run out.
+
+								// Compaction means the server is joining old Yjs updates to free space.
+								// Retry 5 times. Wait 5 seconds between tries. Show the warning if the
+								// server refuses the sixth request.
 								if (result._nay.message === files_yjs_COMPACTION_RETRY_MESSAGE && compactionRetryCount < 5) {
 									compactionRetryCount += 1;
 									await new Promise((resolve) => setTimeout(resolve, 5000));
 									continue;
 								}
-								// The server refused this batch for good (permission, size, archived node...).
-								// Tell the UI instead of swallowing it: the user keeps typing into a document
-								// that silently stopped saving otherwise. The batch stays queued, so a later
-								// edit retries it and a success clears the flag.
-								this.onPushRefusedChange(true);
+
+								// Show the warning on the first permission refusal or other final refusal.
+								// Keep this batch. A later edit can try it again.
+								this.onPushRefusedChange(result._nay.message === "Permission denied" ? "permission" : "other");
 								return;
 							}
 
-							this.pendingOutgoingUpdates.shift();
-							this.onPushRefusedChange(false);
+							const batchIndex = this.pendingOutgoingBatches.indexOf(outgoingBatch);
+							if (batchIndex !== -1) {
+								this.pendingOutgoingBatches.splice(batchIndex, 1);
+							}
+							this.onPushRefusedChange(null);
 							break;
 						} catch (err) {
+							if (outgoingBatch.dropped) {
+								break;
+							}
+
 							console.warn("[FilesConvexYjsStream] yjs_push_update errored", err);
+							// A network error may be temporary. Keep retrying every 5 seconds.
+							// Do not show the final warning for this case.
 							await new Promise((resolve) => setTimeout(resolve, 5000));
 							continue;
 						}
 					}
 
-					if (this.pendingOutgoingUpdates.length > 0) {
+					if (this.pendingOutgoingBatches.length > 0) {
 						// Preserve the normal debounce cadence before sealing edits that
 						// accumulated while the previous batch was in flight.
 						await new Promise((resolve) => setTimeout(resolve, 500));
@@ -235,6 +279,25 @@ class FilesConvexYjsStream {
 		}
 		// Reset the timer while idle so this stays a real debounce, not a throttle.
 		this.outgoingUpdatesDebounceTimer = setTimeout(flushUpdates, 500);
+	}
+
+	dropPendingUpdates() {
+		const dropped = this.pendingOutgoingBatches.length > 0;
+
+		// Mark each batch before clearing the queue. An active request still holds
+		// its batch and may finish later.
+		for (const batch of this.pendingOutgoingBatches) {
+			batch.dropped = true;
+		}
+		this.pendingOutgoingBatches = [];
+
+		// Stop the scheduled send because the queue is now empty.
+		if (this.pendingOutgoingBatches.length === 0 && this.outgoingUpdatesDebounceTimer) {
+			clearTimeout(this.outgoingUpdatesDebounceTimer);
+			this.outgoingUpdatesDebounceTimer = null;
+		}
+
+		return dropped;
 	}
 
 	async sync() {
@@ -373,19 +436,17 @@ class FilesConvexYjsStream {
 			this.outgoingUpdatesDebounceTimer = null;
 		}
 
-		// Edits from the last debounce window are still queued here. Dropping them would lose
-		// the user's newest keystrokes whenever the editor is destroyed right after an edit
-		// (switching the Rich/Markdown view, opening another file). Send them in one final
-		// best-effort mutation instead. The head batch may already be in flight; re-sending it
-		// is safe because applying the same Yjs update twice is a no-op.
-		if (this.pendingOutgoingUpdates.length > 0) {
-			const merged = mergeUpdates(this.pendingOutgoingUpdates);
-			if (!files_yjs_doc_is_diff_update_empty(merged)) {
+		// Try to send every queued batch once before the editor closes. This protects
+		// the user's last keystrokes. A batch may already be in flight, but Yjs can
+		// apply the same update twice without changing the document twice.
+		for (const batch of this.pendingOutgoingBatches) {
+			batch.sealed = true;
+			if (!batch.dropped && !files_yjs_doc_is_diff_update_empty(batch.update)) {
 				app_convex
 					.mutation(app_convex_api.files_nodes.yjs_push_update, {
 						membershipId: this.args.membershipId,
 						nodeId: this.args.nodeId,
-						update: files_u8_to_array_buffer(merged),
+						update: files_u8_to_array_buffer(batch.update),
 						sessionId: this.args.presenceStore.localSessionId,
 					})
 					.then((result) => {
@@ -400,7 +461,7 @@ class FilesConvexYjsStream {
 		}
 
 		this.outgoingUpdateInFlight = false;
-		this.pendingOutgoingUpdates = [];
+		this.pendingOutgoingBatches = [];
 		this.unsubscribe();
 	}
 }
@@ -410,6 +471,8 @@ export type files_yjs_Provider_Args = {
 	enablePermanentUserData?: boolean;
 	presenceStore: files_PresenceStore;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	/** Set this to false to keep sync active without collecting local edits. */
+	editable: boolean;
 };
 
 /** `sync` and `status` are required by `IYjsProvider`; `synced` is the Yjs-style alias. */
@@ -419,8 +482,11 @@ type files_yjs_Provider_Events = {
 	status: (status: YjsSyncStatus) => void;
 	/** Fires with true when the initial document load keeps failing, and false once a load succeeds. */
 	loadFailed: (failed: boolean) => void;
-	/** Fires with true when the server refuses a push for a non-transient reason, and false once a push succeeds. */
-	pushRefused: (refused: boolean) => void;
+	/**
+	 * `reason` tells the UI why the edit failed. `persistent` keeps the warning
+	 * after the hook creates a new provider.
+	 */
+	pushRefused: (reason: files_yjs_PushRefusalReason | null, persistent?: boolean) => void;
 };
 
 export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> implements IYjsProvider {
@@ -438,8 +504,10 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 	/** True while the initial document load keeps failing; read it before the event fires. */
 	public loadFailed = false;
 
-	/** True while the server refuses pushes for a non-transient reason; read it before the event fires. */
-	public pushRefused = false;
+	/** Read this before the event fires to learn why the latest push failed. */
+	public pushRefusedReason: files_yjs_PushRefusalReason | null = null;
+	// Keep an access warning even if an older request succeeds later.
+	private persistentPushRefusalReason: files_yjs_PushRefusalReason | null = null;
 
 	private readonly syncStatusΣ: DerivedSignal<YjsSyncStatus>;
 
@@ -500,8 +568,8 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 	}
 
 	private updateDoc = (update: Uint8Array) => {
-		const canWrite = true;
-		if (!canWrite || this.isPaused) return;
+		// Keep receiving saved changes in read-only mode. Do not queue local edits.
+		if (!this.args.editable || this.isPaused) return;
 		if (update.byteLength === 0) return;
 
 		const stream = this.ensureConvexStream({
@@ -530,9 +598,6 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 			return stream;
 		}
 
-		// TODO: add permissions to room user state
-		const canWrite = true;
-
 		stream = new FilesConvexYjsStream({
 			nodeId: this.args.nodeId,
 			membershipId: this.args.membershipId,
@@ -554,7 +619,7 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 			onSync: (currentStateUpdate) => {
 				args.yDocHandler.handleDocSync({
 					currentStateUpdate,
-					canWrite: canWrite,
+					canWrite: this.args.editable,
 				});
 			},
 			onLoadFailedChange: (failed) => {
@@ -562,10 +627,30 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 				this.loadFailed = failed;
 				this.emit("loadFailed", [failed]);
 			},
-			onPushRefusedChange: (refused) => {
-				if (refused === this.pushRefused) return;
-				this.pushRefused = refused;
-				this.emit("pushRefused", [refused]);
+			onPushRefusedChange: (reason, persistent = false) => {
+				const wasPersistent = this.persistentPushRefusalReason !== null;
+
+				// Stop this provider after an access error. The hook will replace its Y.Doc with a clean one.
+				if (persistent && reason) {
+					this.persistentPushRefusalReason = reason;
+					this.args.editable = false;
+				}
+
+				// Keep the warning when an older request succeeds after access changed.
+				if (!reason && this.persistentPushRefusalReason) {
+					return;
+				}
+
+				const nextReason = this.persistentPushRefusalReason ?? reason;
+				if (nextReason === this.pushRefusedReason) {
+					if (persistent && !wasPersistent && nextReason) {
+						this.emit("pushRefused", [nextReason, true]);
+					}
+					return;
+				}
+
+				this.pushRefusedReason = nextReason;
+				this.emit("pushRefused", [nextReason, persistent]);
 			},
 		});
 
@@ -576,6 +661,31 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 		});
 
 		return stream;
+	}
+
+	/**
+	 * Drop unsaved edits when the file lock or write permission changes.
+	 * A Yjs sync adds saved changes. It cannot remove local edits already in this Y.Doc.
+	 * Let the hook create a new Y.Doc and load the saved content again.
+	 */
+	public dropPendingUpdatesForAccessChange(args: {
+		editable: boolean;
+		editBlockReason: files_yjs_EditBlockReason | null;
+	}) {
+		this.args.editable = args.editable;
+
+		let dropped = false;
+		for (const stream of this.convexStreams.values()) {
+			dropped = stream.dropPendingUpdates() || dropped;
+		}
+
+		// Tell the user that these local edits were not saved.
+		if (dropped) {
+			const reason = args.editBlockReason ?? "other";
+			this.persistentPushRefusalReason = reason;
+			this.pushRefusedReason = reason;
+			this.emit("pushRefused", [reason, true]);
+		}
 	}
 
 	// attempt to load a subdoc of a given guid

@@ -5806,6 +5806,7 @@ describe("file sharing", () => {
 			expectedUpdatedAt: null,
 			baseYjsSequence: 0,
 			baseLineageGeneration: 0,
+			expectedSourceNodeIds: [],
 			baseStateId: sealedByRole.get("base")!.stateId,
 			stagedStateId: sealedByRole.get("staged")!.stateId,
 			unstagedStateId: sealedByRole.get("unstaged")!.stateId,
@@ -8331,5 +8332,360 @@ describe("file sharing", () => {
 		expect(after.node).not.toBeNull();
 		// A grant left pointing at a deleted node is what makes its role undeletable forever.
 		expect(after.grantCount).toBeGreaterThan(0);
+	});
+});
+
+describe("read-only lock management", () => {
+	/** The node's stored lock pointer, so refusal tests can prove nothing was written. */
+	async function read_lock_pointer(t: TestConvex, nodeId: Id<"files_nodes">) {
+		return await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			return node?.readOnlyScopeNodeId;
+		});
+	}
+
+	/** Give the fixture member a custom role that may manage locks on open folders. */
+	async function promote_member_to_manager(
+		fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
+	) {
+		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "Lock Manager",
+			description: "",
+			permissions: ["content.read", "content.write", "content.permissions.manage"],
+		});
+		expect(role._nay).toBeUndefined();
+
+		const assigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: fixture.memberId,
+			role: role._yay!.roleId,
+		});
+		expect(assigned._nay).toBeUndefined();
+	}
+
+	test("direct comment sidecars stay under comment ACL while the file is locked", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "lock-comments-org",
+			suffix: "lock-comments",
+		});
+
+		const folderId = await access_control_test_seed_open_folder(fixture, { name: "comments" });
+		const thread = await fixture.asOwner.mutation(api.chat_messages.chat_messages_threads_create, {
+			membershipId: fixture.ownerMembershipId,
+			fileNodeId: folderId,
+			content: "Before lock",
+		});
+		expect(thread._nay).toBeUndefined();
+
+		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+		});
+		expect(locked._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const created = await fixture.asOwner.mutation(api.chat_messages.chat_messages_threads_create, {
+			membershipId: fixture.ownerMembershipId,
+			fileNodeId: folderId,
+			content: "Created after lock",
+		});
+		expect(created._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const replied = await fixture.asOwner.mutation(api.chat_messages.chat_messages_add, {
+			membershipId: fixture.ownerMembershipId,
+			rootId: thread._yay!.threadId,
+			content: "Reply after lock",
+		});
+		expect(replied._nay).toBeUndefined();
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const archived = await fixture.asOwner.mutation(api.chat_messages.chat_messages_archive, {
+			membershipId: fixture.ownerMembershipId,
+			messageId: thread._yay!.threadId,
+		});
+		expect(archived._nay).toBeUndefined();
+
+		const state = await t.run(async (ctx) => {
+			const root = await ctx.db.get("chat_messages", thread._yay!.threadId);
+			const messages = (await ctx.db.query("chat_messages").collect()).filter(
+				(message) => message.fileNodeId === folderId,
+			);
+			return { root, contents: messages.map((message) => message.content).sort() };
+		});
+		expect(state.root?.isArchived).toBe(true);
+		expect(state.contents).toEqual(["Before lock", "Created after lock", "Reply after lock"]);
+	});
+
+	test("locking takes content.permissions.manage: manager and owner pass, writer and viewer do not", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "lock-authority-org",
+			suffix: "lock-authority",
+		});
+
+		const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: files_ROOT_ID,
+			path: "gate",
+		});
+		expect(folder._nay).toBeUndefined();
+		const folderId = folder._yay!.nodeId;
+
+		// A writer (the default member role) may change content but not lock it.
+		const memberLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: folderId,
+		});
+		expect(memberLock._nay?.message).toBe("Permission denied");
+		expect(await read_lock_pointer(t, folderId)).toBeNull();
+
+		// A viewer may not either.
+		await access_control_test_demote_to_viewer(fixture);
+		const viewerLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: folderId,
+		});
+		expect(viewerLock._nay?.message).toBe("Permission denied");
+
+		// Use the same path to prove the owner can lock the file.
+		const ownerLock = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+		});
+		expect(ownerLock._nay).toBeUndefined();
+		expect(await read_lock_pointer(t, folderId)).toBe(folderId);
+
+		// Unlock is gated the same way.
+		const viewerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_writable, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: folderId,
+		});
+		expect(viewerUnlock._nay?.message).toBe("Permission denied");
+		expect(await read_lock_pointer(t, folderId)).toBe(folderId);
+
+		// A custom role carrying content.permissions.manage may lock and unlock.
+		await promote_member_to_manager(fixture);
+		const managerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_writable, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: folderId,
+		});
+		expect(managerUnlock._nay).toBeUndefined();
+		expect(await read_lock_pointer(t, folderId)).toBeNull();
+
+		const managerLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: folderId,
+		});
+		expect(managerLock._nay).toBeUndefined();
+		expect(await read_lock_pointer(t, folderId)).toBe(folderId);
+	});
+
+	test("a hidden restricted subtree blocks the lock without being revealed", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "lock-hidden-org",
+			suffix: "lock-hidden",
+		});
+		await promote_member_to_manager(fixture);
+
+		const open = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: files_ROOT_ID,
+			path: "open",
+		});
+		expect(open._nay).toBeUndefined();
+		const secret = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: open._yay!.nodeId,
+			path: "secret",
+		});
+		expect(secret._nay).toBeUndefined();
+		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: secret._yay!.nodeId,
+		});
+		expect(restricted._nay).toBeUndefined();
+
+		// The member manages the open folder, but cannot manage its hidden restricted subtree.
+		// Return a general error that does not name the hidden node.
+		const memberLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: open._yay!.nodeId,
+		});
+		expect(memberLock._nay?.message).toBe("Permission denied");
+		expect(await read_lock_pointer(t, open._yay!.nodeId)).toBeNull();
+		expect(await read_lock_pointer(t, secret._yay!.nodeId)).toBeNull();
+
+		// Use the same path to prove the member can lock a folder without a hidden descendant.
+		const plain = await fixture.asMember.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.memberMembershipId,
+			parentId: files_ROOT_ID,
+			path: "plain",
+		});
+		expect(plain._nay).toBeUndefined();
+		const plainLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: plain._yay!.nodeId,
+		});
+		expect(plainLock._nay).toBeUndefined();
+
+		// The owner may lock the hidden subtree. The member still cannot unlock it.
+		const ownerLock = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: open._yay!.nodeId,
+		});
+		expect(ownerLock._nay).toBeUndefined();
+		const memberUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_writable, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: open._yay!.nodeId,
+		});
+		expect(memberUnlock._nay?.message).toBe("Permission denied");
+		expect(await read_lock_pointer(t, open._yay!.nodeId)).toBe(open._yay!.nodeId);
+	});
+
+	test("a direct lock inside a hidden outer lock reports the flag but never the outer node", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "lock-outer-org",
+			suffix: "lock-hidden-outer",
+		});
+
+		const closed = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: files_ROOT_ID,
+			path: "closed",
+		});
+		expect(closed._nay).toBeUndefined();
+		const inner = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: closed._yay!.nodeId,
+			path: "inner",
+		});
+		expect(inner._nay).toBeUndefined();
+
+		// The outer folder is restricted and never shared with the member; the inner folder is its
+		// own restricted scope and the member manages it through a grant.
+		const outerRestricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: closed._yay!.nodeId,
+		});
+		expect(outerRestricted._nay).toBeUndefined();
+		const innerRestricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: inner._yay!.nodeId,
+		});
+		expect(innerRestricted._nay).toBeUndefined();
+		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: inner._yay!.nodeId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "manage",
+		});
+		expect(granted._nay).toBeUndefined();
+
+		const outerLock = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: closed._yay!.nodeId,
+		});
+		expect(outerLock._nay).toBeUndefined();
+
+		// The member may add a direct lock to the node they manage, under the hidden outer lock.
+		const innerLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: inner._yay!.nodeId,
+		});
+		expect(innerLock._nay).toBeUndefined();
+
+		// The member sees the direct lock and the parent-lock flag, but never the hidden outer node.
+		const memberState = await fixture.asMember.query(api.files_nodes.get_node_read_only_management_state, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: inner._yay!.nodeId,
+		});
+		expect(memberState).toEqual({
+			nodeId: inner._yay!.nodeId,
+			canManage: true,
+			readOnlyState: "self",
+			hasInheritedParentLock: true,
+			source: null,
+		});
+
+		// The owner may read the outer lock root, so they get its id and path.
+		const ownerState = await fixture.asOwner.query(api.files_nodes.get_node_read_only_management_state, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: inner._yay!.nodeId,
+		});
+		expect(ownerState?.source).toEqual({ nodeId: closed._yay!.nodeId, path: "/closed" });
+
+		// Removing the direct lock leaves the inherited lock in place.
+		// The result still does not name the hidden outer node.
+		const innerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_writable, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: inner._yay!.nodeId,
+		});
+		expect(innerUnlock._nay).toBeUndefined();
+
+		const memberStateAfter = await fixture.asMember.query(api.files_nodes.get_node_read_only_management_state, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: inner._yay!.nodeId,
+		});
+		expect(memberStateAfter).toEqual({
+			nodeId: inner._yay!.nodeId,
+			canManage: true,
+			readOnlyState: "inherited",
+			hasInheritedParentLock: true,
+			source: null,
+		});
+		expect(await read_lock_pointer(t, inner._yay!.nodeId)).toBe(closed._yay!.nodeId);
+	});
+
+	test("an inherited lock names its source only when the caller may read it", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "lock-projection-org",
+			suffix: "lock-projection",
+		});
+
+		const pub = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: files_ROOT_ID,
+			path: "pub",
+		});
+		expect(pub._nay).toBeUndefined();
+		const child = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: pub._yay!.nodeId,
+			path: "child",
+		});
+		expect(child._nay).toBeUndefined();
+
+		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: pub._yay!.nodeId,
+		});
+		expect(locked._nay).toBeUndefined();
+
+		// The source folder is open, so a plain member may read it and the state names it. The
+		// member still holds no manage permission, so `canManage` stays false.
+		const memberState = await fixture.asMember.query(api.files_nodes.get_node_read_only_management_state, {
+			membershipId: fixture.memberMembershipId,
+			nodeId: child._yay!.nodeId,
+		});
+		expect(memberState).toEqual({
+			nodeId: child._yay!.nodeId,
+			canManage: false,
+			readOnlyState: "inherited",
+			hasInheritedParentLock: true,
+			source: { nodeId: pub._yay!.nodeId, path: "/pub" },
+		});
+
+		const ownerState = await fixture.asOwner.query(api.files_nodes.get_node_read_only_management_state, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: child._yay!.nodeId,
+		});
+		expect(ownerState?.canManage).toBe(true);
 	});
 });

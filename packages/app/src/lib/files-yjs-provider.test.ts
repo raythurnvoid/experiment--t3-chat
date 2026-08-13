@@ -151,7 +151,7 @@ async function advanceTimersByTime(ms: number) {
 	await flushMicrotasks();
 }
 
-async function createReadyProvider() {
+async function createReadyProvider(args: { editable?: boolean } = {}) {
 	const presenceStore = createPresenceStore();
 	const emptySnapshotUpdate = createEmptySnapshotUpdate();
 	appConvexMock.app_convex.action.mockResolvedValue({
@@ -170,6 +170,7 @@ async function createReadyProvider() {
 		membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
 		nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
 		presenceStore,
+		editable: args.editable ?? true,
 	});
 
 	appConvexMock.emitIncrementalUpdates(null);
@@ -258,6 +259,7 @@ describe("files_yjs_Provider snapshot sync", () => {
 			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
 			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
 			presenceStore,
+			editable: true,
 		});
 
 		appConvexMock.emitIncrementalUpdates(null);
@@ -354,5 +356,121 @@ describe("files_yjs_Provider outgoing update queue", () => {
 		expect(getMutationUpdate(2)).not.toBe(firstAttemptUpdate);
 
 		provider.destroy();
+	});
+
+	test("drops a queued batch after the editor becomes read-only and keeps the warning", async () => {
+		appConvexMock.app_convex.mutation.mockResolvedValue({ _yay: { newSequence: 1 } });
+		const { provider, rootDoc } = await createReadyProvider();
+		const pushRefused = vi.fn();
+		provider.on("pushRefused", pushRefused);
+
+		insertText(rootDoc, "not saved");
+		provider.dropPendingUpdatesForAccessChange({ editable: false, editBlockReason: "read_only" });
+
+		expect(provider.pushRefusedReason).toBe("read_only");
+		expect(pushRefused).toHaveBeenCalledWith("read_only", true);
+		await advanceTimersByTime(500);
+		expect(appConvexMock.app_convex.mutation).not.toHaveBeenCalled();
+
+		provider.destroy();
+		await flushMicrotasks();
+		expect(appConvexMock.app_convex.mutation).not.toHaveBeenCalled();
+	});
+
+	test("reports permission when write access loss drops a queued batch", async () => {
+		const { provider, rootDoc } = await createReadyProvider();
+		const pushRefused = vi.fn();
+		provider.on("pushRefused", pushRefused);
+
+		insertText(rootDoc, "not saved");
+		provider.dropPendingUpdatesForAccessChange({ editable: false, editBlockReason: "permission" });
+
+		expect(provider.pushRefusedReason).toBe("permission");
+		expect(pushRefused).toHaveBeenCalledWith("permission", true);
+
+		provider.destroy();
+	});
+
+	test("drops an in-flight batch after the editor becomes read-only", async () => {
+		const pushResult = Promise.withResolvers<{ _yay: { newSequence: number } }>();
+		appConvexMock.app_convex.mutation.mockReturnValue(pushResult.promise);
+		const { provider, rootDoc } = await createReadyProvider();
+
+		insertText(rootDoc, "in flight");
+		await advanceTimersByTime(500);
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+
+		provider.dropPendingUpdatesForAccessChange({ editable: false, editBlockReason: "read_only" });
+		provider.destroy();
+		pushResult.resolve({ _yay: { newSequence: 1 } });
+		await flushMicrotasks();
+
+		expect(provider.pushRefusedReason).toBe("read_only");
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+	});
+
+	test("drops a read-only batch and does not retry it after another local edit", async () => {
+		appConvexMock.app_convex.mutation.mockResolvedValue({
+			_nay: { message: "This item is read-only.", name: "read_only" },
+		});
+		const { provider, rootDoc } = await createReadyProvider();
+
+		insertText(rootDoc, "not saved");
+		await advanceTimersByTime(500);
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+		expect(provider.pushRefusedReason).toBe("read_only");
+
+		insertText(rootDoc, " still not saved");
+		await advanceTimersByTime(500);
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+
+		provider.destroy();
+		await flushMicrotasks();
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+	});
+
+	test("reports permission when the server refuses an edit after access is removed", async () => {
+		appConvexMock.app_convex.mutation.mockResolvedValue({
+			_nay: { message: "Permission denied", name: "nay" },
+		});
+		const { provider, rootDoc } = await createReadyProvider();
+		const pushRefused = vi.fn();
+		provider.on("pushRefused", pushRefused);
+
+		insertText(rootDoc, "not saved");
+		await advanceTimersByTime(500);
+
+		expect(provider.pushRefusedReason).toBe("permission");
+		expect(pushRefused).toHaveBeenCalledWith("permission", false);
+
+		provider.destroy();
+	});
+
+	test("does not queue local updates while the provider is read-only", async () => {
+		const { provider, rootDoc } = await createReadyProvider({ editable: false });
+
+		insertText(rootDoc, "not queued");
+		await advanceTimersByTime(500);
+		expect(appConvexMock.app_convex.mutation).not.toHaveBeenCalled();
+
+		provider.destroy();
+	});
+
+	test("resyncs before sending a fresh edit after access changes", async () => {
+		appConvexMock.app_convex.mutation.mockResolvedValue({ _yay: { newSequence: 1 } });
+		const oldProvider = await createReadyProvider();
+
+		insertText(oldProvider.rootDoc, "old edit");
+		oldProvider.provider.dropPendingUpdatesForAccessChange({ editable: true, editBlockReason: null });
+		oldProvider.provider.destroy();
+
+		const freshProvider = await createReadyProvider();
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(2);
+		insertText(freshProvider.rootDoc, "fresh edit");
+		await advanceTimersByTime(500);
+
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+
+		freshProvider.provider.destroy();
 	});
 });

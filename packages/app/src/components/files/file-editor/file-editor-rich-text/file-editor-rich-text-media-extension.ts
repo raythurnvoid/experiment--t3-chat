@@ -13,7 +13,11 @@ import type { Node as PmNode } from "@tiptap/pm/model";
 import type { EditorView, NodeView } from "@tiptap/pm/view";
 import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
-import { files_media_get_signed_url, files_media_parse_src, files_media_resolve_file_node } from "@/lib/files-media-src.ts";
+import {
+	files_media_get_signed_url,
+	files_media_parse_src,
+	files_media_resolve_file_node,
+} from "@/lib/files-media-src.ts";
 import {
 	file_editor_rich_text_local_upload_get,
 	file_editor_rich_text_local_upload_subscribe,
@@ -137,6 +141,7 @@ class MediaNodeView implements NodeView {
 		private view: EditorView,
 		private getPos: () => number | undefined,
 		private membershipId: app_convex_Id<"organizations_workspaces_users">,
+		private nodeViews: Set<MediaNodeView>,
 	) {
 		const isVideo = node.type.name === "video";
 
@@ -154,7 +159,7 @@ class MediaNodeView implements NodeView {
 			// `<video>` has no such attribute, so an external video url cannot be trimmed this way.
 			this.media.referrerPolicy = "no-referrer";
 		}
-		this.media.addEventListener("error", () => this.render_state("broken"));
+		this.media.addEventListener("error", () => this.renderState("broken"));
 
 		// The caption is the visible text under the media; it doubles as the image's markdown
 		// `title`. CSS hides it while it is empty.
@@ -173,6 +178,9 @@ class MediaNodeView implements NodeView {
 		this.retryButton.addEventListener("click", (event) => {
 			event.preventDefault();
 			event.stopPropagation();
+			if (!this.view.editable) {
+				return;
+			}
 			const uploadId = typeof this.node.attrs.uploadId === "string" ? this.node.attrs.uploadId : "";
 			if (uploadId) {
 				file_editor_rich_text_retry_upload({ view: this.view, uploadId });
@@ -184,8 +192,8 @@ class MediaNodeView implements NodeView {
 		// The handle itself stays pointer-only and out of the accessibility tree; the keyboard
 		// path is Alt+ArrowLeft/Right on the selected node (see addKeyboardShortcuts below).
 		this.resizeHandle.setAttribute("aria-hidden", "true");
-		this.resizeHandle.addEventListener("pointerdown", this.handle_resize_start);
-		this.resizeHandle.addEventListener("dblclick", this.handle_resize_reset);
+		this.resizeHandle.addEventListener("pointerdown", this.handleResizeStart);
+		this.resizeHandle.addEventListener("dblclick", this.handleResizeReset);
 
 		// One shared cluster for the selected-embed buttons, so they lay out as a row instead
 		// of each one owning an absolute position.
@@ -197,16 +205,17 @@ class MediaNodeView implements NodeView {
 		this.alignButton.className = "FileEditorRichTextMedia-align-button" satisfies FileEditorRichTextMedia_ClassNames;
 		this.alignButton.setAttribute("aria-keyshortcuts", "Alt+Shift+A");
 		this.alignButton.addEventListener("mousedown", (event) => event.stopPropagation());
-		this.alignButton.addEventListener("click", this.handle_align_cycle);
+		this.alignButton.addEventListener("click", this.handleAlignCycle);
 
 		this.captionButton = document.createElement("button");
 		this.captionButton.type = "button";
-		this.captionButton.className = "FileEditorRichTextMedia-caption-button" satisfies FileEditorRichTextMedia_ClassNames;
+		this.captionButton.className =
+			"FileEditorRichTextMedia-caption-button" satisfies FileEditorRichTextMedia_ClassNames;
 		this.captionButton.textContent = "Caption";
 		this.captionButton.setAttribute("aria-label", "Edit caption (Alt+Shift+Enter)");
 		this.captionButton.addEventListener("mousedown", (event) => event.stopPropagation());
-		this.captionButton.addEventListener("click", this.handle_caption_open);
-		this.dom.addEventListener(MEDIA_CAPTION_OPEN_EVENT, () => this.open_caption_editor());
+		this.captionButton.addEventListener("click", this.handleCaptionOpen);
+		this.dom.addEventListener(MEDIA_CAPTION_OPEN_EVENT, () => this.openCaptionEditor());
 
 		this.captionInput = document.createElement("input");
 		this.captionInput.type = "text";
@@ -214,8 +223,8 @@ class MediaNodeView implements NodeView {
 		this.captionInput.setAttribute("aria-label", "Caption");
 		this.captionInput.placeholder = "Add a caption";
 		this.captionInput.addEventListener("mousedown", (event) => event.stopPropagation());
-		this.captionInput.addEventListener("keydown", this.handle_caption_keydown);
-		this.captionInput.addEventListener("blur", this.handle_caption_commit);
+		this.captionInput.addEventListener("keydown", this.handleCaptionKeydown);
+		this.captionInput.addEventListener("blur", this.handleCaptionCommit);
 
 		this.controls.append(this.alignButton, this.captionButton);
 
@@ -237,8 +246,8 @@ class MediaNodeView implements NodeView {
 			this.altButton.textContent = "Alt";
 			this.altButton.setAttribute("aria-label", "Edit alt text (Alt+Enter)");
 			this.altButton.addEventListener("mousedown", (event) => event.stopPropagation());
-			this.altButton.addEventListener("click", this.handle_alt_open);
-			this.dom.addEventListener(MEDIA_ALT_OPEN_EVENT, () => this.open_alt_editor());
+			this.altButton.addEventListener("click", this.handleAltOpen);
+			this.dom.addEventListener(MEDIA_ALT_OPEN_EVENT, () => this.openAltEditor());
 
 			this.altInput = document.createElement("input");
 			this.altInput.type = "text";
@@ -246,17 +255,46 @@ class MediaNodeView implements NodeView {
 			this.altInput.setAttribute("aria-label", "Alt text");
 			this.altInput.placeholder = "Describe this image";
 			this.altInput.addEventListener("mousedown", (event) => event.stopPropagation());
-			this.altInput.addEventListener("keydown", this.handle_alt_keydown);
-			this.altInput.addEventListener("blur", this.handle_alt_commit);
+			this.altInput.addEventListener("keydown", this.handleAltKeydown);
+			this.altInput.addEventListener("blur", this.handleAltCommit);
 
 			this.controls.append(this.altButton);
 			this.dom.append(this.altInput);
 		}
 
-		this.apply_text_attributes();
-		this.apply_width();
-		this.apply_align();
+		this.applyTextAttributes();
+		this.applyWidth();
+		this.applyAlign();
+		this.nodeViews.add(this);
+		this.setEditable(this.view.editable);
 		this.resolve();
+	}
+
+	/**
+	 * Update media controls when the document changes between writable and read-only.
+	 */
+	setEditable(editable: boolean) {
+		const focusedEditorInput = document.activeElement === this.altInput || document.activeElement === this.captionInput;
+
+		if (!editable) {
+			// Close without saving because the document became read-only while the user was typing.
+			this.dom.classList.remove(
+				"FileEditorRichTextMedia-alt-editing" satisfies FileEditorRichTextMedia_ClassNames,
+				"FileEditorRichTextMedia-caption-editing" satisfies FileEditorRichTextMedia_ClassNames,
+			);
+		}
+
+		this.retryButton.disabled = !editable;
+		this.alignButton.disabled = !editable;
+		this.captionButton.disabled = !editable;
+		this.captionInput.disabled = !editable;
+		if (this.altButton) this.altButton.disabled = !editable;
+		if (this.altInput) this.altInput.disabled = !editable;
+
+		// Move focus away from an input that is now disabled.
+		if (!editable && focusedEditorInput) {
+			this.view.focus();
+		}
 	}
 
 	/**
@@ -291,9 +329,9 @@ class MediaNodeView implements NodeView {
 
 		const hasSameSource = node.attrs.src === this.node.attrs.src && node.attrs.uploadId === this.node.attrs.uploadId;
 		this.node = node;
-		this.apply_text_attributes();
-		this.apply_width();
-		this.apply_align();
+		this.applyTextAttributes();
+		this.applyWidth();
+		this.applyAlign();
 		if (!hasSameSource) {
 			this.resolve();
 		}
@@ -305,9 +343,11 @@ class MediaNodeView implements NodeView {
 	 * Apply the document's width to the element. CSS `max-width: 100%` still caps the
 	 * display to the editor column.
 	 */
-	private apply_width() {
+	private applyWidth() {
 		const width =
-			typeof this.node.attrs.width === "number" && Number.isFinite(this.node.attrs.width) ? this.node.attrs.width : null;
+			typeof this.node.attrs.width === "number" && Number.isFinite(this.node.attrs.width)
+				? this.node.attrs.width
+				: null;
 		if (width !== null) {
 			this.media.style.width = `${width}px`;
 		} else {
@@ -315,12 +355,15 @@ class MediaNodeView implements NodeView {
 		}
 	}
 
-	private commit_attributes(attrs: {
+	private commitAttributes(attrs: {
 		width?: number | null;
 		alt?: string | null;
 		title?: string | null;
 		align?: MediaAlign;
 	}) {
+		if (!this.view.editable) {
+			return;
+		}
 		const pos = this.getPos();
 		if (pos === undefined) {
 			return;
@@ -332,7 +375,10 @@ class MediaNodeView implements NodeView {
 		this.view.dispatch(tr);
 	}
 
-	private handle_resize_start = (event: PointerEvent) => {
+	private handleResizeStart = (event: PointerEvent) => {
+		if (!this.view.editable) {
+			return;
+		}
 		// Left button only; a right-button drag would fight the context menu.
 		if (event.button !== 0) {
 			return;
@@ -359,12 +405,12 @@ class MediaNodeView implements NodeView {
 			removeListeners();
 			// Commit what is actually displayed: the CSS cap has already clamped the drag to
 			// the editor column, so the stored width never exceeds it.
-			this.commit_attributes({ width: Math.round(this.media.getBoundingClientRect().width) });
+			this.commitAttributes({ width: Math.round(this.media.getBoundingClientRect().width) });
 		};
 		const handleCancel = () => {
 			removeListeners();
 			// Snap back to the stored width.
-			this.apply_width();
+			this.applyWidth();
 		};
 
 		this.resizeHandle.addEventListener("pointermove", handleMove);
@@ -372,22 +418,25 @@ class MediaNodeView implements NodeView {
 		this.resizeHandle.addEventListener("pointercancel", handleCancel);
 	};
 
-	private handle_resize_reset = (event: MouseEvent) => {
+	private handleResizeReset = (event: MouseEvent) => {
 		event.preventDefault();
 		event.stopPropagation();
+		if (!this.view.editable) {
+			return;
+		}
 		// Back to the natural size, and immediately: the node update echoes the same answer.
 		this.media.style.removeProperty("width");
-		this.commit_attributes({ width: null });
+		this.commitAttributes({ width: null });
 	};
 
-	private handle_alt_open = (event: MouseEvent) => {
+	private handleAltOpen = (event: MouseEvent) => {
 		event.preventDefault();
 		event.stopPropagation();
-		this.open_alt_editor();
+		this.openAltEditor();
 	};
 
-	private open_alt_editor() {
-		if (!this.altInput) {
+	private openAltEditor() {
+		if (!this.view.editable || !this.altInput) {
 			return;
 		}
 		this.altInput.value = typeof this.node.attrs.alt === "string" ? this.node.attrs.alt : "";
@@ -396,19 +445,19 @@ class MediaNodeView implements NodeView {
 		this.altInput.select();
 	}
 
-	private handle_alt_keydown = (event: KeyboardEvent) => {
+	private handleAltKeydown = (event: KeyboardEvent) => {
 		// The editor must never treat these keys as document input.
 		event.stopPropagation();
 		if (event.key === "Enter") {
 			event.preventDefault();
-			this.handle_alt_commit();
+			this.handleAltCommit();
 		} else if (event.key === "Escape") {
 			event.preventDefault();
-			this.close_alt_editor();
+			this.closeAltEditor();
 		}
 	};
 
-	private handle_alt_commit = () => {
+	private handleAltCommit = () => {
 		// Closing the editor moves focus, which fires the input's blur; the class check keeps
 		// that second call (and a blur after Escape) from committing again.
 		if (
@@ -419,65 +468,70 @@ class MediaNodeView implements NodeView {
 		}
 
 		const value = this.altInput.value.trim();
-		this.close_alt_editor();
-		this.commit_attributes({ alt: value || null });
+		this.closeAltEditor();
+		this.commitAttributes({ alt: value || null });
 	};
 
-	private close_alt_editor() {
+	private closeAltEditor() {
 		this.dom.classList.remove("FileEditorRichTextMedia-alt-editing" satisfies FileEditorRichTextMedia_ClassNames);
 		this.view.focus();
 	}
 
-	private handle_caption_open = (event: MouseEvent) => {
+	private handleCaptionOpen = (event: MouseEvent) => {
 		event.preventDefault();
 		event.stopPropagation();
-		this.open_caption_editor();
+		this.openCaptionEditor();
 	};
 
-	private open_caption_editor() {
+	private openCaptionEditor() {
+		if (!this.view.editable) {
+			return;
+		}
 		this.captionInput.value = typeof this.node.attrs.title === "string" ? this.node.attrs.title : "";
 		this.dom.classList.add("FileEditorRichTextMedia-caption-editing" satisfies FileEditorRichTextMedia_ClassNames);
 		this.captionInput.focus();
 		this.captionInput.select();
 	}
 
-	private handle_caption_keydown = (event: KeyboardEvent) => {
+	private handleCaptionKeydown = (event: KeyboardEvent) => {
 		// The editor must never treat these keys as document input.
 		event.stopPropagation();
 		if (event.key === "Enter") {
 			event.preventDefault();
-			this.handle_caption_commit();
+			this.handleCaptionCommit();
 		} else if (event.key === "Escape") {
 			event.preventDefault();
-			this.close_caption_editor();
+			this.closeCaptionEditor();
 		}
 	};
 
-	private handle_caption_commit = () => {
+	private handleCaptionCommit = () => {
 		// Closing the editor moves focus, which fires the input's blur; the class check keeps
 		// that second call (and a blur after Escape) from committing again.
 		if (
-			!this.dom.classList.contains("FileEditorRichTextMedia-caption-editing" satisfies FileEditorRichTextMedia_ClassNames)
+			!this.dom.classList.contains(
+				"FileEditorRichTextMedia-caption-editing" satisfies FileEditorRichTextMedia_ClassNames,
+			)
 		) {
 			return;
 		}
 
 		const value = this.captionInput.value.trim();
-		this.close_caption_editor();
-		this.commit_attributes({ title: value || null });
+		this.closeCaptionEditor();
+		this.commitAttributes({ title: value || null });
 	};
 
-	private close_caption_editor() {
+	private closeCaptionEditor() {
 		this.dom.classList.remove("FileEditorRichTextMedia-caption-editing" satisfies FileEditorRichTextMedia_ClassNames);
 		this.view.focus();
 	}
 
-	private handle_align_cycle = (event: MouseEvent) => {
+	private handleAlignCycle = (event: MouseEvent) => {
 		event.preventDefault();
 		event.stopPropagation();
 		const align: MediaAlign =
 			this.node.attrs.align === "center" || this.node.attrs.align === "right" ? this.node.attrs.align : null;
-		this.commit_attributes({ align: media_next_align(align) });
+		this.commitAttributes({ align: media_next_align(align) });
 	};
 
 	/**
@@ -486,7 +540,7 @@ class MediaNodeView implements NodeView {
 	 * image-only; without it a screen reader falls back to reading the signed url's
 	 * filename, which is a random asset key.
 	 */
-	private apply_text_attributes() {
+	private applyTextAttributes() {
 		const title = typeof this.node.attrs.title === "string" ? this.node.attrs.title : "";
 		this.caption.textContent = title;
 		if (title) {
@@ -505,7 +559,7 @@ class MediaNodeView implements NodeView {
 	 * Apply the document's alignment as a class on the root, and keep the align button's
 	 * label saying what the current placement is.
 	 */
-	private apply_align() {
+	private applyAlign() {
 		const align: MediaAlign =
 			this.node.attrs.align === "center" || this.node.attrs.align === "right" ? this.node.attrs.align : null;
 		this.dom.classList.toggle(
@@ -521,21 +575,22 @@ class MediaNodeView implements NodeView {
 
 	destroy() {
 		this.isDestroyed = true;
+		this.nodeViews.delete(this);
 		this.assetWatchUnsubscribe?.();
 		this.assetWatchUnsubscribe = null;
 		this.localUploadUnsubscribe?.();
 		this.localUploadUnsubscribe = null;
-		this.clear_expiry_timer();
+		this.clearExpiryTimer();
 	}
 
-	private clear_expiry_timer() {
+	private clearExpiryTimer() {
 		if (this.expiryTimer) {
 			clearTimeout(this.expiryTimer);
 			this.expiryTimer = null;
 		}
 	}
 
-	private render_state(state: MediaState, url?: string) {
+	private renderState(state: MediaState, url?: string) {
 		if (this.isDestroyed) {
 			return;
 		}
@@ -579,7 +634,7 @@ class MediaNodeView implements NodeView {
 	 * come off so the media element is visible; `-local-preview` dims it slightly to say
 	 * "not stored yet".
 	 */
-	private render_local_preview(objectUrl: string) {
+	private renderLocalPreview(objectUrl: string) {
 		if (this.isDestroyed) {
 			return;
 		}
@@ -603,7 +658,7 @@ class MediaNodeView implements NodeView {
 		this.assetWatchUnsubscribe = null;
 		this.localUploadUnsubscribe?.();
 		this.localUploadUnsubscribe = null;
-		this.clear_expiry_timer();
+		this.clearExpiryTimer();
 
 		const src = typeof this.node.attrs.src === "string" ? this.node.attrs.src : "";
 		const uploadId = typeof this.node.attrs.uploadId === "string" ? this.node.attrs.uploadId : "";
@@ -615,12 +670,12 @@ class MediaNodeView implements NodeView {
 			this.localUploadUnsubscribe = file_editor_rich_text_local_upload_subscribe(uploadId, () => this.resolve());
 			const localUpload = file_editor_rich_text_local_upload_get(uploadId);
 			if (localUpload?.status === "failed") {
-				this.render_state("failed");
+				this.renderState("failed");
 				this.dom.classList.add("FileEditorRichTextMedia-retryable" satisfies FileEditorRichTextMedia_ClassNames);
 				return;
 			}
 			if (localUpload) {
-				this.render_local_preview(localUpload.objectUrl);
+				this.renderLocalPreview(localUpload.objectUrl);
 				// With no src yet there is nothing to watch. With a src, fall through: the asset
 				// watch below swaps the preview for the signed url once the bytes are confirmed,
 				// and the "processing" render on the way is skipped because media is showing.
@@ -638,50 +693,50 @@ class MediaNodeView implements NodeView {
 			if (uploadId) {
 				this.expiryTimer = setTimeout(() => {
 					this.expiryTimer = null;
-					this.render_state("failed");
+					this.renderState("failed");
 				}, UPLOADING_PLACEHOLDER_EXPIRY_MS);
 			}
-			this.render_state(uploadId ? "uploading" : "missing");
+			this.renderState(uploadId ? "uploading" : "missing");
 			return;
 		}
 
 		const parsed = files_media_parse_src(src);
 		if (parsed.kind === "external") {
-			this.render_state("ready", parsed.url);
+			this.renderState("ready", parsed.url);
 			return;
 		}
 
 		if (parsed.kind === "unsupported") {
-			this.render_state("missing");
+			this.renderState("missing");
 			return;
 		}
 
-		this.render_state("processing");
+		this.renderState("processing");
 		files_media_resolve_file_node({ membershipId: this.membershipId, fileNodeId: parsed.fileNodeId })
 			.then((fileNode) => {
 				if (this.isDestroyed) {
 					return;
 				}
 				if (!fileNode?.assetId) {
-					this.render_state("missing");
+					this.renderState("missing");
 					return;
 				}
 
 				// Watch the asset instead of reading it once: the reader may be looking at a file
 				// somebody else is still uploading, and the embed has to swap itself in when the R2
 				// object is confirmed.
-				this.watch_asset(fileNode._id);
+				this.watchAsset(fileNode._id);
 			})
 			.catch((error: unknown) => {
 				console.error("[FileEditorRichTextMedia.resolve] Failed to resolve media reference", {
 					error,
 					src,
 				});
-				this.render_state("missing");
+				this.renderState("missing");
 			});
 	}
 
-	private watch_asset(fileNodeId: app_convex_Id<"files_nodes">) {
+	private watchAsset(fileNodeId: app_convex_Id<"files_nodes">) {
 		const watch = app_convex.watchQuery(app_convex_api.r2.get_asset, {
 			membershipId: this.membershipId,
 			fileNodeId,
@@ -703,7 +758,7 @@ class MediaNodeView implements NodeView {
 				return;
 			}
 
-			this.clear_expiry_timer();
+			this.clearExpiryTimer();
 
 			const state = media_state_from_asset(asset);
 			if (state !== "ready") {
@@ -719,7 +774,7 @@ class MediaNodeView implements NodeView {
 						Math.max(0, asset.unfinalizedExpiresAt - Date.now()) + 1000,
 					);
 				}
-				this.render_state(state);
+				this.renderState(state);
 				return;
 			}
 
@@ -728,17 +783,17 @@ class MediaNodeView implements NodeView {
 			files_media_get_signed_url({ membershipId: this.membershipId, fileNodeId })
 				.then((signed) => {
 					if (signed._nay) {
-						this.render_state("missing");
+						this.renderState("missing");
 						return;
 					}
-					this.render_state("ready", signed._yay);
+					this.renderState("ready", signed._yay);
 				})
 				.catch((error: unknown) => {
-					console.error("[FileEditorRichTextMedia.watch_asset] Failed to sign a media url", {
+					console.error("[FileEditorRichTextMedia.watchAsset] Failed to sign a media url", {
 						error,
 						fileNodeId,
 					});
-					this.render_state("missing");
+					this.renderState("missing");
 				});
 		};
 
@@ -754,6 +809,9 @@ const FILE_EDITOR_RICH_TEXT_MEDIA_PLUGIN_KEY = new PluginKey("file-editor-rich-t
  * and the node is re-selected after the replace so the next press keeps working.
  */
 function media_adjust_width(editor: Editor, delta: number) {
+	if (!editor.isEditable) {
+		return false;
+	}
 	const state = editor.view.state;
 	const selection = state.selection;
 	if (!(selection instanceof NodeSelection)) {
@@ -788,6 +846,9 @@ function media_adjust_width(editor: Editor, delta: number) {
  * re-select as the width helper above.
  */
 function media_cycle_align(editor: Editor) {
+	if (!editor.isEditable) {
+		return false;
+	}
 	const state = editor.view.state;
 	const selection = state.selection;
 	if (!(selection instanceof NodeSelection)) {
@@ -823,6 +884,9 @@ export const file_editor_rich_text_MediaExtension = Extension.create<{
 			"Alt-Shift-a": () => media_cycle_align(this.editor),
 			// Keyboard path for the alt editor; only images have one.
 			"Alt-Enter": () => {
+				if (!this.editor.isEditable) {
+					return false;
+				}
 				const selection = this.editor.view.state.selection;
 				if (!(selection instanceof NodeSelection) || selection.node.type.name !== "image") {
 					return false;
@@ -836,6 +900,9 @@ export const file_editor_rich_text_MediaExtension = Extension.create<{
 			},
 			// Keyboard path for the caption editor; images and videos both have one.
 			"Alt-Shift-Enter": () => {
+				if (!this.editor.isEditable) {
+					return false;
+				}
 				const selection = this.editor.view.state.selection;
 				if (!(selection instanceof NodeSelection)) {
 					return false;
@@ -859,13 +926,26 @@ export const file_editor_rich_text_MediaExtension = Extension.create<{
 		if (!membershipId) {
 			return [];
 		}
+		const mediaNodeViews = new Set<MediaNodeView>();
 
 		const createNodeView = (node: PmNode, view: EditorView, getPos: () => number | undefined) =>
-			new MediaNodeView(node, view, getPos, membershipId);
+			new MediaNodeView(node, view, getPos, membershipId, mediaNodeViews);
 
 		return [
 			new Plugin({
 				key: FILE_EDITOR_RICH_TEXT_MEDIA_PLUGIN_KEY,
+				// ProseMirror keeps its node views when editable changes. Update their controls too.
+				view(editorView) {
+					let editable = editorView.editable;
+					return {
+						update(updatedView) {
+							if (updatedView.editable === editable) return;
+
+							editable = updatedView.editable;
+							for (const nodeView of mediaNodeViews) nodeView.setEditable(editable);
+						},
+					};
+				},
 				props: {
 					nodeViews: {
 						image: createNodeView,

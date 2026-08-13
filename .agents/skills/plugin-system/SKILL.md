@@ -191,13 +191,14 @@ Git submodule with its own repo (`raythurnvoid/bonobo-plugin-gallery`). `dist/` 
 
 # Releases (SDK + Gallery)
 
-**Plugin runs skip the user content check entirely.** `public_api_resolve_live_principal` applies the
-app permission mapped from each `files:*` scope to every principal kind **except** `plugin_run`, because that principal
-carries no content-permission field at all — its authority is a platform baseline of files download,
-files write and activities write, plus secrets-read / outbound-fetch from the run's accepted
-capabilities. So a plugin run does not respect a user's file permissions, and restricted files will
-not hold against one until that changes. See `../access-control/SKILL.md` "Not enforced yet" before
-hardening this surface.
+Plugin runs keep their platform baseline of exact-source download, sibling Markdown writes, and
+activities. Every staged write also reloads the live run, installation, source node, actor membership,
+and the actor's `content.write` on that source in both the prepare and publish transactions. Removing
+the actor or their source-file authority stops an in-flight output. The intrinsic read-only lock is a
+second post-ACL gate: plugin output cannot write into a locked destination. An upload accepted before
+its node locks still finishes and starts its `files.upload.completed` runs. Those runs do not bypass
+locks on their output destinations. Lock refusals settle the plugin call with the existing `conflict`
+code and zero output writes; see `../files-read-only/SKILL.md`.
 
 `/api/v1/activities/start` consumes the run API call before a separate activity mutation writes the
 activity. That mutation must recheck that the installation is still enabled on the same version and

@@ -67,6 +67,7 @@ import { bubbleMenuReevaluateVisibility } from "../../../../../vendor/tiptap/pac
 import { useDebounce, useFn, useRenderPromise, useStateRef } from "../../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFilesYjs } from "@/hooks/files-hooks.ts";
+import type { files_yjs_EditBlockReason } from "@/lib/files-yjs-provider.ts";
 import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
 import { global_event_listen_all } from "../../../../lib/global-event.tsx";
 import { FileEditorRichTextSkeleton } from "./file-editor-rich-text-skeleton.tsx";
@@ -702,13 +703,14 @@ export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(p
 type FileEditorRichTextAnchoredCommentsLayer_Props = {
 	commentsPortalHost: HTMLElement | null;
 	editor: Editor;
+	editable: boolean;
 	isEditorReady: boolean;
 };
 
 const FileEditorRichTextAnchoredCommentsLayer = memo(function FileEditorRichTextAnchoredCommentsLayer(
 	props: FileEditorRichTextAnchoredCommentsLayer_Props,
 ) {
-	const { commentsPortalHost, editor, isEditorReady } = props;
+	const { commentsPortalHost, editor, editable, isEditorReady } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -757,7 +759,7 @@ const FileEditorRichTextAnchoredCommentsLayer = memo(function FileEditorRichText
 	}
 
 	return createPortal(
-		<FileEditorRichTextAnchoredComments editor={editor} threads={threadsQuery?.threads} />,
+		<FileEditorRichTextAnchoredComments editor={editor} editable={editable} threads={threadsQuery?.threads} />,
 		commentsPortalHost,
 	);
 });
@@ -865,7 +867,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 		const files = Array.from(event.currentTarget.files ?? []);
 		// Reset so picking the same file twice in a row still fires a change event.
 		event.currentTarget.value = "";
-		if (files.length === 0 || !editor) {
+		if (files.length === 0 || !editor || !editable) {
 			return;
 		}
 
@@ -924,6 +926,15 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 		return false;
 	});
 
+	const pushRefusedMessage =
+		filesYjs.pushRefusedReason === "read_only"
+			? "This file became read-only, so your unsaved changes were not saved. The saved version was reloaded."
+			: filesYjs.pushRefusedReason === "permission"
+				? "You no longer have permission to edit this file. Your unsaved changes were not saved."
+				: filesYjs.pushRefusedReason === "other"
+					? "Your latest changes were not saved. The server refused the update. New edits will retry it. If this message stays, copy your changes and reload."
+					: null;
+
 	return (
 		<>
 			{/* Keep this outside the root div: the root stays display:none until the editor is
@@ -933,13 +944,11 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 					Can't load this document right now. Retrying — check your connection.
 				</div>
 			)}
-			{/* The Yjs push loop retries transient failures on its own; this shows only when the
-			    server refused the update for good, so typing would otherwise keep going into a
-			    document that silently stopped saving. */}
-			{!filesYjs.loadFailed && filesYjs.pushRefused && (
+			{/* Network and rate-limit errors keep retrying and do not reach this alert. Show the
+			    final server refusal so the user knows why the edits stopped. */}
+			{!filesYjs.loadFailed && pushRefusedMessage && (
 				<div className={"FileEditorRichText-push-refused" satisfies FileEditorRichText_ClassNames} role="alert">
-					Your latest changes were not saved: the server refused the update. New edits retry it — if this
-					message stays, copy your changes and reload.
+					{pushRefusedMessage}
 				</div>
 			)}
 			<div
@@ -1033,7 +1042,13 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 							) {
 								return true;
 							}
-							return file_editor_rich_text_handle_media_drop({ view, event, moved, membershipId, documentNodeId: nodeId });
+							return file_editor_rich_text_handle_media_drop({
+								view,
+								event,
+								moved,
+								membershipId,
+								documentNodeId: nodeId,
+							});
 						},
 					}}
 					extensions={extensions}
@@ -1056,6 +1071,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 				<FileEditorRichTextAnchoredCommentsLayer
 					commentsPortalHost={commentsPortalHost}
 					editor={editor}
+					editable={editable}
 					isEditorReady={isEditorReady}
 				/>
 			)}
@@ -1093,6 +1109,7 @@ export type FileEditorRichText_FgColorCssVarKeys =
 export type FileEditorRichText_Props = React.ComponentProps<"div"> & {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
+	editBlockReason: files_yjs_EditBlockReason | null;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
@@ -1100,8 +1117,16 @@ export type FileEditorRichText_Props = React.ComponentProps<"div"> & {
 };
 
 export function FileEditorRichText(props: FileEditorRichText_Props) {
-	const { nodeId, editable, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot, ...rest } =
-		props;
+	const {
+		nodeId,
+		editable,
+		editBlockReason,
+		presenceStore,
+		commentsPortalHost,
+		toolbarPortalHost,
+		topStickyFloatingSlot,
+		...rest
+	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -1109,6 +1134,8 @@ export function FileEditorRichText(props: FileEditorRichText_Props) {
 		nodeId: nodeId,
 		membershipId,
 		presenceStore,
+		editable,
+		editBlockReason,
 	});
 
 	return (

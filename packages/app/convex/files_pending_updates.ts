@@ -20,12 +20,17 @@ import app_convex_schema from "./schema.ts";
 import { api, internal } from "./_generated/api.js";
 import {
 	files_db_yjs_push_update,
+	files_node_require_writable,
 	files_nodes_db_apply_pending_move,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_can_act_on_swept_nodes,
+	files_nodes_db_collect_descendants,
 	files_nodes_db_hard_delete_node,
 	files_nodes_db_is_eager_node_safe_to_hard_delete,
 	files_nodes_db_remove_created_ancestor_folders_if_safe,
+	files_nodes_db_require_subtree_writable,
+	files_nodes_db_require_swept_nodes_writable,
+	files_nodes_db_resolve_parent_read_only_scope,
 	files_nodes_db_validate_pending_move_target_for_proposal,
 	authorize_leaving_restricted_scope,
 	files_yjs_NODE_NEEDS_REPAIR_MESSAGE,
@@ -1072,6 +1077,12 @@ export const create_file_pending_update_operation_batch = mutation({
 			return authorized;
 		}
 
+		// Refuse before staging pending Yjs input for a read-only file. Check again in the final write.
+		const nodeWritable = files_node_require_writable(authorized._yay.fileNode);
+		if (nodeWritable._nay) {
+			return nodeWritable;
+		}
+
 		return await db_create_operation_batch(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1685,6 +1696,33 @@ export type files_pending_updates_stage_trusted_yjs_update_Result =
 		: never;
 
 /**
+ * Delete a trusted Yjs stage when the final write refuses before using it.
+ */
+export const retire_trusted_yjs_update_stage = internalMutation({
+	args: {
+		stageId: v.id("files_yjs_trusted_update_stages"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const stage = await ctx.db.get("files_yjs_trusted_update_stages", args.stageId);
+		if (
+			stage &&
+			stage.organizationId === args.organizationId &&
+			stage.workspaceId === args.workspaceId &&
+			stage.userId === args.userId &&
+			stage.fileNodeId === args.nodeId
+		) {
+			await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
+		}
+		return null;
+	},
+});
+
+/**
  * The shared preflight for the upsert, rebase, and accept actions: every scalar the action
  * needs for its cheap refusals, and no state bytes. Internal — the caller resolved `userId`
  * from auth.
@@ -1790,6 +1828,67 @@ export type get_data_for_pending_content_operation_Result =
 		: never;
 // #endregion pending state staging
 
+/**
+ * Delete an eager-created file only when it and its new parent folders are writable now.
+ * Check every node before the first delete. If one node is read-only, keep the whole new path.
+ */
+async function files_pending_update_db_remove_eager_created_node_if_safe(
+	ctx: MutationCtx,
+	args: { pendingUpdate: app_convex_Doc<"files_pending_updates"> },
+) {
+	const eagerCreated = args.pendingUpdate.eagerCreated;
+	if (!eagerCreated) {
+		return false;
+	}
+
+	const node = await ctx.db.get("files_nodes", args.pendingUpdate.fileNodeId);
+	if (
+		!node ||
+		node.organizationId !== args.pendingUpdate.organizationId ||
+		node.workspaceId !== args.pendingUpdate.workspaceId ||
+		files_node_require_writable(node)._nay
+	) {
+		return false;
+	}
+
+	for (const ancestorId of eagerCreated.createdAncestorIds ?? []) {
+		const ancestor = await ctx.db.get("files_nodes", ancestorId);
+		if (!ancestor) {
+			continue;
+		}
+		if (
+			ancestor.organizationId !== args.pendingUpdate.organizationId ||
+			ancestor.workspaceId !== args.pendingUpdate.workspaceId ||
+			files_node_require_writable(ancestor)._nay
+		) {
+			return false;
+		}
+	}
+
+	const safeToHardDelete = await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
+		organizationId: args.pendingUpdate.organizationId,
+		workspaceId: args.pendingUpdate.workspaceId,
+		nodeId: args.pendingUpdate.fileNodeId,
+		pendingUpdate: args.pendingUpdate,
+	});
+	if (!safeToHardDelete) {
+		return false;
+	}
+
+	await files_nodes_db_hard_delete_node(ctx, {
+		organizationId: args.pendingUpdate.organizationId,
+		workspaceId: args.pendingUpdate.workspaceId,
+		nodeId: args.pendingUpdate.fileNodeId,
+	});
+	await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
+		organizationId: args.pendingUpdate.organizationId,
+		workspaceId: args.pendingUpdate.workspaceId,
+		userId: args.pendingUpdate.userId,
+		createdAncestorIds: eagerCreated.createdAncestorIds ?? [],
+	});
+	return true;
+}
+
 export const remove_file_pending_update_if_expired = internalMutation({
 	args: {
 		pendingUpdateId: v.id("files_pending_updates"),
@@ -1820,27 +1919,9 @@ export const remove_file_pending_update_if_expired = internalMutation({
 		}
 
 		if (pendingUpdate.eagerCreated) {
-			const safeToHardDelete = await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
-				organizationId: pendingUpdate.organizationId,
-				workspaceId: pendingUpdate.workspaceId,
-				nodeId: pendingUpdate.fileNodeId,
-				pendingUpdate,
-			});
-			if (safeToHardDelete) {
+			if (await files_pending_update_db_remove_eager_created_node_if_safe(ctx, { pendingUpdate })) {
 				// Expired eager-create proposal: remove the eager-created destination node entirely. The
 				// hard delete also removes this doc, its chunks, and the remaining cleanup tasks.
-				await files_nodes_db_hard_delete_node(ctx, {
-					organizationId: pendingUpdate.organizationId,
-					workspaceId: pendingUpdate.workspaceId,
-					nodeId: pendingUpdate.fileNodeId,
-				});
-				// The leaf is gone: also remove the still-empty folders its eager create committed.
-				await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
-					organizationId: pendingUpdate.organizationId,
-					workspaceId: pendingUpdate.workspaceId,
-					userId: pendingUpdate.userId,
-					createdAncestorIds: pendingUpdate.eagerCreated.createdAncestorIds ?? [],
-				});
 				return null;
 			}
 			// The node became a real file (committed content or another user's draft):
@@ -2009,6 +2090,31 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
+		const file = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!file ||
+			file.organizationId !== args.organizationId ||
+			file.workspaceId !== args.workspaceId ||
+			!files_node_has_editable_yjs_state(file)
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNode: file,
+				permission: "content.write",
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+		const writable = files_node_require_writable(file);
+		if (writable._nay) {
+			return writable;
+		}
+
 		// Consume the batch either way: this call ends the operation.
 		await files_db_expire_pending_update_operation_batch(ctx, { operationBatchId: args.operationBatchId });
 
@@ -2111,6 +2217,31 @@ export const refresh_file_pending_update_in_db = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
+		const file = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!file ||
+			file.organizationId !== args.organizationId ||
+			file.workspaceId !== args.workspaceId ||
+			!files_node_has_editable_yjs_state(file)
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNode: file,
+				permission: "content.write",
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+		const writable = files_node_require_writable(file);
+		if (writable._nay) {
+			return writable;
+		}
+
 		await files_db_expire_pending_update_operation_batch(ctx, { operationBatchId: args.operationBatchId });
 
 		const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
@@ -2255,6 +2386,8 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 		expectedUpdatedAt: v.union(v.number(), v.null()),
 		baseYjsSequence: v.number(),
 		baseLineageGeneration: v.number(),
+		/** Source file ids found before the action builds this replace proposal. */
+		expectedSourceNodeIds: v.array(v.id("files_nodes")),
 		baseStateId: v.id("files_pending_update_yjs_states"),
 		stagedStateId: v.id("files_pending_update_yjs_states"),
 		unstagedStateId: v.id("files_pending_update_yjs_states"),
@@ -2272,12 +2405,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 		 * or a caller could forge a stamp that lets discard/expiry hard-delete a real file.
 		 */
 		eagerCreatedCommittedSequence: v.optional(v.number()),
-		/**
-		 * `_id`s of the folders the eager create committed for this node, deepest first
-		 * (`createdAncestorIds` from `create_file_by_path`). Stored on the eager-create stamp so
-		 * discard/expiry can remove still-empty created folders together with the leaf.
-		 * Pass only together with `eagerCreatedCommittedSequence`; ignored without it.
-		 */
+		/** Parent folders created with the file, deepest first. */
 		eagerCreatedAncestorIds: v.optional(v.array(v.id("files_nodes"))),
 		/** Chat thread making this write; appended (deduped) to the doc's contributor set. */
 		threadId: v.optional(v.id("ai_chat_threads")),
@@ -2306,6 +2434,45 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			}))
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// Check the lock again in this final write. Old lock history does not matter.
+		const nodeWritable = files_node_require_writable(file);
+		if (nodeWritable._nay) {
+			return nodeWritable;
+		}
+
+		if (args.copiedFrom?.archivesSourceOnAccept) {
+			const membership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", args.userId)
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId),
+				)
+				.first();
+			if (!membership) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+			const currentSourceChain = await files_pending_update_db_collect_replace_source_chain(ctx, {
+				membership,
+				copiedFrom: args.copiedFrom,
+				userId: args.userId,
+			});
+			if (currentSourceChain._nay) {
+				return currentSourceChain;
+			}
+			const currentSourceNodeIds = currentSourceChain._yay.chain.map((sourceNode) => sourceNode._id);
+			if (
+				currentSourceNodeIds.length !== args.expectedSourceNodeIds.length ||
+				currentSourceNodeIds.some((sourceNodeId, index) => sourceNodeId !== args.expectedSourceNodeIds[index])
+			) {
+				return Result({ _nay: { message: "Pending update changed, retry the write" } });
+			}
+		} else if (args.expectedSourceNodeIds.length > 0) {
+			return Result({ _nay: { message: "Pending update changed, retry the write" } });
 		}
 
 		// The one bounded text this commit carries; the branch states were capped at seal.
@@ -2416,7 +2583,9 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			args.eagerCreatedCommittedSequence !== undefined
 				? {
 						committedSequence: args.eagerCreatedCommittedSequence,
-						...(args.eagerCreatedAncestorIds !== undefined ? { createdAncestorIds: args.eagerCreatedAncestorIds } : {}),
+						...(args.eagerCreatedAncestorIds !== undefined
+							? { createdAncestorIds: args.eagerCreatedAncestorIds }
+							: {}),
 					}
 				: undefined;
 
@@ -2542,7 +2711,7 @@ async function action_upsert_file_pending_update(
 		reviewedUpdatedAt?: number;
 		copiedFrom?: app_convex_Doc<"files_pending_updates">["copiedFrom"];
 		eagerCreatedCommittedSequence?: number;
-		eagerCreatedAncestorIds?: Id<"files_nodes">[];
+		eagerCreatedAncestorIds?: Array<Id<"files_nodes">>;
 		threadId?: Id<"ai_chat_threads">;
 	},
 ) {
@@ -2565,6 +2734,31 @@ async function action_upsert_file_pending_update(
 	}
 	if (!data.batch) {
 		return Result({ _nay: { message: "Not found" } });
+	}
+
+	// Check the lock before loading Yjs state. The final write checks it again.
+	const fileWritable = files_node_require_writable(data.fileNode);
+	if (fileWritable._nay) {
+		await retireBatch();
+		return fileWritable;
+	}
+
+	let expectedSourceNodeIds: Array<Id<"files_nodes">> = [];
+	if (args.copiedFrom?.archivesSourceOnAccept) {
+		const sourcePreflight = (await ctx.runQuery(
+			internal.files_pending_updates.preflight_replace_source_chain_writable,
+			{
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				copiedFrom: args.copiedFrom,
+			},
+		)) as preflight_replace_source_chain_writable_Result;
+		if (sourcePreflight._nay) {
+			await retireBatch();
+			return sourcePreflight;
+		}
+		expectedSourceNodeIds = sourcePreflight._yay.sourceNodeIds;
 	}
 
 	// Only the exact doc the caller targeted: a provided id that resolves to a doc with a
@@ -2745,6 +2939,9 @@ async function action_upsert_file_pending_update(
 			pendingUpdateId: existingPendingUpdate?._id,
 			expectedUpdatedAt: existingPendingUpdate?.updatedAt,
 		})) as settle_file_pending_update_no_change_in_db_Result;
+		if (settled._nay) {
+			await retireBatch();
+		}
 		return settled;
 	}
 
@@ -2807,6 +3004,9 @@ async function action_upsert_file_pending_update(
 			expectedUpdatedAt: existingPendingUpdate.updatedAt,
 			threadId: args.threadId,
 		})) as refresh_file_pending_update_in_db_Result;
+		if (refreshed._nay) {
+			await retireBatch();
+		}
 		return refreshed;
 	}
 
@@ -2880,6 +3080,7 @@ async function action_upsert_file_pending_update(
 			expectedUpdatedAt: existingPendingUpdate?.updatedAt ?? null,
 			baseYjsSequence,
 			baseLineageGeneration: data.lineageGeneration,
+			expectedSourceNodeIds,
 			baseStateId: base.stateId,
 			stagedStateId: staged.stateId,
 			unstagedStateId: unstaged.stateId,
@@ -2984,12 +3185,7 @@ export const upsert_file_pending_update_internal_action = internalAction({
 		 * or a caller could forge a stamp that lets discard/expiry hard-delete a real file.
 		 */
 		eagerCreatedCommittedSequence: v.optional(v.number()),
-		/**
-		 * `_id`s of the folders the eager create committed for this node, deepest first
-		 * (`createdAncestorIds` from `create_file_by_path`). Stored on the eager-create stamp so
-		 * discard/expiry can remove still-empty created folders together with the leaf.
-		 * Pass only together with `eagerCreatedCommittedSequence`; ignored without it.
-		 */
+		/** Parent folders created with the file, deepest first. */
 		eagerCreatedAncestorIds: v.optional(v.array(v.id("files_nodes"))),
 		/** Chat thread making this write; appended (deduped) to the doc's contributor set. */
 		threadId: v.optional(v.id("ai_chat_threads")),
@@ -3109,6 +3305,31 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			}
 		}
 
+		// A move changes the source, its descendants, and the destination folder.
+		// Require all of them to be writable when creating the proposal.
+		// Canceling an old move stays allowed because it only removes this user's pending proposal.
+		const sourceWritable = files_node_require_writable(sourceNode);
+		if (sourceWritable._nay) {
+			return sourceWritable;
+		}
+		const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			node: sourceNode,
+		});
+		if (subtreeWritable._nay) {
+			return subtreeWritable;
+		}
+
+		const destReadOnlyScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
+			parentId: args.destParentId,
+		});
+		const destWritable = files_node_require_writable({ readOnlyScopeNodeId: destReadOnlyScopeNodeId });
+		if (destWritable._nay) {
+			return destWritable;
+		}
+
 		// Proposal-time validation runs against the proposer's visible tree: a sibling with a
 		// pending move away does not conflict, and two proposals cannot claim one visible path.
 		const validated = await files_nodes_db_validate_pending_move_target_for_proposal(ctx, {
@@ -3124,6 +3345,24 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			return validated;
 		}
 		const { node, destPath, replacesNode } = validated._yay;
+
+		// Accepting a replace move archives the old destination and its descendants.
+		// Refuse the proposal if any of those nodes is read-only.
+		if (replacesNode) {
+			const occupantWritable = files_node_require_writable(replacesNode);
+			if (occupantWritable._nay) {
+				return occupantWritable;
+			}
+			const occupantSubtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				node: replacesNode,
+			});
+			if (occupantSubtreeWritable._nay) {
+				return occupantSubtreeWritable;
+			}
+		}
 
 		const existingPendingUpdate = await files_db_get_pending_update(ctx, {
 			organizationId: args.organizationId,
@@ -3246,6 +3485,23 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
+		// Accepting a delete archives the node and all its descendants.
+		// Require all of them to be writable before creating the proposal.
+		// Run this before canceling an eager `rm`. Discard can still remove this user's pending proposal.
+		const nodeWritable = files_node_require_writable(node);
+		if (nodeWritable._nay) {
+			return nodeWritable;
+		}
+		const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			node,
+		});
+		if (subtreeWritable._nay) {
+			return subtreeWritable;
+		}
+
 		const existingPendingUpdate = await files_db_get_pending_update(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -3257,25 +3513,7 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 		// node is hard-deleted when the safety gate passes. A gate failure (content committed,
 		// another user's draft, ...) falls through to a normal delete proposal.
 		if (existingPendingUpdate?.eagerCreated) {
-			const safeToHardDelete = await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				nodeId: args.nodeId,
-				pendingUpdate: existingPendingUpdate,
-			});
-			if (safeToHardDelete) {
-				await files_nodes_db_hard_delete_node(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					nodeId: args.nodeId,
-				});
-				// The leaf is gone: also remove the still-empty folders its eager create committed.
-				await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					userId: existingPendingUpdate.userId,
-					createdAncestorIds: existingPendingUpdate.eagerCreated.createdAncestorIds ?? [],
-				});
+			if (await files_pending_update_db_remove_eager_created_node_if_safe(ctx, { pendingUpdate: existingPendingUpdate })) {
 				return Result({ _yay: { fromPath: node.path, nodeKind: node.kind, outcome: "cancelled_added_file" } });
 			}
 		}
@@ -3556,21 +3794,21 @@ export const apply_file_pending_archive = mutation({
 			return Result({ _yay: null });
 		}
 
-		// Compute the subtree at accept time: nodes added to a deleted folder after the
-		// proposal are archived too, like archiving from the sidebar.
+		// Check the lock again when accepting. Keep the proposal if a new lock blocks the write.
+		const nodeWritable = files_node_require_writable(node);
+		if (nodeWritable._nay) {
+			return nodeWritable;
+		}
+
+		// Load children again because the folder may have changed after the proposal.
+		// Follow node ids so an older archived tree with the same path stays separate.
 		const nodeIdsToArchive = [node._id];
 		if (node.kind === "folder") {
-			const descendantsPathPrefix = `${node.path}/`;
-			const descendantFileNodes = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.gte("path", descendantsPathPrefix)
-						.lt("path", `${descendantsPathPrefix}\uffff`),
-				)
-				.collect();
+			const descendantFileNodes = await files_nodes_db_collect_descendants(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				parentId: node._id,
+			});
 			const activeDescendants = descendantFileNodes.filter(
 				(descendantFileNode) => descendantFileNode.archiveOperationId === undefined,
 			);
@@ -3588,6 +3826,29 @@ export const apply_file_pending_archive = mutation({
 				}))
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
+			}
+
+			// Access was checked above, so a read-only descendant can return the clear lock error.
+			for (const descendantFileNode of activeDescendants) {
+				const descendantWritable = files_node_require_writable(descendantFileNode);
+				if (descendantWritable._nay) {
+					return descendantWritable;
+				}
+			}
+
+			// Do not hide a read-only archived descendant under this newly archived folder.
+			// The user may not see that node, so return a general error if it blocks the write.
+			const archivedDescendants = descendantFileNodes.filter(
+				(descendantFileNode) => descendantFileNode.archiveOperationId !== undefined,
+			);
+			const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				nodes: archivedDescendants,
+			});
+			if (archivedProtected._nay) {
+				return archivedProtected;
 			}
 
 			for (const descendantFileNode of activeDescendants) {
@@ -3700,27 +3961,9 @@ export const discard_file_pending_structural = mutation({
 		}
 
 		if (pendingUpdate.copiedFrom || pendingUpdate.eagerCreated) {
-			const safeToHardDelete = await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				nodeId: args.nodeId,
-				pendingUpdate,
-			});
-			if (safeToHardDelete) {
+			if (await files_pending_update_db_remove_eager_created_node_if_safe(ctx, { pendingUpdate })) {
 				// Discarding an eager-create proposal removes the eager-created destination node
 				// entirely; the hard delete subsumes this doc and its chunks.
-				await files_nodes_db_hard_delete_node(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					nodeId: args.nodeId,
-				});
-				// The leaf is gone: also remove the still-empty folders its eager create committed.
-				await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					userId: pendingUpdate.userId,
-					createdAncestorIds: pendingUpdate.eagerCreated?.createdAncestorIds ?? [],
-				});
 				return Result({ _yay: null });
 			}
 
@@ -4051,6 +4294,12 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 			return authorized;
 		}
 
+		// Check the lock again in this final write.
+		const nodeWritable = files_node_require_writable(authorized._yay.fileNode);
+		if (nodeWritable._nay) {
+			return nodeWritable;
+		}
+
 		// The one bounded text this commit carries; the branch states were capped at seal.
 		if (files_get_utf8_byte_size(args.unstagedText) > files_MAX_TEXT_CONTENT_BYTES) {
 			return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
@@ -4271,6 +4520,13 @@ export const persist_file_pending_update_rebased_state = action({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
+		// Check the lock before loading Yjs state. The final write checks it again.
+		const fileWritable = files_node_require_writable(data.fileNode);
+		if (fileWritable._nay) {
+			await retireBatch();
+			return fileWritable;
+		}
+
 		// Every cheap refusal precedes any state decode: staleness first.
 		if (data.lastSequence !== args.baseYjsSequence) {
 			await retireBatch();
@@ -4398,6 +4654,7 @@ export const persist_file_pending_update_rebased_state = action({
 				expectedUpdatedAt: existingPendingUpdate.updatedAt,
 			})) as settle_file_pending_update_no_change_in_db_Result;
 			if (settled._nay) {
+				await retireBatch();
 				return Result({ _nay: settled._nay });
 			}
 			return Result({ _yay: { pendingUpdate: null } });
@@ -4427,6 +4684,7 @@ export const persist_file_pending_update_rebased_state = action({
 				expectedUpdatedAt: existingPendingUpdate.updatedAt,
 			})) as refresh_file_pending_update_in_db_Result;
 			if (refreshed._nay) {
+				await retireBatch();
 				return Result({ _nay: refreshed._nay });
 			}
 			return Result({ _yay: { pendingUpdate: refreshed._yay.pendingUpdate } });
@@ -4728,6 +4986,168 @@ async function files_pending_update_db_archive_replace_source_chain(
 	}
 }
 
+/**
+ * Find each source file that this replace save will archive.
+ * Check access and the current lock, but do not write yet.
+ * Stop at the same place as the archive step.
+ */
+async function files_pending_update_db_collect_replace_source_chain(
+	ctx: QueryCtx,
+	args: {
+		membership: app_convex_Doc<"organizations_workspaces_users">;
+		copiedFrom: app_convex_Doc<"files_pending_updates">["copiedFrom"];
+		userId: Id<"users">;
+	},
+) {
+	const chain: app_convex_Doc<"files_nodes">[] = [];
+	const visitedNodeIds = new Set<Id<"files_nodes">>();
+	let copiedFrom = args.copiedFrom;
+	while (copiedFrom?.archivesSourceOnAccept && !visitedNodeIds.has(copiedFrom.nodeId)) {
+		visitedNodeIds.add(copiedFrom.nodeId);
+		const sourceNode = await ctx.db.get("files_nodes", copiedFrom.nodeId);
+		if (
+			!sourceNode ||
+			sourceNode.organizationId !== args.membership.organizationId ||
+			sourceNode.workspaceId !== args.membership.workspaceId ||
+			sourceNode.kind !== "file" ||
+			sourceNode.archiveOperationId !== undefined
+		) {
+			break;
+		}
+
+		const authorizedSource = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership: args.membership,
+			permission: "content.write",
+			fileNode: sourceNode,
+		});
+		if (authorizedSource._nay) {
+			return authorizedSource;
+		}
+
+		const sourceWritable = files_node_require_writable(sourceNode);
+		if (sourceWritable._nay) {
+			return sourceWritable;
+		}
+
+		chain.push(sourceNode);
+
+		const sourcePendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: args.membership.organizationId,
+			workspaceId: args.membership.workspaceId,
+			userId: args.userId,
+			nodeId: sourceNode._id,
+		});
+		if (!sourcePendingUpdate) {
+			break;
+		}
+		copiedFrom = sourcePendingUpdate.copiedFrom;
+	}
+	return Result({ _yay: { chain } });
+}
+
+/**
+ * Refuse when any source file this replace proposal will archive is read-only now.
+ */
+export const preflight_replace_source_chain_writable = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		copiedFrom: v.object({
+			nodeId: v.id("files_nodes"),
+			path: v.string(),
+			archivesSourceOnAccept: v.optional(v.boolean()),
+		}),
+	},
+	returns: v_result({ _yay: v.object({ sourceNodeIds: v.array(v.id("files_nodes")) }) }),
+	handler: async (ctx, args) => {
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!membership) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		const sourceChain = await files_pending_update_db_collect_replace_source_chain(ctx, {
+			membership,
+			copiedFrom: args.copiedFrom,
+			userId: args.userId,
+		});
+		if (sourceChain._nay) {
+			return sourceChain;
+		}
+
+		return Result({ _yay: { sourceNodeIds: sourceChain._yay.chain.map((sourceNode) => sourceNode._id) } });
+	},
+});
+
+export type preflight_replace_source_chain_writable_Result =
+	typeof preflight_replace_source_chain_writable extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Refuse when any source file this save will archive is read-only now.
+ */
+export const preflight_save_file_pending_update_writable = internalQuery({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+		pendingUpdateId: v.id("files_pending_updates"),
+	},
+	returns: v_result({ _yay: v.object({ sourceNodeIds: v.array(v.id("files_nodes")) }) }),
+	handler: async (ctx, args) => {
+		const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
+		if (!membership || membership.userId !== args.userId) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const pendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: args.userId,
+			nodeId: args.nodeId,
+			pendingUpdateId: args.pendingUpdateId,
+		});
+		if (!pendingUpdate || pendingUpdate._id !== args.pendingUpdateId) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const sourceChain = await files_pending_update_db_collect_replace_source_chain(ctx, {
+			membership,
+			copiedFrom: pendingUpdate.copiedFrom,
+			userId: args.userId,
+		});
+		if (sourceChain._nay) {
+			return sourceChain;
+		}
+
+		return Result({ _yay: { sourceNodeIds: sourceChain._yay.chain.map((sourceNode) => sourceNode._id) } });
+	},
+});
+
+export type preflight_save_file_pending_update_writable_Result =
+	typeof preflight_save_file_pending_update_writable extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
 export const save_file_pending_update_in_db = internalMutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -4736,6 +5156,8 @@ export const save_file_pending_update_in_db = internalMutation({
 		expectedUpdatedAt: v.number(),
 		baseYjsSequence: v.number(),
 		baseLineageGeneration: v.number(),
+		/** Source file ids found before this save starts. */
+		expectedSourceNodeIds: v.array(v.id("files_nodes")),
 		/** The staged accept diff to publish through door 1; absent when nothing staged changed. */
 		trustedStageId: v.optional(v.id("files_yjs_trusted_update_stages")),
 		/**
@@ -4810,6 +5232,12 @@ export const save_file_pending_update_in_db = internalMutation({
 			return authorized;
 		}
 
+		// Check the lock again before any save writes. Old lock history does not matter.
+		const targetWritable = files_node_require_writable(targetNode);
+		if (targetWritable._nay) {
+			return targetWritable;
+		}
+
 		const pendingUpdate = await files_db_get_pending_update(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -4855,10 +5283,26 @@ export const save_file_pending_update_in_db = internalMutation({
 			});
 		}
 
-		// The action-read sequence must still be the node's current last sequence: the staged
-		// diff was computed against exactly that state, so a commit that landed during the
-		// action gap would make the diff describe the wrong document. The generation check
-		// covers a lineage repair the same way. Reject before any write or billing.
+		// Load the replace sources again in this final write.
+		// Check access and the current lock for every source before changing anything.
+		const currentSourceChain = await files_pending_update_db_collect_replace_source_chain(ctx, {
+			membership,
+			copiedFrom: pendingUpdate.copiedFrom,
+			userId: user._id,
+		});
+		if (currentSourceChain._nay) {
+			return currentSourceChain;
+		}
+		const currentSourceNodeIds = currentSourceChain._yay.chain.map((sourceNode) => sourceNode._id);
+		if (
+			currentSourceNodeIds.length !== args.expectedSourceNodeIds.length ||
+			currentSourceNodeIds.some((sourceNodeId, index) => sourceNodeId !== args.expectedSourceNodeIds[index])
+		) {
+			return Result({ _nay: { message: "Stale save" } });
+		}
+
+		// The file must still have the Yjs sequence used to build this diff.
+		// Refuse before writes or billing if another save or repair changed that sequence.
 		const lastSequenceDoc = targetNode.yjsLastSequenceId
 			? await ctx.db.get("files_yjs_docs_last_sequences", targetNode.yjsLastSequenceId)
 			: null;
@@ -5273,6 +5717,25 @@ export const save_file_pending_update = action({
 			return Result({ _nay: { message: PENDING_BASE_STALE_MESSAGE } });
 		}
 
+		// Check current locks before loading Yjs state.
+		// The final write checks the target and every replace source again.
+		const fileWritable = files_node_require_writable(data.fileNode);
+		if (fileWritable._nay) {
+			return fileWritable;
+		}
+		const sourcePreflight = (await ctx.runQuery(
+			internal.files_pending_updates.preflight_save_file_pending_update_writable,
+			{
+				membershipId: args.membershipId,
+				userId: userAuth.id,
+				nodeId: args.nodeId,
+				pendingUpdateId: pendingUpdate._id,
+			},
+		)) as preflight_save_file_pending_update_writable_Result;
+		if (sourcePreflight._nay) {
+			return sourcePreflight;
+		}
+
 		const rootKind = data.fileNode.yjsRootKind;
 
 		// Page the canonical base/staged/unstaged states and the current live state in memory.
@@ -5359,6 +5822,19 @@ export const save_file_pending_update = action({
 		// Stage the single non-empty accept diff under the update-doc cap; the commit mutation
 		// consumes it and pushes it through door 1.
 		let trustedStageId: Id<"files_yjs_trusted_update_stages"> | undefined;
+		const retireTrustedStage = async () => {
+			if (!trustedStageId) {
+				return;
+			}
+			await ctx.runMutation(internal.files_pending_updates.retire_trusted_yjs_update_stage, {
+				stageId: trustedStageId,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				nodeId: args.nodeId,
+			});
+		};
+
 		if (diffUpdateForLatestFileYjsDoc) {
 			const diffBuffer = files_u8_to_array_buffer(diffUpdateForLatestFileYjsDoc);
 			if (diffBuffer.byteLength > files_MAX_YJS_WIRE_BYTES) {
@@ -5387,9 +5863,11 @@ export const save_file_pending_update = action({
 				expectedUpdatedAt: pendingUpdate.updatedAt,
 				baseYjsSequence: data.lastSequence,
 				baseLineageGeneration: data.lineageGeneration,
+				expectedSourceNodeIds: sourcePreflight._yay.sourceNodeIds,
 				trustedStageId,
 			})) as save_file_pending_update_in_db_Result;
 			if (saved._nay) {
+				await retireTrustedStage();
 				return Result({ _nay: saved._nay });
 			}
 			return Result({ _yay: saved._yay });
@@ -5404,6 +5882,7 @@ export const save_file_pending_update = action({
 				nodeId: args.nodeId,
 				pendingUpdateId: pendingUpdate._id,
 			});
+			await retireTrustedStage();
 			return Result({ _nay: { message: "Failed to serialize unstaged branch after partial save" } });
 		}
 
@@ -5417,6 +5896,7 @@ export const save_file_pending_update = action({
 			},
 		)) as create_file_pending_update_operation_batch_internal_Result;
 		if (batchCreated._nay) {
+			await retireTrustedStage();
 			return Result({ _nay: batchCreated._nay });
 		}
 		const operationBatchId = batchCreated._yay.operationBatchId;
@@ -5437,7 +5917,7 @@ export const save_file_pending_update = action({
 		];
 		for (const output of outputs) {
 			if (output.update.byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES) {
-				await retireBatch();
+				await Promise.all([retireBatch(), retireTrustedStage()]);
 				return Result({
 					_nay: { message: `State exceeds ${files_MAX_YJS_RECONSTRUCTED_STATE_BYTES}-byte limit` },
 				});
@@ -5467,7 +5947,7 @@ export const save_file_pending_update = action({
 					},
 				)) as stage_file_pending_update_state_page_internal_Result;
 				if (stagedPage._nay) {
-					await retireBatch();
+					await Promise.all([retireBatch(), retireTrustedStage()]);
 					return Result({ _nay: { message: stagedPage._nay.message } });
 				}
 			}
@@ -5483,13 +5963,15 @@ export const save_file_pending_update = action({
 			})) as seal_file_pending_update_state_internal_Result;
 			if (sealed._nay) {
 				// The seal already retired the batch family on refusal.
+				await retireTrustedStage();
 				return Result({ _nay: { message: sealed._nay.message } });
 			}
 			sealedByRole.set(output.role, { stateId: sealed._yay.stateId, digest: sealed._yay.digest });
 			sealedLineageGeneration = sealed._yay.lineageGeneration;
 		}
+
 		if (sealedLineageGeneration !== data.lineageGeneration) {
-			await retireBatch();
+			await Promise.all([retireBatch(), retireTrustedStage()]);
 			return Result({ _nay: { message: PENDING_BASE_STALE_MESSAGE } });
 		}
 
@@ -5497,7 +5979,7 @@ export const save_file_pending_update = action({
 		const staged = sealedByRole.get("staged");
 		const unstaged = sealedByRole.get("unstaged");
 		if (!base || !staged || !unstaged) {
-			await retireBatch();
+			await Promise.all([retireBatch(), retireTrustedStage()]);
 			return Result({ _nay: { message: "Not found" } });
 		}
 
@@ -5514,6 +5996,7 @@ export const save_file_pending_update = action({
 				expectedUpdatedAt: pendingUpdate.updatedAt,
 				baseYjsSequence: data.lastSequence,
 				baseLineageGeneration: data.lineageGeneration,
+				expectedSourceNodeIds: sourcePreflight._yay.sourceNodeIds,
 				trustedStageId,
 				partial: {
 					operationBatchId,
@@ -5528,13 +6011,13 @@ export const save_file_pending_update = action({
 				},
 			})) as save_file_pending_update_in_db_Result;
 		} catch (error) {
-			await retireBatch();
+			await Promise.all([retireBatch(), retireTrustedStage()]);
 			throw error;
 		}
 		if (saved._nay) {
 			// A commit refusal ends this operation too: without the retire, the surviving batch
 			// would refuse this user/node's next operation ("already in progress") until the TTL.
-			await retireBatch();
+			await Promise.all([retireBatch(), retireTrustedStage()]);
 			return Result({ _nay: saved._nay });
 		}
 

@@ -16,26 +16,36 @@ import { useState } from "react";
 // #region thread
 type FileEditorRichTextAnchoredCommentsThread_Props = {
 	thread: FileEditorCommentsThread_Props["thread"];
+	canResolve: boolean;
 	onClick: FileEditorCommentsThread_Props["onClick"];
 };
 
 function FileEditorRichTextAnchoredCommentsThread(props: FileEditorRichTextAnchoredCommentsThread_Props) {
-	const { thread, onClick } = props;
+	const { thread, canResolve, onClick } = props;
 
 	const context = FileEditorRichTextAnchoredThreadsItem.useContext();
 
-	return <FileEditorCommentsThread thread={thread} open={context.isActive} hidden={false} onClick={onClick} />;
+	return (
+		<FileEditorCommentsThread
+			thread={thread}
+			open={context.isActive}
+			hidden={false}
+			canResolve={canResolve}
+			onClick={onClick}
+		/>
+	);
 }
 // #endregion thread
 
 // #region threads list
 type FileEditorRichTextAnchoredCommentsThreadsList_Props = {
 	threads: FileEditorRichTextAnchoredCommentsThread_Props["thread"][];
+	canResolve: boolean;
 	onClick: (threadId: string) => void;
 };
 
 function FileEditorRichTextAnchoredCommentsThreadsList(props: FileEditorRichTextAnchoredCommentsThreadsList_Props) {
-	const { threads, onClick } = props;
+	const { threads, canResolve, onClick } = props;
 
 	const context = FileEditorRichTextAnchoredThreads.useContext();
 
@@ -54,7 +64,11 @@ function FileEditorRichTextAnchoredCommentsThreadsList(props: FileEditorRichText
 					}
 					thread={thread}
 				>
-					<FileEditorRichTextAnchoredCommentsThread thread={thread} onClick={() => onClick(thread.id)} />
+					<FileEditorRichTextAnchoredCommentsThread
+						thread={thread}
+						canResolve={canResolve}
+						onClick={() => onClick(thread.id)}
+					/>
 				</FileEditorRichTextAnchoredThreadsItem>
 			))}
 		</>
@@ -71,11 +85,12 @@ export type FileEditorRichTextAnchoredComments_ClassNames =
 
 export type FileEditorRichTextAnchoredComments_Props = {
 	editor: Editor;
+	editable: boolean;
 	threads: chat_messages_Thread[] | undefined;
 };
 
 export function FileEditorRichTextAnchoredComments(props: FileEditorRichTextAnchoredComments_Props) {
-	const { editor, threads } = props;
+	const { editor, editable, threads } = props;
 
 	const [query, setQuery] = useState("");
 
@@ -102,11 +117,7 @@ export function FileEditorRichTextAnchoredComments(props: FileEditorRichTextAnch
 				</div>
 			) : (
 				<>
-					<FileEditorCommentsFilterInput
-						value={query}
-						ariaLabel="Search document comments"
-						onValueChange={setQuery}
-					/>
+					<FileEditorCommentsFilterInput value={query} ariaLabel="Search document comments" onValueChange={setQuery} />
 					<FileEditorRichTextAnchoredThreads
 						className={
 							"FileEditorRichTextAnchoredComments-anchored-elements-container" satisfies FileEditorRichTextAnchoredComments_ClassNames
@@ -114,7 +125,11 @@ export function FileEditorRichTextAnchoredComments(props: FileEditorRichTextAnch
 						editor={editor}
 						threads={filteredThreads}
 					>
-						<FileEditorRichTextAnchoredCommentsThreadsList threads={filteredThreads} onClick={handleThreadClick} />
+						<FileEditorRichTextAnchoredCommentsThreadsList
+							threads={filteredThreads}
+							canResolve={editable}
+							onClick={handleThreadClick}
+						/>
 					</FileEditorRichTextAnchoredThreads>
 				</>
 			)}

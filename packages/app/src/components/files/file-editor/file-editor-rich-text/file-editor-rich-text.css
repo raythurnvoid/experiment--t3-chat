@@ -311,6 +311,17 @@
 			display: inline-block;
 		}
 
+		/* Hide media edit controls while the document is read-only. */
+		&[contenteditable="false"] {
+			.FileEditorRichTextMedia-retry,
+			.FileEditorRichTextMedia-resize-handle,
+			.FileEditorRichTextMedia-controls,
+			.FileEditorRichTextMedia-alt-input,
+			.FileEditorRichTextMedia-caption-input {
+				display: none;
+			}
+		}
+
 		/* Selected-embed controls. They only exist while real media is on screen
 		   (`-has-media`), so a placeholder chip never grows dead controls. */
 		.FileEditorRichTextMedia-resize-handle {

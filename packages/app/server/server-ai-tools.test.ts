@@ -323,6 +323,35 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 	});
 
+	test("describes read-only app paths as terminal writes while allowing copy-out", () => {
+		const { ctx } = makeCtx(async () => null);
+		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
+			allowDbFilesMkdir: true,
+		});
+
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"A read-only app file or folder can still be read, searched, downloaded, shared, and copied OUT to a writable destination.",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"cp may read a read-only source, but its destination and any replaced item must be writable.",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"do not retry that path with another write tool; it cannot change until the user makes it writable.",
+				),
+			}),
+		);
+	});
+
 	test("describes the reader read cap and find depth filters", () => {
 		const { ctx } = makeCtx(async () => null);
 		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
@@ -921,6 +950,45 @@ test("edit_file edits a plain text .json file and stages the exact text", async 
 	});
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.matches).toBe(1);
+});
+
+test("edit_file describes and preserves a terminal read-only refusal", async () => {
+	const currentContent = {
+		nodeId: "file_read_only",
+		displayNodeId: "file_read_only",
+		content: "before",
+		pendingUpdateId: null,
+	};
+	let runActionCallCount = 0;
+	const { ctx } = makeCtx(async () => null, {
+		runMutationImpl: async () => ({ _yay: { operationBatchId: "batch_read_only", expiresAt: Date.now() + 60_000 } }),
+		runActionImpl: async () => {
+			runActionCallCount += 1;
+			return runActionCallCount === 1
+				? currentContent
+				: { _nay: { name: "read_only", message: "This item is read-only." } };
+		},
+	});
+	const tool = ai_chat_tool_create_edit_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
+	);
+
+	expect(tool).toEqual(
+		expect.objectContaining({
+			description: expect.stringContaining(
+				"A read-only refusal is terminal for this edit. Do not retry the path with bash redirects, tee, cp, mv, or another write tool",
+			),
+		}),
+	);
+	await expect(
+		tool.execute?.(
+			{ path: "/docs/locked.md", oldString: "before", newString: "after", replaceAll: false },
+			{ toolCallId: "test", messages: [] },
+		),
+	).rejects.toThrow(
+		"Cannot edit /docs/locked.md: This item is read-only. Do not retry this path with another write tool.",
+	);
 });
 
 test("edit_file's cross-class refusal names the class, not the path", async () => {

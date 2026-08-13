@@ -282,12 +282,13 @@ function FileEditorCommentsThreadForm(props: FileEditorCommentsThreadForm_Props)
 type FileEditorCommentsThreadResolveButton_ClassNames = "FileEditorCommentsThreadResolveButton";
 
 type FileEditorCommentsThreadResolveButton_Props = {
+	disabled: boolean;
 	isArchiving: boolean;
 	onClick: () => void;
 };
 
 function FileEditorCommentsThreadResolveButton(props: FileEditorCommentsThreadResolveButton_Props) {
-	const { isArchiving, onClick } = props;
+	const { disabled, isArchiving, onClick } = props;
 
 	const handleClick: MyIconButton_Props["onClick"] = (event) => {
 		onClick();
@@ -297,9 +298,9 @@ function FileEditorCommentsThreadResolveButton(props: FileEditorCommentsThreadRe
 		<MyIconButton
 			className={"FileEditorCommentsThreadResolveButton" satisfies FileEditorCommentsThreadResolveButton_ClassNames}
 			variant="outline"
-			tooltip="Mark as resolved"
+			tooltip={disabled ? "Resolve is unavailable while this document cannot be edited" : "Mark as resolved"}
 			aria-busy={isArchiving}
-			disabled={isArchiving}
+			disabled={disabled || isArchiving}
 			onClick={handleClick}
 		>
 			<MyIconButtonIcon>
@@ -349,12 +350,16 @@ export type FileEditorCommentsThread_Props = {
 	thread: chat_messages_Thread;
 	open: boolean;
 	hidden: boolean;
+	/**
+	 * Resolving may change the document's comment mark, so the document must be editable.
+	 */
+	canResolve: boolean;
 	onToggle?: ComponentProps<"details">["onToggle"];
 	onClick?: React.MouseEventHandler<HTMLElement>;
 };
 
 export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) {
-	const { ref, className, thread, open, hidden, onToggle, onClick } = props;
+	const { ref, className, thread, open, hidden, canResolve, onToggle, onClick } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -401,7 +406,8 @@ export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) 
 	};
 
 	const handleResolve = async () => {
-		if (!thread.id) {
+		// Check again because the document may become read-only after the button renders.
+		if (!thread.id || !canResolve) {
 			return;
 		}
 
@@ -451,7 +457,11 @@ export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) 
 					avatarFallbackDelay
 					actionsSlot={
 						!thread.isArchived && (
-							<FileEditorCommentsThreadResolveButton isArchiving={isArchiving} onClick={handleResolve} />
+							<FileEditorCommentsThreadResolveButton
+								disabled={!canResolve}
+								isArchiving={isArchiving}
+								onClick={handleResolve}
+							/>
 						)
 					}
 				/>
@@ -470,7 +480,11 @@ export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) 
 										avatarFallbackDelay={false}
 										actionsSlot={
 											!thread.isArchived && (
-												<FileEditorCommentsThreadResolveButton isArchiving={isArchiving} onClick={handleResolve} />
+												<FileEditorCommentsThreadResolveButton
+													disabled={!canResolve}
+													isArchiving={isArchiving}
+													onClick={handleResolve}
+												/>
 											)
 										}
 									/>
@@ -490,7 +504,11 @@ export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) 
 												actionsSlot={
 													index === 0 &&
 													!thread.isArchived && (
-														<FileEditorCommentsThreadResolveButton isArchiving={isArchiving} onClick={handleResolve} />
+														<FileEditorCommentsThreadResolveButton
+															disabled={!canResolve}
+															isArchiving={isArchiving}
+															onClick={handleResolve}
+														/>
 													)
 												}
 											/>

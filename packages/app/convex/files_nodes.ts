@@ -79,6 +79,7 @@ import {
 	access_control_db_authorize_node,
 	access_control_db_can_act_on_file_node,
 	access_control_db_filter_readable_file_nodes,
+	access_control_db_has_permission,
 } from "./access_control.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
@@ -94,7 +95,10 @@ import {
 	r2_generate_upload_url,
 	r2_get_bucket,
 	r2_create_asset_key,
+	r2_create_upload_staging_key,
 	r2_delete_object,
+	r2_enqueue_object_deletion_job,
+	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
 
@@ -505,6 +509,83 @@ export async function files_nodes_db_cascade_restricted_scope(
 	}
 }
 
+// #region read-only
+
+/**
+ * Get the lock from the parent folder.
+ * The parent stores the nearest lock, so one database read is enough.
+ */
+export async function files_nodes_db_resolve_parent_read_only_scope(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		parentId: Doc<"files_nodes">["parentId"];
+	},
+) {
+	if (args.parentId === files_ROOT_ID) {
+		return undefined;
+	}
+
+	const parent = await ctx.db.get("files_nodes", args.parentId);
+	return parent?.readOnlyScopeNodeId;
+}
+
+/**
+ * Update the inherited lock on every descendant. Include archived descendants.
+ * Stop at a descendant with its own lock. Its whole subtree keeps that lock.
+ *
+ * Convex saves all changes together. If the folder is too large, it saves no changes.
+ */
+export async function files_nodes_db_cascade_read_only_scope(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		parentId: Id<"files_nodes">;
+		scopeNodeId: Id<"files_nodes"> | undefined;
+	},
+) {
+	const stack: Array<Id<"files_nodes">> = [args.parentId];
+
+	while (stack.length > 0) {
+		const parentId = stack.pop();
+		if (parentId === undefined) {
+			continue;
+		}
+
+		const children = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", parentId),
+			)
+			.collect();
+
+		await Promise.all(
+			children.map(async (child) => {
+				if (child.readOnlyScopeNodeId === child._id) {
+					return;
+				}
+
+				if (child.readOnlyScopeNodeId !== args.scopeNodeId) {
+					await ctx.db.patch("files_nodes", child._id, { readOnlyScopeNodeId: args.scopeNodeId });
+				}
+				stack.push(child._id);
+			}),
+		);
+	}
+}
+
+/**
+ * Refuse a change when the node is read-only.
+ * Call this after permission checks. Owners and managers must also unlock the node.
+ */
+export function files_node_require_writable(node: Pick<Doc<"files_nodes">, "readOnlyScopeNodeId">) {
+	if (node.readOnlyScopeNodeId !== undefined) {
+		return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
+	}
+
+	return Result({ _yay: null });
+}
+
 /**
  * Whether the caller may act on every node a sweep collected.
  *
@@ -550,6 +631,434 @@ export async function files_nodes_db_can_act_on_swept_nodes(
 
 	return true;
 }
+
+/**
+ * Load every descendant below `parentId`. Include archived descendants.
+ * Use parent ids because active and archived trees can have the same path.
+ */
+export async function files_nodes_db_collect_descendants(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		parentId: Id<"files_nodes">;
+	},
+) {
+	const descendants: Array<Doc<"files_nodes">> = [];
+	const stack = [args.parentId];
+
+	while (stack.length > 0) {
+		const parentId = stack.pop();
+		if (parentId === undefined) {
+			continue;
+		}
+
+		const children = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", parentId),
+			)
+			.collect();
+
+		for (const child of children) {
+			descendants.push(child);
+			stack.push(child._id);
+		}
+	}
+
+	return descendants;
+}
+
+/**
+ * Refuse the whole change when any node is read-only.
+ * Say "read-only" only when the caller can see that node. Otherwise use a general error.
+ */
+export async function files_nodes_db_require_swept_nodes_writable(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		userId: Id<"users">;
+		nodes: readonly Doc<"files_nodes">[];
+	},
+) {
+	const lockedNodes = args.nodes.filter((node) => node.readOnlyScopeNodeId !== undefined);
+	if (lockedNodes.length === 0) {
+		return Result({ _yay: null });
+	}
+
+	// Check each restricted folder once.
+	const readableByScopeNodeId = new Map<Id<"files_nodes">, boolean>();
+	for (const node of lockedNodes) {
+		const scopeNodeId = node.restrictedScopeNodeId;
+		// This node is not restricted. The caller can see the read-only error.
+		if (!scopeNodeId) {
+			return files_node_require_writable(node);
+		}
+
+		let readable = readableByScopeNodeId.get(scopeNodeId);
+		if (readable === undefined) {
+			readable = await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNode: node,
+				permission: "content.read",
+			});
+			readableByScopeNodeId.set(scopeNodeId, readable);
+		}
+		if (readable) {
+			return files_node_require_writable(node);
+		}
+	}
+
+	return Result({ _nay: { message: "Permission denied" } });
+}
+
+/**
+ * Refuse a folder move or rename when any descendant is read-only.
+ * Include archived descendants because their paths also change.
+ */
+export async function files_nodes_db_require_subtree_writable(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		userId: Id<"users">;
+		node: Doc<"files_nodes">;
+	},
+) {
+	if (args.node.kind !== "folder") {
+		return Result({ _yay: null });
+	}
+
+	const subtreeFileNodes = await files_nodes_db_collect_descendants(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		parentId: args.node._id,
+	});
+
+	return await files_nodes_db_require_swept_nodes_writable(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		nodes: subtreeFileNodes,
+	});
+}
+
+/**
+ * Load the membership and node. Check `content.permissions.manage` on the node.
+ *
+ * Check the node so a grant on a restricted node can allow this action.
+ * Do not check the lock here. Lock and unlock must work while the node is locked.
+ */
+async function db_authorize_lock_management(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membershipId: Id<"organizations_workspaces_users">;
+		nodeId: Id<"files_nodes">;
+	},
+) {
+	const membership = await organizations_db_get_membership(ctx, {
+		userId: args.userAuth.id,
+		membershipId: args.membershipId,
+	});
+	if (!membership) {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+
+	const authorized = await access_control_db_authorize_node(ctx, {
+		userAuth: args.userAuth,
+		membership,
+		nodeId: args.nodeId,
+		permission: "content.permissions.manage",
+	});
+	if (authorized._nay) {
+		return authorized;
+	}
+
+	return Result({ _yay: { membership, node: authorized._yay.fileNode } });
+}
+
+/**
+ * Load active and archived descendants once. Reuse them for all checks and updates.
+ */
+async function db_load_swept_descendants(
+	ctx: MutationCtx,
+	args: {
+		membership: Doc<"organizations_workspaces_users">;
+		node: Doc<"files_nodes">;
+	},
+) {
+	if (args.node.kind !== "folder") {
+		return [];
+	}
+
+	return await files_nodes_db_collect_descendants(ctx, {
+		organizationId: args.membership.organizationId,
+		workspaceId: args.membership.workspaceId,
+		parentId: args.node._id,
+	});
+}
+
+/**
+ * Check every restricted subtree inside a folder.
+ * This stops a user from changing the lock on hidden nodes they cannot manage.
+ * Check each restricted subtree only once.
+ */
+async function db_can_manage_swept_subtree(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		node: Doc<"files_nodes">;
+		descendants: readonly Doc<"files_nodes">[];
+	},
+) {
+	if (args.node.kind !== "folder") {
+		return true;
+	}
+
+	return await files_nodes_db_can_act_on_swept_nodes(ctx, {
+		organizationId: args.membership.organizationId,
+		workspaceId: args.membership.workspaceId,
+		userId: args.userAuth.id,
+		rootScopeNodeId: args.node.restrictedScopeNodeId,
+		nodes: args.descendants,
+		permission: "content.permissions.manage",
+	});
+}
+
+/**
+ * Return the lock details needed by the lock control.
+ * A direct lock can also be inside another locked folder.
+ * The result says this without showing a hidden folder id or path.
+ */
+export const get_node_read_only_management_state = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			nodeId: v.id("files_nodes"),
+			/** True when the caller may lock or unlock this node. */
+			canManage: v.boolean(),
+			readOnlyState: v.union(v.literal("writable"), v.literal("self"), v.literal("inherited")),
+			/**
+			 * True when a parent lock will keep this node read-only after its direct lock is removed.
+			 * This field does not say which parent is locked.
+			 */
+			hasInheritedParentLock: v.boolean(),
+			/**
+			 * The node that provides the lock. This can be an inherited lock or a lock above a
+			 * direct lock. This is null when the node is writable or the source is hidden.
+			 */
+			source: v.union(v.null(), v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return null;
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		// Users who can read the node may get its lock details.
+		// `canManage` tells the UI if it should show the lock controls.
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: args.nodeId,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
+			return null;
+		}
+		const { fileNode: node, organization, defaultWorkspaceId } = authorized._yay;
+
+		const canManage = await access_control_db_has_permission(ctx, {
+			organizationId: organization._id,
+			workspaceId: membership.workspaceId,
+			defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resource: {
+				kind: "file",
+				id: String(node._id),
+				restrictedScopeNodeId: node.restrictedScopeNodeId ?? null,
+			},
+			permission: "content.permissions.manage",
+			userId: userAuth.id,
+		});
+
+		const readOnlyState: "writable" | "self" | "inherited" =
+			node.readOnlyScopeNodeId === undefined ? "writable" : node.readOnlyScopeNodeId === node._id ? "self" : "inherited";
+
+		const parentScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
+			parentId: node.parentId,
+		});
+
+		// For an inherited lock, show its source. For a direct lock, show any lock above it.
+		const sourceNodeId = readOnlyState === "inherited" ? node.readOnlyScopeNodeId : parentScopeNodeId;
+
+		let source: { nodeId: Id<"files_nodes">; path: string } | null = null;
+		if (sourceNodeId !== undefined && readOnlyState !== "writable") {
+			const sourceNode = await ctx.db.get("files_nodes", sourceNodeId);
+			// Show the source only when the caller may read it. Keep hidden lock folders hidden.
+			if (
+				sourceNode &&
+				(await access_control_db_has_permission(ctx, {
+					organizationId: organization._id,
+					workspaceId: membership.workspaceId,
+					defaultWorkspaceId,
+					organizationOwnerUserId: organization.ownerUserId,
+					resource: {
+						kind: "file",
+						id: String(sourceNode._id),
+						restrictedScopeNodeId: sourceNode.restrictedScopeNodeId ?? null,
+					},
+					permission: "content.read",
+					userId: userAuth.id,
+				}))
+			) {
+				source = { nodeId: sourceNode._id, path: sourceNode.path };
+			}
+		}
+
+		return {
+			nodeId: node._id,
+			canManage,
+			readOnlyState,
+			hasInheritedParentLock: parentScopeNodeId !== undefined,
+			source,
+		};
+	},
+});
+
+export const set_node_read_only = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await db_authorize_lock_management(ctx, {
+			userAuth,
+			membershipId: args.membershipId,
+			nodeId: args.nodeId,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { membership, node } = authorized._yay;
+
+		// The node is already directly locked. Return success for repeated calls.
+		if (node.readOnlyScopeNodeId === node._id) {
+			return Result({ _yay: null });
+		}
+
+		const descendants = await db_load_swept_descendants(ctx, { membership, node });
+
+		// Use a general error. Do not show the hidden node.
+		if (!(await db_can_manage_swept_subtree(ctx, { userAuth, membership, node, descendants }))) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// A node under a parent lock can also get its own lock. It then stays locked if the parent
+		// is unlocked. Do not change `updatedBy` or `updatedAt` for this setting.
+		await ctx.db.patch("files_nodes", node._id, { readOnlyScopeNodeId: node._id });
+		await files_nodes_db_cascade_read_only_scope(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			parentId: node._id,
+			scopeNodeId: node._id,
+		});
+
+		return Result({ _yay: null });
+	},
+});
+
+export const set_node_writable = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await db_authorize_lock_management(ctx, {
+			userAuth,
+			membershipId: args.membershipId,
+			nodeId: args.nodeId,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { membership, node } = authorized._yay;
+
+		// The node is already writable. Return success for repeated calls.
+		if (node.readOnlyScopeNodeId === undefined) {
+			return Result({ _yay: null });
+		}
+
+		// Only a direct lock can be removed here. Do not name a hidden parent lock.
+		if (node.readOnlyScopeNodeId !== node._id) {
+			return Result({ _nay: { message: "This is not directly read-only" } });
+		}
+
+		const descendants = await db_load_swept_descendants(ctx, { membership, node });
+
+		// Use a general error. Do not show the hidden node.
+		if (!(await db_can_manage_swept_subtree(ctx, { userAuth, membership, node, descendants }))) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// Inherit the parent lock again. The node stays read-only if a parent is still locked.
+		const parentScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
+			parentId: node.parentId,
+		});
+
+		await ctx.db.patch("files_nodes", node._id, { readOnlyScopeNodeId: parentScopeNodeId });
+		await files_nodes_db_cascade_read_only_scope(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			parentId: node._id,
+			scopeNodeId: parentScopeNodeId,
+		});
+
+		return Result({ _yay: null });
+	},
+});
+
+// #endregion read-only
 
 /**
  * Check `content.write` on the node that decides a file write.
@@ -690,6 +1199,11 @@ async function db_insert_node(
 		 * the initial UNPROCESSABLE stats write so those callers do not double-write stats.
 		 */
 		expectsTextContent?: true;
+		/**
+		 * Use only for migration or repair code that can create below a lock.
+		 * The new node gets the parent lock and stays read-only.
+		 */
+		inheritParentReadOnlyScope?: true;
 		now: number;
 	},
 ) {
@@ -700,12 +1214,17 @@ async function db_insert_node(
 		parentId: args.parentId,
 	});
 
+	const readOnlyScopeNodeId = args.inheritParentReadOnlyScope
+		? await files_nodes_db_resolve_parent_read_only_scope(ctx, { parentId: args.parentId })
+		: undefined;
+
 	const nodeId = await ctx.db.insert("files_nodes", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		parentId: args.parentId,
 		path: args.path,
 		restrictedScopeNodeId,
+		readOnlyScopeNodeId,
 		treePath: derive_tree_path_for_file_node(args.path, args.kind),
 		pathDepth: files_path_depth(args.path),
 		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
@@ -784,6 +1303,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 	let currentParent: Doc<"files_nodes">["parentId"] = args.parentId;
 	const pathSegments = path_extract_segments_from(args.path);
 	let currentParentPath: string | null = args.parentId === files_ROOT_ID ? "/" : null;
+	// The workspace root cannot be locked. Only check a real parent node.
+	let currentParentLockChecked = args.parentId === files_ROOT_ID;
 
 	// Walk segments in order because each child lookup needs the previous folder id.
 	for (const [i, name] of pathSegments.entries()) {
@@ -840,6 +1361,14 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			if (!isLeaf) {
 				// Reuse active intermediate folders, but reject files that already own the path.
 				if (existing.kind === "folder") {
+					// Do not create below a read-only folder. Trusted SYSTEM writes skip this check.
+					if (args.userId !== users_SYSTEM_AUTHOR) {
+						const segmentWritable = files_node_require_writable(existing);
+						if (segmentWritable._nay) {
+							return segmentWritable;
+						}
+					}
+					currentParentLockChecked = true;
 					currentParent = existing._id;
 					currentParentPath = existing.path;
 					continue;
@@ -877,6 +1406,19 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			}
 			path = path_join(currentParentPath, name);
 		}
+
+		// Before the first insert, check the parent from the caller.
+		// Later parents were already checked or were just created as writable folders.
+		if (args.userId !== users_SYSTEM_AUTHOR && !currentParentLockChecked) {
+			const parentReadOnlyScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
+				parentId: currentParent,
+			});
+			const parentWritable = files_node_require_writable({ readOnlyScopeNodeId: parentReadOnlyScopeNodeId });
+			if (parentWritable._nay) {
+				return parentWritable;
+			}
+		}
+		currentParentLockChecked = true;
 
 		const nodeIdResult = await db_insert_node(ctx, {
 			userId: args.userId,
@@ -1237,6 +1779,10 @@ export async function files_nodes_db_is_eager_node_safe_to_hard_delete(
 		// Node already gone: the hard delete no-ops, so running it is safe.
 		return true;
 	}
+	// Keep the node while it is read-only. Its pending update docs can still be deleted.
+	if (files_node_require_writable(node)._nay) {
+		return false;
+	}
 	if (node.updatedBy !== args.pendingUpdate.userId) {
 		// Someone else committed a structural change (rename/move) since the eager creation;
 		// structural changes never advance the Yjs sequence, so the stamp cannot catch them.
@@ -1530,6 +2076,11 @@ export async function files_nodes_db_remove_created_ancestor_folders_if_safe(
 			ancestorsLeft = args.createdAncestorIds.length - i;
 			break;
 		}
+		// Keep a read-only folder. Delete it only after a manager unlocks it.
+		if (ancestor.readOnlyScopeNodeId !== undefined) {
+			ancestorsLeft = args.createdAncestorIds.length - i;
+			break;
+		}
 		// Folder creation writes only the files_nodes doc (db_insert_node returns before any side docs
 		// for folders), and the check above ruled out the one other doc a folder can own, so one delete
 		// removes the whole folder.
@@ -1556,9 +2107,8 @@ export const remove_eager_created_node_if_safe = internalMutation({
 		nodeId: v.id("files_nodes"),
 		eagerCreatedCommittedSequence: v.number(),
 		/**
-		 * `_id`s of the folders the eager create committed for this leaf, deepest first
-		 * (`createdAncestorIds` from `create_file_by_path`). After the leaf is removed, each
-		 * is removed too while it is still an empty folder only touched by `userId`.
+		 * Folders created with this file, deepest first. After deleting the file, also delete each
+		 * folder that is still empty and was only changed by `userId`.
 		 */
 		createdAncestorIds: v.optional(v.array(v.id("files_nodes"))),
 	},
@@ -1595,6 +2145,14 @@ export const remove_eager_created_node_if_safe = internalMutation({
 			return Result({ _yay: { removed: false, ancestorsLeft: createdAncestorIds.length } });
 		}
 
+		// Check every created folder first. If one is read-only, keep the file and all folders.
+		const createdAncestorNodes = await Promise.all(
+			createdAncestorIds.map((ancestorId) => ctx.db.get("files_nodes", ancestorId)),
+		);
+		if (createdAncestorNodes.some((ancestor) => ancestor && files_node_require_writable(ancestor)._nay)) {
+			return Result({ _yay: { removed: false, ancestorsLeft: createdAncestorIds.length } });
+		}
+
 		await files_nodes_db_hard_delete_node(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -1615,6 +2173,12 @@ export type files_nodes_remove_eager_created_node_if_safe_Result =
 	typeof remove_eager_created_node_if_safe extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+/**
+ * A signed upload URL works for 15 minutes.
+ * Store its end time so cleanup knows when the URL can no longer write the temporary R2 file.
+ */
+const files_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
 
 export const create_upload_node = mutation({
 	args: {
@@ -1687,6 +2251,12 @@ export const create_upload_node = mutation({
 			) {
 				return Result({ _nay: { message: "Not found" } });
 			}
+			// The caller has write permission, but the folder can still be read-only.
+			// Check before writing the archive or asset docs.
+			const parentWritable = files_node_require_writable(parent);
+			if (parentWritable._nay) {
+				return parentWritable;
+			}
 			parentPath = parent.path;
 		}
 
@@ -1740,6 +2310,13 @@ export const create_upload_node = mutation({
 				return Result({ _nay: { message: "Permission denied" } });
 			}
 
+			// Check every existing folder in the path. Each folder stores its current lock.
+			// Do this before writing the archive or asset docs.
+			const intermediateWritable = files_node_require_writable(intermediate);
+			if (intermediateWritable._nay) {
+				return intermediateWritable;
+			}
+
 			// A file cannot hold other files, so this upload can never succeed. The create below says the
 			// same thing, in the same words and only to callers who got past the check above, but it says
 			// it after the asset doc is written. Answer here, while nothing has been written yet.
@@ -1780,6 +2357,13 @@ export const create_upload_node = mutation({
 				return Result({ _nay: { message: "Permission denied" } });
 			}
 
+			// Replace archives the current file, so that file must be writable.
+			// The caller can use another upload name when it is locked.
+			const occupantWritable = files_node_require_writable(existingNode);
+			if (occupantWritable._nay) {
+				return occupantWritable;
+			}
+
 			await files_nodes_db_archive_nodes(ctx, {
 				nodeIds: [existingNode._id],
 				updatedBy: userAuth.id,
@@ -1797,7 +2381,7 @@ export const create_upload_node = mutation({
 			unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
 			updatedAt: now,
 		});
-		const assetR2Key = r2_create_asset_key({
+		const uploadStagingR2Key = r2_create_upload_staging_key({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			assetId,
@@ -1824,7 +2408,13 @@ export const create_upload_node = mutation({
 			return Result({ _nay: nodeIdResult._nay });
 		}
 
-		const signedUpload = await r2_generate_upload_url(assetR2Key);
+		// Save the temporary key and URL end time before returning the URL.
+		// A later lock does not stop this accepted upload.
+		await ctx.db.patch("files_r2_assets", assetId, {
+			uploadUrlExpiresAt: now + files_UPLOAD_URL_TTL_MS,
+			uploadStagingR2Key,
+		});
+		const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
 		const headers: Record<string, string> = storedContentType ? { "Content-Type": storedContentType } : {};
 
 		return Result({
@@ -1962,6 +2552,12 @@ export const create_upload_nodes = mutation({
 				parent.archiveOperationId !== undefined
 			) {
 				return Result({ _nay: { message: "Not found" } });
+			}
+			// A read-only parent folder refuses the whole import before any write.
+			// A problem inside one item path skips only that item below.
+			const parentWritable = files_node_require_writable(parent);
+			if (parentWritable._nay) {
+				return parentWritable;
 			}
 			parentPath = parent.path;
 		}
@@ -2112,6 +2708,11 @@ export const create_upload_nodes = mutation({
 					itemSkipReason = "conflict";
 					break;
 				}
+				// Report a general conflict. Do not reveal that a hidden folder is read-only.
+				if (intermediate.readOnlyScopeNodeId !== undefined) {
+					itemSkipReason = "conflict";
+					break;
+				}
 				walkParentId = intermediate._id;
 			}
 			if (itemSkipReason) {
@@ -2162,6 +2763,12 @@ export const create_upload_nodes = mutation({
 					skipped.push({ relativePath: item.relativePath, reason: "conflict" });
 					continue;
 				}
+				// If the file being replaced is locked, skip only this item.
+				// Keep that file active and continue the other imports.
+				if (existingNode.readOnlyScopeNodeId !== undefined) {
+					skipped.push({ relativePath: item.relativePath, reason: "conflict" });
+					continue;
+				}
 
 				// Safe to archive now: every folder on the way passed the walk above, so the create
 				// below cannot refuse this item after the old file is already gone.
@@ -2205,24 +2812,35 @@ export const create_upload_nodes = mutation({
 				assetId,
 				now,
 			});
-			// Defense in depth: the skip pass above already refuses every shape that would make
-			// this create fail, so this branch should be unreachable today. Keep it so a future
-			// change to that pass cannot orphan the asset doc or leak the refusal reason.
+			// The checks above should make this branch unreachable.
+			// Keep it so a future change cannot leave an asset doc without a node.
+			// Use "conflict" for permission and read-only errors so hidden paths stay private.
 			if (nodeIdResult._nay) {
 				await ctx.db.delete("files_r2_assets", assetId);
 				skipped.push({
 					relativePath: item.relativePath,
-					reason: nodeIdResult._nay.message === "Permission denied" ? "conflict" : "path_blocked",
+					reason:
+						nodeIdResult._nay.message === "Permission denied" || nodeIdResult._nay.name === "read_only"
+							? "conflict"
+							: "path_blocked",
 				});
 				continue;
 			}
 
-			const assetR2Key = r2_create_asset_key({
+			const uploadStagingR2Key = r2_create_upload_staging_key({
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId,
 			});
-			const signedUpload = await r2_generate_upload_url(assetR2Key);
+
+			// Save the temporary key and URL end time before returning the URL.
+			// A later lock does not stop this accepted upload.
+			await ctx.db.patch("files_r2_assets", assetId, {
+				uploadUrlExpiresAt: now + files_UPLOAD_URL_TTL_MS,
+				uploadStagingR2Key,
+			});
+			const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
+
 			created.push({
 				relativePath: item.relativePath,
 				assetId,
@@ -2401,24 +3019,45 @@ export const discard_failed_upload_node = mutation({
 			return Result({ _yay: { removed: false } });
 		}
 
+		// Keep the failed upload node while it is read-only.
+		// This cleanup deletes the node, so the lock must also block it.
+		const nodeWritable = files_node_require_writable(node);
+		if (nodeWritable._nay) {
+			return nodeWritable;
+		}
+
+		const liveR2Key = r2_create_asset_key({
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			assetId: asset._id,
+		});
+		const uploadStagingR2Key = asset.uploadStagingR2Key ?? liveR2Key;
+		await r2_enqueue_object_deletion_job(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			r2Key: uploadStagingR2Key,
+			reason: "upload_staging",
+			putMayArriveUntil:
+				(asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? Date.now()) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+		});
+		if (liveR2Key !== uploadStagingR2Key) {
+			// The copy may reach the final key before the event saves `r2Key`.
+			// Add a deletion job for that key before deleting the asset doc.
+			await r2_enqueue_object_deletion_job(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				r2Key: liveR2Key,
+				reason: "untracked_asset_event",
+			});
+		}
+
+		// The jobs now cover both R2 keys. The node and asset docs can be deleted.
+		// If the URL writes the temporary file again, its job will delete it later.
 		await files_nodes_db_hard_delete_node(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			nodeId: node._id,
 		});
-
-		// The asset doc had no `r2Key`, but R2 may still hold the bytes: a PUT the browser saw
-		// fail can have been stored, with the object-create event still on its way. The event
-		// for a deleted asset is answered with 404 and acknowledged, so without this delete the
-		// bytes would stay in the bucket with no doc pointing at them.
-		await r2_delete_object(
-			ctx,
-			r2_create_asset_key({
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				assetId: asset._id,
-			}),
-		);
 
 		return Result({ _yay: { removed: true } });
 	},
@@ -2872,6 +3511,29 @@ export async function files_nodes_db_apply_pending_move(
 	}
 	const { node, destPath } = validated._yay;
 
+	// The lock may change after the proposal is created. Check it again when applying the move.
+	// Check the node, all its descendants, the destination, any replaced node, and every swap member.
+	const nodeWritable = files_node_require_writable(node);
+	if (nodeWritable._nay) {
+		return nodeWritable;
+	}
+	const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.updatedBy,
+		node,
+	});
+	if (subtreeWritable._nay) {
+		return subtreeWritable;
+	}
+	const destReadOnlyScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
+		parentId: args.destParentId,
+	});
+	const destWritable = files_node_require_writable({ readOnlyScopeNodeId: destReadOnlyScopeNodeId });
+	if (destWritable._nay) {
+		return destWritable;
+	}
+
 	// Update the node once and then rebase descendants under the new materialized path.
 	const now = Date.now();
 	if (validated._yay.replacesNode) {
@@ -2953,6 +3615,32 @@ export async function files_nodes_db_apply_pending_move(
 				for (const member of cycleMembers) {
 					if (!(await args.authorizeCycleMember({ node: member.node, destParentId: member.destParentId }))) {
 						return Result({ _nay: { message: "Permission denied" } });
+					}
+				}
+
+				// Check every swap member and its children. Also check its destination folder.
+				for (const member of cycleMembers) {
+					const memberWritable = files_node_require_writable(member.node);
+					if (memberWritable._nay) {
+						return memberWritable;
+					}
+					const memberSubtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						userId: args.updatedBy,
+						node: member.node,
+					});
+					if (memberSubtreeWritable._nay) {
+						return memberSubtreeWritable;
+					}
+					const memberDestReadOnlyScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
+						parentId: member.destParentId,
+					});
+					const memberDestWritable = files_node_require_writable({
+						readOnlyScopeNodeId: memberDestReadOnlyScopeNodeId,
+					});
+					if (memberDestWritable._nay) {
+						return memberDestWritable;
 					}
 				}
 
@@ -3045,6 +3733,22 @@ export async function files_nodes_db_apply_pending_move(
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
+		// Replace archives the current node and all its children.
+		// An empty active folder can still have archived children.
+		const occupantWritable = files_node_require_writable(validated._yay.replacesNode);
+		if (occupantWritable._nay) {
+			return occupantWritable;
+		}
+		const occupantSubtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.updatedBy,
+			node: validated._yay.replacesNode,
+		});
+		if (occupantSubtreeWritable._nay) {
+			return occupantSubtreeWritable;
+		}
+
 		await files_nodes_db_archive_nodes(ctx, {
 			nodeIds: [validated._yay.replacesNode._id],
 			updatedBy: args.updatedBy,
@@ -3109,16 +3813,31 @@ export const rename_node = mutation({
 			return authorized;
 		}
 
+		// Write permission does not bypass read-only. A locked node cannot be renamed or moved.
+		const sourceWritable = files_node_require_writable(fileNode);
+		if (sourceWritable._nay) {
+			return sourceWritable;
+		}
+
 		const pathSegments = path_extract_segments_from(args.path);
-		// Resolve the target first so simple and nested renames share one conflict/write path.
+		// Plan the full rename before writing anything.
+		// Remember missing folders now. Create them only after every check passes.
 		let targetParentId = fileNode.parentId;
 		let targetParentPath: string | null;
 		let leafName: string;
+		const missingSegmentNames: string[] = [];
 
 		if (pathSegments.length > 1) {
 			targetParentPath = fileNode.parentId === files_ROOT_ID ? "/" : null;
 			// We trust that the front-end is validating the input correctly.
 			for (const name of pathSegments.slice(0, -1)) {
+				// After one folder is missing, every deeper folder is also missing.
+				// The first missing folder's parent already passed the write check.
+				if (missingSegmentNames.length > 0) {
+					missingSegmentNames.push(name);
+					continue;
+				}
+
 				const existing = await ctx.db
 					.query("files_nodes")
 					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
@@ -3153,6 +3872,13 @@ export const rename_node = mutation({
 					});
 					if (authorizedSegment._nay) {
 						return Result({ _nay: { name: "nay", message: "Permission denied" } });
+					}
+
+					// This rename moves the node into this folder. The folder must be writable.
+					// Check each existing folder in the path.
+					const segmentWritable = files_node_require_writable(existing);
+					if (segmentWritable._nay) {
+						return segmentWritable;
 					}
 
 					if (existing.kind === "folder") {
@@ -3192,23 +3918,8 @@ export const rename_node = mutation({
 					return Result({ _nay: { name: "nay", message: "Permission denied" } });
 				}
 
-				const folderPath = path_join(targetParentPath, name);
-				const folderNodeIdResult = await db_insert_node(ctx, {
-					userId: userAuth.id,
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					parentId: targetParentId,
-					name,
-					path: folderPath,
-					kind: "folder",
-					now: Date.now(),
-				});
-				if (folderNodeIdResult._nay) {
-					return folderNodeIdResult;
-				}
-
-				targetParentId = folderNodeIdResult._yay;
-				targetParentPath = folderPath;
+				// Do not check this parent again. It is the current parent or a folder checked above.
+				missingSegmentNames.push(name);
 			}
 
 			const resolvedLeafName = pathSegments.at(-1);
@@ -3245,6 +3956,18 @@ export const rename_node = mutation({
 			targetParentPath = parentPath;
 		}
 
+		// Rename changes every descendant path, including archived descendants.
+		// Refuse before writing if any descendant is read-only.
+		const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			node: fileNode,
+		});
+		if (subtreeWritable._nay) {
+			return subtreeWritable;
+		}
+
 		// A rename never converts file content, so the new leaf may not claim a different
 		// content class. An allowed plain-text subtype rename (data.json → data.yaml) patches the
 		// classifier media type together with the name below.
@@ -3253,8 +3976,15 @@ export const rename_node = mutation({
 			return renameClass;
 		}
 
-		const renamedPath = path_join(targetParentPath, leafName);
-		if (fileNode.archiveOperationId === undefined) {
+		// Add the missing folders to the final path.
+		let plannedParentPath = targetParentPath;
+		for (const name of missingSegmentNames) {
+			plannedParentPath = path_join(plannedParentPath, name);
+		}
+		const renamedPath = path_join(plannedParentPath, leafName);
+
+		// New folders are empty. Check for a name conflict only in an existing folder.
+		if (fileNode.archiveOperationId === undefined && missingSegmentNames.length === 0) {
 			// Check whether an active sibling already owns the target name.
 			const activeSiblingConflict = await ctx.db
 				.query("files_nodes")
@@ -3265,9 +3995,19 @@ export const rename_node = mutation({
 						.eq("parentId", targetParentId)
 						.eq("name", leafName)
 						.eq("archiveOperationId", undefined),
-				)
-				.first();
+					)
+					.first();
 			if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
+				// Check access before reporting the conflict. Keep a restricted sibling hidden.
+				const authorizedConflict = await access_control_db_authorize_membership(ctx, {
+					userAuth,
+					membership,
+					permission: "content.write",
+					fileNode: activeSiblingConflict,
+				});
+				if (authorizedConflict._nay) {
+					return Result({ _nay: { name: "nay", message: "Permission denied" } });
+				}
 				return Result({
 					_nay: {
 						name: "nay",
@@ -3278,6 +4018,27 @@ export const rename_node = mutation({
 		}
 
 		const now = Date.now();
+
+		// Every check passed. Create the missing folders from top to bottom.
+		for (const name of missingSegmentNames) {
+			const folderPath = path_join(targetParentPath, name);
+			const folderNodeIdResult = await db_insert_node(ctx, {
+				userId: userAuth.id,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				parentId: targetParentId,
+				name,
+				path: folderPath,
+				kind: "folder",
+				now,
+			});
+			if (folderNodeIdResult._nay) {
+				return folderNodeIdResult;
+			}
+
+			targetParentId = folderNodeIdResult._yay;
+			targetParentPath = folderPath;
+		}
 
 		// Update the node once and then rebase descendants under the new materialized path.
 		await ctx.db.patch("files_nodes", args.nodeId, {
@@ -3368,6 +4129,16 @@ export const move_nodes = mutation({
 			return authorizedTarget;
 		}
 
+		// Write permission does not bypass read-only. The destination folder must be writable.
+		// The root cannot be locked, so it returns `undefined`.
+		const destinationReadOnlyScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
+			parentId: args.targetParentId,
+		});
+		const destinationWritable = files_node_require_writable({ readOnlyScopeNodeId: destinationReadOnlyScopeNodeId });
+		if (destinationWritable._nay) {
+			return destinationWritable;
+		}
+
 		const targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -3411,8 +4182,28 @@ export const move_nodes = mutation({
 				return authorizedLeaving;
 			}
 
+			// A move changes the node. Refuse the whole call when it is read-only.
+			const nodeWritable = files_node_require_writable(fileNode);
+			if (nodeWritable._nay) {
+				return nodeWritable;
+			}
+
 			const movedPath = path_join(targetParentPath, fileNode.name);
 			fileNodesToMove.push({ itemId, fileNode, movedPath });
+		}
+
+		// Move changes every descendant path, including archived descendants.
+		// Refuse before writing if any descendant is read-only.
+		for (const fileNodeToMove of fileNodesToMove) {
+			const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				node: fileNodeToMove.fileNode,
+			});
+			if (subtreeWritable._nay) {
+				return subtreeWritable;
+			}
 		}
 
 		const movingNodeIds = new Set(fileNodesToMove.map((fileNodeToMove) => fileNodeToMove.itemId));
@@ -3442,9 +4233,19 @@ export const move_nodes = mutation({
 						.eq("workspaceId", membership.workspaceId)
 						.eq("path", fileNodeToMove.movedPath)
 						.eq("archiveOperationId", undefined),
-				)
-				.first();
+					)
+					.first();
 			if (activePathConflict && !movingNodeIds.has(activePathConflict._id)) {
+				// Check access before reporting the conflict. Keep a restricted child hidden.
+				const authorizedConflict = await access_control_db_authorize_membership(ctx, {
+					userAuth,
+					membership,
+					permission: "content.write",
+					fileNode: activePathConflict,
+				});
+				if (authorizedConflict._nay) {
+					return Result({ _nay: { name: "nay", message: "Permission denied" } });
+				}
 				return Result({
 					_nay: {
 						name: "nay",
@@ -3636,20 +4437,20 @@ export const archive_nodes = mutation({
 				continue;
 			}
 
+			// Archive changes the node. The caller can see it, so return the read-only error.
+			const nodeWritable = files_node_require_writable(fileNode);
+			if (nodeWritable._nay) {
+				return nodeWritable;
+			}
+
 			nodeIdsToArchive.add(fileNode._id);
 
-			// All descendant file nodes need to be archived too.
-			const descendantsPathPrefix = `${fileNode.path}/`;
-			const descendantFileNodes = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.gte("path", descendantsPathPrefix)
-						.lt("path", `${descendantsPathPrefix}\uffff`),
-				)
-				.collect();
+			// Follow parent ids, not paths. Active and archived trees can have the same path.
+			const descendantFileNodes = await files_nodes_db_collect_descendants(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				parentId: fileNode._id,
+			});
 
 			const activeDescendants = descendantFileNodes.filter(
 				(descendantFileNode) => descendantFileNode.archiveOperationId === undefined,
@@ -3669,6 +4470,31 @@ export const archive_nodes = mutation({
 				}))
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
+			}
+
+			// The caller may write every active descendant.
+			// Return the clear read-only error for a descendant the caller can see.
+			for (const descendantFileNode of activeDescendants) {
+				const descendantWritable = files_node_require_writable(descendantFileNode);
+				if (descendantWritable._nay) {
+					return descendantWritable;
+				}
+			}
+
+			// This call does not change archived children. But it must not hide a read-only archived
+			// child under a newly archived parent. Check only read-only archived children.
+			// Use a general error when the caller cannot see the child.
+			const archivedDescendants = descendantFileNodes.filter(
+				(descendantFileNode) => descendantFileNode.archiveOperationId !== undefined,
+			);
+			const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				nodes: archivedDescendants,
+			});
+			if (archivedProtected._nay) {
+				return archivedProtected;
 			}
 
 			for (const descendantFileNode of activeDescendants) {
@@ -3954,51 +4780,46 @@ export const unarchive_nodes = mutation({
 								targetPath: ancestorTargetPath,
 							});
 
-							return ctx.db
-								.query("files_nodes")
-								.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-									q
-										.eq("organizationId", membership.organizationId)
-										.eq("workspaceId", membership.workspaceId)
-										.gte("path", `${ancestorFileNode.path}/`)
-										.lt("path", `${ancestorFileNode.path}/\uffff`),
-								)
-								.collect()
-								.then((descendantFileNodes) => {
-									for (const descendantFileNode of descendantFileNodes) {
-										if (descendantFileNode.archiveOperationId === undefined) {
-											continue;
-										}
+							// Follow parent ids, not paths. Two archived trees can have the same paths.
+							// Restore only children from this tree.
+							const descendantFileNodes = await files_nodes_db_collect_descendants(ctx, {
+								organizationId: membership.organizationId,
+								workspaceId: membership.workspaceId,
+								parentId: ancestorFileNode._id,
+							});
+							for (const descendantFileNode of descendantFileNodes) {
+								if (descendantFileNode.archiveOperationId === undefined) {
+									continue;
+								}
 
-										const targetPath = path_rebase({
-											fromBasePath: ancestorFileNode.path,
-											toBasePath: ancestorTargetPath,
-											path: descendantFileNode.path,
-										});
-
-										if (!targetPath) {
-											const errorMessage = "Failed to rebase descendant file nodes";
-											const errorData = {
-												ancestorNodeId: ancestorFileNode._id,
-												ancestorPath: ancestorFileNode.path,
-												ancestorTargetPath,
-												ancestorTargetParentId,
-												descendantNodeId: descendantFileNode._id,
-												descendantFilePath: descendantFileNode.path,
-											};
-											console.error(errorMessage, errorData);
-											throw should_never_happen(errorMessage, errorData);
-										}
-
-										plans.push({
-											fileNode: descendantFileNode,
-											targetParentId: descendantFileNode.parentId,
-											targetPath,
-										});
-									}
-
-									return Result({ _yay: null });
+								const targetPath = path_rebase({
+									fromBasePath: ancestorFileNode.path,
+									toBasePath: ancestorTargetPath,
+									path: descendantFileNode.path,
 								});
+
+								if (!targetPath) {
+									const errorMessage = "Failed to rebase descendant file nodes";
+									const errorData = {
+										ancestorNodeId: ancestorFileNode._id,
+										ancestorPath: ancestorFileNode.path,
+										ancestorTargetPath,
+										ancestorTargetParentId,
+										descendantNodeId: descendantFileNode._id,
+										descendantFilePath: descendantFileNode.path,
+									};
+									console.error(errorMessage, errorData);
+									throw should_never_happen(errorMessage, errorData);
+								}
+
+								plans.push({
+									fileNode: descendantFileNode,
+									targetParentId: descendantFileNode.parentId,
+									targetPath,
+								});
+							}
+
+							return Result({ _yay: null });
 						})();
 					}
 				})(),
@@ -4026,6 +4847,15 @@ export const unarchive_nodes = mutation({
 			}))
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// Restore changes every node in the plan. Refuse the whole call if one is read-only.
+		// The caller can see every planned node, so return the clear read-only error.
+		for (const plan of plans) {
+			const planWritable = files_node_require_writable(plan.fileNode);
+			if (planWritable._nay) {
+				return planWritable;
+			}
 		}
 
 		// A plan that lands somewhere new is a move, and dropping into a folder writes into that folder.
@@ -4155,12 +4985,52 @@ export const unarchive_nodes = mutation({
 });
 // #endregion Archive nodes
 
+/**
+ * Fields for a node returned by public queries.
+ * Do not return the raw `readOnlyScopeNodeId`. It may point to a hidden folder.
+ * Return `readOnlyState`, and return the lock source only when the caller can read it.
+ */
+const files_node_public_doc_fields = ((/* iife */) => {
+	const { readOnlyScopeNodeId: _readOnlyScopeNodeId, ...rest } = doc(app_convex_schema, "files_nodes").fields;
+
+	return {
+		...rest,
+		readOnlyState: v.union(v.literal("writable"), v.literal("self"), v.literal("inherited")),
+		readOnlySourceNodeId: v.optional(v.id("files_nodes")),
+		readOnlySourcePath: v.optional(v.string()),
+	};
+})();
+
+/**
+ * Build the public read-only fields for one node.
+ * Pass `readableSource` only when the caller may read the lock source.
+ * Pass null to hide its id and path.
+ */
+function files_node_project_read_only(
+	fileNode: Doc<"files_nodes">,
+	readableSource: Pick<Doc<"files_nodes">, "_id" | "path"> | null,
+) {
+	const { readOnlyScopeNodeId, ...rest } = fileNode;
+
+	// Keep these values as exact literals so they match the return validator.
+	const readOnlyState: "writable" | "self" | "inherited" =
+		readOnlyScopeNodeId === undefined ? "writable" : readOnlyScopeNodeId === fileNode._id ? "self" : "inherited";
+
+	return {
+		...rest,
+		readOnlyState,
+		...(readOnlyScopeNodeId !== undefined && readableSource
+			? { readOnlySourceNodeId: readableSource._id, readOnlySourcePath: readableSource.path }
+			: {}),
+	};
+}
+
 export const get_file_node_for_membership = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		fileNodeId: v.string(),
 	},
-	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
+	returns: v.union(v.object(files_node_public_doc_fields), v.null()),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -4196,7 +5066,27 @@ export const get_file_node_for_membership = query({
 			return null;
 		}
 
-		return fileNode;
+		// Return the lock source only when this member can read it.
+		// Keep hidden folder ids and paths private.
+		let readableSource: Pick<Doc<"files_nodes">, "_id" | "path"> | null = null;
+		if (fileNode.readOnlyScopeNodeId === fileNode._id) {
+			readableSource = fileNode;
+		} else if (fileNode.readOnlyScopeNodeId) {
+			const sourceNode = await ctx.db.get("files_nodes", fileNode.readOnlyScopeNodeId);
+			if (sourceNode) {
+				const sourceAuthorized = await access_control_db_authorize_membership(ctx, {
+					userAuth,
+					membership,
+					permission: "content.read",
+					fileNode: sourceNode,
+				});
+				if (!sourceAuthorized._nay) {
+					readableSource = sourceNode;
+				}
+			}
+		}
+
+		return files_node_project_read_only(fileNode, readableSource);
 	},
 });
 
@@ -4273,12 +5163,11 @@ export const list_tree = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 	},
-	// Return whole node documents. Listing the fields here meant every new column broke this query
-	// at runtime with a returns-validation error. The four overrides narrow what the handler below
-	// guarantees: the visible tree never carries reserved `GLOBAL`/`SYSTEM` values.
+	// Use the public node fields above. This keeps new schema fields in sync with this query.
+	// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
 	returns: v.array(
 		v.object({
-			...doc(app_convex_schema, "files_nodes").fields,
+			...files_node_public_doc_fields,
 			organizationId: v.id("organizations"),
 			workspaceId: v.id("organizations_workspaces"),
 			createdBy: v.id("users"),
@@ -4325,6 +5214,10 @@ export const list_tree = query({
 			hasWorkspaceRead: !authorized._nay,
 		});
 
+		// The lock source is this node or one of its parents.
+		// Every node in this map already passed the read check above.
+		const readableById = new Map(fileNodes.map((fileNode) => [fileNode._id, fileNode]));
+
 		return fileNodes.map((fileNode) => {
 			if (fileNode.createdBy === users_SYSTEM_AUTHOR || fileNode.updatedBy === users_SYSTEM_AUTHOR) {
 				const errorMessage = "Reserved SYSTEM author reached visible file tree";
@@ -4337,8 +5230,12 @@ export const list_tree = query({
 				throw should_never_happen(errorMessage, errorData);
 			}
 
+			const readableSource = fileNode.readOnlyScopeNodeId
+				? (readableById.get(fileNode.readOnlyScopeNodeId) ?? null)
+				: null;
+
 			return {
-				...fileNode,
+				...files_node_project_read_only(fileNode, readableSource),
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				createdBy: fileNode.createdBy,
@@ -7270,6 +8167,13 @@ export const archive_snapshot = mutation({
 			return authorized;
 		}
 
+		// A read-only file still allows snapshot reads and downloads.
+		// Archiving a snapshot changes version history, so it is blocked.
+		const nodeWritable = files_node_require_writable(authorized._yay.fileNode);
+		if (nodeWritable._nay) {
+			return nodeWritable;
+		}
+
 		await ctx.db.patch("files_snapshots", args.snapshotId, {
 			archivedAt: Date.now(),
 		});
@@ -7322,6 +8226,13 @@ export const unarchive_snapshot = mutation({
 		});
 		if (authorized._nay) {
 			return authorized;
+		}
+
+		// A read-only file still allows snapshot reads.
+		// Restoring an archived snapshot changes version history, so it is blocked.
+		const nodeWritable = files_node_require_writable(authorized._yay.fileNode);
+		if (nodeWritable._nay) {
+			return nodeWritable;
 		}
 
 		await ctx.db.patch("files_snapshots", args.snapshotId, {
@@ -7688,6 +8599,13 @@ export const yjs_push_update = mutation({
 		});
 		if (authorized._nay) {
 			return authorized;
+		}
+
+		// Check the current lock before reserving a sequence.
+		// An old lock does not matter after the file becomes writable again.
+		const writable = files_node_require_writable(fileNode);
+		if (writable._nay) {
+			return writable;
 		}
 
 		const organization = await ctx.db.get("organizations", membership.organizationId);
