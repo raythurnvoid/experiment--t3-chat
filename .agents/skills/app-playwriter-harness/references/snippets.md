@@ -178,6 +178,18 @@ Read `display` and `childElementCount` together, because they name the most comm
 
 Prove a fix this way rather than by screenshot alone: flip `text-overflow` to `clip` in the CSS, screenshot the same region, and confirm the `…` disappears and comes back. A screenshot on its own cannot tell a working ellipsis from a stale frame.
 
+After changing a flex property on such a text element (for example `flex: 1 1 auto` → `0 1 auto`), the visible rows often all fit, so nothing on screen proves truncation still works. Squeeze one row in the page and put it back in the same call, instead of resizing the window or the user's panels:
+
+```js
+const before = read(text);
+row.style.width = "150px"; // row = the flex container
+const squeezed = read(text);
+row.style.width = "";
+const after = read(text);
+```
+
+`squeezed.overflowing` must be `true`, and any sibling that must stay readable (a status word, a badge) must keep its full width and stay inside the row's right edge. Compare `before` and `after` to confirm the probe left nothing behind.
+
 ## Run A Real axe-core Audit
 
 `auditAccessibility(...)` is only a screen. For rule-level findings, inject axe-core. The dev server sets no CSP that blocks it, so `addScriptTag` works (verified 2026-07-26, axe-core 4.12.1, 572KB).

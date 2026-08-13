@@ -371,6 +371,8 @@
 
 	.AiChatMessagePartDisclosureButton-content {
 		display: inline-flex;
+		/* Keep the status next to the title text instead of pushing it to the row end. */
+		justify-content: start;
 		min-width: 0;
 		width: calc(100% - 1.25em);
 		vertical-align: top;
@@ -394,7 +396,8 @@
 	}
 
 	.AiChatMessagePartDisclosureButton-text {
-		flex: 1 1 auto;
+		/* Do not grow: the text stays only as wide as its content so the status sits right after it. */
+		flex: 0 1 auto;
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
