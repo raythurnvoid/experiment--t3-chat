@@ -330,7 +330,6 @@ export async function files_nodes_ai_http_contextual_prompt(ctx: ActionCtx, requ
 			} as const;
 		}
 
-		// Generate streaming completion using AI SDK v5 UI message stream response
 		const result = streamText({
 			model: openai("gpt-5-mini" satisfies files_InlineAiModelId),
 			system: systemPrompt,

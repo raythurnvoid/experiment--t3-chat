@@ -28,6 +28,10 @@ t3-chat.code-workspace
 
 .eslintcache
 
+# A failing browser test writes a screenshot and its attachments next to the test file.
+**/__screenshots__
+**/.vitest-attachments
+
 .cursor/plans
 
 # Local Playwriter session auth (contains a live session JWT)

@@ -29,6 +29,7 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (whole row is a button; clicking switches to the Pending changes tab; counts only docs whose `threadIds` include the open chat, so a fresh chat shows no strip even when the workspace has pending changes) |
 | Pending-changes tab count badge | `.FileEditorSidebarPendingTabBadge` (inside `#app_file_editor_sidebar_tabs_pending`; absent at count 0; always the workspace-wide count) |
 | Composer image attachment badges | `[aria-label="Image attachments"] li` (each has an `<img>` data-URL preview, a name `<span>`, and a `Remove <filename>` button) |
+| Chat model picker | `button.MySearchSelectTrigger` (its `aria-label` reads `Chat model: <name>`, but `getByRole("button", { name: /^Chat model:/ })` matches nothing — locate it by class) |
 | Queued-message image count | `.AiChatQueuedMessages-attachments` inside the queued row |
 
 `waitForSelector("[role=option]", { state: "visible" })` is a trap in the agent panel: the thread-picker options stay mounted while hidden, so the wait pins the first match — an invisible `FileEditorSidebarAgentThreadPicker-item` — and times out even when the popover you actually opened (for example the `Chat model:` picker) is showing its options. Read all `[role=option]` matches and filter by bounding rect instead of waiting on the first. Same family as the mounted-closed `[role=dialog]` hazard in `known-hazards.md`.
@@ -110,6 +111,12 @@ Typing `@` in any AI chat composer (thread, message edit, file-editor agent side
 ## Message ids flip when a stream finishes
 
 While a response streams, the last assistant `.AiChatMessage` has `data-ai-chat-message-id="ai_message-…"` (the client-generated id). When the response finishes and the persisted row syncs back, that attribute flips in place to the Convex message id. A probe that stored the streaming id and later looks the message up by it finds nothing — re-read the id after idle instead. The rendered content must NOT remount at that flip (open tool-output `details` stay open); that is guarded by `keeps an open tool output open when the streamed message is persisted` in `ai-chat-message.test.tsx`. To prove a remount in the browser, tag the DOM node (`el.__qaTag = "x"`) before the transition and check the tag survives after. Verified 2026-08-02.
+
+## Two traps around a failed send and a fast turn
+
+The `Error details` dialog stays open after you read it, and it keeps focus, so the next `fill()` on the composer writes nothing and the send button stays disabled — the run then fails at a `waitForFunction` that looks like the app is stuck. Press `Escape` and confirm no visible `[role=dialog]` remains before sending again.
+
+`state.qa.queue(text)` only works while a turn is still running, because it waits for the send button's accessible name to be `Queue message`, and that internal wait is 10 s regardless of the CLI `--timeout`. A short first prompt finishes before the second `queue()` call and the helper times out with the queue half-filled. Give the first turn real work ("write a 1500-word essay about …") when you need two or more messages queued behind it.
 
 ## Doneness: waitIdle pattern
 

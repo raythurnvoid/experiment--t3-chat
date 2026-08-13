@@ -3,7 +3,7 @@ import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { FileUIPart } from "ai";
 
-import { ai_chat_get_message_text, type ai_chat_AiSdk5UiMessage, type ai_chat_Thread } from "@/lib/ai-chat.ts";
+import { ai_chat_get_message_text, type ai_chat_UiMessage, type ai_chat_Thread } from "@/lib/ai-chat.ts";
 
 type MockChatInstance = {
 	id: string;
@@ -26,8 +26,8 @@ type MockPrepareSendMessagesRequestOptions = {
 	id: string;
 	messages: Array<{
 		id?: string;
-		role?: ai_chat_AiSdk5UiMessage["role"];
-		parts?: ai_chat_AiSdk5UiMessage["parts"];
+		role?: ai_chat_UiMessage["role"];
+		parts?: ai_chat_UiMessage["parts"];
 		metadata?: {
 			convexParentId?: string | null;
 			selectedModelId?: string;
@@ -56,7 +56,7 @@ const hookMocks = vi.hoisted(() => {
 			_id: string;
 			parentId: string | null;
 			clientGeneratedMessageId?: string | null;
-			content: ai_chat_AiSdk5UiMessage;
+			content: ai_chat_UiMessage;
 		}>,
 		mutation: vi.fn(
 			(): Promise<
@@ -245,7 +245,7 @@ function createPersistedMessage(args: {
 	id: string;
 	clientGeneratedMessageId?: string | null;
 	parentId?: string | null;
-	content: ai_chat_AiSdk5UiMessage;
+	content: ai_chat_UiMessage;
 }) {
 	return {
 		_id: args.id,
@@ -303,7 +303,7 @@ function RuntimeIdentityProbe() {
 	const selectedThreadId = controller.selectedThreadId;
 	const selectedChat = controller.session?.chat as MockChatInstance | null | undefined;
 	const latestMessage = controller.activeBranchMessages.list.at(-1);
-	const liveMessage = selectedChat?.messages.at(0) as ai_chat_AiSdk5UiMessage | undefined;
+	const liveMessage = selectedChat?.messages.at(0) as ai_chat_UiMessage | undefined;
 
 	return (
 		<div>
@@ -334,7 +334,7 @@ function RuntimeIdentityProbe() {
 								selectedModelId: "gpt-5.4-nano",
 								selectedModeId: "ask",
 							},
-						} satisfies ai_chat_AiSdk5UiMessage,
+						} satisfies ai_chat_UiMessage,
 					];
 					forceRender((value) => value + 1);
 				}}
@@ -445,7 +445,7 @@ function RuntimeSendProbe() {
 					}
 
 					const chat = hookMocks.chatInstances.find((chat) => chat.id === selectedThreadId);
-					const userMessage = chat?.messages.at(-1) as ai_chat_AiSdk5UiMessage | undefined;
+					const userMessage = chat?.messages.at(-1) as ai_chat_UiMessage | undefined;
 					if (!chat || userMessage?.role !== "user") {
 						return;
 					}
@@ -458,7 +458,7 @@ function RuntimeSendProbe() {
 							convexParentId: null,
 							parentClientGeneratedId: userMessage.id,
 						},
-					} satisfies ai_chat_AiSdk5UiMessage);
+					} satisfies ai_chat_UiMessage);
 					chat.error = new Error("send failed");
 					forceRender((value) => value + 1);
 				}}
@@ -769,7 +769,7 @@ function RuntimeQueueProbe() {
 			<button
 				type="button"
 				onClick={() => {
-					const latestUserMessage = selectedChat?.messages.at(-1) as ai_chat_AiSdk5UiMessage | undefined;
+					const latestUserMessage = selectedChat?.messages.at(-1) as ai_chat_UiMessage | undefined;
 					if (latestUserMessage?.role === "user") {
 						if (!latestUserMessage.metadata) {
 							latestUserMessage.metadata = {
@@ -785,7 +785,7 @@ function RuntimeQueueProbe() {
 								convexParentId: latestUserMessage.metadata.convexId,
 								parentClientGeneratedId: latestUserMessage.id,
 							},
-						} satisfies ai_chat_AiSdk5UiMessage);
+						} satisfies ai_chat_UiMessage);
 					}
 					selectedChat?.pendingRequestResolvers.shift()?.();
 					forceRender((current) => current + 1);
@@ -796,7 +796,7 @@ function RuntimeQueueProbe() {
 			<button
 				type="button"
 				onClick={() => {
-					const latestAssistantMessage = selectedChat?.messages.at(-1) as ai_chat_AiSdk5UiMessage | undefined;
+					const latestAssistantMessage = selectedChat?.messages.at(-1) as ai_chat_UiMessage | undefined;
 					if (latestAssistantMessage?.role === "assistant") {
 						if (!latestAssistantMessage.metadata) {
 							latestAssistantMessage.metadata = {
@@ -813,7 +813,7 @@ function RuntimeQueueProbe() {
 			<button
 				type="button"
 				onClick={() => {
-					const latestUserMessage = selectedChat?.messages.at(-1) as ai_chat_AiSdk5UiMessage | undefined;
+					const latestUserMessage = selectedChat?.messages.at(-1) as ai_chat_UiMessage | undefined;
 					if (latestUserMessage?.role === "user") {
 						if (!latestUserMessage.metadata) {
 							latestUserMessage.metadata = {
@@ -830,7 +830,7 @@ function RuntimeQueueProbe() {
 								convexParentId: latestUserMessage.metadata.convexId,
 								parentClientGeneratedId: latestUserMessage.id,
 							},
-						} satisfies ai_chat_AiSdk5UiMessage);
+						} satisfies ai_chat_UiMessage);
 					}
 					forceRender((current) => current + 1);
 				}}
@@ -875,7 +875,7 @@ function RuntimeQueueProbe() {
 				type="button"
 				onClick={() => {
 					const chat = hookMocks.chatInstances.find((chat) => chat.id === selectedThreadId);
-					const failedUserMessage = chat?.messages.at(-1) as ai_chat_AiSdk5UiMessage | undefined;
+					const failedUserMessage = chat?.messages.at(-1) as ai_chat_UiMessage | undefined;
 					if (!chat || failedUserMessage?.role !== "user") {
 						return;
 					}
@@ -889,7 +889,7 @@ function RuntimeQueueProbe() {
 								failedUserMessage.metadata?.convexId ?? null,
 							parentClientGeneratedId: failedUserMessage.id,
 						},
-					} satisfies ai_chat_AiSdk5UiMessage);
+					} satisfies ai_chat_UiMessage);
 					chat.error = new Error("send failed");
 					chat.status = "error";
 					chat.pendingRequestResolvers.shift()?.();
@@ -901,7 +901,7 @@ function RuntimeQueueProbe() {
 			<button
 				type="button"
 				onClick={() => {
-					const userMessage = selectedChat?.messages.at(-1) as ai_chat_AiSdk5UiMessage | undefined;
+					const userMessage = selectedChat?.messages.at(-1) as ai_chat_UiMessage | undefined;
 					if (!selectedChat || userMessage?.role !== "user") {
 						return;
 					}
@@ -920,7 +920,7 @@ function RuntimeQueueProbe() {
 							convexParentId: userMessage.metadata.convexId,
 							parentClientGeneratedId: userMessage.id,
 						},
-					} satisfies ai_chat_AiSdk5UiMessage);
+					} satisfies ai_chat_UiMessage);
 					selectedChat.pendingRequestResolvers.shift()?.();
 					forceRender((current) => current + 1);
 				}}
@@ -1493,7 +1493,7 @@ describe("AiChatController", () => {
 			throw new Error("Expected persisted identity chat instance");
 		}
 		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
-		const sentMessage = chat.sendMessage.mock.calls.at(-1)?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const sentMessage = chat.sendMessage.mock.calls.at(-1)?.[0] as ai_chat_UiMessage | undefined;
 		expect(sentMessage?.metadata?.convexParentId).toBe("msg_persisted_user_1");
 	});
 
@@ -1529,7 +1529,7 @@ describe("AiChatController", () => {
 				convexParentId: "msg_user_execute_code",
 				parentClientGeneratedId: null,
 			},
-		} satisfies ai_chat_AiSdk5UiMessage;
+		} satisfies ai_chat_UiMessage;
 
 		AiChatController.useStore.actions.syncThreadRenderState({
 			threadId: "thread_execute_code_stable",
@@ -1545,7 +1545,7 @@ describe("AiChatController", () => {
 		expect(firstMessage).toBe(message);
 
 		// Mirror live execute_code hydration, where equal tool content can arrive as a new object.
-		const clonedMessage = structuredClone(message) as ai_chat_AiSdk5UiMessage;
+		const clonedMessage = structuredClone(message) as ai_chat_UiMessage;
 		AiChatController.useStore.actions.syncThreadRenderState({
 			threadId: "thread_execute_code_stable",
 			messages: [clonedMessage],
@@ -1759,7 +1759,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Third|Fourth|Fifth");
 		});
-		const secondSentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const secondSentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(secondSentMessage?.metadata?.convexParentId).toBe("convex_assistant_ai_message_mock_0");
 		expect(chat.activeRequestCount).toBe(1);
 		expect(chat.pendingRequestResolvers).toHaveLength(1);
@@ -1776,7 +1776,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(3);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Fourth|Fifth");
 		});
-		const thirdSentMessage = chat.sendMessage.mock.calls[2]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const thirdSentMessage = chat.sendMessage.mock.calls[2]?.[0] as ai_chat_UiMessage | undefined;
 		expect(thirdSentMessage?.metadata?.convexParentId).toBe(`convex_assistant_${secondSentMessage?.id}`);
 		expect(chat.activeRequestCount).toBe(1);
 		expect(chat.pendingRequestResolvers).toHaveLength(1);
@@ -1792,7 +1792,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(4);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Fifth");
 		});
-		const fourthSentMessage = chat.sendMessage.mock.calls[3]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const fourthSentMessage = chat.sendMessage.mock.calls[3]?.[0] as ai_chat_UiMessage | undefined;
 		expect(fourthSentMessage?.metadata?.convexParentId).toBe(`convex_assistant_${thirdSentMessage?.id}`);
 		expect(chat.activeRequestCount).toBe(1);
 
@@ -1806,14 +1806,14 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(5);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("");
 		});
-		const fifthSentMessage = chat.sendMessage.mock.calls[4]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const fifthSentMessage = chat.sendMessage.mock.calls[4]?.[0] as ai_chat_UiMessage | undefined;
 		expect(fifthSentMessage?.metadata?.convexParentId).toBe(`convex_assistant_${fourthSentMessage?.id}`);
 		expect(chat.activeRequestCount).toBe(1);
 		expect(chat.pendingRequestResolvers).toHaveLength(1);
 		expect(chat.maxActiveRequestCount).toBe(1);
 
 		const sentTexts = chat.sendMessage.mock.calls.map((call) => {
-			const message = call[0] as ai_chat_AiSdk5UiMessage;
+			const message = call[0] as ai_chat_UiMessage;
 			return message.parts.find((part) => part.type === "text")?.text;
 		});
 		expect(sentTexts).toEqual(["First", "Second", "Third", "Fourth", "Fifth"]);
@@ -1887,7 +1887,7 @@ describe("AiChatController", () => {
 		});
 		expect(screen.getByTestId("queue-edit").textContent).toBe("null");
 		expect(screen.getByTestId("queue-draft").textContent).toBe("Normal draft");
-		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(sentMessage?.parts).toContainEqual({ type: "text", text: "Second edited" });
 		expect(sentMessage?.metadata?.selectedModelId).toBe("gpt-5.4-mini");
 		expect(sentMessage?.metadata?.selectedModeId).toBe("ask");
@@ -1926,7 +1926,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Third");
 		});
-		const secondSentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const secondSentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(secondSentMessage?.parts).toContainEqual({ type: "text", text: "Second" });
 		expect(screen.getByTestId("queue-edit").textContent).toMatch(/:Third:/);
 
@@ -1945,7 +1945,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(3);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("");
 		});
-		const thirdSentMessage = chat.sendMessage.mock.calls[2]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const thirdSentMessage = chat.sendMessage.mock.calls[2]?.[0] as ai_chat_UiMessage | undefined;
 		expect(thirdSentMessage?.parts).toContainEqual({ type: "text", text: "Third" });
 		expect(chat.maxActiveRequestCount).toBe(1);
 	});
@@ -1994,7 +1994,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("");
 		});
-		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(sentMessage?.parts).toContainEqual(QUEUE_IMAGE_FILE_PART);
 		expect(sentMessage?.parts).toContainEqual({ type: "text", text: "Second" });
 	});
@@ -2038,7 +2038,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("queue-texts").textContent).toBe("");
 			expect(screen.getByTestId("queue-attachments").textContent).toBe("");
 		});
-		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(sentMessage?.parts).toContainEqual(QUEUE_IMAGE_FILE_PART);
 		expect(sentMessage?.parts?.some((part) => part.type === "text")).toBe(false);
 	});
@@ -2091,7 +2091,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("queue-texts").textContent).toBe("");
 		});
 		const sentTexts = chat.sendMessage.mock.calls.map((call) => {
-			const message = call[0] as ai_chat_AiSdk5UiMessage;
+			const message = call[0] as ai_chat_UiMessage;
 			return message.parts.find((part) => part.type === "text")?.text;
 		});
 		expect(sentTexts).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]);
@@ -2146,7 +2146,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("queue-paused").textContent).toBe("no");
 		});
 		expect(screen.getByTestId("queue-texts").textContent).toBe("Second edited|Third");
-		const retriedMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const retriedMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(retriedMessage?.parts).toContainEqual({ type: "text", text: "First" });
 
 		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
@@ -2156,7 +2156,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(3);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Third");
 		});
-		const editedMessage = chat.sendMessage.mock.calls[2]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const editedMessage = chat.sendMessage.mock.calls[2]?.[0] as ai_chat_UiMessage | undefined;
 		expect(editedMessage?.parts).toContainEqual({ type: "text", text: "Second edited" });
 		expect(chat.maxActiveRequestCount).toBe(1);
 	});
@@ -2204,7 +2204,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Third");
 		});
-		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(sentMessage?.parts).toContainEqual({ type: "text", text: "Second edited" });
 		expect(chat.maxActiveRequestCount).toBe(1);
 	});
@@ -2251,7 +2251,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Second|Third");
 		});
-		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(sentMessage?.parts).toContainEqual({ type: "text", text: "Fourth" });
 		expect(chat.maxActiveRequestCount).toBe(1);
 	});
@@ -2278,12 +2278,12 @@ describe("AiChatController", () => {
 			throw new Error("Expected Convex barrier queue chat instance");
 		}
 
-		const firstUserMessage = chat.messages.at(0) as ai_chat_AiSdk5UiMessage | undefined;
+		const firstUserMessage = chat.messages.at(0) as ai_chat_UiMessage | undefined;
 		expect(firstUserMessage?.role).toBe("user");
 		if (!firstUserMessage || firstUserMessage.role !== "user") {
 			throw new Error("Expected the first user message");
 		}
-		const firstAssistantMessage: ai_chat_AiSdk5UiMessage = {
+		const firstAssistantMessage: ai_chat_UiMessage = {
 			id: `assistant_${firstUserMessage.id}`,
 			role: "assistant",
 			parts: [{ type: "text", text: "Done" }],
@@ -2327,18 +2327,18 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Third");
 		});
-		const secondSentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const secondSentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(secondSentMessage?.metadata?.convexParentId).toBe("convex_first_assistant");
 		expect(chat.activeRequestCount).toBe(1);
 		expect(chat.pendingRequestResolvers).toHaveLength(1);
 		expect(chat.maxActiveRequestCount).toBe(1);
 
-		const secondUserMessage = chat.messages.at(-1) as ai_chat_AiSdk5UiMessage | undefined;
+		const secondUserMessage = chat.messages.at(-1) as ai_chat_UiMessage | undefined;
 		expect(secondUserMessage?.role).toBe("user");
 		if (!secondUserMessage || secondUserMessage.role !== "user") {
 			throw new Error("Expected the second user message");
 		}
-		const secondAssistantMessage: ai_chat_AiSdk5UiMessage = {
+		const secondAssistantMessage: ai_chat_UiMessage = {
 			id: `assistant_${secondUserMessage.id}`,
 			role: "assistant",
 			parts: [{ type: "text", text: "Done again" }],
@@ -2393,7 +2393,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(3);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("");
 		});
-		const thirdSentMessage = chat.sendMessage.mock.calls[2]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const thirdSentMessage = chat.sendMessage.mock.calls[2]?.[0] as ai_chat_UiMessage | undefined;
 		expect(thirdSentMessage?.metadata?.convexParentId).toBe("convex_second_assistant");
 		expect(chat.activeRequestCount).toBe(1);
 		expect(chat.pendingRequestResolvers).toHaveLength(1);
@@ -2444,7 +2444,7 @@ describe("AiChatController", () => {
 		expect(chat.activeRequestCount).toBe(1);
 		expect(chat.pendingRequestResolvers).toHaveLength(1);
 		expect(chat.maxActiveRequestCount).toBe(1);
-		const retriedMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const retriedMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(retriedMessage?.parts).toContainEqual({ type: "text", text: "First" });
 
 		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
@@ -2462,7 +2462,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("queue-texts").textContent).toBe("");
 		});
 		const sentTexts = chat.sendMessage.mock.calls.map((call) => {
-			const message = call[0] as ai_chat_AiSdk5UiMessage;
+			const message = call[0] as ai_chat_UiMessage;
 			return message.parts.find((part) => part.type === "text")?.text;
 		});
 		expect(sentTexts).toEqual(["First", "First", "Second", "Third"]);
@@ -2500,7 +2500,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Third|Fourth");
 		});
-		const secondSentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const secondSentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(secondSentMessage?.metadata?.convexParentId).toBe("convex_assistant_ai_message_mock_0");
 
 		fireEvent.click(screen.getByRole("button", { name: "reject request queue probe" }));
@@ -2521,7 +2521,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(3);
 			expect(screen.getByTestId("queue-paused").textContent).toBe("no");
 		});
-		const retriedMessage = chat.sendMessage.mock.calls[2]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const retriedMessage = chat.sendMessage.mock.calls[2]?.[0] as ai_chat_UiMessage | undefined;
 		expect(retriedMessage?.parts).toContainEqual({ type: "text", text: "Second" });
 		expect(retriedMessage?.metadata?.convexParentId).toBe("convex_assistant_ai_message_mock_0");
 		expect(chat.activeRequestCount).toBe(1);
@@ -2544,7 +2544,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(4);
 			expect(screen.getByTestId("queue-paused").textContent).toBe("no");
 		});
-		const secondRetry = chat.sendMessage.mock.calls[3]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const secondRetry = chat.sendMessage.mock.calls[3]?.[0] as ai_chat_UiMessage | undefined;
 		expect(secondRetry?.parts).toContainEqual({ type: "text", text: "Second" });
 		expect(secondRetry?.metadata?.convexParentId).toBe("convex_assistant_ai_message_mock_0");
 
@@ -2555,7 +2555,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(5);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Fourth");
 		});
-		const nextMessage = chat.sendMessage.mock.calls[4]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const nextMessage = chat.sendMessage.mock.calls[4]?.[0] as ai_chat_UiMessage | undefined;
 		expect(nextMessage?.parts).toContainEqual({ type: "text", text: "Third" });
 	});
 
@@ -2602,7 +2602,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("queue-texts").textContent).toBe("");
 		});
 		const sentTexts = chat.sendMessage.mock.calls.map((call) => {
-			const message = call[0] as ai_chat_AiSdk5UiMessage;
+			const message = call[0] as ai_chat_UiMessage;
 			return message.parts.find((part) => part.type === "text")?.text;
 		});
 		expect(sentTexts).toEqual(["First", "Second", "Fourth"]);
@@ -2684,7 +2684,7 @@ describe("AiChatController", () => {
 		expect(chat.error?.message).toBe("send failed");
 
 		const sentTexts = chat.messages
-			.filter((message): message is ai_chat_AiSdk5UiMessage => {
+			.filter((message): message is ai_chat_UiMessage => {
 				return typeof message === "object" && message !== null && "role" in message && message.role === "user";
 			})
 			.map((message) => message.parts.find((part) => part.type === "text")?.text);
@@ -2725,7 +2725,7 @@ describe("AiChatController", () => {
 		expect(screen.getByTestId("queue-failed-text").textContent).toBe("First");
 
 		const sentTexts = chat.messages
-			.filter((message): message is ai_chat_AiSdk5UiMessage => {
+			.filter((message): message is ai_chat_UiMessage => {
 				return typeof message === "object" && message !== null && "role" in message && message.role === "user";
 			})
 			.map((message) => message.parts.find((part) => part.type === "text")?.text);
@@ -2765,7 +2765,7 @@ describe("AiChatController", () => {
 		expect(screen.getByTestId("queue-failed-text").textContent).toBe("First");
 
 		const sentTexts = chat.messages
-			.filter((message): message is ai_chat_AiSdk5UiMessage => {
+			.filter((message): message is ai_chat_UiMessage => {
 				return typeof message === "object" && message !== null && "role" in message && message.role === "user";
 			})
 			.map((message) => message.parts.find((part) => part.type === "text")?.text);
@@ -2795,7 +2795,7 @@ describe("AiChatController", () => {
 		}
 
 		const firstUserMessage = chat.messages.find(
-			(message): message is ai_chat_AiSdk5UiMessage =>
+			(message): message is ai_chat_UiMessage =>
 				typeof message === "object" && message !== null && "role" in message && message.role === "user",
 		);
 		expect(firstUserMessage).toBeDefined();
@@ -2842,7 +2842,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 			expect(screen.getByTestId("queue-paused").textContent).toBe("no");
 		});
-		const retriedMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const retriedMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(retriedMessage?.parts).toContainEqual({ type: "text", text: "First" });
 		expect(retriedMessage?.metadata?.convexParentId).toBeNull();
 		expect(chat.activeRequestCount).toBe(1);
@@ -2879,7 +2879,7 @@ describe("AiChatController", () => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 		});
 
-		const queuedMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const queuedMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(queuedMessage?.metadata?.selectedModelId).toBe("gpt-5.4-nano");
 		expect(queuedMessage?.metadata?.selectedModeId).toBe("agent");
 	});
@@ -3017,7 +3017,7 @@ describe("AiChatController", () => {
 		expect(screen.getByTestId("queue-paused").textContent).toBe("yes");
 		expect(chat.activeRequestCount).toBe(1);
 		expect(chat.maxActiveRequestCount).toBe(1);
-		const directMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const directMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(directMessage?.parts).toContainEqual({ type: "text", text: "Third" });
 
 		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
@@ -3037,7 +3037,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("queue-texts").textContent).toBe("");
 		});
 		const sentTexts = chat.sendMessage.mock.calls.map((call) => {
-			const message = call[0] as ai_chat_AiSdk5UiMessage;
+			const message = call[0] as ai_chat_UiMessage;
 			return message.parts.find((part) => part.type === "text")?.text;
 		});
 		expect(sentTexts).toEqual(["First", "Third", "Second"]);
@@ -3251,7 +3251,7 @@ describe("AiChatController", () => {
 			(item) => item.id === "thread_queue_upgraded_after_settle",
 		);
 		expect(upgradedChat?.sendMessage).toHaveBeenCalledTimes(2);
-		const sentMessage = upgradedChat?.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const sentMessage = upgradedChat?.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(sentMessage?.parts).toContainEqual({ type: "text", text: "Third" });
 	});
 
@@ -3329,7 +3329,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Second edited");
 		});
 		const upgradedChat = hookMocks.chatInstances.find((item) => item.id === "thread_queue_upgraded");
-		const sentMessage = upgradedChat?.sendMessage.mock.calls[1]?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		const sentMessage = upgradedChat?.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(sentMessage?.parts).toContainEqual({ type: "text", text: "Third" });
 	});
 

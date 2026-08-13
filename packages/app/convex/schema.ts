@@ -1,7 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { vWorkId } from "@convex-dev/workpool";
-import type { ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
+import type { ai_chat_UiMessage } from "../src/lib/ai-chat.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -60,6 +60,10 @@ const app_convex_schema = defineSchema({
 		archived: v.boolean(),
 		starred: v.optional(v.boolean()),
 
+		/**
+		 * Keep this stored value. It does not track the AI SDK major version.
+		 * The messages table name below has the same `aisdk_5` in it.
+		 */
 		runtime: v.literal("aisdk_5"),
 		stateId: v.union(v.id("ai_chat_threads_state"), v.null()),
 
@@ -97,7 +101,10 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 
 	/**
-	 * Each doc should be compatible with {@link ai_chat_AiSdk5UiMessage}.
+	 * Each doc should be compatible with {@link ai_chat_UiMessage}.
+	 *
+	 * Keep this table name. It is stored data. It does not track the AI SDK major version.
+	 * We removed the version from the TypeScript type names on purpose.
 	 */
 	ai_chat_threads_messages_aisdk_5: defineTable({
 		organizationId: v.string(),
@@ -115,7 +122,7 @@ const app_convex_schema = defineSchema({
 		clientGeneratedMessageId: v.string(),
 
 		/**
-		 * AI SDK 5 {@link ai_chat_AiSdk5UiMessage}.
+		 * One {@link ai_chat_UiMessage}.
 		 **/
 		content: v.record(v.string(), v.any()),
 
@@ -1883,4 +1890,4 @@ export default app_convex_schema;
 export { app_convex_schema };
 
 // @ts-expect-error unused type
-type _ = ai_chat_AiSdk5UiMessage;
+type _ = ai_chat_UiMessage;

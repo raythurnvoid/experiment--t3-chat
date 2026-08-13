@@ -77,16 +77,7 @@ export const ai_chat_MODE_METADATA = {
 	},
 } as const satisfies Record<ai_chat_ModeId, AiChatModeMetadata>;
 
-export type ai_chat_AiSdk5UiTools = {
-	weather: {
-		input: {
-			location: string;
-		};
-		output: {
-			location: string;
-			temperature: string;
-		};
-	};
+export type ai_chat_UiTools = {
 	bash: {
 		input: ai_chat_tool_create_bash_ToolInput;
 		output: ai_chat_tool_create_bash_ToolOutput;
@@ -105,7 +96,7 @@ export type ai_chat_AiSdk5UiTools = {
 	};
 };
 
-export type ai_chat_AiSdk5UiDataParts = {
+export type ai_chat_UiDataParts = {
 	"thread-id": {
 		threadId: string;
 	};
@@ -114,9 +105,9 @@ export type ai_chat_AiSdk5UiDataParts = {
 	};
 };
 
-export type ai_chat_AiSdk5UiDataPart = DataUIPart<ai_chat_AiSdk5UiDataParts>;
+export type ai_chat_UiDataPart = DataUIPart<ai_chat_UiDataParts>;
 
-export type ai_chat_AiSdk5UiMessage = UIMessage<
+export type ai_chat_UiMessage = UIMessage<
 	Record<string, unknown> & {
 		status?: "aborted" | "errored" | undefined;
 		convexId?: string | undefined;
@@ -130,8 +121,8 @@ export type ai_chat_AiSdk5UiMessage = UIMessage<
 		selectedModelId?: ai_chat_ModelId | undefined;
 		selectedModeId?: ai_chat_ModeId | undefined;
 	},
-	ai_chat_AiSdk5UiDataParts,
-	ai_chat_AiSdk5UiTools
+	ai_chat_UiDataParts,
+	ai_chat_UiTools
 >;
 
 export function ai_chat_is_model_id(value: string): value is ai_chat_ModelId {

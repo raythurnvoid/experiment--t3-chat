@@ -12,6 +12,7 @@ Read a repository's own `AGENTS.md` before working inside it. Prefer its README,
 | [agent](agent/) | Convex Agent threads, messages, tools, and workflows | [README](agent/README.md), [docs](agent/docs/), [source](agent/src/) |
 | [ai](ai/) | Vercel AI SDK APIs, providers, tool calling, and examples | [docs](ai/content/docs/), [provider docs](ai/content/providers/), [examples](ai/examples/) |
 | [ai-chatbot](ai-chatbot/) | Full-stack AI chat application patterns | [README](ai-chatbot/README.md), [app](ai-chatbot/app/) |
+| [ai-elements](ai-elements/) | AI SDK chat UI components such as message, conversation, tool, reasoning, and prompt input; reference-only in this app | [README](ai-elements/README.md), [components](ai-elements/packages/elements/src/), [component docs](ai-elements/apps/docs/content/components/) |
 | [assistant-ui](assistant-ui/) | Assistant UI chat components and runtime patterns; reference-only in this app | [README](assistant-ui/README.md), [AGENTS](assistant-ui/AGENTS.md), [packages](assistant-ui/packages/) |
 | [bash-gres](bash-gres/) | PostgreSQL-backed virtual filesystems implementing the `just-bash` filesystem contract | [README](bash-gres/README.md), [examples](bash-gres/examples/), [library](bash-gres/lib/) |
 | [bash-tool](bash-tool/) | AI SDK-compatible bash, read-file, and write-file tools | [README](bash-tool/README.md), [skills example](bash-tool/examples/skills-tool/), [source](bash-tool/src/) |

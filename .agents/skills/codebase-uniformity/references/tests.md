@@ -8,6 +8,8 @@ Use this reference when adding, moving, or reviewing tests.
 - Keep tests beside established fixtures when moving would duplicate large setup. Metadata integration tests currently live in `files_nodes.test.ts` because they reuse its file-tree fixtures; record such placement as an intentional tradeoff.
 - Shared utility tests should use top-level `describe("<public_function>")` groups.
 - In-source `bash.ts` command tests should stay under the existing `action_run` group and use behavior-first test names.
+- Browser tests are named `src/**/*.browser.test.{ts,tsx}` and run in the `browser` vitest project on Playwright Chromium. Use one when the code under test needs real browser behavior that happy-dom cannot show.
+- `src/lib/my-focus.browser.test.ts` is the plain DOM example. `src/hooks/ai-chat-controller.browser.test.tsx` is the integration example. It runs the real AI SDK `Chat` against a fake `fetch` that serves an SSE UI-message stream, and mocks only Convex, auth, and tenant context. It follows the layout of its module-owning sibling `src/hooks/ai-chat-controller.test.tsx`, not the other browser test: helpers above the `describe`, camelCase helper names, and lowercase behavior-first test names.
 
 ## Review
 

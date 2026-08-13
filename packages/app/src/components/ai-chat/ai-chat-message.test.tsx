@@ -2,14 +2,14 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import type { ai_chat_AiSdk5UiMessage } from "@/lib/ai-chat.ts";
+import type { ai_chat_UiMessage } from "@/lib/ai-chat.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AiChatMessage, AiChatMessagePendingAssistant } from "./ai-chat-message.tsx";
 
 const hookMocks = vi.hoisted(() => {
 	return {
-		messageById: new Map<string, ai_chat_AiSdk5UiMessage>(),
+		messageById: new Map<string, ai_chat_UiMessage>(),
 		branchSiblingIdsByMessageId: new Map<string, readonly string[]>(),
 		editingMessageId: null as string | null,
 		sendErrorMessageId: null as string | null,
@@ -30,7 +30,7 @@ const hookMocks = vi.hoisted(() => {
 });
 
 type AiChatControllerStoreMockState = {
-	messageById: Map<string, ai_chat_AiSdk5UiMessage>;
+	messageById: Map<string, ai_chat_UiMessage>;
 	branchSiblingIdsByMessageId: Map<string, readonly string[]>;
 	failedSendUserMessageIdByThreadId: Map<string, string | null>;
 	failedSendErrorMessageByThreadId: Map<string, string | null>;
@@ -92,7 +92,7 @@ function createUserMessage() {
 			selectedModelId: "gpt-5.4-nano",
 			selectedModeId: "ask",
 		},
-	} satisfies ai_chat_AiSdk5UiMessage;
+	} satisfies ai_chat_UiMessage;
 }
 
 function createAssistantErrorMessage() {
@@ -105,7 +105,7 @@ function createAssistantErrorMessage() {
 			parentClientGeneratedId: null,
 			status: "errored",
 		},
-	} satisfies ai_chat_AiSdk5UiMessage;
+	} satisfies ai_chat_UiMessage;
 }
 
 function createAssistantMessage(args?: { id?: string; text?: string; parentId?: string | null }) {
@@ -117,11 +117,11 @@ function createAssistantMessage(args?: { id?: string; text?: string; parentId?: 
 			convexParentId: args?.parentId ?? "msg_user_failed",
 			parentClientGeneratedId: null,
 		},
-	} satisfies ai_chat_AiSdk5UiMessage;
+	} satisfies ai_chat_UiMessage;
 }
 
 function renderMessage(args: {
-	message: ai_chat_AiSdk5UiMessage;
+	message: ai_chat_UiMessage;
 	sendError?: boolean | undefined;
 	sendErrorDetails?: string | undefined;
 	branchSiblingIds?: readonly string[] | undefined;
@@ -232,7 +232,7 @@ describe("AiChatMessage", () => {
 					selectedModelId: "gpt-5.4-nano",
 					selectedModeId: "ask",
 				},
-			} satisfies ai_chat_AiSdk5UiMessage,
+			} satisfies ai_chat_UiMessage,
 		});
 
 		const part = document.querySelector(".AiChatMessagePartTextUser");
@@ -302,7 +302,7 @@ describe("AiChatMessage", () => {
 				convexParentId: "msg_user_failed",
 				parentClientGeneratedId: null,
 			},
-		} satisfies ai_chat_AiSdk5UiMessage;
+		} satisfies ai_chat_UiMessage;
 
 		renderMessage({ message, isRunning: true });
 
@@ -396,7 +396,7 @@ describe("AiChatMessage", () => {
 					convexParentId: "msg_user_failed",
 					parentClientGeneratedId: null,
 				},
-			} satisfies ai_chat_AiSdk5UiMessage,
+			} satisfies ai_chat_UiMessage,
 		});
 
 		expect(screen.getByText("Bash:")).not.toBeNull();
@@ -435,7 +435,7 @@ describe("AiChatMessage", () => {
 					pathIndexTruncated: false,
 				},
 			},
-		} satisfies ai_chat_AiSdk5UiMessage["parts"][number];
+		} satisfies ai_chat_UiMessage["parts"][number];
 
 		// The controller stamps a live message's own id into metadata.clientGeneratedId.
 		const streamingMessage = {
@@ -447,7 +447,7 @@ describe("AiChatMessage", () => {
 				parentClientGeneratedId: null,
 				clientGeneratedId,
 			},
-		} satisfies ai_chat_AiSdk5UiMessage;
+		} satisfies ai_chat_UiMessage;
 		const rendered = renderMessage({ message: streamingMessage, isRunning: true });
 
 		// jsdom does not toggle a details element from a summary click, so set the
@@ -466,7 +466,7 @@ describe("AiChatMessage", () => {
 				convexId: "msg_assistant_persisted",
 				clientGeneratedId,
 			},
-		} satisfies ai_chat_AiSdk5UiMessage;
+		} satisfies ai_chat_UiMessage;
 		hookMocks.messageById.set(persistedMessage.id, persistedMessage);
 		hookMocks.branchSiblingIdsByMessageId.set(persistedMessage.id, [persistedMessage.id]);
 		rendered.rerender(
@@ -515,7 +515,7 @@ describe("AiChatMessage", () => {
 					convexParentId: "msg_user_failed",
 					parentClientGeneratedId: null,
 				},
-			} satisfies ai_chat_AiSdk5UiMessage,
+			} satisfies ai_chat_UiMessage,
 		});
 
 		expect(screen.getByRole("button", { name: "Execute code" })).not.toBeNull();
@@ -562,7 +562,7 @@ describe("AiChatMessage", () => {
 					convexParentId: "msg_user_failed",
 					parentClientGeneratedId: null,
 				},
-			} satisfies ai_chat_AiSdk5UiMessage,
+			} satisfies ai_chat_UiMessage,
 		});
 
 		fireEvent.click(screen.getByRole("button", { name: "Edit file: qa.json" }));
@@ -601,7 +601,7 @@ describe("AiChatMessage", () => {
 					convexParentId: "msg_user_failed",
 					parentClientGeneratedId: null,
 				},
-			} satisfies ai_chat_AiSdk5UiMessage,
+			} satisfies ai_chat_UiMessage,
 		});
 
 		expect(screen.getByText("failed")).not.toBeNull();

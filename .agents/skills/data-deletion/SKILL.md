@@ -156,7 +156,7 @@ Current purge coverage includes:
 - `files_pending_updates_cleanup_tasks`, `files_pending_updates`
 - `files_pending_updates_last_sequence_saved`
 - `ai_chat_files_content`, `ai_chat_files`
-- `ai_chat_threads_messages_aisdk_5`, `ai_chat_threads_state`, `ai_chat_threads`
+- `ai_chat_threads_messages_aisdk_5` (the `aisdk_5` in that name is stored data and does not track the AI SDK major version), `ai_chat_threads_state`, `ai_chat_threads`
 - `api_credentials`
 - `public_api_grants`
 - `public_api_file_write_stages` via `public_api_db_cleanup_file_write_stage`, before the calls/runs/assets passes: staged asset docs have no `r2Key` yet, so the stage cleanup derives the R2 object keys itself and deletes the objects before their asset docs

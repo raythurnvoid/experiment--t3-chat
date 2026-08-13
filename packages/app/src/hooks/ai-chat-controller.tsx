@@ -24,7 +24,7 @@ import { should_never_happen } from "@/lib/utils.ts";
 import { generate_id, get_id_generator, type GeneratedIdPrefix } from "../../shared/generated-ids.ts";
 import { useFn, useLiveRef } from "./utils-hooks.ts";
 import {
-	type ai_chat_AiSdk5UiMessage,
+	type ai_chat_UiMessage,
 	ai_chat_DEFAULT_MODEL_ID,
 	ai_chat_DEFAULT_MODE_ID,
 	ai_chat_get_message_text,
@@ -38,8 +38,8 @@ import {
 
 type ThreadChatArgs = {
 	chatId: string | null;
-	initialMessages?: ai_chat_AiSdk5UiMessage[] | undefined;
-	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<ai_chat_AiSdk5UiMessage>["prepareSendMessagesRequest"]>;
+	initialMessages?: ai_chat_UiMessage[] | undefined;
+	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<ai_chat_UiMessage>["prepareSendMessagesRequest"]>;
 	onFinish?: (options: ThreadChatOnFinish) => void;
 };
 
@@ -52,7 +52,7 @@ export type AiChatQueuedUserMessage = {
 };
 
 type ThreadSession = {
-	chat: Chat<ai_chat_AiSdk5UiMessage> | null;
+	chat: Chat<ai_chat_UiMessage> | null;
 	draftComposerText: string;
 	draftComposerAttachments: readonly FileUIPart[];
 	selectedModelId?: ai_chat_ModelId;
@@ -75,11 +75,11 @@ type ThreadSession = {
 	streamingTitle?: string;
 };
 
-type ThreadChatOnFinish = Parameters<ChatOnFinishCallback<ai_chat_AiSdk5UiMessage>>[0] & {
+type ThreadChatOnFinish = Parameters<ChatOnFinishCallback<ai_chat_UiMessage>>[0] & {
 	chatId: string;
 };
 
-type UseChatResult = ReturnType<typeof useChat<ai_chat_AiSdk5UiMessage>>;
+type UseChatResult = ReturnType<typeof useChat<ai_chat_UiMessage>>;
 
 export type AiChatOptimisticThreadId = ReturnType<typeof generate_id<"ai_thread">>;
 
@@ -87,7 +87,7 @@ type StoreState = {
 	draftSelectedModelId: ai_chat_ModelId;
 	draftSelectedModeId: ai_chat_ModeId;
 	threadById: Map<string, ThreadSession>;
-	messageById: Map<string, ai_chat_AiSdk5UiMessage>;
+	messageById: Map<string, ai_chat_UiMessage>;
 	activeMessageIdsByThreadId: Map<string, readonly string[]>;
 	branchSiblingIdsByMessageId: Map<string, readonly string[]>;
 	failedSendUserMessageIdByThreadId: Map<string, string | null>;
@@ -103,10 +103,10 @@ const EMPTY_QUEUED_USER_MESSAGES: readonly AiChatQueuedUserMessage[] = [];
  * Cache persisted Convex messages by their final message id so query refreshes do not recreate old UIMessage objects.
  * Persisted chat messages are append-only today: editing creates a new branch message, and streaming lives in pending state.
  */
-const persistedUiMessageById = new Map<string, ai_chat_AiSdk5UiMessage>();
+const persistedUiMessageById = new Map<string, ai_chat_UiMessage>();
 // `chat.id` changes as soon as the stream returns the persisted thread id. Keep
 // Zustand's current thread id separate because the session moves after Convex syncs.
-const threadIdByChat = new WeakMap<Chat<ai_chat_AiSdk5UiMessage>, string>();
+const threadIdByChat = new WeakMap<Chat<ai_chat_UiMessage>, string>();
 
 async function ai_chat_fetch(input: RequestInfo | URL, init?: RequestInit) {
 	let response = await fetch(input, init);
@@ -162,7 +162,7 @@ let storeMembershipId: string | null = null;
  * instead of re-resolving client-generated ids at every call site.
  */
 function mutate_message_metadata(
-	mut_message: ai_chat_AiSdk5UiMessage,
+	mut_message: ai_chat_UiMessage,
 	args: {
 		convexId: string;
 		convexParentId: string | null;
@@ -171,7 +171,7 @@ function mutate_message_metadata(
 ) {
 	mut_message.metadata ??= {
 		parentClientGeneratedId: args.parentClientGeneratedId,
-	} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>;
+	} satisfies NonNullable<ai_chat_UiMessage["metadata"]>;
 	mut_message.metadata.convexId = args.convexId;
 	mut_message.metadata.convexParentId = args.convexParentId;
 	mut_message.metadata.parentClientGeneratedId = args.parentClientGeneratedId;
@@ -321,8 +321,8 @@ const EMPTY_MESSAGE_METADATA: Record<string, unknown> = {};
 // AI SDK can return fresh UIMessage objects for the same persisted tool result.
 // Compare the render-relevant fields so no-op syncs keep the existing message reference.
 function ui_messages_have_equal_render_content(
-	a: ai_chat_AiSdk5UiMessage,
-	b: ai_chat_AiSdk5UiMessage,
+	a: ai_chat_UiMessage,
+	b: ai_chat_UiMessage,
 ) {
 	if (a === b) {
 		return true;
@@ -378,7 +378,7 @@ function get_optimistic_thread_list_item(tenant: {
 	return optimisticThread;
 }
 
-function strip_provider_metadata_from_message_parts(message: ai_chat_AiSdk5UiMessage) {
+function strip_provider_metadata_from_message_parts(message: ai_chat_UiMessage) {
 	return {
 		...message,
 		parts: message.parts?.map((part) => {
@@ -388,11 +388,11 @@ function strip_provider_metadata_from_message_parts(message: ai_chat_AiSdk5UiMes
 
 			const { providerMetadata: _providerMetadata, ...partWithoutProviderMetadata } = part;
 			return partWithoutProviderMetadata;
-		}) as ai_chat_AiSdk5UiMessage["parts"],
-	} satisfies ai_chat_AiSdk5UiMessage;
+		}) as ai_chat_UiMessage["parts"],
+	} satisfies ai_chat_UiMessage;
 }
 
-function message_has_visible_parts(message: ai_chat_AiSdk5UiMessage) {
+function message_has_visible_parts(message: ai_chat_UiMessage) {
 	return message.parts.some((part) => {
 		if (part.type.startsWith("data-") || part.type === "step-start") {
 			return false;
@@ -406,7 +406,7 @@ function message_has_visible_parts(message: ai_chat_AiSdk5UiMessage) {
 	});
 }
 
-function get_message_selected_model_id(message?: ai_chat_AiSdk5UiMessage | null) {
+function get_message_selected_model_id(message?: ai_chat_UiMessage | null) {
 	const selectedModelId = message?.metadata?.selectedModelId;
 	if (!selectedModelId || !ai_chat_is_model_id(selectedModelId)) {
 		return undefined;
@@ -415,7 +415,7 @@ function get_message_selected_model_id(message?: ai_chat_AiSdk5UiMessage | null)
 	return selectedModelId;
 }
 
-function get_message_selected_mode_id(message?: ai_chat_AiSdk5UiMessage | null) {
+function get_message_selected_mode_id(message?: ai_chat_UiMessage | null) {
 	const selectedModeId =
 		message?.metadata?.selectedModeId ?? (message?.metadata as { selectedMode?: string } | undefined)?.selectedMode;
 	if (!selectedModeId || !ai_chat_is_mode_id(selectedModeId)) {
@@ -426,7 +426,7 @@ function get_message_selected_mode_id(message?: ai_chat_AiSdk5UiMessage | null) 
 }
 
 const thread_session_create = (args?: {
-	chat?: Chat<ai_chat_AiSdk5UiMessage> | null;
+	chat?: Chat<ai_chat_UiMessage> | null;
 	chatArgs?: ThreadChatArgs | undefined;
 	selectedModelId?: ai_chat_ModelId;
 	selectedModeId?: ai_chat_ModeId;
@@ -450,7 +450,7 @@ const thread_session_create = (args?: {
 };
 
 function create_chat_instance(args: ThreadChatArgs) {
-	const chat = new Chat<ai_chat_AiSdk5UiMessage>({
+	const chat = new Chat<ai_chat_UiMessage>({
 		id: args.chatId ?? generate_id("ai_thread"),
 		generateId: get_id_generator("ai_message"),
 		...(args.initialMessages ? { messages: args.initialMessages } : {}),
@@ -878,7 +878,7 @@ const useStore = ((/* iife */) => {
 			},
 			syncThreadRenderState(args: {
 				threadId: string | null;
-				messages: readonly ai_chat_AiSdk5UiMessage[];
+				messages: readonly ai_chat_UiMessage[];
 				branchSiblingIdsByParentId: Map<string | null, readonly string[]>;
 				isRunning: boolean;
 				errorMessage: string | null;
@@ -984,7 +984,7 @@ const useStore = ((/* iife */) => {
  * queued message must wait for this separate request token.
  */
 function track_chat_request(
-	chat: Chat<ai_chat_AiSdk5UiMessage>,
+	chat: Chat<ai_chat_UiMessage>,
 	request: Promise<void>,
 	claimedQueuedUserMessageId: AiChatQueuedUserMessage["id"] | null = null,
 ) {
@@ -1162,7 +1162,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	}, [threadById]);
 
 	const prepareSendMessagesRequest = useLiveRef<
-		NonNullable<DefaultChatTransport<ai_chat_AiSdk5UiMessage>["prepareSendMessagesRequest"]>
+		NonNullable<DefaultChatTransport<ai_chat_UiMessage>["prepareSendMessagesRequest"]>
 	>(async (options) => {
 		return (async (/* iife */) => {
 			const headers = new Headers(options.headers);
@@ -1353,7 +1353,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 					parentClientGeneratedId: null,
 					selectedModelId: nextSelectedModelId,
 					selectedModeId: nextSelectedModeId,
-				} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
+				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
 			});
 			track_chat_request(optimisticChat, request);
 		}
@@ -1662,15 +1662,15 @@ const useThreadRuntimeController = () => {
 		if (!persistedThreadMessages) return undefined;
 
 		const result = {
-			mapById: new Map<string, ai_chat_AiSdk5UiMessage>(),
-			mapByClientGeneratedId: new Map<string, ai_chat_AiSdk5UiMessage>(),
-			childrenByParentId: new Map<string | null, ai_chat_AiSdk5UiMessage[]>(),
-			list: [] as ai_chat_AiSdk5UiMessage[],
+			mapById: new Map<string, ai_chat_UiMessage>(),
+			mapByClientGeneratedId: new Map<string, ai_chat_UiMessage>(),
+			childrenByParentId: new Map<string | null, ai_chat_UiMessage[]>(),
+			list: [] as ai_chat_UiMessage[],
 		};
 
 		for (const message of persistedThreadMessages.messages) {
 			// Convert DB message to AI SDK UI message
-			const dbMessageContent = message.content as ai_chat_AiSdk5UiMessage;
+			const dbMessageContent = message.content as ai_chat_UiMessage;
 			const metadata = {
 				convexId: message._id,
 				convexParentId: message.parentId ?? null,
@@ -1690,8 +1690,8 @@ const useThreadRuntimeController = () => {
 						// content by it, so an open tool output does not remount and close when this
 						// persisted row replaces the streamed message that used the client id as its id.
 						clientGeneratedId: message.clientGeneratedMessageId,
-					} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
-				} satisfies ai_chat_AiSdk5UiMessage);
+					} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
+				} satisfies ai_chat_UiMessage);
 			mutate_message_metadata(uiMessage, metadata);
 
 			// Persisted AI messages are append-only today; editing creates a new branch message.
@@ -1766,7 +1766,7 @@ const useThreadRuntimeController = () => {
 		: draftSelectedModeId;
 
 	const prepareSendMessagesRequest = useLiveRef<
-		NonNullable<DefaultChatTransport<ai_chat_AiSdk5UiMessage>["prepareSendMessagesRequest"]>
+		NonNullable<DefaultChatTransport<ai_chat_UiMessage>["prepareSendMessagesRequest"]>
 	>(async (options) => {
 		return (async (/* iife */) => {
 			const headers = new Headers(options.headers);
@@ -1928,18 +1928,18 @@ const useThreadRuntimeController = () => {
 		? (session?.chat ?? selectedChatInstance ?? unselectedChatInstance)
 		: unselectedChatInstance;
 
-	const chat = useChat<ai_chat_AiSdk5UiMessage>({ chat: activeChatInstance });
+	const chat = useChat<ai_chat_UiMessage>({ chat: activeChatInstance });
 	const chatRef = useLiveRef(chat);
 	const activeChatInstanceIdRef = useLiveRef(activeChatInstance.id);
 
 	const pendingMessagesLookup = ((/* iife */) => {
 		const result = {
-			list: [] as ai_chat_AiSdk5UiMessage[],
-			mapById: new Map<string, ai_chat_AiSdk5UiMessage>(),
+			list: [] as ai_chat_UiMessage[],
+			mapById: new Map<string, ai_chat_UiMessage>(),
 			/**
 			 * The key can be either a convex id or a client-generated id.
 			 */
-			childrenByParentId: new Map<string | null, ai_chat_AiSdk5UiMessage[]>(),
+			childrenByParentId: new Map<string | null, ai_chat_UiMessage[]>(),
 		};
 
 		// Read messages from the newest to the oldest.
@@ -1962,7 +1962,7 @@ const useThreadRuntimeController = () => {
 			// and the UI can key by that field alone, without a fallback on `message.id`.
 			message.metadata ??= {
 				parentClientGeneratedId: null,
-			} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>;
+			} satisfies NonNullable<ai_chat_UiMessage["metadata"]>;
 			message.metadata.clientGeneratedId = message.id;
 
 			result.list.push(message);
@@ -2008,7 +2008,7 @@ const useThreadRuntimeController = () => {
 	const activeBranchMessages = ((/* iife */) => {
 		const tail = [];
 		const head = [];
-		const mapById = new Map<string, ai_chat_AiSdk5UiMessage>();
+		const mapById = new Map<string, ai_chat_UiMessage>();
 
 		// Find tail messages from persisted messages.
 		if (persistedMessagesLookup) {
@@ -2117,7 +2117,7 @@ const useThreadRuntimeController = () => {
 					parentClientGeneratedId: null,
 					selectedModelId: nextSelectedModelId,
 					selectedModeId: nextSelectedModeId,
-				} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
+				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
 			});
 			track_chat_request(optimisticChat, request);
 		}
@@ -2312,7 +2312,7 @@ const useThreadRuntimeController = () => {
 		});
 	});
 
-	const setComposerValue = useFn((chat: Chat<ai_chat_AiSdk5UiMessage>, message: string) => {
+	const setComposerValue = useFn((chat: Chat<ai_chat_UiMessage>, message: string) => {
 		const threadId = threadIdByChat.get(chat);
 		if (!threadId) {
 			return;
@@ -2326,7 +2326,7 @@ const useThreadRuntimeController = () => {
 		});
 	});
 
-	const setComposerAttachments = useFn((chat: Chat<ai_chat_AiSdk5UiMessage>, attachments: FileUIPart[]) => {
+	const setComposerAttachments = useFn((chat: Chat<ai_chat_UiMessage>, attachments: FileUIPart[]) => {
 		const threadId = threadIdByChat.get(chat);
 		if (!threadId) {
 			return;
@@ -2442,7 +2442,7 @@ const useThreadRuntimeController = () => {
 			}
 
 			const parentMessageIds = ((/* iife */) => {
-				const blockUntilParentPersists = (message: ai_chat_AiSdk5UiMessage, reason: string) => {
+				const blockUntilParentPersists = (message: ai_chat_UiMessage, reason: string) => {
 					console.warn(
 						"[AiChatController.useThreadRuntime.sendUserText] Blocked send until parent message is persisted",
 						{
@@ -2523,7 +2523,7 @@ const useThreadRuntimeController = () => {
 					parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
 					selectedModelId: threadSelectedModelId,
 					selectedModeId: threadSelectedModeId,
-				} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
+				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
 			});
 			track_chat_request(chat, request, options?.queuedMessage?.id ?? null);
 
@@ -2652,7 +2652,7 @@ const useThreadRuntimeController = () => {
 	});
 
 	const setQueuedUserMessageEditText = useFn(
-		(chat: Chat<ai_chat_AiSdk5UiMessage>, messageId: AiChatQueuedUserMessage["id"], text: string) => {
+		(chat: Chat<ai_chat_UiMessage>, messageId: AiChatQueuedUserMessage["id"], text: string) => {
 			const threadId = threadIdByChat.get(chat);
 			if (!threadId) {
 				return;
@@ -2666,7 +2666,7 @@ const useThreadRuntimeController = () => {
 	);
 
 	const setQueuedUserMessageEditAttachments = useFn(
-		(chat: Chat<ai_chat_AiSdk5UiMessage>, messageId: AiChatQueuedUserMessage["id"], attachments: FileUIPart[]) => {
+		(chat: Chat<ai_chat_UiMessage>, messageId: AiChatQueuedUserMessage["id"], attachments: FileUIPart[]) => {
 			const threadId = threadIdByChat.get(chat);
 			if (!threadId) {
 				return;
@@ -2681,7 +2681,7 @@ const useThreadRuntimeController = () => {
 
 	const setQueuedUserMessageEditModelId = useFn(
 		(
-			chat: Chat<ai_chat_AiSdk5UiMessage>,
+			chat: Chat<ai_chat_UiMessage>,
 			messageId: AiChatQueuedUserMessage["id"],
 			selectedModelId: ai_chat_ModelId,
 		) => {
@@ -2699,7 +2699,7 @@ const useThreadRuntimeController = () => {
 
 	const setQueuedUserMessageEditModeId = useFn(
 		(
-			chat: Chat<ai_chat_AiSdk5UiMessage>,
+			chat: Chat<ai_chat_UiMessage>,
 			messageId: AiChatQueuedUserMessage["id"],
 			selectedModeId: ai_chat_ModeId,
 		) => {
@@ -2716,7 +2716,7 @@ const useThreadRuntimeController = () => {
 	);
 
 	const setQueuedUserMessagesReordering = useFn(
-		(chat: Chat<ai_chat_AiSdk5UiMessage>, isQueueReordering: boolean) => {
+		(chat: Chat<ai_chat_UiMessage>, isQueueReordering: boolean) => {
 			const threadId = threadIdByChat.get(chat);
 			if (!threadId) {
 				return;

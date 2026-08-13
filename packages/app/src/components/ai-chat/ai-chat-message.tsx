@@ -36,8 +36,8 @@ import {
 import type { ExtractStrict } from "type-fest";
 import {
 	ai_chat_get_message_text,
-	type ai_chat_AiSdk5UiMessage,
-	type ai_chat_AiSdk5UiTools,
+	type ai_chat_UiMessage,
+	type ai_chat_UiTools,
 	type ai_chat_ModelId,
 	type ai_chat_ModeId,
 } from "@/lib/ai-chat.ts";
@@ -97,10 +97,8 @@ type AiChatMessagePartToolStatus_ClassNames =
 	| "AiChatMessagePartToolStatus-state-error"
 	| "AiChatMessagePartToolStatus-state-approval";
 
-type AiChatMessagePartToolUiState = ToolUIPart["state"] | "approval-requested" | "approval-responded" | "output-denied";
-
 type AiChatMessagePartToolStatus_Props = {
-	state: AiChatMessagePartToolUiState;
+	state: ToolUIPart["state"];
 	isChatRunning: boolean;
 };
 
@@ -179,7 +177,7 @@ type AiChatMessagePartDisclosureButton_Props = {
 	className?: string | undefined;
 	title: string;
 	text?: string;
-	state: AiChatMessagePartToolUiState;
+	state: ToolUIPart["state"];
 	isChatRunning: boolean;
 };
 
@@ -334,8 +332,8 @@ type AiChatMessagePartToolBash_ClassNames = "AiChatMessagePartToolBash" | "AiCha
 
 type AiChatMessagePartToolBash_Props = {
 	className?: string;
-	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-bash" }>["input"];
-	result: ai_chat_AiSdk5UiTools["bash"]["output"] | undefined;
+	args: ExtractStrict<ToolUIPart<ai_chat_UiTools>, { type: "tool-bash" }>["input"];
+	result: ai_chat_UiTools["bash"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 	errorText?: string;
@@ -409,8 +407,8 @@ type AiChatMessagePartToolEditPage_ClassNames = "AiChatMessagePartToolEditPage" 
 
 type AiChatMessagePartToolEditPage_Props = {
 	className?: string | undefined;
-	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-edit_file" }>["input"];
-	result: ai_chat_AiSdk5UiTools["edit_file"]["output"] | undefined;
+	args: ExtractStrict<ToolUIPart<ai_chat_UiTools>, { type: "tool-edit_file" }>["input"];
+	result: ai_chat_UiTools["edit_file"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 	errorText?: string | undefined;
@@ -478,8 +476,8 @@ type AiChatMessagePartToolExecuteCode_ClassNames = "AiChatMessagePartToolExecute
 
 type AiChatMessagePartToolExecuteCode_Props = {
 	className?: string | undefined;
-	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-execute_code" }>["input"];
-	result: ai_chat_AiSdk5UiTools["execute_code"]["output"] | undefined;
+	args: ExtractStrict<ToolUIPart<ai_chat_UiTools>, { type: "tool-execute_code" }>["input"];
+	result: ai_chat_UiTools["execute_code"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 	errorText?: string | undefined;
@@ -528,7 +526,7 @@ type AiChatMessagePartToolUnknown_ClassNames = "AiChatMessagePartToolUnknown" | 
 
 type AiChatMessagePartToolUnknown_Props = {
 	className?: string | undefined;
-	part: ToolUIPart<ai_chat_AiSdk5UiTools> | DynamicToolUIPart;
+	part: ToolUIPart<ai_chat_UiTools> | DynamicToolUIPart;
 	isChatRunning: boolean;
 };
 
@@ -797,8 +795,8 @@ type AiChatMessagePart_ClassNames =
 
 type AiChatMessagePart_Props = {
 	role: "assistant" | "user" | "system";
-	part: ai_chat_AiSdk5UiMessage["parts"][number];
-	message: ai_chat_AiSdk5UiMessage;
+	part: ai_chat_UiMessage["parts"][number];
+	message: ai_chat_UiMessage;
 	isChatRunning: boolean;
 	onToolOutput: AiChatRuntimeActions["addToolOutput"];
 	onToolResumeStream: AiChatRuntimeActions["resumeStream"];
@@ -953,7 +951,7 @@ const AiChatMessageContainer = memo(function AiChatMessageContainer(props: AiCha
 type AiChatMessageContent_DisplayItem =
 	| {
 			type: "part";
-			part: ai_chat_AiSdk5UiMessage["parts"][number];
+			part: ai_chat_UiMessage["parts"][number];
 	  }
 	| {
 			type: "thinking";
@@ -967,7 +965,7 @@ type AiChatMessageContent_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
-	message: ai_chat_AiSdk5UiMessage;
+	message: ai_chat_UiMessage;
 	isChatRunning: boolean;
 	onToolOutput: AiChatMessagePart_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessagePart_Props["onToolResumeStream"];
@@ -976,8 +974,8 @@ type AiChatMessageContent_Props = ComponentPropsWithRef<"div"> & {
 };
 
 function ai_chat_message_content_get_display_items(
-	message: ai_chat_AiSdk5UiMessage,
-	parts: ai_chat_AiSdk5UiMessage["parts"],
+	message: ai_chat_UiMessage,
+	parts: ai_chat_UiMessage["parts"],
 	isChatRunning: boolean,
 ) {
 	if (message.role !== "assistant") {
@@ -1197,7 +1195,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	id?: string;
 	className?: string;
 
-	message: ai_chat_AiSdk5UiMessage;
+	message: ai_chat_UiMessage;
 	selectedThreadId: string | null;
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
@@ -1522,7 +1520,7 @@ type AiChatMessageAgent_Props = ComponentPropsWithRef<"div"> & {
 	id?: string;
 	className?: string;
 
-	message: ai_chat_AiSdk5UiMessage;
+	message: ai_chat_UiMessage;
 	selectedThreadId: string | null;
 	isRunning: boolean;
 	isEditing: boolean;
@@ -1713,7 +1711,7 @@ type AiChatMessageSystem_Props = ComponentPropsWithRef<"div"> & {
 	id?: string;
 	className?: string;
 
-	message: ai_chat_AiSdk5UiMessage;
+	message: ai_chat_UiMessage;
 	selectedThreadId: string | null;
 	isRunning: boolean;
 	isEditing: boolean;
@@ -1762,7 +1760,7 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	className?: string;
 
 	messageId: string;
-	message?: ai_chat_AiSdk5UiMessage | undefined;
+	message?: ai_chat_UiMessage | undefined;
 	selectedThreadId: string | null;
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
@@ -1773,7 +1771,7 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 export type AiChatMessage_CustomAttributes = {
 	"data-ai-chat-thread-id": string;
 	"data-ai-chat-message-id": string;
-	"data-ai-chat-message-role": ai_chat_AiSdk5UiMessage["role"];
+	"data-ai-chat-message-role": ai_chat_UiMessage["role"];
 	"data-ai-chat-message-convex-id": string;
 	"data-ai-chat-message-parent-id": string;
 	"data-ai-chat-message-parent-client-id": string;

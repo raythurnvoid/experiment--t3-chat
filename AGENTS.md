@@ -1308,6 +1308,8 @@ A check that needs a second identity — a permission refusal, a share grant, pr
 
 Before trusting any browser result about Convex code, check that the browser runs your working tree. `pnpm run dev` starts Vite only; the app then talks to the deployment already in `packages/app/.env.local`, so edits under `convex/` reach the browser only while `convex dev` is pushing them. Prove it once per session by breaking one check on purpose and watching the app's behaviour change. Without that, a green browser run says nothing about your edits.
 
+A package upgrade has the same problem on the frontend side. Vite pre-bundles dependencies once into `packages/app/node_modules/.vite/deps`, and a dev server that was already running when you ran `pnpm install` keeps serving the old build of that package. The browser then runs the old library while the source files are yours, and every check looks green for the wrong reason. Compare the mtime of `node_modules/.vite/deps/_metadata.json` with `packages/app/package.json`, and read the served exports from page context with `await import("/@id/<package>")`. If the cache is older, ask the user to restart the dev server before believing any browser result about that package.
+
 # Temporary debug logging
 
 - Add temporary structured logs only to test a concrete debugging hypothesis.

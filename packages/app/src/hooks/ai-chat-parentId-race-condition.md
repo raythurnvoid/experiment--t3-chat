@@ -78,4 +78,4 @@ The server-side fix is preferred because it handles all cases in one place with 
 
 The AI SDK's `lastAssistantMessageIsCompleteWithToolCalls` filters out tool parts where `providerExecuted: true`. For server-side tools (with `execute`), the SDK sets `providerExecuted: true` on tool results. However, the check only looks at the **last step's** tool calls. If the AI's final step is a text response (no tool calls), `sendAutomaticallyWhen` returns `false` and no auto-retry occurs.
 
-In practice during testing, the auto-retry never fired because the AI's final step was always text. But it could fire if the AI exhausts `stepCountIs(5)` with tool calls still pending in the last step.
+In practice during testing, the auto-retry never fired because the AI's final step was always text. But it could fire if the AI exhausts `stepCountIs(10)` with tool calls still pending in the last step.

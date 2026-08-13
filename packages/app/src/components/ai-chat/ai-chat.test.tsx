@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { AiChatThreadRuntime } from "@/hooks/ai-chat-controller.tsx";
-import type { ai_chat_AiSdk5UiMessage } from "@/lib/ai-chat.ts";
+import type { ai_chat_UiMessage } from "@/lib/ai-chat.ts";
 
 // Network boundary: the real hooks talk to a live Convex client.
 vi.mock("convex/react", () => ({
@@ -71,7 +71,7 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 }));
 
 vi.mock("@/components/ai-chat/ai-chat-message.tsx", () => ({
-	AiChatMessage: function AiChatMessage(props: { message: ai_chat_AiSdk5UiMessage; isRunning: boolean }) {
+	AiChatMessage: function AiChatMessage(props: { message: ai_chat_UiMessage; isRunning: boolean }) {
 		return <div data-testid={`message-${props.message.role}`} data-running={props.isRunning} />;
 	},
 	AiChatMessagePendingAssistant: function AiChatMessagePendingAssistant() {
@@ -163,7 +163,7 @@ describe("AiChatThread", () => {
 				selectedModelId: "gpt-5.4-nano",
 				selectedModeId: "ask",
 			},
-		} satisfies ai_chat_AiSdk5UiMessage;
+		} satisfies ai_chat_UiMessage;
 		const assistantMessage = {
 			id: "message_assistant_pending",
 			role: "assistant",
@@ -172,7 +172,7 @@ describe("AiChatThread", () => {
 				convexParentId: "message_user_pending",
 				parentClientGeneratedId: null,
 			},
-		} satisfies ai_chat_AiSdk5UiMessage;
+		} satisfies ai_chat_UiMessage;
 
 		const rendered = render(
 			<AiChatThread
@@ -181,7 +181,7 @@ describe("AiChatThread", () => {
 					isRunning: true,
 					activeBranchMessages: {
 						list: [userMessage],
-						mapById: new Map<string, ai_chat_AiSdk5UiMessage>([[userMessage.id, userMessage]]),
+						mapById: new Map<string, ai_chat_UiMessage>([[userMessage.id, userMessage]]),
 						anchorId: null,
 					},
 				})}
@@ -198,7 +198,7 @@ describe("AiChatThread", () => {
 					isRunning: true,
 					activeBranchMessages: {
 						list: [userMessage, assistantMessage],
-						mapById: new Map<string, ai_chat_AiSdk5UiMessage>([
+						mapById: new Map<string, ai_chat_UiMessage>([
 							[userMessage.id, userMessage],
 							[assistantMessage.id, assistantMessage],
 						]),

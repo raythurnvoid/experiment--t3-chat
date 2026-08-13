@@ -1,5 +1,6 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool, type WorkId } from "@convex-dev/workpool";
+import { NoOutputGeneratedError } from "ai";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api.js";
@@ -18,11 +19,11 @@ import {
 } from "../shared/organizations.ts";
 
 // Keep the provider call visible so this module can verify that automatic retries stay disabled.
-const ai = vi.hoisted(() => ({ generateObject: vi.fn() }));
+const ai = vi.hoisted(() => ({ generateText: vi.fn() }));
 
 vi.mock("ai", async (importOriginal) => ({
 	...(await importOriginal<typeof import("ai")>()),
-	generateObject: ai.generateObject,
+	generateText: ai.generateText,
 }));
 
 beforeEach(() => {
@@ -6482,14 +6483,14 @@ describe("plugins publish_version", () => {
 	});
 
 	test("makes one provider attempt for an AI review", async () => {
-		ai.generateObject.mockReset().mockResolvedValue({
-			object: { verdict: "passed", findings: [] },
+		ai.generateText.mockReset().mockResolvedValue({
+			output: { verdict: "passed", findings: [] },
 		});
 
 		await plugins_ai_review.generate_verdict({ system: "policy", prompt: "artifact" });
 
-		expect(ai.generateObject).toHaveBeenCalledOnce();
-		expect(ai.generateObject).toHaveBeenCalledWith(expect.objectContaining({ maxRetries: 0 }));
+		expect(ai.generateText).toHaveBeenCalledOnce();
+		expect(ai.generateText).toHaveBeenCalledWith(expect.objectContaining({ maxRetries: 0 }));
 	});
 
 	test("reuses flagged reviews and requires a changed artifact for a new verdict", async () => {
@@ -6731,6 +6732,34 @@ describe("plugins publish_version", () => {
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const github = await mock_publish_github_fetch();
 		vi.spyOn(plugins_ai_review, "generate_verdict").mockRejectedValue(new Error("model unreachable"));
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+
+		expect(published).toEqual({
+			_nay: { message: "Plugin AI review is unavailable; the version was not registered" },
+		});
+		expect(github.uploadUrls).toEqual([]);
+		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
+		expect(versions).toEqual([]);
+		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
+		expect(reviews).toEqual([]);
+	});
+
+	test("a verdict the schema rejects blocks the publish instead of registering the version", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const github = await mock_publish_github_fetch();
+		// When the model writes nothing the schema accepts, or stops before finishing, the AI SDK still
+		// resolves `generateText` and throws only when the caller reads `output`. So mock the `ai`
+		// module, not `generate_verdict`. The test then runs the real `generate_verdict`, and proves
+		// it reads `output` and lets the throw reach the publish.
+		ai.generateText.mockReset().mockResolvedValue({
+			get output(): never {
+				throw new NoOutputGeneratedError();
+			},
+		});
 
 		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
 

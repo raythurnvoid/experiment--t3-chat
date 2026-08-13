@@ -5,7 +5,7 @@ import {
 	ai_chat_MODEL_IDS,
 	ai_chat_MODE_IDS,
 	ai_chat_is_message_image_media_type,
-	type ai_chat_AiSdk5UiMessage,
+	type ai_chat_UiMessage,
 } from "../shared/ai-chat.ts";
 import { math_clamp } from "../src/lib/utils.ts";
 import { get_id_generator } from "../shared/generated-ids.ts";
@@ -781,7 +781,7 @@ export const thread_branch = mutation({
 
 		for (let i = chain.length - 1; i >= 0; i--) {
 			const msg = chain[i];
-			const content = msg.content as unknown as ai_chat_AiSdk5UiMessage;
+			const content = msg.content as unknown as ai_chat_UiMessage;
 			const nextId = get_id_generator("ai_message")();
 			const metadata = content.metadata
 				? omit_properties(content.metadata, ["convexParentId", "convexId", "parentClientGeneratedId"])
@@ -1456,7 +1456,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		// Validate the messages if they are present
 		if (body.messages.length > 0) {
 			try {
-				await validateUIMessages<ai_chat_AiSdk5UiMessage>({
+				await validateUIMessages<ai_chat_UiMessage>({
 					messages: body.messages,
 					tools: validationTools,
 				});
@@ -1485,7 +1485,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			}
 		}
 
-		const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
+		const requestMessages = body.messages as ai_chat_UiMessage[];
 
 		// Enforce the image-attachment contract on incoming messages. The
 		// client compresses images to fit, but the caps must hold here too:
@@ -1514,7 +1514,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			}
 		}
 
-		const uiMessages: ai_chat_AiSdk5UiMessage[] = [];
+		const uiMessages: ai_chat_UiMessage[] = [];
 
 		if (body.threadId) {
 			const existingThread = await ctx.runQuery(api.ai_chat.thread_get, {
@@ -1685,14 +1685,14 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				uiMessages.push({
 					...requestMessage,
 					id: persistedMessageId,
-				} satisfies ai_chat_AiSdk5UiMessage);
+				} satisfies ai_chat_UiMessage);
 			}
 
 			resolvedParentId = persistedRequestMessages._yay.ids.at(-1) ?? resolvedParentId;
 			resolvedParentClientGeneratedId = requestMessages.at(-1)?.id ?? resolvedParentClientGeneratedId;
 		}
 
-		const modelMessages = convertToModelMessages(uiMessages, {
+		const modelMessages = await convertToModelMessages(uiMessages, {
 			ignoreIncompleteToolCalls: true,
 		});
 
@@ -1718,7 +1718,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		let capturedUsage: { inputTokens: number; outputTokens: number } | null = null;
 		let capturedActualCents = 0;
 
-		const stream = createUIMessageStream<ai_chat_AiSdk5UiMessage>({
+		const stream = createUIMessageStream<ai_chat_UiMessage>({
 			generateId: get_id_generator("ai_message"),
 			execute: async ({ writer }) => {
 				// TODO(ai-chat): If we allocate Convex message docs up front, emit a transient `data-message-ids`
@@ -1795,7 +1795,12 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 					},
 				});
 
-				const ui_message_stream = result1.toUIMessageStream<ai_chat_AiSdk5UiMessage>();
+				// The AI SDK hides the real error behind a constant "An error occurred." by default,
+				// so server details cannot leak. This chat shows the real message on purpose.
+				// So pass the same `onError` here that `createUIMessageStream` uses below.
+				const ui_message_stream = result1.toUIMessageStream<ai_chat_UiMessage>({
+					onError: (error: unknown) => (error instanceof Error ? error.message : String(error)),
+				});
 				writer.merge(ui_message_stream);
 
 				if (request.signal.aborted) {
@@ -2353,7 +2358,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			id: "message_1",
 			role: "user",
 			parts: [{ type: "text", text: "stored message" }],
-		}) as ai_chat_AiSdk5UiMessage;
+		}) as ai_chat_UiMessage;
 
 	const makeDbMessage = (args: { id: string; parentId?: string | null; clientGeneratedMessageId?: string }) =>
 		({
@@ -2471,10 +2476,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						},
 					},
 				],
-			} as unknown as ai_chat_AiSdk5UiMessage;
+			} as unknown as ai_chat_UiMessage;
 
 			await expect(
-				validateUIMessages<ai_chat_AiSdk5UiMessage>({ messages: [message], tools: configuration.validationTools }),
+				validateUIMessages<ai_chat_UiMessage>({ messages: [message], tools: configuration.validationTools }),
 			).resolves.toBeDefined();
 		});
 
@@ -2504,10 +2509,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						output: { ok: true },
 					},
 				],
-			} as unknown as ai_chat_AiSdk5UiMessage;
+			} as unknown as ai_chat_UiMessage;
 
 			await expect(
-				validateUIMessages<ai_chat_AiSdk5UiMessage>({ messages: [message], tools: configuration.validationTools }),
+				validateUIMessages<ai_chat_UiMessage>({ messages: [message], tools: configuration.validationTools }),
 			).resolves.toBeDefined();
 		});
 

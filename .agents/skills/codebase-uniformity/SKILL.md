@@ -72,7 +72,7 @@ Use this checklist before accepting a patch.
 
 Code uniformity includes vocabulary. After editing comments, docs, names, and logs:
 
-- Run `vp env exec node .agents/skills/codebase-uniformity/scripts/diff-vocabulary-audit.mjs --all -- "<touched-paths>"` for a broad change, after replacing the quoted placeholder with one or more real paths. The scoped form also scans matching untracked files and keeps warnings reviewable. Omit the path scope only when a whole-repository diff review is useful. Treat output as warnings, not hard failures.
+- Run `vp env exec node .agents/skills/codebase-uniformity/scripts/diff-vocabulary-audit.mjs --all -- <touched-paths>` for a broad change, after replacing the placeholder with one or more real paths. Pass each path as its own argument. Several paths inside one pair of quotes become a single pathspec, and the run then prints `warning: could not open directory` plus `no watched terms found`, which reads exactly like a clean audit. The scoped form also scans matching untracked files and keeps warnings reviewable. Omit the path scope only when a whole-repository diff review is useful. Treat output as warnings, not hard failures.
 - Search for newly introduced terms with `rg`, especially abstract nouns such as `projection`, `data`, `state`, `thing`, `stuff`, `handler`, or `manager`.
 - Replace vague terms with the concrete docs, tables, commands, or values involved, such as `search chunks`, `metadata docs`, `pending docs`, `indexed docs`, or `Yjs branch`.
 - In Convex comments and project guidance, use `doc/docs` for entries in Convex tables. Avoid `row/rows` unless quoting an API field, external source, or fixed identifier.

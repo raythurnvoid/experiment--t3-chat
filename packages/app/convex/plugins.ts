@@ -1,4 +1,4 @@
-import { generateObject, zodSchema } from "ai";
+import { generateText, Output, zodSchema } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { Workpool } from "@convex-dev/workpool";
 import { v } from "convex/values";
@@ -740,18 +740,22 @@ export const plugins_ai_review = {
 		return parsed.data.input_tokens;
 	},
 	generate_verdict: async (args: { system: string; prompt: string }) => {
-		const result = await generateObject({
+		const result = await generateText({
 			model: openai(REVIEW_MODEL_ID),
 			temperature: 0,
 			// The publish action retries a failed review later; one security-gate run gets one provider attempt.
 			maxRetries: 0,
 			// The verdict is small; reserving a short response keeps large readable artifacts within the model's TPM limit.
 			maxOutputTokens: 1_000,
-			schema: REVIEW_VERDICT_SCHEMA,
+			output: Output.object({ schema: REVIEW_VERDICT_SCHEMA }),
 			system: args.system,
 			prompt: args.prompt,
 		});
-		return result.object;
+
+		// Reading `output` throws when the model wrote nothing the schema accepts, and also when it
+		// ran out of output tokens before finishing. The publish action catches the throw and refuses
+		// to register the version, so the security gate stays closed on a failed review.
+		return result.output;
 	},
 };
 
