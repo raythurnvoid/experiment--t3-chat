@@ -305,6 +305,43 @@ Its `passes[0].nodes[0].any[0].data` carries `fgColor`, `bgColor`, `contrastRati
 
 `Page.captureScreenshot` is not a usable fallback here: it hangs indefinitely whenever the browser window is occluded, even though `evaluate` keeps working.
 
+## Find Who Moved A React Node (`removeChild` crash)
+
+Use this when the route error boundary shows `Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node`. React only fails that way when something moved a node React rendered into a different DOM parent. React's own stack names no component (only `The above error occurred in the <div> component`), so patch the DOM call and let it name the node itself.
+
+```js
+await state.page.evaluate(() => {
+	const w = window;
+	if (w.__rcPatched) return;
+	w.__rcPatched = true;
+	w.__rcFails = [];
+	const orig = Node.prototype.removeChild;
+	const describe = (n) =>
+		!n ? String(n) : n.nodeType === 1 ? `<${n.tagName.toLowerCase()} class="${n.getAttribute("class") || ""}">` : "#text";
+	const chain = (n, max) => {
+		const out = [];
+		for (let cur = n; cur && out.length < max; cur = cur.parentNode) out.push(describe(cur));
+		return out;
+	};
+	Node.prototype.removeChild = function (child) {
+		if (child && child.parentNode !== this) {
+			w.__rcFails.push({
+				expectedParent: chain(this, 6), // where React thinks the node lives
+				child: describe(child),
+				actualParent: chain(child.parentNode, 8), // where the node really is
+			});
+		}
+		return orig.call(this, child);
+	};
+});
+```
+
+Then reproduce and read `window.__rcFails`. `child` is the moved node, and comparing the two chains tells you which library moved it. Read `expectedParent` carefully: if that chain still reaches a long-lived container, React was deleting only part of the subtree, so the trigger is a conditional render inside a component that stayed mounted — not the whole editor unmounting.
+
+`__rcFails.length` also makes a good pass/fail assertion: it is `0` on a healthy run, so it catches the mismatch even when the error boundary happens not to fire.
+
+This found the 2026-08-13 `/files` editor crash: tiptap's `DragHandle` rendered its element in the React tree while `DragHandlePlugin` moved that element into a wrapper of its own inside the editor DOM.
+
 ## Watch Convex Mutations On The Wire
 
 Use this to prove a feature is or is not still talking to the server (heartbeats, background writes) instead of guessing from the UI. Convex sends every mutation as a WebSocket frame, so one CDP listener catches them all.
