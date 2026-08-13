@@ -190,6 +190,19 @@ const after = read(text);
 
 `squeezed.overflowing` must be `true`, and any sibling that must stay readable (a status word, a badge) must keep its full width and stay inside the row's right edge. Compare `before` and `after` to confirm the probe left nothing behind.
 
+## Read Real Pixels Out Of A Screenshot
+
+Use this when the thing under test has no computed style to read: a scrollbar track or thumb, a canvas, a shadow, a blend. Take one clipped screenshot with the fix on and one with it off (flip it with an inline style in the page), then compare the same pixels in PowerShell.
+
+```powershell
+Add-Type -AssemblyName System.Drawing
+$b = [System.Drawing.Bitmap]::FromFile("C:/.../after.png")
+foreach ($y in 48..70) { $p = $b.GetPixel(200, $y); "y=$y : $($p.R),$($p.G),$($p.B)" }
+$b.Dispose()
+```
+
+Sample a whole column, not one point: one pixel cannot tell you which band you landed in, and a control's own background inside a bar reads nothing like the bar. Map image coordinates from the clip (`imageY = pageY - clip.y`) and from `getBoundingClientRect()` of the element, and remember `page.screenshot({ scale: "css" })` plus `bringToFront()` (a backgrounded tab returns a stale frame).
+
 ## Run A Real axe-core Audit
 
 `auditAccessibility(...)` is only a screen. For rule-level findings, inject axe-core. The dev server sets no CSP that blocks it, so `addScriptTag` works (verified 2026-07-26, axe-core 4.12.1, 572KB).
