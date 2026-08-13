@@ -47,6 +47,7 @@ import { MyIconButton } from "@/components/my-icon-button.tsx";
 import { AiChatController, type AiChatRuntimeActions } from "@/hooks/ai-chat-controller.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/ai-chat-markdown.tsx";
+import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
 import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import {
@@ -270,12 +271,14 @@ type AiChatMessagePartToolTextAreaSection_Props = {
 	code: string;
 	maxHeight?: string | undefined;
 	state?: "error" | undefined;
+	/** Color the code as a unified diff: removed lines red, added lines green. */
+	variant?: "diff" | undefined;
 };
 
 const AiChatMessagePartToolTextAreaSection = memo(function AiChatMessagePartToolTextAreaSection(
 	props: AiChatMessagePartToolTextAreaSection_Props,
 ) {
-	const { className, label, code, maxHeight, state } = props;
+	const { className, label, code, maxHeight, state, variant } = props;
 	const headingId = useId();
 
 	return (
@@ -304,13 +307,23 @@ const AiChatMessagePartToolTextAreaSection = memo(function AiChatMessagePartTool
 			>
 				{label}
 			</h6>
-			<TextMonospaceBlock
-				aria-label={label}
-				className={
-					"AiChatMessagePartToolTextAreaSection-textarea" satisfies AiChatMessagePartToolTextAreaSection_ClassNames
-				}
-				text={code}
-			/>
+			{variant === "diff" ? (
+				<DiffMonospaceBlock
+					aria-label={label}
+					className={
+						"AiChatMessagePartToolTextAreaSection-textarea" satisfies AiChatMessagePartToolTextAreaSection_ClassNames
+					}
+					diffText={code}
+				/>
+			) : (
+				<TextMonospaceBlock
+					aria-label={label}
+					className={
+						"AiChatMessagePartToolTextAreaSection-textarea" satisfies AiChatMessagePartToolTextAreaSection_ClassNames
+					}
+					text={code}
+				/>
+			)}
 		</section>
 	);
 });
@@ -416,7 +429,8 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 			? path_name_of(args.path)
 			: undefined;
 
-	const resultCode = result?.metadata?.diff ?? result?.output;
+	const diff = result?.metadata?.diff;
+	const resultCode = diff || result?.output;
 
 	return (
 		<AiChatMessagePartDisclosure
@@ -445,7 +459,14 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 				)}
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{resultCode && <AiChatMessagePartToolTextAreaSection label="Result" code={resultCode} maxHeight="16lh" />}
+				{resultCode && (
+					<AiChatMessagePartToolTextAreaSection
+						label="Result"
+						code={resultCode}
+						maxHeight="16lh"
+						variant={diff ? "diff" : undefined}
+					/>
+				)}
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);

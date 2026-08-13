@@ -618,6 +618,29 @@ export type ai_chat_WriteToolName = (typeof ai_chat_WRITE_TOOL_NAMES)[number];
 
 // #region edit file
 /**
+ * Build the preview diff of an edit, with only the changed lines in it.
+ *
+ * `createPatch` puts a file header on top: the "Index:" line, the "===" rule, and the
+ * "---"/"+++" lines. It also puts a "@@ -1,6 +1,6 @@" position line above every hunk. The
+ * reader already knows which file was edited, so drop both.
+ *
+ * A later hunk becomes an empty line. Without it, two hunks from far apart in the file would
+ * read as one continuous block.
+ */
+function ai_chat_tool_edit_file_create_diff(path: string, before: string, after: string) {
+	const patch = createPatch(path, before, after);
+	const firstHunkIndex = patch.search(/^@@/m);
+	// An edit that changes nothing produces no hunk.
+	if (firstHunkIndex === -1) {
+		return "";
+	}
+
+	const lines = patch.slice(firstHunkIndex).split("\n");
+	lines.shift();
+	return lines.map((line) => (line.startsWith("@@") ? "" : line)).join("\n");
+}
+
+/**
  * Inspired by `opencode/packages/opencode/src/tool/edit.ts`
  *
  * Tool for proposing a search-and-replace edit on a file (no direct apply).
@@ -712,7 +735,7 @@ export function ai_chat_tool_create_edit_file(
 				mode: "auto",
 			});
 			const modifiedText = files_normalize_ai_edit_content(modifiedTextRaw, currentFileContent.content);
-			const diff = createPatch(normalizedPath, currentFileContent.content, modifiedText);
+			const diff = ai_chat_tool_edit_file_create_diff(normalizedPath, currentFileContent.content, modifiedText);
 
 			const nodeId = currentFileContent.nodeId;
 
@@ -1140,3 +1163,36 @@ type ai_chat_tool_create_execute_code_Tool = ReturnType<typeof ai_chat_tool_crea
 export type ai_chat_tool_create_execute_code_ToolInput = InferToolInput<ai_chat_tool_create_execute_code_Tool>;
 export type ai_chat_tool_create_execute_code_ToolOutput = InferToolOutput<ai_chat_tool_create_execute_code_Tool>;
 // #endregion execute code
+
+// Vite replaces `process.env.NODE_ENV` statically, so this check must come first to let esbuild
+// erase `import.meta.vitest` before Convex analyzes the bundle.
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, expect, test } = import.meta.vitest;
+
+	describe("ai_chat_tool_edit_file_create_diff", () => {
+		test("keeps only the changed lines", () => {
+			const before = '{\n\t"n": 1\n}\n';
+			const after = '{\n\t"n": 2\n}\n';
+
+			expect(ai_chat_tool_edit_file_create_diff("/qa.json", before, after)).toBe(
+				[" {", '-\t"n": 1', '+\t"n": 2', " }", ""].join("\n"),
+			);
+		});
+
+		test("separates two hunks with an empty line", () => {
+			const before = `${["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"].join("\n")}\n`;
+			const after = `${["A", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "L"].join("\n")}\n`;
+
+			const diff = ai_chat_tool_edit_file_create_diff("/qa.txt", before, after);
+			expect(diff).not.toContain("@@");
+			expect(diff).not.toContain("Index:");
+			expect(diff).toContain("-a\n+A\n");
+			expect(diff).toContain("\n\n");
+			expect(diff).toContain("-l\n+L\n");
+		});
+
+		test("returns an empty diff when nothing changed", () => {
+			expect(ai_chat_tool_edit_file_create_diff("/qa.txt", "same\n", "same\n")).toBe("");
+		});
+	});
+}

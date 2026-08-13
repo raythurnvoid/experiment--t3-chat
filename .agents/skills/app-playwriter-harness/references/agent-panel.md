@@ -23,6 +23,8 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | Message | `.AiChatMessage` |
 | Bash tool disclosure | `summary[aria-label^="Bash"]` (`aria-label="Bash: <cmd>"`, `aria-busy` while running) |
 | Bash terminal output | `[aria-label="Bash terminal output"]` (`role=textbox`) |
+| Edit-file tool disclosure | `.AiChatMessagePartToolEditPage` (`summary` `aria-label="Edit file: <name>"`) |
+| Tool `Parameters` / `Result` / `Error` blocks | `[aria-label="Result"]` etc. inside the card (`role=textbox`) |
 | Failed send | `role=alert` containing `Message failed to send.` + `Show error details` and `Retry` buttons; the details dialog is named `Error details` and its raw message textbox is named `Raw error message` |
 | Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (whole row is a button; clicking switches to the Pending changes tab; counts only docs whose `threadIds` include the open chat, so a fresh chat shows no strip even when the workspace has pending changes) |
 | Pending-changes tab count badge | `.FileEditorSidebarPendingTabBadge` (inside `#app_file_editor_sidebar_tabs_pending`; absent at count 0; always the workspace-wide count) |
@@ -30,6 +32,38 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | Queued-message image count | `.AiChatQueuedMessages-attachments` inside the queued row |
 
 `waitForSelector("[role=option]", { state: "visible" })` is a trap in the agent panel: the thread-picker options stay mounted while hidden, so the wait pins the first match — an invisible `FileEditorSidebarAgentThreadPicker-item` — and times out even when the popover you actually opened (for example the `Chat model:` picker) is showing its options. Read all `[role=option]` matches and filter by bounding rect instead of waiting on the first. Same family as the mounted-closed `[role=dialog]` hazard in `known-hazards.md`.
+
+## Tool cards keep a real rect while their disclosure is closed
+
+A tool part renders as `<details class="AiChatMessagePartDisclosure">`, and the cards inside it (`.AiChatMessagePartToolTextAreaSection`, `.DiffMonospaceBlock`) still report a plausible `getBoundingClientRect` while the disclosure is closed. Neighbouring cards then report overlapping rects, and `document.elementFromPoint` at a card center returns `.AiChatMessagePartDisclosureButton` instead. A pointer probe aimed at those coordinates silently hovers the summary, so a hover test reports "nothing is hovered" and reads like a broken app.
+
+Expand the disclosure first, then hit-test every candidate before using its coordinates:
+
+```js
+const disclosure = state.page.locator(".FileEditorSidebarAgent-chat-area-panel .AiChatMessagePartDisclosure").nth(7);
+await disclosure.locator(".AiChatMessagePartDisclosureButton").first().scrollIntoViewIfNeeded();
+await disclosure.locator(".AiChatMessagePartDisclosureButton").first().click({ timeout: 4000 });
+// then, per candidate: document.elementFromPoint(x, y) must be inside the card
+```
+
+## Read an edit_file card's diff without sending a new message
+
+The `Result` block of an `edit_file` card renders the patch through `DiffMonospaceBlock`, one `<span>` per line, so a past chat is enough to check diff rendering — no new agent turn needed. Read the classes, not the colors:
+
+```js
+const card = Array.from(document.querySelectorAll(".AiChatMessagePartToolEditPage")).find((node) => node.open);
+const pre = card.querySelector("[aria-label=Result]");
+Array.from(pre.children).map((line) => [line.getAttribute("class"), line.textContent]);
+// DiffMonospaceBlock-line-header | -added | -removed | -context
+```
+
+The `edit_file` tool already sends the patch trimmed to its changed lines: no `createPatch` file header (`Index:`, `===`, `---`, `+++`) and no `@@ -1,6 +1,6 @@` position lines, with an empty line where a later hunk starts. So the first line is already a diff line, and a `-header` class never appears. Messages persisted before 2026-08-13 still hold the full patch and render its header lines. The block's own box styles lose to `.AiChatMessagePartToolTextAreaSection-textarea` on purpose: inside a tool card it has no border, no background, `overflow: visible`, and the section scrolls instead.
+
+## Scrollbar highlight probe
+
+To check the app's scrollbar highlight standard (`app.css`, `@layer base`), read the computed `scrollbar-color` of the chat panel `.FileEditorSidebarAgent-chat-area-panel` while the pointer sits on a card. Dim is `oklch(0.305 0.008 85)` (`--color-base-1-07`), bright is `oklch(0.395 0.011 85)` (`--color-base-1-10`).
+
+Two traps: a click leaves focus inside the panel and `:focus-within` keeps it bright no matter where the pointer is, so `document.activeElement.blur()` before a hover read; and park the pointer outside the panel between hovers so each `mouse.move` is a real position change. A card whose content fits carries `data-app-scrollable-fits` after the pointer or focus enters it (written by `app_scrollbar_install`), and a bar-less card must leave the panel bright.
 
 ## Composer input (ProseMirror)
 

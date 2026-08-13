@@ -3,6 +3,8 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { ai_chat_AiSdk5UiMessage } from "@/lib/ai-chat.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AiChatMessage, AiChatMessagePendingAssistant } from "./ai-chat-message.tsx";
 
 const hookMocks = vi.hoisted(() => {
@@ -133,15 +135,33 @@ function renderMessage(args: {
 	hookMocks.sendErrorDetails = args.sendErrorDetails ?? null;
 
 	return render(
-		<AiChatMessage
-			messageId={args.message.id}
-			message={args.message}
-			selectedThreadId="thread_1"
-			selectedModelId="gpt-5.4-nano"
-			selectedModeId="ask"
-			isRunning={Boolean(args.isRunning)}
-			actions={hookMocks.actions}
-		/>,
+		withTenant(
+			<AiChatMessage
+				messageId={args.message.id}
+				message={args.message}
+				selectedThreadId="thread_1"
+				selectedModelId="gpt-5.4-nano"
+				selectedModeId="ask"
+				isRunning={Boolean(args.isRunning)}
+				actions={hookMocks.actions}
+			/>,
+		),
+	);
+}
+
+// Tool cards link back to the edited file, so they read the current tenant from this provider.
+// A rerender must reuse it too, otherwise the changed tree remounts the message.
+function withTenant(ui: ReactNode) {
+	return (
+		<AppTenantProvider
+			membershipId={"membership-1" as app_convex_Id<"organizations_workspaces_users">}
+			workspaceId={"workspace-1" as app_convex_Id<"organizations_workspaces">}
+			workspaceName="home"
+			organizationId={"organization-1" as app_convex_Id<"organizations">}
+			organizationName="personal"
+		>
+			{ui}
+		</AppTenantProvider>
 	);
 }
 
@@ -450,15 +470,17 @@ describe("AiChatMessage", () => {
 		hookMocks.messageById.set(persistedMessage.id, persistedMessage);
 		hookMocks.branchSiblingIdsByMessageId.set(persistedMessage.id, [persistedMessage.id]);
 		rendered.rerender(
-			<AiChatMessage
-				messageId={persistedMessage.id}
-				message={persistedMessage}
-				selectedThreadId="thread_1"
-				selectedModelId="gpt-5.4-nano"
-				selectedModeId="ask"
-				isRunning={false}
-				actions={hookMocks.actions}
-			/>,
+			withTenant(
+				<AiChatMessage
+					messageId={persistedMessage.id}
+					message={persistedMessage}
+					selectedThreadId="thread_1"
+					selectedModelId="gpt-5.4-nano"
+					selectedModeId="ask"
+					isRunning={false}
+					actions={hookMocks.actions}
+				/>,
+			),
 		);
 
 		// The same DOM node must survive: a remount would recreate the details closed.
@@ -504,6 +526,51 @@ describe("AiChatMessage", () => {
 		expect(screen.getByRole("textbox", { name: "Code" }).textContent).toContain("return input.a + input.b;");
 		expect(screen.getByRole("textbox", { name: "Input" }).textContent).toContain('"a": 12');
 		expect(screen.getByRole("textbox", { name: "Result" }).textContent).toContain("Result: 21");
+	});
+
+	test("colors the edit_file result diff by line", () => {
+		// The tool already trimmed the patch down to the changed lines.
+		const diff = [" {", '-	"n": 1', '+	"n": 2', " }", ""].join("\n");
+
+		renderMessage({
+			message: {
+				id: "msg_assistant_edit_file",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-edit_file",
+						toolCallId: "call_edit_file",
+						state: "output-available",
+						input: { path: "/qa.json", oldString: '"n": 1', newString: '"n": 2', replaceAll: false },
+						output: {
+							title: "/qa.json",
+							metadata: {
+								nodeId: "node_1" as app_convex_Id<"files_nodes">,
+								contentNodeId: "node_1" as app_convex_Id<"files_nodes">,
+								pendingUpdateId: null,
+								path: "/qa.json",
+								matches: 1,
+								matcher: "exact",
+								diff,
+								modifiedContent: '{\n\t"n": 2\n}\n',
+							},
+							output: "Replaced 1 occurrence",
+						},
+					},
+				],
+				metadata: {
+					convexParentId: "msg_user_failed",
+					parentClientGeneratedId: null,
+				},
+			} satisfies ai_chat_AiSdk5UiMessage,
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Edit file: qa.json" }));
+
+		const result = screen.getByRole("textbox", { name: "Result" });
+		expect(result.querySelector(".DiffMonospaceBlock-line-removed")?.textContent).toContain('"n": 1');
+		expect(result.querySelector(".DiffMonospaceBlock-line-added")?.textContent).toContain('"n": 2');
+		expect(result.querySelectorAll(".DiffMonospaceBlock-line-context").length).toBe(3);
 	});
 
 	test("flags a runner-level execute_code failure in the summary and error section", () => {
