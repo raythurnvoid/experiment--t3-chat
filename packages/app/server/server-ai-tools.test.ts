@@ -641,6 +641,33 @@ test("edit tool describes preserving nested app path suffixes", () => {
 	);
 });
 
+test("edit_file tool treats an invalid pending update id as absent", async () => {
+	const { ctx, runQuery, runAction } = makeCtx(async () => null, {
+		runActionImpl: async () => null,
+	});
+	const tool = ai_chat_tool_create_edit_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
+	);
+
+	await expect(
+		tool.execute?.(
+			{
+				path: "/docs/hello.md",
+				oldString: "world",
+				newString: "team",
+				replaceAll: false,
+				pendingUpdateId: "1",
+			},
+			{ toolCallId: "test", messages: [] },
+		),
+	).rejects.toThrow("File not found");
+
+	const [, firstReadArgs] = runAction.mock.calls[0]!;
+	expect(firstReadArgs.pendingUpdateId).toBeUndefined();
+	expect(runQuery).toHaveBeenNthCalledWith(1, expect.anything(), { pendingUpdateId: "1" });
+});
+
 test("edit_file tool surfaces the upsert rejection when the file is archived after the read", async () => {
 	const nodeId = "p456";
 	const currentContent = {

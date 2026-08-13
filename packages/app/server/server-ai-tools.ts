@@ -686,7 +686,13 @@ export function ai_chat_tool_create_edit_file(
 
 		execute: async (args) => {
 			const normalizedPath = server_path_normalize(args.path);
-			const pendingUpdateId = args.pendingUpdateId as Id<"files_pending_updates"> | undefined;
+			// Treat an invalid model-supplied id as absent. The file read can find the current
+			// pending update from the user and file instead.
+			const pendingUpdateId = args.pendingUpdateId
+				? ((await ctx.runQuery(internal.files_pending_updates.normalize_file_pending_update_id, {
+						pendingUpdateId: args.pendingUpdateId,
+					})) ?? undefined)
+				: undefined;
 			if (!normalizedPath.startsWith("/") || normalizedPath === "/") {
 				throw new Error(`Invalid path: ${normalizedPath}. Path must be absolute and not root.`);
 			}

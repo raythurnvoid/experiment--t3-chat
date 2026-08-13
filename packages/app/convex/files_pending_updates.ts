@@ -4767,6 +4767,16 @@ export const get_file_pending_update = query({
 	},
 });
 
+export const normalize_file_pending_update_id = internalQuery({
+	args: {
+		pendingUpdateId: v.string(),
+	},
+	returns: v.union(v.id("files_pending_updates"), v.null()),
+	handler: async (ctx, args) => {
+		return ctx.db.normalizeId("files_pending_updates", args.pendingUpdateId);
+	},
+});
+
 export const get_file_pending_update_internal = internalQuery({
 	args: {
 		organizationId: v.id("organizations"),
