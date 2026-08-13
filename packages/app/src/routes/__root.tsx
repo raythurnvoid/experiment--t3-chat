@@ -9,7 +9,8 @@ import { MySpinner } from "../components/my-spinner.tsx";
 import { AppTanStackRouterDevTools } from "../components/app-tanstack-router-dev-tools.tsx";
 import { AppRouteError } from "../components/app-route-error.tsx";
 import { app_convex_api, type app_convex_FunctionReturnType } from "../lib/app-convex-client.ts";
-import { cn, valorize_scrollbar_width_px_css_var } from "../lib/utils.ts";
+import { cn } from "../lib/utils.ts";
+import { app_scrollbar_measure_width } from "../lib/app-scrollbar.ts";
 import type { AppElementId } from "../lib/dom-utils.ts";
 
 export type RootLayout_ClassNames =
@@ -61,7 +62,7 @@ function billing_is_loading(args: {
 
 function RootLayoutInner() {
 	useEffect(() => {
-		valorize_scrollbar_width_px_css_var();
+		app_scrollbar_measure_width();
 
 		// Browser QA waits on this attribute instead of polling route content. It appears only
 		// after auth, organization access, and billing bootstrap have all finished.

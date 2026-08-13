@@ -46,6 +46,8 @@ await disclosure.locator(".AiChatMessagePartDisclosureButton").first().click({ t
 // then, per candidate: document.elementFromPoint(x, y) must be inside the card
 ```
 
+The layout does not settle in the same execute call as the expand: a hit test right after the click still reports every card unreachable. Hit-test in the next call.
+
 ## Read an edit_file card's diff without sending a new message
 
 The `Result` block of an `edit_file` card renders the patch through `DiffMonospaceBlock`, one `<span>` per line, so a past chat is enough to check diff rendering — no new agent turn needed. Read the classes, not the colors:
@@ -63,7 +65,7 @@ The `edit_file` tool already sends the patch trimmed to its changed lines: no `c
 
 To check the app's scrollbar highlight standard (`app.css`, `@layer base`), read the computed `scrollbar-color` of the chat panel `.FileEditorSidebarAgent-chat-area-panel` while the pointer sits on a card. Dim is `oklch(0.305 0.008 85)` (`--color-base-1-07`), bright is `oklch(0.395 0.011 85)` (`--color-base-1-10`).
 
-Two traps: a click leaves focus inside the panel and `:focus-within` keeps it bright no matter where the pointer is, so `document.activeElement.blur()` before a hover read; and park the pointer outside the panel between hovers so each `mouse.move` is a real position change. A card whose content fits carries `data-app-scrollable-fits` after the pointer or focus enters it (written by `app_scrollbar_install`), and a bar-less card must leave the panel bright.
+Two traps: a click leaves focus inside the panel and `:focus-within` keeps it bright no matter where the pointer is, so `document.activeElement.blur()` before a hover read; and park the pointer outside the panel between hovers so each `mouse.move` is a real position change. A card whose content fits carries the `app-scrollable-fits` class after the pointer or focus enters it (written by `app_scrollbar_install`), and a bar-less card must leave the panel bright.
 
 ## Composer input (ProseMirror)
 

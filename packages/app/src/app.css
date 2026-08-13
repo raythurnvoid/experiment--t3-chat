@@ -447,15 +447,20 @@
 		scrollbar-color: var(--app-scrollbar-thumb) transparent;
 	}
 
-	/* The innermost tagged scroll container wins. Keep the hover rule and the focus rule
-	   separate. If one rule guarded against both states, focus resting inside a nested
-	   tagged scroll container (for example the agent chat panel while typing in its
-	   composer) would permanently stop hover from brightening the page scrollbar. */
-	.app-scrollable:hover:not(:has(.app-scrollable:hover)) {
+	/* The innermost tagged scroll container wins, but only while it really overflows. CSS
+	   cannot measure overflow, so `app_scrollbar_install` in src/lib/app-scrollbar.ts adds
+	   `app-scrollable-fits` to a hovered or focused container whose content fits. Such a
+	   container has no scrollbar to brighten, so the guards below skip it and let the panel or
+	   page behind it stay bright.
+	   Keep the hover rule and the focus rule separate. If one rule guarded against both states,
+	   focus resting inside a nested tagged scroll container (for example the agent chat panel
+	   while typing in its composer) would permanently stop hover from brightening the page
+	   scrollbar. */
+	.app-scrollable:hover:not(:has(.app-scrollable:not(.app-scrollable-fits):hover)) {
 		scrollbar-color: var(--app-scrollbar-thumb-active) transparent;
 	}
 
-	.app-scrollable:focus-within:not(:has(.app-scrollable:focus-within)) {
+	.app-scrollable:focus-within:not(:has(.app-scrollable:not(.app-scrollable-fits):focus-within)) {
 		scrollbar-color: var(--app-scrollbar-thumb-active) transparent;
 	}
 
