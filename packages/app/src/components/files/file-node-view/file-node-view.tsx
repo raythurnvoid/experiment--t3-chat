@@ -1593,26 +1593,17 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 
 	const { membershipId } = AppTenantProvider.useContext();
 
-	const downloadCandidates: { fileNodeId: app_convex_Id<"files_nodes">; label: string }[] = [];
-	if (node?.kind === "file") {
-		if (node.assetId) {
-			downloadCandidates.push({
-				fileNodeId: node._id,
-				label: node.name,
-			});
-		}
-	}
+	const [isDownloading, setIsDownloading] = useState(false);
 
-	const [downloadingFileNodeId, setDownloadingFileNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
-	const isDownloading = downloadingFileNodeId !== null;
-
-	const handleDownload = useFn((fileNodeId: app_convex_Id<"files_nodes">) => {
-		if (!node || isDownloading) {
+	const handleDownload = useFn(() => {
+		if (node?.kind !== "file" || !node.assetId || isDownloading) {
 			return;
 		}
-		const downloadCandidate = downloadCandidates.find((candidate) => candidate.fileNodeId === fileNodeId);
 
-		setDownloadingFileNodeId(fileNodeId);
+		const fileNodeId = node._id;
+		const filename = node.name;
+
+		setIsDownloading(true);
 		void convex
 			.action(app_convex_api.r2.create_signed_download_url, {
 				membershipId,
@@ -1641,7 +1632,7 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 				const responseBlob = await response.blob();
 				files_download_blob({
 					blob: responseBlob,
-					filename: downloadCandidate?.label ?? node.name,
+					filename,
 				});
 			})
 			.catch((error) => {
@@ -1652,82 +1643,37 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 				toast.error(error instanceof Error ? error.message : "Failed to download file");
 			})
 			.finally(() => {
-				setDownloadingFileNodeId(null);
+				setIsDownloading(false);
 			});
 	});
 
-	if (!node || node.kind !== "file" || downloadCandidates.length === 0) {
+	// Only an uploaded file has stored bytes to download.
+	if (node?.kind !== "file" || !node.assetId) {
 		return null;
 	}
 
-	const singleCandidate = downloadCandidates[0];
-
 	return (
-		<div
-			role="group"
-			aria-label="Download selected file"
-			className={"FileNodeViewToolbarFileDownloadAction" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames}
-		>
-			{downloadCandidates.length === 1 && singleCandidate ? (
-				<MyButton
+		<div className={"FileNodeViewToolbarFileDownloadAction" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames}>
+			<MyIconButton
+				className={
+					"FileNodeViewToolbarFileDownloadAction-button" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
+				}
+				variant="ghost-highlightable"
+				tooltip="Download"
+				// Keep the file name in the accessible name so the button stays identifiable in a page with several actions.
+				aria-label={`Download ${node.name}`}
+				disabled={isDownloading}
+				aria-busy={isDownloading}
+				onClick={handleDownload}
+			>
+				<MyIconButtonIcon
 					className={
-						"FileNodeViewToolbarFileDownloadAction-button" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
+						"FileNodeViewToolbarFileDownloadAction-button-icon" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
 					}
-					variant="ghost-highlightable"
-					disabled={isDownloading}
-					aria-busy={downloadingFileNodeId === singleCandidate.fileNodeId}
-					onClick={() => handleDownload(singleCandidate.fileNodeId)}
 				>
-					<MyButtonIcon
-						className={
-							"FileNodeViewToolbarFileDownloadAction-button-icon" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
-						}
-					>
-						<Download />
-					</MyButtonIcon>
-					{singleCandidate.label}
-				</MyButton>
-			) : (
-				<MyMenu placement="bottom-start">
-					<MyMenuTrigger>
-						<MyButton
-							className={
-								"FileNodeViewToolbarFileDownloadAction-button" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
-							}
-							variant="ghost-highlightable"
-							disabled={isDownloading}
-							aria-busy={isDownloading}
-						>
-							<MyButtonIcon
-								className={
-									"FileNodeViewToolbarFileDownloadAction-button-icon" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
-								}
-							>
-								<Download />
-							</MyButtonIcon>
-							Download
-						</MyButton>
-					</MyMenuTrigger>
-					<MyMenuPopover>
-						<MyMenuPopoverContent>
-							{downloadCandidates.map((downloadCandidate) => (
-								<MyMenuItem
-									key={downloadCandidate.fileNodeId}
-									disabled={isDownloading}
-									onClick={() => handleDownload(downloadCandidate.fileNodeId)}
-								>
-									<MyMenuItemContent>
-										<MyMenuItemContentIcon>
-											<Download />
-										</MyMenuItemContentIcon>
-										<MyMenuItemContentPrimary>{downloadCandidate.label}</MyMenuItemContentPrimary>
-									</MyMenuItemContent>
-								</MyMenuItem>
-							))}
-						</MyMenuPopoverContent>
-					</MyMenuPopover>
-				</MyMenu>
-			)}
+					<Download />
+				</MyIconButtonIcon>
+			</MyIconButton>
 		</div>
 	);
 });

@@ -12,6 +12,7 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 - Comments tab: `#app_file_editor_sidebar_tabs_comments`.
 - Agent tab: `#app_file_editor_sidebar_tabs_agent`.
 - Details tab: `#app_file_editor_sidebar_tabs_details` (since 2026-08-10). Rows are `.FileEditorSidebarDetails-row` with `-label` / `-value` slots. Sidebar tabs depend on the node: a plain-text node shows Details and no Comments (and Details is its default), a Markdown node shows Comments; a stored selection naming a hidden tab falls back without being overwritten.
+- Download control: `.FileNodeViewToolbarFileDownloadAction-button`, an icon button with the tooltip `Download` and the accessible name `Download <file name>` (since 2026-08-13 it no longer shows the file name as visible text). It renders for any node that has an uploaded asset, in every node view. Locate it with `getByRole("button", { name: "Download <file name>" })`, and read the result with `page.waitForEvent("download")` — the file lands in the real `~/Downloads` folder (see `known-hazards.md`). A file whose stored asset is gone answers with a `Not found` toast, so read `[data-sonner-toast]` in the same execute call as the click.
 
 ## Read-Only Selected Node
 
