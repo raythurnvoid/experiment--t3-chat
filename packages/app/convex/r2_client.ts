@@ -345,6 +345,52 @@ export async function r2_delete_object(ctx: MutationCtx, key: string) {
 	await r2.deleteObject(ctx, key);
 }
 
+/**
+ * Publish a picture the chat agent drew: give the asset its final key and drop its cleanup deadline.
+ *
+ * A generated image is only reachable from inside a stored chat message, and no index can find it
+ * there. So `cleanup_expired_unfinalized_assets` would delete it like any other unfinished asset.
+ * The deadline is cleared here instead, when the message that shows the image is stored. An image
+ * whose message never arrives keeps the deadline and is deleted a day later.
+ *
+ * `assetId` travels inside a message body that the client writes, so nothing is trusted: a string
+ * that is not an id, an asset from another workspace, and an asset that is not a generated image
+ * are all ignored.
+ */
+export async function r2_db_finalize_generated_image_asset(
+	ctx: MutationCtx,
+	args: {
+		organizationId: string;
+		workspaceId: string;
+		assetId: string;
+	},
+) {
+	const assetId = ctx.db.normalizeId("files_r2_assets", args.assetId);
+	if (!assetId) {
+		return;
+	}
+
+	const asset = await ctx.db.get("files_r2_assets", assetId);
+	if (
+		!asset ||
+		asset.kind !== "generated_image" ||
+		asset.organizationId !== args.organizationId ||
+		asset.workspaceId !== args.workspaceId
+	) {
+		return;
+	}
+
+	await ctx.db.patch("files_r2_assets", assetId, {
+		r2Key: r2_create_asset_key({
+			organizationId: asset.organizationId,
+			workspaceId: asset.workspaceId,
+			assetId,
+		}),
+		unfinalizedExpiresAt: undefined,
+		updatedAt: Date.now(),
+	});
+}
+
 // #region R2 deletion jobs
 
 // Keep one cleanup job for each R2 key that must be deleted. The R2 component retries only a fixed

@@ -64,6 +64,7 @@ import { cn, json_strigify_ensured, sx } from "@/lib/utils.ts";
 import { path_name_of } from "@/lib/paths.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { files_media_get_signed_chat_image_url } from "@/lib/files-media-src.ts";
 import { MyButton, MyButtonIcon } from "../my-button.tsx";
 
 // Reuse one stable empty array so the store selector does not trigger avoidable re-renders.
@@ -521,6 +522,95 @@ const AiChatMessagePartToolExecuteCode = memo(function AiChatMessagePartToolExec
 });
 // #endregion tool execute_code
 
+// #region tool image_generation
+type AiChatMessagePartToolImageGeneration_ClassNames =
+	| "AiChatMessagePartToolImageGeneration"
+	| "AiChatMessagePartToolImageGeneration-image";
+
+type AiChatMessagePartToolImageGeneration_Props = {
+	className?: string | undefined;
+	result: ai_chat_UiTools["image_generation"]["output"] | undefined;
+	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
+	errorText?: string | undefined;
+};
+
+const AiChatMessagePartToolImageGeneration = memo(function AiChatMessagePartToolImageGeneration(
+	props: AiChatMessagePartToolImageGeneration_Props,
+) {
+	const { className, result, toolState, isChatRunning, errorText } = props;
+
+	const { membershipId } = AppTenantProvider.useContext();
+	const [imageUrl, setImageUrl] = useState<string | null>(null);
+	const assetId = result?.assetId;
+
+	// A signed url lives 15 minutes, so it is fetched while the picture is on screen instead of
+	// being stored with the message.
+	useEffect(() => {
+		if (assetId === undefined) {
+			return;
+		}
+
+		let stillMounted = true;
+		files_media_get_signed_chat_image_url({ membershipId, assetId })
+			.then((signed) => {
+				if (!stillMounted) {
+					return;
+				}
+
+				if (signed._nay) {
+					console.error("[AiChatMessagePartToolImageGeneration.resolveUrl] Failed to sign a generated image", {
+						error: signed._nay,
+						assetId,
+					});
+					return;
+				}
+
+				setImageUrl(signed._yay);
+			})
+			.catch((error: unknown) => {
+				console.error("[AiChatMessagePartToolImageGeneration.resolveUrl] Unexpected async error", {
+					error,
+					assetId,
+				});
+			});
+
+		return () => {
+			stillMounted = false;
+		};
+	}, [membershipId, assetId]);
+
+	// The picture is the answer, so show it directly instead of hiding it inside the
+	// `Generate image` disclosure the other tools use.
+	if (imageUrl !== null) {
+		return (
+			<img
+				className={cn(
+					"AiChatMessagePartToolImageGeneration-image" satisfies AiChatMessagePartToolImageGeneration_ClassNames,
+					className,
+				)}
+				src={imageUrl}
+				alt="Generated image"
+			/>
+		);
+	}
+
+	return (
+		<AiChatMessagePartDisclosure
+			className={cn(
+				"AiChatMessagePartToolImageGeneration" satisfies AiChatMessagePartToolImageGeneration_ClassNames,
+				className,
+			)}
+		>
+			<AiChatMessagePartDisclosureButton title="Generate image" state={toolState} isChatRunning={isChatRunning} />
+			<AiChatMessagePartToolBody>
+				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartDisclosure>
+	);
+});
+// #endregion tool image_generation
+
 // #region tool unknown
 type AiChatMessagePartToolUnknown_ClassNames = "AiChatMessagePartToolUnknown" | "AiChatMessagePartToolUnknown-meta";
 
@@ -866,6 +956,16 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 				return (
 					<AiChatMessagePartToolExecuteCode
 						args={part.input}
+						result={part.output}
+						toolState={part.state}
+						isChatRunning={isChatRunning}
+						errorText={part.errorText}
+					/>
+				);
+			}
+			case "tool-image_generation": {
+				return (
+					<AiChatMessagePartToolImageGeneration
 						result={part.output}
 						toolState={part.state}
 						isChatRunning={isChatRunning}

@@ -1,11 +1,14 @@
 import { composite_id, omit_properties, should_never_happen } from "../shared/shared-utils.ts";
 import {
+	ai_chat_GENERATED_IMAGE_MEDIA_TYPE,
 	ai_chat_MESSAGE_IMAGE_MAX_COUNT,
 	ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS,
+	ai_chat_MODELS,
 	ai_chat_MODEL_IDS,
 	ai_chat_MODE_IDS,
 	ai_chat_is_message_image_media_type,
 	type ai_chat_UiMessage,
+	type ai_chat_UiTools,
 } from "../shared/ai-chat.ts";
 import { math_clamp } from "../src/lib/utils.ts";
 import { get_id_generator } from "../shared/generated-ids.ts";
@@ -32,7 +35,10 @@ import {
 	stepCountIs,
 	convertToModelMessages,
 	validateUIMessages,
+	wrapLanguageModel,
 	TypeValidationError,
+	type InferUIMessageChunk,
+	type LanguageModelMiddleware,
 } from "ai";
 import { z } from "zod";
 import {
@@ -49,8 +55,11 @@ import {
 	ai_chat_tool_create_edit_file,
 	ai_chat_tool_create_web_search,
 	ai_chat_tool_create_execute_code,
+	ai_chat_tool_create_image_generation,
+	ai_chat_tool_create_image_generation_stored,
 	ai_chat_WRITE_TOOL_NAMES,
 } from "../server/server-ai-tools.ts";
+import { r2_create_asset_key, r2_db_finalize_generated_image_asset, r2_put_object } from "./r2_client.ts";
 import app_convex_schema from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { billing_event } from "../server/billing.ts";
@@ -120,7 +129,11 @@ const TITLE_SYSTEM_PROMPT = [
 	"Respond with ONLY the title, no quotes or extra text.",
 ].join("\n");
 
-function ai_chat_system_prompt(args: { organizationName: string; workspaceName: string }) {
+function ai_chat_system_prompt(args: {
+	organizationName: string;
+	workspaceName: string;
+	supportsImageGeneration: boolean;
+}) {
 	const HOME = "/home/cloud-usr";
 	const appMountPath = `${HOME}/w`;
 	const currentWorkspacePath = `${appMountPath}/${args.organizationName}/${args.workspaceName}`;
@@ -143,6 +156,12 @@ function ai_chat_system_prompt(args: { organizationName: string; workspaceName: 
 		"To read app files from code, fetch `${process.env.T3_APP_ORIGIN}/api/v1/files/list` for paths, then `${process.env.T3_APP_ORIGIN}/api/v1/files/read-many` for contents; follow `cursor` until `isDone`, check `errors` and `truncated`, and use `/api/v1/files/read` only for one known file.",
 		"Do not pass app file paths or contents through `input`; keep `input` for ordinary JSON parameters, run file API fetches inside the snippet, and return a compact aggregate instead of raw file contents.",
 		"Summarize `execute_code` results and logs in your answer; do not paste large raw output.",
+		// Only the models marked in `ai_chat_MODELS` get the picture tool, so only they hear about it.
+		...(args.supportsImageGeneration
+			? [
+					"Use `image_generation` when the user asks for a picture, an illustration, or a logo; it draws one image per call and the chat shows it, so describe it in words only when the user asked for a description instead.",
+				]
+			: []),
 		"After tool results, give the user a concise direct answer and only continue using tools when it materially helps.",
 	].join("\n");
 }
@@ -207,6 +226,12 @@ function resolve_parent_message_context(input: {
 	});
 }
 
+/**
+ * What one generated picture costs, in cents. OpenAI charges per image, not per token, so this is
+ * added to the token cost of the turn that drew it.
+ */
+const GENERATED_IMAGE_COST_CENTS = 4;
+
 function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
 	switch (args.modelId) {
 		case "gpt-5.4-nano":
@@ -222,6 +247,161 @@ function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: nu
 	}
 }
 
+/**
+ * Drop the preview copies OpenAI sends while it draws a picture.
+ *
+ * The `image_generation` tool streams the picture as one or more previews and then sends the
+ * finished picture. The provider marks a preview with `preliminary`, but `runToolsTransformation`
+ * in the AI SDK forwards a provider-executed tool result without that flag, so every layer above
+ * reads a preview as one more finished picture. The picture would then be stored twice, billed
+ * twice, and the assistant message would hold two results for one tool call. OpenAI refuses the
+ * next request of that turn with "Duplicate item found", which breaks the title call and any turn
+ * that keeps working after the picture. The chat never shows a preview, so drop them here, where
+ * the flag still exists.
+ */
+const drop_preliminary_tool_results_middleware: LanguageModelMiddleware = {
+	specificationVersion: "v3",
+	wrapStream: async ({ doStream }) => {
+		const { stream, ...rest } = await doStream();
+
+		return {
+			...rest,
+			stream: stream.pipeThrough(
+				new TransformStream({
+					transform: (part, controller) => {
+						if (part.type === "tool-result" && part.preliminary) {
+							return;
+						}
+
+						controller.enqueue(part);
+					},
+				}),
+			),
+		};
+	},
+};
+
+/**
+ * Move a generated picture out of the message and into R2.
+ *
+ * OpenAI runs the image tool on its own side and sends the finished picture back as base64 inside
+ * the tool output. One chat message is stored as one Convex doc with a ~1 MiB limit, and a single
+ * picture already fills most of it, so the bytes cannot stay in the message. Each picture is written
+ * to R2 here and the output becomes a reference to that asset.
+ *
+ * The asset keeps the cleanup deadline `insert_asset` gave it. `thread_messages_add` clears the
+ * deadline when it stores a message that shows the picture, so a picture whose message never arrives
+ * is deleted a day later instead of staying in the bucket forever.
+ */
+function create_generated_image_upload_transform(input: {
+	ctx: ActionCtx;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+	userId: Id<"users">;
+}) {
+	const { ctx, organizationId, workspaceId, userId } = input;
+
+	// A `tool-output-available` chunk carries no tool name, so remember which calls are image calls.
+	const imageToolCallIds = new Set<string>();
+
+	return new TransformStream<InferUIMessageChunk<ai_chat_UiMessage>, InferUIMessageChunk<ai_chat_UiMessage>>({
+		transform: async (chunk, controller) => {
+			if (
+				chunk.type === "tool-input-available" &&
+				chunk.toolName === ("image_generation" satisfies keyof ai_chat_UiTools)
+			) {
+				imageToolCallIds.add(chunk.toolCallId);
+			}
+
+			if (chunk.type !== "tool-output-available" || !imageToolCallIds.has(chunk.toolCallId)) {
+				controller.enqueue(chunk);
+				return;
+			}
+
+			const output = chunk.output;
+			const base64 =
+				output !== null && typeof output === "object" && typeof (output as { result?: unknown }).result === "string"
+					? (output as { result: string }).result
+					: null;
+			if (base64 === null) {
+				console.error("Image generation returned an unexpected output shape", { toolCallId: chunk.toolCallId });
+				controller.enqueue({
+					type: "tool-output-error",
+					toolCallId: chunk.toolCallId,
+					errorText: "The image could not be read.",
+					providerExecuted: true,
+				});
+				return;
+			}
+
+			const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+
+			const assetId = await ctx.runMutation(internal.r2.insert_asset, {
+				organizationId,
+				workspaceId,
+				kind: "generated_image",
+				size: bytes.byteLength,
+				createdBy: userId,
+			});
+
+			try {
+				await r2_put_object(ctx, {
+					key: r2_create_asset_key({ organizationId, workspaceId, assetId }),
+					body: bytes,
+					contentType: ai_chat_GENERATED_IMAGE_MEDIA_TYPE,
+				});
+			} catch (error) {
+				console.error("Failed to store a generated image", { error, assetId, toolCallId: chunk.toolCallId });
+				controller.enqueue({
+					type: "tool-output-error",
+					toolCallId: chunk.toolCallId,
+					errorText: "The image could not be stored.",
+					providerExecuted: true,
+				});
+				return;
+			}
+
+			controller.enqueue({
+				...chunk,
+				output: {
+					assetId,
+					mediaType: ai_chat_GENERATED_IMAGE_MEDIA_TYPE,
+					size: bytes.byteLength,
+				} satisfies ai_chat_UiTools["image_generation"]["output"],
+			});
+		},
+	});
+}
+
+/**
+ * Read the R2 assets a message shows as generated pictures.
+ *
+ * This is the shape `create_generated_image_upload_transform` leaves in the message. `content` is a
+ * loose record and any client can post one, so every field is checked before it is used.
+ */
+function read_generated_image_asset_ids(content: Record<string, unknown>) {
+	const parts: unknown[] = Array.isArray(content.parts) ? content.parts : [];
+	const assetIds: string[] = [];
+
+	for (const part of parts) {
+		if (!part || typeof part !== "object") {
+			continue;
+		}
+
+		const toolPart = part as { type?: unknown; state?: unknown; output?: unknown };
+		if (toolPart.type !== "tool-image_generation" || toolPart.state !== "output-available") {
+			continue;
+		}
+
+		const assetId = (toolPart.output as { assetId?: unknown } | null | undefined)?.assetId;
+		if (typeof assetId === "string") {
+			assetIds.push(assetId);
+		}
+	}
+
+	return assetIds;
+}
+
 function build_agent_configuration(input: {
 	ctx: ActionCtx;
 	ctxData: {
@@ -232,6 +412,7 @@ function build_agent_configuration(input: {
 		userId: Id<"users">;
 	};
 	args: {
+		modelId: (typeof ai_chat_MODEL_IDS)[number];
 		modeId: (typeof ai_chat_MODE_IDS)[number];
 	};
 	getThreadId: () => Id<"ai_chat_threads"> | null;
@@ -239,26 +420,38 @@ function build_agent_configuration(input: {
 	const {
 		ctx,
 		ctxData,
-		args: { modeId },
+		args: { modelId, modeId },
 		getThreadId,
 	} = input;
+
+	const supportsImageGeneration = ai_chat_MODELS[modelId].supportsImageGeneration;
 
 	// The tools that write pending updates (or grants) read the running chat's thread id from
 	// their ctxData; the lazy getter resolves after the http handler creates/loads the thread.
 	const toolCtxData = { ...ctxData, getThreadId };
 
-	// We list every tool here, in both modes. `validateUIMessages` fails when a message mentions a tool
-	// name that is not in this list. The route accepts whatever messages a client posts, and a thread
-	// that once ran in agent mode can hold agent-only tool calls. So a list that changed with the mode
-	// would turn "this thread once ran in agent mode" into a 400. Our own app posts only the new user
-	// message, but the route cannot count on that.
-	const validationTools = {
+	// The tools this route runs itself. Only these can write, so only these are filtered in ask mode.
+	const appTools = {
 		bash: ai_chat_tool_create_bash(ctx, toolCtxData, {
 			allowDbFilesMkdir: modeId === "agent",
 		}),
 		edit_file: ai_chat_tool_create_edit_file(ctx, toolCtxData),
 		web_search: ai_chat_tool_create_web_search(),
 		execute_code: ai_chat_tool_create_execute_code(ctx, toolCtxData),
+	};
+
+	// We list every tool here, in every mode and for every model. `validateUIMessages` fails when a
+	// message mentions a tool name that is not in this list. The route accepts whatever messages a
+	// client posts, and a thread that once ran in agent mode, or on a model that draws pictures, can
+	// hold those tool calls. So a list that changed with the mode or the model would turn "this thread
+	// once ran in agent mode" into a 400. Our own app posts only the new user message, but the route
+	// cannot count on that.
+	const validationTools = {
+		...appTools,
+		// This is the only tool whose stored shape differs from the shape the model call uses. The
+		// stream below replaces the picture with a reference to an R2 asset, and `validateUIMessages`
+		// checks stored messages, so it must be given the stored shape.
+		image_generation: ai_chat_tool_create_image_generation_stored(),
 	};
 
 	const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);
@@ -269,17 +462,22 @@ function build_agent_configuration(input: {
 	// and `experimental_repairToolCall` also matches wrong upper/lower case against it. So a write tool
 	// left here stays callable in ask mode. `edit_file` checks no permission by itself, because this
 	// route is meant to be the check.
-	const tools = Object.fromEntries(
-		Object.entries(validationTools).filter(([name]) => !(modeId === "ask" && writeToolNames.has(name))),
-	) as Partial<typeof validationTools>;
+	const tools = {
+		...(Object.fromEntries(
+			Object.entries(appTools).filter(([name]) => !(modeId === "ask" && writeToolNames.has(name))),
+		) as Partial<typeof appTools>),
+		// OpenAI runs this one on its own side and it changes nothing in the workspace, so both modes
+		// keep it. Only a model that can run it gets it, because it is not a tool we execute: a model
+		// that does not support it would reject the whole request, not just the picture.
+		...(supportsImageGeneration ? { image_generation: ai_chat_tool_create_image_generation() } : {}),
+	};
 
 	const activeTools = Object.keys(tools) as Array<keyof typeof validationTools>;
 
+	const systemPrompt = ai_chat_system_prompt({ ...ctxData, supportsImageGeneration });
+
 	return {
-		systemPrompt:
-			modeId === "ask"
-				? `${ai_chat_system_prompt(ctxData)}\n${ASK_MODE_SYSTEM_PROMPT_SUFFIX}`
-				: ai_chat_system_prompt(ctxData),
+		systemPrompt: modeId === "ask" ? `${systemPrompt}\n${ASK_MODE_SYSTEM_PROMPT_SUFFIX}` : systemPrompt,
 		tools,
 		validationTools,
 		activeTools,
@@ -1250,6 +1448,7 @@ export const thread_messages_add = mutation({
 
 		const now = Date.now();
 		const ids: Array<Id<"ai_chat_threads_messages_aisdk_5">> = [];
+		const generatedImageAssetIds: string[] = [];
 		let nextParentId = parentId;
 		for (const message of args.messages) {
 			const existingMessageId = existingIdsByClientGeneratedMessageId.get(message.clientGeneratedMessageId);
@@ -1271,8 +1470,20 @@ export const thread_messages_add = mutation({
 			});
 
 			existingIdsByClientGeneratedMessageId.set(message.clientGeneratedMessageId, messageId);
+			generatedImageAssetIds.push(...read_generated_image_asset_ids(message.content));
 			ids.push(messageId);
 			nextParentId = messageId;
+		}
+
+		// Storing the message is what makes its pictures permanent. Until now those assets still carry
+		// the cleanup deadline the chat route gave them, so a picture whose message never arrives is
+		// deleted instead of staying in the bucket forever.
+		for (const assetId of generatedImageAssetIds) {
+			await r2_db_finalize_generated_image_asset(ctx, {
+				organizationId: thread.organizationId,
+				workspaceId: thread.workspaceId,
+				assetId,
+			});
 		}
 
 		if (ids.length > 0) {
@@ -1448,6 +1659,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				userId: user._id,
 			},
 			args: {
+				modelId: body.model,
 				modeId: body.mode,
 			},
 			getThreadId: () => threadId,
@@ -1717,6 +1929,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		// can emit one direct Polar usage event with the actual token cost.
 		let capturedUsage: { inputTokens: number; outputTokens: number } | null = null;
 		let capturedActualCents = 0;
+		let capturedGeneratedImages = 0;
 
 		const stream = createUIMessageStream<ai_chat_UiMessage>({
 			generateId: get_id_generator("ai_message"),
@@ -1743,7 +1956,10 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				});
 
 				const result1 = streamText({
-					model: openai(body.model),
+					model: wrapLanguageModel({
+						model: openai(body.model),
+						middleware: drop_preliminary_tool_results_middleware,
+					}),
 					system: systemPrompt,
 					messages: modelMessages,
 					maxOutputTokens: 2000,
@@ -1780,7 +1996,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 							requestSignalAborted: request.signal.aborted,
 						});
 					},
-					onFinish: async ({ totalUsage }) => {
+					onFinish: async ({ totalUsage, steps }) => {
 						// Aggregated across all steps; read by createUIMessageStream.onFinish
 						// to emit one response-usage event.
 						capturedUsage = {
@@ -1792,6 +2008,19 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 							inputTokens: capturedUsage.inputTokens,
 							outputTokens: capturedUsage.outputTokens,
 						});
+
+						// A picture costs per image, not per token. Count the results here rather than in the
+						// upload transform, because a step result holds one entry per finished picture once
+						// `drop_preliminary_tool_results_middleware` has removed the previews.
+						capturedGeneratedImages = steps.reduce(
+							(count, step) =>
+								count +
+								step.toolResults.filter(
+									(toolResult) => toolResult?.toolName === ("image_generation" satisfies keyof ai_chat_UiTools),
+								).length,
+							0,
+						);
+						capturedActualCents += capturedGeneratedImages * GENERATED_IMAGE_COST_CENTS;
 					},
 				});
 
@@ -1801,7 +2030,16 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				const ui_message_stream = result1.toUIMessageStream<ai_chat_UiMessage>({
 					onError: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 				});
-				writer.merge(ui_message_stream);
+				writer.merge(
+					ui_message_stream.pipeThrough(
+						create_generated_image_upload_transform({
+							ctx,
+							organizationId: membership.organizationId,
+							workspaceId: membership.workspaceId,
+							userId: user._id,
+						}),
+					),
+				);
 
 				if (request.signal.aborted) {
 					return;
@@ -1910,6 +2148,8 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 											modelId: TITLE_MODEL_ID,
 											inputTokens: titleInputTokens,
 											outputTokens: titleOutputTokens,
+											// The title model has no tools, so a title turn never draws.
+											generatedImages: 0,
 											threadId: String(threadId ?? ""),
 											messageId: "title",
 										},
@@ -1953,7 +2193,9 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
 				const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
 				const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
-				if (capturedTotalTokens > 0) {
+				// Pictures are billed per image, so a turn that drew one is billed even if the model
+				// reported no token usage.
+				if (capturedTotalTokens > 0 || capturedGeneratedImages > 0) {
 					await billing_ingest_events(ctx, {
 						billedUserEvents: [
 							{
@@ -1981,6 +2223,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 										modelId: body.model,
 										inputTokens: capturedInputTokens,
 										outputTokens: capturedOutputTokens,
+										generatedImages: capturedGeneratedImages,
 										threadId: String(threadId ?? ""),
 										messageId: String(result.responseMessage.id ?? ""),
 									},
@@ -2249,6 +2492,8 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 										modelId: TITLE_MODEL_ID,
 										inputTokens: titleInputTokens,
 										outputTokens: titleOutputTokens,
+										// The title model has no tools, so a title turn never draws.
+										generatedImages: 0,
 										threadId: thread_id,
 										messageId: "title",
 									},
@@ -2325,7 +2570,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		name: "Test User",
 	} as unknown as build_agent_configuration_test_user_identity;
 
-	const build_agent_configuration_expected_tool_keys = ["bash", "edit_file", "web_search", "execute_code"] as const;
+	// Every model can draw pictures today. Pin one that can, so these cases keep asserting the tool list
+	// of a picture-capable model once a model that cannot draw is added.
+	const build_agent_configuration_test_model_id = "gpt-5.4-nano" as const satisfies (typeof ai_chat_MODEL_IDS)[number];
+
+	const build_agent_configuration_expected_tool_keys = [
+		"bash",
+		"edit_file",
+		"web_search",
+		"execute_code",
+		"image_generation",
+	] as const;
 
 	const makeCtx = (args?: {
 		runQueryImpl?: (...fnArgs: unknown[]) => Promise<unknown>;
@@ -2411,13 +2666,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				ctx,
 				ctxData: build_agent_configuration_test_ctx_data,
 				args: {
+					modelId: build_agent_configuration_test_model_id,
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
 			});
 
 			expect(Object.keys(configuration.tools)).toEqual(build_agent_configuration_expected_tool_keys);
-			expect(configuration.activeTools).toEqual(["bash", "edit_file", "web_search", "execute_code"]);
+			expect(configuration.activeTools).toEqual([
+				"bash",
+				"edit_file",
+				"web_search",
+				"execute_code",
+				"image_generation",
+			]);
 		});
 
 		test("drops write tools from the tool registry itself in Ask mode, not only from activeTools", () => {
@@ -2426,6 +2688,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				ctx,
 				ctxData: build_agent_configuration_test_ctx_data,
 				args: {
+					modelId: build_agent_configuration_test_model_id,
 					modeId: "ask",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
@@ -2434,13 +2697,37 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// The `tools` object is what really matters. `activeTools` only shapes the request sent to
 			// the model. The SDK parses and runs a tool call by looking its name up in `tools`, so
 			// leaving `edit_file` there would keep it callable in ask mode whatever `activeTools` says.
-			expect(Object.keys(configuration.tools)).toEqual(["bash", "web_search", "execute_code"]);
-			expect(configuration.activeTools).toEqual(["bash", "web_search", "execute_code"]);
+			expect(Object.keys(configuration.tools)).toEqual(["bash", "web_search", "execute_code", "image_generation"]);
+			expect(configuration.activeTools).toEqual(["bash", "web_search", "execute_code", "image_generation"]);
 			expect("edit_file" in configuration.tools).toBe(false);
 
 			// The list used to validate messages still holds every tool. It has to accept the
 			// `edit_file` parts that an earlier agent-mode turn stored in the same thread.
 			expect(Object.keys(configuration.validationTools)).toEqual(build_agent_configuration_expected_tool_keys);
+		});
+
+		test("registers image_generation only for the models marked as supporting it", () => {
+			const { ctx } = makeCtx();
+
+			for (const modelId of ai_chat_MODEL_IDS) {
+				const configuration = build_agent_configuration({
+					ctx,
+					ctxData: build_agent_configuration_test_ctx_data,
+					args: {
+						modelId,
+						modeId: "agent",
+					},
+					getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				});
+
+				const supportsImageGeneration = ai_chat_MODELS[modelId].supportsImageGeneration;
+				expect("image_generation" in configuration.tools).toBe(supportsImageGeneration);
+				expect(configuration.systemPrompt.includes("Use `image_generation`")).toBe(supportsImageGeneration);
+
+				// The list used to validate stored messages always holds it, whatever the model can do.
+				// The thread may hold a picture an earlier turn drew on another model.
+				expect("image_generation" in configuration.validationTools).toBe(true);
+			}
 		});
 
 		test("accepts a historical execute_code tool part when validating stored UI messages", async () => {
@@ -2449,6 +2736,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				ctx,
 				ctxData: build_agent_configuration_test_ctx_data,
 				args: {
+					modelId: build_agent_configuration_test_model_id,
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
@@ -2489,6 +2777,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				ctx,
 				ctxData: build_agent_configuration_test_ctx_data,
 				args: {
+					modelId: build_agent_configuration_test_model_id,
 					modeId: "ask",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
@@ -2522,6 +2811,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				ctx,
 				ctxData: build_agent_configuration_test_ctx_data,
 				args: {
+					modelId: build_agent_configuration_test_model_id,
 					modeId: "ask",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
@@ -2538,6 +2828,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				ctx,
 				ctxData: build_agent_configuration_test_ctx_data,
 				args: {
+					modelId: build_agent_configuration_test_model_id,
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
@@ -2730,6 +3021,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				ctx,
 				ctxData: build_agent_configuration_test_ctx_data,
 				args: {
+					modelId: build_agent_configuration_test_model_id,
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,

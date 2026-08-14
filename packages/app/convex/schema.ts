@@ -1005,7 +1005,17 @@ const app_convex_schema = defineSchema({
 			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
 		),
-		kind: v.union(v.literal("upload"), v.literal("content"), v.literal("yjs_snapshot"), v.literal("content_snapshot")),
+		/**
+		 * `generated_image` is a picture the chat agent drew. It belongs to a chat message, not to a
+		 * file node, so nothing in the file tree points at it.
+		 */
+		kind: v.union(
+			v.literal("upload"),
+			v.literal("content"),
+			v.literal("yjs_snapshot"),
+			v.literal("content_snapshot"),
+			v.literal("generated_image"),
+		),
 		r2Bucket: v.string(),
 		/**
 		 * The final R2 key. It is set after R2 confirms that the file exists there.

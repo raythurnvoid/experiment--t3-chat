@@ -737,7 +737,7 @@ class MediaNodeView implements NodeView {
 	}
 
 	private watchAsset(fileNodeId: app_convex_Id<"files_nodes">) {
-		const watch = app_convex.watchQuery(app_convex_api.r2.get_asset, {
+		const watch = app_convex.watchQuery(app_convex_api.r2.get_asset_by_file_node_id, {
 			membershipId: this.membershipId,
 			fileNodeId,
 		});

@@ -168,7 +168,12 @@ Current purge coverage includes:
 - `files_yjs_snapshots`, `files_yjs_updates`, `files_yjs_docs_last_sequences`
 - `files_snapshots`, `file_stats`
 - `files_content_materialization_jobs` with Workpool job cancellation
-- `files_r2_assets` with upload-conversion job cancellation and durable exact-key R2 cleanup. Before
+- `files_r2_assets` with upload-conversion job cancellation and durable exact-key R2 cleanup. This
+  also covers `generated_image` assets, the pictures the chat agent drew: they belong to a chat
+  message instead of a file node, so nothing in the file tree points at them, but they are ordinary
+  asset docs in the workspace and this pass deletes them with the rest. A picture whose message was
+  never stored keeps its `unfinalizedExpiresAt` deadline and `cleanup_expired_unfinalized_assets`
+  deletes it a day later. Before
   deleting an asset doc, create a deletion job for the stored live key or its deterministic live key.
   Also create one for `uploadStagingR2Key` when present. The staging job keeps
   `putMayArriveUntil` through `uploadUrlExpiresAt` plus the normal margin. An older upload without a

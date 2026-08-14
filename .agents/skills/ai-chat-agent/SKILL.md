@@ -101,12 +101,13 @@ Non-obvious runtime details:
 
 # Current Toolbelt
 
-The main tool object contains exactly four tools:
+The main tool object contains exactly five tools:
 
 - `bash`
 - `edit_file` (the whole of `ai_chat_WRITE_TOOL_NAMES`; absent from the registry in ask mode)
 - `web_search`
 - `execute_code`
+- `image_generation` (run by OpenAI, not by this route; only for models whose `ai_chat_MODELS` entry sets `supportsImageGeneration`)
 
 `read_file`, `list_files`, `glob_files`, `grep_files`, and `write_file` were deleted, not deactivated — `bash` replaced all five, and the `BASH_REPLACED_TOOL_NAMES` list that used to hold them is gone too. Old threads still render their stored parts, because rendering reads the message, not the registry.
 
@@ -304,6 +305,17 @@ These tools are **deleted**. The sections below stay only so an old assistant me
 - Time bounds: async code is cut at an in-sandbox 5 s timeout (`status: "timed_out"`); a synchronous infinite loop cannot be preempted by either JS timer and runs until workerd's platform CPU limit (~30 s) kills the isolate, which is also reported as `timed_out`. A parent-side 7 s backstop covers a stalled RPC. There is no per-snippet `cpuMs` cap because the Worker Loader API has no `limits` field.
 - Outcomes map to `status: "succeeded" | "errored" | "timed_out"`. Caps: `code` ≤ 20 KB, direct `input` ≤ 32 KB at the app tool boundary, runner input ≤ 64 KB, per-fetch request/response bytes are capped, and result ≤ 16 KB (truncated past that). Operational logs carry only metadata (executionId, codeHash, byte sizes, hashed outbound host metadata), never raw code/input/result/logs, file contents, tokens, or raw hostnames.
 - Available in both Agent and Ask modes (it does not mutate app state). If `CODE_EXECUTION_RUNNER_URL`/`_SECRET` are unset, the tool reports that code execution is unavailable; a `CODE_EXECUTION_DISABLED` kill switch on the Worker returns "disabled".
+
+## `image_generation`
+
+- Draws a picture with OpenAI's `gpt-image-2`. It is a provider-executed tool: OpenAI runs it inside the same Responses call, so this route never executes anything. The factory is `ai_chat_tool_create_image_generation` in `../../../packages/app/server/server-ai-tools.ts`, which pins the model and `outputFormat: "webp"`; the model's own input schema is empty, so the agent cannot pass a prompt, size, or quality.
+- Available in both Agent and Ask modes. It writes nothing to app files, so it is not in `ai_chat_WRITE_TOOL_NAMES` and ask mode keeps it.
+- Registered per model, not for every model: `build_agent_configuration` adds it only when the selected model's `ai_chat_MODELS` entry in `../../../packages/app/shared/ai-chat.ts` sets `supportsImageGeneration: true`, and the system prompt drops its sentence for the other models. The field is required, so a new model id must state whether it can draw. All four OpenAI ids can today; a provider that cannot run OpenAI's tool would reject the whole request, not only the picture. `validationTools` still lists the tool for every model, because a thread can hold a picture an earlier turn drew on a model that supports it.
+- The tool output arrives as the whole picture in base64. A picture is around 500 KB and one message is one Convex doc with a ~1 MiB limit, so `create_generated_image_upload_transform` in `ai_chat.ts` writes the bytes to R2 and replaces the output with `{ assetId, mediaType, size }` before the message is stored. `validateUIMessages` therefore checks stored messages against `ai_chat_tool_create_image_generation_stored`, not against the provider tool.
+- The asset is a `files_r2_assets` doc of kind `generated_image` with no file node. It stays unfinalized until `thread_messages_add` stores a message that shows it; a picture whose message never arrives is deleted a day later by `cleanup_expired_unfinalized_assets`.
+- The chat renders it through `r2.create_signed_chat_image_url`, which refuses any asset that is not a `generated_image` in the caller's workspace. That kind check is the access boundary: file assets have per-node visibility that this path does not apply. The client calls it through `files_media_get_signed_chat_image_url` in `../../../packages/app/src/lib/files-media-src.ts`, sharing the signed-url cache with rich text embeds.
+- OpenAI streams a preview of the picture before the finished one. `@ai-sdk/openai` marks the preview `preliminary`, but `runToolsTransformation` in `ai@6.0.253` forwards a provider-executed tool result without that flag, so `drop_preliminary_tool_results_middleware` wraps the model and drops previews while the flag still exists. Without it the picture is stored twice, billed twice, and the assistant message holds two results for one call, which OpenAI rejects with `Duplicate item found` on the next request of the same turn.
+- Billing charges `GENERATED_IMAGE_COST_CENTS` per picture on top of tokens, and the `ai_usage` event carries `generatedImages`.
 
 ## Public Files API
 

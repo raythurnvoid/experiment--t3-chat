@@ -25,7 +25,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex_api: {
 		r2: {
-			get_asset: "get_asset",
+			get_asset_by_file_node_id: "get_asset_by_file_node_id",
 		},
 		users: {
 			get_anagraphic: "get_anagraphic",
@@ -167,7 +167,7 @@ describe("FileEditorSidebar", () => {
 describe("FileEditorSidebarDetails", () => {
 	test("renders the seven populated metadata rows for a converted upload", () => {
 		useQueryMock.mockImplementation((query: unknown, args: unknown) => {
-			if (query === "get_asset") {
+			if (query === "get_asset_by_file_node_id") {
 				return { size: 2048 };
 			}
 			if (query === "get_anagraphic") {
@@ -201,7 +201,7 @@ describe("FileEditorSidebarDetails", () => {
 		expect(rowValue("Created by")).toBe("Ada Lovelace");
 		expect(rowValue("Last edited by")).toBe("System");
 
-		expect(useQueryMock).toHaveBeenCalledWith("get_asset", {
+		expect(useQueryMock).toHaveBeenCalledWith("get_asset_by_file_node_id", {
 			membershipId: MEMBERSHIP_ID,
 			fileNodeId: "node_json",
 		});
@@ -212,7 +212,7 @@ describe("FileEditorSidebarDetails", () => {
 
 	test("shows the size as Unknown for an in-app file without an asset", () => {
 		useQueryMock.mockImplementation((query: unknown, args: unknown) => {
-			if (query === "get_asset") {
+			if (query === "get_asset_by_file_node_id") {
 				return null;
 			}
 			if (query === "get_anagraphic") {

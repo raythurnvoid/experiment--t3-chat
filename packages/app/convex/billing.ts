@@ -1829,6 +1829,11 @@ const billing_event_validator = v.union(
 			modelId: v.string(),
 			inputTokens: v.number(),
 			outputTokens: v.number(),
+			/**
+			 * How many pictures the chat agent drew in this turn, `0` when it drew none. A picture is
+			 * charged per image, so `amount` is more than the token cost whenever this is above zero.
+			 */
+			generatedImages: v.number(),
 			threadId: v.string(),
 			messageId: v.string(),
 		}),

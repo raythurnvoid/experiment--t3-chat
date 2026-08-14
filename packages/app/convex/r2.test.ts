@@ -876,11 +876,92 @@ describe("r2 asset content", () => {
 		});
 		expect(signedDownload._nay).toMatchObject({ message: "Not found" });
 
-		const asset = await asUser.query(api.r2.get_asset, {
+		const asset = await asUser.query(api.r2.get_asset_by_file_node_id, {
 			membershipId: db.membershipId,
 			fileNodeId: created._yay.nodeId,
 		});
 		expect(asset).toBeNull();
+	});
+
+	test("signs chat images only for generated_image assets in the caller's workspace", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const other = await t.run(async (ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "other", workspaceName: "home" }),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const insertAsset = (args: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			kind: "generated_image" | "content";
+		}) =>
+			t.run(async (ctx) =>
+				ctx.db.insert("files_r2_assets", {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					kind: args.kind,
+					r2Bucket: "test-bucket",
+					size: 128,
+					createdBy: db.userId,
+					unfinalizedExpiresAt: Date.now() + 60_000,
+					updatedAt: Date.now(),
+				}),
+			);
+
+		const generatedImageAssetId = await insertAsset({
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			kind: "generated_image",
+		});
+		const fileAssetId = await insertAsset({
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			kind: "content",
+		});
+		const otherWorkspaceAssetId = await insertAsset({
+			organizationId: other.organizationId,
+			workspaceId: other.workspaceId,
+			kind: "generated_image",
+		});
+
+		// The picture is signed before its message is stored, from the deterministic key.
+		const signed = await asUser.action(api.r2.create_signed_chat_image_url, {
+			membershipId: db.membershipId,
+			assetId: generatedImageAssetId,
+		});
+		expect(signed._nay).toBeUndefined();
+		expect(key_from_r2_url(signed._yay!.url)).toBe(
+			expected_asset_key({
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				assetId: generatedImageAssetId,
+			}),
+		);
+
+		// A file asset must not be reachable here: a file download also filters its node by
+		// per-node visibility, and this path has no node to filter.
+		const fileAsset = await asUser.action(api.r2.create_signed_chat_image_url, {
+			membershipId: db.membershipId,
+			assetId: fileAssetId,
+		});
+		expect(fileAsset._nay).toMatchObject({ message: "Not found" });
+
+		const otherWorkspace = await asUser.action(api.r2.create_signed_chat_image_url, {
+			membershipId: db.membershipId,
+			assetId: otherWorkspaceAssetId,
+		});
+		expect(otherWorkspace._nay).toMatchObject({ message: "Not found" });
+
+		const malformedId = await asUser.action(api.r2.create_signed_chat_image_url, {
+			membershipId: db.membershipId,
+			assetId: "not-an-id",
+		});
+		expect(malformedId._nay).toMatchObject({ message: "Not found" });
 	});
 
 	test("reads pending-update Markdown before saved R2 content", async () => {
@@ -4329,7 +4410,7 @@ describe("get_asset", () => {
 
 		// The file view sees the normal published asset. The node remains locked separately.
 		const [asset, node] = await Promise.all([
-			asUser.query(api.r2.get_asset, { membershipId: db.membershipId, fileNodeId: upload.nodeId }),
+			asUser.query(api.r2.get_asset_by_file_node_id, { membershipId: db.membershipId, fileNodeId: upload.nodeId }),
 			t.run(async (ctx) => ctx.db.get("files_nodes", upload.nodeId)),
 		]);
 		expect(asset?.r2Key).toBe(upload.liveKey);

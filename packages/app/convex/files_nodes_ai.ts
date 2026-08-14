@@ -83,6 +83,8 @@ async function files_ingest_inline_ai_usage_event(
 						modelId: "gpt-5-mini" satisfies files_InlineAiModelId,
 						inputTokens: args.inputTokens,
 						outputTokens: args.outputTokens,
+						// Inline AI edits text and has no picture tool.
+						generatedImages: 0,
 						threadId: "inline_ai",
 						messageId: args.requestId,
 					},

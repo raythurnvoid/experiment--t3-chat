@@ -82,7 +82,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			get_current_user_file_write_permission: "get_current_user_file_write_permission",
 		},
 		r2: {
-			get_asset: "get_asset",
+			get_asset_by_file_node_id: "get_asset_by_file_node_id",
 		},
 	},
 }));
@@ -1064,7 +1064,7 @@ describe("FileEditorSidebarPending", () => {
 		];
 		useQueryMock.mockImplementation((query: unknown, args: { fileNodeId?: string }) => {
 			if (query === "list_files_pending_updates") return pendingUpdates;
-			if (query === "get_asset") {
+			if (query === "get_asset_by_file_node_id") {
 				return { size: args.fileNodeId === "node_source" ? 1_024 : 1_030 };
 			}
 			return undefined;
@@ -1080,11 +1080,11 @@ describe("FileEditorSidebarPending", () => {
 		expect(details).toBeTruthy();
 		const link = screen.getByRole("link", { name: "/source.mp4 → /target.mp4" });
 		expect(link.getAttribute("href")).not.toContain("view=diff_editor");
-		expect(useQueryMock).toHaveBeenCalledWith("get_asset", {
+		expect(useQueryMock).toHaveBeenCalledWith("get_asset_by_file_node_id", {
 			membershipId: MEMBERSHIP_ID,
 			fileNodeId: "node_source",
 		});
-		expect(useQueryMock).toHaveBeenCalledWith("get_asset", {
+		expect(useQueryMock).toHaveBeenCalledWith("get_asset_by_file_node_id", {
 			membershipId: MEMBERSHIP_ID,
 			fileNodeId: "node_target",
 		});
@@ -1106,7 +1106,7 @@ describe("FileEditorSidebarPending", () => {
 		];
 		useQueryMock.mockImplementation((query: unknown) => {
 			if (query === "list_files_pending_updates") return pendingUpdates;
-			if (query === "get_asset") return { size: 1_024 };
+			if (query === "get_asset_by_file_node_id") return { size: 1_024 };
 			return undefined;
 		});
 		useStableQueryMock.mockReturnValue([

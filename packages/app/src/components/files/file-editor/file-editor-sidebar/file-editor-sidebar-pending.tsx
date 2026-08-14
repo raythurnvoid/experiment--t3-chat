@@ -845,11 +845,11 @@ const FileEditorSidebarPendingSizeDiff = memo(function FileEditorSidebarPendingS
 	replacedNodeId: app_convex_Id<"files_nodes">;
 	path: string;
 }) {
-	const sourceAsset = useQuery(app_convex_api.r2.get_asset, {
+	const sourceAsset = useQuery(app_convex_api.r2.get_asset_by_file_node_id, {
 		membershipId: props.membershipId,
 		fileNodeId: props.sourceNodeId,
 	});
-	const replacedAsset = useQuery(app_convex_api.r2.get_asset, {
+	const replacedAsset = useQuery(app_convex_api.r2.get_asset_by_file_node_id, {
 		membershipId: props.membershipId,
 		fileNodeId: props.replacedNodeId,
 	});

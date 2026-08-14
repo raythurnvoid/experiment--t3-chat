@@ -1,4 +1,5 @@
 import { tool, type InferToolInput, type InferToolOutput } from "ai";
+import { openai } from "@ai-sdk/openai";
 import Exa, { ExaError, type RegularSearchOptions, type SearchResponse } from "exa-js";
 import z from "zod";
 import dedent from "dedent";
@@ -18,6 +19,7 @@ import {
 	files_normalize_lf_newlines,
 } from "./files.ts";
 import { path_name_of } from "../shared/paths.ts";
+import { ai_chat_GENERATED_IMAGE_FORMAT } from "../shared/ai-chat.ts";
 import {
 	bash_EXTERNAL_MOUNTS_ROOT,
 	bash_PLUGINS_MOUNT_ROOT,
@@ -1169,6 +1171,51 @@ type ai_chat_tool_create_execute_code_Tool = ReturnType<typeof ai_chat_tool_crea
 export type ai_chat_tool_create_execute_code_ToolInput = InferToolInput<ai_chat_tool_create_execute_code_Tool>;
 export type ai_chat_tool_create_execute_code_ToolOutput = InferToolOutput<ai_chat_tool_create_execute_code_Tool>;
 // #endregion execute code
+
+// #region image generation
+
+/**
+ * Draw an image with OpenAI's `gpt-image-2`.
+ *
+ * OpenAI runs this tool on its own side and sends the finished picture back inside the tool output,
+ * so there is nothing to execute here. The model decides only whether to call it: every option
+ * below is ours, and its input schema is empty.
+ *
+ * `partialImages` stays unset because the chat never shows a picture while it is being drawn.
+ * OpenAI still sends one preview copy, and setting it to `0` does not stop that, so
+ * `drop_preliminary_tool_results_middleware` in `ai_chat.ts` throws the preview away.
+ */
+export function ai_chat_tool_create_image_generation() {
+	return openai.tools.imageGeneration({
+		model: "gpt-image-2",
+		outputFormat: ai_chat_GENERATED_IMAGE_FORMAT,
+	});
+}
+
+/**
+ * The same tool as a stored message holds it.
+ *
+ * The chat route replaces the base64 picture in the tool output with a reference to an R2 asset
+ * before the message is saved, so a saved message no longer matches the output schema of the
+ * provider tool above. `validateUIMessages` checks stored messages, so it must be given this one.
+ */
+export function ai_chat_tool_create_image_generation_stored() {
+	return tool({
+		inputSchema: z.object({}),
+		outputSchema: z.object({
+			assetId: z.string(),
+			mediaType: z.string(),
+			size: z.number(),
+		}),
+	});
+}
+
+type ai_chat_tool_create_image_generation_stored_Tool = ReturnType<typeof ai_chat_tool_create_image_generation_stored>;
+export type ai_chat_tool_create_image_generation_ToolInput =
+	InferToolInput<ai_chat_tool_create_image_generation_stored_Tool>;
+export type ai_chat_tool_create_image_generation_ToolOutput =
+	InferToolOutput<ai_chat_tool_create_image_generation_stored_Tool>;
+// #endregion image generation
 
 // Vite replaces `process.env.NODE_ENV` statically, so this check must come first to let esbuild
 // erase `import.meta.vitest` before Convex analyzes the bundle.

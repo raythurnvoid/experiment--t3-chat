@@ -10,7 +10,7 @@ description: Spec for image and video embeds in rich text documents — the bono
 - `../../../packages/app/src/components/files/file-editor/file-editor-rich-text/file-editor-rich-text-media-upload.ts` (paste/drop/picked upload flow)
 - `../../../packages/app/src/components/files/file-editor/file-editor-rich-text/file-editor-rich-text-media-insert.tsx` (slash-command insertion UI)
 - `../../../packages/app/src/components/files/file-editor/file-editor-rich-text/file-editor-rich-text-tools-slash-command.tsx` (media slash items)
-- `../../../packages/app/src/lib/files-media-src.ts` (reference parsing and signed-url resolution)
+- `../../../packages/app/src/lib/files-media-src.ts` (reference parsing and signed-url resolution; its cache also serves the chat agent's generated pictures)
 - `../../../packages/app/src/lib/files-image-compression.ts` (client-side image compression, shared with the sidebar)
 - `../../../packages/app/convex/files_nodes.ts` (`create_upload_node`, `discard_failed_upload_node`, `get_authorized_by_path`)
 
@@ -51,7 +51,7 @@ saved markdown, but it does persist in the Yjs doc until the flow clears it.
 - `uploading` — the node has an `uploadId` and no `src` (this browser's own upload).
 - `processing` — a `bonobo-file://` reference whose asset has no `r2Key` yet and whose
   `unfinalizedExpiresAt` (24h TTL) has not passed. The asset is watched via
-  `app_convex.watchQuery(r2.get_asset)`, so the embed swaps to `ready` without a reload when
+  `app_convex.watchQuery(r2.get_asset_by_file_node_id)`, so the embed swaps to `ready` without a reload when
   the R2 event confirms the object (~seconds in dev).
 - `ready` — `r2Key` set (signed url minted) or an external url.
 - `failed` — the asset stayed unfinalized past the TTL. Nothing cleans this up; the reader is

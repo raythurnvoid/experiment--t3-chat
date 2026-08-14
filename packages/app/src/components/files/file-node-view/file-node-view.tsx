@@ -851,7 +851,7 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 	const { node, fileNodesList, readOnlyAncestorIds, editorMode, filesSidebarOpen, onlineUsers, onNavigateNode } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 
-	const asset = useQuery(app_convex_api.r2.get_asset, {
+	const asset = useQuery(app_convex_api.r2.get_asset_by_file_node_id, {
 		membershipId,
 		fileNodeId: node._id,
 	});

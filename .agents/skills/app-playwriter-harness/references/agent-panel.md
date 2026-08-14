@@ -25,6 +25,8 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | Bash terminal output | `[aria-label="Bash terminal output"]` (`role=textbox`) |
 | Edit-file tool disclosure | `.AiChatMessagePartToolEditPage` (`summary` `aria-label="Edit file: <name>"`) |
 | Tool `Parameters` / `Result` / `Error` blocks | `[aria-label="Result"]` etc. inside the card (`role=textbox`) |
+| Generated picture | `.AiChatMessage img[alt="Generated image"]` (class `AiChatMessagePartToolImageGeneration-image`; while it is still drawing, the part is the disclosure titled `Generate image`) |
+| Chat mode picker | `getByRole("combobox", { name: /^Chat mode:/ })`, then `getByRole("option", { name: "Agent" \| "Ask" })` |
 | Failed send | `role=alert` containing `Message failed to send.` + `Show error details` and `Retry` buttons; the details dialog is named `Error details` and its raw message textbox is named `Raw error message` |
 | Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (whole row is a button; clicking switches to the Pending changes tab; counts only docs whose `threadIds` include the open chat, so a fresh chat shows no strip even when the workspace has pending changes) |
 | Pending-changes tab count badge | `.FileEditorSidebarPendingTabBadge` (inside `#app_file_editor_sidebar_tabs_pending`; absent at count 0; always the workspace-wide count) |
@@ -218,3 +220,43 @@ When the app tab is not foregrounded:
 
 - `/w/personal/home/chat?threadId=<id>` loads that thread; switching threads updates the URL. Allow ~10 s for messages to load before reading counts.
 - `Branch chat here` (message action) creates a branched thread that inherits `/tmp` files and cwd; the new thread gets a sidebar tab with `aria-selected=true`.
+- `state.qa.newChat()` is for the files-sidebar Agent tab only. On the full-page `/chat` route it waits forever on `[aria-label="Open chats"] [role="tab"][aria-selected="true"]`, because that route renders no tab strip. The route's own control is `New Chat` (capital C), and it can be rendered twice, so a plain `getByRole` click dies with a strict-mode violation — but do not click it at all right now, see the renderer wedge in `known-hazards.md`. To reach a new thread, start a fresh headless browser: with no session the app mints an anonymous user whose chat is empty, and `goto("/w/personal/home/chat")` lands on it. A `goto` without `threadId` in a browser that already has threads reopens the last one.
+
+## Generated pictures (`image_generation`)
+
+Prompt that reliably draws one: `Draw a small picture of a red circle on a white background.` The turn takes ~30-60 s. It works in both `Agent` and `Ask` mode; switch with the chat mode picker in the selector table.
+
+Assert the DOM, not a screenshot:
+
+```js
+await state.qa.send("Draw a small picture of a red circle on a white background.");
+await state.qa.waitDone(280000);
+await state.page.evaluate(() =>
+	Array.from(document.querySelectorAll('.AiChatMessage img[alt="Generated image"]')).map((img) => ({
+		naturalWidth: img.naturalWidth, // > 0 proves R2 really served the bytes
+		complete: img.complete,
+	})),
+);
+```
+
+The message stores only a reference, so check the persisted doc separately (`output` must be `{ assetId, mediaType, size }`, and the whole thread must hold no long base64 run):
+
+```js
+const { app_convex, app_convex_api } = await import("/src/lib/app-convex-client.ts");
+const membership = await app_convex.query(app_convex_api.organizations.get_membership_by_organization_workspace_name, {
+	organizationName: "personal",
+	workspaceName: "home",
+});
+const listed = await app_convex.query(app_convex_api.ai_chat.thread_messages_list, {
+	membershipId: membership._id,
+	threadId: new URL(location.href).searchParams.get("threadId"),
+});
+```
+
+Reload the page before believing the picture works: the live stream and the reload use different paths, and only the reload exercises `r2.create_signed_chat_image_url`.
+
+Asset state lives outside the browser. Read it with `vp env exec pnpm --dir packages/app exec convex data files_r2_assets --limit 3 --order desc`: one `generated_image` doc per picture, `r2Key` set and `unfinalizedExpiresAt` empty once the message is stored. Two docs with the same `size` for one turn means the preview copy is being stored again (see the `image_generation` section of the `ai-chat-agent` skill).
+
+`ai_chat.threads_list` needs `paginationOpts: { cursor: null, numItems: 10 }` and returns `{ page: [...] }`; without it the query throws `ArgumentValidationError`.
+
+To check the per-model gate, count `.AiChatMessagePartToolImageGeneration-image` before and after a turn instead of creating a thread per model. Flip the selected model's `supportsImageGeneration` in `packages/app/shared/ai-chat.ts`, wait ~30 s for `convex dev` to push, reload, and send the same prompt in the same thread: the count must stay put and the assistant must say it cannot draw. Restore the flag and send once more to prove the count moves again. Editing a `shared/` file triggers a Vite reload, so the composer disappears for a moment — always reload and wait for `.AiChatComposer-editor-content` before `state.qa.send`, or the send times out on that selector.

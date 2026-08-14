@@ -40,6 +40,7 @@ import {
 	organizations_is_reserved_workspace_id,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
+import { ai_chat_GENERATED_IMAGE_FORMAT } from "../shared/ai-chat.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import {
 	access_control_db_authorize_membership,
@@ -253,6 +254,13 @@ export type r2_get_assets_ready_states_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+/**
+ * Read one asset of a workspace the caller has already authorized.
+ *
+ * It checks no permission: the caller passes the organization and workspace it already proved the
+ * user may read. Do not call it from a path that starts at a user request. `get_asset` below is the
+ * one that asks the permission question.
+ */
 export const get_asset_by_id = internalQuery({
 	args: {
 		organizationId: v.string(),
@@ -567,7 +575,7 @@ export const create_signed_download_url = action({
 	},
 });
 
-export const get_asset = query({
+export const get_asset_by_file_node_id = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		fileNodeId: v.id("files_nodes"),
@@ -614,6 +622,129 @@ export const get_asset = query({
 		}
 
 		return asset;
+	},
+});
+
+/**
+ * Read the asset of a picture the chat agent drew. It answers null for an asset of any other kind.
+ *
+ * A generated picture has no file node, so this cannot go through the download path above. Workspace
+ * `content.read` is the whole check, the same one `ai_chat.thread_messages_list` makes: a member who
+ * can read the thread list can already read every thread in the workspace, so scoping the picture to
+ * one thread would refuse what the surrounding surface allows.
+ *
+ * The `generated_image` check is what keeps that safe. A file asset must never be signed here: a
+ * file download also puts its node through the per-node visibility filter, and this path has no node
+ * to filter, so it would hand out files the member is not allowed to open.
+ *
+ * `assetId` arrives inside a chat message that the client writes, so it is a plain string here and a
+ * value that is not an id answers null.
+ */
+export const get_asset = internalQuery({
+	args: {
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
+		assetId: v.string(),
+	},
+	returns: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
+	handler: async (ctx, args) => {
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: args.userId,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
+			return null;
+		}
+
+		const assetId = ctx.db.normalizeId("files_r2_assets", args.assetId);
+		if (!assetId) {
+			return null;
+		}
+
+		const asset = await ctx.db.get("files_r2_assets", assetId);
+		if (
+			!asset ||
+			asset.kind !== "generated_image" ||
+			asset.organizationId !== membership.organizationId ||
+			asset.workspaceId !== membership.workspaceId
+		) {
+			return null;
+		}
+
+		return asset;
+	},
+});
+
+type get_asset_Result =
+	typeof get_asset extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Return a signed R2 URL for a picture the chat agent drew.
+ */
+export const create_signed_chat_image_url = action({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		assetId: v.string(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			url: v.string(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const asset = (await ctx.runQuery(internal.r2.get_asset, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+			assetId: args.assetId,
+		})) as get_asset_Result;
+		if (!asset) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		// The chat route writes the picture to this deterministic key while it streams, and only
+		// storing the message that shows it sets `r2Key`. Both are the same key, so the picture can
+		// already be shown while the message is still being written.
+		const r2Key =
+			asset.r2Key ??
+			r2_create_asset_key({
+				organizationId: asset.organizationId,
+				workspaceId: asset.workspaceId,
+				assetId: asset._id,
+			});
+
+		// Pin the served type and the disposition for the same reason a file download does: a
+		// presigned R2 GET carries no nosniff and no CSP. The name is ours, because the chat route is
+		// the only writer of this asset kind and it always asks OpenAI for the same format.
+		const serving = files_get_signed_download_serving(
+			`generated-image-${asset._id}.${ai_chat_GENERATED_IMAGE_FORMAT}`,
+		);
+		const url = await r2_get_download_url({
+			key: r2Key,
+			options: {
+				// 15 minutes.
+				expiresIn: 15 * 60,
+				responseContentType: serving.responseContentType,
+				responseContentDisposition: serving.responseContentDisposition,
+			},
+		});
+
+		return Result({ _yay: { url } });
 	},
 });
 

@@ -499,6 +499,15 @@
 	}
 	/* #endregion tool bash */
 
+	/* #region tool image_generation */
+	.AiChatMessagePartToolImageGeneration-image {
+		max-width: 100%;
+
+		border: 1px solid var(--color-base-1-05);
+		border-radius: 12px;
+	}
+	/* #endregion tool image_generation */
+
 	/* #region tool unknown */
 	.AiChatMessagePartToolUnknown-meta {
 		display: flex;

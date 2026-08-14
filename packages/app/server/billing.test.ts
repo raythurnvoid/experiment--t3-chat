@@ -94,6 +94,7 @@ describe("billing_event", () => {
 				modelId: "gpt-5.4-nano",
 				inputTokens: 1000,
 				outputTokens: 250,
+				generatedImages: 1,
 				threadId: "thread_1",
 				messageId: "message_1",
 			},

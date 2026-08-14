@@ -249,6 +249,105 @@ describe("ai_chat thread state", () => {
 		expect(dataUrlAccepted._yay?.ids).toHaveLength(1);
 	});
 
+	test("thread_messages_add publishes the generated images the stored message shows", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "personal",
+				workspaceName: "home",
+			}),
+		);
+		const other = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "other",
+				workspaceName: "home",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-ai-chat-generated-image",
+			external_id: seeded.userId,
+			email: "ai-chat-generated-image@test.local",
+		});
+
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_generated_image",
+			title: "Generated image",
+			lastMessageAt: Date.now(),
+		});
+		expect(created._yay).toBeTruthy();
+		const threadId = created._yay!.threadId;
+
+		const insertGeneratedImage = (args: { organizationId: string; workspaceId: string }) =>
+			t.run((ctx) =>
+				ctx.db.insert("files_r2_assets", {
+					organizationId: args.organizationId as Id<"organizations">,
+					workspaceId: args.workspaceId as Id<"organizations_workspaces">,
+					kind: "generated_image" as const,
+					r2Bucket: "test-bucket",
+					size: 128,
+					createdBy: seeded.userId,
+					unfinalizedExpiresAt: Date.now() + 60_000,
+					updatedAt: Date.now(),
+				}),
+			);
+
+		const assetId = await insertGeneratedImage(seeded);
+		const otherWorkspaceAssetId = await insertGeneratedImage(other);
+
+		const stored = await asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: seeded.membershipId,
+			threadId,
+			parentId: null,
+			messages: [
+				{
+					clientGeneratedMessageId: "client_message_generated_image",
+					content: {
+						id: "client_message_generated_image",
+						role: "assistant",
+						parts: [
+							{
+								type: "tool-image_generation",
+								toolCallId: "call_image_1",
+								state: "output-available",
+								input: {},
+								output: { assetId, mediaType: "image/webp", size: 128 },
+							},
+							{
+								type: "tool-image_generation",
+								toolCallId: "call_image_2",
+								state: "output-available",
+								input: {},
+								output: { assetId: otherWorkspaceAssetId, mediaType: "image/webp", size: 128 },
+							},
+						],
+						metadata: {
+							convexParentId: null,
+							parentClientGeneratedId: null,
+						},
+					},
+				},
+			],
+		});
+		expect(stored._yay?.ids).toHaveLength(1);
+
+		const assets = await t.run(async (ctx) => ({
+			published: await ctx.db.get("files_r2_assets", assetId),
+			otherWorkspace: await ctx.db.get("files_r2_assets", otherWorkspaceAssetId),
+		}));
+
+		// The message shows this picture, so it must survive the unfinalized-asset cleanup.
+		expect(assets.published?.unfinalizedExpiresAt).toBeUndefined();
+		expect(assets.published?.r2Key).toBe(
+			`organizations/${seeded.organizationId}/workspaces/${seeded.workspaceId}/assets/${assetId}`,
+		);
+
+		// A message cannot publish an asset from another workspace by naming its id.
+		expect(assets.otherWorkspace?.unfinalizedExpiresAt).toBeTypeOf("number");
+		expect(assets.otherWorkspace?.r2Key).toBeUndefined();
+	});
+
 	test("thread_messages_add returns existing ids when the message write limit is exhausted", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
