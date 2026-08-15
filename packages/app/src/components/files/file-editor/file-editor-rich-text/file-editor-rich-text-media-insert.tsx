@@ -41,6 +41,8 @@ declare module "@tiptap/core" {
 	}
 }
 
+// This extension and its React picker share one small command contract.
+// eslint-disable-next-line react-refresh/only-export-components
 export const file_editor_rich_text_MediaInsertExtension = Extension.create<{
 	pickUploadFile: ((kind: "image" | "video") => void) | null;
 	openEmbedExistingPicker: (() => void) | null;

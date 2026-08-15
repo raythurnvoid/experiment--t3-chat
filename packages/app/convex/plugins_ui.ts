@@ -1,7 +1,9 @@
 /**
  * Plugin UI pages and file views: manifest-declared HTML entries rendered in sandboxed iframes
- * (`sandbox="allow-scripts allow-same-origin"`). Pages open from the plugins nav; file views open
- * from `/files` when a file's stored content type matches a view's declared content types.
+ * (`sandbox="allow-scripts allow-same-origin allow-forms"`; the CSP below keeps `form-action
+ * 'none'`, so plugin JS can handle submit events but no real HTTP form submission can leave the
+ * page). Pages open from the plugins nav; file views open from `/files` when a file's stored
+ * content type matches a view's declared content types.
  *
  * Security model:
  * - The host app mints a short-lived `plu_` session token per (user, installation) and hands it
@@ -47,20 +49,29 @@ if (!process.env.R2_ENDPOINT) {
 const R2_ENDPOINT_URL = new URL(process.env.R2_ENDPOINT);
 const R2_MEDIA_ORIGINS = `${R2_ENDPOINT_URL.origin} ${R2_ENDPOINT_URL.protocol}//${r2_get_bucket()}.${R2_ENDPOINT_URL.host}`;
 
-// The frame keeps this asset origin so its public API calls stay same-origin and skip CORS
-// preflights. The host app has a different origin and remains outside the sandbox.
-const PLUGIN_PAGE_CSP = [
-	"default-src 'none'",
-	"script-src 'self'",
-	"style-src 'self' 'unsafe-inline'",
-	`img-src ${R2_MEDIA_ORIGINS} data: blob:`,
-	`media-src ${R2_MEDIA_ORIGINS} blob:`,
-	"connect-src 'self'",
-	"font-src 'self'",
-	"base-uri 'none'",
-	"form-action 'none'",
-	`frame-ancestors ${allowed_origins().join(" ")}`,
-].join("; ");
+/**
+ * The frame keeps this asset origin so its public API calls stay same-origin and skip CORS
+ * preflights. The host app has a different origin and remains outside the sandbox.
+ *
+ * `uiOutboundOrigins` are the extra destinations the plugin version declared and the workspace
+ * accepted at install. They widen `connect-src` only. An asset request carries a plugin version and a
+ * path and nothing else, so the response cannot know which installation is looking at it — which is
+ * why the list lives on the immutable version and not on the installation.
+ */
+function plugin_page_csp(uiOutboundOrigins: readonly string[]) {
+	return [
+		"default-src 'none'",
+		"script-src 'self'",
+		"style-src 'self' 'unsafe-inline'",
+		`img-src ${R2_MEDIA_ORIGINS} data: blob:`,
+		`media-src ${R2_MEDIA_ORIGINS} blob:`,
+		`connect-src ${["'self'", ...uiOutboundOrigins].join(" ")}`,
+		"font-src 'self'",
+		"base-uri 'none'",
+		"form-action 'none'",
+		`frame-ancestors ${allowed_origins().join(" ")}`,
+	].join("; ");
+}
 
 export const mint_page_session = mutation({
 	args: {
@@ -540,7 +551,10 @@ export const get_ui_asset = internalQuery({
 		pluginVersionId: v.string(),
 		path: v.string(),
 	},
-	returns: v.union(v.object({ r2Key: v.string(), contentType: v.string() }), v.null()),
+	returns: v.union(
+		v.object({ r2Key: v.string(), contentType: v.string(), uiOutboundOrigins: v.array(v.string()) }),
+		v.null(),
+	),
 	handler: async (ctx, args) => {
 		const pluginVersionId = ctx.db.normalizeId("plugins_versions", args.pluginVersionId);
 		if (!pluginVersionId) {
@@ -554,7 +568,7 @@ export const get_ui_asset = internalQuery({
 		if (!file) {
 			return null;
 		}
-		return { r2Key: file.r2Key, contentType: file.contentType };
+		return { r2Key: file.r2Key, contentType: file.contentType, uiOutboundOrigins: version.uiOutboundOrigins };
 	},
 });
 
@@ -668,6 +682,6 @@ export async function plugins_ui_http_handle_request(ctx: ActionCtx, request: Re
 	// response costs nothing for subresources and makes sure no document slips through
 	// without a policy. Without it, a "text/html;charset=..." content type or a scriptable
 	// type like SVG would render with no policy when opened directly.
-	headers.set("Content-Security-Policy", PLUGIN_PAGE_CSP);
+	headers.set("Content-Security-Policy", plugin_page_csp(asset.uiOutboundOrigins));
 	return new Response(object.body, { status: 200, headers });
 }

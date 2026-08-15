@@ -2629,6 +2629,7 @@ describe("remove_user_from_organization", () => {
 				version: "0.1.0",
 				description: "Membership-removal token fixture",
 				reviewStatus: "passed",
+				reviewId: null,
 				isLatest: true,
 				artifactHash: `sha256:${"a".repeat(64)}`,
 				sourceRepositoryUrl: "https://github.com/bonobo/removal-test-plugin",
@@ -2643,6 +2644,7 @@ describe("remove_user_from_organization", () => {
 				fileViews: [],
 				capabilities: [],
 				outboundOrigins: [],
+				uiOutboundOrigins: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -2660,6 +2662,7 @@ describe("remove_user_from_organization", () => {
 					acceptedCapabilities: [],
 					capabilitiesAcceptedAt: now,
 					acceptedOutboundOrigins: [],
+					acceptedUiOutboundOrigins: [],
 					outboundOriginsAcceptedAt: now,
 					installedBy: ownerId,
 					updatedBy: ownerId,
@@ -2675,58 +2678,90 @@ describe("remove_user_from_organization", () => {
 					acceptedCapabilities: [],
 					capabilitiesAcceptedAt: now,
 					acceptedOutboundOrigins: [],
+					acceptedUiOutboundOrigins: [],
 					outboundOriginsAcceptedAt: now,
 					installedBy: ownerId,
 					updatedBy: ownerId,
 					updatedAt: now,
 				}),
 			]);
-			const [removedGrantId, keptGrantId, removedSessionId, keptSessionId] = await Promise.all([
-				ctx.db.insert("public_api_grants", {
-					organizationId: organization._yay!.organizationId,
-					workspaceId: workspace._yay!.workspaceId,
-					userId: memberId,
-					threadId: null,
-					principalKey: "removal-test-target",
-					tokenHash: "1".repeat(64),
-					scopes: ["files:list"],
-					pathPrefix: null,
-					createdAt: now,
-					expiresAt: now + 10 * 60 * 1000,
-				}),
-				ctx.db.insert("public_api_grants", {
-					organizationId: otherOrganization._yay!.organizationId,
-					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
-					userId: memberId,
-					threadId: null,
-					principalKey: "removal-test-control",
-					tokenHash: "2".repeat(64),
-					scopes: ["files:list"],
-					pathPrefix: null,
-					createdAt: now,
-					expiresAt: now + 10 * 60 * 1000,
-				}),
-				ctx.db.insert("plugins_ui_sessions", {
-					organizationId: organization._yay!.organizationId,
-					workspaceId: organization._yay!.defaultWorkspaceId,
-					installationId: removedInstallationId,
-					pluginVersionId,
-					userId: memberId,
-					tokenHash: "3".repeat(64),
-					createdAt: now,
-					expiresAt: now + 10 * 60 * 1000,
-				}),
-				ctx.db.insert("plugins_ui_sessions", {
-					organizationId: otherOrganization._yay!.organizationId,
-					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
-					installationId: keptInstallationId,
-					pluginVersionId,
-					userId: memberId,
-					tokenHash: "4".repeat(64),
-					createdAt: now,
-					expiresAt: now + 10 * 60 * 1000,
-				}),
-			]);
+			const [removedGrantId, keptGrantId, removedSessionId, keptSessionId, removedServiceGrantId, keptServiceGrantId] =
+				await Promise.all([
+					ctx.db.insert("public_api_grants", {
+						organizationId: organization._yay!.organizationId,
+						workspaceId: workspace._yay!.workspaceId,
+						userId: memberId,
+						threadId: null,
+						principalKey: "removal-test-target",
+						tokenHash: "1".repeat(64),
+						scopes: ["files:list"],
+						pathPrefix: null,
+						createdAt: now,
+						expiresAt: now + 10 * 60 * 1000,
+					}),
+					ctx.db.insert("public_api_grants", {
+						organizationId: otherOrganization._yay!.organizationId,
+						workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+						userId: memberId,
+						threadId: null,
+						principalKey: "removal-test-control",
+						tokenHash: "2".repeat(64),
+						scopes: ["files:list"],
+						pathPrefix: null,
+						createdAt: now,
+						expiresAt: now + 10 * 60 * 1000,
+					}),
+					ctx.db.insert("plugins_ui_sessions", {
+						organizationId: organization._yay!.organizationId,
+						workspaceId: organization._yay!.defaultWorkspaceId,
+						installationId: removedInstallationId,
+						pluginVersionId,
+						userId: memberId,
+						tokenHash: "3".repeat(64),
+						createdAt: now,
+						expiresAt: now + 10 * 60 * 1000,
+					}),
+					ctx.db.insert("plugins_ui_sessions", {
+						organizationId: otherOrganization._yay!.organizationId,
+						workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+						installationId: keptInstallationId,
+						pluginVersionId,
+						userId: memberId,
+						tokenHash: "4".repeat(64),
+						createdAt: now,
+						expiresAt: now + 10 * 60 * 1000,
+					}),
+					ctx.db.insert("plugin_service_grants", {
+						organizationId: organization._yay!.organizationId,
+						workspaceId: organization._yay!.defaultWorkspaceId,
+						installationId: removedInstallationId,
+						pluginVersionId,
+						pluginName: "media",
+						actorUserId: memberId,
+						tokenHash: "5".repeat(64),
+						scopes: ["plugin_data:read"],
+						principalKey: "removal-test-service-target",
+						phase: "interactive",
+						destinationPathPrefix: null,
+						expiresAt: now + 24 * 60 * 60 * 1000,
+						updatedAt: now,
+					}),
+					ctx.db.insert("plugin_service_grants", {
+						organizationId: otherOrganization._yay!.organizationId,
+						workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+						installationId: keptInstallationId,
+						pluginVersionId,
+						pluginName: "media",
+						actorUserId: memberId,
+						tokenHash: "6".repeat(64),
+						scopes: ["plugin_data:read"],
+						principalKey: "removal-test-service-control",
+						phase: "interactive",
+						destinationPathPrefix: null,
+						expiresAt: now + 24 * 60 * 60 * 1000,
+						updatedAt: now,
+					}),
+				]);
 
 			return {
 				memberHome,
@@ -2738,6 +2773,8 @@ describe("remove_user_from_organization", () => {
 				keptGrantId,
 				removedSessionId,
 				keptSessionId,
+				removedServiceGrantId,
+				keptServiceGrantId,
 			};
 		});
 
@@ -2758,6 +2795,8 @@ describe("remove_user_from_organization", () => {
 				ctx.db.get("public_api_grants", seededAccess.keptGrantId),
 				ctx.db.get("plugins_ui_sessions", seededAccess.removedSessionId),
 				ctx.db.get("plugins_ui_sessions", seededAccess.keptSessionId),
+				ctx.db.get("plugin_service_grants", seededAccess.removedServiceGrantId),
+				ctx.db.get("plugin_service_grants", seededAccess.keptServiceGrantId),
 			]),
 		);
 		expect(afterRemove[0]?.revokedAt).toEqual(expect.any(Number));
@@ -2769,6 +2808,9 @@ describe("remove_user_from_organization", () => {
 		expect(afterRemove[6]?._id).toBe(seededAccess.keptGrantId);
 		expect(afterRemove[7]).toBeNull();
 		expect(afterRemove[8]?._id).toBe(seededAccess.keptSessionId);
+		// A service grant lives 24 hours, so leaving it would hand the service its authority back on re-invite.
+		expect(afterRemove[9]).toBeNull();
+		expect(afterRemove[10]?._id).toBe(seededAccess.keptServiceGrantId);
 		const quotaDocsAfterRemove = await t.run((ctx) =>
 			ctx.db
 				.query("quotas")
@@ -2795,12 +2837,14 @@ describe("remove_user_from_organization", () => {
 				ctx.db.get("api_credentials", seededAccess.memberProject),
 				ctx.db.get("public_api_grants", seededAccess.removedGrantId),
 				ctx.db.get("plugins_ui_sessions", seededAccess.removedSessionId),
+				ctx.db.get("plugin_service_grants", seededAccess.removedServiceGrantId),
 			]),
 		);
 		expect(afterReinvite[0]?.revokedAt).toBe(afterRemove[0]?.revokedAt);
 		expect(afterReinvite[1]?.revokedAt).toBe(afterRemove[1]?.revokedAt);
 		expect(afterReinvite[2]).toBeNull();
 		expect(afterReinvite[3]).toBeNull();
+		expect(afterReinvite[4]).toBeNull();
 		const quotaDocsAfterReinvite = await t.run((ctx) =>
 			ctx.db
 				.query("quotas")

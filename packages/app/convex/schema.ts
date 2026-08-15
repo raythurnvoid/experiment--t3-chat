@@ -13,6 +13,11 @@ const plugins_capability_validator = v.union(
 	v.literal("plugin.secrets.read"),
 	v.literal("outbound.fetch"),
 	v.literal("workspace.files.read"),
+	v.literal("workspace.files.write"),
+	v.literal("plugin.data.read"),
+	v.literal("plugin.data.write"),
+	v.literal("plugin.service.connect"),
+	v.literal("ui.outbound.fetch"),
 );
 
 /**
@@ -205,7 +210,14 @@ const app_convex_schema = defineSchema({
 		obfuscatedValue: v.string(),
 		secretHash: v.string(),
 		scopes: v.array(
-			v.union(v.literal("files:list"), v.literal("files:read"), v.literal("files:write"), v.literal("files:download")),
+			v.union(
+				v.literal("files:list"),
+				v.literal("files:read"),
+				v.literal("files:write"),
+				v.literal("files:download"),
+				v.literal("plugin_data:read"),
+				v.literal("plugin_data:write"),
+			),
 		),
 		createdAt: v.number(),
 		revokedAt: v.union(v.number(), v.null()),
@@ -995,7 +1007,12 @@ const app_convex_schema = defineSchema({
 		 */
 		archivedAt: v.number(),
 	})
-		.index("by_organization_workspace_fileNode_archivedAt", ["organizationId", "workspaceId", "fileNodeId", "archivedAt"])
+		.index("by_organization_workspace_fileNode_archivedAt", [
+			"organizationId",
+			"workspaceId",
+			"fileNodeId",
+			"archivedAt",
+		])
 		.index("by_asset", ["assetId"]),
 
 	files_r2_assets: defineTable({
@@ -1141,14 +1158,25 @@ const app_convex_schema = defineSchema({
 		lastPublishAttempt: v.optional(
 			v.object({
 				at: v.number(),
-				status: v.union(v.literal("succeeded"), v.literal("rejected"), v.literal("failed")),
+				/** Plugin read from the validated manifest. Null when publishing failed before that point. */
+				pluginName: v.union(v.string(), v.null()),
+				status: v.union(v.literal("succeeded"), v.literal("rejected"), v.literal("flagged"), v.literal("failed")),
 				message: v.string(),
 				commitSha: v.union(v.string(), v.null()),
+				/** The build this attempt was about. Null before the manifest could be read and hashed. */
+				artifactHash: v.union(v.string(), v.null()),
+				/**
+				 * The review that decided this attempt. Set only when a review reached a verdict, so an
+				 * operational failure — provider, budget, or source-fetch — leaves it null and cannot be
+				 * mistaken for a verdict nobody produced.
+				 */
+				reviewId: v.union(v.id("plugins_version_reviews"), v.null()),
 			}),
 		),
 	})
 		.index("by_ownerUser_repositoryUrl", ["ownerUserId", "repositoryUrl"])
-		.index("by_repositoryUrl", ["repositoryUrl"]),
+		.index("by_repositoryUrl", ["repositoryUrl"])
+		.index("by_lastPublishAttempt_reviewId", ["lastPublishAttempt.reviewId"]),
 
 	/**
 	 * Publisher secrets scoped to one claimed repository. Runtime resolution also matches the
@@ -1173,9 +1201,11 @@ const app_convex_schema = defineSchema({
 		version: v.string(),
 		description: v.string(),
 		reviewStatus: v.union(v.literal("pending"), v.literal("passed"), v.literal("rejected"), v.literal("flagged")),
+		/** The review that decided this version. Null only for a version that has not reached review. */
+		reviewId: v.union(v.id("plugins_version_reviews"), v.null()),
 		/**
-		 * True only on the newest-created doc for this name:
-		 * publish order stands in for version order.
+		 * True only on the version that most recently became ready for this name.
+		 * Ready order stands in for version order.
 		 **/
 		isLatest: v.boolean(),
 		artifactHash: v.string(),
@@ -1260,6 +1290,14 @@ const app_convex_schema = defineSchema({
 		 * Exact https origins the plugin's code declares it calls; consented at install.
 		 **/
 		outboundOrigins: v.array(v.string()),
+		/**
+		 * Exact https origins the plugin's page may call from the browser; consented at install.
+		 *
+		 * The asset response builds its `connect-src` from this list, and an asset request carries only
+		 * a plugin version and a path. So this has to live on the immutable version: the response cannot
+		 * know which installation is looking at it.
+		 */
+		uiOutboundOrigins: v.array(v.string()),
 		files: v.array(
 			v.object({
 				path: v.string(),
@@ -1279,19 +1317,69 @@ const app_convex_schema = defineSchema({
 		.index("by_name", ["name"])
 		.index("by_name_reviewStatus_sourceStatus", ["name", "reviewStatus", "sourceStatus"])
 		.index("by_name_sourceStatus", ["name", "sourceStatus"])
+		.index("by_name_sourceStatus_updatedAt", ["name", "sourceStatus", "updatedAt"])
 		.index("by_name_version", ["name", "version"])
 		.index("by_name_version_artifactHash", ["name", "version", "artifactHash"])
+		.index("by_reviewId", ["reviewId"])
+		.index("by_reviewId_sourceStatus", ["reviewId", "sourceStatus"])
 		.index("by_sourceRepositoryUrl", ["sourceRepositoryUrl"])
-		.index("by_sourceRepositoryUrl_createdBy_sourceStatus", ["sourceRepositoryUrl", "createdBy", "sourceStatus"]),
+		.index("by_sourceRepositoryUrl_createdBy_sourceStatus", ["sourceRepositoryUrl", "createdBy", "sourceStatus"])
+		.index("by_sourceRepositoryUrl_createdBy_sourceStatus_updatedAt", [
+			"sourceRepositoryUrl",
+			"createdBy",
+			"sourceStatus",
+			"updatedAt",
+		]),
 
 	plugins_version_reviews: defineTable({
-		createdBy: v.id("users"),
+		/** Null after the creator is deleted while a registered version still points at this review. */
+		createdBy: v.union(v.id("users"), v.null()),
+		/**
+		 * The exact build this verdict was first produced for. Kept for release traceability only. It is
+		 * no longer what the cache is keyed on, because it changes with the version number, and a
+		 * release that only bumps the version reviews identical content.
+		 */
 		artifactHash: v.string(),
+		/**
+		 * What was actually reviewed: every security-relevant manifest field and file hash, with the
+		 * version number removed. Two releases of the same content share this value.
+		 */
+		reviewSubjectHash: v.string(),
+		/**
+		 * Which review policy produced this verdict. Bump `plugins_REVIEW_POLICY_VERSION` whenever the
+		 * prompts, the mechanical severities, the model or tool semantics, the file classifier, or the
+		 * required coverage change. Old verdicts then stop being reused instead of silently authorizing
+		 * a publish under a policy that no longer exists.
+		 */
+		reviewPolicyVersion: v.string(),
 		pluginName: v.string(),
 		version: v.string(),
 		status: v.union(v.literal("passed"), v.literal("rejected"), v.literal("flagged")),
+		/** Mechanical findings that rejected this version. A non-empty array means `status: "rejected"`. */
 		mechanicalFindings: v.array(v.string()),
+		/**
+		 * Mechanical findings the publisher should see that block nothing. A normal vendored or
+		 * bundled dependency trips these, so rejecting on them would fail plugins nobody can fix.
+		 */
+		mechanicalAdvisoryFindings: v.array(v.string()),
 		aiFindings: v.array(v.string()),
+		/**
+		 * Which file the reviewer held responsible for each subject the manifest declares. Empty when no
+		 * model ran, such as a mechanical rejection or an artifact with no reviewable text.
+		 *
+		 * A review only passes when every typed capability or origin subject has an entry naming a file
+		 * and exact byte range the reviewer really read. Entries for secret reads and dynamic loads are
+		 * kept too; the host cannot require them because it learns about them only from plugin code.
+		 */
+		capabilityMap: v.array(
+			v.object({
+				subject: v.string(),
+				path: v.string(),
+				evidence: v.string(),
+				startByte: v.number(),
+				endByte: v.number(),
+			}),
+		),
 		model: v.string(),
 		/**
 		 * Artifact hash of the previous passed
@@ -1303,7 +1391,7 @@ const app_convex_schema = defineSchema({
 		 **/
 		updatedAt: v.number(),
 	})
-		.index("by_artifactHash", ["artifactHash"])
+		.index("by_reviewSubjectHash_reviewPolicyVersion", ["reviewSubjectHash", "reviewPolicyVersion"])
 		.index("by_createdBy_pluginName", ["createdBy", "pluginName"])
 		.index("by_pluginName", ["pluginName"]),
 
@@ -1322,6 +1410,12 @@ const app_convex_schema = defineSchema({
 		capabilitiesAcceptedAt: v.number(),
 		acceptedOutboundOrigins: v.array(v.string()),
 		outboundOriginsAcceptedAt: v.number(),
+		/**
+		 * The page origins this workspace agreed to. Nothing reads this to decide a request: the page's
+		 * `connect-src` comes from the version. It is the record of what the install dialog showed, so
+		 * an audit after an upgrade can still say what the workspace agreed to before it.
+		 */
+		acceptedUiOutboundOrigins: v.array(v.string()),
 		installedBy: v.id("users"),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
@@ -1493,6 +1587,314 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_cleanupAt", ["cleanupAt"])
 		.index("by_pluginName", ["pluginName"]),
+
+	/**
+	 * Plugin-owned document store. A plugin keeps its structured data here instead of adding tables
+	 * to the core app schema, the same way installation configuration keeps plugin settings out of
+	 * it. One doc is one document: an installation, a collection inside that installation, and a key
+	 * inside that collection.
+	 */
+	plugins_data: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		/** Denormalized from the installation so a doc states its own scope without a second read. */
+		pluginName: v.string(),
+		collection: v.string(),
+		key: v.string(),
+		/**
+		 * The plugin's own JSON object. The app never reads inside it, so it stays a record of
+		 * unknown values like the other externally-owned payloads in this schema.
+		 */
+		value: v.record(v.string(), v.any()),
+		/** UTF-8 byte size of the canonical JSON encoding of `value`, charged to the installation total. */
+		byteSize: v.number(),
+		/**
+		 * Grows by one on every accepted write. A `versioned` document accepts revision n only when
+		 * the stored revision is n - 1, so one external producer can replay a lost response safely.
+		 */
+		revision: v.number(),
+		/**
+		 * `versioned` binds the key to `producerPrincipalKey` for good. The normal interactive routes
+		 * then refuse that key, so a plugin page cannot race the producer's ordered outbox.
+		 */
+		writeMode: v.union(v.literal("normal"), v.literal("versioned")),
+		/** Set only for `versioned`: the one service principal allowed to write this key. */
+		producerPrincipalKey: v.optional(v.string()),
+		createdBy: v.id("users"),
+		updatedBy: v.id("users"),
+		updatedAt: v.number(),
+	})
+		.index("by_installation_collection_key", ["installationId", "collection", "key"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * One accounting doc per installation. The store has a byte ceiling and a slot ceiling, and
+	 * neither can be answered by counting docs at write time, so the owning mutation keeps these
+	 * counters in the same transaction as the document it changes. That makes this a hot doc:
+	 * concurrent writes to one installation can lose an optimistic-concurrency race and retry.
+	 */
+	plugins_data_usage: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginName: v.string(),
+		/** Sum of `plugins_data.byteSize` for this installation. */
+		usedBytes: v.number(),
+		/** Bytes promised to live reservations that no stored value has claimed yet. */
+		reservedBytes: v.number(),
+		usedDocuments: v.number(),
+		reservedDocuments: v.number(),
+		/** Released or expired reservations and revision tombstones still inside their retry horizon. */
+		tombstoneDocuments: v.number(),
+		/**
+		 * Every collection that currently holds a document or a live reservation. It is bounded by the
+		 * collection limit, so the 16-collection rule can be enforced without scanning the store.
+		 */
+		collectionNames: v.array(v.string()),
+		updatedAt: v.number(),
+	})
+		.index("by_installation", ["installationId"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * Capacity held for one exact document before an external side effect happens. A service that is
+	 * about to create something it cannot take back reserves first, so a full store cannot refuse the
+	 * write afterwards. The reservation also survives a lost HTTP response: an exact replay of the
+	 * same idempotency key is answered from this row instead of reserving twice.
+	 */
+	plugins_data_reservations: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginName: v.string(),
+		collection: v.string(),
+		key: v.string(),
+		/** The service principal that owns this reservation. It survives token rotation. */
+		ownerPrincipalKey: v.string(),
+		maximumBytes: v.number(),
+		/** Bytes still held. Storing or growing the value moves the delta from here into `usedBytes`. */
+		remainingBytes: v.number(),
+		/** `released` keeps the doc as a retry record until `retryHorizonExpiresAt`. */
+		state: v.union(v.literal("live"), v.literal("released")),
+		/** Unique per installation and principal. It is what makes a replay recognizable. */
+		idempotencyKey: v.string(),
+		/**
+		 * The canonical encoding of the reserve request, compared as a whole string. A replay with
+		 * different fields is refused, not reserved. It is not a hash and nothing secret is in it.
+		 */
+		requestFingerprint: v.string(),
+		/**
+		 * Set when the reservation is released, and frozen so a replayed release answers the same
+		 * thing twice. A reserve has no such field on purpose: a replayed reserve is answered from the
+		 * live row, because an ordered write spends part of the reservation and a frozen number would
+		 * promise bytes that are already gone.
+		 */
+		releaseResult: v.optional(
+			v.object({
+				releasedBytes: v.number(),
+			}),
+		),
+		/** True only while this released retry doc owns one `tombstoneDocuments` slot. */
+		holdsUsageTombstoneSlot: v.boolean(),
+		releasedAt: v.optional(v.number()),
+		/** A live reservation past this time is released by the expiry cron. */
+		expiresAt: v.number(),
+		/** After this time the released retry record is deleted and its slot returns. */
+		retryHorizonExpiresAt: v.number(),
+		updatedAt: v.number(),
+	})
+		// `state` sits before the collection so a lookup asks the index for the one live reservation.
+		// One key collects a released retry record per reserve, and they stay for a day after the
+		// reservation expires, so a query that read the key's docs and filtered afterwards would have to
+		// read past all of them. Past enough of them it would stop before the live one and miss it.
+		.index("by_installation_state_collection_key", ["installationId", "state", "collection", "key"])
+		.index("by_installation_state_collection_key_owner_holds_slot", [
+			"installationId",
+			"state",
+			"collection",
+			"key",
+			"ownerPrincipalKey",
+			"holdsUsageTombstoneSlot",
+		])
+		.index("by_installation_principal_idempotencyKey", ["installationId", "ownerPrincipalKey", "idempotencyKey"])
+		// `state` comes first so the expiry cron reads only live docs. Without it, a workspace holding
+		// many released retry records would fill every batch with docs that need nothing, and the live
+		// ones behind them would never be reached.
+		.index("by_state_expiresAt", ["state", "expiresAt"])
+		.index("by_retryHorizonExpiresAt", ["retryHorizonExpiresAt"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * Marks a key its producer deleted for good. The value doc is physically gone and its bytes are
+	 * already back, so reads and lists treat the key as absent. The tombstone exists only to refuse
+	 * writes the producer sent before the delete and that arrive after it, until its retry horizon.
+	 */
+	plugins_data_revision_tombstones: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginName: v.string(),
+		collection: v.string(),
+		key: v.string(),
+		/** The delete's revision. Every lower revision and every later write is refused. */
+		revision: v.number(),
+		producerPrincipalKey: v.string(),
+		deletedAt: v.number(),
+		expiresAt: v.number(),
+	})
+		.index("by_installation_collection_key", ["installationId", "collection", "key"])
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * Bearer grant for a service that acts for one installation (`psg_` tokens, stored hashed). It is
+	 * bound to the installation, not to a user session, so an external worker can finish work the
+	 * member started. Every call still rechecks that the installation is enabled and still accepts
+	 * the matching capabilities, so uninstalling or removing a capability revokes it.
+	 */
+	plugin_service_grants: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginVersionId: v.id("plugins_versions"),
+		pluginName: v.string(),
+		/** The member whose plugin-page token was exchanged for this grant. Kept for audit. */
+		actorUserId: v.id("users"),
+		tokenHash: v.string(),
+		scopes: v.array(v.union(v.literal("plugin_data:read"), v.literal("plugin_data:write"), v.literal("files:write"))),
+		/**
+		 * Stable across token rotation, so reservations and versioned documents stay owned by the
+		 * same producer after the raw token changes.
+		 */
+		principalKey: v.string(),
+		/**
+		 * `processing` is meant to mark work that is already running, so it can finish after the actor
+		 * loses permission. That only becomes safe once the grant is also sealed to one exact target,
+		 * and those sealing fields belong to the Council work that mints such a grant. Until then both
+		 * phases resolve with the same live membership and permission checks.
+		 */
+		phase: v.union(v.literal("interactive"), v.literal("processing")),
+		/** Absolute path prefix this grant may write under. Null means it may not write files. */
+		destinationPathPrefix: v.union(v.string(), v.null()),
+		expiresAt: v.number(),
+		revokedAt: v.optional(v.number()),
+		revokedReason: v.optional(v.string()),
+		updatedAt: v.number(),
+	})
+		.index("by_tokenHash", ["tokenHash"])
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"])
+		// Removing a member deletes their grants by this index, the same way it deletes their public API
+		// grants and plugin UI sessions.
+		.index("by_organization_workspace_actorUser", ["organizationId", "workspaceId", "actorUserId"]),
+
+	/**
+	 * Storage held for one meeting's files before the service uploads them. A processing-phase
+	 * service grant reserves the whole meeting envelope up front, so a full workspace quota refuses
+	 * the meeting before the recording starts instead of refusing the upload after it ended.
+	 * A replay of the same reserve request is answered from this doc instead of reserving twice.
+	 */
+	plugin_service_storage_reservations: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginName: v.string(),
+		/** The service principal that owns this reservation. It survives token rotation. */
+		ownerPrincipalKey: v.string(),
+		/** Unique per installation and principal. It is what makes a replay recognizable. */
+		idempotencyKey: v.string(),
+		/**
+		 * The canonical encoding of the reserve request, compared as a whole string. A replay with
+		 * different fields is refused, not reserved.
+		 */
+		requestFingerprint: v.string(),
+		/** The full envelope charged to the workspace quota when this reservation was created. */
+		reservedBytes: v.number(),
+		/** Bytes no target has claimed yet. Creating a target moves its declared size out of here. */
+		remainingBytes: v.number(),
+		/** `released` keeps the doc as a retry record until `retryHorizonExpiresAt`. */
+		state: v.union(v.literal("live"), v.literal("released")),
+		/** Frozen at release so a replayed release answers the same thing twice. */
+		releaseResult: v.optional(v.object({ releasedBytes: v.number() })),
+		releasedAt: v.optional(v.number()),
+		/** A live reservation past this time is released by the expiry cron. */
+		expiresAt: v.number(),
+		/** After this time the released retry record and its non-committed targets are deleted. */
+		retryHorizonExpiresAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_installation_principal_idempotencyKey", ["installationId", "ownerPrincipalKey", "idempotencyKey"])
+		// `state` comes first so the expiry cron reads only live docs.
+		.index("by_state_expiresAt", ["state", "expiresAt"])
+		.index("by_retryHorizonExpiresAt", ["retryHorizonExpiresAt"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * One file a service upload reservation pays for. The doc is the durable answer to a replayed
+	 * create/remint/finalize call, and it captures ownership and the actual stored size, so the
+	 * workspace quota can give the bytes back when the exact canonical R2 object is later deleted —
+	 * even after the installation or the reservation doc is gone.
+	 */
+	plugin_service_storage_targets: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		reservationId: v.id("plugin_service_storage_reservations"),
+		/** Stable per-reservation idempotency key for this one file. */
+		targetKey: v.string(),
+		/** Same replay rule as the reservation: a different request under the same key is refused. */
+		requestFingerprint: v.string(),
+		/**
+		 * The sealed folder path and its stable node id when this target was created. Existing dev docs
+		 * predate these fields; backfill them before making the fields required.
+		 */
+		destinationPath: v.optional(v.string()),
+		destinationNodeId: v.optional(v.id("files_nodes")),
+		path: v.string(),
+		contentType: v.string(),
+		/** The size the service declared at create time. Spent from the reservation's remaining bytes. */
+		declaredBytes: v.number(),
+		/** The size R2 confirmed at finalization. Null until the target is committed. */
+		actualBytes: v.union(v.number(), v.null()),
+		nodeId: v.id("files_nodes"),
+		assetId: v.id("files_r2_assets"),
+		/**
+		 * `pending` until the canonical object is confirmed and settled, then `committed`. `released`
+		 * means the target no longer charges the quota: the upload expired, the reservation was
+		 * released, or the committed object was physically deleted.
+		 */
+		state: v.union(v.literal("pending"), v.literal("committed"), v.literal("released")),
+		/**
+		 * Set when the service's delete route asked for this committed file to go away. The physical
+		 * deletion settlement then keeps the doc as a released tombstone instead of consuming it, so
+		 * the service can replay the delete and still get an answer.
+		 */
+		deleteRequestedAt: v.optional(v.number()),
+		/** The member whose sealed grant created this target. Kept for audit and file authorship. */
+		createdBy: v.id("users"),
+		updatedAt: v.number(),
+	})
+		.index("by_reservation_targetKey", ["reservationId", "targetKey"])
+		// Physical deletion settlement finds the charged target by the deleted canonical asset.
+		.index("by_asset", ["assetId"])
+		.index("by_organization_workspace_installation_destinationPath", [
+			"organizationId",
+			"workspaceId",
+			"installationId",
+			"destinationPath",
+		])
+		// The archive route finds one target under the sealed destination without scanning an
+		// installation's full upload history. The stable node id then survives a folder rename.
+		.index("by_organization_workspace_installation_path", ["organizationId", "workspaceId", "installationId", "path"])
+		// The delete route finds targets by key inside the installation; the uninstall/workspace drain
+		// uses the same index as a tenant-scope prefix.
+		.index("by_organization_workspace_installation_targetKey", [
+			"organizationId",
+			"workspaceId",
+			"installationId",
+			"targetKey",
+		]),
 
 	// #endregion plugins
 
@@ -1772,6 +2174,7 @@ const app_convex_schema = defineSchema({
 			v.literal("extra_workspaces"),
 			v.literal("active_api_credentials"),
 			v.literal("public_api_upload_bytes"),
+			v.literal("plugin_service_storage_bytes"),
 		),
 		userId: v.optional(v.id("users")),
 		organizationId: v.optional(v.id("organizations")),

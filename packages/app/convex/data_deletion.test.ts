@@ -18,11 +18,7 @@ import { billing_PRODUCTS } from "../shared/billing.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { files_create_room_id, files_get_utf8_byte_size } from "../shared/files.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
-import {
-	r2_PUT_MAY_ARRIVE_MARGIN_MS,
-	r2_create_asset_key,
-	r2_create_upload_staging_key,
-} from "./r2_client.ts";
+import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_create_upload_staging_key } from "./r2_client.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -148,6 +144,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		version: "0.1.0",
 		description: "Workspace media gallery",
 		reviewStatus: "passed",
+		reviewId: null,
 		isLatest: true,
 		artifactHash: `sha256:${"a".repeat(64)}`,
 		sourceRepositoryUrl: "https://github.com/bonobo/gallery-plugin",
@@ -162,6 +159,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		pages: [],
 		fileViews: [],
 		outboundOrigins: [],
+		uiOutboundOrigins: [],
 		files: [],
 		sourceStatus: "ready",
 		sourceLastError: null,
@@ -178,6 +176,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		acceptedCapabilities: ["workspace.files.read"],
 		capabilitiesAcceptedAt: now,
 		acceptedOutboundOrigins: [],
+		acceptedUiOutboundOrigins: [],
 		outboundOriginsAcceptedAt: now,
 		installedBy: args.userId,
 		updatedBy: args.userId,
@@ -1461,6 +1460,7 @@ describe("process_user_deletion_request", () => {
 				version: "0.1.0",
 				description: "Workspace media gallery",
 				reviewStatus: "passed",
+				reviewId: null,
 				isLatest: true,
 				artifactHash: `sha256:${"a".repeat(64)}`,
 				sourceRepositoryUrl: "https://github.com/bonobo/gallery-plugin",
@@ -1475,6 +1475,7 @@ describe("process_user_deletion_request", () => {
 				pages: [],
 				fileViews: [],
 				outboundOrigins: [],
+				uiOutboundOrigins: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -1491,6 +1492,7 @@ describe("process_user_deletion_request", () => {
 				acceptedCapabilities: ["workspace.files.read"],
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],
+				acceptedUiOutboundOrigins: [],
 				outboundOriginsAcceptedAt: now,
 				installedBy: collaborator.userId,
 				updatedBy: collaborator.userId,
@@ -2056,7 +2058,6 @@ describe("process_workspace_deletion_request", () => {
 
 	test("purges workspace content in retryable batches without touching sibling workspaces", async () => {
 		const t = test_convex();
-		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject");
 		const user = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
 				clerkUserId: "clerk-user-ws-batch",
@@ -2154,7 +2155,7 @@ describe("process_workspace_deletion_request", () => {
 		});
 
 		const afterDone = await t.run(async (ctx) => {
-			const [request, victimCount, controlCount] = await Promise.all([
+			const [request, victimCount, controlCount, deletionJobs] = await Promise.all([
 				ctx.db.get("data_deletion_requests", requestId),
 				data_deletion_test_count_workspace_content(ctx, {
 					organizationId: user.defaultOrganizationId,
@@ -2164,16 +2165,17 @@ describe("process_workspace_deletion_request", () => {
 					organizationId: user.defaultOrganizationId,
 					workspaceId: controlWorkspaceId,
 				}),
+				ctx.db.query("files_r2_object_deletion_jobs").collect(),
 			]);
 
-			return { request, victimCount, controlCount };
+			return { request, victimCount, controlCount, deletionJobs };
 		});
 
 		expect(afterDone.request).toBeNull();
 		expect(afterDone.victimCount).toBe(0);
 		expect(afterDone.controlCount).toBeGreaterThan(0);
 		for (const r2Key of r2Keys) {
-			expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), r2Key);
+			expect(afterDone.deletionJobs.some((job) => job.r2Key === r2Key)).toBe(true);
 		}
 	});
 
@@ -2318,7 +2320,6 @@ describe("process_workspace_deletion_request", () => {
 
 	test("durably deletes live and staging keys for an upload asset without r2Key", async () => {
 		const t = test_convex();
-		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject");
 		const user = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
 				clerkUserId: "clerk-user-ws-unfinalized-r2",
@@ -2371,8 +2372,6 @@ describe("process_workspace_deletion_request", () => {
 
 			return { assetId, requestId, stagingKey, uploadUrlExpiresAt };
 		});
-		deleteObjectSpy.mockClear();
-
 		await data_deletion_test_process_workspace_request_until_done(t, {
 			requestId,
 			batchSize: 5,
@@ -2383,14 +2382,13 @@ describe("process_workspace_deletion_request", () => {
 			workspaceId: user.defaultWorkspaceId,
 			assetId,
 		});
-		const jobs = await t.run(async (ctx) =>
-			await ctx.db
-				.query("files_r2_object_deletion_jobs")
-				.filter((q) => q.or(q.eq(q.field("r2Key"), liveKey), q.eq(q.field("r2Key"), stagingKey)))
-				.collect(),
+		const jobs = await t.run(
+			async (ctx) =>
+				await ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.filter((q) => q.or(q.eq(q.field("r2Key"), liveKey), q.eq(q.field("r2Key"), stagingKey)))
+					.collect(),
 		);
-		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), liveKey);
-		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), stagingKey);
 		expect(jobs).toHaveLength(2);
 		expect(jobs.find((job) => job.r2Key === liveKey)).toMatchObject({
 			r2Key: liveKey,
@@ -2458,7 +2456,7 @@ describe("process_workspace_deletion_request", () => {
 		});
 	});
 
-	test("purges plugin installations, secrets, upload event routes, runs, call docs, and activities", async () => {
+	test("purges plugin installations, secrets, upload event routes, runs, call docs, stored data, and activities", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -2501,6 +2499,7 @@ describe("process_workspace_deletion_request", () => {
 				version: "0.1.0",
 				description: "Media plugin",
 				reviewStatus: "pending",
+				reviewId: null,
 				isLatest: true,
 				artifactHash: `sha256:${"a".repeat(64)}`,
 				sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
@@ -2522,6 +2521,7 @@ describe("process_workspace_deletion_request", () => {
 				pages: [],
 				fileViews: [],
 				outboundOrigins: [],
+				uiOutboundOrigins: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -2538,6 +2538,7 @@ describe("process_workspace_deletion_request", () => {
 				acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],
+				acceptedUiOutboundOrigins: [],
 				outboundOriginsAcceptedAt: now,
 				installedBy: user.userId,
 				updatedBy: user.userId,
@@ -2576,6 +2577,81 @@ describe("process_workspace_deletion_request", () => {
 				tokenHash: "e".repeat(64),
 				createdAt: now,
 				expiresAt: now + 30 * 60 * 1000,
+			});
+			// The plugin's own document store: a stored document, its accounting doc, a live
+			// reservation, a delete tombstone, and the service grant that wrote them.
+			await ctx.db.insert("plugins_data", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				installationId,
+				pluginName: "media",
+				collection: "meetings",
+				key: "meeting-1",
+				value: { title: "Weekly sync" },
+				byteSize: 24,
+				revision: 1,
+				writeMode: "normal",
+				createdBy: user.userId,
+				updatedBy: user.userId,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_data_usage", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				installationId,
+				pluginName: "media",
+				usedBytes: 24,
+				reservedBytes: 1000,
+				usedDocuments: 1,
+				reservedDocuments: 1,
+				tombstoneDocuments: 1,
+				collectionNames: ["meetings"],
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_data_reservations", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				installationId,
+				pluginName: "media",
+				collection: "meetings",
+				key: "meeting-2",
+				ownerPrincipalKey: "plugin_service:purge-test",
+				maximumBytes: 1000,
+				remainingBytes: 1000,
+				state: "live",
+				holdsUsageTombstoneSlot: false,
+				idempotencyKey: "reserve-1",
+				requestFingerprint: "f".repeat(64),
+				expiresAt: now + 60_000,
+				retryHorizonExpiresAt: now + 24 * 60 * 60 * 1000,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_data_revision_tombstones", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				installationId,
+				pluginName: "media",
+				collection: "meetings",
+				key: "meeting-3",
+				revision: 4,
+				producerPrincipalKey: "plugin_service:purge-test",
+				deletedAt: now,
+				expiresAt: now + 24 * 60 * 60 * 1000,
+			});
+			await ctx.db.insert("plugin_service_grants", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				installationId,
+				pluginVersionId,
+				pluginName: "media",
+				actorUserId: user.userId,
+				tokenHash: "d".repeat(64),
+				scopes: ["plugin_data:read", "plugin_data:write"],
+				principalKey: "plugin_service:purge-test",
+				phase: "interactive",
+				destinationPathPrefix: null,
+				expiresAt: now + 60 * 60 * 1000,
+				updatedAt: now,
 			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
 				organizationId: user.defaultOrganizationId,
@@ -2701,22 +2777,52 @@ describe("process_workspace_deletion_request", () => {
 		});
 
 		const remaining = await t.run(async (ctx) => {
-			const [calls, runs, eventHandlers, secrets, uiSessions, installations, stages, activities] = await Promise.all([
+			const [
+				calls,
+				runs,
+				eventHandlers,
+				secrets,
+				uiSessions,
+				pluginDocuments,
+				pluginUsage,
+				pluginReservations,
+				pluginTombstones,
+				serviceGrants,
+				installations,
+				stages,
+				activities,
+			] = await Promise.all([
 				ctx.db.query("plugins_event_run_calls").collect(),
 				ctx.db.query("plugins_event_runs").collect(),
 				ctx.db.query("plugins_workspace_event_handlers").collect(),
 				ctx.db.query("plugins_workspace_installation_secrets").collect(),
 				ctx.db.query("plugins_ui_sessions").collect(),
+				ctx.db.query("plugins_data").collect(),
+				ctx.db.query("plugins_data_usage").collect(),
+				ctx.db.query("plugins_data_reservations").collect(),
+				ctx.db.query("plugins_data_revision_tombstones").collect(),
+				ctx.db.query("plugin_service_grants").collect(),
 				ctx.db.query("plugins_workspace_installations").collect(),
 				ctx.db.query("public_api_file_write_stages").collect(),
 				ctx.db.query("activities").collect(),
 			]);
 			const inWorkspace = (doc: { organizationId: string; workspaceId: string }) =>
 				doc.organizationId === user.defaultOrganizationId && doc.workspaceId === user.defaultWorkspaceId;
-			return [calls, runs, eventHandlers, secrets, uiSessions, installations, stages, activities].reduce(
-				(total, docs) => total + docs.filter(inWorkspace).length,
-				0,
-			);
+			return [
+				calls,
+				runs,
+				eventHandlers,
+				secrets,
+				uiSessions,
+				pluginDocuments,
+				pluginUsage,
+				pluginReservations,
+				pluginTombstones,
+				serviceGrants,
+				installations,
+				stages,
+				activities,
+			].reduce((total, docs) => total + docs.filter(inWorkspace).length, 0);
 		});
 
 		expect(remaining).toBe(0);
@@ -2784,7 +2890,7 @@ describe("process_workspace_deletion_request", () => {
 		throw new Error("Workspace deletion request did not finish");
 	});
 
-	test("leaves R2 asset rows retryable when object deletion fails", async () => {
+	test("hands R2 deletion to the durable job before deleting the asset doc", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -2816,28 +2922,29 @@ describe("process_workspace_deletion_request", () => {
 			};
 		});
 
-		vi.spyOn(R2.prototype, "deleteObject").mockRejectedValue(new Error("R2 unavailable"));
-
-		await expect(
-			t.run((ctx) =>
-				ctx.runMutation(internal.data_deletion.process_workspace_deletion_request, {
-					requestId,
-					_test_batchSize: 5,
-				}),
-			),
-		).rejects.toThrow("R2 unavailable");
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_workspace_deletion_request, {
+				requestId,
+				_test_batchSize: 5,
+			}),
+		);
 
 		const after = await t.run(async (ctx) => {
-			const [request, asset] = await Promise.all([
+			const [request, asset, job] = await Promise.all([
 				ctx.db.get("data_deletion_requests", requestId),
 				ctx.db.get("files_r2_assets", assetId),
+				ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", "content/r2-failure"))
+					.first(),
 			]);
 
-			return { request, asset };
+			return { request, asset, job };
 		});
 
 		expect(after.request?._id).toBe(requestId);
-		expect(after.asset?._id).toBe(assetId);
+		expect(after.asset).toBeNull();
+		expect(after.job).toMatchObject({ reason: "untracked_asset_event", generation: 1 });
 	});
 
 	test("cancels materialization jobs before deleting their tracking docs", async () => {
@@ -2951,6 +3058,7 @@ describe("process_workspace_deletion_request", () => {
 				version: "0.1.0",
 				description: "Media plugin",
 				reviewStatus: "pending",
+				reviewId: null,
 				isLatest: true,
 				artifactHash: `sha256:${"a".repeat(64)}`,
 				sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
@@ -2972,6 +3080,7 @@ describe("process_workspace_deletion_request", () => {
 				pages: [],
 				fileViews: [],
 				outboundOrigins: [],
+				uiOutboundOrigins: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -2988,6 +3097,7 @@ describe("process_workspace_deletion_request", () => {
 				acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],
+				acceptedUiOutboundOrigins: [],
 				outboundOriginsAcceptedAt: now,
 				installedBy: user.userId,
 				updatedBy: user.userId,
@@ -4096,7 +4206,9 @@ describe("hard_delete_user_data", () => {
 						.eq("workspaceId", extraWorkspace._yay.workspaceId),
 				)
 				.collect();
-			await Promise.all(memberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)));
+			await Promise.all(
+				memberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)),
+			);
 			await ctx.db.delete("organizations_workspaces", extraWorkspace._yay.workspaceId);
 
 			return {
@@ -4399,7 +4511,14 @@ describe("finalize_user_deletion_data", () => {
 			}),
 		);
 
-		async function seed_user_state_docs(user: { userId: Id<"users">; defaultOrganizationId: Id<"organizations">; defaultWorkspaceId: Id<"organizations_workspaces"> }, tag: string) {
+		async function seed_user_state_docs(
+			user: {
+				userId: Id<"users">;
+				defaultOrganizationId: Id<"organizations">;
+				defaultWorkspaceId: Id<"organizations_workspaces">;
+			},
+			tag: string,
+		) {
 			return await t.run(async (ctx) => {
 				const now = Date.now();
 				const nodeId = await ctx.db.insert("files_nodes", {
@@ -4795,7 +4914,6 @@ describe("finalize_user_deletion_data", () => {
 			};
 		});
 
-		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
 				userId: deletedUser.userId,
@@ -4814,6 +4932,7 @@ describe("finalize_user_deletion_data", () => {
 				organizationRequest,
 				workspaceRequest,
 				unrelatedWorkspaceRequest,
+				deletionJobs,
 			] = await Promise.all([
 				ctx.db.get("users", deletedUser.userId),
 				ctx.db.get("organizations", deletedUser.defaultOrganizationId),
@@ -4832,6 +4951,7 @@ describe("finalize_user_deletion_data", () => {
 				ctx.db.get("data_deletion_requests", requestIds.organizationRequestId),
 				ctx.db.get("data_deletion_requests", requestIds.workspaceRequestId),
 				ctx.db.get("data_deletion_requests", requestIds.unrelatedWorkspaceRequestId),
+				ctx.db.query("files_r2_object_deletion_jobs").collect(),
 			]);
 
 			return {
@@ -4844,6 +4964,7 @@ describe("finalize_user_deletion_data", () => {
 				organizationRequest,
 				workspaceRequest,
 				unrelatedWorkspaceRequest,
+				deletionJobs,
 			};
 		});
 
@@ -4855,9 +4976,8 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.workspace).toBeNull();
 		expect(after.files).toHaveLength(0);
 		expect(after.filesR2Assets).toHaveLength(0);
-		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), deletedR2Keys[0]);
-		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), deletedR2Keys[1]);
-		deleteObjectSpy.mockRestore();
+		expect(after.deletionJobs.some((job) => job.r2Key === deletedR2Keys[0])).toBe(true);
+		expect(after.deletionJobs.some((job) => job.r2Key === deletedR2Keys[1])).toBe(true);
 		expect(after.userRequest).toBeNull();
 		expect(after.organizationRequest).toBeNull();
 		expect(after.workspaceRequest).toBeNull();
@@ -4969,11 +5089,15 @@ describe("finalize_user_deletion_data", () => {
 					ctx.db.insert("plugins_version_reviews", {
 						createdBy: deletedUser.userId,
 						artifactHash: `sha256:${i.toString(16).repeat(64)}`,
+						reviewSubjectHash: `subject:${i.toString(16).repeat(64)}`,
+						reviewPolicyVersion: "1",
 						pluginName: `delete-${i}`,
 						version: "0.1.0",
 						status: "passed",
 						mechanicalFindings: [],
+						mechanicalAdvisoryFindings: [],
 						aiFindings: [],
+						capabilityMap: [],
 						model: "none",
 						updatedAt: now,
 					}),
@@ -5497,6 +5621,7 @@ describe("enqueue_deletion_requests_processing", () => {
 				r2Bucket: "test-bucket",
 				r2Key: "content/worker-r2-failure",
 				size: 1,
+				processingWorkId: "work_worker_r2_failure" as WorkId,
 				createdBy: user.userId,
 				updatedAt: Date.now(),
 			});
@@ -5518,7 +5643,7 @@ describe("enqueue_deletion_requests_processing", () => {
 			};
 		});
 
-		vi.spyOn(R2.prototype, "deleteObject").mockRejectedValueOnce(new Error("R2 unavailable"));
+		vi.spyOn(Workpool.prototype, "cancel").mockRejectedValueOnce(new Error("Workpool unavailable"));
 		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		try {
 			const result = await t.action(internal.data_deletion.process_deletion_requests, {
@@ -5577,6 +5702,7 @@ describe("enqueue_deletion_requests_processing", () => {
 					r2Bucket: "test-bucket",
 					r2Key: `content/workspace-fairness-fail-${i}`,
 					size: 1,
+					processingWorkId: `work_workspace_fairness_fail_${i}` as WorkId,
 					createdBy: user.userId,
 					updatedAt: eligibleAt,
 				});
@@ -5617,9 +5743,9 @@ describe("enqueue_deletion_requests_processing", () => {
 			};
 		});
 
-		vi.spyOn(R2.prototype, "deleteObject").mockImplementation(async (_ctx, key) => {
-			if (key.includes("workspace-fairness-fail")) {
-				throw new Error("R2 unavailable");
+		vi.spyOn(Workpool.prototype, "cancel").mockImplementation(async (_ctx, workId) => {
+			if (String(workId).includes("workspace_fairness_fail")) {
+				throw new Error("Workpool unavailable");
 			}
 		});
 		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -5701,6 +5827,7 @@ describe("enqueue_deletion_requests_processing", () => {
 					r2Bucket: "test-bucket",
 					r2Key: `content/organization-fairness-fail-${i}`,
 					size: 1,
+					processingWorkId: `work_organization_fairness_fail_${i}` as WorkId,
 					createdBy: user.userId,
 					updatedAt: eligibleAt,
 				});
@@ -5742,9 +5869,9 @@ describe("enqueue_deletion_requests_processing", () => {
 			};
 		});
 
-		vi.spyOn(R2.prototype, "deleteObject").mockImplementation(async (_ctx, key) => {
-			if (key.includes("organization-fairness-fail")) {
-				throw new Error("R2 unavailable");
+		vi.spyOn(Workpool.prototype, "cancel").mockImplementation(async (_ctx, workId) => {
+			if (String(workId).includes("organization_fairness_fail")) {
+				throw new Error("Workpool unavailable");
 			}
 		});
 		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -6548,12 +6675,59 @@ describe("prepare_user_for_hard_deletion", () => {
 			const deletedReviewId = await ctx.db.insert("plugins_version_reviews", {
 				createdBy: deletedUser.userId,
 				artifactHash: `sha256:${"d".repeat(64)}`,
+				reviewSubjectHash: `subject:${"d".repeat(64)}`,
+				reviewPolicyVersion: "1",
 				pluginName: "media",
 				version: "0.1.0",
 				status: "passed",
 				mechanicalFindings: [],
+				mechanicalAdvisoryFindings: [],
 				aiFindings: [],
+				capabilityMap: [],
 				model: "none",
+				updatedAt: now,
+			});
+			const linkedDeletedReviewId = await ctx.db.insert("plugins_version_reviews", {
+				createdBy: deletedUser.userId,
+				artifactHash: `sha256:${"c".repeat(64)}`,
+				reviewSubjectHash: `subject:${"c".repeat(64)}`,
+				reviewPolicyVersion: "1",
+				pluginName: "cached-media",
+				version: "0.1.0",
+				status: "passed",
+				mechanicalFindings: [],
+				mechanicalAdvisoryFindings: [],
+				aiFindings: [],
+				capabilityMap: [],
+				model: "none",
+				updatedAt: now,
+			});
+			const linkedVersionId = await ctx.db.insert("plugins_versions", {
+				name: "cached-media",
+				displayName: "Cached Media",
+				version: "0.1.0",
+				description: "Cached media plugin",
+				reviewStatus: "passed",
+				reviewId: linkedDeletedReviewId,
+				isLatest: true,
+				artifactHash: `sha256:${"c".repeat(64)}`,
+				sourceRepositoryUrl: "https://github.com/unrelated/cached-media-plugin",
+				sourceOwner: "unrelated",
+				sourceRepo: "cached-media-plugin",
+				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+				manifestR2Key: "plugins/cached-media/manifest.json",
+				backendEntrypointFile: null,
+				configuration: null,
+				events: [],
+				capabilities: [],
+				pages: [],
+				fileViews: [],
+				outboundOrigins: [],
+				uiOutboundOrigins: [],
+				files: [],
+				sourceStatus: "ready",
+				sourceLastError: null,
+				createdBy: unrelatedUser.userId,
 				updatedAt: now,
 			});
 			const unrelatedRepositoryId = await ctx.db.insert("plugins_publisher_repositories", {
@@ -6574,11 +6748,15 @@ describe("prepare_user_for_hard_deletion", () => {
 			const unrelatedReviewId = await ctx.db.insert("plugins_version_reviews", {
 				createdBy: unrelatedUser.userId,
 				artifactHash: `sha256:${"e".repeat(64)}`,
+				reviewSubjectHash: `subject:${"e".repeat(64)}`,
+				reviewPolicyVersion: "1",
 				pluginName: "pdf",
 				version: "0.1.0",
 				status: "passed",
 				mechanicalFindings: [],
+				mechanicalAdvisoryFindings: [],
 				aiFindings: [],
+				capabilityMap: [],
 				model: "none",
 				updatedAt: now,
 			});
@@ -6587,6 +6765,8 @@ describe("prepare_user_for_hard_deletion", () => {
 				deletedRepositoryId,
 				deletedSecretId,
 				deletedReviewId,
+				linkedDeletedReviewId,
+				linkedVersionId,
 				unrelatedRepositoryId,
 				unrelatedSecretId,
 				unrelatedReviewId,
@@ -6617,6 +6797,8 @@ describe("prepare_user_for_hard_deletion", () => {
 				deletedRepository,
 				deletedSecret,
 				deletedReview,
+				linkedDeletedReview,
+				linkedVersion,
 				deletedUserRepositories,
 				unrelatedRepository,
 				unrelatedSecret,
@@ -6625,6 +6807,8 @@ describe("prepare_user_for_hard_deletion", () => {
 				ctx.db.get("plugins_publisher_repositories", seeded.deletedRepositoryId),
 				ctx.db.get("plugins_publisher_repository_secrets", seeded.deletedSecretId),
 				ctx.db.get("plugins_version_reviews", seeded.deletedReviewId),
+				ctx.db.get("plugins_version_reviews", seeded.linkedDeletedReviewId),
+				ctx.db.get("plugins_versions", seeded.linkedVersionId),
 				ctx.db
 					.query("plugins_publisher_repositories")
 					.withIndex("by_ownerUser_repositoryUrl", (q) => q.eq("ownerUserId", deletedUser.userId))
@@ -6638,6 +6822,8 @@ describe("prepare_user_for_hard_deletion", () => {
 				deletedRepository,
 				deletedSecret,
 				deletedReview,
+				linkedDeletedReview,
+				linkedVersion,
 				deletedUserRepositories,
 				unrelatedRepository,
 				unrelatedSecret,
@@ -6648,10 +6834,145 @@ describe("prepare_user_for_hard_deletion", () => {
 		expect(after.deletedRepository).toBeNull();
 		expect(after.deletedSecret).toBeNull();
 		expect(after.deletedReview).toBeNull();
+		expect(after.linkedDeletedReview?.createdBy).toBeNull();
+		expect(after.linkedVersion?.reviewId).toBe(seeded.linkedDeletedReviewId);
 		expect(after.deletedUserRepositories).toHaveLength(0);
 		expect(after.unrelatedRepository?._id).toBe(seeded.unrelatedRepositoryId);
 		expect(after.unrelatedSecret?._id).toBe(seeded.unrelatedSecretId);
 		expect(after.unrelatedReview?._id).toBe(seeded.unrelatedReviewId);
+
+		// A second publisher may have received this global cached review before deletion removed it.
+		// Registration must reload the review in its own transaction instead of storing a dangling id.
+		expect(
+			await t.mutation(internal.plugins.upsert_plugin, {
+				repositoryId: seeded.unrelatedRepositoryId,
+				name: "media",
+				displayName: "Media",
+				version: "0.2.0",
+				description: "Deleted review race fixture",
+				reviewStatus: "passed",
+				reviewId: seeded.deletedReviewId,
+				artifactHash: `sha256:${"d".repeat(64)}`,
+				sourceRepositoryUrl: "https://github.com/gorilla/pdf-plugin",
+				sourceOwner: "gorilla",
+				sourceRepo: "pdf-plugin",
+				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+				manifestR2Key: "plugins/media/manifest.json",
+				backendEntrypointFile: null,
+				configuration: null,
+				events: [],
+				pages: [],
+				fileViews: [],
+				capabilities: [],
+				outboundOrigins: [],
+				uiOutboundOrigins: [],
+				files: [],
+				createdBy: unrelatedUser.userId,
+			}),
+		).toEqual({ _nay: { message: "Plugin review changed during publishing; publish again" } });
+	});
+
+	test("keeps a cached review used by another publisher's last attempt", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-cached-attempt-review",
+				displayName: "Deleted Review Creator",
+			}),
+		);
+		const publisher = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-cached-attempt-publisher",
+				displayName: "Cached Review Publisher",
+			}),
+		);
+		const seeded = await t.run(async (ctx) => {
+			const now = Date.now();
+			const reviewId = await ctx.db.insert("plugins_version_reviews", {
+				createdBy: deletedUser.userId,
+				artifactHash: `sha256:${"a".repeat(64)}`,
+				reviewSubjectHash: `subject:${"a".repeat(64)}`,
+				reviewPolicyVersion: "3",
+				pluginName: "cached-attempt",
+				version: "0.2.0",
+				status: "rejected",
+				mechanicalFindings: [],
+				mechanicalAdvisoryFindings: [],
+				aiFindings: ["Cached rejection"],
+				capabilityMap: [],
+				model: "gpt-5.4-mini",
+				updatedAt: now,
+			});
+			const repositoryId = await ctx.db.insert("plugins_publisher_repositories", {
+				ownerUserId: publisher.userId,
+				repositoryUrl: "https://github.com/bonobo/cached-attempt-plugin",
+				owner: "bonobo",
+				repo: "cached-attempt-plugin",
+				lastPublishAttempt: {
+					at: now,
+					pluginName: "cached-attempt",
+					status: "rejected",
+					message: "Plugin review rejected this version: Cached rejection",
+					commitSha: null,
+					artifactHash: `sha256:${"a".repeat(64)}`,
+					reviewId,
+				},
+			});
+			await ctx.db.insert("plugins_versions", {
+				name: "cached-attempt",
+				displayName: "Cached Attempt",
+				version: "0.1.0",
+				description: "Existing release",
+				reviewStatus: "passed",
+				reviewId: null,
+				isLatest: true,
+				artifactHash: `sha256:${"b".repeat(64)}`,
+				sourceRepositoryUrl: "https://github.com/bonobo/cached-attempt-plugin",
+				sourceOwner: "bonobo",
+				sourceRepo: "cached-attempt-plugin",
+				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+				manifestR2Key: "plugins/cached-attempt/manifest.json",
+				backendEntrypointFile: null,
+				configuration: null,
+				events: [],
+				pages: [],
+				fileViews: [],
+				capabilities: [],
+				outboundOrigins: [],
+				uiOutboundOrigins: [],
+				files: [],
+				sourceStatus: "ready",
+				sourceLastError: null,
+				createdBy: publisher.userId,
+				updatedAt: now,
+			});
+			return { repositoryId, reviewId };
+		});
+
+		let prepared = false;
+		for (let index = 0; index < 10; index += 1) {
+			prepared = await t.run((ctx) =>
+				ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+					userId: deletedUser.userId,
+					_test_batchSize: 2,
+				}),
+			);
+			if (prepared) break;
+		}
+		expect(prepared).toBe(true);
+
+		const review = await t.run((ctx) => ctx.db.get("plugins_version_reviews", seeded.reviewId));
+		expect(review?.createdBy).toBeNull();
+		const details = await t
+			.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-user-cached-attempt-publisher",
+				external_id: publisher.userId,
+			})
+			.query(api.plugins.get_publisher_plugin, { pluginName: "cached-attempt" });
+		expect(details?.repository._id).toBe(seeded.repositoryId);
+		expect(details?.repository.lastPublishAttempt?.reviewId).toBe(seeded.reviewId);
+		expect(details?.reviews.map((item) => item._id)).toContain(seeded.reviewId);
 	});
 
 	test("drains the deleted user's notifications after the publisher docs", async () => {

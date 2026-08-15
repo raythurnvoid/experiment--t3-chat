@@ -96,6 +96,15 @@ const migrations_test_schema = defineSchema({
 		createdAt: v.number(),
 		updatedAt: v.number(),
 	}),
+	plugins_versions: defineTable({
+		name: v.string(),
+		sourceStatus: v.union(v.literal("preparing"), v.literal("failed"), v.literal("ready")),
+		isLatest: v.boolean(),
+		updatedAt: v.number(),
+	})
+		.index("by_isLatest_name", ["isLatest", "name"])
+		.index("by_name", ["name"])
+		.index("by_name_sourceStatus_updatedAt", ["name", "sourceStatus", "updatedAt"]),
 });
 
 describe("rename_plain_text_chunks_file_node_id", () => {
@@ -143,11 +152,7 @@ describe("rename_plain_text_chunks_file_node_id", () => {
 		});
 
 		const plainTextChunk = await t.run(async (ctx) => {
-			await runToCompletion(
-				ctx,
-				components.migrations,
-				internal.migrations.rename_plain_text_chunks_file_node_id,
-			);
+			await runToCompletion(ctx, components.migrations, internal.migrations.rename_plain_text_chunks_file_node_id);
 
 			return await ctx.db.get("files_plain_text_chunks", legacy.plainTextChunkId);
 		});
@@ -249,6 +254,257 @@ describe("remove_plugins_workspace_installation_secrets_key_version", () => {
 
 		expect(secret).toMatchObject({ pluginName: "media", valuePreview: "configured", updatedAt: 100 });
 		expect(secret).not.toHaveProperty("keyVersion");
+	});
+});
+
+describe("backfill_plugins_versions_is_latest", () => {
+	test("keeps one marker after a committed bounded batch", async () => {
+		const t = convexTest(migrations_test_schema, migrations_test_modules);
+		component.register(t);
+		const versions = await t.run(async (ctx) => {
+			// Put the winner in the first batch and both stale markers after its cursor.
+			const newestReadyId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "ready",
+				isLatest: false,
+				updatedAt: 300,
+			});
+			const firstStaleId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "ready",
+				isLatest: true,
+				updatedAt: 200,
+			});
+			const secondStaleId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "ready",
+				isLatest: true,
+				updatedAt: 100,
+			});
+			return { firstStaleId, newestReadyId, secondStaleId };
+		});
+
+		const batch = await t.mutation(internal.migrations.backfill_plugins_versions_is_latest, {
+			cursor: null,
+			batchSize: 1,
+			dryRun: false,
+			oneBatchOnly: true,
+		});
+		const result = await t.run(async (ctx) => ({
+			firstStale: await ctx.db.get("plugins_versions", versions.firstStaleId),
+			newestReady: await ctx.db.get("plugins_versions", versions.newestReadyId),
+			secondStale: await ctx.db.get("plugins_versions", versions.secondStaleId),
+		}));
+
+		expect(batch).toMatchObject({ processed: 1, isDone: false });
+		expect(
+			[result.firstStale, result.newestReady, result.secondStale]
+				.filter((version) => version?.isLatest)
+				.map((version) => version?._id),
+		).toEqual([versions.newestReadyId]);
+		expect(result.newestReady?.isLatest).toBe(true);
+		expect(result.firstStale?.isLatest).toBe(false);
+		expect(result.secondStale?.isLatest).toBe(false);
+	});
+});
+
+describe("repair_plugins_versions_is_latest", () => {
+	test("uses a bounded default batch", async () => {
+		const t = convexTest(migrations_test_schema, migrations_test_modules);
+		component.register(t);
+		await t.run(async (ctx) => {
+			await Promise.all(
+				Array.from({ length: 21 }, (_, index) =>
+					ctx.db.insert("plugins_versions", {
+						name: `plugin-${index}`,
+						sourceStatus: "ready",
+						isLatest: false,
+						updatedAt: index,
+					}),
+				),
+			);
+		});
+
+		const batch = await t.mutation(internal.migrations.repair_plugins_versions_is_latest, {
+			cursor: null,
+			dryRun: false,
+			oneBatchOnly: true,
+		});
+
+		expect(batch).toMatchObject({ processed: 20, isDone: false });
+	});
+
+	test("keeps one marker after a committed bounded batch", async () => {
+		const t = convexTest(migrations_test_schema, migrations_test_modules);
+		component.register(t);
+		const versions = await t.run(async (ctx) => {
+			// Put the winner in the first batch and both stale markers after its cursor.
+			const newestReadyId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "ready",
+				isLatest: false,
+				updatedAt: 300,
+			});
+			const firstStaleId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "ready",
+				isLatest: true,
+				updatedAt: 200,
+			});
+			const secondStaleId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "ready",
+				isLatest: true,
+				updatedAt: 100,
+			});
+			return { firstStaleId, newestReadyId, secondStaleId };
+		});
+
+		const batch = await t.mutation(internal.migrations.repair_plugins_versions_is_latest, {
+			cursor: null,
+			batchSize: 1,
+			dryRun: false,
+			oneBatchOnly: true,
+		});
+		const result = await t.run(async (ctx) => ({
+			firstStale: await ctx.db.get("plugins_versions", versions.firstStaleId),
+			newestReady: await ctx.db.get("plugins_versions", versions.newestReadyId),
+			secondStale: await ctx.db.get("plugins_versions", versions.secondStaleId),
+		}));
+
+		expect(batch).toMatchObject({ processed: 1, isDone: false });
+		expect(
+			[result.firstStale, result.newestReady, result.secondStale]
+				.filter((version) => version?.isLatest)
+				.map((version) => version?._id),
+		).toEqual([versions.newestReadyId]);
+		expect(result.newestReady?.isLatest).toBe(true);
+		expect(result.firstStale?.isLatest).toBe(false);
+		expect(result.secondStale?.isLatest).toBe(false);
+	});
+
+	test("moves the marker to the ready version that became ready last", async () => {
+		const t = convexTest(migrations_test_schema, migrations_test_modules);
+		component.register(t);
+		const versions = await t.run(async (ctx) => {
+			// The stale marker sits on the older ready row, so the migration has to move it.
+			const staleId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "ready",
+				isLatest: true,
+				updatedAt: 100,
+			});
+			const newestReadyId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "ready",
+				isLatest: false,
+				updatedAt: 300,
+			});
+			// A failed row can carry the newest time of all. It must never win.
+			const failedLaterId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "failed",
+				isLatest: false,
+				updatedAt: 500,
+			});
+			// A second plugin proves the migration answers per name instead of picking one global winner.
+			const otherPluginId = await ctx.db.insert("plugins_versions", {
+				name: "gallery",
+				sourceStatus: "ready",
+				isLatest: false,
+				updatedAt: 700,
+			});
+			return { failedLaterId, newestReadyId, otherPluginId, staleId };
+		});
+
+		const result = await t.run(async (ctx) => {
+			await runToCompletion(ctx, components.migrations, internal.migrations.repair_plugins_versions_is_latest);
+			return {
+				failedLater: await ctx.db.get("plugins_versions", versions.failedLaterId),
+				newestReady: await ctx.db.get("plugins_versions", versions.newestReadyId),
+				otherPlugin: await ctx.db.get("plugins_versions", versions.otherPluginId),
+				stale: await ctx.db.get("plugins_versions", versions.staleId),
+			};
+		});
+
+		expect(result.stale?.isLatest).toBe(false);
+		expect(result.newestReady?.isLatest).toBe(true);
+		expect(result.failedLater?.isLatest).toBe(false);
+		expect(result.otherPlugin?.isLatest).toBe(true);
+	});
+
+	test("keeps an existing latest marker inside the newest ready tie", async () => {
+		const t = convexTest(migrations_test_schema, migrations_test_modules);
+		component.register(t);
+		const versions = await t.run(async (ctx) => {
+			// Old rows can share a millisecond. Two of them even carry the marker, so the migration has
+			// to pick one and clear the other instead of leaving the plugin with two latest versions.
+			const markedFirstId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "ready",
+				isLatest: true,
+				updatedAt: 300,
+			});
+			const markedSecondId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "ready",
+				isLatest: true,
+				updatedAt: 300,
+			});
+			const unmarkedId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				sourceStatus: "ready",
+				isLatest: false,
+				updatedAt: 300,
+			});
+			return { markedFirstId, markedSecondId, unmarkedId };
+		});
+
+		const result = await t.run(async (ctx) => {
+			await runToCompletion(ctx, components.migrations, internal.migrations.repair_plugins_versions_is_latest);
+			return {
+				markedFirst: await ctx.db.get("plugins_versions", versions.markedFirstId),
+				markedSecond: await ctx.db.get("plugins_versions", versions.markedSecondId),
+				unmarked: await ctx.db.get("plugins_versions", versions.unmarkedId),
+			};
+		});
+
+		expect(result.markedFirst?.isLatest).toBe(true);
+		expect(result.markedSecond?.isLatest).toBe(false);
+		expect(result.unmarked?.isLatest).toBe(false);
+	});
+
+	test("leaves a plugin with no ready version without a latest marker", async () => {
+		const t = convexTest(migrations_test_schema, migrations_test_modules);
+		component.register(t);
+		const versions = await t.run(async (ctx) => {
+			// A plugin can hold a stale marker on a row that never became ready. Nothing is publishable,
+			// so the migration has to clear the marker rather than hand it to the next best row.
+			const failedId = await ctx.db.insert("plugins_versions", {
+				name: "broken",
+				sourceStatus: "failed",
+				isLatest: true,
+				updatedAt: 900,
+			});
+			const preparingId = await ctx.db.insert("plugins_versions", {
+				name: "broken",
+				sourceStatus: "preparing",
+				isLatest: false,
+				updatedAt: 800,
+			});
+			return { failedId, preparingId };
+		});
+
+		const result = await t.run(async (ctx) => {
+			await runToCompletion(ctx, components.migrations, internal.migrations.repair_plugins_versions_is_latest);
+			return {
+				failed: await ctx.db.get("plugins_versions", versions.failedId),
+				preparing: await ctx.db.get("plugins_versions", versions.preparingId),
+			};
+		});
+
+		expect(result.failed?.isLatest).toBe(false);
+		expect(result.preparing?.isLatest).toBe(false);
 	});
 });
 

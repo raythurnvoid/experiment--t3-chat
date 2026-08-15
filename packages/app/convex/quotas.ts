@@ -28,7 +28,7 @@ type QuotaScope =
 			workspaceId: Id<"organizations_workspaces">;
 	  }
 	| {
-			quotaName: "public_api_upload_bytes";
+			quotaName: "public_api_upload_bytes" | "plugin_service_storage_bytes";
 			organizationId: Id<"organizations">;
 			workspaceId: Id<"organizations_workspaces">;
 	  };
@@ -40,14 +40,16 @@ function quota_scope_fields(args: QuotaScope) {
 	if (args.quotaName === "extra_workspaces") {
 		return { organizationId: args.organizationId };
 	}
-	if (args.quotaName === "public_api_upload_bytes") {
-		return { organizationId: args.organizationId, workspaceId: args.workspaceId };
+	// Check the single-literal member positively: TypeScript cannot remove the
+	// "public_api_upload_bytes" | "plugin_service_storage_bytes" member with negative checks.
+	if (args.quotaName === "active_api_credentials") {
+		return {
+			userId: args.userId,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+		};
 	}
-	return {
-		userId: args.userId,
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-	};
+	return { organizationId: args.organizationId, workspaceId: args.workspaceId };
 }
 
 async function db_find_quota(ctx: QueryCtx | MutationCtx, args: QuotaScope) {
@@ -65,23 +67,22 @@ async function db_find_quota(ctx: QueryCtx | MutationCtx, args: QuotaScope) {
 			)
 			.first();
 	}
-	if (args.quotaName === "public_api_upload_bytes") {
+	// Same narrowing limit as quota_scope_fields: check the single-literal member positively.
+	if (args.quotaName === "active_api_credentials") {
 		return await ctx.db
 			.query("quotas")
-			.withIndex("by_workspace_quotaName", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("quotaName", args.quotaName),
+			.withIndex("by_user_organization_workspace_quotaName", (q) =>
+				q
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("quotaName", args.quotaName),
 			)
 			.first();
 	}
 	return await ctx.db
 		.query("quotas")
-		.withIndex("by_user_organization_workspace_quotaName", (q) =>
-			q
-				.eq("userId", args.userId)
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("quotaName", args.quotaName),
-		)
+		.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", args.workspaceId).eq("quotaName", args.quotaName))
 		.first();
 }
 
@@ -193,9 +194,9 @@ export const get = query({
 			return null;
 		}
 
-		// Seeded lazily at the first public-API upload mint, so a missing doc means nothing was
-		// consumed yet, not quota drift.
-		if (args.quotaName === "public_api_upload_bytes") {
+		// Seeded lazily at the first public-API upload mint (or the first service upload reservation),
+		// so a missing doc means nothing was consumed yet, not quota drift.
+		if (args.quotaName === "public_api_upload_bytes" || args.quotaName === "plugin_service_storage_bytes") {
 			return await db_find_quota(ctx, {
 				quotaName: args.quotaName,
 				organizationId: membership.organizationId,

@@ -125,7 +125,9 @@ type TestCredential = {
 	name: string;
 	keyId: string;
 	obfuscatedValue: string;
-	scopes: Array<"files:list" | "files:read" | "files:download" | "files:write">;
+	scopes: Array<
+		"files:list" | "files:read" | "files:download" | "files:write" | "plugin_data:read" | "plugin_data:write"
+	>;
 	createdAt: number;
 	revokedAt: number | null;
 	lastUsedAt: number | null;
@@ -234,7 +236,15 @@ describe("RouteApiKeys", () => {
 	});
 
 	test("creates, tests, and clears a key with the default read scopes", async () => {
-		const fetchMock = vi.fn().mockResolvedValue({ status: 200 });
+		// The verify route answers with the scopes the key still has, so the message can name them.
+		const fetchMock = vi.fn().mockResolvedValue({
+			status: 200,
+			json: async () => ({
+				organizationId: "organization_1",
+				workspaceId: "workspace_1",
+				scopes: ["files:list", "files:read"],
+			}),
+		});
 		vi.stubGlobal("fetch", fetchMock);
 		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
 		renderRoute();
@@ -262,22 +272,41 @@ describe("RouteApiKeys", () => {
 		expect(copyButtonMock).toHaveBeenCalledWith(expect.objectContaining({ text: API_KEY }));
 
 		fireEvent.click(screen.getByRole("button", { name: "Test key" }));
-		await screen.findByText("Key verified. It can list files in this workspace.");
-		expect(fetchMock).toHaveBeenCalledWith(
-			new URL("https://api.test/api/v1/files/list"),
-			{
-				method: "POST",
-				credentials: "omit",
-				headers: {
-					Authorization: `Bearer ${API_KEY}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({ path: "/", limit: 1 }),
+		await screen.findByText("Key verified. It can use: files:list, files:read.");
+		expect(fetchMock).toHaveBeenCalledWith(new URL("https://api.test/api/v1/auth/verify"), {
+			method: "POST",
+			credentials: "omit",
+			headers: {
+				Authorization: `Bearer ${API_KEY}`,
 			},
-		);
+		});
 
 		fireEvent.click(screen.getByRole("button", { name: "I saved the key" }));
 		expect(screen.queryByText(API_KEY)).toBeNull();
+	});
+
+	test("says the key is valid but useless when its permissions allow no scope", async () => {
+		// The key resolves, so the route answers 200. Its scopes are all filtered out because the
+		// person behind it lost the permissions they need, and the message must say that instead of
+		// claiming the key works.
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({
+				status: 200,
+				json: async () => ({ organizationId: "organization_1", workspaceId: "workspace_1", scopes: [] }),
+			}),
+		);
+		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
+		renderRoute();
+
+		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
+		const nameInput = screen.getByRole("textbox", { name: "Name" });
+		fireEvent.change(nameInput, { target: { value: "Local script" } });
+		fireEvent.submit(nameInput.closest("form")!);
+
+		await screen.findByRole("heading", { name: "Save your API key" });
+		fireEvent.click(screen.getByRole("button", { name: "Test key" }));
+		await screen.findByText("The key is valid, but your current permissions allow none of its scopes.");
 	});
 
 	test("passes exactly the checked scopes to the create mutation", async () => {
@@ -341,17 +370,85 @@ describe("RouteApiKeys", () => {
 		expect(writeCheckbox.getAttribute("aria-describedby")).toBeNull();
 	});
 
-	test("renders badge labels for all four scopes", () => {
+	test("renders badge labels for every scope a key can hold", () => {
 		useQueryMock.mockReturnValue({
-			_yay: [createCredential({ scopes: ["files:list", "files:read", "files:download", "files:write"] })],
+			_yay: [
+				createCredential({
+					scopes: [
+						"files:list",
+						"files:read",
+						"files:download",
+						"files:write",
+						"plugin_data:read",
+						"plugin_data:write",
+					],
+				}),
+			],
 		});
 
 		renderRoute();
 
 		const scopeGroup = screen.getByRole("group", { name: "Permissions" });
-		for (const label of ["List files", "Read file content", "Download files", "Write files"]) {
+		for (const label of [
+			"List files",
+			"Read file content",
+			"Download files",
+			"Write files",
+			"Read plugin data",
+			"Write plugin data",
+		]) {
 			expect(scopeGroup.textContent).toContain(label);
 		}
+	});
+
+	test("leaves the plugin-data scopes unchecked and submits them only when chosen", () => {
+		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
+		renderRoute();
+
+		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
+
+		// Most keys never touch plugin data, and a plugin's documents can hold whatever that plugin
+		// collected. So both stay opt-in, unlike the two file read scopes.
+		const readPluginData = screen.getByRole("checkbox", { name: /Read plugin data/ });
+		const writePluginData = screen.getByRole("checkbox", { name: /Write plugin data/ });
+		expect((readPluginData as HTMLInputElement).checked).toBe(false);
+		expect((writePluginData as HTMLInputElement).checked).toBe(false);
+
+		fireEvent.click(readPluginData);
+		const nameInput = screen.getByRole("textbox", { name: "Name" });
+		fireEvent.change(nameInput, { target: { value: "Council reader" } });
+		fireEvent.submit(nameInput.closest("form")!);
+
+		expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
+			membershipId: "membership_1",
+			name: "Council reader",
+			scopes: ["files:list", "files:read", "plugin_data:read"],
+		});
+	});
+
+	test("shows the write warning for plugin data too, not only for files", () => {
+		renderRoute();
+
+		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
+		const writeFiles = screen.getByRole("checkbox", { name: /Write files/ });
+		const writePluginData = screen.getByRole("checkbox", { name: /Write plugin data/ });
+		expect(screen.queryByText(/Treat it like a password/)).toBeNull();
+
+		// One warning covers every scope that can change stored data, so checking either one shows it
+		// and both point at it.
+		fireEvent.click(writePluginData);
+		const warning = screen.getByText(/Treat it like a password/);
+		expect(writePluginData.getAttribute("aria-describedby")).toBe(warning.id);
+		expect(writeFiles.getAttribute("aria-describedby")).toBeNull();
+
+		fireEvent.click(writeFiles);
+		expect(writeFiles.getAttribute("aria-describedby")).toBe(warning.id);
+
+		// The warning only goes away once no write scope is left.
+		fireEvent.click(writePluginData);
+		expect(screen.getByText(/Treat it like a password/)).not.toBeNull();
+		fireEvent.click(writeFiles);
+		expect(screen.queryByText(/Treat it like a password/)).toBeNull();
 	});
 
 	test("validates the trimmed API key name length", async () => {

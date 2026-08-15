@@ -24,6 +24,13 @@ Load each companion skill that owns the affected boundary:
 - Tenant, workspace, and account purge are named read-only bypasses. These flows delete the whole
   lifecycle scope, so they do not call normal writable guards. They delete locked subtrees like other
   content. See [files-read-only](../files-read-only/SKILL.md).
+- Only these flows hard-delete a member's real file. Everywhere else "delete a file" means archive:
+  the UI delete, and the Council delete-meeting workflow, which archives the meeting folder through
+  `/api/v1/files/service-uploads/archive-destination` instead of removing its files.
+  `files_nodes_db_hard_delete_node` outside these purges only ever removes a node that never became
+  real content — a rejected agent create proposal, or an upload placeholder that was canceled or
+  never finished. An archived file keeps its R2 object and its quota bytes, so archiving frees no
+  storage.
 
 # Primary Files
 
@@ -39,7 +46,7 @@ Load each companion skill that owns the affected boundary:
 - `data_deletion_db_request`: creates or reuses exactly one queue doc for the requested user, organization, or workspace scope.
 - `db_prepare_user_for_deletion`: phase 1 for a user. It tombstones the user, deactivates memberships, and removes presence.
 - `db_drain_user_plugin_ui_sessions_batch`: deletes one bounded batch of a user's `plugins_ui_sessions` docs via `by_user`. Both user-deletion paths drain these to zero before `db_finalize_deleted_user`, which therefore never reads them.
-- `db_drain_user_plugin_publisher_docs_batch`: deletes one bounded user-owned publisher phase in child-first order: repository secrets, repository docs, then version reviews. Both user-deletion paths drain these docs to zero before `db_finalize_deleted_user`.
+- `db_drain_user_plugin_publisher_docs_batch`: drains one bounded user-owned publisher phase in child-first order: repository secrets, repository docs, then version reviews. It deletes an unreferenced review. If a global plugin version or another publisher's `lastPublishAttempt` still points at the review, it keeps the immutable decision and clears `createdBy` instead. Replacing that attempt, deleting its repository, or cleaning a failed source snapshot then deletes the anonymized review only after the last version and publish-attempt link is gone. Fresh review persistence, version preparation, and ready finalization recheck the user tombstone and exact repository ownership in their write transactions. A provider call, cached review, or upload that finishes after this drain cannot recreate or expose publisher data. Both user-deletion paths repeat this phase until the deleted user's index is empty before `db_finalize_deleted_user`.
 - `db_drain_user_notifications_batch`: deletes one bounded batch of notifications where the deleted user is the recipient, via `by_user`. Both user-deletion paths drain these to zero before `db_finalize_deleted_user`. The per-user cap sweep in `notifications.cleanup_extra_notifications` walks the `users` table, so without this drain a purged user record would leave its notifications unreachable forever. Notifications that only name the deleted user as `actorUserId` stay in the recipient's inbox with the deleted user's name (product decision 2026-08-09: keep the name, do not anonymize).
 - `prepare_user_for_hard_deletion`: tombstones the user and drains bounded plugin UI session, publisher-doc, and recipient-notification batches before the admin action performs external provider writes. The action reads the current Polar subscription before calling this mutation.
 - `db_finalize_deleted_user`: phase 2 for a tombstoned user. It deletes user-scoped docs and returns organizations that became empty. Its user-scoped drains include the paged pending-state family and its operation scaffolding via `by_user`: `files_pending_update_yjs_states` (with their pages), `files_pending_update_text_inputs`, `files_pending_update_operation_batches`, and `files_yjs_trusted_update_stages`.
@@ -98,7 +105,7 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - It only owns user-scope request docs.
 - If the user doc is already gone, clear user quota docs and remove the stale request.
 - A non-tombstoned user request should make no destructive progress and should log.
-- Before finalization it drains bounded plugin UI session, publisher-doc, and recipient-notification batches. Publisher secrets are deleted before their repository parents, followed by version reviews. The queued path returns `done: false` after each non-empty batch, so its request doc stays in place. The direct admin preparation returns `false`, so its action schedules another bounded pass. Finalization never reads those growing tables.
+- Before finalization it drains bounded plugin UI session, publisher-doc, and recipient-notification batches. Publisher secrets are deleted before their repository parents. Unreferenced reviews are deleted; reviews linked from global plugin versions or another publisher's last attempt are anonymized. The queued path returns `done: false` after each non-empty batch, so its request doc stays in place. The direct admin preparation returns `false`, so its action schedules another bounded pass. Finalization never reads those growing tables.
 - A post-retention reclaim through `users.resolve_user` can land between drain batches. Already-drained notifications are not restored then — the same accepted exposure as the session and publisher drains.
 - The standalone `internal.data_deletion.finalize_user_deletion_data` entrypoint drains nothing itself; its contract assumes `prepare_user_for_hard_deletion` already ran the drains. A CLI-driven finalize alone does not remove notifications.
 - `db_finalize_deleted_user` deletes the remaining user-scoped memberships, role assignments, direct user grants, API credentials, public API grants, pending-update docs, last-sequence docs, and user quota docs. Publishing is user-owned — there is no publisher account table. Normal finalization retains the tombstoned `users` doc and its anagraphic, so kept `plugins_versions.createdBy` still resolves and the marketplace can still show that retained display name. The reference becomes dangling, and the display becomes null, only after `purge_deleted_user_tombstone` removes both retained docs. Whether deleted publishers should remain named is an unresolved privacy rule; do not claim that normal finalization anonymizes them.
@@ -160,7 +167,8 @@ Current purge coverage includes:
 - `api_credentials`
 - `public_api_grants`
 - `public_api_file_write_stages` via `public_api_db_cleanup_file_write_stage`, before the calls/runs/assets passes: staged asset docs have no `r2Key` yet, so the stage cleanup derives the R2 object keys itself and deletes the objects before their asset docs
-- `plugins_event_run_calls`, `plugins_event_runs` with `plugins_runtime_workpool` run cancellation (plugin event runs execute on that dedicated component; R2 asset `processingWorkId` jobs stay on `files_upload_conversion_workpool`), `plugins_workspace_event_handlers`, `plugins_workspace_installation_secrets`, then `plugins_workspace_installations` one installation per pass: its `plugins_ui_sessions` (via `by_installation`) drain one bounded batch per transaction, and the installation doc is deleted only once no sessions remain
+- `plugins_event_run_calls`, `plugins_event_runs` with `plugins_runtime_workpool` run cancellation (plugin event runs execute on that dedicated component; R2 asset `processingWorkId` jobs stay on `files_upload_conversion_workpool`), `plugins_workspace_event_handlers`, `plugins_workspace_installation_secrets`, then the plugin document store, then `plugins_workspace_installations` one installation per pass: its `plugins_ui_sessions` (via `by_installation`) drain one bounded batch per transaction, and the installation doc is deleted only once no sessions remain
+- The plugin document store through `plugins_data_db_drain_batch` with `installationId: null`, which covers every installation in the workspace in one pass. It deletes `plugins_data_reservations`, `plugins_data_revision_tombstones`, `plugins_data`, `plugin_service_grants`, then the service upload storage (`plugin_service_storage_reservations` and, for this workspace-wide drain, `plugin_service_storage_targets` — live reservations are released first so their held bytes return to the workspace quota while it still exists), then `plugins_data_usage`. The accounting doc goes last so it is never the survivor: a leftover accounting doc with no documents behind it would look like a real installation. It runs before the installation pass, so no row is left pointing at an installation that is already gone. An installation-scoped drain (uninstall) keeps committed `plugin_service_storage_targets` on purpose: the uploaded files stay in the workspace, so their stored bytes must stay charged until the files are physically deleted, at which point `settle_object_deletion_job` in `r2_client.ts` refunds the quota and consumes the target doc.
 - `activities` after the plugin passes. The run-retention path normally deletes an activity together with its plugin run, but this purge deletes run docs directly, so it drains the leftover activities by the workspace index. Every activity producer needs a live run doc, so no new rows can appear once the run pass is empty.
 - `chat_messages`
 - `files_metadata_docs`
@@ -173,7 +181,8 @@ Current purge coverage includes:
   message instead of a file node, so nothing in the file tree points at them, but they are ordinary
   asset docs in the workspace and this pass deletes them with the rest. A picture whose message was
   never stored keeps its `unfinalizedExpiresAt` deadline and `cleanup_expired_unfinalized_assets`
-  deletes it a day later. Before
+  deletes it a day later. A referenced upload retries for at most eight days after its latest signed
+  URL; the terminal pass removes its placeholder and hands both possible keys to the deletion ledger. Before
   deleting an asset doc, create a deletion job for the stored live key or its deterministic live key.
   Also create one for `uploadStagingR2Key` when present. The staging job keeps
   `putMayArriveUntil` through `uploadUrlExpiresAt` plus the normal margin. An older upload without a
@@ -181,12 +190,30 @@ Current purge coverage includes:
 - `access_control_permission_grants` before their file scope nodes. This purge step also runs for data-only reset, where the preserved home workspace never reaches structure deletion.
 - `files_nodes` last
 
-The asset pass creates or advances `files_r2_object_deletion_jobs` before deleting an asset doc. Keep
-existing job docs and advance them through the normal exact-key helper. The processor does not need
+The exact-key jobs are the durable handoff. The purge deletes the asset docs after it writes the
+jobs; the scheduled job action then retries R2 independently. An R2 outage must not roll the Convex
+purge back or keep tenant data alive.
+
+**Accepted residue: R2 credentials at rest outside this purge.** The installed Convex version can
+declare typed component environment values with `defineComponent(..., { env })`, and a parent can
+bind them with `app.use(..., { env })`. The current R2 component does not declare that environment,
+so its client passes R2 credentials as retrier arguments and the retrier stores them for about one
+week. This workspace purge no longer uses that client path. Other `r2_delete_object` call sites still
+do, so moving the component to declared environment values is separate follow-up work.
+
+Keep existing job docs and advance them through the normal exact-key helper. The processor does not need
 tenant or asset docs. Each job stays until its processor confirms the R2 file is absent after the
-signed URL can no longer be used.
+signed URL can no longer be used. The job's final confirm (`settle_object_deletion_job`) is also the
+settlement point for plugin service upload storage: a canonical `assets/<assetId>` key with a
+committed `plugin_service_storage_targets` doc refunds the workspace's
+`plugin_service_storage_bytes` quota exactly once. The refund ends the charge record: the doc is
+consumed, unless the service's `/api/v1/files/service-uploads/delete` route marked it with
+`deleteRequestedAt` — then it becomes a `released` tombstone so the service's delete replays keep
+getting an answer.
 
 During the retention window, tombstoning an anonymous user also does not revoke every anonymous access path. See the current security gap in [auth-system](../auth-system/SKILL.md#known-anonymous-deletion-gap).
+
+Uninstalling one plugin does not go through this purge. `plugins.uninstall_version` deletes the installation doc in its own transaction, so the drain that follows cannot re-derive its scope from the installation. The uninstall schedules `plugins_data.drain_uninstalled_installation` with the tenant and installation id it already holds, and that mutation reschedules itself until nothing is left. The registry hard delete runs the same drain synchronously, per installation, before deleting the installation doc.
 
 Plugin publish source trees live in the virtual global tenant (GLOBAL organization / PLUGINS workspace) under version-keyed roots `/<pluginVersionId>/...`, not in any user tenant, so no user or tenant purge reaches them. `plugins.hard_delete_plugin_from_registry` sweeps each version's tree (via `files_nodes_db_delete_subtree_batch`) before deleting the version doc, so registry hard deletes leave no source-tree file-node or R2 orphans. Activities cannot exist in these reserved tenants: their `organizationId`/`workspaceId` fields are strict ids, while the GLOBAL sentinels are plain strings. `plugins.delete_plugin_source_tree_batch` drains a single version's tree if one was ever orphaned. GitHub mirror trees follow the same shape under GLOBAL/GITHUB commit-keyed roots `/<name>/<commitSha>/...`: `github_mounts.clear_pending_root_batch` and `github_mounts.gc_sweep_mount_roots` drive `files_nodes_db_delete_subtree_batch`, the shared child-before-parent deleter both flows rely on.
 
@@ -233,6 +260,7 @@ For data-only reset, treat missing or inconsistent default tenant state as an in
 
 - Workspace content purge, workspace structure deletion, organization deletion, and the Workpool loop are explicitly bounded and retryable.
 - Plugin UI session deletion is bounded on all three paths: per-installation batches in workspace purge, per-pass `by_user` batches in the queued user path, and repeated `prepare_user_for_hard_deletion` batches in the direct admin action.
+- Plugin document-store deletion is bounded on all three paths through the one `plugins_data_db_drain_batch` helper: workspace-scoped inside the content purge, installation-scoped and self-rescheduling after uninstall, installation-scoped inside the registry hard delete. The stored documents have no user-scoped path, because they belong to an installation and not to the member who wrote them. `plugin_service_grants` is the exception: it names an `actorUserId`, and `remove_user_from_organization` deletes that member's grants by `by_organization_workspace_actorUser`, next to their public API grants and plugin UI sessions. A grant lives 24 hours, so a removal reversed the same day would otherwise return the service its old authority.
 - Publisher repository secrets, repository docs, and version reviews are bounded on both user-deletion paths. Delete secrets first, then repository parents, then reviews.
 - Recipient notifications are bounded on both user-deletion paths through `db_drain_user_notifications_batch`, after the publisher docs.
 - `process_workspace_deletion_request` deletes content only; `db_delete_workspace_batch` deletes content and structure.

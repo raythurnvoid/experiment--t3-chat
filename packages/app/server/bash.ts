@@ -2021,24 +2021,30 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				throw new Error(batch._nay.message);
 			}
 			const operationBatchId = batch._yay.operationBatchId;
-			const staged = await runner.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
-				organizationId: runner.seeded.organizationId,
-				workspaceId: runner.seeded.workspaceId,
-				userId: runner.seeded.userId,
-				operationBatchId,
-				role: "unstaged",
-				text: args.unstagedText,
-			});
+			const staged = await runner.t.mutation(
+				internal.files_pending_updates.stage_file_pending_update_text_input_internal,
+				{
+					organizationId: runner.seeded.organizationId,
+					workspaceId: runner.seeded.workspaceId,
+					userId: runner.seeded.userId,
+					operationBatchId,
+					role: "unstaged",
+					text: args.unstagedText,
+				},
+			);
 			if (staged._nay) {
 				throw new Error(staged._nay.message);
 			}
-			const upserted = await runner.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-				organizationId: runner.seeded.organizationId,
-				workspaceId: runner.seeded.workspaceId,
-				userId: runner.seeded.userId,
-				nodeId: args.nodeId,
-				operationBatchId,
-			});
+			const upserted = await runner.t.action(
+				internal.files_pending_updates.upsert_file_pending_update_internal_action,
+				{
+					organizationId: runner.seeded.organizationId,
+					workspaceId: runner.seeded.workspaceId,
+					userId: runner.seeded.userId,
+					nodeId: args.nodeId,
+					operationBatchId,
+				},
+			);
 			if (upserted._nay) {
 				throw new Error(upserted._nay.message);
 			}
@@ -5005,9 +5011,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(moved.metadata.exitCode).toBe(0);
 
 			// The move-only pending update doc stores size 0; both cat gates must keep using the committed asset size.
-			const multi = await runner.run(
-				`cat ${test_db_files_mount}/renamed-big.md ${test_db_files_mount}/docs/readme.md`,
-			);
+			const multi = await runner.run(`cat ${test_db_files_mount}/renamed-big.md ${test_db_files_mount}/docs/readme.md`);
 			expect(multi.metadata.exitCode).toBe(1);
 			expect(multi.stderr).toContain("too large to concatenate");
 			expect(multi.stdout).not.toContain("# Readme");
@@ -5250,7 +5254,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(scratchRead.metadata.exitCode).not.toBe(0);
 
 			// A failing operand does not stop later operands (builtin continue-on-error).
-			const partial = await runner.run(`rm ${test_db_files_mount}/missing.md ${test_db_files_mount}/docs/nested/deep.md`);
+			const partial = await runner.run(
+				`rm ${test_db_files_mount}/missing.md ${test_db_files_mount}/docs/nested/deep.md`,
+			);
 			expect(partial.metadata.exitCode).not.toBe(0);
 			expect(partial.stderr).toBe(`rm: cannot remove '${test_db_files_mount}/missing.md': No such file or directory\n`);
 			expect(partial.stdout).toBe(
@@ -5693,11 +5699,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 			const sourceId = await get_seeded_node_id(runner, "/docs/tutorial.md");
 
-			const firstMove = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/first.md`);
+			const firstMove = await runner.run(
+				`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/first.md`,
+			);
 			expect(firstMove.metadata.exitCode).toBe(0);
 			// The overlay already shows the file at /docs/first.md, so the follow-up mv uses the
 			// visible path (the vacated /docs/tutorial.md reads as gone).
-			const secondMove = await runner.run(`mv ${test_db_files_mount}/docs/first.md ${test_db_files_mount}/docs/second.md`);
+			const secondMove = await runner.run(
+				`mv ${test_db_files_mount}/docs/first.md ${test_db_files_mount}/docs/second.md`,
+			);
 			expect(secondMove.metadata.exitCode).toBe(0);
 
 			// mv after mv replaces the proposal on the same single pending update doc.
@@ -5736,7 +5746,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("reuses a vacated path and reads a moved source through the overlay", async () => {
 			const runner = await create_bash_runner();
 
-			const firstMove = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`);
+			const firstMove = await runner.run(
+				`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`,
+			);
 			expect(firstMove.metadata.exitCode).toBe(0);
 
 			// The vacated path reads as free for the proposer, so another mv can claim it.
@@ -5854,9 +5866,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(moveFolderToFilePath.metadata.exitCode).toBe(0);
 
 			// The closing mv forms a mixed cycle with a folder member: proposable like any swap.
-			const closing = await runner.run(
-				`mv ${test_db_files_mount}/fsc-mix-tmp.md ${test_db_files_mount}/fsc-mix-b.md`,
-			);
+			const closing = await runner.run(`mv ${test_db_files_mount}/fsc-mix-tmp.md ${test_db_files_mount}/fsc-mix-b.md`);
 			expect(closing.metadata.exitCode).toBe(0);
 			expect(closing.stderr).toBe("");
 			expect(closing.stdout).toBe("pending move created: /fsc-mix-tmp.md -> /fsc-mix-b.md — review in Files\n");
@@ -5921,7 +5931,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 
 			// A file never replaces a folder, matching rename()'s EISDIR.
-			const fileMove = await runner.run(`mv -T ${test_db_files_mount}/edr-full-file.md ${test_db_files_mount}/edr-full`);
+			const fileMove = await runner.run(
+				`mv -T ${test_db_files_mount}/edr-full-file.md ${test_db_files_mount}/edr-full`,
+			);
 			expect(fileMove.metadata.exitCode).not.toBe(0);
 			expect(fileMove.stderr).toBe(
 				`mv: cannot overwrite directory '${test_db_files_mount}/edr-full' with non-directory\n`,
@@ -6076,7 +6088,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("overlays pending moves onto ls listings", async () => {
 			const runner = await create_bash_runner();
 
-			const move = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/reports/guide.md`);
+			const move = await runner.run(
+				`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/reports/guide.md`,
+			);
 			expect(move.metadata.exitCode).toBe(0);
 
 			// The destination folder shows the moved file under its new name.
@@ -6090,7 +6104,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(sourceList.stdout.trim().split("\n")).toEqual(["nested/", "readme.md"]);
 
 			// A move to the workspace root shows up in the root listing.
-			const rootMove = await runner.run(`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/root-readme.md`);
+			const rootMove = await runner.run(
+				`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/root-readme.md`,
+			);
 			expect(rootMove.metadata.exitCode).toBe(0);
 			const rootList = await runner.run(`ls ${test_db_files_mount}`);
 			const rootLines = rootList.stdout.trim().split("\n");
@@ -6182,7 +6198,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("lists a pending move nested under a moved folder exactly once", async () => {
 			const runner = await create_bash_runner();
 
-			const folderMove = await runner.run(`mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`);
+			const folderMove = await runner.run(
+				`mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`,
+			);
 			expect(folderMove.metadata.exitCode).toBe(0);
 			// The follow-up mv uses the moved folder's visible path, nesting one pending move
 			// under another.
@@ -6207,7 +6225,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("ls -R lists a pending move nested under a moved folder exactly once", async () => {
 			const runner = await create_bash_runner();
 
-			const folderMove = await runner.run(`mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`);
+			const folderMove = await runner.run(
+				`mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`,
+			);
 			expect(folderMove.metadata.exitCode).toBe(0);
 			const nestedMove = await runner.run(
 				`mv ${test_db_files_mount}/reports/nested/deep.md ${test_db_files_mount}/reports/nested/renamed.md`,
@@ -6476,9 +6496,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					"Use the Files sidebar rename/move UI for app path '/docs/readme.md' -> '/docs/renamed.md'. For content changes, use edit_file on '/docs/readme.md'.\n",
 			);
 
-			const cpResult = await runner.run(
-				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/copy.md`,
-			);
+			const cpResult = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/copy.md`);
 			expect(cpResult.metadata.exitCode).not.toBe(0);
 			expect(cpResult.stderr).toContain("cannot write to app file");
 			expect(cpResult.stderr).toContain("Agent mode");
@@ -6489,7 +6507,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				),
 			).toBe(false);
 			expect(
-				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path"),
+				runner.runAction.mock.calls.some(
+					([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path",
+				),
 			).toBe(false);
 		});
 
@@ -6505,7 +6525,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				expect(result.stderr).toContain("Agent mode");
 			}
 			expect(
-				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path"),
+				runner.runAction.mock.calls.some(
+					([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path",
+				),
 			).toBe(false);
 			expect(await list_pending_updates(runner)).toHaveLength(0);
 		});
@@ -6647,7 +6669,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(dotted.stderr).toContain("app file names are normalized");
 			expect(dotted.stderr).toContain(`${test_db_files_mount}/hidden.md`);
 			expect(
-				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path"),
+				runner.runAction.mock.calls.some(
+					([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path",
+				),
 			).toBe(false);
 			expect(await list_pending_updates(runner)).toHaveLength(0);
 
@@ -6787,7 +6811,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			// Neither refusal reached the create action or left a pending row.
 			expect(
-				runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path"),
+				runner.runAction.mock.calls.some(
+					([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path",
+				),
 			).toBe(false);
 			expect(await list_pending_updates(runner)).toHaveLength(0);
 		});
@@ -6838,7 +6864,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 			const nodeId = await get_seeded_node_id(runner, "/data/notes.json");
 
-			const moved = await runner.run(`mv ${test_db_files_mount}/data/notes.json ${test_db_files_mount}/data/notes.yaml`);
+			const moved = await runner.run(
+				`mv ${test_db_files_mount}/data/notes.json ${test_db_files_mount}/data/notes.yaml`,
+			);
 			expect(moved.metadata.exitCode).toBe(0);
 			expect(moved.stdout).toBe("pending move created: /data/notes.json -> /data/notes.yaml — review in Files\n");
 
@@ -6873,11 +6901,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			// The proposal mutation checks a structural rename across content classes.
-			const plainToMd = await runner.run(`mv ${test_db_files_mount}/data/notes.json ${test_db_files_mount}/data/notes.md`);
+			const plainToMd = await runner.run(
+				`mv ${test_db_files_mount}/data/notes.json ${test_db_files_mount}/data/notes.md`,
+			);
 			expect(plainToMd.metadata.exitCode).not.toBe(0);
 			expect(plainToMd.stderr).toContain("plain text extension");
 
-			const mdToJson = await runner.run(`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/readme.json`);
+			const mdToJson = await runner.run(
+				`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/readme.json`,
+			);
 			expect(mdToJson.metadata.exitCode).not.toBe(0);
 			expect(mdToJson.stderr).toContain("must keep the .md extension");
 
@@ -7038,7 +7070,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("cp into a new deep path records the created ancestor ids on the pending row", async () => {
 			const runner = await create_bash_runner();
 
-			const result = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/new/deep/copy.md`);
+			const result = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/new/deep/copy.md`,
+			);
 			expect(result.stderr).toBe("");
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toBe("pending copy created: /docs/readme.md -> /new/deep/copy.md — review in Files\n");
@@ -7200,7 +7234,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(movedRead.stdout).toContain("zeta");
 
 			// A genuinely free path still takes a plain pending copy.
-			const freeCopy = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/fresh.md`);
+			const freeCopy = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/fresh.md`,
+			);
 			expect(freeCopy.metadata.exitCode).toBe(0);
 			expect(freeCopy.stdout).toBe("pending copy created: /docs/readme.md -> /docs/fresh.md — review in Files\n");
 		});
@@ -7472,7 +7508,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			// cp to an explicit missing name under the moved folder's VISIBLE path succeeds;
 			// stdout shows the visible join.
-			const copy = await runner.run(`cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive/copy.md`);
+			const copy = await runner.run(
+				`cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive/copy.md`,
+			);
 			expect(copy.stderr).toBe("");
 			expect(copy.metadata.exitCode).toBe(0);
 			expect(copy.stdout).toBe("pending copy created: /docs/tutorial.md -> /archive/copy.md — review in Files\n");
@@ -7645,7 +7683,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const fileMove = await runner.run(`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/foo.md`);
 			expect(fileMove.metadata.exitCode).toBe(0);
 
-			const copy = await runner.run(`cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/foo.md/sub/y.md`);
+			const copy = await runner.run(
+				`cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/foo.md/sub/y.md`,
+			);
 			expect(copy.metadata.exitCode).not.toBe(0);
 			expect(copy.stderr).toBe("cp: cannot create regular file '/foo.md/sub/y.md': Not a directory\n");
 
@@ -7700,7 +7740,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				`cp: '${test_db_files_mount}/docs/readme.md' and '${test_db_files_mount}/docs' are the same file\n`,
 			);
 
-			const folderOccupant = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/conflict`);
+			const folderOccupant = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/conflict`,
+			);
 			expect(folderOccupant.metadata.exitCode).not.toBe(0);
 			expect(folderOccupant.stderr).toBe("cp: cannot overwrite directory '/conflict/readme.md' with non-directory\n");
 
@@ -8221,7 +8263,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				'bash -c "$(head -n 1 loaded-script.sh)"',
 				'bash -c "$(tail -n 1 loaded-script.sh)"',
 				'bash -c "$(grep app-loaded loaded-script.sh)"',
-				'bash -c "$(sed -n \'1p\' loaded-script.sh)"',
+				"bash -c \"$(sed -n '1p' loaded-script.sh)\"",
 				'bash -c "$(textgrep app-loaded loaded-script.sh)"',
 				"script='source loaded-script.sh'; bash -c \"$script\"",
 			]) {
@@ -8232,7 +8274,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 
 			const tmpScript = await runner.run(
-				'printf \'echo tmp-loaded\\n\' > /tmp/loaded-script.sh && bash -c "$(cat /tmp/loaded-script.sh)"',
+				"printf 'echo tmp-loaded\\n' > /tmp/loaded-script.sh && bash -c \"$(cat /tmp/loaded-script.sh)\"",
 			);
 			expect(tmpScript.metadata.exitCode).toBe(0);
 			expect(tmpScript.stdout).toBe("tmp-loaded\n");
@@ -8706,6 +8748,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						version: "0.1.0",
 						description: `${pluginName} plugin`,
 						reviewStatus: "passed",
+						reviewId: null,
 						isLatest: true,
 						artifactHash: `sha256:${"a".repeat(64)}`,
 						sourceRepositoryUrl: `https://github.com/bonobo/${pluginName}-plugin`,
@@ -8727,6 +8770,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						fileViews: [],
 						capabilities: [],
 						outboundOrigins: [],
+						uiOutboundOrigins: [],
 						files: [],
 						sourceStatus: "ready",
 						sourceLastError: null,
@@ -8757,6 +8801,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 							acceptedCapabilities: [],
 							capabilitiesAcceptedAt: now,
 							acceptedOutboundOrigins: [],
+							acceptedUiOutboundOrigins: [],
 							outboundOriginsAcceptedAt: now,
 							installedBy: runner.seeded.userId,
 							updatedBy: runner.seeded.userId,

@@ -1,7 +1,7 @@
 import "./my-hovercard.css";
 import * as Ariakit from "@ariakit/react";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { memo, type ReactNode, type Ref, useRef } from "react";
+import { memo, type ReactNode, useRef } from "react";
 import { cn } from "@/lib/utils.ts";
 
 // #region MyHoverCard
@@ -21,16 +21,15 @@ export type MyHovercardAction_ClassNames =
 	| "MyHovercardAction-disclosure";
 
 export type MyHovercardAction_Props = {
-	ref?: Ref<HTMLDivElement>;
 	"aria-label": string;
 	children?: ReactNode;
-} & Omit<Ariakit.HovercardAnchorProps<"div">, "render" | "children">;
+} & Omit<Ariakit.HovercardAnchorProps, "render" | "children">;
 
 /**
- * Hover-only trigger that opens the hovercard on pointer hover. Renders a non-focusable div
+ * Hover-only trigger that opens the hovercard on pointer hover. Renders a non-focusable anchor
  * so there is a single tab stop: the sr-only disclosure button, which opens the card via keyboard.
  */
-type AnchorOnFocus = Ariakit.HovercardAnchorProps<"div">["onFocus"];
+type AnchorOnFocus = Ariakit.HovercardAnchorProps["onFocus"];
 
 export const MyHovercardAction = memo(function MyHovercardAction(props: MyHovercardAction_Props) {
 	const { ref, id, className, "aria-label": ariaLabel, onFocus, children, ...rest } = props;
@@ -49,9 +48,10 @@ export const MyHovercardAction = memo(function MyHovercardAction(props: MyHoverc
 				className={cn("MyHovercardAction" satisfies MyHovercardAction_ClassNames, className)}
 				aria-label={ariaLabel}
 				onFocus={handleFocus}
-				render={(anchorProps) => <div {...anchorProps}>{children}</div>}
-				{...(rest as any)}
-			/>
+				{...rest}
+			>
+				{children}
+			</Ariakit.HovercardAnchor>
 			<Ariakit.HovercardDisclosure
 				ref={disclosureRef}
 				className={cn("MyHovercardAction-disclosure" satisfies MyHovercardAction_ClassNames, "sr-only")}

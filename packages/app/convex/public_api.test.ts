@@ -12,6 +12,7 @@ import {
 	r2_create_upload_staging_key,
 	r2_confirmed_object_delete,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
+	r2_server_side_copy,
 } from "./r2_client.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -42,6 +43,28 @@ function install_r2_object_reads() {
 	vi.spyOn(r2_confirmed_object_delete, "delete_object").mockImplementation(async (_ctx, key) => {
 		r2Objects.delete(key);
 		r2ObjectMetadata.delete(key);
+	});
+	// Copy inside the in-memory R2 map instead of calling the component's real S3 client. Mirror the
+	// real action: verify the source against the expected identity before copying.
+	vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
+		const body = r2Objects.get(args.sourceKey);
+		const metadata = r2ObjectMetadata.get(args.sourceKey);
+		if (body === undefined && metadata === undefined) {
+			return { outcome: "source_missing" as const };
+		}
+		const size = metadata?.size ?? (typeof body === "string" ? body.length : (body?.byteLength ?? 0));
+		const etag = metadata?.etag;
+		if (
+			(args.expectedSize !== undefined && size !== args.expectedSize) ||
+			(args.expectedEtag !== undefined && (etag === undefined || etag !== args.expectedEtag))
+		) {
+			return { outcome: "source_changed" as const };
+		}
+		r2Objects.set(args.destinationKey, body ?? "");
+		if (metadata !== undefined) {
+			r2ObjectMetadata.set(args.destinationKey, metadata);
+		}
+		return { outcome: "copied" as const, size, etag };
 	});
 	vi.stubGlobal(
 		"fetch",

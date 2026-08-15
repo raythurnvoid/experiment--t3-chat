@@ -8,7 +8,6 @@ import { memo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
-import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import {
 	MyInput,
@@ -22,9 +21,9 @@ import { PluginsGalleryCard } from "@/components/plugins-gallery-card.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
-import { format_datetime } from "@/lib/date.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
+import { RoutePluginsPublisherLastAttempt } from "./-publisher-last-attempt.tsx";
 
 type Repositories = app_convex_FunctionReturnType<typeof app_convex_api.plugins.list_user_published_repositories>;
 
@@ -72,6 +71,7 @@ type RoutePluginsPublisherPlugins_ClassNames =
 	| "RoutePluginsPublisherPlugins-form"
 	| "RoutePluginsPublisherPlugins-empty"
 	| "RoutePluginsPublisherPlugins-grid"
+	| "RoutePluginsPublisherRepositoryItem"
 	| "RoutePluginsPublisherUnpublishedCard"
 	| "RoutePluginsPublisherUnpublishedCard-header"
 	| "RoutePluginsPublisherUnpublishedCard-icon"
@@ -79,8 +79,6 @@ type RoutePluginsPublisherPlugins_ClassNames =
 	| "RoutePluginsPublisherUnpublishedCard-name"
 	| "RoutePluginsPublisherUnpublishedCard-subtitle"
 	| "RoutePluginsPublisherUnpublishedCard-description"
-	| "RoutePluginsPublisherUnpublishedCard-lastAttempt"
-	| "RoutePluginsPublisherUnpublishedCard-lastAttemptMessage"
 	| "RoutePluginsPublisherUnpublishedCard-footer";
 
 type RoutePluginsPublisherUnpublishedCard_Props = {
@@ -171,24 +169,6 @@ const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisher
 			>
 				Never published. Publish builds and registers the first version from the default branch.
 			</span>
-			{repository.lastPublishAttempt ? (
-				<span
-					className={
-						"RoutePluginsPublisherUnpublishedCard-lastAttempt" satisfies RoutePluginsPublisherPlugins_ClassNames
-					}
-				>
-					<MyBadge variant={repository.lastPublishAttempt.status === "succeeded" ? "secondary" : "destructive"}>
-						{repository.lastPublishAttempt.status}
-					</MyBadge>
-					<span
-						className={
-							"RoutePluginsPublisherUnpublishedCard-lastAttemptMessage" satisfies RoutePluginsPublisherPlugins_ClassNames
-						}
-					>
-						Last publish {format_datetime(repository.lastPublishAttempt.at)} · {repository.lastPublishAttempt.message}
-					</span>
-				</span>
-			) : null}
 			<span className={"RoutePluginsPublisherUnpublishedCard-footer" satisfies RoutePluginsPublisherPlugins_ClassNames}>
 				<MyButton disabled={publishing || removing} onClick={handlePublish}>
 					<UploadCloud aria-hidden />
@@ -282,21 +262,29 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 				</div>
 			) : (
 				<div className={"RoutePluginsPublisherPlugins-grid" satisfies RoutePluginsPublisherPlugins_ClassNames}>
-					{repositories.map(({ repository, latestVersion }) =>
-						latestVersion ? (
-							<PluginsGalleryCard
-								key={repository._id}
-								pluginName={latestVersion.name}
-								displayName={latestVersion.displayName}
-								subtitle={`${repository.owner}/${repository.repo}`}
-								description={latestVersion.description}
-								version={latestVersion.version}
-								reviewStatus={latestVersion.reviewStatus}
-							/>
-						) : (
-							<RoutePluginsPublisherUnpublishedCard key={repository._id} repository={repository} />
-						),
-					)}
+					{repositories.map(({ repository, readyVersions }) => (
+						<div
+							key={repository._id}
+							className={"RoutePluginsPublisherRepositoryItem" satisfies RoutePluginsPublisherPlugins_ClassNames}
+						>
+							{readyVersions.length === 0 ? (
+								<RoutePluginsPublisherUnpublishedCard repository={repository} />
+							) : (
+								readyVersions.map((readyVersion) => (
+									<PluginsGalleryCard
+										key={readyVersion.name}
+										pluginName={readyVersion.name}
+										displayName={readyVersion.displayName}
+										subtitle={`${repository.owner}/${repository.repo}`}
+										description={readyVersion.description}
+										version={readyVersion.version}
+										reviewStatus={readyVersion.reviewStatus}
+									/>
+								))
+							)}
+							<RoutePluginsPublisherLastAttempt attempt={repository.lastPublishAttempt} />
+						</div>
+					))}
 				</div>
 			)}
 		</section>

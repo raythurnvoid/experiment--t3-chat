@@ -2463,6 +2463,8 @@ importers:
         specifier: 4.1.10
         version: 4.1.10(@edge-runtime/vm@5.0.0)(@opentelemetry/api@1.9.0)(@types/node@26.1.1)(@vitest/browser-playwright@4.1.10)(happy-dom@20.0.11)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.7(@types/node@26.1.1)(typescript@7.0.2))(vite@8.1.5(@types/node@26.1.1)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.9.0))
 
+  packages/council-service: {}
+
   packages/plugin-runner:
     dependencies:
       common:

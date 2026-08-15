@@ -602,22 +602,49 @@ export const backfill_plugins_version_reviews_updated_at = app_migrations.define
 	},
 });
 
+async function plugins_versions_normalize_is_latest(ctx: MutationCtx, version: Doc<"plugins_versions">) {
+	// Use ready time because a failed older row can finish after a newer row.
+	const [latestReady, markedVersions] = await Promise.all([
+		ctx.db
+			.query("plugins_versions")
+			.withIndex("by_name_sourceStatus_updatedAt", (q) => q.eq("name", version.name).eq("sourceStatus", "ready"))
+			.order("desc")
+			.first(),
+		ctx.db
+			.query("plugins_versions")
+			.withIndex("by_isLatest_name", (q) => q.eq("isLatest", true).eq("name", version.name))
+			.collect(),
+	]);
+	// Old rows can share a millisecond. Keep the valid marker when it is inside the newest tie.
+	const markedLatestInTie = latestReady
+		? markedVersions.find(
+				(markedVersion) => markedVersion.sourceStatus === "ready" && markedVersion.updatedAt === latestReady.updatedAt,
+			)
+		: undefined;
+	const latestVersion = markedLatestInTie ?? latestReady;
+
+	// A batch can stop after this doc. Normalize every marker for the plugin before this transaction commits.
+	await Promise.all([
+		...markedVersions
+			.filter((markedVersion) => markedVersion._id !== latestVersion?._id)
+			.map((markedVersion) => ctx.db.patch("plugins_versions", markedVersion._id, { isLatest: false })),
+		...(latestVersion && !latestVersion.isLatest
+			? [ctx.db.patch("plugins_versions", latestVersion._id, { isLatest: true })]
+			: []),
+	]);
+}
+
 export const backfill_plugins_versions_is_latest = app_migrations.define({
 	table: "plugins_versions",
-	migrateOne: async (ctx, version) => {
-		// Publish order stands in for version order: the newest-created doc per name is the latest.
-		const latest = await ctx.db
-			.query("plugins_versions")
-			.withIndex("by_name", (q) => q.eq("name", version.name))
-			.order("desc")
-			.first();
-		const isLatest = latest?._id === version._id;
-		if (version.isLatest === isLatest) {
-			return;
-		}
+	batchSize: 20,
+	migrateOne: plugins_versions_normalize_is_latest,
+});
 
-		await ctx.db.patch("plugins_versions", version._id, { isLatest });
-	},
+// Use a new migration name because the component skips an old migration after it is complete.
+export const repair_plugins_versions_is_latest = app_migrations.define({
+	table: "plugins_versions",
+	batchSize: 20,
+	migrateOne: plugins_versions_normalize_is_latest,
 });
 
 export const backfill_plugins_versions_backend_entrypoint_file = app_migrations.define({
@@ -686,6 +713,37 @@ export const backfill_plugins_versions_backend_entrypoint_file_sha256 = app_migr
 		await ctx.db.patch("plugins_versions", version._id, {
 			backendEntrypointFile: { ...backendEntrypointFile, sha256: backendEntrypointListedFile.sha256 },
 		});
+	},
+});
+
+/**
+ * Existing versions were published before a plugin page could declare its own outbound origins.
+ * Their manifests could not name any, so the empty list is what a republish of the same commit
+ * would produce. The field is required again once this backfill has run.
+ */
+export const backfill_plugins_versions_ui_outbound_origins = app_migrations.define({
+	table: "plugins_versions",
+	migrateOne: async (ctx, version) => {
+		if (version.uiOutboundOrigins !== undefined) {
+			return;
+		}
+
+		await ctx.db.patch("plugins_versions", version._id, { uiOutboundOrigins: [] });
+	},
+});
+
+/**
+ * The install-side record of the same consent. These installs were accepted before a page could
+ * declare outbound origins, so the workspace agreed to none.
+ */
+export const backfill_plugins_installations_accepted_ui_origins = app_migrations.define({
+	table: "plugins_workspace_installations",
+	migrateOne: async (ctx, installation) => {
+		if (installation.acceptedUiOutboundOrigins !== undefined) {
+			return;
+		}
+
+		await ctx.db.patch("plugins_workspace_installations", installation._id, { acceptedUiOutboundOrigins: [] });
 	},
 });
 
@@ -877,6 +935,9 @@ export const run_backfill_plugins_version_reviews_updated_at = app_migrations.ru
 export const run_backfill_plugins_versions_is_latest = app_migrations.runner(
 	internal.migrations.backfill_plugins_versions_is_latest,
 );
+export const run_repair_plugins_versions_is_latest = app_migrations.runner(
+	internal.migrations.repair_plugins_versions_is_latest,
+);
 export const run_backfill_plugins_versions_backend_entrypoint_file = app_migrations.runner(
 	internal.migrations.backfill_plugins_versions_backend_entrypoint_file,
 );
@@ -891,4 +952,10 @@ export const run_backfill_plugins_versions_backend_entrypoint_file_sha256 = app_
 );
 export const run_backfill_ai_chat_threads_read_at = app_migrations.runner(
 	internal.migrations.backfill_ai_chat_threads_read_at,
+);
+export const run_backfill_plugins_versions_ui_outbound_origins = app_migrations.runner(
+	internal.migrations.backfill_plugins_versions_ui_outbound_origins,
+);
+export const run_backfill_plugins_installations_accepted_ui_origins = app_migrations.runner(
+	internal.migrations.backfill_plugins_installations_accepted_ui_origins,
 );

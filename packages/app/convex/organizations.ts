@@ -1303,6 +1303,19 @@ export const remove_user_from_organization = mutation({
 					.collect(),
 			),
 		);
+		const pluginServiceGrantsPromise = Promise.all(
+			memberships.map((membership) =>
+				ctx.db
+					.query("plugin_service_grants")
+					.withIndex("by_organization_workspace_actorUser", (q) =>
+						q
+							.eq("organizationId", organization._id)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("actorUserId", args.userIdToRemove),
+					)
+					.collect(),
+			),
+		);
 		const apiCredentialQuotasPromise = Promise.all(
 			memberships.map((membership) =>
 				quotas_db_get(ctx, {
@@ -1324,12 +1337,17 @@ export const remove_user_from_organization = mutation({
 						.map((apiCredential) => ctx.db.patch("api_credentials", apiCredential._id, { revokedAt: now })),
 				),
 			),
-			// Re-inviting this user must not restore public API grants or plugin UI sessions.
+			// Re-inviting this user must not restore public API grants, plugin UI sessions, or the service
+			// grants those sessions were exchanged for. A service grant lives 24 hours, so without this a
+			// removal reversed the same day would hand the service its old authority back.
 			publicApiGrantsPromise.then((grants) =>
 				Promise.all(grants.flat().map((grant) => ctx.db.delete("public_api_grants", grant._id))),
 			),
 			pluginUiSessionsPromise.then((sessions) =>
 				Promise.all(sessions.flat().map((session) => ctx.db.delete("plugins_ui_sessions", session._id))),
+			),
+			pluginServiceGrantsPromise.then((grants) =>
+				Promise.all(grants.flat().map((grant) => ctx.db.delete("plugin_service_grants", grant._id))),
 			),
 			// Delete these quota docs so a later invite creates counters with `usedCount: 0`.
 			apiCredentialQuotasPromise.then((quotaDocs) =>

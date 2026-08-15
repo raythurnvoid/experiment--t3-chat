@@ -10,6 +10,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import {
 	public_api_PLUGIN_RUN_TOKEN_REGEX,
+	public_api_PLUGIN_SERVICE_TOKEN_REGEX,
 	public_api_PLUGIN_UI_TOKEN_REGEX,
 	type public_api_Scope,
 } from "../shared/public-api.ts";
@@ -30,10 +31,15 @@ const REQUIRED_APP_PERMISSION_BY_SCOPE = {
 	"secrets:read": null,
 	"outbound:fetch": null,
 	"activities:write": null,
+	// Plugin documents live in the workspace, so a key can never read or write more of them than the
+	// person behind it can. Mapping these to null would let a member without content permissions read
+	// every installation's stored data.
+	"plugin_data:read": CONTENT_READ_PERMISSION,
+	"plugin_data:write": CONTENT_WRITE_PERMISSION,
 } as const satisfies Record<public_api_Scope, RequiredAppPermission | null>;
 
 type Principal = NonNullable<public_api_resolve_principal_Result["_yay"]>;
-type PrincipalKind = "public_api_grant" | "user_api_key" | "plugin_run" | "plugin_ui";
+type PrincipalKind = "public_api_grant" | "user_api_key" | "plugin_run" | "plugin_ui" | "plugin_service";
 
 function get_bearer_token(request: Request) {
 	const authorization = request.headers.get("Authorization");
@@ -49,7 +55,8 @@ function is_plausible_bearer_token(token: string) {
 		API_CREDENTIAL_TOKEN_REGEX.test(token) ||
 		PUBLIC_API_GRANT_TOKEN_REGEX.test(token) ||
 		public_api_PLUGIN_RUN_TOKEN_REGEX.test(token) ||
-		public_api_PLUGIN_UI_TOKEN_REGEX.test(token)
+		public_api_PLUGIN_UI_TOKEN_REGEX.test(token) ||
+		public_api_PLUGIN_SERVICE_TOKEN_REGEX.test(token)
 	);
 }
 
@@ -125,13 +132,17 @@ export async function public_api_resolve_live_principal(
 			? principal.apiTokenExpiresAt
 			: principal.kind === "plugin_ui"
 				? principal.sessionExpiresAt
-				: principal.kind === "public_api_grant"
+				: principal.kind === "public_api_grant" || principal.kind === "plugin_service"
 					? principal.expiresAt
 					: null;
 	if (expiresAt != null && expiresAt <= args.now) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 
+	// A `processing` grant is meant to outlive the actor's permissions one day, so that work already
+	// accepted is not stranded half-written. That exemption is not here yet on purpose: it is only safe
+	// once the grant is sealed to one exact target, and the sealing fields belong to the Council work
+	// that mints such a grant. Until then every service grant is checked like any other principal.
 	const requiredAppPermission = REQUIRED_APP_PERMISSION_BY_SCOPE[args.requiredScope];
 	if (requiredAppPermission && principal.kind !== "plugin_run") {
 		const allowed =
@@ -144,6 +155,83 @@ export async function public_api_resolve_live_principal(
 	}
 
 	return resolved;
+}
+
+/**
+ * Authorize a user API key so its owner can inspect it, without asking for any one scope.
+ *
+ * `public_api_authorize_request` exists to make a route name the scope it needs, so it can never
+ * forget the matching app-permission check. A key-inspection route has no scope to name: the whole
+ * point is to report which scopes the key still has. So it gets its own entry point instead of a
+ * nullable scope on the shared one, and the returned list is already filtered to what the person
+ * behind the key may still do.
+ */
+export async function public_api_authorize_key_inspection(ctx: ActionCtx, request: Request, args: { route: string }) {
+	const token = get_bearer_token(request);
+	const rateLimitAuthFailure = async () => {
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "public_api_auth",
+			key: `${rate_limiter_http_client_key(request)}:${args.route}`,
+		});
+		if (rateLimit) {
+			return {
+				_nay: {
+					status: 429,
+					body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs },
+				},
+			} as const;
+		}
+
+		return { _nay: { status: 401, body: { message: "Unauthenticated" } } } as const;
+	};
+
+	if (!token || !is_plausible_bearer_token(token)) {
+		return await rateLimitAuthFailure();
+	}
+
+	const resolved: public_api_resolve_principal_Result = await ctx.runQuery(internal.public_api.resolve_principal, {
+		presented: token,
+	});
+	if (resolved._nay) {
+		return await rateLimitAuthFailure();
+	}
+
+	// Only a person's own key can be inspected this way. A plugin token has no key screen, and a
+	// short-lived grant would learn nothing it does not already carry.
+	const principal = resolved._yay;
+	if (principal.kind !== "user_api_key") {
+		return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
+	}
+
+	const now = Date.now();
+	const postAuthRateLimit = await rate_limiter_limit_by_key(ctx, {
+		name: "public_api_principal",
+		key: `${principal.kind}:${principal.principalKey}:${args.route}`,
+	});
+	if (postAuthRateLimit) {
+		return {
+			_nay: {
+				status: 429,
+				body: { message: postAuthRateLimit.message, retryAfterMs: postAuthRateLimit.retryAfterMs },
+			},
+		} as const;
+	}
+
+	// A scope the owner can no longer use is not a scope the key still has. Report what a call would
+	// actually be allowed to do today, not what the key was minted with.
+	const allowedScopes = principal.scopes.filter((scope) => {
+		const requiredAppPermission = REQUIRED_APP_PERMISSION_BY_SCOPE[scope];
+		if (!requiredAppPermission) {
+			return true;
+		}
+
+		return requiredAppPermission === CONTENT_READ_PERMISSION
+			? principal.contentPermissions.read
+			: principal.contentPermissions.write;
+	});
+
+	await mark_credential_used_best_effort(ctx, { credentialId: principal.credentialId, now });
+	return { _yay: { principal, allowedScopes } } as const;
 }
 
 /**

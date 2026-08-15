@@ -191,6 +191,16 @@
 		gap: 10px;
 	}
 
+	/* Let this wrapper absorb the grid row's extra height. Keep both base card types at their content
+	   height so one repository's failure does not move a sibling card's footer. */
+	.RoutePluginsPublisherRepositoryItem {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		min-width: 0;
+	}
+
 	.RoutePluginsPublisherUnpublishedCard {
 		display: flex;
 		flex-direction: column;
@@ -263,20 +273,6 @@
 		margin: 0;
 
 		font-size: 13px;
-		line-height: 1.45;
-		color: var(--color-fg-08);
-	}
-
-	.RoutePluginsPublisherUnpublishedCard-lastAttempt {
-		display: flex;
-		align-items: start;
-		gap: 8px;
-	}
-
-	.RoutePluginsPublisherUnpublishedCard-lastAttemptMessage {
-		overflow-wrap: anywhere;
-
-		font-size: 12px;
 		line-height: 1.45;
 		color: var(--color-fg-08);
 	}

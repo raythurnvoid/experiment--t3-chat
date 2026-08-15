@@ -48,7 +48,7 @@ import {
 	files_yjs_doc_update_from_text,
 } from "../shared/files-tiptap.ts";
 import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../shared/files-yjs.ts";
-import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
+import { r2_confirmed_object_delete, r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
@@ -3652,18 +3652,24 @@ describe("files_nodes.create_upload_nodes", () => {
 		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
 			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
 		);
+		// The staged object exists only in this stub: report it copied so the event can finalize.
+		// Enforce the expected-identity contract like the real action, so a garbled expectedSource
+		// from the event route fails here instead of staying green.
+		vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, copyArgs) => {
+			if (copyArgs.sourceKey !== uploadStagingR2Key) {
+				return { outcome: "source_missing" as const };
+			}
+			if (copyArgs.expectedSize !== 64 || copyArgs.expectedEtag !== "etag_browser_import_1") {
+				return { outcome: "source_changed" as const };
+			}
+			return { outcome: "copied" as const, size: 64, etag: "etag_browser_import_1" };
+		});
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 				if (url === "https://r2.test/upload" && init?.method === "PUT") {
 					return new Response(null, { status: 200 });
-				}
-				if (url === `https://r2.test/object?key=${encodeURIComponent(uploadStagingR2Key)}`) {
-					return new Response(new Uint8Array(64), {
-						status: 200,
-						headers: { "Content-Length": "64", ETag: "etag_browser_import_1" },
-					});
 				}
 				return new Response(null, { status: 404 });
 			}),

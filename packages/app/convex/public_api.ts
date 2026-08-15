@@ -76,10 +76,12 @@ import {
 } from "./r2_client.ts";
 import {
 	public_api_PLUGIN_RUN_TOKEN_REGEX,
+	public_api_PLUGIN_SERVICE_TOKEN_REGEX,
 	public_api_PLUGIN_UI_TOKEN_REGEX,
 	type public_api_Scope,
 } from "../shared/public-api.ts";
 import {
+	public_api_authorize_key_inspection,
 	public_api_authorize_request,
 	public_api_is_path_inside_prefix,
 	public_api_resolve_live_principal,
@@ -136,6 +138,14 @@ const API_CREDENTIAL_NAME_MAX_CHARS = 80;
 const API_CREDENTIAL_LIST_MAX = 100;
 const PUBLIC_API_GRANT_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_API_GRANT_CLEANUP_BATCH_SIZE = 100;
+const PLUGIN_SERVICE_GRANT_TOKEN_PREFIX = "psg_";
+const PLUGIN_SERVICE_GRANT_TOKEN_BYTES = 32;
+// One working day. A service that needs longer renews, so a stolen token stops working on its own
+// instead of living as long as the work does.
+const PLUGIN_SERVICE_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
+// Six days: the recovery window a sealed processing grant gets to finish uploading a meeting's
+// files after the meeting closes. Renewal rotates the token but never extends this deadline.
+const PLUGIN_SERVICE_PROCESSING_GRANT_TTL_MS = 6 * 24 * 60 * 60 * 1000;
 // Stages only need to outlive one write action; anything older is a crashed write. Keep this far
 // below the 24 h unfinalized-asset TTL: the orphan sweeper in r2.ts does not check stage
 // references, so a stage must always die before its staged asset docs become sweepable.
@@ -176,6 +186,8 @@ const user_credential_scopes_validator = v.array(
 		v.literal("files:read" satisfies public_api_Scope),
 		v.literal("files:write" satisfies public_api_Scope),
 		v.literal("files:download" satisfies public_api_Scope),
+		v.literal("plugin_data:read" satisfies public_api_Scope),
+		v.literal("plugin_data:write" satisfies public_api_Scope),
 	),
 );
 const plugin_run_scopes_validator = v.array(
@@ -185,14 +197,25 @@ const plugin_run_scopes_validator = v.array(
 		v.literal("secrets:read" satisfies public_api_Scope),
 		v.literal("outbound:fetch" satisfies public_api_Scope),
 		v.literal("activities:write" satisfies public_api_Scope),
+		v.literal("plugin_data:read" satisfies public_api_Scope),
+		v.literal("plugin_data:write" satisfies public_api_Scope),
 	),
 );
-// Read-only by design: UI sessions never get write, secrets, or outbound scopes.
+// Read-only by design: UI sessions never get write, secrets, or outbound scopes. Plugin data is the
+// same: a page may display what its plugin stored, but only a backend or service writes it.
 const plugin_ui_scopes_validator = v.array(
 	v.union(
 		v.literal("files:list" satisfies public_api_Scope),
 		v.literal("files:read" satisfies public_api_Scope),
 		v.literal("files:download" satisfies public_api_Scope),
+		v.literal("plugin_data:read" satisfies public_api_Scope),
+	),
+);
+const plugin_service_scopes_validator = v.array(
+	v.union(
+		v.literal("plugin_data:read" satisfies public_api_Scope),
+		v.literal("plugin_data:write" satisfies public_api_Scope),
+		v.literal("files:write" satisfies public_api_Scope),
 	),
 );
 
@@ -394,6 +417,255 @@ export const cleanup_expired_grants = internalMutation({
 		done: v.boolean(),
 	}),
 	handler: async (ctx, args) => cleanup_expired_grants_batch(ctx, args),
+});
+
+// Plugin service grants
+
+/**
+ * Mint one `psg_` grant for a service that acts for an installation. Only the hash is stored, so the
+ * raw token is returned once and cannot be read back.
+ *
+ * The caller says which scopes it wants, but the installation's accepted capabilities decide what it
+ * gets. Nothing about the tenant, the plugin, or the version comes from the caller: those are read
+ * from the live installation.
+ *
+ * Unlike `create_grant`, this does not delete expired rows on the way through. Expiry belongs to the
+ * cron, so a service that never calls again still has its grant cleaned up.
+ */
+export const create_plugin_service_grant = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		actorUserId: v.id("users"),
+		requestedScopes: plugin_service_scopes_validator,
+		// The seal mint passes true: a processing grant must carry every scope it was promised, so a
+		// capability removed between the caller's pre-check and this mutation refuses the mint instead
+		// of silently writing a narrower grant.
+		requireAllRequestedScopes: v.optional(v.boolean()),
+		destinationPathPrefix: v.union(v.string(), v.null()),
+		phase: v.union(v.literal("interactive"), v.literal("processing")),
+		now: v.number(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			token: v.string(),
+			grantId: v.id("plugin_service_grants"),
+			principalKey: v.string(),
+			scopes: plugin_service_scopes_validator,
+			expiresAt: v.number(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		if (
+			!installation ||
+			installation.status !== "enabled" ||
+			installation.organizationId !== args.organizationId ||
+			installation.workspaceId !== args.workspaceId
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.actorUserId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		// This is the capability the install-consent dialog warns about, and the only one that is about
+		// the exchange itself rather than about a scope. Without it the workspace never agreed to let
+		// this plugin hand its access to a server outside the app, so there is nothing to hand over.
+		if (!installation.acceptedCapabilities.includes("plugin.service.connect")) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		const requested = new Set(args.requestedScopes);
+		const scopes: Infer<typeof plugin_service_scopes_validator> = [];
+		if (requested.has("plugin_data:read") && installation.acceptedCapabilities.includes("plugin.data.read")) {
+			scopes.push("plugin_data:read");
+		}
+		if (requested.has("plugin_data:write") && installation.acceptedCapabilities.includes("plugin.data.write")) {
+			scopes.push("plugin_data:write");
+		}
+		// The workspace consented to file writes through the capability, and the prefix says where they
+		// may land. Check the capability first: without it the scope is narrowed away like the two
+		// above, and asking where it would have written makes no sense.
+		const destinationPathPrefix =
+			args.destinationPathPrefix == null ? null : server_path_normalize(args.destinationPathPrefix);
+		if (requested.has("files:write") && installation.acceptedCapabilities.includes("workspace.files.write")) {
+			if (destinationPathPrefix == null) {
+				return Result({ _nay: { message: "A file-write grant requires a destination path prefix" } });
+			}
+			scopes.push("files:write");
+		}
+		if (scopes.length === 0) {
+			return Result({ _nay: { message: "At least one scope is required" } });
+		}
+		if (args.requireAllRequestedScopes && scopes.length !== requested.size) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		const token = `${PLUGIN_SERVICE_GRANT_TOKEN_PREFIX}${crypto_random_hex(PLUGIN_SERVICE_GRANT_TOKEN_BYTES)}`;
+		const tokenHash = await crypto_sha256_hex(token);
+		// 32 random bytes do not repeat in practice, so this refuses rather than retries. The reason to
+		// check at all is that `resolve_principal` reads this index with `.unique()`: two docs with one
+		// hash would make it throw on every call with that token instead of answering.
+		const duplicate = await ctx.db
+			.query("plugin_service_grants")
+			.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
+			.first();
+		if (duplicate) {
+			return Result({ _nay: { message: "Failed to mint a unique grant token" } });
+		}
+
+		// One producer identity per installation. It survives token rotation and re-exchange, so the
+		// versioned documents and reservations this service owns stay owned by it.
+		const principalKey = `plugin_service:${args.organizationId}:${args.workspaceId}:${args.installationId}`;
+		// A processing grant is the fixed recovery window after a meeting closes; an interactive grant
+		// lives one working day and renews.
+		const expiresAt =
+			args.now + (args.phase === "processing" ? PLUGIN_SERVICE_PROCESSING_GRANT_TTL_MS : PLUGIN_SERVICE_GRANT_TTL_MS);
+		const grantId = await ctx.db.insert("plugin_service_grants", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			installationId: args.installationId,
+			pluginVersionId: installation.pluginVersionId,
+			pluginName: installation.pluginName,
+			actorUserId: args.actorUserId,
+			tokenHash,
+			scopes,
+			principalKey,
+			phase: args.phase,
+			destinationPathPrefix,
+			expiresAt,
+			updatedAt: args.now,
+		});
+
+		return Result({
+			_yay: {
+				token,
+				grantId,
+				principalKey,
+				scopes,
+				expiresAt,
+			},
+		});
+	},
+});
+
+/**
+ * Give a live grant a new raw token and another day, keeping the same doc. A processing grant only
+ * gets the new token: its deadline is the sealed recovery window and never moves.
+ *
+ * The caller presents the raw token it holds, never the grant id: the id is not a secret, so taking
+ * one here would let anyone who ever saw an id extend that grant. Looking the doc up by the hash of
+ * the presented token is what proves the caller still holds it.
+ *
+ * The stored scopes are left alone. `resolve_principal` narrows them against the installation's
+ * current capabilities on every single call, so rewriting them here would only make a capability
+ * that is given back later stay lost.
+ *
+ * Two renewals at once cannot both win: they patch the same doc, so Convex retries the loser, and by
+ * then the old hash is gone and it is told its token no longer works. The service that lost re-runs
+ * the exchange with a fresh `plu_` token.
+ */
+export const rotate_plugin_service_grant = internalMutation({
+	args: {
+		presented: v.string(),
+		now: v.number(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			token: v.string(),
+			grantId: v.id("plugin_service_grants"),
+			principalKey: v.string(),
+			scopes: plugin_service_scopes_validator,
+			expiresAt: v.number(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const presentedHash = await crypto_sha256_hex(args.presented);
+		const grant = await ctx.db
+			.query("plugin_service_grants")
+			.withIndex("by_tokenHash", (q) => q.eq("tokenHash", presentedHash))
+			.unique();
+		if (!grant || grant.revokedAt != null || grant.expiresAt <= args.now) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		// The same liveness the mint asks for, because a renewal is a fresh 24 hours of access. A dead
+		// installation or a departed actor would be caught again at every use, but refusing here means
+		// the service learns now instead of holding a token that answers 401 on its next real call.
+		const installation = await ctx.db.get("plugins_workspace_installations", grant.installationId);
+		if (
+			!installation ||
+			installation.status !== "enabled" ||
+			installation.pluginVersionId !== grant.pluginVersionId ||
+			installation.organizationId !== grant.organizationId ||
+			installation.workspaceId !== grant.workspaceId ||
+			!installation.acceptedCapabilities.includes("plugin.service.connect")
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const actor = await ctx.db.get("users", grant.actorUserId);
+		if (!actor || actor.deletedAt != null) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", grant.actorUserId)
+					.eq("organizationId", grant.organizationId)
+					.eq("workspaceId", grant.workspaceId),
+			)
+			.first();
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const token = `${PLUGIN_SERVICE_GRANT_TOKEN_PREFIX}${crypto_random_hex(PLUGIN_SERVICE_GRANT_TOKEN_BYTES)}`;
+		const tokenHash = await crypto_sha256_hex(token);
+		// Same reason as the mint: `resolve_principal` reads this index with `.unique()`, so two docs
+		// sharing one hash would make every call with that token throw instead of answering.
+		const duplicate = await ctx.db
+			.query("plugin_service_grants")
+			.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
+			.first();
+		if (duplicate) {
+			return Result({ _nay: { message: "Failed to mint a unique grant token" } });
+		}
+
+		// A processing grant's deadline is the recovery window sealed at mint. Rotation may refresh the
+		// raw token, but extending the deadline would let a service roll the window forever.
+		const expiresAt = grant.phase === "processing" ? grant.expiresAt : args.now + PLUGIN_SERVICE_GRANT_TTL_MS;
+		await ctx.db.patch("plugin_service_grants", grant._id, {
+			tokenHash,
+			expiresAt,
+			updatedAt: args.now,
+		});
+
+		return Result({
+			_yay: {
+				token,
+				grantId: grant._id,
+				principalKey: grant.principalKey,
+				scopes: grant.scopes,
+				expiresAt,
+			},
+		});
+	},
 });
 
 export const cleanup_expired_grants_until_done = internalMutation({
@@ -773,6 +1045,32 @@ export const resolve_principal = internalQuery({
 				credentialId: v.null(),
 				pathPrefix: v.null(),
 			}),
+			v.object({
+				kind: v.literal("plugin_service"),
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				grantId: v.id("plugin_service_grants"),
+				installationId: v.id("plugins_workspace_installations"),
+				pluginVersionId: v.id("plugins_versions"),
+				/**
+				 * The member whose plugin page asked for this grant. The service has no user of its own,
+				 * so this is the authorship it writes with and the eyes it reads with, the same way a
+				 * plugin run uses the person whose upload started it.
+				 */
+				actorUserId: v.id("users"),
+				/**
+				 * Carried so a caller can tell the two apart. Neither phase is treated differently yet:
+				 * `processing` is meant to outlive the actor's permissions once it is sealed to one exact
+				 * target, and the sealing fields belong to the Council work that mints such a grant.
+				 */
+				phase: v.union(v.literal("interactive"), v.literal("processing")),
+				expiresAt: v.number(),
+				contentPermissions: v.object({ read: v.boolean(), write: v.boolean() }),
+				scopes: plugin_service_scopes_validator,
+				principalKey: v.string(),
+				credentialId: v.null(),
+				pathPrefix: v.union(v.string(), v.null()),
+			}),
 		),
 	}),
 	handler: async (ctx, args) => {
@@ -822,6 +1120,15 @@ export const resolve_principal = internalQuery({
 			}
 			if (pluginRun.acceptedCapabilities.includes("outbound.fetch")) {
 				scopes.push("outbound:fetch");
+			}
+			// Plugin-data access is never part of the baseline. An installation that predates the store
+			// consented to a plugin that could persist nothing, and it keeps that deal until an upgrade
+			// makes the workspace accept the new capability.
+			if (pluginRun.acceptedCapabilities.includes("plugin.data.read")) {
+				scopes.push("plugin_data:read");
+			}
+			if (pluginRun.acceptedCapabilities.includes("plugin.data.write")) {
+				scopes.push("plugin_data:write");
 			}
 
 			return Result({
@@ -897,6 +1204,12 @@ export const resolve_principal = internalQuery({
 			)
 				? ["files:list", "files:read", "files:download"]
 				: [];
+			// A page may show what its plugin stored, but never write it. A page session can belong to an
+			// anonymous identity, and a page is the surface an XSS reaches first, so a stored write from
+			// here would become injected input that the plugin's backend later acts on with its secrets.
+			if (installation.acceptedCapabilities.includes("plugin.data.read")) {
+				scopes.push("plugin_data:read");
+			}
 
 			return Result({
 				_yay: {
@@ -914,6 +1227,103 @@ export const resolve_principal = internalQuery({
 					principalKey: `plugin_ui:${session.organizationId}:${session.workspaceId}:${session.userId}:${session.installationId}`,
 					credentialId: null,
 					pathPrefix: null,
+				},
+			});
+		}
+
+		if (public_api_PLUGIN_SERVICE_TOKEN_REGEX.test(args.presented)) {
+			const tokenHash = await crypto_sha256_hex(args.presented);
+			const grant = await ctx.db
+				.query("plugin_service_grants")
+				.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
+				.unique();
+			if (!grant || grant.revokedAt != null) {
+				return Result({ _nay: { message: "Unauthenticated" } });
+			}
+
+			// The grant belongs to the installation, so it dies with it: disabling, uninstalling, or
+			// upgrading the installation (an upgrade changes pluginVersionId) revokes every live grant.
+			// The connect capability is rechecked for the same reason the scopes are below: taking it
+			// away on upgrade must stop the outside server now, not when the grant expires.
+			const installation = await ctx.db.get("plugins_workspace_installations", grant.installationId);
+			if (
+				!installation ||
+				installation.status !== "enabled" ||
+				installation.pluginVersionId !== grant.pluginVersionId ||
+				installation.organizationId !== grant.organizationId ||
+				installation.workspaceId !== grant.workspaceId ||
+				!installation.acceptedCapabilities.includes("plugin.service.connect")
+			) {
+				return Result({ _nay: { message: "Unauthenticated" } });
+			}
+
+			const actor = await ctx.db.get("users", grant.actorUserId);
+			if (!actor || actor.deletedAt != null) {
+				return Result({ _nay: { message: "Unauthenticated" } });
+			}
+			const membership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", grant.actorUserId)
+						.eq("organizationId", grant.organizationId)
+						.eq("workspaceId", grant.workspaceId),
+				)
+				.first();
+			// A grant acts for its actor, so the actor has to still be a member. A `processing` grant is
+			// meant to outlive that one day, so work already accepted is not stranded half-written, but
+			// only once it is sealed to one exact target. The sealing fields belong to the Council work
+			// that mints such a grant, so until then both phases need a live membership.
+			if (!membership) {
+				return Result({ _nay: { message: "Unauthenticated" } });
+			}
+			const contentPermissions = await get_workspace_content_permissions(ctx, {
+				organizationId: grant.organizationId,
+				workspaceId: grant.workspaceId,
+				userId: grant.actorUserId,
+			});
+
+			// The grant is issued with the scopes the exchange asked for, but the installation's accepted
+			// capabilities are still the ceiling. Removing a capability on upgrade therefore narrows every
+			// outstanding grant instead of waiting for it to expire.
+			const scopes: Infer<typeof plugin_service_scopes_validator> = [];
+			if (grant.scopes.includes("plugin_data:read") && installation.acceptedCapabilities.includes("plugin.data.read")) {
+				scopes.push("plugin_data:read");
+			}
+			if (
+				grant.scopes.includes("plugin_data:write") &&
+				installation.acceptedCapabilities.includes("plugin.data.write")
+			) {
+				scopes.push("plugin_data:write");
+			}
+			// A file write must land somewhere the grant was told to write. A grant without a destination
+			// prefix loses the scope, so the "no prefix means anywhere" reading of `pathPrefix` below can
+			// never be reached from here. Removing the capability on upgrade narrows this one too.
+			if (
+				grant.scopes.includes("files:write") &&
+				installation.acceptedCapabilities.includes("workspace.files.write") &&
+				grant.destinationPathPrefix != null
+			) {
+				scopes.push("files:write");
+			}
+
+			return Result({
+				_yay: {
+					kind: "plugin_service" as const,
+					organizationId: grant.organizationId,
+					workspaceId: grant.workspaceId,
+					grantId: grant._id,
+					installationId: grant.installationId,
+					pluginVersionId: grant.pluginVersionId,
+					actorUserId: grant.actorUserId,
+					phase: grant.phase,
+					expiresAt: grant.expiresAt,
+					contentPermissions,
+					scopes,
+					principalKey: grant.principalKey,
+					credentialId: null,
+					pathPrefix: grant.destinationPathPrefix,
 				},
 			});
 		}
@@ -1030,6 +1440,19 @@ export const resolve_principal = internalQuery({
 
 export type public_api_resolve_principal_Result =
 	typeof resolve_principal extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+// The Council exchange routes in `plugins_service.ts` call these two through the generated `internal`
+// object, which erases the return type. Each alias gives that call its type back.
+
+export type public_api_create_plugin_service_grant_Result =
+	typeof create_plugin_service_grant extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export type public_api_rotate_plugin_service_grant_Result =
+	typeof rotate_plugin_service_grant extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -4588,6 +5011,31 @@ export async function public_api_http_start_activity(
 	return {
 		status: 200,
 		body: { activityId: started._yay.activityId },
+		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+/**
+ * Answer what a user API key can still do, for the workspace API-keys screen's "Test key" button.
+ *
+ * Every other route needs one scope, so testing a key through one of them only proves the key has
+ * that scope. A key minted for plugin documents alone would look broken. This route asks for no
+ * scope and reports the ones the key still has.
+ */
+export async function public_api_http_verify_key(ctx: ActionCtx, request: Request, path: "/api/v1/auth/verify") {
+	const auth = await public_api_authorize_key_inspection(ctx, request, { route: path });
+	if (auth._nay) {
+		return auth._nay;
+	}
+
+	const principal = auth._yay.principal;
+	return {
+		status: 200,
+		body: {
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			scopes: auth._yay.allowedScopes,
+		},
 		headers: { "Cache-Control": "no-store" },
 	} as const;
 }

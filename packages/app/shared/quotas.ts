@@ -26,6 +26,12 @@ export const quotas = {
 		tooltip_explanation:
 			"Counts the declared bytes of files uploaded through the public API in this workspace. The counter only grows: deleting files does not give the budget back.",
 	},
+	plugin_service_storage_bytes: {
+		disabledReason: "This workspace has used its 10 GB of plugin service storage",
+		maxCount: 10 * 1024 * 1024 * 1024,
+		tooltip_explanation:
+			"Counts the bytes plugin services reserve and store in this workspace through the service upload path. Deleting those stored files gives the space back.",
+	},
 } as const satisfies Record<
 	Doc<"quotas">["quotaName"],
 	{ maxCount: number; disabledReason: string; tooltip_explanation: string }

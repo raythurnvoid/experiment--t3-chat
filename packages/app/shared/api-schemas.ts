@@ -83,10 +83,13 @@ type api_schemas_<GroupNameInPascalCase>_<api_path_in_snake_case>_body_schema =
 
 import type { ai_chat_http_routes } from "../convex/ai_chat_http_routes.ts";
 import type { files_nodes_ai_http_routes } from "../convex/files_nodes_ai_http_routes.ts";
+import type { plugins_data_http_routes } from "../convex/plugins_data_http_routes.ts";
 import type { public_api_files_list_http_routes } from "../convex/public_api_files_list_http.ts";
 import type { public_api_http_routes } from "../convex/public_api_http_routes.ts";
+import type { public_api_service_uploads_http_routes } from "../convex/public_api_service_uploads_http_routes.ts";
 import type { r2_http_routes } from "../convex/r2_http_routes.ts";
 import type { plugins_runtime_http_routes } from "../convex/plugins_runtime_http_routes.ts";
+import type { plugins_service_http_routes } from "../convex/plugins_service_http_routes.ts";
 import type { users_http_routes } from "../convex/users_http_routes.ts";
 
 // #region Schema validation
@@ -146,6 +149,60 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/upload-urls": ReturnType<typeof public_api_http_routes>["/api/v1/files/upload-urls"];
 
+	"/api/v1/files/service-uploads/reserve": ReturnType<
+		typeof public_api_service_uploads_http_routes
+	>["/api/v1/files/service-uploads/reserve"];
+
+	"/api/v1/files/service-uploads/create-target": ReturnType<
+		typeof public_api_service_uploads_http_routes
+	>["/api/v1/files/service-uploads/create-target"];
+
+	"/api/v1/files/service-uploads/remint": ReturnType<
+		typeof public_api_service_uploads_http_routes
+	>["/api/v1/files/service-uploads/remint"];
+
+	"/api/v1/files/service-uploads/finalize": ReturnType<
+		typeof public_api_service_uploads_http_routes
+	>["/api/v1/files/service-uploads/finalize"];
+
+	"/api/v1/files/service-uploads/release": ReturnType<
+		typeof public_api_service_uploads_http_routes
+	>["/api/v1/files/service-uploads/release"];
+
+	"/api/v1/files/service-uploads/delete": ReturnType<
+		typeof public_api_service_uploads_http_routes
+	>["/api/v1/files/service-uploads/delete"];
+
+	"/api/v1/files/service-uploads/archive-destination": ReturnType<
+		typeof public_api_service_uploads_http_routes
+	>["/api/v1/files/service-uploads/archive-destination"];
+
+	"/api/v1/auth/verify": ReturnType<typeof public_api_http_routes>["/api/v1/auth/verify"];
+
+	"/api/v1/plugin-data/read": ReturnType<typeof plugins_data_http_routes>["/api/v1/plugin-data/read"];
+
+	"/api/v1/plugin-data/list": ReturnType<typeof plugins_data_http_routes>["/api/v1/plugin-data/list"];
+
+	"/api/v1/plugin-data/write": ReturnType<typeof plugins_data_http_routes>["/api/v1/plugin-data/write"];
+
+	"/api/v1/plugin-data/write-batch": ReturnType<typeof plugins_data_http_routes>["/api/v1/plugin-data/write-batch"];
+
+	"/api/v1/plugin-data/delete": ReturnType<typeof plugins_data_http_routes>["/api/v1/plugin-data/delete"];
+
+	"/api/v1/plugin-data/write-versioned": ReturnType<
+		typeof plugins_data_http_routes
+	>["/api/v1/plugin-data/write-versioned"];
+
+	"/api/v1/plugin-data/delete-versioned": ReturnType<
+		typeof plugins_data_http_routes
+	>["/api/v1/plugin-data/delete-versioned"];
+
+	"/api/v1/plugin-data/reserve": ReturnType<typeof plugins_data_http_routes>["/api/v1/plugin-data/reserve"];
+
+	"/api/v1/plugin-data/release-reservation": ReturnType<
+		typeof plugins_data_http_routes
+	>["/api/v1/plugin-data/release-reservation"];
+
 	"/api/v1/activities/start": ReturnType<typeof public_api_http_routes>["/api/v1/activities/start"];
 
 	"/api/files/contextual-prompt": ReturnType<typeof files_nodes_ai_http_routes>["/api/files/contextual-prompt"];
@@ -163,6 +220,22 @@ export interface api_schemas_Main {
 	"/api/internal/plugins/host/secret-get": ReturnType<
 		typeof plugins_runtime_http_routes
 	>["/api/internal/plugins/host/secret-get"];
+
+	"/api/internal/plugins/service-grants/exchange": ReturnType<
+		typeof plugins_service_http_routes
+	>["/api/internal/plugins/service-grants/exchange"];
+
+	"/api/internal/plugins/service-grants/renew": ReturnType<
+		typeof plugins_service_http_routes
+	>["/api/internal/plugins/service-grants/renew"];
+
+	"/api/internal/plugins/service-grants/seal-processing": ReturnType<
+		typeof plugins_service_http_routes
+	>["/api/internal/plugins/service-grants/seal-processing"];
+
+	"/api/internal/plugins/service-grants/verify-live": ReturnType<
+		typeof plugins_service_http_routes
+	>["/api/internal/plugins/service-grants/verify-live"];
 }
 
 export type api_schemas_Main_Path = keyof api_schemas_Main;

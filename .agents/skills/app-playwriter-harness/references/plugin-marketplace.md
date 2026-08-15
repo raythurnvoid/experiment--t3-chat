@@ -99,6 +99,74 @@ const minted = await app_convex.mutation(app_convex_api.plugins_ui.mint_file_vie
 `membershipId` is not readable from the DOM; this query is the way to get it. `/api/v1/files/read`
 takes a **path**, not a node id, so a cross-file check is `body: { path: "/README.md" }`.
 
+## Driving `/api/v1/plugin-data/*` with a user API key
+
+The plugin-data routes are the cheapest way to check plugin-data behaviour end to end, because a user
+API key reaches them without a plugin run. Mint one on the API-keys route with `Read plugin data` and
+`Write plugin data` (see `app-map.md`), then call the route from page context so the request comes
+from the app origin:
+
+```js
+state.convexHttp = "https://<deployment>.convex.site"; // VITE_CONVEX_HTTP_URL in packages/app/.env.local
+state.pdWrite = async (key, body) =>
+	await state.page.evaluate(async (a) => {
+		const r = await fetch(a.origin + "/api/v1/plugin-data/write", {
+			method: "POST",
+			headers: { Authorization: "Bearer " + a.key, "Content-Type": "application/json" },
+			body: JSON.stringify(a.body),
+		});
+		return { status: r.status, body: await r.json() };
+	}, { origin: state.convexHttp, key, body });
+```
+
+What a user API key can and cannot reach, so a check is not designed around an impossible refusal:
+
+- The body **must** name `installationId` for a user API key, and the installation must have accepted
+  the matching `plugin.data.*` capability. Omitting it is a 400 `installationId is required for an API
+  key`; the plugin token kinds carry their own installation and are refused for naming a second.
+- Read the installation id from `vp env exec pnpx convex data plugins_workspace_installations`; it is
+  not in the DOM.
+- Ordered writes (`/write-versioned`, `/delete-versioned`) and reservations (`/reserve`) require a
+  `plugin_service` principal. A user key gets 403 `Permission denied`, never a conflict, so a 409
+  check cannot be built from user keys alone: plain `/write` does not enforce writer ownership between
+  two keys, and the conflicts that do exist need a document a service wrote first. A service grant
+  needs the installation to declare `plugin.service.connect`.
+- Revoking the key on the page takes effect immediately — the next call is 401 `Unauthenticated`.
+
+Uninstalling the plugin drains its `plugins_data` and `plugins_data_usage` rows, which is the cleanup
+step after this kind of check. Confirm with the dual-control counting rule below.
+
+Checking tenant isolation and the uninstall drain needs a **second installation you own**, and the
+signed-in account is the organization owner, so an owner-only run proves nothing about a refusal that
+a permission check would have produced anyway. Build the second installation in a scratch workspace
+instead of touching a pre-existing one, and never uninstall an installation you did not create:
+
+1. Open the org switcher, `Create workspace`, name it (the submit-button collision in
+   `known-hazards.md` applies). Read its id from `convex data organizations_workspaces`.
+2. Go to `/w/<org>/<scratch>/plugins/<plugin>`, `Install`, `Accept and install`. Read the new
+   installation id from `convex data plugins_workspace_installations` — the newest row.
+3. Mint a second API key on `/w/<org>/<scratch>/api-keys`. Keys are per workspace, so this one cannot
+   reach the first workspace's installation.
+4. Cross-name the installations. Both directions answer `404 Not found` on read, write and list. The
+   owner passes every permission check, so that 404 can only come from the installation-tenant check.
+5. Write a few documents under the scratch installation, snapshot the row counts, then `Uninstall` it
+   from its plugin page. The drain finishes in seconds: poll until the scratch installation has zero
+   rows in all five owned tables — `plugins_data`, `plugins_data_usage`, `plugins_data_reservations`,
+   `plugins_data_revision_tombstones` and `plugin_service_grants` — and confirm the other
+   installation's rows are untouched. Counting only the first four passes while grants survive.
+6. Clean up: delete any QA documents under an installation you will keep, revoke both keys, and delete
+	the scratch workspace through the switcher's `More actions for workspace: <name>` -> `Delete` (it
+	deletes immediately, with no confirmation step). Do not call `/delete` for the scratch installation
+	after uninstall; that installation and its plugin data are already gone.
+
+The first accepted write **creates** a `plugins_data_usage` row for that installation, and deleting the
+last document only zeroes it. A pre-existing installation may therefore keep one zeroed accounting row;
+this is expected. Never call `drain_uninstalled_installation` to remove it from an installed or
+pre-existing installation. That mutation does not check uninstall state. It deletes all five plugin-data
+tables for the named installation, including live `plugin_service_grants`. For QA that needs a zero-table
+readback, create a scratch installation and uninstall it through the product flow.
+Verified 2026-08-15.
+
 ## Upload fixtures for file-view QA
 
 The sandbox cannot read repo or personal-folder files, so an upload runner must embed its payload. Generate the runner from a fixture with PowerShell, then run it with `-f`:
@@ -113,4 +181,208 @@ In the runner, target the hidden file input on the `/files` route:
 ```js
 const input = state.page.locator('input[type="file"][aria-hidden="true"]');
 await input.setInputFiles({ name: "fixture.mp4", mimeType: "video/mp4", buffer: Buffer.from(FILE_B64, "base64") });
+```
+
+## Publishing a plugin from a repository, end to end
+
+The publisher route is `/w/<org>/<workspace>/plugins/publisher`. Claiming and publishing are two
+separate steps and both are one click:
+
+```js
+await state.page.getByRole("textbox", { name: /GitHub repository URL/i }).fill(repoUrl);
+await state.page.getByRole("button", { name: "Claim", exact: true }).click();
+// The claimed card appears in the same list; its Publish button is the first one on the page.
+await state.page.getByRole("button", { name: "Publish", exact: true }).first().click();
+```
+
+Keep the click in its own short eval and return immediately. A publish takes 60–120 seconds, and an
+eval that polls for the result inside the browser crashes the relay (see `known-hazards.md`). Read the
+outcome from the CLI instead — `lastPublishAttempt` on the repository row carries `status`, `message`,
+`commitSha`, `artifactHash` and `reviewId`:
+
+```powershell
+vp env exec pnpx convex data plugins_publisher_repositories --limit 5
+```
+
+The plugin detail page shows the same thing in the release history, including the review verdict, for
+example `data-probe@0.1.0 · published Aug 14, 10:32 AM · e0e7d066 · reviewed by gpt-5.4-mini · passed`.
+
+## Triggering a plugin backend
+
+Plugin backends run on `files.upload.completed`, and **a text upload does not trigger one**. An upload
+whose name has a recognized editable-text extension (`.txt`, `.md`, `.json`, …) is converted into an
+editable document, and `r2.ts` suppresses the plugin event on that path — only a stored blob dispatches,
+and a blob a plugin service stored (a `plugin_service_storage_targets` row owns its asset) never does.
+Use an image instead. A 1×1 PNG is enough and needs no fixture file:
+
+```js
+const PNG_B64 =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const input = state.page.locator('input[type="file"][aria-hidden="true"]').first();
+await input.setInputFiles({ name: `probe-${Date.now()}.png`, mimeType: "image/png", buffer: Buffer.from(PNG_B64, "base64") });
+```
+
+Allow about 30 seconds after the upload: the R2 event, the conversion pass and the plugin dispatch are
+all asynchronous. Then read `plugins_event_runs` to see whether the run happened and what it settled as.
+
+`raythurnvoid/bonobo-plugin-data-probe` is the fixture plugin for plugin-data QA — its backend writes one
+document per upload and its page lists them.
+
+## Council page smoke (page → Worker → Convex exchange)
+
+The Council plugin page (`/w/<org>/<workspace>/plugins/council/pages/council`) proves the whole
+service-connect auth chain: on load it POSTs to the Council Worker
+(`https://bonobo-council-service.ray-thurne-void.workers.dev/api/meetings/list`), and the Worker trades
+the page token for a service grant at Convex `/api/internal/plugins/service-grants/exchange`
+(`plugins_service.ts`). An empty meetings list with no `role="alert"` is the pass signal.
+
+- Capture the iframe's Worker calls with plain `state.page.on("request"/"response")` listeners on the
+  HOST page, installed before navigating — Playwright page listeners see subframe fetches, including the
+  sandboxed cross-origin plugin frame. No CDP session needed.
+- The frame renders errors as a `role="alert"` with a `Retry` button. Read it with `frame.evaluate`
+  (anchor the frame per the Gallery playbook).
+- A first-open alert saying `Rate limit exceeded` is usually the host's `plugins_ui_session_mint`
+  bucket (STRICT_WRITE: capacity 2, 12/min, keyed per user — the user's own open plugin tabs share it).
+  Retry recovers in seconds; it is not a Worker or exchange fault.
+- An alert naming the exchange (`Convex /api/internal/plugins/service-grants/exchange returned HTTP
+  401`) means the Worker reached Convex and Convex refused. The exchange 401s for: wrong/unset
+  `COUNCIL_SERVICE_EXCHANGE_SECRET`, bad bearer, dead page token. To check the deployment secret
+  without ever printing it, probe its SHAPE: pipe `convex env get COUNCIL_SERVICE_EXCHANGE_SECRET`
+  into a Node one-liner that prints only length, line count, and char classes. A value with an embedded
+  newline can never match — HTTP headers cannot carry raw newlines and the stored value is compared
+  untrimmed — so a 2-line value is proof of a mis-set env var (found 2026-08-15: 43 chars + trailing
+  `\n`; `convex env list` shows such a value as a stray `'` continuation line).
+
+## Council page: driving meeting creation
+
+Drive the whole meeting loop with plain frame-handle clicks. Council 0.1.2+ renders every action as a
+`type="button"` with an onClick handler, and the host added `allow-forms` to the plugin sandbox on
+2026-08-16, so the dispatched-submit workaround in `known-hazards.md` ("Plugin UI frames: forms submit
+in JS only") is needed only for an older plugin build served by a pre-fix host. Reach for it after a
+click provably does nothing, not before.
+
+- The create form's title field carries a React `useId` id (`P0-0`), not a stable `#meeting-title`. A
+  guessed id selector never resolves and `fill()` burns the whole CLI timeout, which reads like a frozen
+  frame. Use the label instead: `frame.getByRole("textbox", { name: /Meeting title/i })`. Enumerate
+  `document.querySelectorAll("input")` ids before trusting any id-based selector in this frame.
+  Verified 2026-08-16: even after that locator **resolves** to `#P0-0`, `fill()` can still hang on
+  actionability inside the Convex `plugins-ui` iframe. Click the input, `Control+A`, then
+  `pressSequentially` the title. Do not `{ force: true }`.
+- Prefer `page.frameLocator(".PluginsUiFrame")` over `frames().filter(...).evaluate(...)` for later
+  Council clicks. A plugin-frame `evaluate` during a remount dies with `Execution context was destroyed`
+  and can take the CLI down with the libuv assertion. `Get room link` itself is a locator click; give
+  it 10–15s, not 800ms retries that miss the remount window.
+- The create response is the ONLY place the join code and guest link exist (`{meeting, joinCode, guestUrl}`;
+  the service stores only hashes). Capture it with a host-page `state.page.on("response")` listener filtered
+  on `/api/meetings/create`, park the values on `state`, and never print them — the meeting id is the one
+  reportable field. Read success from the captured body, not the panel alone.
+- Delete is a two-step inline confirm: `Delete` renders a `Confirm delete` / `Cancel` panel below the
+  row while the original `Delete` button stays in place, so scope the second click by exact name. After
+  confirming, a body-text check can race the follow-up
+  `meetings/list` refresh — re-read the list a moment later before asserting the row survived. A
+  no-recording meeting settles `Created → Open → Ready` within ~10 seconds of Close and writes no
+  files, so it leaves no `/meetings/<id>` folder to clean up (verified 2026-08-16 from a real
+  signed-in session).
+- Council 0.1.6 accessibility anchors (verified 2026-08-16). The page keeps one permanently mounted live
+  region as the last child of `.council`: `div.council-announcer.visually-hidden[role=status][aria-live=polite]`,
+  empty on first load by design. It is written only when a list refresh sees a change, as
+  `Meeting <title> is now <Status>`, `Meeting <title> was added`, or `Meeting <title> was deleted`.
+  Capture its text with the MutationObserver recipe in
+  `snippets.md` — a single poll misses it, since a refresh with no change writes `""` back. The delete
+  confirmation moves focus to `Confirm delete`, which carries `aria-describedby` pointing at the warning
+  paragraph, and `Cancel` returns focus to the row's `Delete` button; read `activeElement` in a **separate**
+  execute call from the click, or the focus-moving effect has not run yet. The only other `[role=status]`
+  in the frame is the transient copy-confirmation inside the join-code panel — the empty state
+  (`.council-status`, "No meetings yet.") deliberately carries no role, matching the Gallery plugin.
+- Deleting a meeting that never opened is the cheapest way to exercise both announcer branches
+  (`is now Deleting`, then `was deleted`) and it self-cleans: no pipeline ran, so no `/meetings/<id>` folder
+  is written, and D1 shows `status: "deleted_tombstone"` with `title` scrubbed within ~15 seconds.
+- Guest join checks (verified 2026-08-16 on the status-specific guest-session messages): the guest link
+  is `https://<council-worker>/room?m=<meetingId>` — a plain query param, no fragment — and the guest
+  types the join code manually. The page is public (no app auth) and is NOT sandboxed, so normal fills
+  and clicks work: `#guest-code`, `#guest-name` (email optional), `#guest-submit`, and refusals render
+  inline in `#guest-error` (assert `textContent` + computed visibility, not a screenshot). After create,
+  the row shows a one-time join-code panel that hides the status line — dismiss it with the
+  `Done, I saved the code` button. Right after clicking `Delete`, a row-scoped `allTextContents` can
+  transiently report both `Delete` and `Confirm delete` — just click `Confirm delete`.
+- The list always polls every 5 s (`setInterval(refresh, 5000)` in `app.tsx`). Waiting for polling to
+  stop never ends. A delete or a close settles in the open page with no reload because the next poll
+  picks it up. A D1 `UPDATE` on a settled row also appears within one poll interval. Corrected 2026-08-16
+  — earlier notes said the list does not poll, then that it polls only while transitional; both were wrong.
+- The meeting row does NOT render the meeting id, so you cannot pick a row by id from the DOM. It shows
+  only the title, the status label, and the action buttons (`Details` adds artifact `fileNodeId`s, still
+  not the meeting id). To bind a row to an id, capture the `/api/meetings/list` response with a host-page
+  `state.page.on("response")` listener and keep only `{id, title, status}` — that response also carries
+  fields you must not store. Then match the row by its title. Verified 2026-08-16.
+  Details lists each artifact as `name` plus a `.meeting-artifact-id` span whose text is ` · <fileNodeId>`.
+  Strip the leading `·` and spaces before using that text as `?nodeId=`. Passing the raw span text
+  navigates to `?nodeId=root` instead of the file. Verified 2026-08-16.
+- Delete end state: `POST /api/meetings/delete` answers `200 {"status":"deleting"}`. That 200 means the
+  delete was enqueued, not that the meeting is gone — do not treat Confirm delete as `was deleted`,
+  and do not expect a `role="alert"` on that 200. The status label flips to `Deleting`. A happy-path
+  meeting drops out of the list once D1 is `deleted_tombstone` (title scrubbed). A locked child file
+  must fail visibly without unlocking: keep the lock, wait ~5 s, and assert the row is `Delete failed`
+  with the failure reason on the row (`role="status"`). Unlocking first would hide the hang that Round
+  2 found. Read-only ground truth: `vp env exec pnpx wrangler d1 execute bonobo-council --remote --json
+  --command "SELECT id, status, title, failure_reason FROM meetings WHERE id = '<id>'"`. There is no
+  `deleted_at` column — selecting one fails the whole query with `SQLITE_ERROR 7500`. Verified
+  2026-08-16 on a `ready` meeting with a real recorded transcript.
+- Recorded-meeting host-only E2E (verified 2026-08-16): create/open via the page UI, then join the room
+  in a scratch Chrome launched with `--use-fake-ui-for-media-capture --use-fake-device-for-media-capture
+  --use-file-for-fake-audio-capture=<wav> --autoplay-policy=no-user-gesture-required` plus a scratch
+  `--user-data-dir` and `--remote-debugging-port=9223` (`session new --direct 127.0.0.1:9223`). Mint the
+  room ticket only AFTER that browser is up (2-minute TTL). Two verified handoffs (2026-08-16): a fresh
+  direct-CDP session can list the launched tab as one page with an EMPTY url (`context.pages()` →
+  `[""]`) — bind `pages()[0]` and `goto` the target instead of matching by URL. And to move the
+  single-use host room link across browsers without printing or storing it: in the Edge frame click
+  `Get room link`, read the `.meeting-room-link input` value, `navigator.clipboard.writeText(value)`
+  from the HOST page (extension mode allows the write); in the scratch session
+  `grantPermissions(["clipboard-read"], { origin })` (works in direct CDP), park the scratch tab on
+  `/room?m=<id>` first
+  (real origin for the grant, and the query makes the later hash-carrying `location.assign` a full
+  document load that consumes the ticket), then read the clipboard in-page and `location.assign` it;
+  clear the clipboard afterwards. The link never appears in CLI output or on disk.
+  Direct-CDP `grantPermissions(["clipboard-read"])` works on the Worker origin; `clipboard.writeText` there throws `NotAllowedError`. Copy join codes and room links from the app host page (extension mode), then only *read* them in the scratch session. Clear the clipboard from the host page afterwards.
+  Do not Join from the Edge QA profile: `grantPermissions` cannot grant the microphone there, the
+  permission prompt wedges `getUserMedia`, Join stays disabled, and later Council iframe CDP calls
+  hang. Keep Edge on the Council page only. Join in the scratch Chrome.
+- Hashchange after Join (Round 3 L4-H1, verified 2026-08-16): park-then-assign **before** Join does
+  not cover this. Join until `#view-call` is visible, mint a **fresh** host ticket from Council, copy
+  it from the app host page, then `location.assign` that URL on the **same** scratch-Chrome room tab.
+  Do not hop `about:blank` first — that hides the bug. Success is `#view-lobby` visible, `#view-ended`
+  hidden, `#join-button` enabled, role Host, hash erased. Join again on that lobby to prove the button
+  was re-armed.
+  Chrome 151 on this machine still lists the real microphones when launched with `--use-fake-device-for-media-capture` and a 48 kHz stereo fake-audio WAV. `getUserMedia` then captures the default hardware device, not the file. Call `context.grantPermissions(["microphone"], { origin })` before Join or Unmute, or `getUserMedia` returns `NotAllowedError`. Treat missing phrase attribution after that as an environment/provider blocker, not as proof the lobby names failed — the transcript still carries the typed display names.
+  ~30 seconds of looping speech WAV produces a real `transcript.md`. Processing can take ~5 minutes when the best-effort provider-transcript polling
+  runs its sleeps, and `provider-transcript.json` may legitimately never appear — poll the D1
+  `meetings.status` (read-only `wrangler d1 execute bonobo-council --remote`) instead of trusting a
+  3-minute budget. The list always polls every 5 s, including after a D1 `UPDATE` on a settled row —
+  see the polling hazards bullet above. Do not reload the host page to pick up that change.
+- Since the 2026-08-16 upload-conversion change, the pipeline's `transcript.md` becomes a normal
+  editable rich text document (`yjsRootKind: "rich_text"`, chunk-readable) and a produced
+  `provider-transcript.json` becomes an editable plain-text document; the `.webm` track files stay
+  stored blobs. Deleting a meeting archives the whole `/meetings/<meetingId>` folder through the
+  service `archive-destination` door and tombstones the D1 row. Check it by reading the file nodes,
+  not the tree alone: the folder and every file in it get ONE shared `archiveOperationId`, so they
+  leave the active tree together and a member can restore them. Their bytes stay charged, and the R2
+  objects stay — that is the archive working, not failed QA cleanup.
+- A create failure renders only as a `role="alert"` inside the frame with the Worker's generic message.
+  `Failed to reserve storage for the meeting` (HTTP 502) wraps ANY non-auth Convex `plugin-data/reserve`
+  refusal: `convex_post` in `packages/council-service/src/convex-api.ts` collapses every non-401/403/404/409/429
+  status to `refused`, the route maps that to 502, and neither side logs the underlying reason —
+  `wrangler tail` shows `logs: []` and `convex logs` shows nothing. Diagnose by reading the reserve args in
+  `routes-page.ts` against the caps in `packages/app/convex/plugins_data.ts` (`MAX_RESERVATION_TTL_MS`,
+  `MAX_VALUE_BYTES`, name rules) instead of retrying.
+
+## Reading a table count without fooling yourself
+
+`convex data <table>` prints "There are no documents in this table" for a table that does not exist, so
+a misspelled name reads exactly like a clean zero. Count rows by the quoted id at line start, and run
+**two** controls in the same pass: one table name that cannot exist (must be 0) and one you know is
+populated (must not be 0).
+
+```bash
+for t in plugins_data plugins_data_usage totally_bogus_table_xyz plugins_workspace_installations; do
+	printf "%-36s " "$t"; vp env exec pnpx convex data "$t" --limit 200 2>&1 | grep -c '^"'
+done
 ```

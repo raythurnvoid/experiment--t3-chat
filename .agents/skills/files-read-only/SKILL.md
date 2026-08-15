@@ -185,7 +185,12 @@ staging file.
 
 If the live copy succeeds but publication or an event retry fails, keep `unfinalizedExpiresAt`. The
 hourly unfinalized-asset sweep schedules the same safe staging-to-live action again and moves the
-deadline forward. Recovery keeps retrying until the verified live file is published.
+deadline forward. Recovery retries hourly for the first 30 hours after the latest signed URL was
+issued, then once a week. After eight days it deletes the failed placeholder and hands both possible
+keys to the durable deletion ledger. If the placeholder is read-only, cleanup keeps it and checks
+again a week later. Releasing a plugin-service upload envelope follows the same lock rule; only a
+named workspace deletion bypasses it. The slow retry exists because an hourly copy attempt for an
+upload the caller abandoned costs more than it can ever recover.
 
 When an unfinished upload is discarded, create deletion jobs for both possible keys before deleting
 its docs. The staging key keeps the signed-URL arrival window. The deterministic live key has no

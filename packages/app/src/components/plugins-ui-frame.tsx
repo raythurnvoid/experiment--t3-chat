@@ -301,11 +301,13 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 	return (
 		// The frame and public API share the Convex origin, so normal JSON requests need no CORS
 		// preflight. The host app uses a different origin, so the plugin still cannot reach its DOM.
+		// `allow-forms` only lets the submit EVENT fire so plugin code can handle it in JS; the
+		// asset CSP's `form-action 'none'` still blocks every real HTTP form submission.
 		<iframe
 			ref={iframeRef}
 			className={"PluginsUiFrame" satisfies PluginsUiFrame_ClassNames}
 			title={title}
-			sandbox="allow-scripts allow-same-origin"
+			sandbox="allow-scripts allow-same-origin allow-forms"
 			referrerPolicy="no-referrer"
 		/>
 	);

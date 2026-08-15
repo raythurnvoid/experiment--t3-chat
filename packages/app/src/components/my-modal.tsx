@@ -131,7 +131,7 @@ export const MyModalFooter = memo(function MyModalFooter(props: MyModalFooter_Pr
 
 export type MyModalHeading_ClassNames = "MyModalHeading";
 
-export type MyModalHeading_Props = ComponentPropsWithRef<"h1">;
+export type MyModalHeading_Props = Ariakit.DialogHeadingProps;
 
 export const MyModalHeading = memo(function MyModalHeading(props: MyModalHeading_Props) {
 	// Leave `id` inside `rest`: passing an explicit `id={undefined}` overrides the auto id
@@ -151,7 +151,7 @@ export const MyModalHeading = memo(function MyModalHeading(props: MyModalHeading
 
 export type MyModalDescription_ClassNames = "MyModalDescription";
 
-export type MyModalDescription_Props = ComponentPropsWithRef<"p">;
+export type MyModalDescription_Props = Ariakit.DialogDescriptionProps;
 
 export const MyModalDescription = memo(function MyModalDescription(props: MyModalDescription_Props) {
 	// Leave `id` inside `rest` for the same reason as MyModalHeading (`aria-describedby`).

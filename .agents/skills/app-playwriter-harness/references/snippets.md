@@ -244,6 +244,34 @@ Scope traps that silently change the result:
 - Close every tooltip before a document-scope run. An open Ariakit tooltip portals a bare `<div>` onto `<body>`, outside all landmarks, and that alone produces a `region` violation that is yours, not the app's.
 - With an Ariakit modal open the app shell goes `inert`, so axe skips it and a document-scope run audits **only the modal**. App-shell rules then come back `PASS` or `INAPPLICABLE` for a reason that has nothing to do with the app shell. `#root` itself does **not** carry the attribute — probe `document.querySelector("header.MainAppHeader").closest("[inert]")`, not `#root.hasAttribute("inert")`, or you will conclude the shell is in scope when it is not. Confirm scope from the result: read the checked nodes of `landmark-no-duplicate-banner`; if `.MainAppHeader` is absent, the PASS only covers modal content.
 
+## Prove A Live Region Actually Announces
+
+A `role="status"` / `aria-live` element is only half the claim. The other half is that text really lands in it, and a live region is usually written and then cleared again a moment later, so a single poll after the action reads `""` and looks like the feature is dead. Record every change instead, with a `MutationObserver` installed **before** the action:
+
+```js
+await frame.evaluate(() => {
+	const region = document.querySelector(".council-announcer");
+	window.__annLog = [{ t: Date.now(), text: region.textContent, note: "baseline" }];
+	window.__annObserver = new MutationObserver(() => {
+		const text = region.textContent;
+		if (window.__annLog[window.__annLog.length - 1].text !== text) {
+			window.__annLog.push({ t: Date.now(), text });
+		}
+	});
+	window.__annObserver.observe(region, { childList: true, characterData: true, subtree: true });
+});
+```
+
+Then drive the action and read `window.__annLog` in a later call. An interleaved `""` between two messages is normal for the common "recompute the message on every refresh" shape — a refresh that finds no change writes the empty string back. Assert on the sequence of non-empty entries, not on the current text.
+
+Two things that make such a region correct and are worth asserting together with the text: it must be **permanently mounted** (a region that appears together with its first message is announced unreliably), and it must be hidden without leaving the accessibility tree — `position: absolute` with a 1x1 rect and `clip-path: inset(50%)` is right, `display: none` or `visibility: hidden` is not. Read those from `getComputedStyle`, not from the class name.
+
+## A React focus-management effect loses a same-call read
+
+`document.activeElement` read in the **same** execute call as the click that opens a panel reports the element the click focused, not the one the component's `useEffect` moves focus to. The effect has not run yet at that point, so a correct focus-management implementation reads as broken. Split it: click in one call, read `activeElement` in the next. Confirmed 2026-08-16 on the Council delete confirmation, where the same-call read said `Delete` and the next call said `Confirm delete`.
+
+For a control inside a cross-origin plugin iframe, check both sides: the frame's own `document.activeElement` is the button, and the **host** page's `document.activeElement` is the `IFRAME` element. Reading only the host page makes every in-frame focus move look like it failed.
+
 ## Read The Chrome Accessibility Tree
 
 Use this when the DOM and assistive tech disagree — `aria-describedby` can be present while the AX `description` is null, and `aria-disabled` shows up as AX `disabled` with `focusable: true`.

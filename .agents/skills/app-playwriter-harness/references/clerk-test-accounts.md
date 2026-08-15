@@ -11,19 +11,32 @@ Login and logout with the seeded `+clerk_test` accounts is a supported autonomou
 - **Only `+clerk_test` fixture addresses with the code `424242`.** Never type a real password, a real verification code, or any other real credential. If a check needs a real account, hand that step to the user.
 - **One account at a time.** Single-session mode means one browser profile holds one signed-in user. To use several accounts, cycle sign-out → sign-in in the same scratch profile.
 
-## Seeded accounts (dev DB, verified 2026-08-02)
+## Seeded accounts (dev DB, verified 2026-08-16)
+
+**Verify before building on these accounts.** A dev-data reset can drop them from the Clerk instance while this table still lists them: the sign-in form then answers `Couldn't find your account` for every prefix. That already happened once — a dev-data reset dropped all five, and they were reseeded on 2026-08-16 with the ids below. The `Couldn't find your account` message means the account no longer exists, not a typo — do not retry other prefixes hoping for a different result, and do not create a replacement account on your own initiative during a QA check. Fall back to the anonymous identity in `second-user-fixtures.md` when the check does not need a specific role, and report the missing accounts so the user can request a reseed (see "Reseeding" below).
 
 All emails end with `+clerk_test@example.com` and all accept the code `424242`.
 
 | Email prefix       | Convex `users` id                  | Notes                                                                                            |
 | ------------------ | ---------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `qa.perm.owner`    | `m5747621ndk84yed1mg11f1ca98bcrbj` | Owns the `qa-browser` organization.                                                               |
-| `qa.perm.admin`    | `m57dtqtg7wwvn6s7ta282b0fbx8bdsj8` | Not a member of `qa-browser`.                                                                     |
-| `qa.perm.member`   | `m57ajc3qefttt0921x41ayhdrh8bcn06` | Owns `qa-tmp-share`. Not a member of `qa-browser` — opening it shows the access-denied screen.    |
-| `qa.perm.viewer`   | `m5712hffzcfd0615e7qshgp6wd8bdgw3` | Member of `qa-browser` holding the `member` role (the name is misleading; see `app-map.md`).      |
-| `import-qa-member` | `m57bevz11d996z3qrkyz63erfd8bnxx7` | Import QA fixture.                                                                                |
+| `qa.perm.owner`    | `m575qvj9kyabtdn9jef1dgw0js8ck2dq` | Owns the `qa-browser` organization.                                                               |
+| `qa.perm.admin`    | `m572b1a4snqa1en3qqp1gfwwnn8cjxya` | Not a member of `qa-browser`.                                                                     |
+| `qa.perm.member`   | `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | Owns `qa-tmp-share`. Not a member of `qa-browser` — opening it shows the access-denied screen.    |
+| `qa.perm.viewer`   | `m572qhnpq7xw34askfcy6w97h18ck1f8` | Member of `qa-browser` holding the `member` role (the name is misleading; see `app-map.md`).      |
+| `import-qa-member` | `m5754ckhv5yrt02vjf1dt2v4hd8cjsy4` | Accounts-only import QA fixture: no extra memberships.                                            |
 
-Do not infer membership or role from the account name. Before building a check on an account, read its membership back: `organizations.get_membership_by_organization_workspace_name` from its signed-in tab, or the `organizations_workspaces_users` table over the Convex CLI. The `qa-browser` members named `Bob Reader`, `New Owner` and charlie carry seeded fake `clerkUserId`s and cannot be signed in as.
+Do not infer membership or role from the account name. Before building a check on an account, read its membership back: `organizations.get_membership_by_organization_workspace_name` from its signed-in tab, or the `organizations_workspaces_users` table over the Convex CLI. Since the 2026-08-16 reseed, `qa-browser` has exactly two members (`qa.perm.owner` as owner, `qa.perm.viewer` with the `member` role) — the fake members named `Bob Reader`, `New Owner` and charlie were artifacts of an older DB seed and no longer exist; do not expect them and do not recreate them.
+
+These accounts have no display name: the dev Clerk instance has both the name and the username attributes disabled (`Clerk.user.update` rejects `first_name`/`username` with `form_param_unknown`), and the app has no anagraphic edit UI, so `resolve_user` stores the fallback `User <clerkUserId>` as the display name on every sign-in. Build locators on emails and ids, never on display names.
+
+## Reseeding (user-requested only)
+
+Recreating dropped accounts is a sign-UP flow, done only when the user explicitly asks for a reseed. It mirrors the sign-in recipe (`window.Clerk.openSignUp()`, `#emailAddress-field`, `Continue` with `exact: true`, then the code `424242` in `.cl-otpCodeField input`), with two extra rules learned on 2026-08-16:
+
+- **One sign-up per fresh scratch profile.** Clerk gates sign-up behind an invisible Cloudflare Turnstile. The first solve in a fresh `--user-data-dir` passes in a few seconds; every later sign-up attempt in that same profile wedges silently — no `sign_ups` POST ever fires, `Clerk.client.signUp.status` stays `null`, and the modal's form section hides itself. No amount of waiting, modal reopening, or page reloading recovers it. Kill the scratch Chrome and relaunch with a new temp profile for each account. Sign-INS are not captcha-gated and keep working in a used profile.
+- **Pause ~2.5s before typing the verification code.** Filling the moment the OTP field appears trips the code-before-send race far more often on sign-up than on sign-in, and the `Resend` button then sits behind a 30s countdown. With the pause, the flow lands cleanly; without it, the already-typed code is usually still accepted once the send settles, so observe before retrying.
+
+After sign-up, the app upgrades the tab's current anonymous user in place (`resolve_user` branch 3), and Clerk's `external_id` is backfilled asynchronously — a token read right after sign-up can show `external_id: null`. Wait a few seconds and read again with `getToken({ template: "convex", skipCache: true })`.
 
 ## Isolated browser
 

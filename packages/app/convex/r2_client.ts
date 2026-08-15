@@ -175,6 +175,32 @@ export async function r2_fetch_object_range_from_bucket(args: { key: string; sta
 	return response;
 }
 
+// Keep this object so tests can replace the copy function. The real call asks the R2 component to
+// copy the object on the R2 server side. Keep the R2 login secrets in this module. Never save or
+// log them.
+export const r2_server_side_copy = {
+	copy_object: async (
+		ctx: ActionCtx,
+		args: {
+			sourceKey: string;
+			destinationKey: string;
+			expectedSize?: number;
+			expectedEtag?: string;
+		},
+	) => {
+		return await ctx.runAction(components.r2.lib.copyR2Object, {
+			sourceKey: args.sourceKey,
+			destinationKey: args.destinationKey,
+			expectedSize: args.expectedSize,
+			expectedEtag: args.expectedEtag,
+			bucket: R2_BUCKET_FILES,
+			endpoint: R2_ENDPOINT,
+			accessKeyId: R2_ACCESS_KEY_ID,
+			secretAccessKey: R2_SECRET_ACCESS_KEY,
+		});
+	},
+};
+
 /**
  * Copy a temporary R2 object to its final key. Never replace an object already at the final key.
  */
@@ -200,18 +226,28 @@ export async function r2_copy_object_to_immutable_key(
 		}
 		return {
 			size,
-			etag: response.headers.get("ETag") ?? undefined,
+			// Cloudflare downgrades the ETag of a compressed response to a weak `W/"..."` form,
+			// and header etags carry quotes while event etags do not. Store one consistent bare
+			// shape across every publish path.
+			etag: response.headers.get("ETag")?.replace(/^W\//, "").replace(/^"|"$/g, "") ?? undefined,
 		};
 	};
 
-	const normalizeEtag = (etag: string) => {
-		return etag.replace(/^W\//, "").replace(/^"|"$/g, "");
+	// Cloudflare's edge compresses text responses and drops their Content-Length. A ranged
+	// request is never compressed, and its Content-Range reports the full object size after
+	// the slash.
+	const readSizeWithRange = async (key: string) => {
+		const response = await r2_fetch_object_range_from_bucket({ key, start: 0, endInclusive: 0 });
+		await response.body?.cancel();
+		const total = /\/(\d+)$/.exec(response.headers.get("Content-Range") ?? "")?.[1];
+		return total === undefined ? undefined : Number(total);
 	};
 
 	const getDestinationMetadata = async (response: Response) => {
 		const metadata = readMetadata(response, args.destinationKey);
 		await response.body?.cancel();
-		if (metadata.size === undefined) {
+		const size = metadata.size ?? (await readSizeWithRange(args.destinationKey));
+		if (size === undefined) {
 			throw convex_error({
 				message: "Immutable R2 object is missing Content-Length",
 				cause: { key: args.destinationKey },
@@ -220,7 +256,7 @@ export async function r2_copy_object_to_immutable_key(
 		await r2.syncMetadata(ctx, args.destinationKey);
 		return {
 			outcome: "ready" as const,
-			size: metadata.size,
+			size,
 			etag: metadata.etag,
 		};
 	};
@@ -245,88 +281,34 @@ export async function r2_copy_object_to_immutable_key(
 		});
 	}
 
-	const sourceUrl = await r2_get_download_url({
-		key: args.sourceKey,
-		options: { expiresIn: 60 },
+	// The signed URL may have replaced the temporary object after R2 created this event. The event
+	// carries the object's eTag; without it the staged object cannot be verified, so treat the event
+	// as stale and let a later event or the recovery pass publish the object.
+	if (args.expectedSource !== undefined && args.expectedSource.etag === undefined) {
+		return { outcome: "stale_source" as const };
+	}
+
+	// Copy on the R2 server side. Streaming the staged body through a signed PUT sends it chunked
+	// without Content-Length, and R2 refuses that with 411 for bodies the runtime does not buffer
+	// (observed live 2026-08-16 on a 2MB upload). The component action heads the staged object,
+	// refuses when it no longer matches the event, and copies with the head's own eTag as the
+	// precondition, so it never copies bytes it did not verify.
+	const copied = await r2_server_side_copy.copy_object(ctx, {
+		sourceKey: args.sourceKey,
+		destinationKey: args.destinationKey,
+		expectedSize: args.expectedSource?.size,
+		expectedEtag: args.expectedSource?.etag,
 	});
-	const source = await fetch(sourceUrl);
-	if (source.status === 404) {
+	if (copied.outcome === "source_missing") {
 		return { outcome: "source_missing" as const };
 	}
-	if (!source.ok) {
-		throw convex_error({
-			message: "Failed to read staged R2 object",
-			cause: {
-				status: source.status,
-				key: args.sourceKey,
-			},
-		});
-	}
-	const sourceMetadata = readMetadata(source, args.sourceKey);
-	// The signed URL may have replaced the temporary object after R2 created this event. Copy only
-	// when the event still matches the current object.
-	if (args.expectedSource !== undefined) {
-		if (sourceMetadata.size === undefined || sourceMetadata.etag === undefined) {
-			await source.body?.cancel();
-			throw convex_error({
-				message: "Staged R2 object is missing identity metadata",
-				cause: { key: args.sourceKey },
-			});
-		}
-		if (
-			sourceMetadata.size !== args.expectedSource.size ||
-			args.expectedSource.etag === undefined ||
-			normalizeEtag(sourceMetadata.etag) !== normalizeEtag(args.expectedSource.etag)
-		) {
-			await source.body?.cancel();
-			return { outcome: "stale_source" as const };
-		}
-	}
-	if (!source.body) {
-		throw convex_error({
-			message: "R2 source object has no body",
-			cause: { key: args.sourceKey },
-		});
+	if (copied.outcome === "source_changed") {
+		return { outcome: "stale_source" as const };
 	}
 
-	const upload = await r2_generate_upload_url(args.destinationKey);
-	const response = await fetch(upload.url, {
-		method: "PUT",
-		headers: {
-			"If-None-Match": "*",
-			...(source.headers.get("Content-Type") ? { "Content-Type": source.headers.get("Content-Type") as string } : {}),
-		},
-		body: source.body,
-	});
-	// Another event may copy the final object first. R2 returns 412 in this case. Read that object
-	// below.
-	if (!response.ok && response.status !== 412) {
-		throw convex_error({
-			message: "Failed to copy staged R2 object",
-			cause: {
-				status: response.status,
-				sourceKey: args.sourceKey,
-				destinationKey: args.destinationKey,
-			},
-		});
-	}
-
-	if (response.status === 412) {
-		// Trust the final object's metadata because this attempt's temporary object may be different.
-		const winner = await fetch(destinationUrl);
-		if (!winner.ok) {
-			throw convex_error({
-				message: "Failed to read immutable R2 object after conditional copy",
-				cause: {
-					status: winner.status,
-					key: args.destinationKey,
-				},
-			});
-		}
-		return await getDestinationMetadata(winner);
-	}
-
-	const size = sourceMetadata.size ?? args.expectedSource?.size;
+	// A compressed head answer hides the copied object's size. The copy above put the
+	// object at the destination, so the ranged read can report it.
+	const size = copied.size ?? args.expectedSource?.size ?? (await readSizeWithRange(args.destinationKey));
 	if (size === undefined) {
 		throw convex_error({
 			message: "Staged R2 object is missing Content-Length",
@@ -337,7 +319,7 @@ export async function r2_copy_object_to_immutable_key(
 	return {
 		outcome: "ready" as const,
 		size,
-		etag: sourceMetadata.etag ?? args.expectedSource?.etag,
+		etag: copied.etag,
 	};
 }
 
@@ -606,6 +588,43 @@ export const settle_object_deletion_job = internalMutation({
 		// R2 confirmed the final delete. Remove the job and clear the asset's cleanup deadline.
 		await ctx.runMutation(components.r2.lib.deleteMetadata, { bucket: R2_BUCKET_FILES, key: job.r2Key });
 		await ctx.db.delete("files_r2_object_deletion_jobs", job._id);
+
+		// Plugin service uploads charge the `plugin_service_storage_bytes` quota while their canonical
+		// object exists. This confirmed delete is the one moment the object is provably gone, so the
+		// charged bytes go back here, exactly once: the charge record leaves the committed state below,
+		// so a second settlement cannot find it again.
+		const canonicalMatch = /^organizations\/[^/]+\/workspaces\/[^/]+\/assets\/([^/]+)$/.exec(job.r2Key);
+		const deletedAssetId = canonicalMatch ? ctx.db.normalizeId("files_r2_assets", canonicalMatch[1]) : null;
+		if (deletedAssetId) {
+			const serviceTarget = await ctx.db
+				.query("plugin_service_storage_targets")
+				.withIndex("by_asset", (q) => q.eq("assetId", deletedAssetId))
+				.first();
+			if (serviceTarget && serviceTarget.state === "committed") {
+				const quota = await ctx.db
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) =>
+						q.eq("workspaceId", serviceTarget.workspaceId).eq("quotaName", "plugin_service_storage_bytes"),
+					)
+					.first();
+				if (quota) {
+					await ctx.db.patch("quotas", quota._id, {
+						usedCount: Math.max(0, quota.usedCount - (serviceTarget.actualBytes ?? serviceTarget.declaredBytes)),
+						updatedAt: Date.now(),
+					});
+				}
+				// The service's delete route replays by target key, so a delete it asked for keeps a
+				// released tombstone as the durable answer. Other deletion paths consume the doc.
+				if (serviceTarget.deleteRequestedAt !== undefined) {
+					await ctx.db.patch("plugin_service_storage_targets", serviceTarget._id, {
+						state: "released",
+						updatedAt: Date.now(),
+					});
+				} else {
+					await ctx.db.delete("plugin_service_storage_targets", serviceTarget._id);
+				}
+			}
+		}
 
 		if (job.assetId) {
 			const asset = await ctx.db.get("files_r2_assets", job.assetId);

@@ -44,3 +44,54 @@ const tiles = await frame.evaluate(() => document.querySelectorAll(".tile").leng
 - Canonical assets use `/plugins-ui/<versionId>/<path>`. Responses are immutable for the published plugin version, so any asset or header-policy change requires a plugin version bump and republish.
 - A second iframe load disables the bridge and replaces the frame with a Retry error. Always re-find the frame after this state change; an already-started request cannot be inferred from DOM state alone.
 - Cold scratch-profile Edge can starve media loads during the first ~60 s (extension sync); let the profile settle before judging thumbnail readyState.
+
+## Testing a plugin API boundary with a real session token
+
+Use this when a check needs a genuine plugin credential. A forged `plu_`/`plr_` token only ever proves
+the 401 path, so it cannot tell "no credential" apart from "valid credential, capability not granted".
+
+The SDK keeps its token in module scope, so it is not on `window` and cannot be read out of the frame.
+Capture the host's `bonobo:init` message instead. The init script has to be installed before the frame
+loads, so add it and then reload:
+
+```js
+await state.page.addInitScript(() => {
+	window.__capturedInit = null;
+	window.addEventListener("message", (event) => {
+		const data = event.data;
+		if (data && typeof data === "object" && data.type === "bonobo:init") {
+			window.__capturedInit = data;
+		}
+	});
+});
+await state.page.reload({ waitUntil: "domcontentloaded" });
+```
+
+Then call the API from inside the frame. The frame is same-origin with `/api/v1/*`, so the request goes
+out without a preflight, exactly as the plugin's own code would send it:
+
+```js
+const frame = state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1);
+const result = await frame.evaluate(async () => {
+	const token = window.__capturedInit.token;
+	const response = await fetch("/api/v1/plugin-data/write", {
+		method: "POST",
+		headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+		body: JSON.stringify({ collection: "probe", key: "probe", value: {} }),
+	});
+	return { status: response.status, body: (await response.text()).slice(0, 140) };
+});
+```
+
+Rules:
+
+- Never print the token, and never write it to a file. Return the status and body only. `token.slice(0, 4)`
+  is enough to confirm you captured a `plu_` and not something else.
+- Always pair a refusal with a positive control in the same frame and the same moment: call a route the
+  installation did consent to and show it returns 200. Without it, a 403 could equally be an expired
+  session or a bad route, and the check proves nothing about the capability gate.
+- Finish by reading the target tables back through `convex data`. "Refused" and "wrote nothing" are two
+  separate claims, and only the readback settles the second one.
+- Observed 2026-08-14 against the Gallery installation, which consents to `workspace.files.read` only:
+  `/api/v1/files/list` returned 200 while all four `/api/v1/plugin-data/*` routes returned 403
+  `Permission denied` for the same token.

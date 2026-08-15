@@ -255,6 +255,8 @@ type AiChatComposerFileMentionList_Props = {
 	command: (attrs: { id: string; label: string }) => void;
 };
 
+// This component is private because the Tiptap extension owns its lifecycle.
+// eslint-disable-next-line react-refresh/only-export-components
 const AiChatComposerFileMentionList = memo(function AiChatComposerFileMentionList(
 	props: AiChatComposerFileMentionList_Props,
 ) {

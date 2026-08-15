@@ -56,6 +56,14 @@ const rate_limiter_CONFIG = {
 		period: MINUTE,
 		capacity: 100,
 	},
+	// Same shape for plugin-document batches: one token per document, charged once before the batch
+	// writes anything. The capacity covers two full 50-document batches back to back.
+	public_api_plugin_data_write_bulk: {
+		kind: "token bucket",
+		rate: 600,
+		period: MINUTE,
+		capacity: 100,
+	},
 	ai_chat_http: STRICT_AI_HTTP,
 	ai_chat_message_write: {
 		kind: "token bucket",
@@ -111,7 +119,8 @@ const rate_limiter_CONFIG = {
 		period: MINUTE,
 		capacity: 8,
 	},
-	// Each fresh plugin artifact review is a system-billed model call; cached artifact hashes bypass this.
+	// Each fresh plugin artifact review is a system-billed model call. A publish whose review subject
+	// already has a stored verdict reuses it and is never charged here.
 	plugins_publish_review: {
 		kind: "token bucket",
 		rate: 20,

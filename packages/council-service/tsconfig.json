@@ -1,0 +1,17 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"lib": ["ES2022", "DOM"],
+		"strict": true,
+		"noEmit": true,
+		"skipLibCheck": true,
+		"allowImportingTsExtensions": true
+	},
+	// Tests run under vitest, which supplies its own types. This project checks the Worker sources the
+	// deploy bundles, so pulling the test files in would only ask it to resolve a dependency the
+	// package does not have.
+	"include": ["src/**/*.ts"],
+	"exclude": ["src/**/*.test.ts"]
+}

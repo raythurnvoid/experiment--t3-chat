@@ -9304,6 +9304,28 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.selectedCount).toBe(1);
 			expect(result.scanTruncated).toBe(false);
 		});
+
+		test("reports a slice window that ended before the match", async () => {
+			// The slice is the caller's own window, so running out of it is not a cap the scanner hit.
+			// It has to be its own reason, because the continuation resumes at a character index rather
+			// than at the next line.
+			const content = `${"x".repeat(files_GREP_MAX_SCAN_BYTES + 10)}needle-end\n`;
+			const result = await match_text_chunks_list(grepTestChunkIterator(grepTestChunks(content)), {
+				...matchMarkdownTestScannerOptions,
+				pattern: "needle",
+				match: { kind: "substring", needle: "needle", ignoreCase: false },
+				window: { kind: "slice", startIndex: 0, maxChars: 64 },
+			});
+
+			expect(result).not.toBeNull();
+			if (!result) throw new Error("expected grep scan result");
+			expect(result.lines).toEqual([]);
+			expect(result.scanTruncated).toBe(true);
+			expect(result.truncatedReason).toBe("slice_window_ended");
+			// The next page starts five characters back from the window end, not at it. "needle" is six
+			// characters, so a match sitting across the edge would be missed by both pages otherwise.
+			expect(result.nextStartIndex).toBe(64 - ("needle".length - 1));
+		});
 	});
 
 	describe("derive_tree_path_for_file_node", () => {

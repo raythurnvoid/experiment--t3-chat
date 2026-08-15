@@ -7,8 +7,9 @@ import { FileText, Search } from "lucide-react";
 import { memo, useState } from "react";
 
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
+import { MyComboboxInputControl } from "@/components/my-combobox.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
-import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
+import { MyInput, MyInputArea, MyInputBackground, MyInputBox } from "@/components/my-input.tsx";
 import { MyModal, MyModalPopover } from "@/components/my-modal.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
@@ -121,15 +122,11 @@ const FilesSearchPalette = memo(function FilesSearchPalette() {
 							<MyInput variant="floating">
 								<MyInputBackground />
 								<MyInputArea>
-									<Ariakit.Combobox
+									<MyComboboxInputControl
 										autoFocus
 										autoSelect
 										aria-label="Search file contents"
 										placeholder="Search file contents…"
-										render={(comboboxProps) => {
-											const { className: comboboxClassName, id: _comboboxId, ...comboboxRest } = comboboxProps;
-											return <MyInputControl className={cn(comboboxClassName)} {...comboboxRest} />;
-										}}
 									/>
 								</MyInputArea>
 								<MyInputBox />

@@ -75,6 +75,7 @@ const gallery_manifest_base = {
 	events: [],
 	capabilities: ["workspace.files.read"],
 	outboundOrigins: [],
+	uiOutboundOrigins: [],
 	files: [
 		{
 			path: "dist/frontend/index.html",
@@ -97,6 +98,7 @@ async function register_gallery_plugin(
 	args: {
 		version?: string;
 		capabilities?: plugins_Capability[];
+		uiOutboundOrigins?: string[];
 		pages?: { id: string; title: string; entry: string; navItem: { label: string; icon: string } | null }[];
 		fileViews?: { id: string; title: string; entry: string; contentTypes: string[] }[];
 	} = {},
@@ -125,6 +127,7 @@ async function register_gallery_plugin(
 		version,
 		description: "Workspace media gallery",
 		reviewStatus: "passed",
+		reviewId: null,
 		artifactHash: `sha256:${version.replaceAll(".", "0").padEnd(64, "c").slice(0, 64)}`,
 		sourceRepositoryUrl: "https://github.com/bonobo/gallery-plugin",
 		sourceOwner: "bonobo",
@@ -145,6 +148,7 @@ async function register_gallery_plugin(
 		fileViews: args.fileViews ?? [],
 		capabilities: args.capabilities ?? ["workspace.files.read"],
 		outboundOrigins: [],
+		uiOutboundOrigins: args.uiOutboundOrigins ?? [],
 		files: [
 			{
 				path: "dist/frontend/index.html",
@@ -174,12 +178,14 @@ async function install_gallery_plugin(
 	t: ReturnType<typeof test_convex>,
 	args: {
 		capabilities?: plugins_Capability[];
+		uiOutboundOrigins?: string[];
 		fileViews?: { id: string; title: string; entry: string; contentTypes: string[] }[];
 	} = {},
 ) {
 	const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const registered = await register_gallery_plugin(t, membership.userId, {
 		capabilities: args.capabilities,
+		uiOutboundOrigins: args.uiOutboundOrigins,
 		fileViews: args.fileViews,
 	});
 	const asOwner = t.withIdentity(user_identity(membership.userId));
@@ -188,6 +194,7 @@ async function install_gallery_plugin(
 		pluginVersionId: registered.pluginVersionId,
 		acceptedCapabilities: args.capabilities ?? ["workspace.files.read"],
 		acceptedOutboundOrigins: [],
+		acceptedUiOutboundOrigins: args.uiOutboundOrigins ?? [],
 	});
 	if (installed._nay) {
 		throw new Error(installed._nay.message);
@@ -629,6 +636,7 @@ describe("plugin ui sessions", () => {
 			pluginVersionId: registered.pluginVersionId,
 			acceptedCapabilities: ["workspace.files.read"],
 			acceptedOutboundOrigins: [],
+			acceptedUiOutboundOrigins: [],
 		});
 		expect(installed._nay).toBeUndefined();
 
@@ -753,6 +761,7 @@ describe("plugin ui sessions", () => {
 				acceptedCapabilities: ["workspace.files.read"],
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],
+				acceptedUiOutboundOrigins: [],
 				outboundOriginsAcceptedAt: now,
 				installedBy: fixture.membership.userId,
 				updatedBy: fixture.membership.userId,
@@ -1607,6 +1616,44 @@ describe("plugin ui assets", () => {
 		expect(csp).toContain("connect-src 'self'");
 		expect(csp).toContain("frame-ancestors https://app.test");
 		expect(await response.text()).toBe("<!doctype html><title>Gallery</title>");
+	});
+
+	test("lets the page reach only the origins its own version declared", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, {
+			capabilities: ["workspace.files.read", "ui.outbound.fetch"],
+			uiOutboundOrigins: ["https://council.example.com"],
+		});
+		r2Objects.set("plugins/gallery/0.1.0/dist/frontend/index.html", "<!doctype html><title>Gallery</title>");
+
+		const response = await t.fetch(`/plugins-ui/${fixture.pluginVersionId}/dist/frontend/index.html`, {
+			method: "GET",
+		});
+		expect(response.status).toBe(200);
+		const csp = response.headers.get("Content-Security-Policy");
+		// The declared origin is added to the same host origin the SDK already needs; it does not replace it.
+		expect(csp).toContain("connect-src 'self' https://council.example.com;");
+		expect(csp).not.toContain("connect-src 'self';");
+	});
+
+	test("keeps another plugin's declared origins out of this page's policy", async () => {
+		const t = test_convex();
+		// Two versions in one deployment. The policy must come from the version being served, not from
+		// whatever any installed plugin declared, or one plugin would widen every other plugin's page.
+		const talker = await install_gallery_plugin(t, {
+			capabilities: ["workspace.files.read", "ui.outbound.fetch"],
+			uiOutboundOrigins: ["https://council.example.com"],
+		});
+		const quiet = await register_gallery_plugin(t, talker.membership.userId, { version: "0.2.0" });
+		r2Objects.set("plugins/gallery/0.2.0/dist/frontend/index.html", "<!doctype html><title>Gallery</title>");
+
+		const response = await t.fetch(`/plugins-ui/${quiet.pluginVersionId}/dist/frontend/index.html`, {
+			method: "GET",
+		});
+		expect(response.status).toBe(200);
+		const csp = response.headers.get("Content-Security-Policy");
+		expect(csp).toContain("connect-src 'self';");
+		expect(csp).not.toContain("council.example.com");
 	});
 
 	test("attaches CSP to non-html assets too, so no served document escapes the policy", async () => {

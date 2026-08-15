@@ -5,10 +5,13 @@ import { allowed_origins } from "../server/server-utils.ts";
 import { ai_chat_http_routes } from "./ai_chat_http_routes.ts";
 import { billing_http_routes } from "./billing_http_routes.ts";
 import { files_nodes_ai_http_routes } from "./files_nodes_ai_http_routes.ts";
+import { plugins_data_http_routes } from "./plugins_data_http_routes.ts";
 import { plugins_runtime_http_routes } from "./plugins_runtime_http_routes.ts";
+import { plugins_service_http_routes } from "./plugins_service_http_routes.ts";
 import { plugins_ui_http_routes } from "./plugins_ui_http_routes.ts";
 import { public_api_files_list_http_routes } from "./public_api_files_list_http.ts";
 import { public_api_http_routes } from "./public_api_http_routes.ts";
+import { public_api_service_uploads_http_routes } from "./public_api_service_uploads_http_routes.ts";
 import { r2_http_routes } from "./r2_http_routes.ts";
 import { users_http_routes } from "./users_http_routes.ts";
 
@@ -30,8 +33,11 @@ files_nodes_ai_http_routes(appCors);
 // File listing stays static because it is small and is the hot plugin read path.
 public_api_files_list_http_routes(appCors);
 public_api_http_routes(appCors);
+public_api_service_uploads_http_routes(appCors);
+plugins_data_http_routes(appCors);
 r2_http_routes(appCors);
 plugins_runtime_http_routes(appCors);
+plugins_service_http_routes(appCors);
 plugins_ui_http_routes(http);
 billing_http_routes(http);
 

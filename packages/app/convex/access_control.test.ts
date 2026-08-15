@@ -187,6 +187,7 @@ async function access_control_test_seed_activity(
 			version: "1.0.0",
 			description: "",
 			reviewStatus: "passed",
+			reviewId: null,
 			isLatest: true,
 			artifactHash: "hash",
 			sourceRepositoryUrl: "https://github.test/acme/media",
@@ -201,6 +202,7 @@ async function access_control_test_seed_activity(
 			fileViews: [],
 			capabilities: [],
 			outboundOrigins: [],
+			uiOutboundOrigins: [],
 			files: [],
 			sourceStatus: "ready",
 			sourceLastError: null,
@@ -217,6 +219,7 @@ async function access_control_test_seed_activity(
 			acceptedCapabilities: [],
 			capabilitiesAcceptedAt: now,
 			acceptedOutboundOrigins: [],
+			acceptedUiOutboundOrigins: [],
 			outboundOriginsAcceptedAt: now,
 			installedBy: fixture.ownerId,
 			updatedBy: fixture.ownerId,
@@ -4577,14 +4580,11 @@ describe("file sharing", () => {
 		expect(sharedWithInviter._nay).toBeUndefined();
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-		const invitedAfterShare = await fixture.asMember.mutation(
-			api.organizations.invite_user_to_organization_workspace,
-			{
-				organizationId: fixture.organizationId,
-				workspaceId: sideWorkspaceId,
-				userIdToAdd: newcomerId,
-			},
-		);
+		const invitedAfterShare = await fixture.asMember.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: fixture.organizationId,
+			workspaceId: sideWorkspaceId,
+			userIdToAdd: newcomerId,
+		});
 		expect(invitedAfterShare._nay).toBeUndefined();
 	});
 
@@ -4730,14 +4730,11 @@ describe("file sharing", () => {
 		expect(sharedWithInviter._nay).toBeUndefined();
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-		const invitedAfterShare = await fixture.asMember.mutation(
-			api.organizations.invite_user_to_organization_workspace,
-			{
-				organizationId: fixture.organizationId,
-				workspaceId: sideWorkspaceId,
-				userIdToAdd: bobId,
-			},
-		);
+		const invitedAfterShare = await fixture.asMember.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: fixture.organizationId,
+			workspaceId: sideWorkspaceId,
+			userIdToAdd: bobId,
+		});
 		expect(invitedAfterShare._nay).toBeUndefined();
 	});
 
@@ -4894,14 +4891,11 @@ describe("file sharing", () => {
 		// Positive control: the same share still refuses an invite that does join that workspace.
 		// Without this the test would pass against a ceiling that had stopped refusing anything.
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-		const invitedIntoSide = await fixture.asMember.mutation(
-			api.organizations.invite_user_to_organization_workspace,
-			{
-				organizationId: fixture.organizationId,
-				workspaceId: sideWorkspaceId,
-				userIdToAdd: bobId,
-			},
-		);
+		const invitedIntoSide = await fixture.asMember.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: fixture.organizationId,
+			workspaceId: sideWorkspaceId,
+			userIdToAdd: bobId,
+		});
 		expect(invitedIntoSide._nay?.message).toContain("shared on a file");
 	});
 
@@ -5767,18 +5761,24 @@ describe("file sharing", () => {
 		}
 		const operationBatchId = batch._yay.operationBatchId;
 
-		const sealedByRole = new Map<"base" | "staged" | "unstaged", { stateId: Id<"files_pending_update_yjs_states">; digest: string }>();
+		const sealedByRole = new Map<
+			"base" | "staged" | "unstaged",
+			{ stateId: Id<"files_pending_update_yjs_states">; digest: string }
+		>();
 		for (const role of ["base", "staged", "unstaged"] as const) {
-			const staged = await args.t.mutation(internal.files_pending_updates.stage_file_pending_update_state_page_internal, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: args.userId,
-				operationBatchId,
-				phase: "output",
-				role,
-				pageIndex: 0,
-				bytes: args.stateUpdate,
-			});
+			const staged = await args.t.mutation(
+				internal.files_pending_updates.stage_file_pending_update_state_page_internal,
+				{
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					operationBatchId,
+					phase: "output",
+					role,
+					pageIndex: 0,
+					bytes: args.stateUpdate,
+				},
+			);
 			if (staged._nay) {
 				throw new Error(staged._nay.message);
 			}
@@ -5994,14 +5994,11 @@ describe("file sharing", () => {
 		const afterDiscard = await t.run((ctx) => ctx.db.get("files_pending_updates", draftId));
 		expect(afterDiscard?.pendingMove).toBeUndefined();
 
-		const contentDiscarded = await fixture.asMember.mutation(
-			api.files_pending_updates.discard_file_pending_content,
-			{
-				membershipId: fixture.memberMembershipId,
-				nodeId,
-				pendingUpdateId: draftId,
-			},
-		);
+		const contentDiscarded = await fixture.asMember.mutation(api.files_pending_updates.discard_file_pending_content, {
+			membershipId: fixture.memberMembershipId,
+			nodeId,
+			pendingUpdateId: draftId,
+		});
 		expect(contentDiscarded._nay).toBeUndefined();
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", draftId))).toBeNull();
 	});

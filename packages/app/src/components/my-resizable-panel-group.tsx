@@ -1,8 +1,8 @@
 import "./my-resizable-panel-group.css";
 
 import { GripHorizontal, GripVertical } from "lucide-react";
-import { createContext, memo, useContext, useRef, type ComponentPropsWithRef, type ComponentRef } from "react";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { createContext, memo, useContext, useRef, type ComponentPropsWithRef } from "react";
+import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelGroupHandle } from "react-resizable-panels";
 import type { ExtractStrict } from "type-fest";
 
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -30,7 +30,7 @@ export type MyPanelGroup_Props = Omit<
 
 export const MyPanelGroup = memo(function MyPanelGroup(props: MyPanelGroup_Props) {
 	const { className, defaultLayout, onLayoutReset, ...rest } = props;
-	const panelGroupRef = useRef<ComponentRef<typeof PanelGroup> | null>(null);
+	const panelGroupRef = useRef<ImperativePanelGroupHandle | null>(null);
 
 	const handleResetToDefaultLayout = useFn(() => {
 		if (!defaultLayout) {

@@ -83,6 +83,8 @@ const API_KEY_SCOPE_LABELS = {
 	"files:read": "Read file content",
 	"files:download": "Download files",
 	"files:write": "Write files",
+	"plugin_data:read": "Read plugin data",
+	"plugin_data:write": "Write plugin data",
 } as const satisfies Record<RouteApiKeys_Scope, string>;
 
 // Create-modal row order: read scopes first, then the opt-in download and write scopes.
@@ -91,14 +93,22 @@ const API_KEY_SCOPE_ROWS = [
 	{ scope: "files:read", description: "Read the committed content of editable text files by path." },
 	{ scope: "files:download", description: "Get temporary download links for files." },
 	{ scope: "files:write", description: "Create and update Markdown files by path, and upload other files." },
+	{ scope: "plugin_data:read", description: "Read the documents an installed plugin stores in this workspace." },
+	{ scope: "plugin_data:write", description: "Create, change, and delete those plugin documents." },
 ] as const satisfies ReadonlyArray<{ scope: RouteApiKeys_Scope; description: string }>;
 
-// Read scopes start checked; download and write stay opt-in.
+// Every scope that lets a key change stored data. They share one warning under the checkbox list.
+const API_KEY_WRITE_SCOPES: readonly RouteApiKeys_Scope[] = ["files:write", "plugin_data:write"];
+
+// Read scopes start checked; download and write stay opt-in. Plugin data stays opt-in too: most keys
+// never touch it, and a plugin's stored documents can hold whatever that plugin collected.
 const API_KEY_SCOPE_DEFAULTS = {
 	"files:list": true,
 	"files:read": true,
 	"files:download": false,
 	"files:write": false,
+	"plugin_data:read": false,
+	"plugin_data:write": false,
 } as const satisfies Record<RouteApiKeys_Scope, boolean>;
 
 type RouteApiKeys_CredentialListResult = app_convex_FunctionReturnType<
@@ -132,29 +142,40 @@ function validate_api_key_name(name: string) {
 	return undefined;
 }
 
+/**
+ * Test a key through the route that asks for no scope.
+ *
+ * Testing through a real route, such as listing files, only proves the key holds that one scope. A
+ * key made only for plugin documents would then look broken. This route answers with the scopes the
+ * key still has, so the message can name them.
+ */
 async function verify_api_key(credential: string) {
 	try {
-		const response = await fetch(app_fetch_main_api_url("/api/v1/files/list"), {
+		const response = await fetch(app_fetch_main_api_url("/api/v1/auth/verify"), {
 			method: "POST",
 			credentials: "omit",
 			headers: {
 				Authorization: `Bearer ${credential}`,
-				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({ path: "/", limit: 1 }),
 		});
 
 		if (response.status === 200) {
-			return { status: "success", message: "Key verified. It can list files in this workspace." } as const;
+			const body: unknown = await response.json();
+			const scopes =
+				body && typeof body === "object" && "scopes" in body && Array.isArray(body.scopes)
+					? body.scopes.filter((scope): scope is string => typeof scope === "string")
+					: [];
+			if (scopes.length === 0) {
+				return {
+					status: "error",
+					message: "The key is valid, but your current permissions allow none of its scopes.",
+				} as const;
+			}
+
+			return { status: "success", message: `Key verified. It can use: ${scopes.join(", ")}.` } as const;
 		}
 		if (response.status === 401) {
 			return { status: "error", message: "This key is invalid or revoked." } as const;
-		}
-		if (response.status === 403) {
-			return {
-				status: "error",
-				message: "The key is valid, but it cannot list files with its current permissions.",
-			} as const;
 		}
 		if (response.status === 429) {
 			return { status: "error", message: "Too many attempts. Try again shortly." } as const;
@@ -566,6 +587,7 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 	const helperId = `${modalId}-helper`;
 	const writeWarningId = `${modalId}-write-warning`;
 	const hasSelectedScope = API_KEY_SCOPE_ROWS.some((row) => scopes[row.scope]);
+	const hasWriteScope = API_KEY_WRITE_SCOPES.some((scope) => scopes[scope]);
 
 	return (
 		<MyModal open={open} setOpen={onOpenChange}>
@@ -639,7 +661,7 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 												checked={scopes[row.scope]}
 												disabled={pending}
 												aria-describedby={
-													row.scope === "files:write" && scopes["files:write"] ? writeWarningId : undefined
+													API_KEY_WRITE_SCOPES.includes(row.scope) && scopes[row.scope] ? writeWarningId : undefined
 												}
 												onCheckedChange={(checked) => onScopeChange(row.scope, checked)}
 											>
@@ -667,13 +689,14 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 										</li>
 									))}
 								</ul>
-								{scopes["files:write"] ? (
+								{hasWriteScope ? (
 									<p
 										id={writeWarningId}
 										className={"RouteApiKeysCreateModal-writeWarning" satisfies RouteApiKeysCreateModal_ClassNames}
 									>
 										<AlertTriangle aria-hidden />
-										A write key can create and replace files everywhere you can write. Treat it like a password.
+										A write key can create and replace files and plugin documents everywhere you can write. Treat it
+										like a password.
 									</p>
 								) : null}
 							</fieldset>

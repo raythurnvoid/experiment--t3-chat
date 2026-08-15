@@ -172,3 +172,6 @@
 [submodule "references-submodules/ai-elements"]
 	path = references-submodules/ai-elements
 	url = https://github.com/vercel/ai-elements.git
+[submodule "plugins/bonobo-plugin-council"]
+	path = plugins/bonobo-plugin-council
+	url = https://github.com/raythurnvoid/bonobo-plugin-council.git

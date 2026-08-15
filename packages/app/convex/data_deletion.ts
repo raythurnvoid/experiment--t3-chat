@@ -1,6 +1,5 @@
 import { v } from "convex/values";
 import { Workpool } from "@convex-dev/workpool";
-import { R2 } from "@convex-dev/r2";
 import type { RegisteredMutation } from "convex/server";
 import { components, internal } from "./_generated/api.js";
 import {
@@ -20,46 +19,17 @@ import {
 } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
+import { plugins_data_db_drain_batch } from "./plugins_data.ts";
+import { plugins_db_delete_anonymized_review_if_unlinked } from "./plugins.ts";
 import { files_nodes_db_hard_delete_node, files_nodes_db_is_eager_node_safe_to_hard_delete } from "./files_nodes.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
-import {
-	r2_PUT_MAY_ARRIVE_MARGIN_MS,
-	r2_create_asset_key,
-	r2_enqueue_object_deletion_job,
-} from "./r2_client.ts";
+import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_client.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
 const WORKSPACE_CONTENT_PURGE_BATCH_SIZE = 100;
-
-const R2_BUCKET_FILES = process.env.R2_BUCKET_FILES;
-if (!R2_BUCKET_FILES) {
-	throw new Error("R2_BUCKET_FILES is not set in Convex env");
-}
-
-const R2_ENDPOINT = process.env.R2_ENDPOINT;
-if (!R2_ENDPOINT) {
-	throw new Error("R2_ENDPOINT is not set in Convex env");
-}
-
-const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
-if (!R2_ACCESS_KEY_ID) {
-	throw new Error("R2_ACCESS_KEY_ID is not set in Convex env");
-}
-
-const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
-if (!R2_SECRET_ACCESS_KEY) {
-	throw new Error("R2_SECRET_ACCESS_KEY is not set in Convex env");
-}
-
-const r2 = new R2(components.r2, {
-	bucket: R2_BUCKET_FILES,
-	endpoint: R2_ENDPOINT,
-	accessKeyId: R2_ACCESS_KEY_ID,
-	secretAccessKey: R2_SECRET_ACCESS_KEY,
-});
 
 /**
  * Workpool handle for file content-materialization jobs.
@@ -521,6 +491,19 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: pluginSecrets.length };
 	}
 
+	// Stored plugin documents, their reservations, tombstones, accounting docs, and service grants.
+	// One pass covers every installation in the workspace, and it runs before the installations
+	// below so no row is left pointing at an installation that is already gone.
+	const pluginData = await plugins_data_db_drain_batch(ctx, {
+		organizationId,
+		workspaceId,
+		installationId: null,
+		batchSize,
+	});
+	if (!pluginData.done) {
+		return { done: false, deletedCount: pluginData.deletedCount };
+	}
+
 	const pluginInstallation = await ctx.db
 		.query("plugins_workspace_installations")
 		.withIndex("by_organization_workspace_pluginName", (q) =>
@@ -709,9 +692,7 @@ async function db_purge_organization_workspace_content_batch(
 						// An old upload URL writes directly to this key. Keep the deletion job until the URL
 						// expires because the URL can create the object again.
 						putMayArriveUntil:
-							asset.kind === "upload" && asset.uploadStagingR2Key === undefined
-								? uploadPutMayArriveUntil
-								: undefined,
+							asset.kind === "upload" && asset.uploadStagingR2Key === undefined ? uploadPutMayArriveUntil : undefined,
 					}),
 				];
 				if (asset.uploadStagingR2Key !== undefined && asset.uploadStagingR2Key !== liveR2Key) {
@@ -728,25 +709,8 @@ async function db_purge_organization_workspace_content_batch(
 				return jobs;
 			}),
 		);
-		// The jobs retry until R2 confirms deletion. Also start the old delete helper now so most
-		// objects are removed without waiting for the scheduled job.
-		await Promise.all(
-			assets.flatMap((asset) => {
-				const liveR2Key =
-					asset.r2Key ??
-					r2_create_asset_key({
-						organizationId,
-						workspaceId,
-						assetId: asset._id,
-					});
-				return [
-					r2.deleteObject(ctx, liveR2Key),
-					...(asset.uploadStagingR2Key !== undefined && asset.uploadStagingR2Key !== liveR2Key
-						? [r2.deleteObject(ctx, asset.uploadStagingR2Key)]
-						: []),
-				];
-			}),
-		);
+		// The exact-key jobs are the durable handoff. Their scheduled action retries R2 after this
+		// mutation commits, so an R2 outage never rolls the tenant purge back.
 		await Promise.all(assets.map((doc) => ctx.db.delete("files_r2_assets", doc._id)));
 		return { done: false, deletedCount: assets.length };
 	}
@@ -1231,7 +1195,14 @@ async function db_drain_user_plugin_publisher_docs_batch(
 		.withIndex("by_ownerUser_repositoryUrl", (q) => q.eq("ownerUserId", args.userId))
 		.take(args.batchSize);
 	if (repositories.length > 0) {
-		await Promise.all(repositories.map((doc) => ctx.db.delete("plugins_publisher_repositories", doc._id)));
+		await Promise.all(
+			repositories.map(async (doc) => {
+				await ctx.db.delete("plugins_publisher_repositories", doc._id);
+				if (doc.lastPublishAttempt?.reviewId) {
+					await plugins_db_delete_anonymized_review_if_unlinked(ctx, doc.lastPublishAttempt.reviewId);
+				}
+			}),
+		);
 		return repositories.length;
 	}
 
@@ -1239,7 +1210,26 @@ async function db_drain_user_plugin_publisher_docs_batch(
 		.query("plugins_version_reviews")
 		.withIndex("by_createdBy_pluginName", (q) => q.eq("createdBy", args.userId))
 		.take(args.batchSize);
-	await Promise.all(reviews.map((doc) => ctx.db.delete("plugins_version_reviews", doc._id)));
+	await Promise.all(
+		reviews.map(async (review) => {
+			const [linkedVersion, linkedAttempt] = await Promise.all([
+				ctx.db
+					.query("plugins_versions")
+					.withIndex("by_reviewId", (q) => q.eq("reviewId", review._id))
+					.first(),
+				ctx.db
+					.query("plugins_publisher_repositories")
+					.withIndex("by_lastPublishAttempt_reviewId", (q) => q.eq("lastPublishAttempt.reviewId", review._id))
+					.first(),
+			]);
+			// Keep the immutable decision while a global version or another publisher's attempt points at it.
+			if (linkedVersion || linkedAttempt) {
+				await ctx.db.patch("plugins_version_reviews", review._id, { createdBy: null });
+				return;
+			}
+			await ctx.db.delete("plugins_version_reviews", review._id);
+		}),
+	);
 	return reviews.length;
 }
 
@@ -1445,9 +1435,7 @@ async function db_finalize_deleted_user(
 			.query("files_pending_update_operation_batches")
 			.withIndex("by_user", (q) => q.eq("userId", userIdString))
 			.collect()
-			.then((docs) =>
-				Promise.all(docs.map((doc) => ctx.db.delete("files_pending_update_operation_batches", doc._id))),
-			),
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("files_pending_update_operation_batches", doc._id)))),
 		ctx.db
 			.query("files_yjs_trusted_update_stages")
 			.withIndex("by_user", (q) => q.eq("userId", user._id))
@@ -2320,9 +2308,7 @@ export const hard_delete_user_data = internalMutation({
 			// pointer left, so force that content purge during the immediate admin reset.
 			const queuedWorkspaceRequest = await ctx.db
 				.query("data_deletion_requests")
-				.withIndex("by_organization_scope", (q) =>
-					q.eq("organizationId", organization._id).eq("scope", "workspace"),
-				)
+				.withIndex("by_organization_scope", (q) => q.eq("organizationId", organization._id).eq("scope", "workspace"))
 				.first();
 			if (queuedWorkspaceRequest?.workspaceId) {
 				const queuedWorkspacePurge = await db_purge_organization_workspace_content_batch(ctx, {

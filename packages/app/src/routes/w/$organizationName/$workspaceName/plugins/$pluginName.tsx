@@ -722,8 +722,7 @@ type RoutePluginsPluginSecrets_Props = {
 };
 
 const RoutePluginsPluginSecrets = memo(function RoutePluginsPluginSecrets(props: RoutePluginsPluginSecrets_Props) {
-	const { membershipId, installationId, installationCanAdd, publisherRepositoryId, managing, onManagingChange } =
-		props;
+	const { membershipId, installationId, installationCanAdd, publisherRepositoryId, managing, onManagingChange } = props;
 	// A non-publisher install without plugin.secrets.read only needs this section while leftover
 	// secrets from a previous version remain deletable, so peek at the list in that rare case.
 	// `managing` keeps the section (and the modal mounted inside it) alive while the user deletes
@@ -1293,6 +1292,34 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 				)}
 			</section>
 
+			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
+				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
+					Page network access
+				</h3>
+				{plugin.uiOutboundOrigins.length === 0 ? (
+					<div className={"RoutePluginsPluginAccess-empty" satisfies RoutePluginsPluginAccess_ClassNames}>
+						No page outbound origins.
+					</div>
+				) : (
+					<>
+						<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+							{plugin.uiOutboundOrigins.map((origin) => (
+								<li
+									key={origin}
+									className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+								>
+									{origin}
+								</li>
+							))}
+						</ul>
+						<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
+							The plugin page runs in a member's browser and may call these origins directly. This is a separate risk
+							from backend network access: the page holds that member's session token.
+						</p>
+					</>
+				)}
+			</section>
+
 			{activeEvents ? (
 				<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
 					<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
@@ -1352,6 +1379,9 @@ function review_badge_variant(status: "passed" | "rejected" | "flagged" | "pendi
 type RoutePluginsPluginPublisherReleases_ClassNames =
 	| "RoutePluginsPluginPublisherReleases"
 	| "RoutePluginsPluginPublisherReleases-title"
+	| "RoutePluginsPluginPublisherReleases-lastAttempt"
+	| "RoutePluginsPluginPublisherReleases-lastAttemptMessage"
+	| "RoutePluginsPluginPublisherReleases-limitNotice"
 	| "RoutePluginsPluginPublisherReleases-empty"
 	| "RoutePluginsPluginPublisherReleases-list"
 	| "RoutePluginsPluginPublisherReleaseItem"
@@ -1359,18 +1389,22 @@ type RoutePluginsPluginPublisherReleases_ClassNames =
 	| "RoutePluginsPluginPublisherReleaseItem-name"
 	| "RoutePluginsPluginPublisherReleaseItem-meta"
 	| "RoutePluginsPluginPublisherReleaseItem-findings"
+	| "RoutePluginsPluginPublisherReleaseItem-advisory-title"
+	| "RoutePluginsPluginPublisherReleaseItem-advisory"
 	| "RoutePluginsPluginPublisherReleaseItem-note";
 
 type RoutePluginsPluginPublisherReleases_Props = {
 	versions: RoutePlugins_PublisherPlugin["versions"];
 	reviews: RoutePlugins_PublisherPlugin["reviews"];
+	lastPublishAttempt: RoutePlugins_PublisherPlugin["repository"]["lastPublishAttempt"];
+	historyIsTruncated: RoutePlugins_PublisherPlugin["historyIsTruncated"];
 };
 
 const RoutePluginsPluginPublisherReleases = memo(function RoutePluginsPluginPublisherReleases(
 	props: RoutePluginsPluginPublisherReleases_Props,
 ) {
-	const { versions, reviews } = props;
-	const reviewsByArtifactHash = new Map(reviews.map((review) => [review.artifactHash, review]));
+	const { versions, reviews, lastPublishAttempt, historyIsTruncated } = props;
+	const reviewsById = new Map(reviews.map((review) => [review._id, review]));
 	const releases: Array<{
 		artifactHash: string;
 		name: string;
@@ -1380,20 +1414,20 @@ const RoutePluginsPluginPublisherReleases = memo(function RoutePluginsPluginPubl
 		reviewStatus: "passed" | "rejected" | "flagged" | "pending";
 		review: RoutePlugins_PublisherPlugin["reviews"][number] | null;
 	}> = versions.map((version) => {
-		const review = reviewsByArtifactHash.get(version.artifactHash) ?? null;
+		const review = version.reviewId ? (reviewsById.get(version.reviewId) ?? null) : null;
 		return {
 			artifactHash: version.artifactHash,
 			name: version.name,
 			version: version.version,
 			sourceCommitSha: version.sourceCommitSha,
-			publishedAt: version._creationTime,
+			publishedAt: version.updatedAt,
 			reviewStatus: review?.status ?? version.reviewStatus,
 			review,
 		};
 	});
-	const publishedArtifactHashes = new Set(versions.map((version) => version.artifactHash));
+	const publishedReviewIds = new Set(versions.flatMap((version) => (version.reviewId ? [version.reviewId] : [])));
 	for (const review of reviews) {
-		if (!publishedArtifactHashes.has(review.artifactHash)) {
+		if (!publishedReviewIds.has(review._id)) {
 			releases.push({
 				artifactHash: review.artifactHash,
 				name: review.pluginName,
@@ -1416,8 +1450,35 @@ const RoutePluginsPluginPublisherReleases = memo(function RoutePluginsPluginPubl
 				className={"RoutePluginsPluginPublisherReleases-title" satisfies RoutePluginsPluginPublisherReleases_ClassNames}
 			>
 				<History aria-hidden />
-				Release history
+				Recent release history
 			</h2>
+			{historyIsTruncated ? (
+				<div
+					className={
+						"RoutePluginsPluginPublisherReleases-limitNotice" satisfies RoutePluginsPluginPublisherReleases_ClassNames
+					}
+				>
+					Older published versions or review attempts are not shown.
+				</div>
+			) : null}
+			{lastPublishAttempt && lastPublishAttempt.status !== "succeeded" ? (
+				<div
+					className={
+						"RoutePluginsPluginPublisherReleases-lastAttempt" satisfies RoutePluginsPluginPublisherReleases_ClassNames
+					}
+				>
+					<MyBadge variant={lastPublishAttempt.status === "flagged" ? "outline" : "destructive"}>
+						{lastPublishAttempt.status}
+					</MyBadge>
+					<span
+						className={
+							"RoutePluginsPluginPublisherReleases-lastAttemptMessage" satisfies RoutePluginsPluginPublisherReleases_ClassNames
+						}
+					>
+						Last publish {format_datetime(lastPublishAttempt.at)} · {lastPublishAttempt.message}
+					</span>
+				</div>
+			) : null}
 			{releases.length === 0 ? (
 				<div
 					className={
@@ -1433,7 +1494,10 @@ const RoutePluginsPluginPublisherReleases = memo(function RoutePluginsPluginPubl
 					}
 				>
 					{releases.map((release) => {
+						// Only these blocked the version. Advisory findings render in their own labeled list
+						// below, so a publisher never reads a shape warning as the reason for a reject.
 						const findings = release.review ? [...release.review.mechanicalFindings, ...release.review.aiFindings] : [];
+						const advisoryFindings = release.review?.mechanicalAdvisoryFindings ?? [];
 						return (
 							<div
 								key={release.artifactHash}
@@ -1483,13 +1547,33 @@ const RoutePluginsPluginPublisherReleases = memo(function RoutePluginsPluginPubl
 										))}
 									</ul>
 								)}
+								{advisoryFindings.length === 0 ? null : (
+									<>
+										<div
+											className={
+												"RoutePluginsPluginPublisherReleaseItem-advisory-title" satisfies RoutePluginsPluginPublisherReleases_ClassNames
+											}
+										>
+											Advisory — did not block this version
+										</div>
+										<ul
+											className={
+												"RoutePluginsPluginPublisherReleaseItem-advisory" satisfies RoutePluginsPluginPublisherReleases_ClassNames
+											}
+										>
+											{advisoryFindings.map((finding, index) => (
+												<li key={index}>{finding}</li>
+											))}
+										</ul>
+									</>
+								)}
 								{release.reviewStatus === "flagged" ? (
 									<div
 										className={
 											"RoutePluginsPluginPublisherReleaseItem-note" satisfies RoutePluginsPluginPublisherReleases_ClassNames
 										}
 									>
-										Installs of this version are blocked until the verdict is cleared.
+										This version was not published. Change the reviewed content and publish again.
 									</div>
 								) : null}
 							</div>
@@ -1565,6 +1649,7 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 		reviewStatus: version.reviewStatus,
 		capabilities: version.capabilities,
 		outboundOrigins: version.outboundOrigins,
+		uiOutboundOrigins: version.uiOutboundOrigins,
 		pages: version.pages,
 		fileViews: version.fileViews,
 	};
@@ -1686,6 +1771,7 @@ function RoutePluginsPlugin() {
 				pluginVersionId: plugin.pluginVersionId,
 				acceptedCapabilities: plugin.capabilities,
 				acceptedOutboundOrigins: plugin.outboundOrigins,
+				acceptedUiOutboundOrigins: plugin.uiOutboundOrigins,
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -1779,9 +1865,17 @@ function RoutePluginsPlugin() {
 	const installedVersion = installedItem?.version;
 	const consentDiff = plugins_consent_diff({
 		current: installedVersion
-			? { capabilities: installedVersion.capabilities, outboundOrigins: installedVersion.outboundOrigins }
+			? {
+					capabilities: installedVersion.capabilities,
+					outboundOrigins: installedVersion.outboundOrigins,
+					uiOutboundOrigins: installedVersion.uiOutboundOrigins,
+				}
 			: null,
-		target: { capabilities: plugin.capabilities, outboundOrigins: plugin.outboundOrigins },
+		target: {
+			capabilities: plugin.capabilities,
+			outboundOrigins: plugin.outboundOrigins,
+			uiOutboundOrigins: plugin.uiOutboundOrigins,
+		},
 	});
 	// Installed-and-current shows only Uninstall; reinstalling means uninstalling and installing again.
 	const installAction = installedVersion ? "Update" : "Install";
@@ -1793,6 +1887,18 @@ function RoutePluginsPlugin() {
 	const secretsInstallationId = installedItem ? installedItem.installation._id : null;
 	const secretsCanAdd = installedVersion?.capabilities.includes("plugin.secrets.read") ?? false;
 	const pluginConfiguration = installedVersion?.configuration ?? null;
+	// Access describes what the installed version can do. The marketplace listing can be a newer
+	// version the member has not accepted yet.
+	const accessPlugin = installedVersion
+		? {
+				...plugin,
+				capabilities: installedVersion.capabilities,
+				outboundOrigins: installedVersion.outboundOrigins,
+				uiOutboundOrigins: installedVersion.uiOutboundOrigins,
+				pages: installedVersion.pages,
+				fileViews: installedVersion.fileViews,
+			}
+		: plugin;
 
 	return (
 		<main
@@ -1939,14 +2045,19 @@ function RoutePluginsPlugin() {
 					/>
 				) : null}
 				<RoutePluginsPluginAccess
-					plugin={plugin}
+					plugin={accessPlugin}
 					handlers={installedItem?.handlers ?? null}
 					configurationYaml={installedItem?.installation.configurationYaml ?? null}
 					events={installedItem?.version.events ?? null}
 				/>
 
 				{publisherPlugin ? (
-					<RoutePluginsPluginPublisherReleases versions={publisherPlugin.versions} reviews={publisherPlugin.reviews} />
+					<RoutePluginsPluginPublisherReleases
+						versions={publisherPlugin.versions}
+						reviews={publisherPlugin.reviews}
+						lastPublishAttempt={publisherPlugin.repository.lastPublishAttempt}
+						historyIsTruncated={publisherPlugin.historyIsTruncated}
+					/>
 				) : null}
 				{installedItem ? (
 					<RoutePluginsInstalledRuns membershipId={membershipId} installationId={installedItem.installation._id} />
@@ -1984,6 +2095,14 @@ function RoutePluginsPlugin() {
 								</li>
 							))}
 						</ul>
+						{/* Every other capability is used by code the app runs. This one hands a token to a
+						    server outside the app, which then keeps working when nobody has the page open. */}
+						{plugin.capabilities.includes("plugin.service.connect") ? (
+							<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
+								This plugin's page can pass its access to the publisher's own server. That server can keep using the
+								capabilities above while nobody is using the plugin. Uninstalling stops it.
+							</p>
+						) : null}
 						{plugin.pages.length > 0 ? (
 							<>
 								{/* One-line explanation doubles as the section title, like the other consent sections. */}
@@ -2031,6 +2150,29 @@ function RoutePluginsPlugin() {
 							</ul>
 						)}
 
+						{/* Page egress is consented separately from backend egress: the page runs with a member's
+						    session token, so whatever it may reach is reachable by anything running inside it. */}
+						{plugin.uiOutboundOrigins.length > 0 ? (
+							<>
+								<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
+									This plugin's pages can call these origins from your browser
+								</div>
+								<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
+									{plugin.uiOutboundOrigins.map((origin) => (
+										<li
+											key={origin}
+											className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
+										>
+											{origin}
+											{installedVersion && consentDiff.newUiOutboundOrigins.includes(origin) ? (
+												<MyBadge variant="secondary">new</MyBadge>
+											) : null}
+										</li>
+									))}
+								</ul>
+							</>
+						) : null}
+
 						<div className={"RoutePluginsPluginConsentModal-actions" satisfies RoutePluginsPlugin_ClassNames}>
 							<MyButton variant="ghost" disabled={installing} onClick={() => setConsenting(false)}>
 								Cancel
@@ -2058,6 +2200,59 @@ export { Route };
 // #region tests
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, expect, test } = import.meta.vitest;
+
+	describe("RoutePluginsPluginPublisherReleases", () => {
+		test("keeps the latest failed publish visible", async () => {
+			const { renderToStaticMarkup } = await import("react-dom/server");
+			const html = renderToStaticMarkup(
+				<RoutePluginsPluginPublisherReleases
+					versions={[]}
+					reviews={[]}
+					historyIsTruncated={false}
+					lastPublishAttempt={{
+						at: 1234,
+						pluginName: "media",
+						status: "failed",
+						message: "Plugin review model step failed; try again",
+						commitSha: null,
+						artifactHash: null,
+						reviewId: null,
+					}}
+				/>,
+			);
+
+			expect(html).toContain("Plugin review model step failed; try again");
+			expect(html).toContain("failed");
+		});
+
+		test("shows when a retried version became ready as its publish time", async () => {
+			const { renderToStaticMarkup } = await import("react-dom/server");
+			const createdAt = new Date("2025-01-01T00:00:00.000Z").getTime();
+			const readyAt = new Date("2026-02-02T00:00:00.000Z").getTime();
+			const version = {
+				_id: "version-id",
+				_creationTime: createdAt,
+				artifactHash: `sha256:${"1".repeat(64)}`,
+				name: "media",
+				version: "0.1.0",
+				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+				reviewId: null,
+				reviewStatus: "passed",
+				updatedAt: readyAt,
+			} as RoutePlugins_PublisherPlugin["versions"][number];
+			const html = renderToStaticMarkup(
+				<RoutePluginsPluginPublisherReleases
+					versions={[version]}
+					reviews={[]}
+					historyIsTruncated={false}
+					lastPublishAttempt={undefined}
+				/>,
+			);
+
+			expect(html).toContain(`published ${format_datetime(readyAt)}`);
+			expect(html).not.toContain(`published ${format_datetime(createdAt)}`);
+		});
+	});
 
 	describe("can_open_plugin_detail", () => {
 		test("allows a publisher without workspace plugin management", () => {

@@ -1960,9 +1960,11 @@ const useThreadRuntimeController = () => {
 			// A live message's own id is its client-generated id. Stamp it into metadata so
 			// every rendered message carries the stable id in `metadata.clientGeneratedId`
 			// and the UI can key by that field alone, without a fallback on `message.id`.
-			message.metadata ??= {
-				parentClientGeneratedId: null,
-			} satisfies NonNullable<ai_chat_UiMessage["metadata"]>;
+			if (!message.metadata) {
+				message.metadata = {
+					parentClientGeneratedId: null,
+				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>;
+			}
 			message.metadata.clientGeneratedId = message.id;
 
 			result.list.push(message);

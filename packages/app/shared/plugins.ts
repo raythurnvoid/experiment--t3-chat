@@ -7,10 +7,36 @@ import { organizations_name_autofix_and_validate } from "./organizations.ts";
 
 export const plugins_RUNTIME_VERSION = "1";
 
+/**
+ * Which review policy the current code implements.
+ *
+ * A stored verdict is only reused when it was produced under this same value. Bump it whenever the
+ * review prompts, the mechanical severities, the model or tool semantics, the file classifier, or the
+ * required coverage change. Without the bump an old verdict would keep authorizing publishes under a
+ * policy that no longer exists.
+ *
+ * Keep one value through a multi-step rollout, or invalidate every verdict produced by the interim
+ * steps before any of them can authorize a publish.
+ */
+export const plugins_REVIEW_POLICY_VERSION = "6";
+
 const MANIFEST_SCHEMA_VERSION = 1;
 const EVENT_TYPES = ["files.upload.completed"] as const;
 
-const CAPABILITIES = ["plugin.secrets.read", "outbound.fetch", "workspace.files.read"] as const;
+const CAPABILITIES = [
+	"plugin.secrets.read",
+	"outbound.fetch",
+	"workspace.files.read",
+	"workspace.files.write",
+	"plugin.data.read",
+	"plugin.data.write",
+	"plugin.service.connect",
+	// The plugin's page, running in the browser, may call the origins in `uiOutboundOrigins`. Kept
+	// apart from `outbound.fetch`, which is the plugin's backend calling out from the runner. The two
+	// are different risks and get different consent text: a page holds a member's session token, and
+	// whatever it may reach can be reached by anything that manages to run inside that page.
+	"ui.outbound.fetch",
+] as const;
 export type plugins_Capability = (typeof CAPABILITIES)[number];
 
 // Shared by env text parsing and the dist review scan.
@@ -293,14 +319,18 @@ export function plugins_validate_origin(raw: string) {
 }
 
 export function plugins_consent_diff(args: {
-	current: { capabilities: plugins_Capability[]; outboundOrigins: string[] } | null;
-	target: { capabilities: plugins_Capability[]; outboundOrigins: string[] };
+	current: { capabilities: plugins_Capability[]; outboundOrigins: string[]; uiOutboundOrigins: string[] } | null;
+	target: { capabilities: plugins_Capability[]; outboundOrigins: string[]; uiOutboundOrigins: string[] };
 }) {
 	const currentCapabilities = new Set(args.current?.capabilities ?? []);
 	const currentOrigins = new Set(args.current?.outboundOrigins ?? []);
+	// Backend and page egress are consented separately. The same origin can appear in both lists and
+	// still be new to one of them, so the two sets never share entries.
+	const currentUiOrigins = new Set(args.current?.uiOutboundOrigins ?? []);
 	return {
 		newCapabilities: args.target.capabilities.filter((capability) => !currentCapabilities.has(capability)),
 		newOutboundOrigins: args.target.outboundOrigins.filter((origin) => !currentOrigins.has(origin)),
+		newUiOutboundOrigins: args.target.uiOutboundOrigins.filter((origin) => !currentUiOrigins.has(origin)),
 	};
 }
 
@@ -484,11 +514,19 @@ const JS_KEYWORDS = new Set([
  * lines, mostly single-character names, dense escape sequences, huge base64
  * blobs, the Function constructor) without spending an AI review call.
  *
- * Returns one human-readable message per failed check; an empty array means
- * the source passed. Any finding rejects the version.
+ * The two arrays have different power. `findings` rejects the version.
+ * `advisoryFindings` is shown to the publisher and blocks nothing.
+ *
+ * The shape checks (line length, average line length, single-character
+ * identifier share) are advisory because a normal vendored or bundled
+ * dependency trips them and the plugin author cannot fix it. The content
+ * checks stay rejecting: dense escapes, a huge base64 literal, and the
+ * Function constructor are patterns an author writes on purpose, and each one
+ * hides code from the review that follows.
  */
 export function plugins_dist_review_mechanical_findings(source: string, options?: { javaScript?: boolean }) {
 	const findings: string[] = [];
+	const advisoryFindings: string[] = [];
 	const readableKind = options?.javaScript === false ? "text" : "JavaScript";
 
 	// Blank lines are dropped so they don't drag the average down.
@@ -497,7 +535,7 @@ export function plugins_dist_review_mechanical_findings(source: string, options?
 	// Minifiers pack whole programs onto one line; readable code stays well under the limit.
 	const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
 	if (longestLine > MAX_LINE_LENGTH) {
-		findings.push(
+		advisoryFindings.push(
 			`Longest line is ${longestLine} characters (limit ${MAX_LINE_LENGTH}); the dist must be plain readable ${readableKind}, not minified`,
 		);
 	}
@@ -505,7 +543,7 @@ export function plugins_dist_review_mechanical_findings(source: string, options?
 	// The average catches minified output that was split across a few still-long lines.
 	const avgLineLength = lines.length > 0 ? lines.reduce((sum, line) => sum + line.length, 0) / lines.length : 0;
 	if (avgLineLength > MAX_AVG_LINE_LENGTH) {
-		findings.push(
+		advisoryFindings.push(
 			`Average line length is ${Math.round(avgLineLength)} characters (limit ${MAX_AVG_LINE_LENGTH}); the dist must be plain readable ${readableKind}, not minified`,
 		);
 	}
@@ -518,7 +556,7 @@ export function plugins_dist_review_mechanical_findings(source: string, options?
 		const singleCharShare =
 			identifiers.length > 0 ? identifiers.filter((word) => word.length === 1).length / identifiers.length : 0;
 		if (singleCharShare > MAX_SINGLE_CHAR_IDENTIFIER_SHARE) {
-			findings.push(
+			advisoryFindings.push(
 				`${Math.round(singleCharShare * 100)}% of identifiers are a single character (limit ${MAX_SINGLE_CHAR_IDENTIFIER_SHARE * 100}%); the dist must keep readable identifier names`,
 			);
 		}
@@ -544,7 +582,7 @@ export function plugins_dist_review_mechanical_findings(source: string, options?
 		findings.push("Dist uses the Function constructor; dynamically-assembled code is not allowed");
 	}
 
-	return findings;
+	return { findings, advisoryFindings };
 }
 
 // #endregion dist review
@@ -564,6 +602,12 @@ const MAX_NAV_ITEMS = 8;
 const MAX_FILE_VIEWS = 8;
 const MAX_EVENTS = 8;
 const MAX_EVENT_FILTERS = 8;
+const MAX_DISPLAY_NAME_LENGTH = 80;
+const MAX_DESCRIPTION_LENGTH = 2_000;
+const MAX_VERSION_LENGTH = 100;
+const MAX_COMPATIBILITY_FLAGS = 32;
+const MAX_COMPATIBILITY_FLAG_LENGTH = 64;
+const MAX_STORED_MANIFEST_BYTES = 64 * 1024;
 const MAX_CONFIGURATION_PATH_SEGMENTS = 16;
 const MAX_CONFIGURATION_PATH_SEGMENT_LENGTH = 128;
 const MAX_CONFIGURATION_DESCRIPTION_LENGTH = 500;
@@ -641,7 +685,6 @@ const manifest_file_schema = z
 		sha256: z.string().regex(SHA256_REGEX),
 		bytes: z.number().int().nonnegative().max(MAX_FILE_BYTES),
 		contentType: z.string().min(1).max(MAX_CONTENT_TYPE_LENGTH),
-		r2Key: z.string().optional(),
 	})
 	.strict();
 
@@ -718,9 +761,17 @@ const manifest_schema = z
 	.object({
 		schemaVersion: z.literal(MANIFEST_SCHEMA_VERSION),
 		name: z.string(),
-		displayName: z.string().min(1),
-		version: z.string().regex(SEMVER_REGEX),
-		description: z.string(),
+		displayName: z
+			.string()
+			.min(1)
+			.max(MAX_DISPLAY_NAME_LENGTH, `Plugin display names must be at most ${MAX_DISPLAY_NAME_LENGTH} characters`),
+		version: z
+			.string()
+			.max(MAX_VERSION_LENGTH, `Plugin versions must be at most ${MAX_VERSION_LENGTH} characters`)
+			.regex(SEMVER_REGEX),
+		description: z
+			.string()
+			.max(MAX_DESCRIPTION_LENGTH, `Plugin descriptions must be at most ${MAX_DESCRIPTION_LENGTH} characters`),
 		compatibility: z
 			.object({
 				bonoboPluginRuntime: z.literal(plugins_RUNTIME_VERSION),
@@ -731,7 +782,20 @@ const manifest_schema = z
 				entry: module_path_schema,
 				moduleName: module_path_schema,
 				compatibilityDate: z.string().regex(COMPATIBILITY_DATE_REGEX),
-				compatibilityFlags: z.array(z.string().min(1)),
+				compatibilityFlags: z
+					.array(
+						z
+							.string()
+							.min(1)
+							.max(
+								MAX_COMPATIBILITY_FLAG_LENGTH,
+								`Compatibility flags must be at most ${MAX_COMPATIBILITY_FLAG_LENGTH} characters`,
+							),
+					)
+					.max(
+						MAX_COMPATIBILITY_FLAGS,
+						`Plugin backends can declare at most ${MAX_COMPATIBILITY_FLAGS} compatibility flags`,
+					),
 			})
 			.strict()
 			.optional(),
@@ -750,6 +814,12 @@ const manifest_schema = z
 		outboundOrigins: z
 			.array(z.string())
 			.max(MAX_OUTBOUND_ORIGINS, `Plugin manifests can declare at most ${MAX_OUTBOUND_ORIGINS} outbound origins`),
+		// Where the plugin's page may send requests. This becomes the `connect-src` of the asset
+		// response, so the browser stops any other destination even if the page's code asks for it.
+		uiOutboundOrigins: z
+			.array(z.string())
+			.max(MAX_OUTBOUND_ORIGINS, `Plugin manifests can declare at most ${MAX_OUTBOUND_ORIGINS} page outbound origins`)
+			.default([]),
 		files: z.array(manifest_file_schema).max(MAX_FILES),
 	})
 	.strict();
@@ -758,6 +828,11 @@ export function plugins_validate_manifest(input: unknown) {
 	const parsed = manifest_schema.safeParse(input);
 	if (!parsed.success) {
 		return Result({ _nay: { message: parsed.error.issues[0]?.message ?? "Invalid plugin manifest" } });
+	}
+	// A publisher query reads a bounded release window. Keep each stored version small enough that
+	// the whole window stays far below Convex's transaction read limit.
+	if (files_get_utf8_byte_size(JSON.stringify(parsed.data)) > MAX_STORED_MANIFEST_BYTES) {
+		return Result({ _nay: { message: "Plugin manifest stores more than 64 KiB of metadata" } });
 	}
 	const name = autofix_and_validate_name(parsed.data.name);
 	if (name._nay) {
@@ -815,6 +890,20 @@ export function plugins_validate_manifest(input: unknown) {
 		}
 		outboundOrigins.add(origin);
 	}
+	const uiOutboundOrigins = new Set<string>();
+	for (const origin of parsed.data.uiOutboundOrigins) {
+		const validated = plugins_validate_origin(origin);
+		if (validated._nay) {
+			return Result({ _nay: { message: validated._nay.message } });
+		}
+		if (validated._yay !== origin) {
+			return Result({ _nay: { message: "Page outbound origins must already be normalized" } });
+		}
+		if (uiOutboundOrigins.has(origin)) {
+			return Result({ _nay: { message: `Plugin manifest has duplicate page outbound origin "${origin}"` } });
+		}
+		uiOutboundOrigins.add(origin);
+	}
 	const filePaths = new Set<string>();
 	let declaredArtifactBytes = 0;
 	for (const file of parsed.data.files) {
@@ -825,6 +914,14 @@ export function plugins_validate_manifest(input: unknown) {
 			return Result({ _nay: { message: `Plugin manifest has duplicate file path "${file.path}"` } });
 		}
 		filePaths.add(file.path);
+		// The review prompt lists every shipped file on its own line and prints this value on that
+		// line. A newline here would let a publisher add inventory lines for files nobody shipped, and
+		// a bidi override or zero-width character could hide part of a real line from the reviewer.
+		if (/[\p{Cc}\p{Cf}]/u.test(file.contentType)) {
+			return Result({
+				_nay: { message: `Plugin file "${file.path}" content type must not contain control characters` },
+			});
+		}
 		declaredArtifactBytes += file.bytes;
 		if (declaredArtifactBytes > plugins_MAX_ARTIFACT_BYTES) {
 			return Result({ _nay: { message: "Plugin manifest declares more than 16 MiB of artifact bytes" } });
@@ -920,6 +1017,44 @@ export function plugins_validate_manifest(input: unknown) {
 	// already-published plugins that never declared their secret names.
 	if (parsed.data.secrets.length > 0 && !capabilities.has("plugin.secrets.read" satisfies plugins_Capability)) {
 		return Result({ _nay: { message: "Plugin secrets declarations require the plugin.secrets.read capability" } });
+	}
+	// A plugin that can write its own documents must also be able to read them back. Without the read
+	// capability the workspace would consent to durable writes it can never see through the plugin.
+	if (
+		capabilities.has("plugin.data.write" satisfies plugins_Capability) &&
+		!capabilities.has("plugin.data.read" satisfies plugins_Capability)
+	) {
+		return Result({ _nay: { message: "The plugin.data.write capability requires the plugin.data.read capability" } });
+	}
+	// plugin.service.connect only lets an outside service borrow the capabilities the workspace
+	// already granted this plugin. On its own it can obtain no scope at all, so the grant mint would
+	// always refuse it. Reject that manifest at publish instead of letting the plugin install and
+	// then fail the first time its page tries to connect.
+	if (
+		capabilities.has("plugin.service.connect" satisfies plugins_Capability) &&
+		!capabilities.has("plugin.data.read" satisfies plugins_Capability) &&
+		!capabilities.has("workspace.files.write" satisfies plugins_Capability)
+	) {
+		return Result({
+			_nay: {
+				message:
+					"The plugin.service.connect capability requires the plugin.data.read or workspace.files.write capability",
+			},
+		});
+	}
+	// The two must agree in both directions, unlike `plugin.secrets.read` above. The page's
+	// `connect-src` is built from this list, so a capability with an empty list consents to nothing and
+	// a list without the capability would open the page's egress with no consent text ever shown.
+	if (
+		capabilities.has("ui.outbound.fetch" satisfies plugins_Capability) &&
+		parsed.data.uiOutboundOrigins.length === 0
+	) {
+		return Result({
+			_nay: { message: "The ui.outbound.fetch capability requires at least one page outbound origin" },
+		});
+	}
+	if (parsed.data.uiOutboundOrigins.length > 0 && !capabilities.has("ui.outbound.fetch" satisfies plugins_Capability)) {
+		return Result({ _nay: { message: "Page outbound origins require the ui.outbound.fetch capability" } });
 	}
 	return Result({ _yay: parsed.data });
 }

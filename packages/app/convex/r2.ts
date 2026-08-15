@@ -64,7 +64,11 @@ import {
 	files_metadata_preflight_frontmatter,
 } from "../shared/files-metadata.ts";
 import app_convex_schema from "./schema.ts";
-import { db_get_file_content_materialization_db_state } from "./files_nodes.ts";
+import {
+	db_get_file_content_materialization_db_state,
+	files_node_require_writable,
+	files_nodes_db_hard_delete_node,
+} from "./files_nodes.ts";
 import {
 	db_insert_file_text_content,
 	files_nodes_create_yjs_snapshot_update_from_text,
@@ -731,9 +735,7 @@ export const create_signed_chat_image_url = action({
 		// Pin the served type and the disposition for the same reason a file download does: a
 		// presigned R2 GET carries no nosniff and no CSP. The name is ours, because the chat route is
 		// the only writer of this asset kind and it always asks OpenAI for the same format.
-		const serving = files_get_signed_download_serving(
-			`generated-image-${asset._id}.${ai_chat_GENERATED_IMAGE_FORMAT}`,
-		);
+		const serving = files_get_signed_download_serving(`generated-image-${asset._id}.${ai_chat_GENERATED_IMAGE_FORMAT}`);
 		const url = await r2_get_download_url({
 			key: r2Key,
 			options: {
@@ -1450,9 +1452,7 @@ export const record_untracked_asset_event = internalMutation({
 			return "ignored";
 		}
 
-		const match = /^organizations\/([^/]+)\/workspaces\/([^/]+)\/(assets|upload-staging)\/([^/]+)$/.exec(
-			args.key,
-		);
+		const match = /^organizations\/([^/]+)\/workspaces\/([^/]+)\/(assets|upload-staging)\/([^/]+)$/.exec(args.key);
 		const [, organizationIdRaw, workspaceIdRaw, keyKind, assetIdRaw] = match ?? [];
 		if (!organizationIdRaw || !workspaceIdRaw || !assetIdRaw) {
 			return "ignored";
@@ -1479,9 +1479,7 @@ export const record_untracked_asset_event = internalMutation({
 			// A signed URL can upload the temporary object again. Wait for the URL to expire. Users cannot
 			// upload to the final key, so cleanup for that key does not wait.
 			putMayArriveUntil:
-				keyKind === "upload-staging"
-					? now + UPLOAD_SIGNED_URL_TTL_MS + r2_PUT_MAY_ARRIVE_MARGIN_MS
-					: undefined,
+				keyKind === "upload-staging" ? now + UPLOAD_SIGNED_URL_TTL_MS + r2_PUT_MAY_ARRIVE_MARGIN_MS : undefined,
 			r2EventId: args.eventId,
 		});
 		return "recorded";
@@ -1500,6 +1498,16 @@ const UNFINALIZED_ASSET_RECHECK_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Try to finish an incomplete upload again in one hour. */
 const UNFINALIZED_UPLOAD_RECOVERY_RECHECK_DELAY_MS = 60 * 60 * 1000;
+
+/**
+ * Keep retrying an incomplete upload every hour for this long after the latest signed URL was
+ * issued, then drop to the weekly recheck. The first deadline is already a day after the URL, so
+ * this window has to be longer than that day or the hourly retry would never run even once.
+ */
+const UNFINALIZED_UPLOAD_RECOVERY_FAST_WINDOW_MS = 30 * 60 * 60 * 1000;
+
+/** Stop automatic recovery eight days after the latest signed upload URL was issued. */
+const UNFINALIZED_UPLOAD_RECOVERY_MAX_WINDOW_MS = 8 * 24 * 60 * 60 * 1000;
 
 /**
  * Check unfinished assets after their deadline. Retry an upload when a node still uses the asset.
@@ -1559,19 +1567,70 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 					continue;
 				}
 
-				if (
-					referencingNode &&
-					asset.kind === "upload" &&
-					asset.uploadStagingR2Key !== undefined
-				) {
+				if (referencingNode && asset.kind === "upload" && asset.uploadStagingR2Key !== undefined) {
+					// Remint moves uploadUrlExpiresAt, so both retry windows start from the latest URL,
+					// not from the asset's first creation.
+					const recoveryStartedAt =
+						asset.uploadUrlExpiresAt === undefined
+							? asset._creationTime
+							: asset.uploadUrlExpiresAt - UPLOAD_SIGNED_URL_TTL_MS;
 					const recoveryScope = r2_require_real_scope(asset.organizationId, asset.workspaceId);
+					if (now - recoveryStartedAt >= UNFINALIZED_UPLOAD_RECOVERY_MAX_WINDOW_MS) {
+						// Keep a failed upload placeholder while the user has locked it. Recheck after the
+						// lock may have changed instead of bypassing the file's current read-only state.
+						if (files_node_require_writable(referencingNode)._nay) {
+							await ctx.db.patch("files_r2_assets", asset._id, {
+								unfinalizedExpiresAt: now + UNFINALIZED_ASSET_RECHECK_DELAY_MS,
+								updatedAt: now,
+							});
+							continue;
+						}
+						const liveR2Key = r2_create_asset_key({
+							organizationId: asset.organizationId,
+							workspaceId: asset.workspaceId,
+							assetId: asset._id,
+						});
+						await r2_enqueue_object_deletion_job(ctx, {
+							organizationId: recoveryScope.organizationId,
+							workspaceId: recoveryScope.workspaceId,
+							r2Key: liveR2Key,
+							reason: "untracked_asset_event",
+						});
+						await r2_enqueue_object_deletion_job(ctx, {
+							organizationId: recoveryScope.organizationId,
+							workspaceId: recoveryScope.workspaceId,
+							r2Key: asset.uploadStagingR2Key,
+							reason: "upload_staging",
+							putMayArriveUntil:
+								(asset.uploadUrlExpiresAt ?? recoveryStartedAt + UPLOAD_SIGNED_URL_TTL_MS) +
+								r2_PUT_MAY_ARRIVE_MARGIN_MS,
+						});
+						await files_nodes_db_hard_delete_node(ctx, {
+							organizationId: recoveryScope.organizationId,
+							workspaceId: recoveryScope.workspaceId,
+							nodeId: referencingNode._id,
+						});
+						// The hard-delete owns this file's asset. Keep this guard for a concurrent no-op.
+						const assetAfter = await ctx.db.get("files_r2_assets", asset._id);
+						if (assetAfter) {
+							await ctx.db.delete("files_r2_assets", assetAfter._id);
+						}
+						deletedCount += 1;
+						continue;
+					}
 					await ctx.scheduler.runAfter(0, internal.r2.recover_unfinalized_upload_publication, {
 						organizationId: recoveryScope.organizationId,
 						workspaceId: recoveryScope.workspaceId,
 						assetId: asset._id,
 					});
+					// Slow old retries down. The terminal window above later removes the placeholder and
+					// hands both possible keys to the durable deletion ledger.
+					const recoveryDelay =
+						now - recoveryStartedAt < UNFINALIZED_UPLOAD_RECOVERY_FAST_WINDOW_MS
+							? UNFINALIZED_UPLOAD_RECOVERY_RECHECK_DELAY_MS
+							: UNFINALIZED_ASSET_RECHECK_DELAY_MS;
 					await ctx.db.patch("files_r2_assets", asset._id, {
-						unfinalizedExpiresAt: now + UNFINALIZED_UPLOAD_RECOVERY_RECHECK_DELAY_MS,
+						unfinalizedExpiresAt: now + recoveryDelay,
 						updatedAt: now,
 					});
 					continue;
@@ -1617,11 +1676,9 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 						// cleanup after its first confirmed delete.
 						putMayArriveUntil:
 							cleanupKey === asset.uploadStagingR2Key
-								? (asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) +
-									r2_PUT_MAY_ARRIVE_MARGIN_MS
+								? (asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS
 								: asset.kind === "upload" && asset.uploadStagingR2Key === undefined
-									? (asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) +
-										r2_PUT_MAY_ARRIVE_MARGIN_MS
+									? (asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS
 									: undefined,
 					});
 				}
@@ -1786,10 +1843,7 @@ export async function r2_http_event(ctx: ActionCtx, request: Request) {
 			size: body._yay.event.object.size,
 			etag: body._yay.event.object.eTag,
 		};
-		if (
-			asset._yay.keyKind === "upload_staging" &&
-			asset._yay.asset.r2Key === undefined
-		) {
+		if (asset._yay.keyKind === "upload_staging" && asset._yay.asset.r2Key === undefined) {
 			const copied = await r2_copy_object_to_immutable_key(ctx, {
 				sourceKey: body._yay.event.object.key,
 				destinationKey: liveR2Key,
@@ -1799,8 +1853,15 @@ export async function r2_http_event(ctx: ActionCtx, request: Request) {
 				},
 			});
 			// The temporary object may change before an old event arrives. Publish only if the event still
-			// describes the current object.
+			// describes the current object. Log the drop: this branch acks the queue message, so a
+			// wrong non-ready outcome here silently loses the upload until the recovery pass.
 			if (copied.outcome !== "ready") {
+				console.warn("R2 staged copy did not publish", {
+					outcome: copied.outcome,
+					key: body._yay.event.object.key,
+					size: body._yay.event.object.size,
+					eTagPresent: body._yay.event.object.eTag !== undefined,
+				});
 				return {
 					status: 204,
 					body: {},
@@ -1815,8 +1876,7 @@ export async function r2_http_event(ctx: ActionCtx, request: Request) {
 		await ctx.runMutation(internal.r2.process_uploaded_asset_event, {
 			assetId: asset._yay.asset._id,
 			r2Key: liveR2Key,
-			uploadStagingR2Key:
-				asset._yay.keyKind === "upload_staging" ? body._yay.event.object.key : undefined,
+			uploadStagingR2Key: asset._yay.keyKind === "upload_staging" ? body._yay.event.object.key : undefined,
 			size: publicationMetadata.size,
 			etag: publicationMetadata.etag,
 			eventId: body._yay.cloudflareMessageId,

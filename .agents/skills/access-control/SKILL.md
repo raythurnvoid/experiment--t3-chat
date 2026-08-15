@@ -591,8 +591,10 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   (`FileEditorPresenceSupplier`), which disconnects properly; only the global room is unconditional.
 - **Plugin runs still expose one content field.** `plugins.list_recent_runs` now drops a run's file
   name, path, content type and size unless the caller also holds `content.read`, so a custom role
-  carrying only `workspace.plugins.manage` sees run status without file identity. Nothing else on the
-  plugin surface takes the content check yet.
+  carrying only `workspace.plugins.manage` sees run status without file identity. The plugin document store is the other
+  content-checked plugin surface: `db_authorize` in `plugins_data.ts` asks for `content.read` or
+  `content.write` on the workspace for the acting member, on every principal kind including
+  `plugin_run` and the `plugin_service` grant, in the same transaction as the read or write.
 - **A restricted path is still an existence oracle.** A path holds one active node, so creating a
   file where a restricted one already sits has to fail, and the refusal tells the caller something is
   there. `files_nodes_db_create_node_recursively_at_path` answers `"This file already exists."`, and

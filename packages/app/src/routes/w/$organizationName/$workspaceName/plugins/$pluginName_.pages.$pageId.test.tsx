@@ -168,7 +168,9 @@ describe("RoutePluginsPluginPage", () => {
 		]);
 		expect(secondBridge.bridgeNonce).not.toBe(firstBridge.bridgeNonce);
 		expect(secondBridge.iframe.getAttribute("referrerpolicy")).toBe("no-referrer");
-		expect(secondBridge.iframe.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin");
+		// `allow-forms` lets plugin JS handle submit events; the asset CSP's `form-action 'none'`
+		// keeps real HTTP form submissions blocked.
+		expect(secondBridge.iframe.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin allow-forms");
 	});
 
 	test("mint failure replaces the page with an alert and moves focus to Retry", async () => {

@@ -329,6 +329,8 @@ describe("plugins_validate_manifest", () => {
 				}>;
 			}>;
 			outboundOrigins?: string[];
+			uiOutboundOrigins?: string[];
+			capabilities?: string[];
 			duplicateFilePath?: boolean;
 			nonDistFilePath?: boolean;
 		} = {},
@@ -343,8 +345,9 @@ describe("plugins_validate_manifest", () => {
 			...(args.configuration === undefined ? {} : { configuration: args.configuration }),
 			events: args.events ?? [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 			pages: [],
-			capabilities: ["plugin.secrets.read", "outbound.fetch"],
+			capabilities: args.capabilities ?? ["plugin.secrets.read", "outbound.fetch"],
 			outboundOrigins: args.outboundOrigins ?? [],
+			...(args.uiOutboundOrigins === undefined ? {} : { uiOutboundOrigins: args.uiOutboundOrigins }),
 			files: [
 				{
 					path: args.nonDistFilePath ? "src/backend/worker.js" : "dist/backend/worker.js",
@@ -396,6 +399,55 @@ describe("plugins_validate_manifest", () => {
 				configuration: { description: expect.any(String), defaultYaml: expect.any(String) },
 				events: [{ filters: [{ configurationPath: ["routing", "allowedFolders"] }] }],
 			},
+		});
+	});
+
+	test("bounds manifest text that is copied into every stored version", () => {
+		expect(plugins_validate_manifest({ ...manifest_json(), displayName: "x".repeat(81) })).toEqual({
+			_nay: { message: "Plugin display names must be at most 80 characters" },
+		});
+		expect(plugins_validate_manifest({ ...manifest_json(), description: "x".repeat(2_001) })).toEqual({
+			_nay: { message: "Plugin descriptions must be at most 2000 characters" },
+		});
+		expect(plugins_validate_manifest({ ...manifest_json(), version: `0.1.0-${"a".repeat(95)}` })).toEqual({
+			_nay: { message: "Plugin versions must be at most 100 characters" },
+		});
+		const backend = {
+			entry: "dist/backend/worker.js",
+			moduleName: "dist/backend/worker.js",
+			compatibilityDate: "2026-08-14",
+			compatibilityFlags: Array.from({ length: 33 }, () => "nodejs_compat"),
+		};
+		expect(plugins_validate_manifest({ ...manifest_json(), backend })).toEqual({
+			_nay: { message: "Plugin backends can declare at most 32 compatibility flags" },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				backend: { ...backend, compatibilityFlags: ["x".repeat(65)] },
+			}),
+		).toEqual({ _nay: { message: "Compatibility flags must be at most 64 characters" } });
+	});
+
+	test("bounds the whole stored manifest payload", () => {
+		const files = Array.from({ length: 64 }, (_, index) => ({
+			path: `dist/${String(index).padStart(2, "0")}-${"a".repeat(500)}`,
+			sha256: `sha256:${"a".repeat(64)}`,
+			bytes: 1,
+			contentType: `application/${"x".repeat(243)}`,
+		}));
+		const manifest = {
+			...manifest_json(),
+			configuration: {
+				description: "Large metadata fixture",
+				defaultYaml: `notes: ${JSON.stringify("x".repeat(12_000))}`,
+			},
+			events: [],
+			files,
+		};
+
+		expect(plugins_validate_manifest(manifest)).toEqual({
+			_nay: { message: "Plugin manifest stores more than 64 KiB of metadata" },
 		});
 	});
 
@@ -455,10 +507,59 @@ describe("plugins_validate_manifest", () => {
 		});
 	});
 
+	test("rejects a manifest file content type that could forge a review inventory line", () => {
+		// The reviewer's file inventory prints one shipped file per line and ends an unreviewable one
+		// with "not reviewable text — not sent)". A newline in this value closes that line early and
+		// starts another, so the publisher gets to describe a file nobody shipped.
+		const forgedLine =
+			"image/png, 1 bytes, not reviewable text — not sent)\ndist/backend/ghost.js (application/javascript";
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				files: [
+					{ path: "dist/backend/worker.js", sha256: `sha256:${"a".repeat(64)}`, bytes: 1, contentType: forgedLine },
+					{ path: "dist/ui/index.html", sha256: `sha256:${"b".repeat(64)}`, bytes: 1, contentType: "text/html" },
+				],
+			}),
+		).toEqual({
+			_nay: { message: 'Plugin file "dist/backend/worker.js" content type must not contain control characters' },
+		});
+
+		// The same guard covers characters that hide text rather than add a line.
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				files: [
+					{
+						path: "dist/backend/worker.js",
+						sha256: `sha256:${"a".repeat(64)}`,
+						bytes: 1,
+						// A zero-width space, built from its code point so it stays visible in this source.
+						contentType: `text/${String.fromCharCode(0x200b)}html`,
+					},
+					{ path: "dist/ui/index.html", sha256: `sha256:${"b".repeat(64)}`, bytes: 1, contentType: "text/html" },
+				],
+			}),
+		).toEqual({
+			_nay: { message: 'Plugin file "dist/backend/worker.js" content type must not contain control characters' },
+		});
+	});
+
 	test("rejects a manifest that still declares the removed artifact pointer", () => {
 		expect(plugins_validate_manifest({ ...manifest_json(), artifact: "dist/artifact.json" })).toMatchObject({
 			_nay: { message: expect.any(String) },
 		});
+	});
+
+	test("rejects host-owned R2 keys in manifest file entries", () => {
+		const manifest = manifest_json();
+
+		expect(
+			plugins_validate_manifest({
+				...manifest,
+				files: [{ ...manifest.files[0]!, r2Key: "plugins/caller-chosen-key" }, ...manifest.files.slice(1)],
+			}),
+		).toMatchObject({ _nay: { message: expect.any(String) } });
 	});
 
 	test("accepts declared outbound origins that are already normalized", () => {
@@ -487,6 +588,88 @@ describe("plugins_validate_manifest", () => {
 				manifest_json({ outboundOrigins: ["https://api.openai.com", "https://api.openai.com"] }),
 			),
 		).toEqual({ _nay: { message: 'Plugin manifest has duplicate outbound origin "https://api.openai.com"' } });
+	});
+
+	test("defaults page outbound origins to none when the manifest omits them", () => {
+		const validated = plugins_validate_manifest(manifest_json());
+		if (validated._nay) {
+			throw new Error(validated._nay.message);
+		}
+		expect(validated._yay.uiOutboundOrigins).toEqual([]);
+	});
+
+	test("accepts declared page outbound origins that are already normalized", () => {
+		const validated = plugins_validate_manifest(
+			manifest_json({
+				capabilities: ["plugin.secrets.read", "ui.outbound.fetch"],
+				uiOutboundOrigins: ["https://council.example.com"],
+			}),
+		);
+		if (validated._nay) {
+			throw new Error(validated._nay.message);
+		}
+		expect(validated._yay.uiOutboundOrigins).toEqual(["https://council.example.com"]);
+		// Page egress does not imply backend egress. The two lists stay separate.
+		expect(validated._yay.outboundOrigins).toEqual([]);
+	});
+
+	test("rejects invalid, non-normalized, and duplicate page outbound origins", () => {
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					capabilities: ["plugin.secrets.read", "ui.outbound.fetch"],
+					uiOutboundOrigins: ["http://council.example.com"],
+				}),
+			),
+		).toEqual({ _nay: { message: "Origin must use https" } });
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					capabilities: ["plugin.secrets.read", "ui.outbound.fetch"],
+					uiOutboundOrigins: ["https://Council.Example.com/"],
+				}),
+			),
+		).toEqual({ _nay: { message: "Page outbound origins must already be normalized" } });
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					capabilities: ["plugin.secrets.read", "ui.outbound.fetch"],
+					uiOutboundOrigins: ["https://council.example.com", "https://council.example.com"],
+				}),
+			),
+		).toEqual({
+			_nay: { message: 'Plugin manifest has duplicate page outbound origin "https://council.example.com"' },
+		});
+	});
+
+	test("keeps the ui.outbound.fetch capability and page outbound origins together", () => {
+		expect(
+			plugins_validate_manifest(manifest_json({ capabilities: ["plugin.secrets.read", "ui.outbound.fetch"] })),
+		).toEqual({ _nay: { message: "The ui.outbound.fetch capability requires at least one page outbound origin" } });
+		expect(
+			plugins_validate_manifest(
+				manifest_json({ capabilities: ["plugin.secrets.read"], uiOutboundOrigins: ["https://council.example.com"] }),
+			),
+		).toEqual({ _nay: { message: "Page outbound origins require the ui.outbound.fetch capability" } });
+	});
+
+	test("bounds page outbound origins at the same cap as backend origins", () => {
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					capabilities: ["plugin.secrets.read", "ui.outbound.fetch"],
+					uiOutboundOrigins: Array.from({ length: 16 }, (_, index) => `https://page-${index}.example.com`),
+				}),
+			),
+		).toMatchObject({ _yay: expect.any(Object) });
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					capabilities: ["plugin.secrets.read", "ui.outbound.fetch"],
+					uiOutboundOrigins: Array.from({ length: 17 }, (_, index) => `https://page-${index}.example.com`),
+				}),
+			),
+		).toEqual({ _nay: { message: "Plugin manifests can declare at most 16 page outbound origins" } });
 	});
 
 	test("bounds event and outbound-origin fan-out", () => {
@@ -590,9 +773,9 @@ describe("plugins_validate_manifest", () => {
 	test("rejects secret declarations with invalid names, duplicates, or missing capability", () => {
 		// A name that is not a valid env key could never be configured or read.
 		for (const name of ["MY KEY", "https://example.com", "please set the api key"]) {
-			expect(
-				plugins_validate_manifest({ ...manifest_json(), secrets: [{ name, description: "" }] }),
-			).toEqual({ _nay: { message: "Secret names must use env key syntax" } });
+			expect(plugins_validate_manifest({ ...manifest_json(), secrets: [{ name, description: "" }] })).toEqual({
+				_nay: { message: "Secret names must use env key syntax" },
+			});
 		}
 		expect(
 			plugins_validate_manifest({ ...manifest_json(), secrets: [{ name: " OPENAI_API_KEY ", description: "" }] }),
@@ -632,6 +815,68 @@ describe("plugins_validate_manifest", () => {
 				secrets: [{ name: "OPENAI_API_KEY", description: "" }],
 			}),
 		).toEqual({ _nay: { message: "Plugin secrets declarations require the plugin.secrets.read capability" } });
+	});
+
+	test("rejects plugin.data.write without plugin.data.read", () => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				capabilities: ["plugin.data.write"],
+			}),
+		).toEqual({ _nay: { message: "The plugin.data.write capability requires the plugin.data.read capability" } });
+		// Reading without writing is a normal declaration for a page that only displays stored documents.
+		const readOnly = plugins_validate_manifest({ ...manifest_json(), capabilities: ["plugin.data.read"] });
+		if (readOnly._nay) {
+			throw new Error(readOnly._nay.message);
+		}
+		expect(readOnly._yay.capabilities).toEqual(["plugin.data.read"]);
+		const readWrite = plugins_validate_manifest({
+			...manifest_json(),
+			capabilities: ["plugin.data.read", "plugin.data.write"],
+		});
+		if (readWrite._nay) {
+			throw new Error(readWrite._nay.message);
+		}
+		expect(readWrite._yay.capabilities).toEqual(["plugin.data.read", "plugin.data.write"]);
+	});
+
+	test("rejects plugin.service.connect with nothing for the service to borrow", () => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				capabilities: ["plugin.service.connect"],
+			}),
+		).toEqual({
+			_nay: {
+				message:
+					"The plugin.service.connect capability requires the plugin.data.read or workspace.files.write capability",
+			},
+		});
+		// Outbound fetch is the plugin's own backend calling out, not an outside service acting for it,
+		// so it does not satisfy the rule.
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				capabilities: ["plugin.service.connect", "outbound.fetch"],
+			}),
+		).toEqual({
+			_nay: {
+				message:
+					"The plugin.service.connect capability requires the plugin.data.read or workspace.files.write capability",
+			},
+		});
+		// Either grantable capability is enough on its own: a service that only files artifacts never
+		// needs the document store, and one that only keeps state never needs to write files.
+		for (const paired of ["plugin.data.read", "workspace.files.write"] as const) {
+			const accepted = plugins_validate_manifest({
+				...manifest_json(),
+				capabilities: ["plugin.service.connect", paired],
+			});
+			if (accepted._nay) {
+				throw new Error(accepted._nay.message);
+			}
+			expect(accepted._yay.capabilities).toEqual(["plugin.service.connect", paired]);
+		}
 	});
 
 	test("rejects duplicate file view content types within and across views", () => {
@@ -728,33 +973,76 @@ describe("plugins_consent_diff", () => {
 		expect(
 			plugins_consent_diff({
 				current: null,
-				target: { capabilities: ["plugin.secrets.read"], outboundOrigins: ["https://api.openai.com"] },
+				target: {
+					capabilities: ["plugin.secrets.read"],
+					outboundOrigins: ["https://api.openai.com"],
+					uiOutboundOrigins: ["https://council.example.com"],
+				},
 			}),
 		).toEqual({
 			newCapabilities: ["plugin.secrets.read"],
 			newOutboundOrigins: ["https://api.openai.com"],
+			newUiOutboundOrigins: ["https://council.example.com"],
 		});
 	});
 
 	test("returns an empty diff when the upgrade declares nothing new", () => {
 		expect(
 			plugins_consent_diff({
-				current: { capabilities: ["plugin.secrets.read"], outboundOrigins: ["https://api.openai.com"] },
-				target: { capabilities: ["plugin.secrets.read"], outboundOrigins: ["https://api.openai.com"] },
+				current: {
+					capabilities: ["plugin.secrets.read"],
+					outboundOrigins: ["https://api.openai.com"],
+					uiOutboundOrigins: ["https://council.example.com"],
+				},
+				target: {
+					capabilities: ["plugin.secrets.read"],
+					outboundOrigins: ["https://api.openai.com"],
+					uiOutboundOrigins: ["https://council.example.com"],
+				},
 			}),
-		).toEqual({ newCapabilities: [], newOutboundOrigins: [] });
+		).toEqual({ newCapabilities: [], newOutboundOrigins: [], newUiOutboundOrigins: [] });
 	});
 
 	test("returns only the added capabilities and origins for an upgrade", () => {
 		expect(
 			plugins_consent_diff({
-				current: { capabilities: ["plugin.secrets.read"], outboundOrigins: ["https://api.openai.com"] },
+				current: {
+					capabilities: ["plugin.secrets.read"],
+					outboundOrigins: ["https://api.openai.com"],
+					uiOutboundOrigins: [],
+				},
 				target: {
 					capabilities: ["plugin.secrets.read", "outbound.fetch"],
 					outboundOrigins: ["https://api.openai.com", "https://example.com"],
+					uiOutboundOrigins: ["https://council.example.com"],
 				},
 			}),
-		).toEqual({ newCapabilities: ["outbound.fetch"], newOutboundOrigins: ["https://example.com"] });
+		).toEqual({
+			newCapabilities: ["outbound.fetch"],
+			newOutboundOrigins: ["https://example.com"],
+			newUiOutboundOrigins: ["https://council.example.com"],
+		});
+	});
+
+	test("an origin the backend already reaches is still new to the page", () => {
+		expect(
+			plugins_consent_diff({
+				current: {
+					capabilities: ["outbound.fetch"],
+					outboundOrigins: ["https://council.example.com"],
+					uiOutboundOrigins: [],
+				},
+				target: {
+					capabilities: ["outbound.fetch", "ui.outbound.fetch"],
+					outboundOrigins: ["https://council.example.com"],
+					uiOutboundOrigins: ["https://council.example.com"],
+				},
+			}),
+		).toEqual({
+			newCapabilities: ["ui.outbound.fetch"],
+			newOutboundOrigins: [],
+			newUiOutboundOrigins: ["https://council.example.com"],
+		});
 	});
 });
 
@@ -764,28 +1052,39 @@ describe("plugins_dist_review_mechanical_findings", () => {
 		return readFileSync(`${process.cwd()}/../../plugins/bonobo-plugin-${plugin}/dist/backend/worker.js`, "utf8");
 	}
 
-	test("the real readable first-party dists pass", () => {
-		expect(plugins_dist_review_mechanical_findings(read_first_party_dist("image"))).toEqual([]);
-		expect(plugins_dist_review_mechanical_findings(read_first_party_dist("pdf"))).toEqual([]);
+	test("the real readable first-party dists produce no finding of either severity", () => {
+		expect(plugins_dist_review_mechanical_findings(read_first_party_dist("image"))).toEqual({
+			findings: [],
+			advisoryFindings: [],
+		});
+		expect(plugins_dist_review_mechanical_findings(read_first_party_dist("pdf"))).toEqual({
+			findings: [],
+			advisoryFindings: [],
+		});
 	});
 
-	test("rejects the same dist with its whitespace minified away", () => {
+	test("reports the same dist with its whitespace minified away as advisory only", () => {
 		const minified = read_first_party_dist("image")
 			.split(/\r?\n/u)
 			.map((line) => line.trim())
 			.filter(Boolean)
 			.join("");
-		expect(plugins_dist_review_mechanical_findings(minified)).toEqual([
-			expect.stringContaining("Longest line"),
-			expect.stringContaining("Average line length"),
-		]);
+		// Shape alone never blocks: a normal bundled dependency looks exactly like this and the plugin
+		// author cannot fix it.
+		expect(plugins_dist_review_mechanical_findings(minified)).toEqual({
+			findings: [],
+			advisoryFindings: [expect.stringContaining("Longest line"), expect.stringContaining("Average line length")],
+		});
 	});
 
-	test("rejects a dist dominated by single-character identifiers", () => {
+	test("reports a dist dominated by single-character identifiers as advisory only", () => {
 		const minified = Array.from({ length: 50 }, (_, i) => `var a${i % 3};function f(x,y,z){var q=x+y;return q*z}`).join(
 			"\n",
 		);
-		expect(plugins_dist_review_mechanical_findings(minified)).toEqual([expect.stringContaining("single character")]);
+		expect(plugins_dist_review_mechanical_findings(minified)).toEqual({
+			findings: [],
+			advisoryFindings: [expect.stringContaining("single character")],
+		});
 	});
 
 	test("rejects a dist with a giant base64 string literal", () => {
@@ -794,15 +1093,32 @@ describe("plugins_dist_review_mechanical_findings", () => {
 			(_, i) => `export function handler${i}(request) { return request; }`,
 		);
 		const source = [...readableLines, `const payload = decodePayload("${"A".repeat(300)}");`].join("\n");
-		expect(plugins_dist_review_mechanical_findings(source)).toEqual([expect.stringContaining("base64")]);
+		expect(plugins_dist_review_mechanical_findings(source)).toEqual({
+			findings: [expect.stringContaining("base64")],
+			advisoryFindings: [],
+		});
 	});
 
 	test("rejects escape-sequence obfuscation and the Function constructor", () => {
 		const escaped = `const readableName = "${"\\x41".repeat(20)}";\n`;
-		expect(plugins_dist_review_mechanical_findings(escaped)).toEqual([expect.stringContaining("escape sequences")]);
-		expect(plugins_dist_review_mechanical_findings('const build = Function("return 1");\n')).toEqual([
-			expect.stringContaining("Function constructor"),
-		]);
+		expect(plugins_dist_review_mechanical_findings(escaped)).toEqual({
+			findings: [expect.stringContaining("escape sequences")],
+			advisoryFindings: [],
+		});
+		expect(plugins_dist_review_mechanical_findings('const build = Function("return 1");\n')).toEqual({
+			findings: [expect.stringContaining("Function constructor")],
+			advisoryFindings: [],
+		});
+	});
+
+	test("a rejecting finding still rejects when the same file is also advisory", () => {
+		// One long line carrying a hidden payload. The shape is advisory and the payload rejects, and
+		// the two must land in their own arrays instead of merging back into one verdict.
+		const source = `const payload = decodePayload("${"A".repeat(300)}"); ${"// padding".repeat(100)}\n`;
+		expect(plugins_dist_review_mechanical_findings(source)).toEqual({
+			findings: [expect.stringContaining("base64")],
+			advisoryFindings: [expect.stringContaining("Longest line"), expect.stringContaining("Average line length")],
+		});
 	});
 
 	test("keeps JavaScript-only checks out of non-JavaScript text", () => {
@@ -810,7 +1126,7 @@ describe("plugins_dist_review_mechanical_findings", () => {
 			plugins_dist_review_mechanical_findings('main::before { content: "Function(return 1)"; }\n', {
 				javaScript: false,
 			}),
-		).toEqual([]);
+		).toEqual({ findings: [], advisoryFindings: [] });
 	});
 });
 

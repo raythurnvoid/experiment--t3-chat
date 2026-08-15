@@ -240,6 +240,39 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 				}))(),
 			},
 		}))(),
+		...((/* iife */ path = "/api/v1/auth/verify" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						// The bearer token is the whole request. There is nothing else to send.
+						type Body = never;
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const { public_api_http_verify_key } = await import("./public_api.ts");
+								const result = await public_api_http_verify_key(ctx, request, path);
+								return Response.json(result.body, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<
+								typeof import("./public_api.ts").public_api_http_verify_key
+							>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
 		...((/* iife */ path = "/api/v1/activities/start" as const satisfies api_schemas_Main_Path) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({

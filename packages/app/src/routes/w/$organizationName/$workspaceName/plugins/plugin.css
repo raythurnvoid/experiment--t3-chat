@@ -838,6 +838,28 @@
 		}
 	}
 
+	.RoutePluginsPluginPublisherReleases-lastAttempt {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.RoutePluginsPluginPublisherReleases-lastAttemptMessage {
+		min-width: 0;
+		overflow-wrap: anywhere;
+
+		font-size: 13px;
+		line-height: 1.4;
+		color: var(--color-fg-09);
+	}
+
+	.RoutePluginsPluginPublisherReleases-limitNotice {
+		font-size: 13px;
+		line-height: 1.4;
+		color: var(--color-fg-07);
+	}
+
 	.RoutePluginsPluginPublisherReleases-empty {
 		font-size: 14px;
 		color: var(--color-fg-08);
@@ -898,6 +920,26 @@
 
 		& li::marker {
 			color: var(--color-fg-06);
+		}
+	}
+
+	/* Dimmer than the blocking list above so the two never read as one set of reasons. */
+	.RoutePluginsPluginPublisherReleaseItem-advisory-title {
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--color-fg-06);
+	}
+
+	.RoutePluginsPluginPublisherReleaseItem-advisory {
+		margin: 0;
+		padding-inline-start: 18px;
+
+		font-size: 13px;
+		line-height: 1.5;
+		color: var(--color-fg-06);
+
+		& li::marker {
+			color: var(--color-fg-04);
 		}
 	}
 

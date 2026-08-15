@@ -42,6 +42,14 @@ vp env exec pnpm --dir packages/app exec convex data files_r2_assets --limit 20 
 
 `--format json` is fine for exploratory reads; use `--format jsonArray` when the admin-ops skill's exact-readback rule applies. This pnpm form works from the repo root for commands without JSON args (`data`, `logs`); commands that pass JSON args must use the admin-ops direct-node form from `packages/app`.
 
+**`convex data` cannot tell you that a table name is wrong.** A misspelled or nonexistent table prints `There are no documents in this table.` — the same line a real empty table prints. So a readback that is meant to prove "nothing was written" reads as a clean pass when you simply typed the wrong name, and the check silently proves nothing. This is easy to hit because neighbouring tables do not share one prefix: the plugin document store is `plugins_data`, `plugins_data_usage`, `plugins_data_reservations` and `plugins_data_revision_tombstones`, while the service grants table is `plugin_service_grants` with a singular `plugin_`.
+
+Before trusting an empty readback, take the table names from `defineTable` in `packages/app/convex/schema.ts` rather than from memory, and run one control query against a name that cannot exist. If the control prints the same thing as your real query, that query has not verified anything yet.
+
+```powershell
+vp env exec pnpm --dir packages/app exec convex data totally_bogus_table_xyz --limit 3
+```
+
 Fetch recent logs:
 
 ```powershell
