@@ -16,6 +16,7 @@ const plugins_capability_validator = v.union(
 	v.literal("workspace.files.write"),
 	v.literal("plugin.data.read"),
 	v.literal("plugin.data.write"),
+	v.literal("plugin.data.user-write"),
 	v.literal("plugin.service.connect"),
 	v.literal("ui.outbound.fetch"),
 );
@@ -1621,11 +1622,29 @@ const app_convex_schema = defineSchema({
 		writeMode: v.union(v.literal("normal"), v.literal("versioned")),
 		/** Set only for `versioned`: the one service principal allowed to write this key. */
 		producerPrincipalKey: v.optional(v.string()),
+		/**
+		 * `owned` binds the doc to its `createdBy`: only that member may change or delete it through
+		 * any interactive writer. `shared` docs follow the normal content.write rule.
+		 */
+		ownership: v.union(v.literal("shared"), v.literal("owned")),
+		/** Set only by the user-write door's append: the caller's idempotency key, scoped per creator. */
+		userWriteRequestId: v.optional(v.string()),
+		/**
+		 * Digest of the append request that created this doc. A replayed append with the same digest
+		 * answers with the stored key; a different digest under the same request id is refused.
+		 */
+		userWriteRequestFingerprint: v.optional(v.string()),
 		createdBy: v.id("users"),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
 	})
 		.index("by_installation_collection_key", ["installationId", "collection", "key"])
+		.index("by_installation_collection_createdBy_requestId", [
+			"installationId",
+			"collection",
+			"createdBy",
+			"userWriteRequestId",
+		])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**

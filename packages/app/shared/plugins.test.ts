@@ -2,8 +2,11 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, test } from "vitest";
 
+import app_convex_schema from "../convex/schema.ts";
+import type { plugins_Capability } from "./plugins.ts";
 import {
 	plugins_consent_diff,
+	plugins_data_validate_watch_inputs,
 	plugins_dist_review_mechanical_findings,
 	plugins_event_matches_configuration,
 	plugins_get_event_filter_values,
@@ -253,6 +256,54 @@ OPENAI_API_KEY=plain
 		expect(plugins_parse_env_text("GOOD=value\nnot valid")).toMatchObject({
 			_nay: { message: "Line 2 must be KEY=value" },
 		});
+	});
+});
+
+describe("plugins_data_validate_watch_inputs", () => {
+	test("accepts every edge shape the server accepts", () => {
+		const cases = [
+			{ collection: "a", limit: 1 },
+			{ collection: "a".repeat(128), limit: 100 },
+			{ collection: "messages", keyPrefix: "~".repeat(109), limit: 50 },
+			{ collection: "messages", keyPrefix: "!", limit: 100 },
+		];
+		for (const args of cases) {
+			expect(plugins_data_validate_watch_inputs(args)).toEqual({ _yay: args });
+		}
+	});
+
+	test("stays a strict subset of the server rules: version-dependent refusals fall through", () => {
+		// The server refuses control characters and surrounding whitespace with Unicode-property
+		// checks whose outcome can differ between engines. The host must accept these and let the
+		// server answer null, so a browser with newer Unicode data can never refuse a collection
+		// the server still serves.
+		const serverOnlyRefusals = [
+			{ collection: " padded ", limit: 10 },
+			{ collection: "with\u{7}bell", limit: 10 },
+			{ collection: "with\u{200B}zwsp", limit: 10 },
+		];
+		for (const args of serverOnlyRefusals) {
+			expect(plugins_data_validate_watch_inputs(args)).toEqual({ _yay: args });
+		}
+	});
+
+	test("refuses lengths, non-ASCII prefixes, and out-of-range limits", () => {
+		expect(plugins_data_validate_watch_inputs({ collection: "", limit: 10 })).toMatchObject({
+			_nay: { message: "Collection names must be 1 to 128 characters" },
+		});
+		expect(plugins_data_validate_watch_inputs({ collection: "a".repeat(129), limit: 10 })).toMatchObject({
+			_nay: { message: "Collection names must be 1 to 128 characters" },
+		});
+		for (const keyPrefix of ["", "k".repeat(110), "café", "no space", "general:\u{10FFFF}"]) {
+			expect(plugins_data_validate_watch_inputs({ collection: "messages", keyPrefix, limit: 10 })).toMatchObject({
+				_nay: { message: "Key prefixes must be 1 to 109 printable ASCII characters" },
+			});
+		}
+		for (const limit of [0, 101, 2.5, Number.NaN]) {
+			expect(plugins_data_validate_watch_inputs({ collection: "messages", limit })).toMatchObject({
+				_nay: { message: "Watch limits must be integers from 1 to 100" },
+			});
+		}
 	});
 });
 
@@ -840,6 +891,25 @@ describe("plugins_validate_manifest", () => {
 		expect(readWrite._yay.capabilities).toEqual(["plugin.data.read", "plugin.data.write"]);
 	});
 
+	test("rejects plugin.data.user-write without plugin.data.read", () => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				capabilities: ["plugin.data.user-write"],
+			}),
+		).toEqual({
+			_nay: { message: "The plugin.data.user-write capability requires the plugin.data.read capability" },
+		});
+		const readUserWrite = plugins_validate_manifest({
+			...manifest_json(),
+			capabilities: ["plugin.data.read", "plugin.data.user-write"],
+		});
+		if (readUserWrite._nay) {
+			throw new Error(readUserWrite._nay.message);
+		}
+		expect(readUserWrite._yay.capabilities).toEqual(["plugin.data.read", "plugin.data.user-write"]);
+	});
+
 	test("rejects plugin.service.connect with nothing for the service to borrow", () => {
 		expect(
 			plugins_validate_manifest({
@@ -965,6 +1035,31 @@ describe("plugins_validate_manifest", () => {
 				})),
 			}),
 		).toEqual({ _nay: { message: "Plugin manifests can declare at most 8 file views" } });
+	});
+});
+
+describe("plugins_Capability", () => {
+	test("the Convex schema capability validator matches the shared capability list exactly", () => {
+		// `satisfies Record<plugins_Capability, true>` forces this literal to name every member of
+		// the shared union and nothing else, so a capability added to one list but not the other
+		// fails this test or its compile.
+		const capabilities = Object.keys({
+			"plugin.secrets.read": true,
+			"outbound.fetch": true,
+			"workspace.files.read": true,
+			"workspace.files.write": true,
+			"plugin.data.read": true,
+			"plugin.data.write": true,
+			"plugin.data.user-write": true,
+			"plugin.service.connect": true,
+			"ui.outbound.fetch": true,
+		} satisfies Record<plugins_Capability, true>);
+
+		const schemaCapabilities =
+			app_convex_schema.tables.plugins_versions.validator.fields.capabilities.element.members.map(
+				(member) => member.value,
+			);
+		expect([...schemaCapabilities].sort()).toEqual([...capabilities].sort());
 	});
 });
 

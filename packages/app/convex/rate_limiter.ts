@@ -108,6 +108,15 @@ const rate_limiter_CONFIG = {
 	files_snapshot_write: STRICT_WRITE,
 	files_tree_write: BULK_FILES_WRITE,
 	files_yjs_push_update: STRICT_WRITE,
+	// A member writing plugin data through the app, one document per call. Chat-like use is
+	// bursty — a few messages or reactions in a row — so the capacity covers a short burst and
+	// the rate sustains one write every two seconds.
+	plugins_data_user_write: {
+		kind: "token bucket",
+		rate: 30,
+		period: MINUTE,
+		capacity: 10,
+	},
 	plugins_manage: STRICT_AUTH_OR_BILLING,
 	// Initial mint plus occasional refresh per open plugin page; token TTL is 30 minutes.
 	plugins_ui_session_mint: STRICT_WRITE,

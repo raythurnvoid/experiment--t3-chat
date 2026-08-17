@@ -5,13 +5,16 @@
  * and talks to the embedding host app over the current strict postMessage contract: the page
  * announces `bonobo:ready`, the host answers `bonobo:init` with a short-lived scoped bearer token,
  * and from then on the client calls the public `/api/v1/*` API on its own iframe origin directly
- * with `Authorization: Bearer <token>`.
+ * with `Authorization: Bearer <token>`. The `data` and `members` APIs stay on the bridge instead:
+ * the page posts `bonobo:data-*` messages and the host performs those reads and writes as the
+ * viewing member.
  */
 
 /** `getToken` refreshes when the token is expired or expires within this margin. */
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
 const READY_RETRY_MS = 500;
 const REFRESH_DEADLINE_MS = 10_000;
+const DATA_REQUEST_DEADLINE_MS = 10_000;
 const BRIDGE_NONCE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
@@ -26,6 +29,7 @@ function is_ui_context(value) {
 	const context = /** @type {Record<string, unknown>} */ (value);
 	if (
 		typeof context.pluginName !== "string" ||
+		typeof context.userId !== "string" ||
 		typeof context.organizationId !== "string" ||
 		typeof context.workspaceId !== "string"
 	) {
@@ -92,7 +96,7 @@ function read_bridge_bootstrap() {
 
 /**
  * Connects the page to the embedding host app. It installs one shared `message` listener (for
- * init and token responses), posts `{ type: "bonobo:ready", bridgeNonce }` to `window.parent`,
+ * init, token, and plugin-data responses), posts `{ type: "bonobo:ready", bridgeNonce }` to `window.parent`,
  * and resolves with the frontend client when the host's `bonobo:init` arrives. `bonobo:init`
  * messages after the first are ignored.
  *
@@ -115,6 +119,24 @@ export async function bonobo_ui_connect() {
 	const pending_refreshes = new Map();
 	/** @type {Promise<string> | null} */
 	let refresh_in_flight = null;
+
+	// Plugin-data bridge state — watch registrations route matching `bonobo:data-update` messages,
+	// and the two pending maps correlate write and member-resolve requests with their `-result`
+	// answers. A `_nay` result resolves (it is passed through as-is); only the deadline rejects.
+	// The `kind` decides the update payload shape: a plain watch delivers the docs array, a
+	// window delivers `{ docs, hasMore, atCapacity, incomplete }`. Death is a bare `null` for both.
+	/** @type {Map<string, { kind: "plain" | "window", deliver: (update: any, info?: import("bonobo-plugin-sdk/frontend").BonoboUiWatchDeathInfo) => void }>} */
+	const watch_registrations = new Map();
+	/** @type {Map<string, { resolve: (result: import("bonobo-plugin-sdk/frontend").BonoboUiDataWriteResult) => void, timeout: ReturnType<typeof setTimeout> }>} */
+	const pending_data_writes = new Map();
+	/** @type {Map<string, { resolve: (members: Record<string, string | null>) => void, timeout: ReturnType<typeof setTimeout> }>} */
+	const pending_member_resolves = new Map();
+
+	// The document is going away (unload or bfcache). Drop every watch registration so a page
+	// restored from bfcache cannot keep routing updates for subscriptions the host already cleared.
+	window.addEventListener("pagehide", () => {
+		watch_registrations.clear();
+	});
 
 	/**
 	 * Returns the current token, refreshing it first when it is expired or within
@@ -207,6 +229,181 @@ export async function bonobo_ui_connect() {
 		return response.json();
 	}
 
+	/**
+	 * Shared plumbing for one correlated page->host request: registers `requestId` in `pending`,
+	 * posts `message` to the host, and settles when the message handler resolves the entry.
+	 * Rejects with `timeoutMessage` when the host does not answer within
+	 * `DATA_REQUEST_DEADLINE_MS`, like an unanswered token refresh.
+	 *
+	 * @template T
+	 * @param {Map<string, { resolve: (value: T) => void, timeout: ReturnType<typeof setTimeout> }>} pending
+	 * @param {string} requestId
+	 * @param {object} message
+	 * @param {string} timeoutMessage
+	 * @returns {Promise<T>}
+	 */
+	function post_correlated_request(pending, requestId, message, timeoutMessage) {
+		return new Promise((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				pending.delete(requestId);
+				reject(new Error(timeoutMessage));
+			}, DATA_REQUEST_DEADLINE_MS);
+			pending.set(requestId, { resolve, timeout });
+			try {
+				window.parent.postMessage(message, parentOrigin);
+			} catch (error) {
+				clearTimeout(timeout);
+				pending.delete(requestId);
+				reject(error);
+			}
+		});
+	}
+
+	/**
+	 * Posts one `bonobo:data-user-write` and resolves with the correlated
+	 * `bonobo:data-user-write-result` `result` as-is, `_yay` and `_nay` alike. The runtime passes
+	 * the result through without checking it, so each caller casts this shared promise to its
+	 * op's result type — that narrowing is the host-door contract, not a runtime guarantee.
+	 *
+	 * @param {{ op: "append" | "put" | "remove" | "putOwned" | "removeOwned", collection: string, keyPrefix?: string, key?: string, value?: object, clientRequestId?: string, expectedRevision?: number }} fields
+	 */
+	function post_data_user_write(fields) {
+		const requestId = crypto.randomUUID();
+		return post_correlated_request(
+			pending_data_writes,
+			requestId,
+			{ type: "bonobo:data-user-write", bridgeNonce, requestId, ...fields },
+			"Plugin data write timed out",
+		);
+	}
+
+	/** @type {import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["data"]} */
+	const data = {
+		watch(opts, onUpdate) {
+			const subscriptionId = crypto.randomUUID();
+			watch_registrations.set(subscriptionId, { kind: "plain", deliver: onUpdate });
+			window.parent.postMessage(
+				{
+					type: "bonobo:data-watch",
+					bridgeNonce,
+					subscriptionId,
+					collection: opts.collection,
+					...(opts.keyPrefix === undefined ? {} : { keyPrefix: opts.keyPrefix }),
+					limit: opts.limit,
+				},
+				parentOrigin,
+			);
+			return function unsubscribe() {
+				// After a null update (or an earlier unsubscribe) the registration is already gone
+				// and the host dropped its side too, so nothing must be posted again.
+				if (!watch_registrations.delete(subscriptionId)) {
+					return;
+				}
+				window.parent.postMessage({ type: "bonobo:data-unwatch", bridgeNonce, subscriptionId }, parentOrigin);
+			};
+		},
+		watchWindow(opts, onUpdate) {
+			const subscriptionId = crypto.randomUUID();
+			watch_registrations.set(subscriptionId, { kind: "window", deliver: onUpdate });
+			window.parent.postMessage(
+				{
+					type: "bonobo:data-watch-window",
+					bridgeNonce,
+					subscriptionId,
+					collection: opts.collection,
+					...(opts.keyPrefix === undefined ? {} : { keyPrefix: opts.keyPrefix }),
+					pageSize: opts.pageSize,
+				},
+				parentOrigin,
+			);
+			return {
+				loadOlder() {
+					// A dead or unsubscribed window posts nothing; the host would ignore it anyway.
+					if (!watch_registrations.has(subscriptionId)) {
+						return;
+					}
+					window.parent.postMessage(
+						{ type: "bonobo:data-window-load-older", bridgeNonce, subscriptionId },
+						parentOrigin,
+					);
+				},
+				unsubscribe() {
+					// Same discipline as the plain watch's unsubscribe above.
+					if (!watch_registrations.delete(subscriptionId)) {
+						return;
+					}
+					window.parent.postMessage({ type: "bonobo:data-unwatch", bridgeNonce, subscriptionId }, parentOrigin);
+				},
+			};
+		},
+		append(opts) {
+			return /** @type {Promise<import("bonobo-plugin-sdk/frontend").BonoboUiDataAppendResult>} */ (
+				post_data_user_write({
+					op: "append",
+					collection: opts.collection,
+					...(opts.keyPrefix === undefined ? {} : { keyPrefix: opts.keyPrefix }),
+					value: opts.value,
+					...(opts.clientRequestId === undefined ? {} : { clientRequestId: opts.clientRequestId }),
+				})
+			);
+		},
+		put(opts) {
+			return /** @type {Promise<import("bonobo-plugin-sdk/frontend").BonoboUiDataPutResult>} */ (
+				post_data_user_write({
+					op: "put",
+					collection: opts.collection,
+					key: opts.key,
+					value: opts.value,
+					...(opts.expectedRevision === undefined ? {} : { expectedRevision: opts.expectedRevision }),
+				})
+			);
+		},
+		remove(opts) {
+			return /** @type {Promise<import("bonobo-plugin-sdk/frontend").BonoboUiDataRemoveResult>} */ (
+				post_data_user_write({
+					op: "remove",
+					collection: opts.collection,
+					key: opts.key,
+					...(opts.expectedRevision === undefined ? {} : { expectedRevision: opts.expectedRevision }),
+				})
+			);
+		},
+		putOwned(opts) {
+			return /** @type {Promise<import("bonobo-plugin-sdk/frontend").BonoboUiDataPutOwnedResult>} */ (
+				post_data_user_write({
+					op: "putOwned",
+					collection: opts.collection,
+					key: opts.key,
+					value: opts.value,
+					...(opts.expectedRevision === undefined ? {} : { expectedRevision: opts.expectedRevision }),
+				})
+			);
+		},
+		removeOwned(opts) {
+			return /** @type {Promise<import("bonobo-plugin-sdk/frontend").BonoboUiDataRemoveResult>} */ (
+				post_data_user_write({
+					op: "removeOwned",
+					collection: opts.collection,
+					key: opts.key,
+					...(opts.expectedRevision === undefined ? {} : { expectedRevision: opts.expectedRevision }),
+				})
+			);
+		},
+	};
+
+	/** @type {import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["members"]} */
+	const members = {
+		resolve(userIds) {
+			const requestId = crypto.randomUUID();
+			return post_correlated_request(
+				pending_member_resolves,
+				requestId,
+				{ type: "bonobo:data-resolve-members", bridgeNonce, requestId, userIds },
+				"Plugin member resolve timed out",
+			);
+		},
+	};
+
 	/** @type {Promise<import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient>} */
 	const client_promise = new Promise((resolve) => {
 		let initialized = false;
@@ -246,7 +443,7 @@ export async function bonobo_ui_connect() {
 				apiOrigin = message.apiOrigin;
 				token = message.token;
 				tokenExpiresAt = message.tokenExpiresAt;
-				resolve({ context: message.context, apiOrigin, getToken, refreshToken, fetchJson });
+				resolve({ context: message.context, apiOrigin, getToken, refreshToken, fetchJson, data, members });
 			} else if (
 				initialized &&
 				message.bridgeNonce === bridgeNonce &&
@@ -277,8 +474,74 @@ export async function bonobo_ui_connect() {
 					clearTimeout(pending.timeout);
 					pending.reject(new Error(message.message));
 				}
+			} else if (
+				initialized &&
+				message.bridgeNonce === bridgeNonce &&
+				message.type === "bonobo:data-update" &&
+				typeof message.subscriptionId === "string" &&
+				(message.docs === null || Array.isArray(message.docs))
+			) {
+				const registration = watch_registrations.get(message.subscriptionId);
+				if (registration) {
+					// A null update means the host killed the subscription and already dropped it.
+					// Deliver the null once and drop the registration, so a later unsubscribe is a
+					// no-op and later updates for this id are ignored. The host may say why it
+					// refused (`reason`/`message`); pass that along without requiring it.
+					if (message.docs === null) {
+						watch_registrations.delete(message.subscriptionId);
+						// Pass the info argument only when the host explained the death, so a bare
+						// death keeps delivering exactly one argument like it did before 0.8.0.
+						const info = {
+							...(typeof message.reason === "string" ? { reason: message.reason } : {}),
+							...(typeof message.message === "string" ? { message: message.message } : {}),
+						};
+						if (Object.keys(info).length > 0) {
+							registration.deliver(null, info);
+						} else {
+							registration.deliver(null);
+						}
+					} else if (registration.kind === "window") {
+						registration.deliver({
+							docs: message.docs,
+							hasMore: message.hasMore === true,
+							atCapacity: message.atCapacity === true,
+							incomplete: message.incomplete === true,
+						});
+					} else {
+						registration.deliver(message.docs);
+					}
+				}
+			} else if (
+				initialized &&
+				message.bridgeNonce === bridgeNonce &&
+				message.type === "bonobo:data-user-write-result" &&
+				typeof message.requestId === "string" &&
+				typeof message.result === "object" &&
+				message.result !== null
+			) {
+				const pending = pending_data_writes.get(message.requestId);
+				if (pending) {
+					pending_data_writes.delete(message.requestId);
+					clearTimeout(pending.timeout);
+					pending.resolve(message.result);
+				}
+			} else if (
+				initialized &&
+				message.bridgeNonce === bridgeNonce &&
+				message.type === "bonobo:data-resolve-members-result" &&
+				typeof message.requestId === "string" &&
+				typeof message.members === "object" &&
+				message.members !== null
+			) {
+				const pending = pending_member_resolves.get(message.requestId);
+				if (pending) {
+					pending_member_resolves.delete(message.requestId);
+					clearTimeout(pending.timeout);
+					pending.resolve(message.members);
+				}
 			}
-			// Anything else (unknown types, replayed inits, stray requestIds) is silently ignored.
+			// Anything else (unknown types, replayed inits, stray requestIds or subscriptionIds) is
+			// silently ignored.
 		};
 
 		window.addEventListener("message", handle_message);

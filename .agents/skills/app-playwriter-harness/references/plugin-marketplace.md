@@ -207,6 +207,16 @@ vp env exec pnpx convex data plugins_publisher_repositories --limit 5
 The plugin detail page shows the same thing in the release history, including the review verdict, for
 example `data-probe@0.1.0 · published Aug 14, 10:32 AM · e0e7d066 · reviewed by gpt-5.4-mini · passed`.
 
+A rejection can land in ~5 seconds instead of the usual 60–120s publish: the mechanical dist gate
+(`plugins_dist_review_mechanical_findings` in `packages/app/shared/plugins.ts`) runs before the AI
+review, and its rejecting findings (dense escapes, huge base64 literal, `Function` constructor) use
+the same `Plugin review rejected this version: ...` message shape on the card. The attempt row then
+has `status: "rejected"` with `commitSha: null`. This is deterministic per commit — do not retry the
+same HEAD. Known real-world trigger: a bundled dependency's `new Function("")` feature-detection
+(Zod v4 `allowsEval`) trips the case-sensitive `\bFunction\s*\(` check. When reproducing a finding
+against the repo's dist yourself, remember PowerShell `-match` is case-insensitive by default and
+over-reports lowercase `function (` lines.
+
 ## Triggering a plugin backend
 
 Plugin backends run on `files.upload.completed`, and **a text upload does not trigger one**. An upload
@@ -373,6 +383,84 @@ click provably does nothing, not before.
   `wrangler tail` shows `logs: []` and `convex logs` shows nothing. Diagnose by reading the reserve args in
   `routes-page.ts` against the caps in `packages/app/convex/plugins_data.ts` (`MAX_RESERVATION_TTL_MS`,
   `MAX_VALUE_BYTES`, name rules) instead of retrying.
+
+## Chitchat page smoke (channels + messages)
+
+The Chitchat plugin page (`/w/<org>/<workspace>/plugins/chitchat/pages/chat`) drives cleanly with
+plain `page.frameLocator(".PluginsUiFrame")` clicks — no dispatched-submit workarounds needed.
+Verified 2026-08-17 on chitchat@0.1.0:
+
+- Empty state body text: `No channels yet — create the first one.`
+- `Create channel` opens an inline dialog (`Channel name` text input, `Cancel` / `Create`); the new
+  channel renders as `#<name>` in the list and opens itself.
+- The composer is a `textarea` with `aria-label="Message #<channel>"`; `pressSequentially` the text
+  and press `Enter` to send (`Enter sends · Shift+Enter for a new line`). The sent message renders
+  with author display name and a locale timestamp.
+- The install consent dialog lists capabilities as raw ids (`plugin.data.read`, …); the friendly
+  labels (`Plugin Data Read`, …) appear only in the detail page's Capabilities section.
+
+Threads (verified 2026-08-17 on chitchat@0.1.2):
+
+- Message rows are `li.message`; their action buttons (`Reply in thread`, `Add reaction`, `Edit`,
+  `Delete`) are hover-revealed — a direct click fails with "`li.message` intercepts pointer events".
+  Park the pointer away, `row.hover()`, then click the button scoped to that row.
+- Once a message's thread has replies, `Reply in thread` is REPLACED by an `N replies` button — a
+  locator on the old name waits forever. Enumerate the row's buttons when a name stops matching.
+- The thread panel's composer (`textarea[aria-label="Reply in thread"]`) comes BEFORE the channel
+  composer (`Message #<channel>`) in DOM order, so `locator("textarea").last()` posts to the CHANNEL.
+  Target by aria-label. Deleting a mis-sent message is a two-step confirm (`Delete` → dialog
+  `Delete message`) and leaves a "Message deleted" placeholder row.
+
+Windows and CAS (verified 2026-08-17, two-user E2E on 0.1.3):
+
+- Reads are reactive document windows since 0.1.3: opening a 200+ message channel renders exactly
+  the newest 100 rows with a `Load older` button; each click adds up to 100 older rows over the
+  bridge (`fetchJson` is not involved — the HTTP paging path is gone), and the button disappears at
+  full history. A remote arrival appends without collapsing loaded history.
+- Channel rename/archive are hover-revealed row actions: `li.channel-item` holds
+  `aria-label="Rename #<name>"` / `"Archive #<name>"` buttons. Rename is compare-and-set: save from
+  a dialog opened before someone else's rename keeps the dialog open with a `role="alert"` reading
+  `Someone else changed this channel while the dialog was open. Close it and try again.` The winner's
+  name stays in the list.
+- A reply badge reads `N replies` (also for N = 1 — pre-existing wording). Reactions and reply
+  counts on rows deep beyond the newest-100 update live on both sides once each side has extended
+  its own window with `Load older`.
+- To observe the raw host window payloads (doc count, `hasMore`), install a `message` listener
+  inside the frame with `frame.evaluate` filtering `event.data.type === "bonobo:data-update"` with
+  `Array.isArray(docs)` — the chitchat UI deliberately masks host-side window slides with its
+  accumulating store, so DOM row counts cannot prove window behavior.
+- The hidden polite announcer (`.chitchat-announcer`) makes `getByText("<message text>")` resolve to
+  TWO elements right after a remote arrival (the row and the announcer) — scope text asserts to
+  `li.message` or `.message-text`.
+- To drive the bridge itself (refusal reasons, caps, budget) without any plugin UI: the frame's own
+  URL fragment carries `parentOrigin` and `bridgeNonce` (`new URLSearchParams(location.hash.slice(1))`),
+  so `frame.evaluate` can post crafted `bonobo:data-watch`/`data-unwatch`/`data-window-load-older`
+  messages to `window.parent` and collect the `bonobo:data-update` answers with a `message` listener.
+  Verified 2026-08-17: 9 stacked watches → `reason: "capacity"` once the page's 8 slots fill;
+  ~60 watch/unwatch churn cycles → `reason: "budget"` (slots return, tokens do not); a second
+  `bonobo:ready` kills the page's live watches audibly and the plugin renders its data-dead alert —
+  reload the tab afterwards to restore the page. Draining the budget rate-limits the live page's own
+  new subscriptions for about a minute; do it only in a QA workspace.
+
+Deeper driving anchors (verified 2026-08-17, two-user E2E on 0.1.0):
+
+- Message rows are `li.message[data-key]`; per-row actions (`Reply in thread` / `Add reaction` /
+  `Edit` / `Delete`) live in `.message-actions`, which is `display:none` until the row is hovered
+  or contains focus — `row.hover()` before clicking, or focus a reaction chip. Keyboard-only:
+  in 0.1.0 a plain row had zero focusable children (actions Tab-unreachable); fixed in 0.1.1
+  (`opacity:0`/`pointer-events:none` keeps the buttons in the tab order — Shift+Tab from the
+  composer lands on the newest row's Delete first).
+- Reaction palette: `role="group"` `aria-label="Choose a reaction"`, items
+  `.reaction-palette-item`; arrows rove, Escape returns focus to `Add reaction`. Chips are
+  `button.reaction-chip[aria-pressed]` labeled `"<Token>, N reaction(s)"`.
+- Delete dialog: `role="dialog" aria-modal="true"`, initial focus on Cancel, Tab trap holds,
+  Escape returns focus to the row's Delete button.
+- 0.1.0-only bug (fixed in 0.1.1, re-verified 2/2): ANY remote arrival (or reconnect) rebuilt the
+  message store and collapsed `Load older` history back to the newest-100 window. On 0.1.0
+  fixtures, do pagination assertions before generating new traffic; 0.1.1+ accumulates correctly.
+- Removing the second user from the org kills the HOST route reactively ("You do not have access
+  to this organization/workspace.") and unmounts `.PluginsUiFrame` entirely — the plugin-level
+  `bonobo:data-update docs:null` dead-state path never runs for org-membership revocation.
 
 ## Reading a table count without fooling yourself
 

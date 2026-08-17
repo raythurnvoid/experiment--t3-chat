@@ -30,6 +30,11 @@ const CAPABILITIES = [
 	"workspace.files.write",
 	"plugin.data.read",
 	"plugin.data.write",
+	// Consent line: the plugin's pages may store and change this plugin's data as the acting
+	// member, through the app. Kept apart from `plugin.data.write`, which is the plugin's own
+	// backend or service writing as the installation: the two are different consents, and a
+	// user-write door under the backend capability would widen consent nobody gave.
+	"plugin.data.user-write",
 	"plugin.service.connect",
 	// The plugin's page, running in the browser, may call the origins in `uiOutboundOrigins`. Kept
 	// apart from `outbound.fetch`, which is the plugin's backend calling out from the runner. The two
@@ -286,6 +291,60 @@ export function plugins_validate_secret_value(raw: string) {
 }
 
 // #endregion secrets
+
+// #region plugin data store
+
+/** Collection names and keys in the plugin data store. Same length a plugin secret name may have. */
+export const plugins_data_MAX_NAME_LENGTH = 128;
+/**
+ * An append completes the caller's prefix into a full key by adding the 13-digit inverted
+ * millisecond stamp, one `:`, and 4 random characters. The budget reserves those 18 characters
+ * plus one spare, so the composed key always fits the key length limit.
+ */
+export const plugins_data_MAX_KEY_PREFIX_LENGTH = plugins_data_MAX_NAME_LENGTH - (13 + 1 + 4 + 1);
+/** The largest page or window one plugin-data read may return. */
+export const plugins_data_MAX_LIST_PAGE_SIZE = 100;
+
+// Printable ASCII only (0x21-0x7E, no space). A literal code range, so the host and the Convex
+// isolate can never disagree about it the way Unicode-property classes can.
+const PLUGIN_DATA_KEY_PREFIX_REGEX = /^[\x21-\x7e]+$/;
+
+/**
+ * Host-side pre-check for the watch inputs a plugin page sends over the bridge.
+ *
+ * This is a strict SUBSET of the server's validation: only rules whose outcome cannot depend on
+ * the JavaScript engine's Unicode version (lengths, a literal ASCII range, an integer range).
+ * The server also refuses control characters and surrounding whitespace with Unicode-property
+ * checks; the host must NOT duplicate those, because a browser with newer Unicode data would
+ * refuse names the server still serves. Input that passes here can still die on the server with
+ * the same bare null a denial gets — that is today's behavior and stays correct.
+ */
+export function plugins_data_validate_watch_inputs(args: { collection: string; keyPrefix?: string; limit: number }) {
+	if (args.collection.length === 0 || args.collection.length > plugins_data_MAX_NAME_LENGTH) {
+		return Result({
+			_nay: { message: `Collection names must be 1 to ${plugins_data_MAX_NAME_LENGTH} characters` },
+		});
+	}
+	if (
+		args.keyPrefix !== undefined &&
+		(args.keyPrefix.length > plugins_data_MAX_KEY_PREFIX_LENGTH || !PLUGIN_DATA_KEY_PREFIX_REGEX.test(args.keyPrefix))
+	) {
+		return Result({
+			_nay: {
+				message: `Key prefixes must be 1 to ${plugins_data_MAX_KEY_PREFIX_LENGTH} printable ASCII characters`,
+			},
+		});
+	}
+	if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > plugins_data_MAX_LIST_PAGE_SIZE) {
+		return Result({
+			_nay: { message: `Watch limits must be integers from 1 to ${plugins_data_MAX_LIST_PAGE_SIZE}` },
+		});
+	}
+
+	return Result({ _yay: args });
+}
+
+// #endregion plugin data store
 
 const MAX_OUTBOUND_ORIGIN_LENGTH = 255;
 
@@ -1025,6 +1084,16 @@ export function plugins_validate_manifest(input: unknown) {
 		!capabilities.has("plugin.data.read" satisfies plugins_Capability)
 	) {
 		return Result({ _nay: { message: "The plugin.data.write capability requires the plugin.data.read capability" } });
+	}
+	// Same rule for member writes through the app: a page that stores data the plugin can never
+	// read back would ask the workspace to consent to writes with no visible product behind them.
+	if (
+		capabilities.has("plugin.data.user-write" satisfies plugins_Capability) &&
+		!capabilities.has("plugin.data.read" satisfies plugins_Capability)
+	) {
+		return Result({
+			_nay: { message: "The plugin.data.user-write capability requires the plugin.data.read capability" },
+		});
 	}
 	// plugin.service.connect only lets an outside service borrow the capabilities the workspace
 	// already granted this plugin. On its own it can obtain no scope at all, so the grant mint would

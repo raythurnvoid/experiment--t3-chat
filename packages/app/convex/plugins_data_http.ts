@@ -418,6 +418,7 @@ const list_body_validator = z
 	.object({
 		...installation_field,
 		collection: request_string_validator,
+		keyPrefix: request_string_validator.optional(),
 		cursor: request_string_validator.nullable().optional(),
 		limit: z.number().int().min(1).max(PLUGIN_DATA_LIST_MAX_PAGE_SIZE).optional(),
 	})
@@ -451,6 +452,7 @@ export async function plugins_data_http_list(ctx: ActionCtx, request: Request, p
 	const listed: plugins_data_list_documents_Result = await ctx.runQuery(internal.plugins_data.list_documents, {
 		principal: principal._yay,
 		collection: body._yay.collection,
+		...(body._yay.keyPrefix === undefined ? {} : { keyPrefix: body._yay.keyPrefix }),
 		paginationOpts: {
 			cursor: body._yay.cursor ?? null,
 			numItems: body._yay.limit ?? PLUGIN_DATA_LIST_MAX_PAGE_SIZE,

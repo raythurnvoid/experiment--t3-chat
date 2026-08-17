@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { compareValues } from "convex/values";
 
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { api, internal } from "./_generated/api.js";
@@ -658,6 +659,105 @@ describe("public API routes", () => {
 		});
 		expect(listed.status).toBe(200);
 		expect(await listed.json()).toMatchObject({ documents: [{ key: "meeting-1" }], isDone: true, cursor: null });
+	});
+
+	test("reports the full public document shape on the read route", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const minted = await mint_service_grant(t, fixture);
+		if (minted._nay) {
+			throw new Error(minted._nay.message);
+		}
+
+		// A pre-door doc: written interactively with no stored ownership, so it reads back as shared.
+		await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture),
+			collection: "meetings",
+			key: "meeting-1",
+			value: { title: "Weekly sync" },
+		});
+
+		const read = await t.fetch("/api/v1/plugin-data/read", {
+			method: "POST",
+			headers: service_headers(minted._yay.token),
+			body: JSON.stringify({ collection: "meetings", key: "meeting-1" }),
+		});
+		expect(read.status).toBe(200);
+		// Pin the exact field set: the bridge, the SDK, and plugin pages all consume this shape.
+		expect(await read.json()).toEqual({
+			document: {
+				collection: "meetings",
+				key: "meeting-1",
+				value: { title: "Weekly sync" },
+				revision: 1,
+				byteSize: 23,
+				writeMode: "normal",
+				ownership: "shared",
+				createdBy: fixture.userId,
+				updatedBy: fixture.userId,
+				createdAt: expect.any(Number),
+				updatedAt: expect.any(Number),
+			},
+		});
+
+		// A door-created doc reads back as owned.
+		const appended = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			value: { text: "hello" },
+			clientRequestId: "shape-1",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+		const owned = await t.fetch("/api/v1/plugin-data/read", {
+			method: "POST",
+			headers: service_headers(minted._yay.token),
+			body: JSON.stringify({ collection: "messages", key: appended._yay.key }),
+		});
+		expect(owned.status).toBe(200);
+		expect(await owned.json()).toMatchObject({ document: { ownership: "owned", createdBy: fixture.userId } });
+	});
+
+	test("filters the list route by keyPrefix and refuses an invalid one", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const minted = await mint_service_grant(t, fixture);
+		if (minted._nay) {
+			throw new Error(minted._nay.message);
+		}
+
+		await t.mutation(internal.plugins_data.write_documents_batch, {
+			principal: store_principal(fixture),
+			documents: [
+				{ collection: "meetings", key: "meeting:1", value: { n: 1 } },
+				{ collection: "meetings", key: "note:1", value: { n: 2 } },
+			],
+		});
+
+		const listed = await t.fetch("/api/v1/plugin-data/list", {
+			method: "POST",
+			headers: service_headers(minted._yay.token),
+			body: JSON.stringify({ collection: "meetings", keyPrefix: "meeting:" }),
+		});
+		expect(listed.status).toBe(200);
+		expect(await listed.json()).toMatchObject({ documents: [{ key: "meeting:1" }], isDone: true, cursor: null });
+
+		// The shared prefix rule answers the refusal, so the route reports the same 400 the append does.
+		for (const [keyPrefix, message] of [
+			["no space", "Key prefixes must contain only printable ASCII characters"],
+			["", "Key prefixes must not be empty"],
+			["p".repeat(110), "Key prefixes must be at most 109 characters"],
+		] as const) {
+			const refused = await t.fetch("/api/v1/plugin-data/list", {
+				method: "POST",
+				headers: service_headers(minted._yay.token),
+				body: JSON.stringify({ collection: "meetings", keyPrefix }),
+			});
+			expect(refused.status).toBe(400);
+			expect(await refused.json()).toEqual({ message });
+		}
 	});
 
 	test("refuses a value field name Convex cannot store, and accepts the punctuation it can", async () => {
@@ -1523,6 +1623,8 @@ describe("write_document", () => {
 			revision: 1,
 			byteSize: 40,
 			writeMode: "normal",
+			// The service write path stamps shared on docs it creates now that the field is required.
+			ownership: "shared",
 			createdBy: fixture.userId,
 			updatedBy: fixture.userId,
 		});
@@ -1902,6 +2004,7 @@ describe("list_documents", () => {
 					byteSize: 9,
 					revision: 1,
 					writeMode: "normal",
+					ownership: "shared",
 					createdBy: fixture.userId,
 					updatedBy: fixture.userId,
 					updatedAt: now,
@@ -1932,6 +2035,113 @@ describe("list_documents", () => {
 		}
 		expect(rest._yay.page).toHaveLength(20);
 		expect(rest._yay.isDone).toBe(true);
+	});
+
+	test("keyPrefix narrows the pages and the cursor continues inside the range", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			const insert = async (key: string, n: number) => {
+				await ctx.db.insert("plugins_data", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					installationId: fixture.installationId,
+					pluginName: "council",
+					collection: "messages",
+					key,
+					value: { n },
+					byteSize: 9,
+					revision: 1,
+					writeMode: "normal",
+					ownership: "shared",
+					createdBy: fixture.userId,
+					updatedBy: fixture.userId,
+					updatedAt: now,
+				});
+			};
+			for (let index = 0; index < 120; index += 1) {
+				await insert(`msg:${String(index).padStart(3, "0")}`, index);
+			}
+			for (let index = 0; index < 30; index += 1) {
+				await insert(`note:${String(index).padStart(3, "0")}`, index);
+			}
+		});
+
+		const firstPage = await t.query(internal.plugins_data.list_documents, {
+			principal: store_principal(fixture),
+			collection: "messages",
+			keyPrefix: "msg:",
+			paginationOpts: { numItems: 100, cursor: null },
+		});
+		if (firstPage._nay) {
+			throw new Error(firstPage._nay.message);
+		}
+		expect(firstPage._yay.page).toHaveLength(100);
+		expect(firstPage._yay.isDone).toBe(false);
+		expect(firstPage._yay.page.every((doc) => doc.key.startsWith("msg:"))).toBe(true);
+
+		// The second page picks up inside the narrowed range: only the 20 remaining prefixed docs,
+		// never the 30 `note:` docs that follow them in the index.
+		const secondPage = await t.query(internal.plugins_data.list_documents, {
+			principal: store_principal(fixture),
+			collection: "messages",
+			keyPrefix: "msg:",
+			paginationOpts: { numItems: 100, cursor: firstPage._yay.continueCursor },
+		});
+		if (secondPage._nay) {
+			throw new Error(secondPage._nay.message);
+		}
+		expect(secondPage._yay.page).toHaveLength(20);
+		expect(secondPage._yay.isDone).toBe(true);
+		expect(secondPage._yay.page.every((doc) => doc.key.startsWith("msg:"))).toBe(true);
+	});
+
+	test("the successor bound excludes sibling prefixes at the alphabet edges", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const key of ["room9", "room9a", "room:x", "room;y", "x~", "x~é", "x€"]) {
+				await ctx.db.insert("plugins_data", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					installationId: fixture.installationId,
+					pluginName: "council",
+					collection: "rooms",
+					key,
+					value: { n: 1 },
+					byteSize: 7,
+					revision: 1,
+					writeMode: "normal",
+					ownership: "shared",
+					createdBy: fixture.userId,
+					updatedBy: fixture.userId,
+					updatedAt: now,
+				});
+			}
+		});
+
+		const list = async (keyPrefix: string) => {
+			const listed = await t.query(internal.plugins_data.list_documents, {
+				principal: store_principal(fixture),
+				collection: "rooms",
+				keyPrefix,
+				paginationOpts: { numItems: 100, cursor: null },
+			});
+			if (listed._nay) {
+				throw new Error(listed._nay.message);
+			}
+			return listed._yay.page.map((doc) => doc.key);
+		};
+
+		// ':' is exactly '9' + 1, so a "room:" key starts at the exclusive bound of prefix "room9" and
+		// must stay out. A key equal to the prefix itself is a match.
+		expect(await list("room9")).toEqual(["room9", "room9a"]);
+		expect(await list("room:")).toEqual(["room:x"]);
+		// '~' is the top of the allowed alphabet. Its bound is the unstorable 0x7F, which still sorts
+		// below every non-ASCII continuation, so "x€" stays out while "x~é" stays in.
+		expect(await list("x~")).toEqual(["x~", "x~é"]);
 	});
 });
 
@@ -3367,6 +3577,1485 @@ describe("db_authorize", () => {
 });
 
 /**
+ * An installation whose version declares and whose workspace accepted the user-write door, owned
+ * by a signed-in member. The door takes app auth, so calls go through `asUser`.
+ */
+async function seed_user_write_door(
+	t: ReturnType<typeof test_convex>,
+	args: { organizationName?: string; clerkUserId?: string } = {},
+) {
+	const clerkUserId = args.clerkUserId ?? "door-owner";
+	const userId = await t.run(async (ctx) => await ctx.db.insert("users", { clerkUserId }));
+	const fixture = await seed_installation(t, {
+		userId,
+		organizationName: args.organizationName,
+		acceptedCapabilities: ["plugin.data.read", "plugin.data.write", "plugin.data.user-write", "plugin.service.connect"],
+	});
+	// The seed inserts a version without the door capability, and the door checks the declaration
+	// on every call, so stamp it on the version too.
+	await t.run(async (ctx) => {
+		await ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+			capabilities: [
+				"plugin.data.read",
+				"plugin.data.write",
+				"plugin.data.user-write",
+				"plugin.service.connect",
+			] satisfies plugins_Capability[],
+		});
+	});
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", subject: clerkUserId, external_id: userId });
+	return { ...fixture, asUser } as const;
+}
+
+describe("user_append_document", () => {
+	test("stores an owned document under a newest-first server key", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		const limiterNow = Date.now();
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(limiterNow);
+		try {
+			const appended = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				keyPrefix: "general:",
+				value: { text: "hello" },
+				clientRequestId: "append-1",
+			});
+			if (appended._nay) {
+				throw new Error(appended._nay.message);
+			}
+
+			// 13-digit inverted millisecond stamp, one `:`, four random hex characters.
+			const invertedMs = String(9_999_999_999_999 - limiterNow).padStart(13, "0");
+			expect(appended._yay.key).toMatch(new RegExp(`^general:${invertedMs}:[0-9a-f]{4}$`));
+
+			const documents = await read_documents(t, fixture);
+			expect(documents).toHaveLength(1);
+			expect(documents[0]).toMatchObject({
+				collection: "messages",
+				key: appended._yay.key,
+				value: { text: "hello" },
+				revision: 1,
+				writeMode: "normal",
+				ownership: "owned",
+				userWriteRequestId: "append-1",
+				createdBy: fixture.userId,
+				updatedBy: fixture.userId,
+			});
+			expect(documents[0]!.userWriteRequestFingerprint).toMatch(/^[0-9a-f]{64}$/);
+			expect(await read_usage(t, fixture)).toMatchObject({
+				usedDocuments: 1,
+				usedBytes: appended._yay.byteSize,
+				collectionNames: ["messages"],
+			});
+		} finally {
+			dateNow.mockRestore();
+		}
+	});
+
+	test("a later append sorts lexicographically before an earlier one", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const baseNow = Date.now();
+
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(baseNow);
+		try {
+			const first = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				value: { n: 1 },
+				clientRequestId: "order-1",
+			});
+			dateNow.mockReturnValue(baseNow + 5_000);
+			const second = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				value: { n: 2 },
+				clientRequestId: "order-2",
+			});
+			if (first._nay || second._nay) {
+				throw new Error(first._nay?.message ?? second._nay?.message);
+			}
+
+			// Ascending key order must read newest first, so the later key sorts before the earlier.
+			expect(second._yay.key < first._yay.key).toBe(true);
+			const documents = await read_documents(t, fixture);
+			expect(documents.map((doc) => doc.key)).toEqual([second._yay.key, first._yay.key]);
+		} finally {
+			dateNow.mockRestore();
+		}
+	});
+
+	test("answers a replayed append with the stored key and refuses a changed one", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const send = async (value: Record<string, unknown>, keyPrefix?: string) =>
+			await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				...(keyPrefix === undefined ? {} : { keyPrefix }),
+				value,
+				clientRequestId: "retry-1",
+			});
+
+		const first = await send({ text: "hello" });
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
+		const replay = await send({ text: "hello" });
+		if (replay._nay) {
+			throw new Error(replay._nay.message);
+		}
+		expect(replay._yay).toEqual(first._yay);
+		expect(await read_documents(t, fixture)).toHaveLength(1);
+
+		// Same idempotency key, different request: refused instead of appending a second document.
+		const changedValue = await send({ text: "different" });
+		expect(changedValue._nay?.message).toBe("This idempotency key was already used for a different write");
+		const changedPrefix = await send({ text: "hello" }, "general:");
+		expect(changedPrefix._nay?.message).toBe("This idempotency key was already used for a different write");
+		expect(await read_documents(t, fixture)).toHaveLength(1);
+	});
+
+	test("keeps the generated key inside the budget at the longest allowed prefix", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		const atLimit = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			keyPrefix: "p".repeat(109),
+			value: { n: 1 },
+			clientRequestId: "long-1",
+		});
+		if (atLimit._nay) {
+			throw new Error(atLimit._nay.message);
+		}
+		expect(atLimit._yay.key).toMatch(/^p{109}\d{13}:[0-9a-f]{4}$/);
+		expect(atLimit._yay.key.length).toBeLessThanOrEqual(128);
+
+		const overLimit = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			keyPrefix: "p".repeat(110),
+			value: { n: 1 },
+			clientRequestId: "long-2",
+		});
+		expect(overLimit._nay?.message).toBe("Key prefixes must be at most 109 characters");
+		expect(await read_documents(t, fixture)).toHaveLength(1);
+	});
+
+	test("pins the key prefix alphabet to printable ASCII without space", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const send = async (keyPrefix: string, clientRequestId: string) =>
+			await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				keyPrefix,
+				value: { n: 1 },
+				clientRequestId,
+			});
+
+		// '9', ':', and '~' are the digit, segment, and top edges of the allowed 0x21-0x7E range.
+		for (const [index, keyPrefix] of ["9", ":", "~"].entries()) {
+			expect((await send(keyPrefix, `edge-ok-${index}`))._nay).toBeUndefined();
+		}
+		for (const [index, keyPrefix] of [" ", "no space", "caffé", "🦧"].entries()) {
+			expect((await send(keyPrefix, `edge-bad-${index}`))._nay?.message).toBe(
+				"Key prefixes must contain only printable ASCII characters",
+			);
+		}
+		expect((await send("", "edge-empty"))._nay?.message).toBe("Key prefixes must not be empty");
+		expect(await read_documents(t, fixture)).toHaveLength(3);
+	});
+
+	test("lets an invited anonymous member append", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const anonymous = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: null });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			return { userId, membershipId } as const;
+		});
+
+		// An anonymous member authenticates with the app's own JWT issuer; the subject is the user id.
+		const asAnonymous = t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: anonymous.userId });
+		const appended = await asAnonymous.mutation(api.plugins_data.user_append_document, {
+			membershipId: anonymous.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			value: { text: "from an anonymous member" },
+			clientRequestId: "anon-1",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+
+		const documents = await read_documents(t, fixture);
+		expect(documents).toHaveLength(1);
+		expect(documents[0]).toMatchObject({ createdBy: anonymous.userId, ownership: "owned" });
+	});
+
+	test("refuses the eleventh append in one frozen-clock burst", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		const limiterNow = Date.now();
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(limiterNow);
+		try {
+			// The bucket holds 10 tokens and refills one every two seconds, so a frozen clock lets
+			// exactly ten writes through.
+			for (let index = 0; index < 10; index += 1) {
+				const appended = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+					membershipId: fixture.membershipId,
+					pluginName: "council",
+					collection: "messages",
+					value: { n: index },
+					clientRequestId: `burst-${index}`,
+				});
+				expect(appended._nay).toBeUndefined();
+			}
+			const refused = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				value: { n: 10 },
+				clientRequestId: "burst-10",
+			});
+			expect(refused._nay?.message).toBe("Rate limit exceeded");
+		} finally {
+			dateNow.mockRestore();
+		}
+		expect(await read_documents(t, fixture)).toHaveLength(10);
+	});
+
+	test("a replayed append answers the stored key even when the bucket is empty", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		const limiterNow = Date.now();
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(limiterNow);
+		try {
+			for (let index = 0; index < 10; index += 1) {
+				const appended = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+					membershipId: fixture.membershipId,
+					pluginName: "council",
+					collection: "messages",
+					value: { n: index },
+					clientRequestId: `burst-${index}`,
+				});
+				expect(appended._nay).toBeUndefined();
+			}
+
+			// A retry after a lost response replays the same request. The first call already
+			// committed and charged the bucket, so the replay must answer the stored key instead
+			// of a rate refusal, or a delivered message would report as failed.
+			const replayed = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				value: { n: 0 },
+				clientRequestId: "burst-0",
+			});
+			expect(replayed._nay).toBeUndefined();
+			const documents = await read_documents(t, fixture);
+			expect(replayed._yay?.key).toBe(documents.find((doc) => doc.userWriteRequestId === "burst-0")?.key);
+
+			// A fresh append still refuses: the replay above answered without refilling anything.
+			const refused = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				value: { n: 11 },
+				clientRequestId: "burst-11",
+			});
+			expect(refused._nay?.message).toBe("Rate limit exceeded");
+		} finally {
+			dateNow.mockRestore();
+		}
+		expect(await read_documents(t, fixture)).toHaveLength(10);
+	});
+
+	test("rejects an expectedRevision argument: an append has no revision to expect", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		// The field is absent from the validator on purpose, so a caller cannot even ask.
+		await expect(
+			fixture.asUser.mutation(api.plugins_data.user_append_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				value: { n: 1 },
+				clientRequestId: "cas-append",
+				...({ expectedRevision: 0 } as object),
+			}),
+		).rejects.toThrow(/expectedRevision/);
+	});
+});
+
+describe("user_put_document", () => {
+	test("creates shared docs any member can change, and guards owned docs by creator", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const member = await join_member_with_role(t, fixture, { clerkUserId: "door-second-member", role: "member" });
+
+		const appended = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			value: { text: "original" },
+			clientRequestId: "put-1",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+		const ownedKey = appended._yay.key;
+
+		// Another member may not edit the owned doc, not even through the door.
+		const refused = await member.asUser.mutation(api.plugins_data.user_put_document, {
+			membershipId: member.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			key: ownedKey,
+			value: { text: "hijacked" },
+		});
+		expect(refused._nay?.message).toBe("This document belongs to another writer");
+
+		// The creator edits their own doc, and it stays owned.
+		const edited = await fixture.asUser.mutation(api.plugins_data.user_put_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			key: ownedKey,
+			value: { text: "edited" },
+		});
+		if (edited._nay) {
+			throw new Error(edited._nay.message);
+		}
+		expect(edited._yay.revision).toBe(2);
+
+		// A put on an absent key creates a shared doc, and any member with content.write may update it.
+		const created = await member.asUser.mutation(api.plugins_data.user_put_document, {
+			membershipId: member.membershipId,
+			pluginName: "council",
+			collection: "channels",
+			key: "general",
+			value: { name: "general" },
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const renamed = await fixture.asUser.mutation(api.plugins_data.user_put_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "channels",
+			key: "general",
+			value: { name: "renamed" },
+		});
+		if (renamed._nay) {
+			throw new Error(renamed._nay.message);
+		}
+		expect(renamed._yay.revision).toBe(2);
+
+		const documents = await read_documents(t, fixture);
+		expect(documents.find((doc) => doc.key === ownedKey)).toMatchObject({
+			value: { text: "edited" },
+			ownership: "owned",
+			createdBy: fixture.userId,
+		});
+		expect(documents.find((doc) => doc.key === "general")).toMatchObject({
+			value: { name: "renamed" },
+			ownership: "shared",
+			createdBy: member.userId,
+			updatedBy: fixture.userId,
+		});
+	});
+
+	test("refuses a versioned key with the service literal", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		await t.mutation(internal.plugins_data.write_versioned_document, {
+			principal: service_principal(fixture),
+			collection: "messages",
+			key: "outbox",
+			revision: 1,
+			value: { n: 1 },
+		});
+
+		const put = await fixture.asUser.mutation(api.plugins_data.user_put_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			key: "outbox",
+			value: { n: 2 },
+		});
+		expect(put._nay?.message).toBe("This document is written by a service and cannot be changed here");
+		const removed = await fixture.asUser.mutation(api.plugins_data.user_remove_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			key: "outbox",
+		});
+		expect(removed._nay?.message).toBe("This document is written by a service and cannot be changed here");
+
+		const documents = await read_documents(t, fixture);
+		expect(documents).toHaveLength(1);
+		expect(documents[0]).toMatchObject({ key: "outbox", value: { n: 1 }, writeMode: "versioned" });
+	});
+
+	test("expectedRevision gates the put against the revision the caller read", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const member = await join_member_with_role(t, fixture, { clerkUserId: "cas-put-member", role: "member" });
+		const put = async (args: { key?: string; value: Record<string, unknown>; expectedRevision?: number }) =>
+			await fixture.asUser.mutation(api.plugins_data.user_put_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "channels",
+				key: args.key ?? "general",
+				value: args.value,
+				...(args.expectedRevision === undefined ? {} : { expectedRevision: args.expectedRevision }),
+			});
+
+		// 0 means "must not exist yet", and the first stored revision is 1.
+		expect((await put({ value: { name: "general" }, expectedRevision: 0 }))._yay).toMatchObject({ revision: 1 });
+		expect((await put({ value: { name: "late" }, expectedRevision: 0 }))._nay).toEqual({
+			name: "conflict",
+			message: "This document changed since it was read",
+		});
+
+		// A matching revision writes; replaying the same guess refuses, and the refusal carries no
+		// fresh revision to retry against.
+		expect((await put({ value: { name: "renamed" }, expectedRevision: 1 }))._yay).toMatchObject({ revision: 2 });
+		const stale = await put({ value: { name: "stale" }, expectedRevision: 1 });
+		expect(stale._nay).toEqual({ name: "conflict", message: "This document changed since it was read" });
+
+		// A guess about an absent doc refuses too: the doc it read is gone.
+		expect((await put({ key: "missing", value: { n: 1 }, expectedRevision: 3 }))._nay).toMatchObject({
+			message: "This document changed since it was read",
+		});
+
+		// Delete and recreate starts over at revision 1: a revision orders one document lifetime.
+		const removed = await fixture.asUser.mutation(api.plugins_data.user_remove_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "channels",
+			key: "general",
+		});
+		expect(removed._yay).toEqual({ deleted: true });
+		expect((await put({ value: { name: "reborn" }, expectedRevision: 0 }))._yay).toMatchObject({ revision: 1 });
+
+		// Bad guesses are bad input, not conflicts.
+		expect((await put({ value: { n: 1 }, expectedRevision: -1 }))._nay?.message).toBe(
+			"Expected revisions must be non-negative integers",
+		);
+		expect((await put({ value: { n: 1 }, expectedRevision: 1.5 }))._nay?.message).toBe(
+			"Expected revisions must be non-negative integers",
+		);
+
+		// Ownership is judged before the guess: a writer refused for ownership hears that refusal
+		// whatever revision they pass, so the guess cannot probe a doc they may not touch.
+		const appended = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			value: { text: "mine" },
+			clientRequestId: "cas-owned",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+		const hijack = await member.asUser.mutation(api.plugins_data.user_put_document, {
+			membershipId: member.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			key: appended._yay.key,
+			value: { text: "hijacked" },
+			expectedRevision: 999,
+		});
+		expect(hijack._nay?.message).toBe("This document belongs to another writer");
+	});
+});
+
+describe("user_remove_document", () => {
+	test("deletes own and shared docs, reports absent keys, and guards owned docs", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const member = await join_member_with_role(t, fixture, { clerkUserId: "door-remover", role: "member" });
+
+		const absent = await fixture.asUser.mutation(api.plugins_data.user_remove_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			key: "never-stored",
+		});
+		expect(absent).toEqual({ _yay: { deleted: false } });
+
+		const appended = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			value: { text: "mine" },
+			clientRequestId: "rm-1",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+
+		const refused = await member.asUser.mutation(api.plugins_data.user_remove_document, {
+			membershipId: member.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			key: appended._yay.key,
+		});
+		expect(refused._nay?.message).toBe("This document belongs to another writer");
+		expect(await read_documents(t, fixture)).toHaveLength(1);
+
+		// A shared doc is removable by any member with content.write, not only its creator.
+		const shared = await member.asUser.mutation(api.plugins_data.user_put_document, {
+			membershipId: member.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			key: "shared-note",
+			value: { n: 1 },
+		});
+		if (shared._nay) {
+			throw new Error(shared._nay.message);
+		}
+		const sharedRemoved = await fixture.asUser.mutation(api.plugins_data.user_remove_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			key: "shared-note",
+		});
+		expect(sharedRemoved).toEqual({ _yay: { deleted: true } });
+
+		const ownRemoved = await fixture.asUser.mutation(api.plugins_data.user_remove_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			key: appended._yay.key,
+		});
+		expect(ownRemoved).toEqual({ _yay: { deleted: true } });
+		expect(await read_documents(t, fixture)).toHaveLength(0);
+		expect(await read_usage(t, fixture)).toMatchObject({ usedDocuments: 0, usedBytes: 0 });
+	});
+
+	test("expectedRevision gates the remove, and an absent doc answers the guess", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const member = await join_member_with_role(t, fixture, { clerkUserId: "cas-remove-member", role: "member" });
+		const remove = async (args: { key: string; expectedRevision?: number }) =>
+			await fixture.asUser.mutation(api.plugins_data.user_remove_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "channels",
+				key: args.key,
+				...(args.expectedRevision === undefined ? {} : { expectedRevision: args.expectedRevision }),
+			});
+
+		const created = await fixture.asUser.mutation(api.plugins_data.user_put_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "channels",
+			key: "general",
+			value: { name: "general" },
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		// A stale guess leaves the doc alone; the read revision deletes it.
+		expect((await remove({ key: "general", expectedRevision: 2 }))._nay).toEqual({
+			name: "conflict",
+			message: "This document changed since it was read",
+		});
+		expect((await remove({ key: "general", expectedRevision: 1 }))._yay).toEqual({ deleted: true });
+
+		// An absent doc keeps the idempotent answer for "no expectation" and for "must not exist",
+		// and refuses a guess about a revision that is gone.
+		expect((await remove({ key: "general" }))._yay).toEqual({ deleted: false });
+		expect((await remove({ key: "general", expectedRevision: 0 }))._yay).toEqual({ deleted: false });
+		expect((await remove({ key: "general", expectedRevision: 1 }))._nay).toMatchObject({
+			message: "This document changed since it was read",
+		});
+
+		// Ownership is judged before the guess, like the put.
+		const appended = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			value: { text: "mine" },
+			clientRequestId: "cas-remove-owned",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+		const hijack = await member.asUser.mutation(api.plugins_data.user_remove_document, {
+			membershipId: member.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			key: appended._yay.key,
+			expectedRevision: 999,
+		});
+		expect(hijack._nay?.message).toBe("This document belongs to another writer");
+	});
+});
+
+describe("user_put_owned_document", () => {
+	test("isolates two members writing the same logical key", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const member = await join_member_with_role(t, fixture, { clerkUserId: "door-reactor", role: "member" });
+
+		const aVote = await fixture.asUser.mutation(api.plugins_data.user_put_owned_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "reactions",
+			key: "vote",
+			value: { choice: "yes" },
+		});
+		const bVote = await member.asUser.mutation(api.plugins_data.user_put_owned_document, {
+			membershipId: member.membershipId,
+			pluginName: "council",
+			collection: "reactions",
+			key: "vote",
+			value: { choice: "no" },
+		});
+		if (aVote._nay || bVote._nay) {
+			throw new Error(aVote._nay?.message ?? bVote._nay?.message);
+		}
+		expect(aVote._yay.key).toBe(`vote:${fixture.userId}`);
+		expect(bVote._yay.key).toBe(`vote:${member.userId}`);
+		expect(await read_documents(t, fixture)).toHaveLength(2);
+
+		// The generic remove on the other member's full suffixed key hits the ownership rule.
+		const forged = await member.asUser.mutation(api.plugins_data.user_remove_document, {
+			membershipId: member.membershipId,
+			pluginName: "council",
+			collection: "reactions",
+			key: aVote._yay.key,
+		});
+		expect(forged._nay?.message).toBe("This document belongs to another writer");
+
+		// A ":" smuggled into the caller key stays caller text: it lands under the caller's own suffix.
+		const smuggled = await member.asUser.mutation(api.plugins_data.user_put_owned_document, {
+			membershipId: member.membershipId,
+			pluginName: "council",
+			collection: "reactions",
+			key: `vote:${fixture.userId}`,
+			value: { choice: "forged" },
+		});
+		if (smuggled._nay) {
+			throw new Error(smuggled._nay.message);
+		}
+		expect(smuggled._yay.key).toBe(`vote:${fixture.userId}:${member.userId}`);
+		const documents = await read_documents(t, fixture);
+		expect(documents).toHaveLength(3);
+		expect(documents.find((doc) => doc.key === `vote:${fixture.userId}`)).toMatchObject({
+			value: { choice: "yes" },
+			createdBy: fixture.userId,
+		});
+
+		// removeOwned only ever reaches the caller's own suffix.
+		const removed = await member.asUser.mutation(api.plugins_data.user_remove_owned_document, {
+			membershipId: member.membershipId,
+			pluginName: "council",
+			collection: "reactions",
+			key: "vote",
+		});
+		expect(removed).toEqual({ _yay: { deleted: true } });
+		const after = await read_documents(t, fixture);
+		expect(after.map((doc) => doc.key).sort()).toEqual([`vote:${fixture.userId}`, `vote:${fixture.userId}:${member.userId}`]);
+
+		const removedAgain = await member.asUser.mutation(api.plugins_data.user_remove_owned_document, {
+			membershipId: member.membershipId,
+			pluginName: "council",
+			collection: "reactions",
+			key: "vote",
+		});
+		expect(removedAgain).toEqual({ _yay: { deleted: false } });
+	});
+
+	test("refuses a squatted composed key and a key that outgrows the budget", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		// A shared doc created at exactly the composed key squats it; putOwned must refuse, not adopt.
+		const squat = await fixture.asUser.mutation(api.plugins_data.user_put_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "reactions",
+			key: `poll:${fixture.userId}`,
+			value: { n: 1 },
+		});
+		if (squat._nay) {
+			throw new Error(squat._nay.message);
+		}
+		const refused = await fixture.asUser.mutation(api.plugins_data.user_put_owned_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "reactions",
+			key: "poll",
+			value: { n: 2 },
+		});
+		expect(refused._nay?.message).toBe("This document belongs to another writer");
+		const documents = await read_documents(t, fixture);
+		expect(documents).toHaveLength(1);
+		expect(documents[0]).toMatchObject({ value: { n: 1 }, ownership: "shared" });
+
+		// The composed key must still fit 128 characters with `:` and the writer id appended.
+		const idLength = String(fixture.userId).length;
+		const fits = await fixture.asUser.mutation(api.plugins_data.user_put_owned_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "reactions",
+			key: "k".repeat(127 - idLength),
+			value: { n: 3 },
+		});
+		if (fits._nay) {
+			throw new Error(fits._nay.message);
+		}
+		expect(fits._yay.key.length).toBe(128);
+		const overflow = await fixture.asUser.mutation(api.plugins_data.user_put_owned_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "reactions",
+			key: "k".repeat(128 - idLength),
+			value: { n: 4 },
+		});
+		expect(overflow._nay?.message).toBe("Keys must be at most 128 characters after the writer id is appended");
+	});
+
+	test("expectedRevision gates the owned put and remove against the composed key's doc", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const putOwned = async (args: { value: Record<string, unknown>; expectedRevision?: number }) =>
+			await fixture.asUser.mutation(api.plugins_data.user_put_owned_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "reactions",
+				key: "msg-1",
+				value: args.value,
+				...(args.expectedRevision === undefined ? {} : { expectedRevision: args.expectedRevision }),
+			});
+		const removeOwned = async (args: { expectedRevision?: number }) =>
+			await fixture.asUser.mutation(api.plugins_data.user_remove_owned_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "reactions",
+				key: "msg-1",
+				...(args.expectedRevision === undefined ? {} : { expectedRevision: args.expectedRevision }),
+			});
+
+		// The guess is judged against the doc at the composed key, so the same flow as the shared
+		// put holds per member: create with 0, update with the read revision, refuse the replay.
+		expect((await putOwned({ value: { emoji: "👍" }, expectedRevision: 0 }))._yay).toMatchObject({ revision: 1 });
+		expect((await putOwned({ value: { emoji: "🎉" }, expectedRevision: 1 }))._yay).toMatchObject({ revision: 2 });
+		expect((await putOwned({ value: { emoji: "👀" }, expectedRevision: 1 }))._nay).toEqual({
+			name: "conflict",
+			message: "This document changed since it was read",
+		});
+
+		// The owned remove answers the guess the same way, absent doc included.
+		expect((await removeOwned({ expectedRevision: 1 }))._nay).toMatchObject({
+			message: "This document changed since it was read",
+		});
+		expect((await removeOwned({ expectedRevision: 2 }))._yay).toEqual({ deleted: true });
+		expect((await removeOwned({ expectedRevision: 0 }))._yay).toEqual({ deleted: false });
+		expect((await removeOwned({ expectedRevision: 2 }))._nay).toMatchObject({
+			message: "This document changed since it was read",
+		});
+	});
+});
+
+describe("db_authorize_user_write", () => {
+	test("refuses a forged membership, a stranger, and an unauthenticated caller", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const member = await join_member_with_role(t, fixture, { clerkUserId: "door-forger", role: "member" });
+
+		// A member naming somebody else's membership doc is refused before anything is derived from it.
+		const forged = await member.asUser.mutation(api.plugins_data.user_append_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			value: { text: "forged" },
+			clientRequestId: "forged-1",
+		});
+		expect(forged._nay?.message).toBe("Unauthorized");
+
+		const stranger = await seed_user_write_door(t, { organizationName: "stranger-org", clerkUserId: "door-stranger" });
+		const crossTenant = await stranger.asUser.mutation(api.plugins_data.user_append_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			value: { text: "cross-tenant" },
+			clientRequestId: "forged-2",
+		});
+		expect(crossTenant._nay?.message).toBe("Unauthorized");
+
+		const unauthenticated = await t.mutation(api.plugins_data.user_append_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			value: { text: "nobody" },
+			clientRequestId: "forged-3",
+		});
+		expect(unauthenticated._nay?.message).toBe("Unauthenticated");
+
+		expect(await read_documents(t, fixture)).toHaveLength(0);
+	});
+
+	test("closes the door on every revocation flavor and on a read-only role", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const append = async (clientRequestId: string) =>
+			await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				value: { text: clientRequestId },
+				clientRequestId,
+			});
+
+		expect((await append("baseline"))._nay).toBeUndefined();
+
+		// 1) The workspace withdraws its consent for the capability.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: ["plugin.data.read", "plugin.data.write", "plugin.service.connect"],
+			});
+		});
+		expect((await append("no-acceptance"))._nay?.message).toBe("Permission denied");
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: [
+					"plugin.data.read",
+					"plugin.data.write",
+					"plugin.data.user-write",
+					"plugin.service.connect",
+				],
+			});
+		});
+
+		// 2) The installation is disabled.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" });
+		});
+		expect((await append("disabled"))._nay?.message).toBe("Not found");
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "enabled" });
+		});
+
+		// 3) An upgrade stops declaring the capability, even though the workspace once accepted it.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+				capabilities: ["plugin.data.read", "plugin.data.write", "plugin.service.connect"],
+			});
+		});
+		expect((await append("no-declaration"))._nay?.message).toBe("Permission denied");
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+				capabilities: [
+					"plugin.data.read",
+					"plugin.data.write",
+					"plugin.data.user-write",
+					"plugin.service.connect",
+				] satisfies plugins_Capability[],
+			});
+		});
+
+		// 4) A viewer may read the workspace but not write it.
+		const viewer = await join_member_with_role(t, fixture, { clerkUserId: "door-viewer", role: "viewer" });
+		const viewerAppend = await viewer.asUser.mutation(api.plugins_data.user_append_document, {
+			membershipId: viewer.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			value: { text: "viewer" },
+			clientRequestId: "viewer-1",
+		});
+		expect(viewerAppend._nay?.message).toBe("Permission denied");
+
+		// 5) The membership itself is removed.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("organizations_workspaces_users", fixture.membershipId, { active: false });
+		});
+		expect((await append("no-membership"))._nay?.message).toBe("Unauthorized");
+
+		// Only the baseline write landed.
+		const documents = await read_documents(t, fixture);
+		expect(documents).toHaveLength(1);
+		expect(documents[0]).toMatchObject({ value: { text: "baseline" } });
+	});
+});
+
+describe("watch_documents", () => {
+	test("throws with no auth identity and answers null for a forged membership", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		await expect(
+			t.query(api.plugins_data.watch_documents, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				limit: 10,
+			}),
+		).rejects.toThrow(/Unauthenticated/);
+
+		// A member naming somebody else's membership doc is refused before anything is derived from it.
+		const member = await join_member_with_role(t, fixture, { clerkUserId: "watch-forger", role: "member" });
+		const forged = await member.asUser.query(api.plugins_data.watch_documents, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			limit: 10,
+		});
+		expect(forged).toBeNull();
+
+		const stranger = await seed_user_write_door(t, {
+			organizationName: "watch-stranger-org",
+			clerkUserId: "watch-stranger",
+		});
+		const crossTenant = await stranger.asUser.query(api.plugins_data.watch_documents, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			limit: 10,
+		});
+		expect(crossTenant).toBeNull();
+	});
+
+	test("returns the newest window in ascending key order and respects the limit", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const baseNow = Date.now();
+
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(baseNow);
+		try {
+			const keys: string[] = [];
+			for (let index = 0; index < 3; index += 1) {
+				dateNow.mockReturnValue(baseNow + index * 5_000);
+				const appended = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+					membershipId: fixture.membershipId,
+					pluginName: "council",
+					collection: "messages",
+					value: { n: index },
+					clientRequestId: `watch-order-${index}`,
+				});
+				if (appended._nay) {
+					throw new Error(appended._nay.message);
+				}
+				keys.push(appended._yay.key);
+			}
+
+			const watched = await fixture.asUser.query(api.plugins_data.watch_documents, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				limit: 2,
+			});
+			// The window holds the two newest appends: inverted-ms keys make ascending order newest
+			// first, so the oldest append falls off the end of the window, not the newest.
+			expect(watched?.docs.map((doc) => doc.key)).toEqual([keys[2], keys[1]]);
+			expect(watched?.docs.map((doc) => doc.value)).toEqual([{ n: 2 }, { n: 1 }]);
+		} finally {
+			dateNow.mockRestore();
+		}
+	});
+
+	test("keyPrefix narrows the window and spans a supplementary Unicode key", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		for (const [index, keyPrefix] of ["general:", "general:", "random:"].entries()) {
+			const appended = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				keyPrefix,
+				value: { n: index },
+				clientRequestId: `watch-prefix-${index}`,
+			});
+			if (appended._nay) {
+				throw new Error(appended._nay.message);
+			}
+		}
+		// A key whose first character after the prefix is U+10FFFF sorts above every ASCII
+		// continuation, and above the broken `prefix + "\uffff"` bound this range must not use. The
+		// door only mints ASCII keys, so store it through the interactive write path, whose key rule
+		// allows non-control Unicode.
+		const unicodeKey = "general:\u{10FFFF}late";
+		const written = await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture),
+			collection: "messages",
+			key: unicodeKey,
+			value: { n: 3 },
+		});
+		expect(written._nay).toBeUndefined();
+
+		const watched = await fixture.asUser.query(api.plugins_data.watch_documents, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			keyPrefix: "general:",
+			limit: 100,
+		});
+		expect(watched?.docs).toHaveLength(3);
+		expect(watched?.docs.every((doc) => doc.key.startsWith("general:"))).toBe(true);
+		expect(watched?.docs.map((doc) => doc.key)).toContain(unicodeKey);
+	});
+
+	test("interval bounds intersect with the key prefix on the tighter side", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		for (const key of ["a:", "a:1", "a:2", "a:3", "a:4", "b:1"]) {
+			const written = await t.mutation(internal.plugins_data.write_document, {
+				principal: store_principal(fixture),
+				collection: "messages",
+				key,
+				value: { key },
+			});
+			expect(written._nay).toBeUndefined();
+		}
+		const watch = async (args: { keyPrefix?: string; keyStartExclusive?: string; keyEndInclusive?: string }) =>
+			await fixture.asUser.query(api.plugins_data.watch_documents, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				...args,
+				limit: 100,
+			});
+		const keys = async (args: Parameters<typeof watch>[0]) => (await watch(args))?.docs.map((doc) => doc.key);
+
+		// One bound at a time, both inside the prefix range.
+		expect(await keys({ keyPrefix: "a:", keyEndInclusive: "a:2" })).toEqual(["a:", "a:1", "a:2"]);
+		expect(await keys({ keyPrefix: "a:", keyStartExclusive: "a:2" })).toEqual(["a:3", "a:4"]);
+
+		// Both bounds inside the prefix range.
+		expect(await keys({ keyPrefix: "a:", keyStartExclusive: "a:1", keyEndInclusive: "a:3" })).toEqual(["a:2", "a:3"]);
+
+		// Bounds outside the prefix range lose to the prefix on their side.
+		expect(await keys({ keyPrefix: "a:", keyStartExclusive: "Z", keyEndInclusive: "z" })).toEqual([
+			"a:",
+			"a:1",
+			"a:2",
+			"a:3",
+			"a:4",
+		]);
+
+		// A start bound equal to the prefix's own lower bound is the tighter side: its `gt` drops
+		// the doc whose key IS the prefix, which the prefix's `gte` kept above.
+		expect(await keys({ keyPrefix: "a:", keyStartExclusive: "a:" })).toEqual(["a:1", "a:2", "a:3", "a:4"]);
+
+		// Bounds with no prefix at all cross the former prefix boundary.
+		expect(await keys({ keyStartExclusive: "a:2", keyEndInclusive: "b:1" })).toEqual(["a:3", "a:4", "b:1"]);
+	});
+
+	test("an interval whose bounds cross or touch exclusively answers empty, not null", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		for (const key of ["a:1", "a:2", "a:3"]) {
+			const written = await t.mutation(internal.plugins_data.write_document, {
+				principal: store_principal(fixture),
+				collection: "messages",
+				key,
+				value: { key },
+			});
+			expect(written._nay).toBeUndefined();
+		}
+		const watch = async (args: { keyStartExclusive: string; keyEndInclusive: string }) =>
+			await fixture.asUser.query(api.plugins_data.watch_documents, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				...args,
+				limit: 100,
+			});
+
+		// Inverted bounds hold nothing. They are not refused, because detecting the inversion is
+		// itself a key comparison, and the window dies as empty either way.
+		expect(await watch({ keyStartExclusive: "a:3", keyEndInclusive: "a:1" })).toEqual({ docs: [], truncated: false });
+
+		// gt X .. lte X holds nothing either: the one shared key is dropped by the exclusive side.
+		expect(await watch({ keyStartExclusive: "a:2", keyEndInclusive: "a:2" })).toEqual({ docs: [], truncated: false });
+	});
+
+	test("truncated says whether the range holds more documents than the limit", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		for (const key of ["a:1", "a:2", "a:3"]) {
+			const written = await t.mutation(internal.plugins_data.write_document, {
+				principal: store_principal(fixture),
+				collection: "messages",
+				key,
+				value: { key },
+			});
+			expect(written._nay).toBeUndefined();
+		}
+		const watch = async (args: { keyStartExclusive?: string; keyEndInclusive?: string; limit: number }) =>
+			await fixture.asUser.query(api.plugins_data.watch_documents, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				...args,
+			});
+
+		// The extra document read past the limit only flips the flag; it never leaves the server.
+		expect(await watch({ limit: 2 })).toEqual({
+			docs: [expect.objectContaining({ key: "a:1" }), expect.objectContaining({ key: "a:2" })],
+			truncated: true,
+		});
+		expect((await watch({ limit: 3 }))?.truncated).toBe(false);
+
+		// The flag is judged inside the bounded range, not against the whole collection.
+		expect(await watch({ keyStartExclusive: "a:1", keyEndInclusive: "a:3", limit: 1 })).toEqual({
+			docs: [expect.objectContaining({ key: "a:2" })],
+			truncated: true,
+		});
+		expect((await watch({ keyStartExclusive: "a:1", limit: 2 }))?.truncated).toBe(false);
+	});
+
+	test("bound comparisons follow the index's UTF-8 order for supplementary-plane keys", async () => {
+		// In UTF-16 a supplementary-plane character compares BELOW U+FFFF, so a JS `<` between these
+		// bounds would read the interval as inverted and answer nothing. The index orders keys by
+		// their UTF-8 bytes, where U+10FFFF is the largest character, and compareValues must agree
+		// with the index for the intersection to be sound.
+		expect(compareValues("\u{10FFFF}", "\u{FFFF}")).toBeGreaterThan(0);
+
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const written = await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture),
+			collection: "messages",
+			key: "k\u{10FFFF}",
+			value: { n: 1 },
+		});
+		expect(written._nay).toBeUndefined();
+
+		const watched = await fixture.asUser.query(api.plugins_data.watch_documents, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			keyStartExclusive: "k\u{FFFF}",
+			keyEndInclusive: "k\u{10FFFF}",
+			limit: 100,
+		});
+		expect(watched?.docs.map((doc) => doc.key)).toEqual(["k\u{10FFFF}"]);
+	});
+
+	test("closes every revocation flavor into null", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const watch = async () =>
+			await fixture.asUser.query(api.plugins_data.watch_documents, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				limit: 10,
+			});
+
+		expect(await watch()).not.toBeNull();
+
+		// 1) The workspace withdraws its consent for the read capability.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: ["plugin.data.write", "plugin.data.user-write", "plugin.service.connect"],
+			});
+		});
+		expect(await watch()).toBeNull();
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: [
+					"plugin.data.read",
+					"plugin.data.write",
+					"plugin.data.user-write",
+					"plugin.service.connect",
+				],
+			});
+		});
+
+		// 2) The installation is disabled.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" });
+		});
+		expect(await watch()).toBeNull();
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "enabled" });
+		});
+
+		// 3) An upgrade stops declaring the read capability, even though the workspace once accepted it.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+				capabilities: ["plugin.data.write", "plugin.data.user-write", "plugin.service.connect"],
+			});
+		});
+		expect(await watch()).toBeNull();
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+				capabilities: [
+					"plugin.data.read",
+					"plugin.data.write",
+					"plugin.data.user-write",
+					"plugin.service.connect",
+				] satisfies plugins_Capability[],
+			});
+		});
+
+		// 4) The membership itself is removed.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("organizations_workspaces_users", fixture.membershipId, { active: false });
+		});
+		expect(await watch()).toBeNull();
+	});
+
+	test("lets a read-only viewer watch until the role itself is gone", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const viewer = await join_member_with_role(t, fixture, { clerkUserId: "watch-viewer", role: "viewer" });
+		const watch = async () =>
+			await viewer.asUser.query(api.plugins_data.watch_documents, {
+				membershipId: viewer.membershipId,
+				pluginName: "council",
+				collection: "messages",
+				limit: 10,
+			});
+
+		// Watching gates on content.read, not content.write: the viewer role holds read alone, and the
+		// same role is refused by the write door.
+		expect(await watch()).not.toBeNull();
+
+		// Deleting the role assignment takes content.read away, and the same watch dies into null.
+		await t.run(async (ctx) => {
+			const assignments = await ctx.db.query("access_control_role_assignments").collect();
+			for (const assignment of assignments) {
+				if (assignment.userId === viewer.userId) {
+					await ctx.db.delete("access_control_role_assignments", assignment._id);
+				}
+			}
+		});
+		expect(await watch()).toBeNull();
+	});
+
+	test("answers null for a window the store can never answer", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const watch = async (args: {
+			collection?: string;
+			keyPrefix?: string;
+			keyStartExclusive?: string;
+			keyEndInclusive?: string;
+			limit?: number;
+		}) =>
+			await fixture.asUser.query(api.plugins_data.watch_documents, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				collection: args.collection ?? "messages",
+				...(args.keyPrefix === undefined ? {} : { keyPrefix: args.keyPrefix }),
+				...(args.keyStartExclusive === undefined ? {} : { keyStartExclusive: args.keyStartExclusive }),
+				...(args.keyEndInclusive === undefined ? {} : { keyEndInclusive: args.keyEndInclusive }),
+				limit: args.limit ?? 10,
+			});
+
+		// The baseline answers, so every refusal below comes from the one input it changes.
+		expect(await watch({})).not.toBeNull();
+
+		expect(await watch({ collection: "bad\u0000name" })).toBeNull();
+		expect(await watch({ keyPrefix: "no space" })).toBeNull();
+		expect(await watch({ keyPrefix: "" })).toBeNull();
+		expect(await watch({ limit: 0 })).toBeNull();
+		expect(await watch({ limit: 101 })).toBeNull();
+		expect(await watch({ limit: 2.5 })).toBeNull();
+
+		// Interval bounds follow the key shape rules, and a bad bound dies like any other bad input.
+		expect(await watch({ keyStartExclusive: "" })).toBeNull();
+		expect(await watch({ keyStartExclusive: "a".repeat(129) })).toBeNull();
+		expect(await watch({ keyEndInclusive: "bad\u{0}key" })).toBeNull();
+		expect(await watch({ keyEndInclusive: " padded " })).toBeNull();
+	});
+});
+
+describe("resolve_member_display", () => {
+	test("resolves live members and answers null entries for everyone else", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const member = await join_member_with_role(t, fixture, { clerkUserId: "resolve-member", role: "member" });
+		// A user with a live membership in another workspace only: their name must not leak here, even
+		// though they have one stored.
+		const outsider = await seed_user_write_door(t, {
+			organizationName: "resolve-outside-org",
+			clerkUserId: "resolve-outsider",
+		});
+		// The fixtures skip the sign-in bootstrap that writes anagraphics, so store the names directly.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const [userId, displayName] of [
+				[fixture.userId, "Door Owner"],
+				[member.userId, "Second Member"],
+				[outsider.userId, "Outside Person"],
+			] as const) {
+				const anagraphicId = await ctx.db.insert("users_anagraphics", {
+					userId,
+					displayName,
+					email: "",
+					updatedAt: now,
+				});
+				await ctx.db.patch("users", userId, { anagraphic: anagraphicId });
+			}
+		});
+		// An id whose user doc is gone entirely.
+		const unknownUserId = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "resolve-deleted" });
+			await ctx.db.delete("users", userId);
+			return userId;
+		});
+
+		const resolved = await fixture.asUser.query(api.plugins_data.resolve_member_display, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			userIds: [fixture.userId, member.userId, outsider.userId, unknownUserId],
+		});
+		expect(resolved).toEqual({
+			members: {
+				[fixture.userId]: "Door Owner",
+				[member.userId]: "Second Member",
+				[outsider.userId]: null,
+				[unknownUserId]: null,
+			},
+		});
+	});
+
+	test("throws with no auth identity and answers null for denials and bad input", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		await expect(
+			t.query(api.plugins_data.resolve_member_display, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				userIds: [fixture.userId],
+			}),
+		).rejects.toThrow(/Unauthenticated/);
+
+		const resolve = async (userIds: Id<"users">[]) =>
+			await fixture.asUser.query(api.plugins_data.resolve_member_display, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+				userIds,
+			});
+
+		// The read capability gates name resolution the same way it gates the watch.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: ["plugin.data.write", "plugin.data.user-write", "plugin.service.connect"],
+			});
+		});
+		expect(await resolve([fixture.userId])).toBeNull();
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: [
+					"plugin.data.read",
+					"plugin.data.write",
+					"plugin.data.user-write",
+					"plugin.service.connect",
+				],
+			});
+		});
+
+		expect(await resolve([])).toBeNull();
+		expect(await resolve(Array.from({ length: 51 }, () => fixture.userId))).toBeNull();
+		// The same call inside the ceiling answers, so the refusals above came from the input alone.
+		expect(await resolve([fixture.userId])).not.toBeNull();
+	});
+});
+
+describe("storage-layer ownership", () => {
+	test("refuses changing another member's owned doc through every interactive writer", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const other = await join_member_with_role(t, fixture, { clerkUserId: "owned-doc-outsider", role: "member" });
+
+		const appended = await fixture.asUser.mutation(api.plugins_data.user_append_document, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+			collection: "messages",
+			value: { text: "mine" },
+			clientRequestId: "owned-1",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+		const key = appended._yay.key;
+
+		// The storage layer judges the actor, not the route: an API key, a plugin run, and a service
+		// grant acting for someone else are all refused on the member's owned doc.
+		for (const kind of ["user_api_key", "plugin_run", "plugin_service"] as const) {
+			const written = await t.mutation(internal.plugins_data.write_document, {
+				principal: store_principal(fixture, { kind, actorUserId: other.userId }),
+				collection: "messages",
+				key,
+				value: { text: "overwritten" },
+			});
+			expect(written._nay?.message).toBe("This document belongs to another writer");
+		}
+		const batched = await t.mutation(internal.plugins_data.write_documents_batch, {
+			principal: store_principal(fixture, { kind: "user_api_key", actorUserId: other.userId }),
+			documents: [
+				{ collection: "messages", key: "fresh", value: { n: 1 } },
+				{ collection: "messages", key, value: { text: "overwritten" } },
+			],
+		});
+		expect(batched._nay?.message).toBe("This document belongs to another writer");
+		const removed = await t.mutation(internal.plugins_data.delete_document, {
+			principal: store_principal(fixture, { kind: "user_api_key", actorUserId: other.userId }),
+			collection: "messages",
+			key,
+		});
+		expect(removed._nay?.message).toBe("This document belongs to another writer");
+
+		// The refused batch must not keep its valid sibling either.
+		const documents = await read_documents(t, fixture);
+		expect(documents).toHaveLength(1);
+		expect(documents[0]).toMatchObject({ key, value: { text: "mine" }, ownership: "owned" });
+
+		// The creator is the one actor an interactive writer may act for on this doc.
+		const ownWrite = await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture, { kind: "user_api_key", actorUserId: fixture.userId }),
+			collection: "messages",
+			key,
+			value: { text: "edited by its creator" },
+		});
+		expect(ownWrite._nay).toBeUndefined();
+		expect((await read_documents(t, fixture))[0]).toMatchObject({ value: { text: "edited by its creator" } });
+	});
+});
+
+/**
  * Fill every one of the five installation-owned tables: a stored document, a live reservation, a
  * released reservation, a revision tombstone, a service grant, and the accounting doc they share.
  */
@@ -3573,6 +5262,7 @@ describe("plugins_data_db_drain_batch", () => {
 					byteSize: 9,
 					revision: 1,
 					writeMode: "normal",
+					ownership: "shared",
 					createdBy: fixture.userId,
 					updatedBy: fixture.userId,
 					updatedAt: now,

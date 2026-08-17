@@ -11172,6 +11172,7 @@ describe("plugins admin hard delete", () => {
 				byteSize: 24,
 				revision: 1,
 				writeMode: "normal",
+				ownership: "shared",
 				createdBy: membership.userId,
 				updatedBy: membership.userId,
 				updatedAt: now,

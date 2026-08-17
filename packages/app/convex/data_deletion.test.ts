@@ -2591,6 +2591,7 @@ describe("process_workspace_deletion_request", () => {
 				byteSize: 24,
 				revision: 1,
 				writeMode: "normal",
+				ownership: "shared",
 				createdBy: user.userId,
 				updatedBy: user.userId,
 				updatedAt: now,

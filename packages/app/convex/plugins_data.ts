@@ -1,19 +1,35 @@
-import { v, type Infer } from "convex/values";
+import { compareValues, v, type Infer } from "convex/values";
 import {
 	paginationOptsValidator,
 	paginationResultValidator,
 	type RegisteredMutation,
 	type RegisteredQuery,
 } from "convex/server";
-import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import {
+	internalMutation,
+	internalQuery,
+	mutation,
+	query,
+	type MutationCtx,
+	type QueryCtx,
+} from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { access_control_db_has_permission } from "./access_control.ts";
+import { access_control_db_authorize_membership, access_control_db_has_permission } from "./access_control.ts";
+import { organizations_db_get_membership } from "./organizations.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
-import { v_result } from "../server/convex-utils.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { convex_error, v_result } from "../server/convex-utils.ts";
+import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
-import type { plugins_Capability } from "../shared/plugins.ts";
+import {
+	plugins_data_MAX_KEY_PREFIX_LENGTH,
+	plugins_data_MAX_LIST_PAGE_SIZE,
+	plugins_data_MAX_NAME_LENGTH,
+	type plugins_Capability,
+} from "../shared/plugins.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // #region limits
@@ -23,8 +39,18 @@ import { should_never_happen } from "../shared/shared-utils.ts";
  * which keeps every stored document far below the 1 MiB Convex document limit.
  */
 const MAX_VALUE_BYTES = 16 * 1024;
-/** Collection names and keys. Same length a plugin secret name may have. */
-const MAX_NAME_LENGTH = 128;
+/**
+ * The name and key length caps and the list/watch page cap live in `shared/plugins.ts`
+ * (`plugins_data_MAX_NAME_LENGTH`, `plugins_data_MAX_KEY_PREFIX_LENGTH`,
+ * `plugins_data_MAX_LIST_PAGE_SIZE`), because the plugins UI frame pre-checks watch inputs
+ * against the same numbers before subscribing.
+ */
+/**
+ * The largest 13-digit number. Storing `ceiling - now` as the key's time part makes a later
+ * append sort lexicographically before an earlier one, so ascending key order reads newest
+ * first. 13 digits cover every epoch millisecond until the year 2286.
+ */
+const APPEND_KEY_MS_CEILING = 9_999_999_999_999;
 const MAX_COLLECTIONS = 16;
 /** Stored value bytes plus bytes promised to live reservations, per installation. */
 const MAX_INSTALLATION_BYTES = 16 * 1024 * 1024;
@@ -35,7 +61,8 @@ const MAX_INSTALLATION_BYTES = 16 * 1024 * 1024;
  */
 const MAX_DOCUMENT_SLOTS = 10_000;
 const MAX_BATCH_DOCUMENTS = 50;
-const MAX_LIST_PAGE_SIZE = 100;
+/** How many member ids one display-name resolve may ask about. Same size as a write batch. */
+const MAX_MEMBER_RESOLVE_IDS = 50;
 /**
  * The longest a reservation may hold capacity.
  *
@@ -103,8 +130,8 @@ function validate_name(raw: string, label: "Collection names" | "Keys" | "Idempo
 	if (raw.length === 0) {
 		return Result({ _nay: { message: `${label} must not be empty` } });
 	}
-	if (raw.length > MAX_NAME_LENGTH) {
-		return Result({ _nay: { message: `${label} must be at most ${MAX_NAME_LENGTH} characters` } });
+	if (raw.length > plugins_data_MAX_NAME_LENGTH) {
+		return Result({ _nay: { message: `${label} must be at most ${plugins_data_MAX_NAME_LENGTH} characters` } });
 	}
 	if (raw !== raw.trim()) {
 		return Result({ _nay: { message: `${label} must not start or end with whitespace` } });
@@ -123,6 +150,85 @@ function validate_value(value: Record<string, unknown>) {
 	}
 
 	return Result({ _yay: byteSize });
+}
+
+/**
+ * A key prefix is caller text the append completes into a full key, and the same rule bounds the
+ * list route's prefix filter. Printable ASCII only (0x21-0x7E, no space): with that alphabet the
+ * exclusive upper bound of a prefix scan can be built by incrementing the prefix's last
+ * character, which a full Unicode alphabet would not allow.
+ */
+function validate_key_prefix(raw: string) {
+	if (raw.length === 0) {
+		return Result({ _nay: { message: "Key prefixes must not be empty" } });
+	}
+	if (raw.length > plugins_data_MAX_KEY_PREFIX_LENGTH) {
+		return Result({ _nay: { message: `Key prefixes must be at most ${plugins_data_MAX_KEY_PREFIX_LENGTH} characters` } });
+	}
+	if (!/^[\x21-\x7e]+$/.test(raw)) {
+		return Result({ _nay: { message: "Key prefixes must contain only printable ASCII characters" } });
+	}
+
+	return Result({ _yay: raw });
+}
+
+/**
+ * The exclusive upper bound of a scan for keys that start with a validated key prefix.
+ *
+ * Replace the prefix's last character with the next character code. Every key that starts with the
+ * prefix sorts below that bound, no matter what the rest of the key holds — including supplementary
+ * Unicode characters, which sort above U+FFFF in Convex's UTF-8 index order. This only works
+ * because `validate_key_prefix` pins the prefix alphabet to printable ASCII, so the incremented
+ * character is at most 0x7F. The bound is a range endpoint, not a key, so it is not validated as one.
+ */
+function key_prefix_upper_bound(keyPrefix: string) {
+	const lastCharCode = keyPrefix.charCodeAt(keyPrefix.length - 1);
+	return keyPrefix.slice(0, -1) + String.fromCharCode(lastCharCode + 1);
+}
+
+/**
+ * Intersect the key-prefix range with a watch's optional interval bounds into one index range.
+ *
+ * Convex index builders accept only one lower and one upper bound per field, and the prefix scan
+ * already uses both, so this module picks the tighter side itself. Every comparison uses
+ * `compareValues`, because the index orders strings by their UTF-8 bytes and a JS `<` would
+ * disagree on supplementary-plane characters. An interval whose bounds cross reads as "empty"
+ * instead of being refused, because detecting the inversion up front would need exactly that
+ * broken JS order check.
+ */
+function intersect_key_ranges(args: {
+	prefixRange: { lower: string; upper: string } | null;
+	startExclusive: string | null;
+	endInclusive: string | null;
+}) {
+	// Pick the tighter lower bound. On a tie the fencepost wins: the prefix's `gte` would keep the
+	// boundary doc that the fencepost's `gt` must drop.
+	let lower: { value: string; inclusive: boolean } | null = args.prefixRange
+		? { value: args.prefixRange.lower, inclusive: true }
+		: null;
+	if (args.startExclusive !== null && (lower === null || compareValues(args.startExclusive, lower.value) >= 0)) {
+		lower = { value: args.startExclusive, inclusive: false };
+	}
+
+	// Mirrored on the upper side: the prefix's exclusive `lt` wins a tie against the fencepost's
+	// inclusive `lte`.
+	let upper: { value: string; inclusive: boolean } | null = args.prefixRange
+		? { value: args.prefixRange.upper, inclusive: false }
+		: null;
+	if (args.endInclusive !== null && (upper === null || compareValues(args.endInclusive, upper.value) < 0)) {
+		upper = { value: args.endInclusive, inclusive: true };
+	}
+
+	// Crossed bounds hold nothing. Touching bounds hold their one shared key only when both sides
+	// keep it.
+	if (lower !== null && upper !== null) {
+		const order = compareValues(lower.value, upper.value);
+		if (order > 0 || (order === 0 && !(lower.inclusive && upper.inclusive))) {
+			return "empty" as const;
+		}
+	}
+
+	return { lower, upper };
 }
 
 // #endregion validation
@@ -773,6 +879,10 @@ const document_validator = v.object({
 	revision: v.number(),
 	byteSize: v.number(),
 	writeMode: v.union(v.literal("normal"), v.literal("versioned")),
+	ownership: v.union(v.literal("shared"), v.literal("owned")),
+	createdBy: v.id("users"),
+	updatedBy: v.id("users"),
+	createdAt: v.number(),
 	updatedAt: v.number(),
 });
 
@@ -784,6 +894,10 @@ function to_public_document(document: Doc<"plugins_data">): Infer<typeof documen
 		revision: document.revision,
 		byteSize: document.byteSize,
 		writeMode: document.writeMode,
+		ownership: document.ownership,
+		createdBy: document.createdBy,
+		updatedBy: document.updatedBy,
+		createdAt: document._creationTime,
 		updatedAt: document.updatedAt,
 	};
 }
@@ -842,6 +956,7 @@ export const list_documents = internalQuery({
 	args: {
 		principal: store_principal_validator,
 		collection: v.string(),
+		keyPrefix: v.optional(v.string()),
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: v_result({ _yay: paginationResultValidator(document_validator) }),
@@ -856,15 +971,24 @@ export const list_documents = internalQuery({
 		if (collection._nay) {
 			return collection;
 		}
+		const keyPrefix = args.keyPrefix === undefined ? Result({ _yay: null }) : validate_key_prefix(args.keyPrefix);
+		if (keyPrefix._nay) {
+			return keyPrefix;
+		}
+		const keyRange =
+			keyPrefix._yay === null ? null : { lower: keyPrefix._yay, upper: key_prefix_upper_bound(keyPrefix._yay) };
 
+		// The prefix rides the index as a range, never a post-index filter, so the pagination cursor
+		// continues inside the narrowed range and every page stays full.
 		const page = await ctx.db
 			.query("plugins_data")
-			.withIndex("by_installation_collection_key", (q) =>
-				q.eq("installationId", installation._id).eq("collection", collection._yay),
-			)
+			.withIndex("by_installation_collection_key", (q) => {
+				const scope = q.eq("installationId", installation._id).eq("collection", collection._yay);
+				return keyRange ? scope.gte("key", keyRange.lower).lt("key", keyRange.upper) : scope;
+			})
 			.paginate({
 				...args.paginationOpts,
-				numItems: Math.min(args.paginationOpts.numItems, MAX_LIST_PAGE_SIZE),
+				numItems: Math.min(args.paginationOpts.numItems, plugins_data_MAX_LIST_PAGE_SIZE),
 			});
 
 		return Result({ _yay: { ...page, page: page.page.map(to_public_document) } });
@@ -884,13 +1008,17 @@ export type plugins_data_list_documents_Result =
 async function db_write_document(
 	ctx: MutationCtx,
 	args: {
-		principal: StorePrincipal;
+		actorUserId: Id<"users">;
 		installation: Doc<"plugins_workspace_installations">;
 		existing: Doc<"plugins_data"> | null;
 		collection: string;
 		key: string;
 		value: Record<string, unknown>;
 		byteSize: number;
+		/** Only the user-write door sets this. Absent keeps the pre-door meaning: shared. */
+		ownership?: "shared" | "owned";
+		/** Only the user-write door's append sets this, for replay dedup. */
+		userWrite?: { requestId: string; requestFingerprint: string };
 		now: number;
 	},
 ) {
@@ -899,7 +1027,7 @@ async function db_write_document(
 			value: args.value,
 			byteSize: args.byteSize,
 			revision: args.existing.revision + 1,
-			updatedBy: args.principal.actorUserId,
+			updatedBy: args.actorUserId,
 			updatedAt: args.now,
 		});
 		return;
@@ -916,8 +1044,12 @@ async function db_write_document(
 		byteSize: args.byteSize,
 		revision: 1,
 		writeMode: "normal",
-		createdBy: args.principal.actorUserId,
-		updatedBy: args.principal.actorUserId,
+		// The service and API writers never pass ownership; their docs are shared by definition.
+		ownership: args.ownership ?? "shared",
+		userWriteRequestId: args.userWrite?.requestId,
+		userWriteRequestFingerprint: args.userWrite?.requestFingerprint,
+		createdBy: args.actorUserId,
+		updatedBy: args.actorUserId,
 		updatedAt: args.now,
 	});
 }
@@ -1049,6 +1181,12 @@ async function db_write_documents(
 				_nay: { name: REFUSAL_CONFLICT, message: "This document is written by a service and cannot be changed here" },
 			});
 		}
+		// An owned doc was created by one member through the user-write door and only that member may
+		// change it. This is the storage layer, so every interactive writer is judged here, no
+		// matter which route it came through.
+		if (existing?.ownership === "owned" && existing.createdBy !== args.principal.actorUserId) {
+			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This document belongs to another writer" } });
+		}
 		const reserved = await db_get_live_reservation(ctx, {
 			installationId: installation._id,
 			collection: collection._yay,
@@ -1103,7 +1241,7 @@ async function db_write_documents(
 	// is created if this is the installation's first document.
 	for (const document of prepared) {
 		await db_write_document(ctx, {
-			principal: args.principal,
+			actorUserId: args.principal.actorUserId,
 			installation,
 			existing: document.existing,
 			collection: document.collection,
@@ -1177,6 +1315,11 @@ export const delete_document = internalMutation({
 		if (!existing) {
 			return Result({ _yay: { deleted: false } });
 		}
+		// Same storage-layer ownership rule as the write path: only the member who created an owned
+		// doc may delete it.
+		if (existing.ownership === "owned" && existing.createdBy !== args.principal.actorUserId) {
+			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This document belongs to another writer" } });
+		}
 
 		const now = Date.now();
 		// A stored document was created by the write path, which always writes the accounting doc in
@@ -1208,6 +1351,858 @@ export type plugins_data_delete_document_Result =
 		: never;
 
 // #endregion documents
+
+// #region user writes
+
+/**
+ * Member writes through the app.
+ *
+ * These are public mutations: the host app calls them with the member's own Convex auth when a
+ * plugin page asks over the bridge. A page principal is structurally impossible here, because a
+ * page holds a bearer token and these mutations only accept app auth. An invited anonymous member
+ * carries a real auth identity, so it may write like any other member.
+ */
+
+/**
+ * Prove the member may write this plugin's documents, inside the same transaction as the write.
+ * Args follow `mint_page_session`: the caller names a membership and a plugin, and everything
+ * tenant-scoped is derived from the membership doc the caller is proven to own.
+ */
+async function db_authorize_user_write(
+	ctx: MutationCtx,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		pluginName: string;
+		/**
+		 * Append charges the bucket itself, after its replay lookup: a replayed request already
+		 * paid on its first call, and a retry refused by the bucket would report a delivered
+		 * write as failed.
+		 */
+		skipRateLimit?: true;
+	},
+) {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	if (!userAuth) {
+		return Result({ _nay: { message: "Unauthenticated" } });
+	}
+
+	const membership = await organizations_db_get_membership(ctx, {
+		userId: userAuth.id,
+		membershipId: args.membershipId,
+	});
+	if (!membership) {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+
+	if (!args.skipRateLimit) {
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_data_user_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+	}
+
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth,
+		membership,
+		permission: "content.write",
+	});
+	if (authorized._nay) {
+		return authorized;
+	}
+
+	const installation = await ctx.db
+		.query("plugins_workspace_installations")
+		.withIndex("by_organization_workspace_status_pluginName", (q) =>
+			q
+				.eq("organizationId", membership.organizationId)
+				.eq("workspaceId", membership.workspaceId)
+				.eq("status", "enabled")
+				.eq("pluginName", args.pluginName),
+		)
+		.first();
+	if (!installation) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+	if (!version) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	// Both sides must still say yes on every call: the installed version declares the capability
+	// and the workspace accepted it. An upgrade that drops the declaration or a consent change
+	// closes the door immediately.
+	if (
+		!version.capabilities.includes("plugin.data.user-write" satisfies plugins_Capability) ||
+		!installation.acceptedCapabilities.includes("plugin.data.user-write" satisfies plugins_Capability)
+	) {
+		return Result({ _nay: { message: "Permission denied" } });
+	}
+
+	return Result({ _yay: { installation, userId: userAuth.id } });
+}
+
+/**
+ * Refuse taking a key a service producer holds. A live reservation promises the key to its
+ * producer, and a tombstone marks a key its producer deleted. A member write on either would
+ * squat the producer's key, exactly what the interactive write path refuses too.
+ */
+async function db_refuse_service_held_key(
+	ctx: QueryCtx,
+	args: { installationId: Id<"plugins_workspace_installations">; collection: string; key: string },
+) {
+	const [reservation, tombstone] = await Promise.all([db_get_live_reservation(ctx, args), db_get_tombstone(ctx, args)]);
+	if (reservation || tombstone) {
+		return Result({
+			_nay: { name: REFUSAL_CONFLICT, message: "This document is written by a service and cannot be changed here" },
+		});
+	}
+
+	return Result({ _yay: null });
+}
+
+/**
+ * Compare-and-set guard shared by the four door mutations below. `expectedRevision` is the
+ * revision the caller read before deciding to write, and 0 means the caller expects no document
+ * at all — the first stored revision is 1. On a mismatch the caller re-reads and decides again
+ * instead of overwriting a write it never saw. Absent means optimistic: the write happens
+ * whatever the current revision is, like before the field existed.
+ *
+ * Delete followed by recreate starts over at revision 1, so a caller can pass this check against
+ * a same-revision successor document. The doors accept that: a revision orders writes within one
+ * document lifetime, it is not a content hash.
+ *
+ * The refusal carries no current revision on purpose. This door never proved the caller may read,
+ * so the fresh revision must arrive through a read surface, not through a refused write.
+ */
+function refuse_revision_mismatch(existing: Doc<"plugins_data"> | null, expectedRevision: number | undefined) {
+	if (expectedRevision === undefined) {
+		return Result({ _yay: null });
+	}
+	if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+		return Result({ _nay: { message: "Expected revisions must be non-negative integers" } });
+	}
+	if ((existing?.revision ?? 0) !== expectedRevision) {
+		return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This document changed since it was read" } });
+	}
+
+	return Result({ _yay: null });
+}
+
+/**
+ * One accepted door write: price it, store it, and update the accounting doc in this transaction.
+ * The caller has already authorized the member and refused every conflicting key state, so this
+ * only enforces the capacity ceilings.
+ */
+async function db_user_write_document(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		userId: Id<"users">;
+		existing: Doc<"plugins_data"> | null;
+		collection: string;
+		key: string;
+		value: Record<string, unknown>;
+		byteSize: number;
+		ownership: "shared" | "owned";
+		userWrite?: { requestId: string; requestFingerprint: string };
+	},
+) {
+	const now = Date.now();
+	const usage = await db_get_usage(ctx, args.installation._id);
+	const addsCollection = !(usage?.collectionNames ?? []).includes(args.collection);
+	const capacity = check_capacity(usage, {
+		addedBytes: args.byteSize - (args.existing?.byteSize ?? 0),
+		addedSlots: args.existing ? 0 : 1,
+		addedCollections: addsCollection ? 1 : 0,
+	});
+	if (capacity._nay) {
+		return capacity;
+	}
+
+	await db_write_document(ctx, {
+		actorUserId: args.userId,
+		installation: args.installation,
+		existing: args.existing,
+		collection: args.collection,
+		key: args.key,
+		value: args.value,
+		byteSize: args.byteSize,
+		ownership: args.ownership,
+		userWrite: args.userWrite,
+		now,
+	});
+
+	const storedUsage = usage ?? (await db_create_usage(ctx, { installation: args.installation, now }));
+	await ctx.db.patch("plugins_data_usage", storedUsage._id, {
+		usedBytes: storedUsage.usedBytes + args.byteSize - (args.existing?.byteSize ?? 0),
+		usedDocuments: storedUsage.usedDocuments + (args.existing ? 0 : 1),
+		collectionNames: addsCollection ? [...storedUsage.collectionNames, args.collection] : storedUsage.collectionNames,
+		updatedAt: now,
+	});
+
+	return Result({ _yay: { revision: (args.existing?.revision ?? 0) + 1, byteSize: args.byteSize } });
+}
+
+/**
+ * One accepted door delete, with the same accounting as the interactive delete.
+ */
+async function db_user_delete_document(
+	ctx: MutationCtx,
+	args: { installation: Doc<"plugins_workspace_installations">; existing: Doc<"plugins_data"> },
+) {
+	const now = Date.now();
+	// A stored document was created by a write path that always writes the accounting doc in the
+	// same transaction, so it exists here.
+	const usage = await db_get_usage(ctx, args.installation._id);
+	if (!usage) {
+		const errorMessage = "Plugin data document without a usage doc";
+		const errorData = { documentId: args.existing._id };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	await ctx.db.delete("plugins_data", args.existing._id);
+	await ctx.db.patch("plugins_data_usage", usage._id, {
+		usedBytes: usage.usedBytes - args.existing.byteSize,
+		usedDocuments: usage.usedDocuments - 1,
+		collectionNames: await db_drop_collection_if_empty(ctx, { usage, collection: args.existing.collection }),
+		updatedAt: now,
+	});
+}
+
+export const user_append_document = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		pluginName: v.string(),
+		collection: v.string(),
+		keyPrefix: v.optional(v.string()),
+		value: v.record(v.string(), v.any()),
+		clientRequestId: v.string(),
+	},
+	returns: v_result({ _yay: v.object({ key: v.string(), revision: v.number(), byteSize: v.number() }) }),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_user_write(ctx, {
+			membershipId: args.membershipId,
+			pluginName: args.pluginName,
+			skipRateLimit: true,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { installation, userId } = authorized._yay;
+
+		const collection = validate_name(args.collection, "Collection names");
+		if (collection._nay) {
+			return collection;
+		}
+		const clientRequestId = validate_name(args.clientRequestId, "Idempotency keys");
+		if (clientRequestId._nay) {
+			return clientRequestId;
+		}
+		const keyPrefix = args.keyPrefix === undefined ? Result({ _yay: "" }) : validate_key_prefix(args.keyPrefix);
+		if (keyPrefix._nay) {
+			return keyPrefix;
+		}
+		const byteSize = validate_value(args.value);
+		if (byteSize._nay) {
+			return byteSize;
+		}
+
+		// The same request replayed after a lost response must answer with the key the first call
+		// stored, and a different request under the same idempotency key must be refused rather than
+		// quietly appending a second document. The value can be large, so the doc keeps a digest of
+		// the request instead of the request itself.
+		const requestFingerprint = await crypto_sha256_hex(
+			canonical_json({
+				collection: collection._yay,
+				keyPrefix: keyPrefix._yay,
+				ownership: "owned",
+				value: args.value,
+			}),
+		);
+		const replay = await ctx.db
+			.query("plugins_data")
+			.withIndex("by_installation_collection_createdBy_requestId", (q) =>
+				q
+					.eq("installationId", installation._id)
+					.eq("collection", collection._yay)
+					.eq("createdBy", userId)
+					.eq("userWriteRequestId", clientRequestId._yay),
+			)
+			.first();
+		if (replay) {
+			if (replay.userWriteRequestFingerprint !== requestFingerprint) {
+				return Result({
+					_nay: { name: REFUSAL_CONFLICT, message: "This idempotency key was already used for a different write" },
+				});
+			}
+
+			return Result({ _yay: { key: replay.key, revision: replay.revision, byteSize: replay.byteSize } });
+		}
+
+		// Only a genuinely new append charges the bucket; the replay above answered without paying
+		// twice for one delivered write.
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_data_user_write", key: userId });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		// Two appends in the same millisecond can draw the same suffix, and a duplicate key would
+		// break the one-doc-per-key rule every `.first()` lookup relies on. So probe the candidate
+		// and draw a fresh suffix on a hit. A key a service producer holds is avoided the same way.
+		const invertedMs = String(APPEND_KEY_MS_CEILING - Date.now()).padStart(13, "0");
+		let key: string | null = null;
+		for (let attempt = 0; attempt < 3 && key === null; attempt += 1) {
+			const candidate = `${keyPrefix._yay}${invertedMs}:${crypto_random_hex(2)}`;
+			const [document, serviceHeld] = await Promise.all([
+				db_get_document(ctx, { installationId: installation._id, collection: collection._yay, key: candidate }),
+				db_refuse_service_held_key(ctx, {
+					installationId: installation._id,
+					collection: collection._yay,
+					key: candidate,
+				}),
+			]);
+			if (!document && !serviceHeld._nay) {
+				key = candidate;
+			}
+		}
+		if (key === null) {
+			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "Could not assign a unique key, try again" } });
+		}
+
+		const written = await db_user_write_document(ctx, {
+			installation,
+			userId,
+			existing: null,
+			collection: collection._yay,
+			key,
+			value: args.value,
+			byteSize: byteSize._yay,
+			ownership: "owned",
+			userWrite: { requestId: clientRequestId._yay, requestFingerprint },
+		});
+		if (written._nay) {
+			return written;
+		}
+
+		return Result({ _yay: { key, revision: written._yay.revision, byteSize: written._yay.byteSize } });
+	},
+});
+
+export const user_put_document = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		pluginName: v.string(),
+		collection: v.string(),
+		key: v.string(),
+		value: v.record(v.string(), v.any()),
+		expectedRevision: v.optional(v.number()),
+	},
+	returns: v_result({ _yay: v.object({ revision: v.number(), byteSize: v.number() }) }),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_user_write(ctx, {
+			membershipId: args.membershipId,
+			pluginName: args.pluginName,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { installation, userId } = authorized._yay;
+
+		const collection = validate_name(args.collection, "Collection names");
+		if (collection._nay) {
+			return collection;
+		}
+		const key = validate_name(args.key, "Keys");
+		if (key._nay) {
+			return key;
+		}
+		const byteSize = validate_value(args.value);
+		if (byteSize._nay) {
+			return byteSize;
+		}
+
+		const existing = await db_get_document(ctx, {
+			installationId: installation._id,
+			collection: collection._yay,
+			key: key._yay,
+		});
+		// A versioned key belongs to a producer's ordered outbox, exactly like the interactive path.
+		if (existing?.writeMode === "versioned") {
+			return Result({
+				_nay: { name: REFUSAL_CONFLICT, message: "This document is written by a service and cannot be changed here" },
+			});
+		}
+		// The target decides: a shared doc takes any member's put, an owned doc only its creator's.
+		if (existing?.ownership === "owned" && existing.createdBy !== userId) {
+			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This document belongs to another writer" } });
+		}
+		// CAS after ownership: a writer refused for the doc's ownership hears that refusal whatever
+		// revision they guess, so the guess cannot change which refusal comes back.
+		const revisionMismatch = refuse_revision_mismatch(existing, args.expectedRevision);
+		if (revisionMismatch._nay) {
+			return revisionMismatch;
+		}
+		if (!existing) {
+			const serviceHeld = await db_refuse_service_held_key(ctx, {
+				installationId: installation._id,
+				collection: collection._yay,
+				key: key._yay,
+			});
+			if (serviceHeld._nay) {
+				return serviceHeld;
+			}
+		}
+
+		// A put on an absent key creates a shared doc. Owned docs are only created by append and
+		// putOwned, whose keys carry the creator's identity.
+		return await db_user_write_document(ctx, {
+			installation,
+			userId,
+			existing,
+			collection: collection._yay,
+			key: key._yay,
+			value: args.value,
+			byteSize: byteSize._yay,
+			ownership: "shared",
+		});
+	},
+});
+
+export const user_remove_document = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		pluginName: v.string(),
+		collection: v.string(),
+		key: v.string(),
+		expectedRevision: v.optional(v.number()),
+	},
+	returns: v_result({ _yay: v.object({ deleted: v.boolean() }) }),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_user_write(ctx, {
+			membershipId: args.membershipId,
+			pluginName: args.pluginName,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { installation, userId } = authorized._yay;
+
+		const collection = validate_name(args.collection, "Collection names");
+		if (collection._nay) {
+			return collection;
+		}
+		const key = validate_name(args.key, "Keys");
+		if (key._nay) {
+			return key;
+		}
+
+		const existing = await db_get_document(ctx, {
+			installationId: installation._id,
+			collection: collection._yay,
+			key: key._yay,
+		});
+		if (existing?.writeMode === "versioned") {
+			return Result({
+				_nay: { name: REFUSAL_CONFLICT, message: "This document is written by a service and cannot be changed here" },
+			});
+		}
+		if (!existing) {
+			// An absent doc still answers the revision guess: expecting a live revision of a doc that
+			// is gone means the doc changed since it was read. Expecting 0 or nothing keeps the
+			// idempotent "already deleted" answer.
+			const revisionMismatch = refuse_revision_mismatch(null, args.expectedRevision);
+			if (revisionMismatch._nay) {
+				return revisionMismatch;
+			}
+			return Result({ _yay: { deleted: false } });
+		}
+		// The target decides, like the put above: an owned doc is only removed by its creator.
+		if (existing.ownership === "owned" && existing.createdBy !== userId) {
+			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This document belongs to another writer" } });
+		}
+		const revisionMismatch = refuse_revision_mismatch(existing, args.expectedRevision);
+		if (revisionMismatch._nay) {
+			return revisionMismatch;
+		}
+
+		await db_user_delete_document(ctx, { installation, existing });
+		return Result({ _yay: { deleted: true } });
+	},
+});
+
+export const user_put_owned_document = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		pluginName: v.string(),
+		collection: v.string(),
+		key: v.string(),
+		value: v.record(v.string(), v.any()),
+		expectedRevision: v.optional(v.number()),
+	},
+	returns: v_result({ _yay: v.object({ key: v.string(), revision: v.number(), byteSize: v.number() }) }),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_user_write(ctx, {
+			membershipId: args.membershipId,
+			pluginName: args.pluginName,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { installation, userId } = authorized._yay;
+
+		const collection = validate_name(args.collection, "Collection names");
+		if (collection._nay) {
+			return collection;
+		}
+		const key = validate_name(args.key, "Keys");
+		if (key._nay) {
+			return key;
+		}
+		const byteSize = validate_value(args.value);
+		if (byteSize._nay) {
+			return byteSize;
+		}
+
+		// The server appends the acting member's id, so identity inside the key can never be forged.
+		// A `:` smuggled into the caller's key just stays part of the caller's key.
+		const storedKey = `${key._yay}:${userId}`;
+		if (storedKey.length > plugins_data_MAX_NAME_LENGTH) {
+			return Result({
+				_nay: { message: `Keys must be at most ${plugins_data_MAX_NAME_LENGTH} characters after the writer id is appended` },
+			});
+		}
+
+		const existing = await db_get_document(ctx, {
+			installationId: installation._id,
+			collection: collection._yay,
+			key: storedKey,
+		});
+		// Only the member's own owned doc may sit at the composed key. Anything else there — a shared
+		// doc squatting the key, a service doc, another creator's doc — refuses.
+		if (existing && (existing.ownership !== "owned" || existing.createdBy !== userId)) {
+			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This document belongs to another writer" } });
+		}
+		// CAS after ownership, like the put above.
+		const revisionMismatch = refuse_revision_mismatch(existing, args.expectedRevision);
+		if (revisionMismatch._nay) {
+			return revisionMismatch;
+		}
+		if (!existing) {
+			const serviceHeld = await db_refuse_service_held_key(ctx, {
+				installationId: installation._id,
+				collection: collection._yay,
+				key: storedKey,
+			});
+			if (serviceHeld._nay) {
+				return serviceHeld;
+			}
+		}
+
+		const written = await db_user_write_document(ctx, {
+			installation,
+			userId,
+			existing,
+			collection: collection._yay,
+			key: storedKey,
+			value: args.value,
+			byteSize: byteSize._yay,
+			ownership: "owned",
+		});
+		if (written._nay) {
+			return written;
+		}
+
+		return Result({ _yay: { key: storedKey, revision: written._yay.revision, byteSize: written._yay.byteSize } });
+	},
+});
+
+export const user_remove_owned_document = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		pluginName: v.string(),
+		collection: v.string(),
+		key: v.string(),
+		expectedRevision: v.optional(v.number()),
+	},
+	returns: v_result({ _yay: v.object({ deleted: v.boolean() }) }),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_user_write(ctx, {
+			membershipId: args.membershipId,
+			pluginName: args.pluginName,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { installation, userId } = authorized._yay;
+
+		const collection = validate_name(args.collection, "Collection names");
+		if (collection._nay) {
+			return collection;
+		}
+		const key = validate_name(args.key, "Keys");
+		if (key._nay) {
+			return key;
+		}
+
+		const storedKey = `${key._yay}:${userId}`;
+		if (storedKey.length > plugins_data_MAX_NAME_LENGTH) {
+			return Result({
+				_nay: { message: `Keys must be at most ${plugins_data_MAX_NAME_LENGTH} characters after the writer id is appended` },
+			});
+		}
+
+		const existing = await db_get_document(ctx, {
+			installationId: installation._id,
+			collection: collection._yay,
+			key: storedKey,
+		});
+		if (!existing) {
+			// Same absent-doc rule as the shared remove above.
+			const revisionMismatch = refuse_revision_mismatch(null, args.expectedRevision);
+			if (revisionMismatch._nay) {
+				return revisionMismatch;
+			}
+			return Result({ _yay: { deleted: false } });
+		}
+		// Same rule as the put above: only the member's own owned doc may sit at the composed key.
+		if (existing.ownership !== "owned" || existing.createdBy !== userId) {
+			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This document belongs to another writer" } });
+		}
+		const revisionMismatch = refuse_revision_mismatch(existing, args.expectedRevision);
+		if (revisionMismatch._nay) {
+			return revisionMismatch;
+		}
+
+		await db_user_delete_document(ctx, { installation, existing });
+		return Result({ _yay: { deleted: true } });
+	},
+});
+
+// #endregion user writes
+
+// #region user reads
+
+/**
+ * Member reads through the app.
+ *
+ * These are public queries: the host app subscribes to them with the member's own Convex auth when
+ * a plugin page asks over the bridge. Their answer is also the host's kill signal: the query throws
+ * only when there is no auth identity at all, and answers null for every denial, so a revoked page
+ * sees its subscription die instead of an error.
+ */
+
+/**
+ * Prove the member may read this plugin's documents. Args follow the write door: the caller names a
+ * membership and a plugin, and everything tenant-scoped is derived from the membership doc the
+ * caller is proven to own. Reading the membership and installation docs inside the query is what
+ * makes a revocation re-run every live subscription into null.
+ */
+async function db_authorize_user_read(
+	ctx: QueryCtx,
+	args: { membershipId: Id<"organizations_workspaces_users">; pluginName: string },
+) {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	if (!userAuth) {
+		throw convex_error({ message: "Unauthenticated" });
+	}
+
+	const membership = await organizations_db_get_membership(ctx, {
+		userId: userAuth.id,
+		membershipId: args.membershipId,
+	});
+	if (!membership) {
+		return null;
+	}
+
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth,
+		membership,
+		permission: "content.read",
+	});
+	if (authorized._nay) {
+		return null;
+	}
+
+	const installation = await ctx.db
+		.query("plugins_workspace_installations")
+		.withIndex("by_organization_workspace_status_pluginName", (q) =>
+			q
+				.eq("organizationId", membership.organizationId)
+				.eq("workspaceId", membership.workspaceId)
+				.eq("status", "enabled")
+				.eq("pluginName", args.pluginName),
+		)
+		.first();
+	if (!installation) {
+		return null;
+	}
+	const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+	if (!version) {
+		return null;
+	}
+	// Both sides must still say yes on every call, like the write door: the installed version
+	// declares the read capability and the workspace accepted it. Reading gates on the read
+	// capability alone; a plugin without the user-write door can still show its documents.
+	if (
+		!version.capabilities.includes("plugin.data.read" satisfies plugins_Capability) ||
+		!installation.acceptedCapabilities.includes("plugin.data.read" satisfies plugins_Capability)
+	) {
+		return null;
+	}
+
+	return { installation };
+}
+
+export const watch_documents = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		pluginName: v.string(),
+		collection: v.string(),
+		keyPrefix: v.optional(v.string()),
+		keyStartExclusive: v.optional(v.string()),
+		keyEndInclusive: v.optional(v.string()),
+		limit: v.number(),
+	},
+	returns: v.union(v.object({ docs: v.array(document_validator), truncated: v.boolean() }), v.null()),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_user_read(ctx, {
+			membershipId: args.membershipId,
+			pluginName: args.pluginName,
+		});
+		if (!authorized) {
+			return null;
+		}
+		const installation = authorized.installation;
+
+		// Bad input answers null like a denial: the host kills the subscription either way, and a
+		// window the store can never answer should die the same way a revoked one does.
+		const collection = validate_name(args.collection, "Collection names");
+		if (collection._nay) {
+			return null;
+		}
+		if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > plugins_data_MAX_LIST_PAGE_SIZE) {
+			return null;
+		}
+		const keyPrefix = args.keyPrefix === undefined ? Result({ _yay: null }) : validate_key_prefix(args.keyPrefix);
+		if (keyPrefix._nay) {
+			return null;
+		}
+		// Interval bounds are fenceposts the host copied from previously delivered keys, so they
+		// follow the same shape rules as keys. There is no order check between the two bounds:
+		// `intersect_key_ranges` reads an inverted pair as empty.
+		const keyStartExclusive =
+			args.keyStartExclusive === undefined ? Result({ _yay: null }) : validate_name(args.keyStartExclusive, "Keys");
+		if (keyStartExclusive._nay) {
+			return null;
+		}
+		const keyEndInclusive =
+			args.keyEndInclusive === undefined ? Result({ _yay: null }) : validate_name(args.keyEndInclusive, "Keys");
+		if (keyEndInclusive._nay) {
+			return null;
+		}
+
+		const keyRange =
+			keyPrefix._yay === null ? null : { lower: keyPrefix._yay, upper: key_prefix_upper_bound(keyPrefix._yay) };
+		const range = intersect_key_ranges({
+			prefixRange: keyRange,
+			startExclusive: keyStartExclusive._yay,
+			endInclusive: keyEndInclusive._yay,
+		});
+		if (range === "empty") {
+			return { docs: [], truncated: false };
+		}
+
+		// Never read the usage doc here. Every accepted write for the installation updates it, so one
+		// read would re-run every live subscription on every write anywhere in the store, not only on
+		// writes inside the watched window.
+		//
+		// Ascending index order is the whole ordering story: the door's inverted-millisecond keys make
+		// ascending read newest first, and the query itself stays order-neutral for any other key
+		// scheme.
+		//
+		// Read one past the limit so `truncated` can say whether the range holds more documents. The
+		// extra document never leaves the server.
+		const documents = await ctx.db
+			.query("plugins_data")
+			.withIndex("by_installation_collection_key", (q) => {
+				const scope = q.eq("installationId", installation._id).eq("collection", collection._yay);
+				const lowerBounded =
+					range.lower === null
+						? scope
+						: range.lower.inclusive
+							? scope.gte("key", range.lower.value)
+							: scope.gt("key", range.lower.value);
+				return range.upper === null
+					? lowerBounded
+					: range.upper.inclusive
+						? lowerBounded.lte("key", range.upper.value)
+						: lowerBounded.lt("key", range.upper.value);
+			})
+			.take(args.limit + 1);
+
+		const truncated = documents.length > args.limit;
+		return { docs: (truncated ? documents.slice(0, args.limit) : documents).map(to_public_document), truncated };
+	},
+});
+
+export const resolve_member_display = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		pluginName: v.string(),
+		userIds: v.array(v.id("users")),
+	},
+	returns: v.union(v.object({ members: v.record(v.id("users"), v.union(v.string(), v.null())) }), v.null()),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_user_read(ctx, {
+			membershipId: args.membershipId,
+			pluginName: args.pluginName,
+		});
+		if (!authorized) {
+			return null;
+		}
+		const installation = authorized.installation;
+
+		if (args.userIds.length === 0 || args.userIds.length > MAX_MEMBER_RESOLVE_IDS) {
+			return null;
+		}
+
+		const resolved = await Promise.all(
+			args.userIds.map(async (userId) => {
+				// Only a live member of this exact workspace resolves to a name. Anything else answers a
+				// null entry, so stored ids cannot be turned into names from outside the workspace, and a
+				// former or deleted member reads as null instead of leaking a name.
+				const membership = await ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_active_user_organization_workspace", (q) =>
+						q
+							.eq("active", true)
+							.eq("userId", userId)
+							.eq("organizationId", installation.organizationId)
+							.eq("workspaceId", installation.workspaceId),
+					)
+					.first();
+				if (!membership) {
+					return [userId, null] as const;
+				}
+
+				const user = await ctx.db.get("users", userId);
+				if (!user?.anagraphic) {
+					return [userId, null] as const;
+				}
+				const anagraphic = await ctx.db.get("users_anagraphics", user.anagraphic);
+				return [userId, anagraphic?.displayName ?? null] as const;
+			}),
+		);
+
+		const members: Record<Id<"users">, string | null> = {};
+		for (const [userId, displayName] of resolved) {
+			members[userId] = displayName;
+		}
+		return { members };
+	},
+});
+
+// #endregion user reads
 
 // #region versioned documents
 
@@ -1353,6 +2348,8 @@ export const write_versioned_document = internalMutation({
 				byteSize: byteSize._yay,
 				revision: args.revision,
 				writeMode: "versioned",
+				// The versioned service projection is workspace-visible data, not member-owned.
+				ownership: "shared",
 				producerPrincipalKey: args.principal.principalKey,
 				createdBy: args.principal.actorUserId,
 				updatedBy: args.principal.actorUserId,
