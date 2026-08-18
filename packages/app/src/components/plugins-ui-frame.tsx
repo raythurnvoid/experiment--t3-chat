@@ -66,6 +66,14 @@ type PluginsUiFrame_Props = {
 	 * as `mintSession`.
 	 */
 	getInitContext: () => Record<string, unknown>;
+	/**
+	 * Called at most once per frame generation when a token refresh finds the session gone
+	 * (`refresh_ui_session` answers "Unauthorized"). That happens when the device slept past the
+	 * session expiry and the server deleted the session doc. The owner should remount the frame
+	 * with a fresh key, the same way its Retry button does, so the page comes back with a fresh
+	 * session instead of dying. Wrap in `useFn` for the same reason as `mintSession`.
+	 */
+	onSessionLost: () => void;
 	onError: (message: string) => void;
 };
 
@@ -79,8 +87,18 @@ type PluginsUiFrame_Props = {
  * document and bridge nonce.
  */
 export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame_Props) {
-	const { membershipId, pluginName, pluginVersionId, entry, title, kindLabel, mintSession, getInitContext, onError } =
-		props;
+	const {
+		membershipId,
+		pluginName,
+		pluginVersionId,
+		entry,
+		title,
+		kindLabel,
+		mintSession,
+		getInitContext,
+		onSessionLost,
+		onError,
+	} = props;
 	// The frame only mounts for an authenticated member, and the SDK requires `userId` in the init
 	// context of both kinds.
 	const { userId } = AppAuthProvider.useAuthenticated();
@@ -248,6 +266,24 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 				})
 				.then((result) => {
 					if (result._nay) {
+						// "Unauthorized" means the session is gone for good: the server deleted the
+						// session doc (the device slept past the session expiry), or the membership
+						// ended. Answering token-error would leave the page dead until a manual
+						// reload, so stop this frame and ask the owner to remount it with a fresh
+						// session, the same path its Retry button takes. Setting `cancelled` caps
+						// this at one automatic remount per frame generation: if the fresh mint
+						// still refuses, the next generation shows the error state instead of
+						// looping. Host-initiated kills (ready flood, second load) set `cancelled`
+						// before this handler can run, so a page the host revoked on purpose never
+						// remints itself. Every other refresh failure is transient and still
+						// answers token-error so the SDK's own retry handles it.
+						if (result._nay.message === "Unauthorized" && !cancelled) {
+							cancelled = true;
+							// The session doc is already gone, so there is nothing left to revoke.
+							revokeStarted = true;
+							clearTimeout(startupDeadline);
+							onSessionLost();
+						}
 						return token_error(requestId, result._nay.message);
 					}
 					if (result._yay.pluginVersionId !== pluginVersionId) {
@@ -330,7 +366,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			iframeNode.removeEventListener("load", handle_load);
 			revoke_session(sessionId);
 		};
-	}, [bridgeNonce, entry, getInitContext, kindLabel, membershipId, mintSession, onError, pluginName, pluginVersionId, userId]);
+	}, [bridgeNonce, entry, getInitContext, kindLabel, membershipId, mintSession, onError, onSessionLost, pluginName, pluginVersionId, userId]);
 
 	return (
 		// The frame and public API share the Convex origin, so normal JSON requests need no CORS

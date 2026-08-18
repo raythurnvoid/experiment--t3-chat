@@ -1201,6 +1201,7 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 					kindLabel="plugin view"
 					mintSession={mintSession}
 					getInitContext={getInitContext}
+					onSessionLost={handleRetry}
 					onError={handleFrameError}
 				/>
 			)}

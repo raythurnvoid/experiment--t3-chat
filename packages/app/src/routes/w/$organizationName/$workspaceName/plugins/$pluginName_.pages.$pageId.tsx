@@ -122,6 +122,7 @@ function RoutePluginsPluginPage() {
 					kindLabel="plugin page"
 					mintSession={mintSession}
 					getInitContext={getInitContext}
+					onSessionLost={handleRetry}
 					onError={handleFrameError}
 				/>
 			)}

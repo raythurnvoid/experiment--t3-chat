@@ -555,6 +555,107 @@ describe("RoutePluginsPluginPage", () => {
 		expect(postMessageMock).not.toHaveBeenCalled();
 	});
 
+	test("a refresh that finds the session gone remounts the frame instead of answering token-error", async () => {
+		let mintCount = 0;
+		mutationMock.mockImplementation((reference: string) => {
+			if (reference === "plugins_ui.mint_page_session") {
+				mintCount += 1;
+				return Promise.resolve({
+					_yay: {
+						token: `plu_${mintCount}`,
+						expiresAt: Date.now() + 60_000,
+						pluginVersionId: "version_1",
+						sessionId: `session_${mintCount}`,
+					},
+				});
+			}
+			// The server deleted the session doc (the device slept past the session expiry), so the
+			// refresh answers "Unauthorized".
+			if (reference === "plugins_ui.refresh_ui_session") {
+				return Promise.resolve({ _nay: { message: "Unauthorized" } });
+			}
+			return Promise.resolve({ _yay: {} });
+		});
+
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const { container } = render(<PageComponent />);
+		const firstBridge = bridge_for(container);
+		await act(async () => post_ready(firstBridge.bridgeNonce));
+		const firstNonce = latest_init_message().bridgeNonce;
+		expect(firstNonce).toBe(firstBridge.bridgeNonce);
+		postMessageMock.mockClear();
+
+		await act(async () => {
+			post_from_frame({
+				type: "bonobo:token-refresh-request",
+				bridgeNonce: firstNonce,
+				requestId: "refresh_lost",
+			});
+		});
+
+		// The frame recovers by remounting instead of leaving the page dead behind a token-error.
+		expect(postMessageMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:token-error" }),
+			CONVEX_HTTP_ORIGIN,
+		);
+		expect(screen.queryByRole("alert")).toBeNull();
+		const secondBridge = bridge_for(container);
+		expect(secondBridge.bridgeNonce).not.toBe(firstNonce);
+		expect(mintCount).toBe(2);
+		// The session doc is already gone server-side, so the host does not try to revoke it.
+		expect(mutationMock).not.toHaveBeenCalledWith(
+			"plugins_ui.revoke_ui_session",
+			expect.objectContaining({ sessionId: "session_1" }),
+		);
+
+		await act(async () => post_ready(secondBridge.bridgeNonce));
+		expect(latest_init_message()).toMatchObject({ bridgeNonce: secondBridge.bridgeNonce, token: "plu_2" });
+	});
+
+	test("a transient refresh failure answers token-error without remounting", async () => {
+		let mintCount = 0;
+		mutationMock.mockImplementation((reference: string) => {
+			if (reference === "plugins_ui.mint_page_session") {
+				mintCount += 1;
+				return Promise.resolve({
+					_yay: {
+						token: `plu_${mintCount}`,
+						expiresAt: Date.now() + 60_000,
+						pluginVersionId: "version_1",
+						sessionId: `session_${mintCount}`,
+					},
+				});
+			}
+			// Any refusal other than "Unauthorized" is transient; the SDK's own retry handles it.
+			if (reference === "plugins_ui.refresh_ui_session") {
+				return Promise.resolve({ _nay: { message: "Not found" } });
+			}
+			return Promise.resolve({ _yay: {} });
+		});
+
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const { container } = render(<PageComponent />);
+		const firstBridge = bridge_for(container);
+		await act(async () => post_ready(firstBridge.bridgeNonce));
+		postMessageMock.mockClear();
+
+		await act(async () => {
+			post_from_frame({
+				type: "bonobo:token-refresh-request",
+				bridgeNonce: firstBridge.bridgeNonce,
+				requestId: "refresh_transient",
+			});
+		});
+
+		expect(postMessageMock).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:token-error", requestId: "refresh_transient", message: "Not found" }),
+			CONVEX_HTTP_ORIGIN,
+		);
+		expect(bridge_for(container).bridgeNonce).toBe(firstBridge.bridgeNonce);
+		expect(mintCount).toBe(1);
+		expect(screen.queryByRole("alert")).toBeNull();
+	});
+
 	test("a second load stops the frame and revokes a session that finishes minting late", async () => {
 		let resolveMint: ((value: unknown) => void) | null = null;
 		const mintPromise = new Promise((resolve) => {
@@ -669,6 +770,7 @@ describe("RoutePluginsPluginPage", () => {
 				workspaceId: "ws_1",
 				file: { fileNodeId: "node_1", name: "a.png", path: "/a.png", contentType: "image/png" },
 			}),
+			onSessionLost: () => {},
 			onError: () => {},
 		} as unknown as ComponentProps<typeof PluginsUiFrame>;
 		const view = render(<PluginsUiFrame {...fileViewProps} />);

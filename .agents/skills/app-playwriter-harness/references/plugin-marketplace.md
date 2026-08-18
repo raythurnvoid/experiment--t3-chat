@@ -236,7 +236,10 @@ Allow about 30 seconds after the upload: the R2 event, the conversion pass and t
 all asynchronous. Then read `plugins_event_runs` to see whether the run happened and what it settled as.
 
 `raythurnvoid/bonobo-plugin-data-probe` is the fixture plugin for plugin-data QA — its backend writes one
-document per upload and its page lists them.
+document per upload and its page lists them. Its page still runs a hand-vendored pre-0.8.0 bridge
+(`fetchJson` reads, no `client.data.*`), and it works on the direct-Convex host — verified 2026-08-18
+on 0.1.0 (`/w/personal/home/plugins/data-probe/pages/data-probe` renders "Recorded uploads (N)"). Do
+not chase a "data-probe page hangs" report without re-checking it live.
 
 ## Council page smoke (page → Worker → Convex exchange)
 
@@ -388,6 +391,8 @@ click provably does nothing, not before.
 
 The Chitchat plugin page (`/w/<org>/<workspace>/plugins/chitchat/pages/chat`) drives cleanly with
 plain `page.frameLocator(".PluginsUiFrame")` clicks — no dispatched-submit workarounds needed.
+Chitchat 0.1.5 (published 2026-08-18) changed no page behavior — it repointed the SDK pin to 0.9.1
+(transient-retry JWT exchange) and rewrote stale source comments — so the 0.1.4 recipes below hold.
 Verified 2026-08-17 on chitchat@0.1.0:
 
 - Empty state body text: `No channels yet — create the first one.`
@@ -450,7 +455,12 @@ Windows and CAS (verified 2026-08-17, two-user E2E on 0.1.3):
   `app_convex.mutation(api.plugins_ui.revoke_ui_session, { membershipId, sessionId })` (Vite serves
   the same module singletons the app runs). Within seconds the revoked tab renders "Access to this
   plugin's data ended…" with the composer disabled while other tabs stay live (one session per
-  mount, 1:1 — verified); a reload mints a fresh session and recovers.
+  mount, 1:1 — verified); a reload mints a fresh session and recovers. Since the host's
+  sleep-recovery change (2026-08-18) the tab also recovers on its own: when the page's ConvexClient
+  refetches its JWT (~10 min after boot), the refresh chain hits the gone session, the host gets
+  "Unauthorized" and remounts the frame with a fresh session and nonce — verified live (revoke →
+  dead state → one auto-remount ~9 min later, exactly one new session doc, no loop). To watch it,
+  poll the iframe `src` fragment for a `bridgeNonce` change instead of holding a frame reference.
 - The composer swallows Enter while a send is in flight and keeps the unsent text in place. For
   scripted sends, wait for the composer to empty between messages; a single composer maxes out
   around 3 sends per 10 seconds, below the write bucket's refill, so UI-driven sending cannot trip
