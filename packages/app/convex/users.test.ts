@@ -1462,6 +1462,110 @@ describe("get_anagraphic", () => {
 	});
 });
 
+describe("get_organization_workspace_member_anagraphic", () => {
+	function users_test_identity(
+		t: ReturnType<typeof test_convex>,
+		userId: Id<"users">,
+		args: { name: string; email: string },
+	) {
+		return t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: `clerk-${userId}`,
+			name: args.name,
+			external_id: userId,
+			email: args.email,
+		});
+	}
+
+	test("hands a fellow workspace member the email, and nobody else", async () => {
+		const t = test_convex();
+		const owner = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-member-anagraphic-owner",
+				displayName: "Member Anagraphic Owner",
+				email: "member-anagraphic-owner@test.local",
+			}),
+		);
+		const member = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-member-anagraphic-member",
+				displayName: "Member Anagraphic Member",
+				email: "member-anagraphic-member@test.local",
+			}),
+		);
+		const stranger = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-member-anagraphic-stranger",
+				displayName: "Member Anagraphic Stranger",
+				email: "member-anagraphic-stranger@test.local",
+			}),
+		);
+
+		const organization = await t.run(async (ctx) => {
+			const now = Date.now();
+			const created = await organizations_db_create(ctx, {
+				userId: owner.userId,
+				name: "member-anag-org",
+				description: "",
+				now,
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: created._yay.organizationId,
+				workspaceId: created._yay.defaultWorkspaceId,
+				userId: member.userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: created._yay.organizationId,
+				workspaceId: created._yay.defaultWorkspaceId,
+				userId: member.userId,
+				role: "member",
+				now,
+			});
+
+			return created._yay;
+		});
+
+		const queryArgs = {
+			organizationId: organization.organizationId,
+			workspaceId: organization.defaultWorkspaceId,
+			userId: owner.userId,
+		};
+
+		const asMember = users_test_identity(t, member.userId, {
+			name: "Member Anagraphic Member",
+			email: "member-anagraphic-member@test.local",
+		});
+		const asStranger = users_test_identity(t, stranger.userId, {
+			name: "Member Anagraphic Stranger",
+			email: "member-anagraphic-stranger@test.local",
+		});
+
+		const memberView = await asMember.query(api.users.get_organization_workspace_member_anagraphic, queryArgs);
+		expect(memberView?.displayName).toBe("Member Anagraphic Owner");
+		expect(memberView?.email).toBe("member-anagraphic-owner@test.local");
+
+		// Same person, same `users` id, but no shared workspace. `get_anagraphic` would still return
+		// the name here; this query must not, because the email would come with it.
+		expect(await asStranger.query(api.users.get_organization_workspace_member_anagraphic, queryArgs)).toBeNull();
+
+		expect(
+			await asMember.query(api.users.get_organization_workspace_member_anagraphic, {
+				...queryArgs,
+				userId: stranger.userId,
+			}),
+		).toBeNull();
+
+		expect(await t.query(api.users.get_organization_workspace_member_anagraphic, queryArgs)).toBeNull();
+	});
+});
+
 describe("list_current_user_account_deletion_blocking_organizations", () => {
 	test("returns only owned non-default organizations at default-workspace scope", async () => {
 		const t = test_convex();

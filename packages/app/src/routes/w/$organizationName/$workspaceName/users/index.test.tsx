@@ -47,7 +47,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			invite_user_to_organization_workspace: "organizations.invite_user_to_organization_workspace",
 			remove_user_from_organization: "organizations.remove_user_from_organization",
 		},
-		users: { get_anagraphic: "users.get_anagraphic" },
+		users: { get_organization_workspace_member_anagraphic: "users.get_organization_workspace_member_anagraphic" },
 		access_control: {
 			list_roles: "access_control.list_roles",
 			get_current_user_role: "access_control.get_current_user_role",
@@ -242,8 +242,8 @@ function setQueries(args?: {
 	useQueriesMock.mockImplementation((props: Record<string, { query: string }>) =>
 		Object.fromEntries(
 			Object.entries(props).map(([userId, entry]) => {
-				if (entry.query === "users.get_anagraphic") {
-					return [userId, { displayName: userId, avatarUrl: null }];
+				if (entry.query === "users.get_organization_workspace_member_anagraphic") {
+					return [userId, { displayName: userId, email: `${userId}@test.local`, avatarUrl: null }];
 				}
 
 				return [userId, userId === OWNER_USER_ID ? { kind: "owner" } : { kind: "system", role: "member" }];
@@ -394,5 +394,54 @@ describe("RouteUsers role select", () => {
 			expect(toastMock.error).toHaveBeenCalledWith("This role adds nothing to the member's organization role"),
 		);
 		expect(toastMock.success).not.toHaveBeenCalled();
+	});
+});
+
+describe("RouteUsers member emails", () => {
+	beforeEach(() => {
+		authMock.mockReturnValue({ userId: SELF_USER_ID });
+		mutationMock.mockResolvedValue({ _yay: null });
+		setQueries();
+	});
+
+	afterEach(() => {
+		cleanup();
+		vi.clearAllMocks();
+	});
+
+	test("shows each member's email under their name", () => {
+		render(<PageComponent />);
+
+		expect(document.querySelector(`[data-user-id="${TARGET_USER_ID}"] .RouteUsersUserListItem-email`)?.textContent).toBe(
+			`${TARGET_USER_ID}@test.local`,
+		);
+		expect(document.querySelector(`[data-user-id="${OWNER_USER_ID}"] .RouteUsersUserListItem-email`)?.textContent).toBe(
+			`${OWNER_USER_ID}@test.local`,
+		);
+	});
+
+	test("omits the email line when the member has none", () => {
+		useQueriesMock.mockImplementation((props: Record<string, { query: string }>) =>
+			Object.fromEntries(
+				Object.entries(props).map(([userId, entry]) => {
+					if (entry.query === "users.get_organization_workspace_member_anagraphic") {
+						return [
+							userId,
+							{
+								displayName: userId,
+								email: userId === TARGET_USER_ID ? "" : `${userId}@test.local`,
+								avatarUrl: null,
+							},
+						];
+					}
+
+					return [userId, userId === OWNER_USER_ID ? { kind: "owner" } : { kind: "system", role: "member" }];
+				}),
+			),
+		);
+		render(<PageComponent />);
+
+		expect(document.querySelector(`[data-user-id="${TARGET_USER_ID}"] .RouteUsersUserListItem-email`)).toBeNull();
+		expect(document.querySelector(`[data-user-id="${OWNER_USER_ID}"] .RouteUsersUserListItem-email`)).not.toBeNull();
 	});
 });

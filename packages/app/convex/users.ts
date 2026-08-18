@@ -517,6 +517,62 @@ export const get_anagraphic = query({
 	},
 });
 
+/**
+ * Return a workspace member's profile, including email.
+ *
+ * Use this on the Users page. `get_anagraphic` blanks email for anyone but the caller because its
+ * only argument is a `users` id, and those ids are not secret. This query first proves that the
+ * caller and the named user are both active members of the same workspace, so the address is only
+ * shown to people who already share that workspace.
+ */
+export const get_organization_workspace_member_anagraphic = query({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+	},
+	returns: v.union(doc(app_convex_schema, "users_anagraphics"), v.null()),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return null;
+		}
+
+		const [currentWorkspaceMembership, targetWorkspaceMembership, user] = await Promise.all([
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", userAuth.id)
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId),
+				)
+				.first(),
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", args.userId)
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId),
+				)
+				.first(),
+			ctx.db.get("users", args.userId),
+		]);
+
+		// Both memberships are required. Without the target's, a caller who is in the workspace could
+		// still ask about any `users` id and read that person's email. Without the caller's, this would
+		// be the same as widening `get_anagraphic`.
+		if (!currentWorkspaceMembership || !targetWorkspaceMembership || !user?.anagraphic) {
+			return null;
+		}
+
+		return await ctx.db.get("users_anagraphics", user.anagraphic);
+	},
+});
+
 export const list_current_user_account_deletion_blocking_organizations = query({
 	args: {},
 	returns: users_v_account_deletion_blocking_organizations,

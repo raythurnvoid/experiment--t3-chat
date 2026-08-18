@@ -43,7 +43,7 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 
 - Route: `/w/:organizationName/:workspaceName/users`.
 - Page header `.RouteUsersHeader` (heading `Users`, subtitle `<org> organization membership`) with actions in `.RouteUsersHeader-toolbar`; invite dialog root `.RouteUsersInviteModal`.
-- Member list is a real `ul[aria-label="Organization members"]` with rows `li.RouteUsersUserListItem[data-user-id="<users id>"]`.
+- Member list is a real `ul[aria-label="Organization members"]` with rows `li.RouteUsersUserListItem[data-user-id="<users id>"]`. Each row shows the display name in `.RouteUsersUserListItem-name` and, when the workspace-member anagraphic includes one, the email in `.RouteUsersUserListItem-email`. Anonymous members with an empty email omit that line.
 - The role cell inside `.RouteUsersUserListItem-title` has **two shapes**, both carrying `data-role-kind="<kind>"` and `data-role-value="<system role name | custom role id | empty>"`:
   - **Read-only badge** `span.MyBadge` — on the owner's row, on your own row, and whenever you may not change roles here. Its text is `Role: <label>`, a `span.sr-only` prefix plus the visible label; there is no `aria-label`, because ARIA forbids naming a plain span. The owner renders `Role: Owner` / `data-role-kind="owner"`.
   - **Select trigger** `button.RouteUsersUserListItem-role-select` — everywhere else. Accessible name `Role for <display name>` (no `Role: ` prefix), and while a change is in flight it reads `Saving...` and carries `aria-busy="true"`. The option list is a `MySelectPopover` with `unmountOnHide`, so it is **not** in the DOM until you open the trigger; each option is a `MySelectItem` with its own `data-role-value`.

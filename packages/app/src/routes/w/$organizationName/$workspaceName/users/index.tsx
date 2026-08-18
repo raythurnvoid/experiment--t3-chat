@@ -66,6 +66,7 @@ type RouteUsersUserListItem_ClassNames =
 	| "RouteUsersUserListItem-main"
 	| "RouteUsersUserListItem-title"
 	| "RouteUsersUserListItem-name"
+	| "RouteUsersUserListItem-email"
 	| "RouteUsersUserListItem-role-select"
 	| "RouteUsersUserListItem-actions";
 
@@ -79,6 +80,7 @@ type RouteUsersUserListItem_Props = {
 	userId: app_convex_Id<"users">;
 	authUserId: app_convex_Id<"users"> | null;
 	displayName: string;
+	email: string;
 	role: access_control_DisplayRole | null;
 	assignableRoles: readonly RouteUsersAssignableRole[];
 	/** `undefined` while the permission query is still loading. */
@@ -99,6 +101,7 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 		userId,
 		authUserId,
 		displayName,
+		email,
 		role,
 		assignableRoles,
 		canManageMembers,
@@ -246,6 +249,9 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 						</MyBadge>
 					)}
 				</div>
+				{email ? (
+					<span className={"RouteUsersUserListItem-email" satisfies RouteUsersUserListItem_ClassNames}>{email}</span>
+				) : null}
 			</div>
 
 			<div className={"RouteUsersUserListItem-actions" satisfies RouteUsersUserListItem_ClassNames}>
@@ -285,7 +291,9 @@ type RouteUsersList_Props = {
 	workspaceUserIds: app_convex_Id<"users">[];
 	userAnagraphicDict: Record<
 		app_convex_Id<"users">,
-		app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | undefined | Error
+		| app_convex_FunctionReturnType<typeof app_convex_api.users.get_organization_workspace_member_anagraphic>
+		| undefined
+		| Error
 	>;
 	userRoleDict: Record<app_convex_Id<"users">, access_control_DisplayRole | null | undefined | Error>;
 	assignableRoles: readonly RouteUsersAssignableRole[];
@@ -387,6 +395,7 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 						userId={userId}
 						authUserId={authUserId}
 						displayName={anagraphic.displayName}
+						email={anagraphic.email}
 						role={role}
 						assignableRoles={assignableRoles}
 						canManageMembers={canManageMembers}
@@ -689,6 +698,8 @@ function RouteUsers() {
 	// server still refuses a change the caller is not allowed to make.
 	const customRoles = useQuery(app_convex_api.access_control.list_roles, { organizationId });
 
+	// The Users page is a shared-workspace roster, so this query returns email. `get_anagraphic`
+	// blanks it for anyone but the caller because a bare `users` id is not a tenant check.
 	// The react compiler is unable to memoize code that uses the returned value from a hook
 	const userAnagraphicQueryProps = useMemo(
 		() =>
@@ -698,18 +709,18 @@ function RouteUsers() {
 						[
 							userId,
 							{
-								query: app_convex_api.users.get_anagraphic,
-								args: { userId },
+								query: app_convex_api.users.get_organization_workspace_member_anagraphic,
+								args: { organizationId, workspaceId, userId },
 							},
 						] as const,
 				),
 			),
-		[workspaceUserIds],
+		[workspaceUserIds, organizationId, workspaceId],
 	);
 
 	const userAnagraphicQueryResults = useQueries(userAnagraphicQueryProps) as Record<
 		app_convex_Id<"users">,
-		app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | undefined | Error
+		app_convex_FunctionReturnType<typeof app_convex_api.users.get_organization_workspace_member_anagraphic> | undefined | Error
 	>;
 
 	// The react compiler is unable to memoize code that uses the returned value from a hook
