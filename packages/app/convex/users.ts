@@ -525,7 +525,7 @@ export const get_anagraphic = query({
  * caller and the named user are both active members of the same workspace, so the address is only
  * shown to people who already share that workspace.
  */
-export const get_organization_workspace_member_anagraphic = query({
+export const get_workspace_member_anagraphic = query({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),

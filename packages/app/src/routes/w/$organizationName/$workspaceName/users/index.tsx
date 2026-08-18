@@ -291,7 +291,7 @@ type RouteUsersList_Props = {
 	workspaceUserIds: app_convex_Id<"users">[];
 	userAnagraphicDict: Record<
 		app_convex_Id<"users">,
-		| app_convex_FunctionReturnType<typeof app_convex_api.users.get_organization_workspace_member_anagraphic>
+		| app_convex_FunctionReturnType<typeof app_convex_api.users.get_workspace_member_anagraphic>
 		| undefined
 		| Error
 	>;
@@ -709,7 +709,7 @@ function RouteUsers() {
 						[
 							userId,
 							{
-								query: app_convex_api.users.get_organization_workspace_member_anagraphic,
+								query: app_convex_api.users.get_workspace_member_anagraphic,
 								args: { organizationId, workspaceId, userId },
 							},
 						] as const,
@@ -720,7 +720,7 @@ function RouteUsers() {
 
 	const userAnagraphicQueryResults = useQueries(userAnagraphicQueryProps) as Record<
 		app_convex_Id<"users">,
-		app_convex_FunctionReturnType<typeof app_convex_api.users.get_organization_workspace_member_anagraphic> | undefined | Error
+		app_convex_FunctionReturnType<typeof app_convex_api.users.get_workspace_member_anagraphic> | undefined | Error
 	>;
 
 	// The react compiler is unable to memoize code that uses the returned value from a hook

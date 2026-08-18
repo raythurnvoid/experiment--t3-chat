@@ -435,7 +435,7 @@ product decision, so record the answer here before changing the behaviour. An en
   a bare `users` id, and ids are handed out in bulk by presence rosters, so without it anyone who
   could call at all could walk a roster into an address book. `""` is the value anonymous users
   already carry, so every reader already has a no-email branch — do not "fix" one by widening the
-  query. Same-workspace callers use `users.get_organization_workspace_member_anagraphic`, which
+  query. Same-workspace callers use `users.get_workspace_member_anagraphic`, which
   proves both people are active members of that workspace before it returns the address. The Users
   page is the current caller.
 
@@ -623,7 +623,7 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   identity and hides other people's email, but any signed-in caller still turns any `users` id into a
   display name and avatar. Closing that needs a relationship check the query has no argument for
   today, and the same rule would have to reach `presence.listRoom`. Email is already gated:
-  same-workspace callers use `users.get_organization_workspace_member_anagraphic`.
+  same-workspace callers use `users.get_workspace_member_anagraphic`.
 
 # Public access
 

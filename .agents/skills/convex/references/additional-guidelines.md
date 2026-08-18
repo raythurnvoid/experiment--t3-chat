@@ -651,7 +651,7 @@ Convex query results are automatically cached by the client and kept consistent 
 
 Practical implication for this repo:
 
-- For the current user's own profile, reuse the current-user-safe profile query from both surfaces. For another user's profile, use only a public-safe display-profile query that enforces the required tenant or audience scope. `users.get_anagraphic` is the worked example: it requires an identity, returns display name and avatar for any `users` id because those render cross-tenant, and blanks `email` for anyone but the caller. Field-level audience beats a second query when only one field has a narrower audience. When a screen needs that withheld field, add a query whose arguments can prove the narrower audience — `users.get_organization_workspace_member_anagraphic` is the Users-page example — instead of widening the generic query.
+- For the current user's own profile, reuse the current-user-safe profile query from both surfaces. For another user's profile, use only a public-safe display-profile query that enforces the required tenant or audience scope. `users.get_anagraphic` is the worked example: it requires an identity, returns display name and avatar for any `users` id because those render cross-tenant, and blanks `email` for anyone but the caller. Field-level audience beats a second query when only one field has a narrower audience. When a screen needs that withheld field, add a query whose arguments can prove the narrower audience — `users.get_workspace_member_anagraphic` is the Users-page example — instead of widening the generic query.
 
 # Migrations
 

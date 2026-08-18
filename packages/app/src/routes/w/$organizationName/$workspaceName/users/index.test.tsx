@@ -47,7 +47,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			invite_user_to_organization_workspace: "organizations.invite_user_to_organization_workspace",
 			remove_user_from_organization: "organizations.remove_user_from_organization",
 		},
-		users: { get_organization_workspace_member_anagraphic: "users.get_organization_workspace_member_anagraphic" },
+		users: { get_workspace_member_anagraphic: "users.get_workspace_member_anagraphic" },
 		access_control: {
 			list_roles: "access_control.list_roles",
 			get_current_user_role: "access_control.get_current_user_role",
@@ -242,7 +242,7 @@ function setQueries(args?: {
 	useQueriesMock.mockImplementation((props: Record<string, { query: string }>) =>
 		Object.fromEntries(
 			Object.entries(props).map(([userId, entry]) => {
-				if (entry.query === "users.get_organization_workspace_member_anagraphic") {
+				if (entry.query === "users.get_workspace_member_anagraphic") {
 					return [userId, { displayName: userId, email: `${userId}@test.local`, avatarUrl: null }];
 				}
 
@@ -424,7 +424,7 @@ describe("RouteUsers member emails", () => {
 		useQueriesMock.mockImplementation((props: Record<string, { query: string }>) =>
 			Object.fromEntries(
 				Object.entries(props).map(([userId, entry]) => {
-					if (entry.query === "users.get_organization_workspace_member_anagraphic") {
+					if (entry.query === "users.get_workspace_member_anagraphic") {
 						return [
 							userId,
 							{

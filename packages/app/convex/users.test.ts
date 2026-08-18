@@ -1462,7 +1462,7 @@ describe("get_anagraphic", () => {
 	});
 });
 
-describe("get_organization_workspace_member_anagraphic", () => {
+describe("get_workspace_member_anagraphic", () => {
 	function users_test_identity(
 		t: ReturnType<typeof test_convex>,
 		userId: Id<"users">,
@@ -1547,22 +1547,22 @@ describe("get_organization_workspace_member_anagraphic", () => {
 			email: "member-anagraphic-stranger@test.local",
 		});
 
-		const memberView = await asMember.query(api.users.get_organization_workspace_member_anagraphic, queryArgs);
+		const memberView = await asMember.query(api.users.get_workspace_member_anagraphic, queryArgs);
 		expect(memberView?.displayName).toBe("Member Anagraphic Owner");
 		expect(memberView?.email).toBe("member-anagraphic-owner@test.local");
 
 		// Same person, same `users` id, but no shared workspace. `get_anagraphic` would still return
 		// the name here; this query must not, because the email would come with it.
-		expect(await asStranger.query(api.users.get_organization_workspace_member_anagraphic, queryArgs)).toBeNull();
+		expect(await asStranger.query(api.users.get_workspace_member_anagraphic, queryArgs)).toBeNull();
 
 		expect(
-			await asMember.query(api.users.get_organization_workspace_member_anagraphic, {
+			await asMember.query(api.users.get_workspace_member_anagraphic, {
 				...queryArgs,
 				userId: stranger.userId,
 			}),
 		).toBeNull();
 
-		expect(await t.query(api.users.get_organization_workspace_member_anagraphic, queryArgs)).toBeNull();
+		expect(await t.query(api.users.get_workspace_member_anagraphic, queryArgs)).toBeNull();
 	});
 });
 
