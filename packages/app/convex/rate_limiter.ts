@@ -108,10 +108,11 @@ const rate_limiter_CONFIG = {
 	files_snapshot_write: STRICT_WRITE,
 	files_tree_write: BULK_FILES_WRITE,
 	files_yjs_push_update: STRICT_WRITE,
-	// A member writing plugin data through the app, one document per call. Chat-like use is
+	// A member writing plugin data from a plugin page, one document per call. Chat-like use is
 	// bursty — a few messages or reactions in a row — so the capacity covers a short burst and
-	// the rate sustains one write every two seconds.
-	plugins_data_user_write: {
+	// the rate sustains one write every two seconds. Keyed by user and installation together, so
+	// one busy plugin page cannot drain the member's write budget in every other plugin.
+	plugins_data_page_user_write: {
 		kind: "token bucket",
 		rate: 30,
 		period: MINUTE,
@@ -127,6 +128,15 @@ const rate_limiter_CONFIG = {
 		rate: 30,
 		period: MINUTE,
 		capacity: 8,
+	},
+	// The iframe exchanges its `plu_` token for a ~10-minute plugin-session JWT, so steady state is
+	// one exchange per open page per JWT lifetime. Keyed by session id, and only a token that
+	// resolved to a live session reaches the charge — a garbage token is refused before it.
+	plugins_ui_session_jwt_exchange: {
+		kind: "token bucket",
+		rate: 12,
+		period: MINUTE,
+		capacity: 6,
 	},
 	// Each fresh plugin artifact review is a system-billed model call. A publish whose review subject
 	// already has a stored verdict reuses it and is never charged here.

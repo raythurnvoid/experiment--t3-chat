@@ -635,6 +635,35 @@ describe("/api/auth/resolve-user", () => {
 			fetchSpy.mockRestore();
 		}
 	});
+
+	test("refuses anonymous and plugin-session identities with 401", async () => {
+		const t = test_convex();
+
+		// Both custom issuers must be refused at the door. Before the explicit guard, an
+		// anonymous token fell through to resolve_user and failed only because it carries no
+		// email — an accident, not a boundary.
+		for (const issuer of [
+			process.env.VITE_CONVEX_HTTP_URL!,
+			`${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
+		]) {
+			const asToken = t.withIdentity({
+				issuer,
+				subject: "resolve-user-custom-issuer-subject",
+			});
+
+			const response = await asToken.fetch("/api/auth/resolve-user", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			const body = await response.json();
+
+			expect(response.status).toBe(401);
+			expect(body._nay?.message).toBe("Unauthorized");
+		}
+	});
 });
 
 describe("resolve_user", () => {
@@ -1459,6 +1488,37 @@ describe("get_anagraphic", () => {
 
 		const ownProfile = await asAnonymous.query(api.users.get_anagraphic, { userId: anonymous.userId });
 		expect(ownProfile?.displayName).toBe("Anagraphic Anonymous");
+	});
+
+	test("refuses a plugin-session identity even with the same subject an anonymous caller uses", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-anagraphic-plugin-session",
+				displayName: "Anagraphic Plugin Session",
+			}),
+		);
+
+		// Same subject, different issuer: the plugin-session provider identifies a person with
+		// fewer permissions, and member functions must read it as no user at all. Only the
+		// issuer separates the two tokens, so this pins the classifier's plugin branch.
+		const asPluginSession = t.withIdentity({
+			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
+			subject: user.userId,
+		});
+
+		expect(await asPluginSession.query(api.users.get_anagraphic, { userId: user.userId })).toBeNull();
+
+		// The plugin branch must win by issuer alone, not because plugin JWTs happen to carry no
+		// `external_id`. A crafted claim must not upgrade the token to a signed-in member.
+		const asPluginSessionWithExternalId = t.withIdentity({
+			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
+			subject: user.userId,
+			external_id: user.userId,
+			email: "anagraphic-plugin-session@test.local",
+		});
+
+		expect(await asPluginSessionWithExternalId.query(api.users.get_anagraphic, { userId: user.userId })).toBeNull();
 	});
 });
 

@@ -31,6 +31,11 @@ if (!process.env.VITE_CONVEX_HTTP_URL) {
 	process.env.VITE_CONVEX_HTTP_URL = "https://convex.test";
 }
 
+// Convex sets this automatically on real deployments; plugins_ui.ts reads it for the iframe CSP.
+if (!process.env.CONVEX_CLOUD_URL) {
+	process.env.CONVEX_CLOUD_URL = "https://cloud.convex.test";
+}
+
 if (!process.env.CLERK_SECRET_KEY) {
 	process.env.CLERK_SECRET_KEY = "CLERK_SECRET_KEY";
 }

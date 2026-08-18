@@ -15,13 +15,12 @@ import {
 } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { access_control_db_authorize_membership, access_control_db_has_permission } from "./access_control.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { access_control_db_has_permission } from "./access_control.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { server_convex_get_plugin_session } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
 import {
@@ -1355,75 +1354,114 @@ export type plugins_data_delete_document_Result =
 // #region user writes
 
 /**
- * Member writes through the app.
+ * Member writes from a plugin page.
  *
- * These are public mutations: the host app calls them with the member's own Convex auth when a
- * plugin page asks over the bridge. A page principal is structurally impossible here, because a
- * page holds a bearer token and these mutations only accept app auth. An invited anonymous member
- * carries a real auth identity, so it may write like any other member.
+ * These are public mutations: the plugin iframe calls them directly, authenticated with its
+ * plugin-session JWT (see plugins_ui.ts). The JWT's subject is a `plugins_ui_sessions` id, and
+ * the session doc names the member, installation, and version the page was minted for. Member
+ * functions refuse that identity and these doors refuse every other identity, so each side of
+ * the boundary answers only its own callers. An invited anonymous member mints page sessions
+ * like any other member, so it may write here too.
  */
 
 /**
- * Prove the member may write this plugin's documents, inside the same transaction as the write.
- * Args follow `mint_page_session`: the caller names a membership and a plugin, and everything
- * tenant-scoped is derived from the membership doc the caller is proven to own.
+ * Prove the page's member may write this plugin's documents, inside the same transaction as the
+ * write. Everything tenant-scoped is derived from the session doc the JWT points at, and every
+ * fact is re-read on every call, mirroring `resolve_principal` in public_api.ts: revoking the
+ * session, disabling or upgrading the installation, or removing the member closes the door
+ * immediately, even while the JWT itself is still signed-valid.
  */
-async function db_authorize_user_write(
+async function db_authorize_page_write(
 	ctx: MutationCtx,
 	args: {
-		membershipId: Id<"organizations_workspaces_users">;
-		pluginName: string;
 		/**
 		 * Append charges the bucket itself, after its replay lookup: a replayed request already
 		 * paid on its first call, and a retry refused by the bucket would report a delivered
 		 * write as failed.
 		 */
 		skipRateLimit?: true;
-	},
+	} = {},
 ) {
-	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-	if (!userAuth) {
+	const pluginSession = await server_convex_get_plugin_session(ctx);
+	if (!pluginSession) {
+		return Result({ _nay: { message: "Unauthenticated" } });
+	}
+	// The session doc is the kill switch: revoke, expiry, uninstall, and account deletion all
+	// delete it. Expiry deletes it through a scheduled job that can lag behind the wall clock,
+	// so the door also compares expiresAt itself instead of trusting that the doc is gone.
+	const session = await ctx.db.get("plugins_ui_sessions", pluginSession.sessionId);
+	if (!session || session.expiresAt <= Date.now()) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 
-	const membership = await organizations_db_get_membership(ctx, {
-		userId: userAuth.id,
-		membershipId: args.membershipId,
-	});
+	// The session dies with its installation: disabling, uninstalling, or upgrading it (an
+	// upgrade changes pluginVersionId) revokes every outstanding page session.
+	const installation = await ctx.db.get("plugins_workspace_installations", session.installationId);
+	if (
+		!installation ||
+		installation.status !== "enabled" ||
+		installation.pluginVersionId !== session.pluginVersionId ||
+		installation.organizationId !== session.organizationId ||
+		installation.workspaceId !== session.workspaceId
+	) {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+
+	// The page acts on behalf of the minting user: a deleted account or a lost membership closes
+	// the door even while the session doc still exists.
+	const user = await ctx.db.get("users", session.userId);
+	if (!user || user.deletedAt != null) {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+	const membership = await ctx.db
+		.query("organizations_workspaces_users")
+		.withIndex("by_active_user_organization_workspace", (q) =>
+			q
+				.eq("active", true)
+				.eq("userId", session.userId)
+				.eq("organizationId", session.organizationId)
+				.eq("workspaceId", session.workspaceId),
+		)
+		.first();
 	if (!membership) {
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
 
 	if (!args.skipRateLimit) {
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_data_user_write", key: userAuth.id });
+		// Keyed by user and installation together, so one busy plugin page cannot drain the
+		// member's write budget in every other installed plugin.
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "plugins_data_page_user_write",
+			key: `${session.userId}:${session.installationId}`,
+		});
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 	}
 
-	const authorized = await access_control_db_authorize_membership(ctx, {
-		userAuth,
-		membership,
-		permission: "content.write",
-	});
-	if (authorized._nay) {
-		return authorized;
-	}
-
-	const installation = await ctx.db
-		.query("plugins_workspace_installations")
-		.withIndex("by_organization_workspace_status_pluginName", (q) =>
-			q
-				.eq("organizationId", membership.organizationId)
-				.eq("workspaceId", membership.workspaceId)
-				.eq("status", "enabled")
-				.eq("pluginName", args.pluginName),
-		)
-		.first();
-	if (!installation) {
+	// The page acts as the member, so the member must hold workspace content.write, checked the
+	// same way `db_authorize` above checks the service principals.
+	const [organization, workspace] = await Promise.all([
+		ctx.db.get("organizations", session.organizationId),
+		ctx.db.get("organizations_workspaces", session.workspaceId),
+	]);
+	if (!organization?.defaultWorkspaceId || !workspace || workspace.organizationId !== organization._id) {
 		return Result({ _nay: { message: "Not found" } });
 	}
-	const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+	const allowed = await access_control_db_has_permission(ctx, {
+		organizationId: organization._id,
+		workspaceId: workspace._id,
+		defaultWorkspaceId: organization.defaultWorkspaceId,
+		organizationOwnerUserId: organization.ownerUserId,
+		resource: { kind: "workspace", id: String(workspace._id) },
+		permission: "content.write",
+		userId: session.userId,
+	});
+	if (!allowed) {
+		return Result({ _nay: { message: "Permission denied" } });
+	}
+
+	const version = await ctx.db.get("plugins_versions", session.pluginVersionId);
 	if (!version) {
 		return Result({ _nay: { message: "Not found" } });
 	}
@@ -1437,7 +1475,7 @@ async function db_authorize_user_write(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	return Result({ _yay: { installation, userId: userAuth.id } });
+	return Result({ _yay: { installation, userId: session.userId } });
 }
 
 /**
@@ -1571,8 +1609,6 @@ async function db_user_delete_document(
 
 export const user_append_document = mutation({
 	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		pluginName: v.string(),
 		collection: v.string(),
 		keyPrefix: v.optional(v.string()),
 		value: v.record(v.string(), v.any()),
@@ -1580,11 +1616,7 @@ export const user_append_document = mutation({
 	},
 	returns: v_result({ _yay: v.object({ key: v.string(), revision: v.number(), byteSize: v.number() }) }),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_user_write(ctx, {
-			membershipId: args.membershipId,
-			pluginName: args.pluginName,
-			skipRateLimit: true,
-		});
+		const authorized = await db_authorize_page_write(ctx, { skipRateLimit: true });
 		if (authorized._nay) {
 			return authorized;
 		}
@@ -1641,7 +1673,10 @@ export const user_append_document = mutation({
 
 		// Only a genuinely new append charges the bucket; the replay above answered without paying
 		// twice for one delivered write.
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_data_user_write", key: userId });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "plugins_data_page_user_write",
+			key: `${userId}:${installation._id}`,
+		});
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -1690,8 +1725,6 @@ export const user_append_document = mutation({
 
 export const user_put_document = mutation({
 	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		pluginName: v.string(),
 		collection: v.string(),
 		key: v.string(),
 		value: v.record(v.string(), v.any()),
@@ -1699,10 +1732,7 @@ export const user_put_document = mutation({
 	},
 	returns: v_result({ _yay: v.object({ revision: v.number(), byteSize: v.number() }) }),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_user_write(ctx, {
-			membershipId: args.membershipId,
-			pluginName: args.pluginName,
-		});
+		const authorized = await db_authorize_page_write(ctx);
 		if (authorized._nay) {
 			return authorized;
 		}
@@ -1770,18 +1800,13 @@ export const user_put_document = mutation({
 
 export const user_remove_document = mutation({
 	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		pluginName: v.string(),
 		collection: v.string(),
 		key: v.string(),
 		expectedRevision: v.optional(v.number()),
 	},
 	returns: v_result({ _yay: v.object({ deleted: v.boolean() }) }),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_user_write(ctx, {
-			membershipId: args.membershipId,
-			pluginName: args.pluginName,
-		});
+		const authorized = await db_authorize_page_write(ctx);
 		if (authorized._nay) {
 			return authorized;
 		}
@@ -1832,8 +1857,6 @@ export const user_remove_document = mutation({
 
 export const user_put_owned_document = mutation({
 	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		pluginName: v.string(),
 		collection: v.string(),
 		key: v.string(),
 		value: v.record(v.string(), v.any()),
@@ -1841,10 +1864,7 @@ export const user_put_owned_document = mutation({
 	},
 	returns: v_result({ _yay: v.object({ key: v.string(), revision: v.number(), byteSize: v.number() }) }),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_user_write(ctx, {
-			membershipId: args.membershipId,
-			pluginName: args.pluginName,
-		});
+		const authorized = await db_authorize_page_write(ctx);
 		if (authorized._nay) {
 			return authorized;
 		}
@@ -1918,18 +1938,13 @@ export const user_put_owned_document = mutation({
 
 export const user_remove_owned_document = mutation({
 	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		pluginName: v.string(),
 		collection: v.string(),
 		key: v.string(),
 		expectedRevision: v.optional(v.number()),
 	},
 	returns: v_result({ _yay: v.object({ deleted: v.boolean() }) }),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_user_write(ctx, {
-			membershipId: args.membershipId,
-			pluginName: args.pluginName,
-		});
+		const authorized = await db_authorize_page_write(ctx);
 		if (authorized._nay) {
 			return authorized;
 		}
@@ -1983,60 +1998,91 @@ export const user_remove_owned_document = mutation({
 // #region user reads
 
 /**
- * Member reads through the app.
+ * Member reads from a plugin page.
  *
- * These are public queries: the host app subscribes to them with the member's own Convex auth when
- * a plugin page asks over the bridge. Their answer is also the host's kill signal: the query throws
- * only when there is no auth identity at all, and answers null for every denial, so a revoked page
- * sees its subscription die instead of an error.
+ * These are public queries: the plugin iframe subscribes to them directly with its plugin-session
+ * JWT (see plugins_ui.ts). Their answer is also the kill signal: the query throws only when there
+ * is no auth identity at all, and answers null for every denial, so a revoked page sees its
+ * subscription die instead of an error.
+ *
+ * The server deliberately does not cap live subscriptions per session. Convex gives a query no
+ * subscribe hook to count against, so a hostile page that talks to Convex directly can open more
+ * subscriptions than the SDK's own per-page caps allow. Accepted risk: it is bounded only by the
+ * 30-minute session TTL and revocation, and stays on the ask list for the Convex team.
  */
 
 /**
- * Prove the member may read this plugin's documents. Args follow the write door: the caller names a
- * membership and a plugin, and everything tenant-scoped is derived from the membership doc the
- * caller is proven to own. Reading the membership and installation docs inside the query is what
- * makes a revocation re-run every live subscription into null.
+ * Prove the page's member may read this plugin's documents. Everything tenant-scoped is derived
+ * from the session doc the JWT points at, mirroring `resolve_principal` in public_api.ts. Reading
+ * the session, installation, and membership docs inside the query is what makes a revocation
+ * re-run every live subscription into null.
  */
-async function db_authorize_user_read(
-	ctx: QueryCtx,
-	args: { membershipId: Id<"organizations_workspaces_users">; pluginName: string },
-) {
-	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-	if (!userAuth) {
-		throw convex_error({ message: "Unauthenticated" });
+async function db_authorize_page_read(ctx: QueryCtx) {
+	const pluginSession = await server_convex_get_plugin_session(ctx);
+	// A caller with no identity at all is misconfigured and hears an error. Any authenticated
+	// caller that is not a plugin session hears null, like every other denial below.
+	if (!pluginSession) {
+		const identity = await ctx.auth.getUserIdentity().catch(() => null);
+		if (!identity) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		return null;
+	}
+	const session = await ctx.db.get("plugins_ui_sessions", pluginSession.sessionId);
+	if (!session || session.expiresAt <= Date.now()) {
+		return null;
 	}
 
-	const membership = await organizations_db_get_membership(ctx, {
-		userId: userAuth.id,
-		membershipId: args.membershipId,
-	});
+	// Same liveness chain as the write door above, with null in place of every refusal.
+	const installation = await ctx.db.get("plugins_workspace_installations", session.installationId);
+	if (
+		!installation ||
+		installation.status !== "enabled" ||
+		installation.pluginVersionId !== session.pluginVersionId ||
+		installation.organizationId !== session.organizationId ||
+		installation.workspaceId !== session.workspaceId
+	) {
+		return null;
+	}
+	const user = await ctx.db.get("users", session.userId);
+	if (!user || user.deletedAt != null) {
+		return null;
+	}
+	const membership = await ctx.db
+		.query("organizations_workspaces_users")
+		.withIndex("by_active_user_organization_workspace", (q) =>
+			q
+				.eq("active", true)
+				.eq("userId", session.userId)
+				.eq("organizationId", session.organizationId)
+				.eq("workspaceId", session.workspaceId),
+		)
+		.first();
 	if (!membership) {
 		return null;
 	}
 
-	const authorized = await access_control_db_authorize_membership(ctx, {
-		userAuth,
-		membership,
+	const [organization, workspace] = await Promise.all([
+		ctx.db.get("organizations", session.organizationId),
+		ctx.db.get("organizations_workspaces", session.workspaceId),
+	]);
+	if (!organization?.defaultWorkspaceId || !workspace || workspace.organizationId !== organization._id) {
+		return null;
+	}
+	const allowed = await access_control_db_has_permission(ctx, {
+		organizationId: organization._id,
+		workspaceId: workspace._id,
+		defaultWorkspaceId: organization.defaultWorkspaceId,
+		organizationOwnerUserId: organization.ownerUserId,
+		resource: { kind: "workspace", id: String(workspace._id) },
 		permission: "content.read",
+		userId: session.userId,
 	});
-	if (authorized._nay) {
+	if (!allowed) {
 		return null;
 	}
 
-	const installation = await ctx.db
-		.query("plugins_workspace_installations")
-		.withIndex("by_organization_workspace_status_pluginName", (q) =>
-			q
-				.eq("organizationId", membership.organizationId)
-				.eq("workspaceId", membership.workspaceId)
-				.eq("status", "enabled")
-				.eq("pluginName", args.pluginName),
-		)
-		.first();
-	if (!installation) {
-		return null;
-	}
-	const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+	const version = await ctx.db.get("plugins_versions", session.pluginVersionId);
 	if (!version) {
 		return null;
 	}
@@ -2055,8 +2101,6 @@ async function db_authorize_user_read(
 
 export const watch_documents = query({
 	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		pluginName: v.string(),
 		collection: v.string(),
 		keyPrefix: v.optional(v.string()),
 		keyStartExclusive: v.optional(v.string()),
@@ -2065,10 +2109,7 @@ export const watch_documents = query({
 	},
 	returns: v.union(v.object({ docs: v.array(document_validator), truncated: v.boolean() }), v.null()),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_user_read(ctx, {
-			membershipId: args.membershipId,
-			pluginName: args.pluginName,
-		});
+		const authorized = await db_authorize_page_read(ctx);
 		if (!authorized) {
 			return null;
 		}
@@ -2147,16 +2188,11 @@ export const watch_documents = query({
 
 export const resolve_member_display = query({
 	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		pluginName: v.string(),
 		userIds: v.array(v.id("users")),
 	},
 	returns: v.union(v.object({ members: v.record(v.id("users"), v.union(v.string(), v.null())) }), v.null()),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_user_read(ctx, {
-			membershipId: args.membershipId,
-			pluginName: args.pluginName,
-		});
+		const authorized = await db_authorize_page_read(ctx);
 		if (!authorized) {
 			return null;
 		}

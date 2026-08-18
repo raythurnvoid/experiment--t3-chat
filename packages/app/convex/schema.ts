@@ -1559,6 +1559,12 @@ const app_convex_schema = defineSchema({
 		tokenHash: v.string(),
 		createdAt: v.number(),
 		expiresAt: v.number(),
+		/**
+		 * The scheduled job that deletes this doc at `expiresAt`. The deletion is what ends live
+		 * plugin subscriptions, because Convex reruns queries on writes, not on wall clock. Refresh
+		 * cancels this job and schedules a new one for the new expiry.
+		 */
+		expiryJobId: v.optional(v.id("_scheduled_functions")),
 	})
 		.index("by_tokenHash", ["tokenHash"])
 		.index("by_expiresAt", ["expiresAt"])

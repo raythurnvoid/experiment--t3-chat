@@ -24,7 +24,7 @@ import { quotas_db_ensure } from "./quotas.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_fetch_json } from "../server/server-fetch.ts";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { PLUGINS_UI_SESSIONS_JWT_ISSUER, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { organizations_db_ensure_default_organization_and_workspace_for_user } from "./organizations.ts";
 import { access_control_db_ensure_organization_member_role } from "./access_control.ts";
 import {
@@ -75,6 +75,12 @@ const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
  * The first kid is the default kid (most recent).
  **/
 const ANONYMOUS_USERS_JWT_KID_LIST = ["anonymous-user-jwt-2025-12"];
+
+/**
+ * Default (most recent) kid. Also used by the plugin-session JWT signer in plugins_ui.ts: both
+ * custom providers sign with the same key pair and publish the same JWKS; only the issuer differs.
+ */
+export const users_ANONYMOUS_JWT_DEFAULT_KID = ANONYMOUS_USERS_JWT_KID_LIST[0];
 
 /**
  * Rotate the stored refresh JWT once it is 7 days away from expiry.
@@ -129,7 +135,10 @@ const get_anonymous_users_jwt_public_xy = ((/* iife */) => {
 	};
 })();
 
-const get_anonymous_users_jwt_private_key = ((/* iife */) => {
+/**
+ * Also used by the plugin-session JWT signer in plugins_ui.ts (see the kid comment above).
+ */
+export const users_get_anonymous_jwt_private_key = ((/* iife */) => {
 	function value() {
 		return importPKCS8(ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM, "ES256");
 	}
@@ -148,13 +157,13 @@ async function sign_anonymous_users_jwt(args: {
 	name: string;
 	avatarUrl?: string;
 }) {
-	const key = await get_anonymous_users_jwt_private_key();
+	const key = await users_get_anonymous_jwt_private_key();
 
 	return await new SignJWT({
 		name: args.name,
 		...(args.avatarUrl ? { avatarUrl: args.avatarUrl } : null),
 	})
-		.setProtectedHeader({ alg: "ES256", kid: ANONYMOUS_USERS_JWT_KID_LIST[0], typ: "JWT" })
+		.setProtectedHeader({ alg: "ES256", kid: users_ANONYMOUS_JWT_DEFAULT_KID, typ: "JWT" })
 		.setIssuer(ANONYMOUS_USERS_JWT_ISSUER)
 		.setAudience(args.kind === "access" ? "convex" : ANONYMOUS_USERS_REFRESH_JWT_AUD)
 		.setSubject(args.subject)
@@ -1232,6 +1241,16 @@ export async function users_http_resolve_user(ctx: ActionCtx, request: Request) 
 
 	const identity = await ctx.auth.getUserIdentity().catch(() => null);
 	if (!identity) {
+		return {
+			status: 401,
+			body: Result({ _nay: { message: "Unauthorized" } }),
+		} as const;
+	}
+
+	// This route links Clerk accounts, so only Clerk identities may enter. Refuse both custom
+	// issuers explicitly: an anonymous or plugin-session JWT here would be read as a Clerk user
+	// id below, and the old protection (those tokens carry no email) was an accident, not a rule.
+	if (identity.issuer === ANONYMOUS_USERS_JWT_ISSUER || identity.issuer === PLUGINS_UI_SESSIONS_JWT_ISSUER) {
 		return {
 			status: 401,
 			body: Result({ _nay: { message: "Unauthorized" } }),

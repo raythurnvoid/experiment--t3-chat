@@ -1,6 +1,6 @@
 ---
 name: auth-system
-description: Auth and account-management system (Clerk + Convex + anonymous JWT) guidelines, including Convex-authoritative account lifecycle, anagraphic-first UI profile data, and planned permissions/upgrade behavior. Use when modifying auth flows, account/profile UI, delete-account behavior, Clerk cleanup, or anonymous upgrade behavior.
+description: Auth and account-management system (Clerk + Convex + anonymous JWT + plugin-session JWT) guidelines, including Convex-authoritative account lifecycle, anagraphic-first UI profile data, and planned permissions/upgrade behavior. Use when modifying auth flows, account/profile UI, delete-account behavior, Clerk cleanup, or anonymous upgrade behavior.
 ---
 
 # Product And Security Invariants
@@ -61,7 +61,9 @@ Auth is coordinated by `ClerkProvider` + `AppAuthProvider` + Convex auth integra
 
 Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={AppAuthProvider.useAuth}`.
 
-## Two identity modes
+## Three token identities
+
+`auth.config.ts` verifies three providers: Clerk, the anonymous custom JWT, and the plugin-session custom JWT. Only the first two are member identities; the third is deliberately refused by member functions.
 
 ### Clerk (signed-in)
 
@@ -127,15 +129,24 @@ Anonymous JWT properties (both tokens, signed with the same ES256 key):
 - access token: `aud "convex"`, expiry `"1h"`
 - refresh token: `aud "anonymous-refresh"`, expiry `"30d"`
 
+### Plugin-session (plugin UI iframes)
+
+A plugin-session JWT identifies a person with fewer permissions: the member behind a plugin UI iframe. It is signed with the same ES256 key as the anonymous tokens and served by the same JWKS; the issuer `${VITE_CONVEX_HTTP_URL}/plugins-ui` is the only discriminator, because Convex never exposes `aud` to app code. Its `sub` is the `plugins_ui_sessions` id, not a `users` id — every plugin-facing door loads that session doc on each run, so revoking or expiring the session kills the identity even while the JWT is still signed-valid.
+
+The classifier in [server-utils.ts](../../../packages/app/server/server-utils.ts) is fail-closed: `server_convex_get_user_fallback_to_anonymous` returns `null` for this issuer, so member functions treat a plugin page as unauthenticated. Only `server_convex_get_plugin_session` resolves it, and only the plugin-facing doors call that. The classifier treats every unknown issuer as Clerk, so adding a fourth provider to `auth.config.ts` requires extending the classifier first — both files carry a comment saying so.
+
+The SDK obtains this JWT by exchanging the host-minted page session token at `POST /plugins-ui/session-jwt` (10-minute life, capped at session expiry; the exchange never extends the session). Full exchange-route contract and door model: `../plugin-system/SKILL.md`.
+
 ### `GET /.well-known/jwks.json`
 
-Exposes public JWK(s) for the anonymous JWT signing key so JWT verifiers can validate anonymous tokens.
+Exposes public JWK(s) for the shared ES256 signing key so JWT verifiers can validate anonymous and plugin-session tokens.
 
 ### `POST /api/auth/resolve-user`
 
 Purpose: ensure a Clerk identity is linked to a Convex user id, and ensure Clerk `external_id` is set.
 
 - Requires a valid Clerk-authenticated request (`ctx.auth.getUserIdentity()` must exist).
+- Refuses the anonymous and plugin-session issuers explicitly with `401`. This route links Clerk accounts, so a custom-JWT identity here would be misread as a Clerk user id; the old protection (those tokens carry no email) was an accident, not a rule.
 - If `identity.external_id` resolves to a non-tombstoned `users` doc with both default-tenant pointer fields set, returns it without consuming the auth write rate limit. This fast path checks that the pointers are present, not that their target docs exist.
 - If `identity.external_id` is missing or points to a missing `users` doc, the route rate-limits by `identity.external_id` when present, otherwise by the Clerk subject. On deny it returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
 - After the repair/create path is allowed:
@@ -339,6 +350,7 @@ When a public Convex handler needs the current app user, resolve auth with `serv
 - Convex auth returns no usable identity.
 - Convex auth returns a user id, but that id does not resolve to a row in the `users` table.
 - The caller is anonymous and the resolved row has `deletedAt`.
+- The caller presents a plugin-session JWT: the helper answers `null` for that issuer by design. Plugin-facing doors are the only handlers that resolve it, through `server_convex_get_plugin_session`.
 
 `access_control_db_authorize_membership` applies the `deletedAt` rejection to **every** caller, anonymous or signed in, at all of its call sites. The four public Polar actions do the same before any provider call. Recovery clears the tombstone before normal access resumes: `users.resolve_user` patches `deletedAt: undefined`, and `/api/auth/resolve-user` refuses a tombstoned user on the read-only fast path so it must fall through to that patch. Keep these checks even though account deletion asks Clerk to delete the identity, because that best-effort request can fail.
 

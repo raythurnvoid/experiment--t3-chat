@@ -1,4 +1,5 @@
 import { R2 } from "@convex-dev/r2";
+import { importSPKI, jwtVerify } from "jose";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
@@ -47,6 +48,7 @@ beforeEach(() => {
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
+	vi.useRealTimers();
 });
 
 function user_identity(userId: Id<"users">) {
@@ -415,6 +417,15 @@ async function seed_session_token(
 	return token;
 }
 
+// Default to the frame's own origin, derived from the env exactly like the handler derives it.
+async function exchange_session_jwt(t: ReturnType<typeof test_convex>, token: string, origin?: string) {
+	return await t.fetch("/plugins-ui/session-jwt", {
+		method: "POST",
+		headers: { "Content-Type": "application/json", Origin: origin ?? new URL(process.env.VITE_CONVEX_HTTP_URL!).origin },
+		body: JSON.stringify({ token }),
+	});
+}
+
 describe("plugin ui manifest pages", () => {
 	test("accepts a frontend-only manifest with pages", () => {
 		const manifest = {
@@ -624,6 +635,35 @@ describe("plugin ui sessions", () => {
 			membershipId: fixture.membership.membershipId,
 		});
 		expect(afterDisable).toEqual([]);
+	});
+
+	test("a plugin-session identity cannot mint sessions or list pages", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+
+		const minted = await fixture.asOwner.mutation(api.plugins_ui.mint_page_session, {
+			membershipId: fixture.membership.membershipId,
+			pluginName: "gallery",
+		});
+		if (minted._nay) throw new Error(minted._nay.message);
+
+		// A leaked plugin JWT must not mint more sessions or reach member functions. The subject
+		// is a real session id, so only the issuer separates this identity from a member's.
+		const asPluginSession = t.withIdentity({
+			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
+			subject: minted._yay.sessionId,
+		});
+
+		const remint = await asPluginSession.mutation(api.plugins_ui.mint_page_session, {
+			membershipId: fixture.membership.membershipId,
+			pluginName: "gallery",
+		});
+		expect(remint).toMatchObject({ _nay: { message: "Unauthenticated" } });
+
+		const pages = await asPluginSession.query(api.plugins_ui.list_ui_pages, {
+			membershipId: fixture.membership.membershipId,
+		});
+		expect(pages).toEqual([]);
 	});
 
 	test("excludes pages-less versions from list_ui_pages and mint_page_session", async () => {
@@ -1598,6 +1638,204 @@ describe("plugin ui file view sessions", () => {
 	});
 });
 
+// The expiry job is shared by both mints and moved by refresh, so it gets its own group.
+describe("plugin ui session expiry", () => {
+	test("a minted session deletes itself at expiry without the daily cron", async () => {
+		const t = test_convex();
+		// The expiry deletion runs on the scheduler, so the test needs fake timers to reach it.
+		vi.useFakeTimers();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+
+		const stored = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId));
+		if (!stored?.expiryJobId) {
+			throw new Error("mint did not schedule the expiry job");
+		}
+		const job = await t.run((ctx) => ctx.db.system.get("_scheduled_functions", stored.expiryJobId!));
+		expect(job?.scheduledTime).toBe(session.expiresAt);
+
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId))).toBeNull();
+	});
+
+	test("refresh moves the expiry job to the new expiry instead of letting the old one fire", async () => {
+		const t = test_convex();
+		vi.useFakeTimers();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+		const beforeRefresh = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId));
+
+		// Let time pass so the refreshed expiry lands later than the minted one.
+		vi.advanceTimersByTime(60 * 1000);
+		const refreshed = await fixture.asOwner.mutation(api.plugins_ui.refresh_ui_session, {
+			membershipId: fixture.membership.membershipId,
+			sessionId: session.sessionId,
+		});
+		if (refreshed._nay) {
+			throw new Error(refreshed._nay.message);
+		}
+		expect(refreshed._yay.expiresAt).toBeGreaterThan(session.expiresAt);
+
+		const afterRefresh = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId));
+		expect(afterRefresh?.expiryJobId).not.toBe(beforeRefresh?.expiryJobId);
+		const oldJob = await t.run((ctx) => ctx.db.system.get("_scheduled_functions", beforeRefresh!.expiryJobId!));
+		expect(oldJob?.state.kind).toBe("canceled");
+		const newJob = await t.run((ctx) => ctx.db.system.get("_scheduled_functions", afterRefresh!.expiryJobId!));
+		expect(newJob?.scheduledTime).toBe(refreshed._yay.expiresAt);
+	});
+
+	test("the expiry job is a no-op for a moved expiry and for a revoked session", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+
+		// A stale run before expiry (a refresh raced the job) leaves the doc alone.
+		await t.mutation(internal.plugins_ui.expire_ui_session, { sessionId: session.sessionId });
+		expect(await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId))).not.toBeNull();
+
+		// A run after revocation finds no doc and does not throw.
+		const revoked = await fixture.asOwner.mutation(api.plugins_ui.revoke_ui_session, {
+			membershipId: fixture.membership.membershipId,
+			sessionId: session.sessionId,
+		});
+		expect(revoked).toMatchObject({ _yay: {} });
+		await t.mutation(internal.plugins_ui.expire_ui_session, { sessionId: session.sessionId });
+		expect(await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId))).toBeNull();
+	});
+});
+
+describe("plugin session jwt exchange", () => {
+	test("exchanges a live token for a verifiable plugin-session JWT without extending the session", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+
+		const response = await exchange_session_jwt(t, session.token);
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { _yay?: { jwt: string; sessionExpiresAt: number } };
+		if (!body._yay) {
+			throw new Error("exchange refused a live token");
+		}
+		expect(body._yay.sessionExpiresAt).toBe(session.expiresAt);
+
+		// Verify against the same public key the JWKS route publishes: signature, issuer, audience.
+		const publicKey = await importSPKI(process.env.ANONYMOUS_USERS_JWT_PUBLIC_KEY_PEM!, "ES256");
+		const verified = await jwtVerify(body._yay.jwt, publicKey, {
+			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
+			audience: "convex",
+		});
+		expect(verified.payload.sub).toBe(session.sessionId);
+		expect(verified.protectedHeader.kid).toBe("anonymous-user-jwt-2025-12");
+		// A 10-minute JWT inside a 30-minute session: the expiry comes from the JWT lifetime.
+		expect(verified.payload.exp! * 1000).toBeLessThanOrEqual(Date.now() + 10 * 60 * 1000);
+
+		// The exchange must never extend the session; only refresh_ui_session (member auth) does.
+		const stored = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId));
+		expect(stored?.expiresAt).toBe(session.expiresAt);
+	});
+
+	test("caps the JWT at the session expiry when the session is nearly over", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+		// Two minutes left on the session, so the 10-minute JWT lifetime must not win.
+		const nearExpiry = Date.now() + 2 * 60 * 1000;
+		await t.run((ctx) => ctx.db.patch("plugins_ui_sessions", session.sessionId, { expiresAt: nearExpiry }));
+
+		const response = await exchange_session_jwt(t, session.token);
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { _yay?: { jwt: string; sessionExpiresAt: number } };
+		if (!body._yay) {
+			throw new Error("exchange refused a live token");
+		}
+		expect(body._yay.sessionExpiresAt).toBe(nearExpiry);
+
+		const publicKey = await importSPKI(process.env.ANONYMOUS_USERS_JWT_PUBLIC_KEY_PEM!, "ES256");
+		const verified = await jwtVerify(body._yay.jwt, publicKey, {
+			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
+			audience: "convex",
+		});
+		expect(verified.payload.exp! * 1000).toBeLessThanOrEqual(nearExpiry);
+	});
+
+	test("refuses wrong origins, garbage tokens, other principal kinds, and dead sessions", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+
+		// A cross-origin browser call with a live token: only the Origin guard stands between a
+		// foreign page and a readable JWT.
+		const crossOrigin = await exchange_session_jwt(t, session.token, "https://evil.example");
+		expect(crossOrigin.status).toBe(403);
+		// A sandboxed iframe without allow-same-origin sends the literal "null" Origin.
+		const nullOrigin = await exchange_session_jwt(t, session.token, "null");
+		expect(nullOrigin.status).toBe(403);
+
+		// A request with no Origin header at all is allowed: non-browser callers send none, and
+		// the browser threat is the readable response, which the missing CORS headers block.
+		const noOrigin = await t.fetch("/plugins-ui/session-jwt", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ token: session.token }),
+		});
+		expect(noOrigin.status).toBe(200);
+		expect(noOrigin.headers.get("Access-Control-Allow-Origin")).toBeNull();
+
+		const noToken = await t.fetch("/plugins-ui/session-jwt", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Origin: new URL(process.env.VITE_CONVEX_HTTP_URL!).origin },
+			body: JSON.stringify({}),
+		});
+		expect(noToken.status).toBe(400);
+
+		const garbage = await exchange_session_jwt(t, `plu_${"0".repeat(64)}`);
+		expect(garbage.status).toBe(401);
+
+		// A real user API key resolves to a principal, but not a plugin_ui one — it must never
+		// become a Convex identity through this route.
+		await t.run((ctx) =>
+			ctx.db.patch("users", fixture.membership.userId, { clerkUserId: `clerk-${fixture.membership.userId}` }),
+		);
+		const created = await fixture.asOwner.mutation(api.public_api.api_credential_create, {
+			membershipId: fixture.membership.membershipId,
+			name: "Files key",
+			scopes: ["files:read"],
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const apiKey = await exchange_session_jwt(t, created._yay.credential);
+		expect(apiKey.status).toBe(401);
+
+		// Expired session: resolve_principal leaves the expiry verdict to this route.
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_ui_sessions", session.sessionId, { expiresAt: Date.now() - 1000 }),
+		);
+		const expired = await exchange_session_jwt(t, session.token);
+		expect(expired.status).toBe(401);
+
+		// Revoked session: the token no longer resolves at all.
+		await t.run((ctx) => ctx.db.delete("plugins_ui_sessions", session.sessionId));
+		const revoked = await exchange_session_jwt(t, session.token);
+		expect(revoked.status).toBe(401);
+	});
+
+	test("rate limits repeated exchanges per session", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+
+		// Capacity 6 per session id; the seventh call in a burst must be refused.
+		for (let index = 0; index < 6; index += 1) {
+			expect((await exchange_session_jwt(t, session.token)).status).toBe(200);
+		}
+		const refused = await exchange_session_jwt(t, session.token);
+		expect(refused.status).toBe(429);
+		const body = (await refused.json()) as { retryAfterMs?: number };
+		expect(body.retryAfterMs).toBeGreaterThan(0);
+	});
+});
+
 describe("plugin ui assets", () => {
 	test("serves a published html entry with CSP and immutable caching", async () => {
 		const t = test_convex();
@@ -1613,7 +1851,9 @@ describe("plugin ui assets", () => {
 		const csp = response.headers.get("Content-Security-Policy");
 		expect(csp).toContain("default-src 'none'");
 		expect(csp).toContain("script-src 'self'");
-		expect(csp).toContain("connect-src 'self'");
+		// The Convex cloud origins let the frame's own ConvexClient connect; https never
+		// authorizes wss, so both schemes must be listed.
+		expect(csp).toContain("connect-src 'self' https://cloud.convex.test wss://cloud.convex.test;");
 		expect(csp).toContain("frame-ancestors https://app.test");
 		expect(await response.text()).toBe("<!doctype html><title>Gallery</title>");
 	});
@@ -1631,9 +1871,11 @@ describe("plugin ui assets", () => {
 		});
 		expect(response.status).toBe(200);
 		const csp = response.headers.get("Content-Security-Policy");
-		// The declared origin is added to the same host origin the SDK already needs; it does not replace it.
-		expect(csp).toContain("connect-src 'self' https://council.example.com;");
-		expect(csp).not.toContain("connect-src 'self';");
+		// The declared origin is added to the origins every frame already needs; it does not replace them.
+		expect(csp).toContain(
+			"connect-src 'self' https://cloud.convex.test wss://cloud.convex.test https://council.example.com;",
+		);
+		expect(csp).not.toContain("connect-src 'self' https://cloud.convex.test wss://cloud.convex.test;");
 	});
 
 	test("keeps another plugin's declared origins out of this page's policy", async () => {
@@ -1652,7 +1894,7 @@ describe("plugin ui assets", () => {
 		});
 		expect(response.status).toBe(200);
 		const csp = response.headers.get("Content-Security-Policy");
-		expect(csp).toContain("connect-src 'self';");
+		expect(csp).toContain("connect-src 'self' https://cloud.convex.test wss://cloud.convex.test;");
 		expect(csp).not.toContain("council.example.com");
 	});
 

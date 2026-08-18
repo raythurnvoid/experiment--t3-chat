@@ -10,6 +10,10 @@
  *   to the iframe over postMessage only — tokens never appear in URLs. The public API resolves
  *   it as a `plugin_ui` principal; its scopes depend on the `workspace.files.read` capability
  *   the workspace consented to (see resolve_principal in public_api.ts).
+ * - The iframe's own ConvexClient authenticates with a plugin-session JWT from the
+ *   `POST /plugins-ui/session-jwt` exchange below (subject = session id). Member functions refuse
+ *   that identity (see server-utils.ts); only the plugin-facing doors resolve it, and they load the
+ *   session doc on every call, so revocation and expiry still win over a signed-valid JWT.
  * - Secret values never reach plugin frontends: `plugin_ui` principals never get `secrets:read`
  *   or `outbound:fetch`, no matter what the installation accepted. Only the plugin backend can
  *   read secrets (plr_ runs via the runner host routes).
@@ -20,16 +24,22 @@
  *   no tenant data and are already public: anyone can browse them as source in GLOBAL/PLUGINS.
  */
 import { ConvexError, v } from "convex/values";
+import { SignJWT } from "jose";
 import { internalMutation, internalQuery, mutation, query, type ActionCtx } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
-import { allowed_origins, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import {
+	allowed_origins,
+	PLUGINS_UI_SESSIONS_JWT_ISSUER,
+	server_convex_get_user_fallback_to_anonymous,
+} from "../server/server-utils.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2_fetch_object_from_bucket, r2_get_bucket } from "./r2_client.ts";
+import { users_ANONYMOUS_JWT_DEFAULT_KID, users_get_anonymous_jwt_private_key } from "./users.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -40,6 +50,11 @@ export const experimental_reuseContext = true;
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const SESSION_CLEANUP_BATCH_SIZE = 100;
 
+// Plugin-session JWTs (minted by the /plugins-ui/session-jwt exchange below) stay much shorter
+// than the session. The plugin-facing doors load the session doc on every call, so the JWT lifetime only
+// bounds how long Convex keeps trusting an identity after the frame's refresh path breaks.
+const SESSION_JWT_LIFETIME_MS = 10 * 60 * 1000;
+
 if (!process.env.R2_ENDPOINT) {
 	throw new Error("R2_ENDPOINT is not set in Convex env");
 }
@@ -49,9 +64,28 @@ if (!process.env.R2_ENDPOINT) {
 const R2_ENDPOINT_URL = new URL(process.env.R2_ENDPOINT);
 const R2_MEDIA_ORIGINS = `${R2_ENDPOINT_URL.origin} ${R2_ENDPOINT_URL.protocol}//${r2_get_bucket()}.${R2_ENDPOINT_URL.host}`;
 
+if (!process.env.VITE_CONVEX_HTTP_URL) {
+	throw new Error("VITE_CONVEX_HTTP_URL is not set in Convex env");
+}
+// The iframe documents are served from this deployment's HTTP origin (the asset route below), so a
+// JWT-exchange request from a plugin frame carries exactly this Origin. Every other Origin is
+// refused, including the literal "null" an opaque-origin page sends.
+const SITE_ORIGIN = new URL(process.env.VITE_CONVEX_HTTP_URL).origin;
+
+if (!process.env.CONVEX_CLOUD_URL) {
+	throw new Error("CONVEX_CLOUD_URL is not set in Convex env");
+}
+// The SDK runs its own ConvexClient inside the iframe, and that client talks to the deployment's
+// cloud origin over a WebSocket. `https:` in connect-src never authorizes `wss:`, so the CSP must
+// list both schemes.
+const CONVEX_CLOUD_ORIGIN = new URL(process.env.CONVEX_CLOUD_URL).origin;
+const CONVEX_CLOUD_WS_ORIGIN = CONVEX_CLOUD_ORIGIN.replace(/^https:/, "wss:");
+
 /**
  * The frame keeps this asset origin so its public API calls stay same-origin and skip CORS
- * preflights. The host app has a different origin and remains outside the sandbox.
+ * preflights. The host app has a different origin and remains outside the sandbox. The Convex
+ * cloud origins let the frame's own ConvexClient connect (https for the client's HTTP calls,
+ * wss for the sync WebSocket).
  *
  * `uiOutboundOrigins` are the extra destinations the plugin version declared and the workspace
  * accepted at install. They widen `connect-src` only. An asset request carries a plugin version and a
@@ -65,7 +99,7 @@ function plugin_page_csp(uiOutboundOrigins: readonly string[]) {
 		"style-src 'self' 'unsafe-inline'",
 		`img-src ${R2_MEDIA_ORIGINS} data: blob:`,
 		`media-src ${R2_MEDIA_ORIGINS} blob:`,
-		`connect-src ${["'self'", ...uiOutboundOrigins].join(" ")}`,
+		`connect-src ${["'self'", CONVEX_CLOUD_ORIGIN, CONVEX_CLOUD_WS_ORIGIN, ...uiOutboundOrigins].join(" ")}`,
 		"font-src 'self'",
 		"base-uri 'none'",
 		"form-action 'none'",
@@ -155,6 +189,12 @@ export const mint_page_session = mutation({
 			createdAt: now,
 			expiresAt,
 		});
+
+		// Delete the doc exactly at expiry: Convex reruns queries on writes, not on wall clock, so
+		// without this job a live subscription through the plugin-facing doors would keep streaming past
+		// `expiresAt` until the daily cleanup cron.
+		const expiryJobId = await ctx.scheduler.runAt(expiresAt, internal.plugins_ui.expire_ui_session, { sessionId });
+		await ctx.db.patch("plugins_ui_sessions", sessionId, { expiryJobId });
 
 		// The plaintext token is returned exactly once; only its hash is stored.
 		return Result({ _yay: { token, expiresAt, pluginVersionId: installation.pluginVersionId, sessionId } });
@@ -256,6 +296,10 @@ export const mint_file_view_session = mutation({
 			expiresAt,
 		});
 
+		// Same reactive-expiry job as in mint_page_session.
+		const expiryJobId = await ctx.scheduler.runAt(expiresAt, internal.plugins_ui.expire_ui_session, { sessionId });
+		await ctx.db.patch("plugins_ui_sessions", sessionId, { expiryJobId });
+
 		// The plaintext token is returned exactly once; only its hash is stored.
 		return Result({ _yay: { token, expiresAt, pluginVersionId: installation.pluginVersionId, sessionId } });
 	},
@@ -342,11 +386,23 @@ export const refresh_ui_session = mutation({
 		const now = Date.now();
 		const expiresAt = now + SESSION_TTL_MS;
 		const token = `plu_${crypto_random_hex(32)}`;
+
+		// Move the expiry-deletion job to the new expiry. Cancelling a job that already ran is a
+		// no-op, and the job re-checks `expiresAt` anyway, so a leftover job cannot kill the
+		// refreshed session.
+		if (session.expiryJobId) {
+			await ctx.scheduler.cancel(session.expiryJobId);
+		}
+		const expiryJobId = await ctx.scheduler.runAt(expiresAt, internal.plugins_ui.expire_ui_session, {
+			sessionId: session._id,
+		});
+
 		// Rotate the hash on the same session so the old plaintext token stops resolving immediately.
 		await ctx.db.patch("plugins_ui_sessions", session._id, {
 			tokenHash: await crypto_sha256_hex(token),
 			createdAt: now,
 			expiresAt,
+			expiryJobId,
 		});
 
 		return Result({ _yay: { token, expiresAt, pluginVersionId: session.pluginVersionId } });
@@ -572,6 +628,26 @@ export const get_ui_asset = internalQuery({
 	},
 });
 
+/**
+ * Scheduled per session at its `expiresAt` by the mints, and moved by refresh. The deletion is
+ * what ends live plugin subscriptions at expiry (see the schema comment on `expiryJobId`).
+ * Revoke, uninstall, cleanup, or account deletion may have deleted the doc first, and a refresh
+ * racing this run may have moved the expiry forward — both make this run a no-op.
+ */
+export const expire_ui_session = internalMutation({
+	args: { sessionId: v.id("plugins_ui_sessions") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const session = await ctx.db.get("plugins_ui_sessions", args.sessionId);
+		if (!session || session.expiresAt > Date.now()) {
+			return null;
+		}
+
+		await ctx.db.delete("plugins_ui_sessions", session._id);
+		return null;
+	},
+});
+
 export const cleanup_expired_ui_sessions = internalMutation({
 	args: {
 		batchSize: v.optional(v.number()),
@@ -684,4 +760,72 @@ export async function plugins_ui_http_handle_request(ctx: ActionCtx, request: Re
 	// type like SVG would render with no policy when opened directly.
 	headers.set("Content-Security-Policy", plugin_page_csp(asset.uiOutboundOrigins));
 	return new Response(object.body, { status: 200, headers });
+}
+
+export type plugins_ui_http_session_jwt_Body = { token?: string };
+
+/**
+ * Exchanges a live `plu_` session token for a short-lived plugin-session JWT. The iframe's own
+ * ConvexClient authenticates with that JWT (subject = session id), which is how a plugin page
+ * subscribes to Convex queries directly instead of proxying through the host window.
+ *
+ * Registered on the plain router ON PURPOSE: the frame calls this route from the same origin, so
+ * it needs no CORS — and the response must never gain CORS headers, because that would make the
+ * JWT readable to scripts on other origins. The Origin check refuses cross-origin browser calls
+ * outright, including the literal "null" an opaque-origin page sends.
+ *
+ * The exchange never extends the session. Only `refresh_ui_session` (member auth in the host
+ * window) moves `expiresAt`; the SDK refreshes the `plu_` token through the host shortly before
+ * expiry, and each refreshed token exchanges here for a new JWT.
+ */
+export async function plugins_ui_http_session_jwt(ctx: ActionCtx, request: Request) {
+	const origin = request.headers.get("Origin");
+	if (origin !== null && origin !== SITE_ORIGIN) {
+		return { status: 403, body: Result({ _nay: { message: "Unauthorized" } }) } as const;
+	}
+
+	const body = (await request.json().catch(() => null)) as null | plugins_ui_http_session_jwt_Body;
+	if (typeof body?.token !== "string") {
+		return { status: 400, body: Result({ _nay: { message: "Request body must carry a token" } }) } as const;
+	}
+
+	const principalResult = await ctx.runQuery(internal.public_api.resolve_principal, { presented: body.token });
+	if (principalResult._nay || principalResult._yay.kind !== "plugin_ui") {
+		return { status: 401, body: Result({ _nay: { message: "Unauthenticated" } }) } as const;
+	}
+	const principal = principalResult._yay;
+
+	// resolve_principal leaves the expiry verdict to its callers (see its doc comment).
+	const now = Date.now();
+	if (principal.sessionExpiresAt <= now) {
+		return { status: 401, body: Result({ _nay: { message: "Unauthenticated" } }) } as const;
+	}
+
+	const rateLimit = await rate_limiter_limit_by_key(ctx, {
+		name: "plugins_ui_session_jwt_exchange",
+		key: principal.sessionId,
+	});
+	if (rateLimit) {
+		return {
+			status: 429,
+			body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs },
+		} as const;
+	}
+
+	// Cap the JWT at the session expiry: it must never authenticate past the session it stands for.
+	const jwtExpiresAt = Math.min(now + SESSION_JWT_LIFETIME_MS, principal.sessionExpiresAt);
+	const key = await users_get_anonymous_jwt_private_key();
+	const jwt = await new SignJWT({})
+		.setProtectedHeader({ alg: "ES256", kid: users_ANONYMOUS_JWT_DEFAULT_KID, typ: "JWT" })
+		.setIssuer(PLUGINS_UI_SESSIONS_JWT_ISSUER)
+		.setAudience("convex")
+		.setSubject(principal.sessionId)
+		.setIssuedAt()
+		.setExpirationTime(Math.floor(jwtExpiresAt / 1000))
+		.sign(key);
+
+	return {
+		status: 200,
+		body: Result({ _yay: { jwt, sessionExpiresAt: principal.sessionExpiresAt } }),
+	} as const;
 }

@@ -66,7 +66,7 @@ They override what you may have learned about Convex from training data.
 
 - [ai_chat.ts](packages/app/convex/ai_chat.ts) - Main AI chat functionality with streaming and tool calling
 - [schema.ts](packages/app/convex/schema.ts) - Application database schema
-- [auth.config.ts](packages/app/convex/auth.config.ts) - Clerk and anonymous JWT authentication providers
+- [auth.config.ts](packages/app/convex/auth.config.ts) - Clerk, anonymous JWT, and plugin-session JWT authentication providers
 - [users.ts](packages/app/convex/users.ts) - User lifecycle and anonymous authentication routes
 - [http.ts](packages/app/convex/http.ts) - HTTP routing for API endpoints
 

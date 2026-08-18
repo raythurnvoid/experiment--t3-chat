@@ -305,45 +305,6 @@ export const plugins_data_MAX_KEY_PREFIX_LENGTH = plugins_data_MAX_NAME_LENGTH -
 /** The largest page or window one plugin-data read may return. */
 export const plugins_data_MAX_LIST_PAGE_SIZE = 100;
 
-// Printable ASCII only (0x21-0x7E, no space). A literal code range, so the host and the Convex
-// isolate can never disagree about it the way Unicode-property classes can.
-const PLUGIN_DATA_KEY_PREFIX_REGEX = /^[\x21-\x7e]+$/;
-
-/**
- * Host-side pre-check for the watch inputs a plugin page sends over the bridge.
- *
- * This is a strict SUBSET of the server's validation: only rules whose outcome cannot depend on
- * the JavaScript engine's Unicode version (lengths, a literal ASCII range, an integer range).
- * The server also refuses control characters and surrounding whitespace with Unicode-property
- * checks; the host must NOT duplicate those, because a browser with newer Unicode data would
- * refuse names the server still serves. Input that passes here can still die on the server with
- * the same bare null a denial gets — that is today's behavior and stays correct.
- */
-export function plugins_data_validate_watch_inputs(args: { collection: string; keyPrefix?: string; limit: number }) {
-	if (args.collection.length === 0 || args.collection.length > plugins_data_MAX_NAME_LENGTH) {
-		return Result({
-			_nay: { message: `Collection names must be 1 to ${plugins_data_MAX_NAME_LENGTH} characters` },
-		});
-	}
-	if (
-		args.keyPrefix !== undefined &&
-		(args.keyPrefix.length > plugins_data_MAX_KEY_PREFIX_LENGTH || !PLUGIN_DATA_KEY_PREFIX_REGEX.test(args.keyPrefix))
-	) {
-		return Result({
-			_nay: {
-				message: `Key prefixes must be 1 to ${plugins_data_MAX_KEY_PREFIX_LENGTH} printable ASCII characters`,
-			},
-		});
-	}
-	if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > plugins_data_MAX_LIST_PAGE_SIZE) {
-		return Result({
-			_nay: { message: `Watch limits must be integers from 1 to ${plugins_data_MAX_LIST_PAGE_SIZE}` },
-		});
-	}
-
-	return Result({ _yay: args });
-}
-
 // #endregion plugin data store
 
 const MAX_OUTBOUND_ORIGIN_LENGTH = 255;

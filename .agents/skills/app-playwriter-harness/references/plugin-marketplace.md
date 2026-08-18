@@ -414,33 +414,47 @@ Threads (verified 2026-08-17 on chitchat@0.1.2):
 Windows and CAS (verified 2026-08-17, two-user E2E on 0.1.3):
 
 - Reads are reactive document windows since 0.1.3: opening a 200+ message channel renders exactly
-  the newest 100 rows with a `Load older` button; each click adds up to 100 older rows over the
-  bridge (`fetchJson` is not involved — the HTTP paging path is gone), and the button disappears at
-  full history. A remote arrival appends without collapsing loaded history.
+  the newest 100 rows with a `Load older` button; each click adds up to 100 older rows (`fetchJson`
+  is not involved — the HTTP paging path is gone), and the button disappears at full history. A
+  remote arrival appends without collapsing loaded history. Since 0.1.4 the windows run inside the
+  page on the SDK's own ConvexClient — there is no data bridge to observe (see below).
 - Channel rename/archive are hover-revealed row actions: `li.channel-item` holds
   `aria-label="Rename #<name>"` / `"Archive #<name>"` buttons. Rename is compare-and-set: save from
   a dialog opened before someone else's rename keeps the dialog open with a `role="alert"` reading
   `Someone else changed this channel while the dialog was open. Close it and try again.` The winner's
   name stays in the list.
-- A reply badge reads `N replies` (also for N = 1 — pre-existing wording). Reactions and reply
-  counts on rows deep beyond the newest-100 update live on both sides once each side has extended
-  its own window with `Load older`.
-- To observe the raw host window payloads (doc count, `hasMore`), install a `message` listener
-  inside the frame with `frame.evaluate` filtering `event.data.type === "bonobo:data-update"` with
-  `Array.isArray(docs)` — the chitchat UI deliberately masks host-side window slides with its
-  accumulating store, so DOM row counts cannot prove window behavior.
+- A reply badge reads `1 reply` / `N replies` (the `1 replies` wording was fixed in 0.1.4 —
+  verified live). Reactions and reply counts on rows deep beyond the newest-100 update live on both
+  sides once each side has extended its own window with `Load older`.
 - The hidden polite announcer (`.chitchat-announcer`) makes `getByText("<message text>")` resolve to
   TWO elements right after a remote arrival (the row and the announcer) — scope text asserts to
   `li.message` or `.message-text`.
-- To drive the bridge itself (refusal reasons, caps, budget) without any plugin UI: the frame's own
-  URL fragment carries `parentOrigin` and `bridgeNonce` (`new URLSearchParams(location.hash.slice(1))`),
-  so `frame.evaluate` can post crafted `bonobo:data-watch`/`data-unwatch`/`data-window-load-older`
-  messages to `window.parent` and collect the `bonobo:data-update` answers with a `message` listener.
-  Verified 2026-08-17: 9 stacked watches → `reason: "capacity"` once the page's 8 slots fill;
-  ~60 watch/unwatch churn cycles → `reason: "budget"` (slots return, tokens do not); a second
-  `bonobo:ready` kills the page's live watches audibly and the plugin renders its data-dead alert —
-  reload the tab afterwards to restore the page. Draining the budget rate-limits the live page's own
-  new subscriptions for about a minute; do it only in a QA workspace.
+- Reaching the plugin iframe: use
+  `state.page.frames().filter(f => f.url().includes("/plugins-ui/")).pop()`. Take the LAST match —
+  stale Playwright frame references linger after the host remounts the iframe (a `.first()` frame
+  can hang every locator call until the execute timeout). One `<iframe>` element in the DOM with two
+  reported frames is that artifact, not a leaked node.
+- Since 0.1.4 there are no `bonobo:data-*` messages, so the old crafted-message bridge recipe is
+  gone; window payloads are not observable via postMessage in either direction. Refusal reasons
+  (`capacity`/`invalid`; `budget` is retired) live in the SDK's own suite
+  (`packages/bonobo-plugin-sdk/frontend.test.ts`). To prove bridge absence: install a top-window
+  `message` listener recording `event.data.type` (in `page.evaluate` — a `page.goto` wipes it, so
+  remount the frame with SPA sidebar navigation instead), then drive sends and deliveries; expect
+  `bonobo:ready` (positive control: the handshake still uses postMessage) and zero
+  `bonobo:data-*` entries. Verified 2026-08-18 on 0.1.4.
+- Session revocation break-test (verified 2026-08-18): list `plugins_ui_sessions` for the newest
+  session, find the member's `organizations_workspaces_users` id, then call the host's own
+  revocation door through the app's authed client from the HOST page context —
+  `state.page.evaluate` with `const { app_convex } = await import("/src/lib/app-convex-client.ts")`
+  and `const { api } = await import("/convex/_generated/api.js")`, then
+  `app_convex.mutation(api.plugins_ui.revoke_ui_session, { membershipId, sessionId })` (Vite serves
+  the same module singletons the app runs). Within seconds the revoked tab renders "Access to this
+  plugin's data ended…" with the composer disabled while other tabs stay live (one session per
+  mount, 1:1 — verified); a reload mints a fresh session and recovers.
+- The composer swallows Enter while a send is in flight and keeps the unsent text in place. For
+  scripted sends, wait for the composer to empty between messages; a single composer maxes out
+  around 3 sends per 10 seconds, below the write bucket's refill, so UI-driven sending cannot trip
+  the `plugins_data_page_user_write` bucket.
 
 Deeper driving anchors (verified 2026-08-17, two-user E2E on 0.1.0):
 
@@ -460,7 +474,8 @@ Deeper driving anchors (verified 2026-08-17, two-user E2E on 0.1.0):
   fixtures, do pagination assertions before generating new traffic; 0.1.1+ accumulates correctly.
 - Removing the second user from the org kills the HOST route reactively ("You do not have access
   to this organization/workspace.") and unmounts `.PluginsUiFrame` entirely — the plugin-level
-  `bonobo:data-update docs:null` dead-state path never runs for org-membership revocation.
+  dead state (since 0.1.4 a watch dying to null on the page's own Convex client) never renders for
+  org-membership revocation. Use the session revocation break-test above for a narrower kill.
 
 ## Reading a table count without fooling yourself
 

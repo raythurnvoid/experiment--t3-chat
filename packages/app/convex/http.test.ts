@@ -91,6 +91,7 @@ describe("http routes", () => {
 				"OPTIONS /getMessagesByAuthor",
 				"POST /polar/events",
 				"GET /plugins-ui/*",
+				"POST /plugins-ui/session-jwt",
 			].sort(),
 		);
 	});

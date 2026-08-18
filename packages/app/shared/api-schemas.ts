@@ -90,6 +90,7 @@ import type { public_api_service_uploads_http_routes } from "../convex/public_ap
 import type { r2_http_routes } from "../convex/r2_http_routes.ts";
 import type { plugins_runtime_http_routes } from "../convex/plugins_runtime_http_routes.ts";
 import type { plugins_service_http_routes } from "../convex/plugins_service_http_routes.ts";
+import type { plugins_ui_http_routes } from "../convex/plugins_ui_http_routes.ts";
 import type { users_http_routes } from "../convex/users_http_routes.ts";
 
 // #region Schema validation
@@ -236,6 +237,8 @@ export interface api_schemas_Main {
 	"/api/internal/plugins/service-grants/verify-live": ReturnType<
 		typeof plugins_service_http_routes
 	>["/api/internal/plugins/service-grants/verify-live"];
+
+	"/plugins-ui/session-jwt": ReturnType<typeof plugins_ui_http_routes>["/plugins-ui/session-jwt"];
 }
 
 export type api_schemas_Main_Path = keyof api_schemas_Main;

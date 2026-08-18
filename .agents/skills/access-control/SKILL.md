@@ -596,7 +596,10 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   carrying only `workspace.plugins.manage` sees run status without file identity. The plugin document store is the other
   content-checked plugin surface: `db_authorize` in `plugins_data.ts` asks for `content.read` or
   `content.write` on the workspace for the acting member, on every principal kind including
-  `plugin_run` and the `plugin_service` grant, in the same transaction as the read or write.
+  `plugin_run` and the `plugin_service` grant, in the same transaction as the read or write. The
+  page-facing doors do the same from a plugin-session JWT: `db_authorize_page_write` resolves the
+  member from the session doc (deleted session = revoked identity) and checks `content.write`
+  through `access_control_db_has_permission` in the same transaction.
 - **A restricted path is still an existence oracle.** A path holds one active node, so creating a
   file where a restricted one already sits has to fail, and the refusal tells the caller something is
   there. `files_nodes_db_create_node_recursively_at_path` answers `"This file already exists."`, and
