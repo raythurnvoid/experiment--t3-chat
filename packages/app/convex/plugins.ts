@@ -99,9 +99,11 @@ const REVIEW_READ_SOURCE_MAX_BYTES = REVIEW_TOOL_RESULT_MAX_BYTES - 4_096;
  *
  * After four moves where the model can search or choose a file, the host packs unread ranges from
  * several files into each 40,000-byte result. A 900,000-byte artifact therefore needs about 26
- * forced batches plus one final `done` step. Leave some room for headers and a few extra finish moves.
+ * forced batches plus one final `done` step, so coverage alone can take about 31 calls. The rest of
+ * the budget pays for note-taking and repair turns between batches. That work is real: a 431 KB
+ * bundle ran out of the old 40-step budget on it, so keep the ceiling well above the coverage cost.
  */
-const REVIEW_MAX_STEPS = 40;
+const REVIEW_MAX_STEPS = 60;
 const REVIEW_MAX_EXPLORATION_STEPS = 4;
 /**
  * How long the navigation loop may run. Convex allows an action ten minutes, and the loop must leave
