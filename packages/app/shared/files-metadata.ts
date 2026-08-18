@@ -74,7 +74,8 @@ export type files_metadata_SearchPlan =
 
 // Keep this regex fully anchored and omit the m flag. A block scalar has a trailing newline, so it
 // must not match.
-const MAYBE_DATE_REGEX = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})?)?$/u;
+const MAYBE_DATE_REGEX =
+	/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})?)?$/u;
 
 const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
@@ -291,26 +292,47 @@ function collect_metadata_from_node(args: {
 	}
 }
 
-export function files_metadata_extract_frontmatter(markdown: string): ExtractedMetadata {
+export function files_metadata_extract_frontmatter(markdown: string) {
 	const body = extract_frontmatter_body(markdown);
 	if (body === null) {
-		return empty_extracted_metadata();
+		return Result({ _yay: empty_extracted_metadata() });
 	}
 
-	const doc = parseDocument(normalize_frontmatter_indentation(body), {
-		version: "1.2",
-		schema: "core",
-		// Keep explicit YAML tags unresolved so tagged values become presence-only metadata.
-		resolveKnownTags: false,
-	});
+	// The parser reads one nesting level by calling itself again, and it sets no depth limit. Deep
+	// enough frontmatter fills the stack and throws. The depth that does it depends on the runtime:
+	// Node gives up around 1000 levels, the Convex runtime reads 1000 and throws by 5000 (both
+	// measured 2026-08-18). Flow style needs no indentation, so 5000 levels of `a: {b: {b: ...` fit
+	// in 25 KB. The byte caps do not stop it, because the file is small and only its depth is big.
+	// Every caller below is a file save, so an escaping throw would fail the save itself and the
+	// user could not store their own text.
+	//
+	// Report it instead of throwing, and keep it separate from the `doc.errors` case below. Broken
+	// YAML really has no metadata, so returning nothing for it is right. Here the frontmatter may
+	// be perfectly good and we simply could not read it, so the file loses metadata it should have
+	// had. Each caller decides what that is worth.
+	//
+	// Catch everything: the thrown type changes with the parser options (`RangeError` with these,
+	// `SyntaxError` with others), so matching on the type would miss cases.
+	let doc: ReturnType<typeof parseDocument>;
+	try {
+		doc = parseDocument(normalize_frontmatter_indentation(body), {
+			version: "1.2",
+			schema: "core",
+			// Keep explicit YAML tags unresolved so tagged values become presence-only metadata.
+			resolveKnownTags: false,
+		});
+	} catch (error) {
+		return Result({ _nay: { message: "Failed to parse frontmatter", cause: error } });
+	}
+
 	if (doc.errors.length > 0) {
-		return empty_extracted_metadata();
+		return Result({ _yay: empty_extracted_metadata() });
 	}
 
 	const root = doc.contents;
 	// Aliases can duplicate values outside the written field path, so treat anchored docs like invalid frontmatter.
 	if (!isMap(root) || node_has_anchor_or_alias(root)) {
-		return empty_extracted_metadata();
+		return Result({ _yay: empty_extracted_metadata() });
 	}
 
 	const fields = new Set<string>();
@@ -328,10 +350,12 @@ export function files_metadata_extract_frontmatter(markdown: string): ExtractedM
 		});
 	}
 
-	return {
-		fields: [...fields],
-		values: [...values.values()],
-	};
+	return Result({
+		_yay: {
+			fields: [...fields],
+			values: [...values.values()],
+		},
+	});
 }
 
 /**
@@ -340,14 +364,24 @@ export function files_metadata_extract_frontmatter(markdown: string): ExtractedM
  * index-document count (one doc per field plus one per value, `maybe_date` companions included).
  * Committed materialization settles a marker and pending creation/rebase returns a refusal when
  * either count is over. The insert helpers keep their late throws only as impossible backstops.
+ *
+ * Returns `_nay` when the frontmatter could not be parsed at all. Save paths must not fail on it:
+ * index no frontmatter and let the file save.
  */
 export function files_metadata_preflight_frontmatter(markdown: string) {
-	const metadata = files_metadata_extract_frontmatter(markdown);
-	return {
-		metadata,
-		fieldCount: metadata.fields.length,
-		indexDocumentCount: metadata.fields.length + metadata.values.length,
-	};
+	const extracted = files_metadata_extract_frontmatter(markdown);
+	if (extracted._nay) {
+		return extracted;
+	}
+
+	const metadata = extracted._yay;
+	return Result({
+		_yay: {
+			metadata,
+			fieldCount: metadata.fields.length,
+			indexDocumentCount: metadata.fields.length + metadata.values.length,
+		},
+	});
 }
 
 export function files_metadata_frontmatter_exceeds_index_caps(preflight: {

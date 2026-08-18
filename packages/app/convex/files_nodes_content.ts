@@ -3182,13 +3182,23 @@ export const materialize_file_content = internalAction({
 		// Only rich text has frontmatter; a `.yaml` starting with `---` is plain text.
 		if (rootKind === "rich_text") {
 			const frontmatter = files_metadata_preflight_frontmatter(extractedText._yay);
-			if (files_metadata_frontmatter_exceeds_index_caps(frontmatter)) {
+			// Unreadable frontmatter is not a reason to refuse the user's own content. Materialize
+			// normally with no frontmatter index; the insert helper skips it for the same reason.
+			// No marker is set, because the markers describe over-cap frontmatter and the file
+			// would show a count it does not have.
+			if (frontmatter._nay) {
+				console.warn("Materializing without frontmatter metadata: the frontmatter could not be parsed", {
+					nodeId: args.nodeId,
+					sequence,
+					error: frontmatter._nay,
+				});
+			} else if (files_metadata_frontmatter_exceeds_index_caps(frontmatter._yay)) {
 				const errorMessage = "Frontmatter exceeds the index caps";
 				console.warn(errorMessage, {
 					nodeId: args.nodeId,
 					sequence,
-					fieldCount: frontmatter.fieldCount,
-					indexDocumentCount: frontmatter.indexDocumentCount,
+					fieldCount: frontmatter._yay.fieldCount,
+					indexDocumentCount: frontmatter._yay.indexDocumentCount,
 				});
 				await ctx.runMutation(internal.files_nodes_content.mark_file_content_frontmatter_too_large, {
 					organizationId: args.organizationId,
@@ -3196,8 +3206,8 @@ export const materialize_file_content = internalAction({
 					nodeId: args.nodeId,
 					sequence,
 					targetSequence: args.targetSequence,
-					fieldCount: frontmatter.fieldCount,
-					indexDocumentCount: frontmatter.indexDocumentCount,
+					fieldCount: frontmatter._yay.fieldCount,
+					indexDocumentCount: frontmatter._yay.indexDocumentCount,
 				});
 				return Result({ _nay: { name: "nay", message: errorMessage } });
 			}
@@ -4260,7 +4270,24 @@ export const finalize_file_yjs_repair = internalMutation({
 		// fitting edit clears them through normal materialization.
 		const repairRootKind = state.fileNode.yjsRootKind;
 		const frontmatter = repairRootKind === "rich_text" ? files_metadata_preflight_frontmatter(args.text) : null;
-		const frontmatterOverCap = frontmatter !== null && files_metadata_frontmatter_exceeds_index_caps(frontmatter);
+		// Unreadable frontmatter is not over-cap, so leave the markers alone. The repair commits
+		// the chunks with no frontmatter index, which is what the insert helper does too.
+		if (frontmatter?._nay) {
+			console.warn("Repairing without frontmatter metadata: the frontmatter could not be parsed", {
+				nodeId: state.fileNode._id,
+				error: frontmatter._nay,
+			});
+		}
+
+		// Keep the counts only while they are over the caps, so the marker writes below read them
+		// straight from here and a fitting file cannot leave a stale count behind.
+		const frontmatterOverCapCounts =
+			frontmatter?._yay != null && files_metadata_frontmatter_exceeds_index_caps(frontmatter._yay)
+				? frontmatter._yay
+				: null;
+
+		// There is nothing to index when the frontmatter is over the caps or could not be read.
+		const skipFrontmatterIndex = frontmatterOverCapCounts !== null || frontmatter?._nay != null;
 
 		// Reuse the finalization shape: swap the Yjs pointer, finalize both assets, replace the
 		// committed chunks, record the new version, clear the markers, reset the counters and
@@ -4304,8 +4331,8 @@ export const finalize_file_yjs_repair = internalMutation({
 					contentTooLargeByteSize: undefined,
 					contentShapeMismatchAt: undefined,
 					contentYjsStateTooLargeByteSize: undefined,
-					contentFrontmatterTooLargeFieldCount: frontmatterOverCap ? frontmatter.fieldCount : undefined,
-					contentFrontmatterTooLargeIndexDocumentCount: frontmatterOverCap ? frontmatter.indexDocumentCount : undefined,
+					contentFrontmatterTooLargeFieldCount: frontmatterOverCapCounts?.fieldCount,
+					contentFrontmatterTooLargeIndexDocumentCount: frontmatterOverCapCounts?.indexDocumentCount,
 					updatedBy: args.authorUserId,
 					updatedAt: now,
 				}),
@@ -4322,7 +4349,7 @@ export const finalize_file_yjs_repair = internalMutation({
 					nodeId: args.nodeId,
 					yjsSequence: args.targetSequence,
 					textContent: args.text,
-					skipFrontmatterIndex: frontmatterOverCap,
+					skipFrontmatterIndex,
 				}),
 			]),
 		);

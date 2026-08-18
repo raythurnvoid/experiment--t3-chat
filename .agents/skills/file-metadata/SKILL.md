@@ -99,12 +99,47 @@ Other decisions in the parser:
 - A deeply nested document is refused, not parsed. The parser recurses into nested collections, so
   2000 nested `{` overflow the stack and throw. That fits in 4 KB, so the byte cap does not stop it.
   `parseDocument` runs inside a `try`, and the throw becomes the plain "Metadata must be valid YAML"
-  refusal. The same guard is missing on the frontmatter parser above it, which is older code.
+  refusal. `files_metadata_extract_frontmatter` guards the same way but answers differently — see
+  below.
 - Only the first line of a YAML syntax error is kept. The library appends the offending lines and a
   caret under them, and that frame loses its shape once HTML collapses the whitespace.
 
 `files_metadata_stringify_entries_yaml` renders the stored map back with `Document.set`, never plain
 object assignment, so a key such as `__proto__` stays an ordinary key.
+
+## The frontmatter parser answers the same crash differently
+
+`files_metadata_extract_frontmatter` returns `Result`. Both parsers guard the same `parseDocument`
+throw, but they answer it differently on purpose:
+
+- The panel parser refuses and shows the user a message. The user is editing that YAML by hand, so
+  they need to know why Save did nothing.
+- The frontmatter parser returns `_nay` and every caller keeps saving. The user is saving a *file*
+  and the frontmatter is only part of it. Refusing would leave them unable to store their own text,
+  and they cannot fix depth by writing less.
+
+Depth is the limit, not size, and the depth that breaks depends on the runtime's stack. Measured
+2026-08-18: Node (so every test here) throws around 1000 levels, while the real Convex runtime reads
+1000 and throws by 5000. Flow style needs no indentation, so even 5000 levels of `a: {b: {b: …` fit
+in 25 KB. Never pick a test fixture depth from the Node number alone when the check has to fail
+inside a deployed function.
+
+Rules for the six callers (`files_metadata_db_insert_committed`, `files_metadata_db_replace_pending`,
+materialization and repair in `files_nodes_content.ts`, the upload publish in `r2.ts`, and the
+pending-update preflight in `files_pending_updates.ts`):
+
+- Never fail the save on `_nay`. Index no frontmatter, log a warning, continue.
+- Never set the `contentFrontmatterTooLarge*` marker pair for it. Those markers mean over-cap and
+  carry counts; an unreadable file has no counts to show.
+- Keep `_nay` separate from the `doc.errors` case, which returns empty metadata. Broken YAML really
+  has no metadata. An unreadable parse may have hidden good metadata, and that is worth a log.
+
+Catch everything, never `instanceof RangeError`. The thrown type follows the parser options:
+`RangeError` with ours, `SyntaxError` from a regex inside the library on another path.
+
+This is a weakness in `yaml` 2.8.2, not a depth nobody should use: `JSON.parse` reads 100,000 levels
+of the same shape without complaint. If a later version reports it in `doc.errors` instead, the
+`try` becomes redundant but stays correct.
 
 # Write Doors
 
@@ -204,6 +239,8 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 - `packages/app/shared/files-metadata.test.ts` — parse, stringify, validate, apply-changes, index docs.
 - `packages/app/convex/files_nodes.test.ts` — the `metadata` tests: search next to frontmatter,
   surviving a content save, the pending-overlay exemption, refusals, and the agent door on an upload.
+- `packages/app/convex/files_pending_updates.test.ts` — a save whose frontmatter the parser cannot
+  read still stores the text and writes no metadata docs.
 - `packages/app/server/server-ai-tools.test.ts` — the `set_file_metadata` tool.
 - `packages/app/server/bash-meta-command.test.ts` — `metadata.*` field parsing.
 - `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-metadata.test.tsx` — the panel.

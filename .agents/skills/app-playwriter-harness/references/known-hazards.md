@@ -349,3 +349,17 @@ If the main sidebar looks visible but its links are not clickable, inspect `.Mai
 ## Clicking the rich-text editor on a long document
 
 `locator.click()` on `.FileEditorRichText-editor-content .ProseMirror` can burn the whole CLI timeout on a long document: the element is thousands of pixels tall, and Playwright's scroll-into-view plus actionability check on it stalls. To focus the editor, `mouse.click(x, y)` on a visible point inside the document column instead (compute the point from `.FileNodeView-editor-area` and the agent panel rects). Verified 2026-08-02. Related: the chat thread's auto-scroll can revert `scrollIntoView()` on a message element right after it runs — set `thread.scrollTop` directly and re-read the rect before hovering.
+
+## Node's stack limit is not the Convex runtime's
+
+A fixture sized to blow the JS stack in a unit test can parse fine in a deployed Convex function.
+Measured 2026-08-18 with flow-style YAML frontmatter (`a: {b: {b: …`): Node throws
+`RangeError: Maximum call stack size exceeded` at about 1000 nesting levels, and so does
+convex-test, because it runs on Node. The real deployment read 1000 levels without complaining and
+only threw somewhere before 5000. The upload published with `contentFrontmatterTooLargeFieldCount:
+1001`, which looks like a passing check but proves the opposite of what the run was meant to prove.
+
+So when a browser check needs a deployed function to hit a recursion limit, escalate the depth
+against the deployment and read the durable state, instead of reusing the depth that failed in the
+test. Reading `convex data files_nodes` for the marker fields separated the two outcomes here; the
+`convex logs` warning line named the exact code path.

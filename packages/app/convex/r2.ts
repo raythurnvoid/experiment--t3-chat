@@ -813,10 +813,27 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 	// same publish patch, and publish normally; the user's next fitting edit clears the pair
 	// through normal materialization.
 	const frontmatter = args.rootKind === "rich_text" ? files_metadata_preflight_frontmatter(args.text) : null;
-	const frontmatterOverCap =
-		frontmatter !== null &&
-		(frontmatter.fieldCount > files_metadata_MAX_FRONTMATTER_FIELDS ||
-			frontmatter.indexDocumentCount > files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS);
+	// An uploaded `.md` can carry frontmatter this parser cannot read. Publish it anyway with no
+	// frontmatter index, the same escape the over-cap case takes. The markers stay clear, because
+	// they mean over-cap and this file has no counts to show.
+	if (frontmatter?._nay) {
+		console.warn("Publishing upload without frontmatter metadata: the frontmatter could not be parsed", {
+			fileNodeId: args.fileNodeId,
+			error: frontmatter._nay,
+		});
+	}
+
+	// Keep the counts only while they are over the caps, so the marker pair below reads them
+	// straight from here and a fitting upload cannot leave a stale count behind.
+	const frontmatterOverCapCounts =
+		frontmatter?._yay != null &&
+		(frontmatter._yay.fieldCount > files_metadata_MAX_FRONTMATTER_FIELDS ||
+			frontmatter._yay.indexDocumentCount > files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS)
+			? frontmatter._yay
+			: null;
+
+	// There is nothing to index when the frontmatter is over the caps or could not be read.
+	const skipFrontmatterIndex = frontmatterOverCapCounts !== null || frontmatter?._nay != null;
 
 	// Create editable Yjs metadata for an existing node whose R2 objects were
 	// already written by the caller.
@@ -849,7 +866,7 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 			yjsSequence: 0,
 			rootKind: args.rootKind,
 			textContent: args.text,
-			skipFrontmatterIndex: frontmatterOverCap,
+			skipFrontmatterIndex,
 		}).then((chunks) => {
 			if (chunks._nay) {
 				throw convex_error({
@@ -885,10 +902,10 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 			yjsRootKind: args.rootKind,
 			// A node born with over-cap frontmatter carries the marker pair from its first
 			// publish, exactly like a materialization settle would set it.
-			...(frontmatterOverCap
+			...(frontmatterOverCapCounts !== null
 				? {
-						contentFrontmatterTooLargeFieldCount: frontmatter.fieldCount,
-						contentFrontmatterTooLargeIndexDocumentCount: frontmatter.indexDocumentCount,
+						contentFrontmatterTooLargeFieldCount: frontmatterOverCapCounts.fieldCount,
+						contentFrontmatterTooLargeIndexDocumentCount: frontmatterOverCapCounts.indexDocumentCount,
 					}
 				: {}),
 			updatedBy: args.userId,

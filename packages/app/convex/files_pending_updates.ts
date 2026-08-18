@@ -445,7 +445,14 @@ function files_pending_update_check_frontmatter_caps(args: {
 	}
 
 	const preflight = files_metadata_preflight_frontmatter(args.unstagedText);
-	if (files_metadata_frontmatter_exceeds_index_caps(preflight)) {
+	// Do not refuse the proposal. The user cannot fix frontmatter this parser cannot read by
+	// editing less of it, and refusing would block the save that would let them rewrite it. The
+	// index writer skips the frontmatter and logs it.
+	if (preflight._nay) {
+		return null;
+	}
+
+	if (files_metadata_frontmatter_exceeds_index_caps(preflight._yay)) {
 		return Result({ _nay: { message: "Too many frontmatter fields" } });
 	}
 

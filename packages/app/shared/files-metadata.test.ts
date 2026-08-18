@@ -5,6 +5,7 @@ import {
 	files_metadata_extract_entries,
 	files_metadata_parse_maybe_date,
 	files_metadata_parse_entries_yaml,
+	files_metadata_preflight_frontmatter,
 	files_metadata_stringify_entries_yaml,
 	files_metadata_validate_entries,
 	files_metadata_validate_remove_keys,
@@ -13,10 +14,10 @@ import {
 
 describe("files_metadata_extract_frontmatter", () => {
 	test("returns empty metadata when no closed leading frontmatter exists", () => {
-		expect(files_metadata_extract_frontmatter("# Title\n")).toEqual({ fields: [], values: [] });
-		expect(files_metadata_extract_frontmatter("---\nfrom: alice\n")).toEqual({ fields: [], values: [] });
-		expect(files_metadata_extract_frontmatter("x\n---\nfrom: alice\n---\n")).toEqual({ fields: [], values: [] });
-		expect(files_metadata_extract_frontmatter("--- yaml\nfrom: alice\n---\n")).toEqual({ fields: [], values: [] });
+		expect(files_metadata_extract_frontmatter("# Title\n")._yay).toEqual({ fields: [], values: [] });
+		expect(files_metadata_extract_frontmatter("---\nfrom: alice\n")._yay).toEqual({ fields: [], values: [] });
+		expect(files_metadata_extract_frontmatter("x\n---\nfrom: alice\n---\n")._yay).toEqual({ fields: [], values: [] });
+		expect(files_metadata_extract_frontmatter("--- yaml\nfrom: alice\n---\n")._yay).toEqual({ fields: [], values: [] });
 	});
 
 	test("extracts scalar frontmatter values with YAML 1.2 core semantics", () => {
@@ -33,14 +34,14 @@ describe("files_metadata_extract_frontmatter", () => {
 			].join("\n"),
 		);
 
-		expect(metadata.fields).toEqual([
+		expect(metadata._yay?.fields).toEqual([
 			"frontmatter.from",
 			"frontmatter.amount",
 			"frontmatter.hasAttachments",
 			"frontmatter.legacyYes",
 			"frontmatter.date",
 		]);
-		expect(metadata.values).toEqual([
+		expect(metadata._yay?.values).toEqual([
 			{ qualifiedField: "frontmatter.from", valueKind: "string", value: "alice@example.com" },
 			{ qualifiedField: "frontmatter.amount", valueKind: "number", value: 120.5 },
 			{ qualifiedField: "frontmatter.hasAttachments", valueKind: "boolean", value: true },
@@ -55,8 +56,8 @@ describe("files_metadata_extract_frontmatter", () => {
 			["---", "cc:", "  - bob@example.com", "  - bob@example.com", "  - jane@example.com", "---", ""].join("\n"),
 		);
 
-		expect(metadata.fields).toEqual(["frontmatter.cc"]);
-		expect(metadata.values).toEqual([
+		expect(metadata._yay?.fields).toEqual(["frontmatter.cc"]);
+		expect(metadata._yay?.values).toEqual([
 			{ qualifiedField: "frontmatter.cc", valueKind: "string", value: "bob@example.com" },
 			{ qualifiedField: "frontmatter.cc", valueKind: "string", value: "jane@example.com" },
 		]);
@@ -69,8 +70,8 @@ describe("files_metadata_extract_frontmatter", () => {
 			),
 		);
 
-		expect(metadata.fields).toEqual(["frontmatter.cc", "frontmatter.subject"]);
-		expect(metadata.values).toEqual([
+		expect(metadata._yay?.fields).toEqual(["frontmatter.cc", "frontmatter.subject"]);
+		expect(metadata._yay?.values).toEqual([
 			{ qualifiedField: "frontmatter.cc", valueKind: "string", value: "bob@example.com" },
 			{ qualifiedField: "frontmatter.cc", valueKind: "string", value: "jane@example.com" },
 			{ qualifiedField: "frontmatter.subject", valueKind: "string", value: "alpha\u00a0beta" },
@@ -82,8 +83,8 @@ describe("files_metadata_extract_frontmatter", () => {
 			["---", "sender:", "  name: Alice", "  bad.key: skipped", "  team-id: ops", "---", ""].join("\n"),
 		);
 
-		expect(metadata.fields).toEqual(["frontmatter.sender", "frontmatter.sender.name", "frontmatter.sender.team-id"]);
-		expect(metadata.values).toEqual([
+		expect(metadata._yay?.fields).toEqual(["frontmatter.sender", "frontmatter.sender.name", "frontmatter.sender.team-id"]);
+		expect(metadata._yay?.values).toEqual([
 			{ qualifiedField: "frontmatter.sender.name", valueKind: "string", value: "Alice" },
 			{ qualifiedField: "frontmatter.sender.team-id", valueKind: "string", value: "ops" },
 		]);
@@ -94,21 +95,40 @@ describe("files_metadata_extract_frontmatter", () => {
 			["---", "nullable: null", "attachments:", "  - name: invoice.pdf", "---", ""].join("\n"),
 		);
 
-		expect(metadata.fields).toEqual(["frontmatter.nullable", "frontmatter.attachments"]);
-		expect(metadata.values).toEqual([]);
+		expect(metadata._yay?.fields).toEqual(["frontmatter.nullable", "frontmatter.attachments"]);
+		expect(metadata._yay?.values).toEqual([]);
 	});
 
 	test("drops invalid YAML, duplicate keys, aliases, and anchors", () => {
-		expect(files_metadata_extract_frontmatter("---\na: [\n---\n")).toEqual({ fields: [], values: [] });
-		expect(files_metadata_extract_frontmatter("---\na: 1\na: 2\n---\n")).toEqual({ fields: [], values: [] });
-		expect(files_metadata_extract_frontmatter("---\na: &x 1\nb: *x\n---\n")).toEqual({ fields: [], values: [] });
+		expect(files_metadata_extract_frontmatter("---\na: [\n---\n")._yay).toEqual({ fields: [], values: [] });
+		expect(files_metadata_extract_frontmatter("---\na: 1\na: 2\n---\n")._yay).toEqual({ fields: [], values: [] });
+		expect(files_metadata_extract_frontmatter("---\na: &x 1\nb: *x\n---\n")._yay).toEqual({ fields: [], values: [] });
+	});
+
+	test("returns a Result for deep nesting in a small file, instead of throwing", () => {
+		// Flow style needs no indentation, so 1000 levels fit in about 5 KB. That depth is enough to
+		// fill Node's stack, which is the runtime this test runs in; the Convex runtime needs more.
+		// Every caller is a file save, so a throw here would stop the user saving their own text.
+		const markdown = `---\na: ${"{b: ".repeat(1000)}v${"}".repeat(1000)}\n---\n`;
+		expect(markdown.length).toBeLessThan(16 * 1024);
+		expect(() => files_metadata_extract_frontmatter(markdown)).not.toThrow();
+		expect(files_metadata_extract_frontmatter(markdown)._nay?.message).toBe("Failed to parse frontmatter");
+	});
+
+	test("keeps the preflight counts on the yay branch and reports an unreadable parse", () => {
+		const preflight = files_metadata_preflight_frontmatter("---\ntitle: Hello\n---\n");
+		expect(preflight._yay?.fieldCount).toBe(1);
+		expect(preflight._yay?.indexDocumentCount).toBe(2);
+
+		const unreadable = `---\na: ${"{b: ".repeat(1000)}v${"}".repeat(1000)}\n---\n`;
+		expect(files_metadata_preflight_frontmatter(unreadable)._nay?.message).toBe("Failed to parse frontmatter");
 	});
 
 	test("keeps explicit tagged values as presence-only metadata", () => {
 		const metadata = files_metadata_extract_frontmatter("---\ndate: !!timestamp 2024-01-02\n---\n");
 
-		expect(metadata.fields).toEqual(["frontmatter.date"]);
-		expect(metadata.values).toEqual([]);
+		expect(metadata._yay?.fields).toEqual(["frontmatter.date"]);
+		expect(metadata._yay?.values).toEqual([]);
 	});
 
 	test("indexes date-like strings a second time as maybe_date values", () => {
@@ -126,7 +146,7 @@ describe("files_metadata_extract_frontmatter", () => {
 			].join("\n"),
 		);
 
-		expect(metadata.values).toEqual([
+		expect(metadata._yay?.values).toEqual([
 			{ qualifiedField: "frontmatter.realStartTime", valueKind: "string", value: "2026-07-29T14:30:36.264Z" },
 			{ qualifiedField: "frontmatter.realStartTime", valueKind: "maybe_date", value: Date.UTC(2026, 6, 29, 14, 30, 36, 264) },
 			{ qualifiedField: "frontmatter.days", valueKind: "string", value: "2026-07-27" },
@@ -143,7 +163,7 @@ describe("files_metadata_extract_frontmatter", () => {
 			["---", "times:", '  - "2026-07-29T14:30:00Z"', '  - "2026-07-29T15:30:00+01:00"', "---", ""].join("\n"),
 		);
 
-		expect(metadata.values).toEqual([
+		expect(metadata._yay?.values).toEqual([
 			{ qualifiedField: "frontmatter.times", valueKind: "string", value: "2026-07-29T14:30:00Z" },
 			{ qualifiedField: "frontmatter.times", valueKind: "maybe_date", value: Date.UTC(2026, 6, 29, 14, 30) },
 			{ qualifiedField: "frontmatter.times", valueKind: "string", value: "2026-07-29T15:30:00+01:00" },
@@ -153,7 +173,7 @@ describe("files_metadata_extract_frontmatter", () => {
 	test("indexes the epoch itself, which a falsiness check would drop", () => {
 		const metadata = files_metadata_extract_frontmatter(["---", "startedAt: 1970-01-01", "---", ""].join("\n"));
 
-		expect(metadata.values).toEqual([
+		expect(metadata._yay?.values).toEqual([
 			{ qualifiedField: "frontmatter.startedAt", valueKind: "string", value: "1970-01-01" },
 			{ qualifiedField: "frontmatter.startedAt", valueKind: "maybe_date", value: 0 },
 		]);
@@ -167,7 +187,7 @@ describe("files_metadata_extract_frontmatter", () => {
 		);
 
 		// Keep the block scalar's trailing newline to prove it is not parsed as a date.
-		expect(metadata.values).toEqual([
+		expect(metadata._yay?.values).toEqual([
 			{ qualifiedField: "frontmatter.badDay", valueKind: "string", value: "2026-02-31" },
 			{ qualifiedField: "frontmatter.looseDate", valueKind: "string", value: "2026-7-9" },
 			{ qualifiedField: "frontmatter.compact", valueKind: "number", value: 20260729 },
@@ -546,7 +566,7 @@ describe("files_metadata_extract_entries", () => {
 		const frontmatter = files_metadata_extract_frontmatter("---\ntitle: From frontmatter\n---\n");
 
 		expect(indexDocs.fields).toEqual(["metadata.title"]);
-		expect(frontmatter.fields).toEqual(["frontmatter.title"]);
+		expect(frontmatter._yay?.fields).toEqual(["frontmatter.title"]);
 	});
 });
 

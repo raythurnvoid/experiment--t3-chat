@@ -139,12 +139,23 @@ export async function files_metadata_db_insert_committed(
 	}
 
 	const preflight = files_metadata_preflight_frontmatter(args.markdownContent);
-	const metadata = preflight.metadata;
+	// The save that called this must still finish, so index no frontmatter and keep going. The
+	// caller already logged the same failure; log here too because this helper also runs from
+	// paths that never preflight themselves.
+	if (preflight._nay) {
+		console.warn("Skipped committed frontmatter metadata: the frontmatter could not be parsed", {
+			nodeId: args.nodeId,
+			error: preflight._nay,
+		});
+		return;
+	}
+
+	const metadata = preflight._yay.metadata;
 	// Impossible backstop only: committed materialization already ran this preflight and settled
 	// a marker instead of calling here. The throw stays so an unexpected over-cap insert still
 	// rolls the whole transaction back rather than exceeding Convex's per-transaction doc-write
 	// limit.
-	if (files_metadata_frontmatter_exceeds_index_caps(preflight)) {
+	if (files_metadata_frontmatter_exceeds_index_caps(preflight._yay)) {
 		throw convex_error({ message: "Too many frontmatter fields" });
 	}
 
@@ -202,12 +213,24 @@ export async function files_metadata_db_replace_pending(
 	}
 
 	const preflight = files_metadata_preflight_frontmatter(args.unstagedText);
-	const metadata = preflight.metadata;
+	// The stale pending docs were deleted above, so returning here leaves this proposal with no
+	// frontmatter docs. That is the right outcome: the proposal still saves, and nothing stale is
+	// left behind.
+	if (preflight._nay) {
+		console.warn("Skipped pending frontmatter metadata: the frontmatter could not be parsed", {
+			nodeId: args.nodeId,
+			pendingUpdateId: args.pendingUpdateId,
+			error: preflight._nay,
+		});
+		return;
+	}
+
+	const metadata = preflight._yay.metadata;
 	// Impossible backstop only: the pending commit mutations run the same preflight before any
 	// canonical write and return a visible refusal. The throw stays so an unexpected over-cap
 	// insert still rolls back the whole pending save mutation, including the pending update doc
 	// write that ran before this helper.
-	if (files_metadata_frontmatter_exceeds_index_caps(preflight)) {
+	if (files_metadata_frontmatter_exceeds_index_caps(preflight._yay)) {
 		throw convex_error({ message: "Too many frontmatter fields" });
 	}
 

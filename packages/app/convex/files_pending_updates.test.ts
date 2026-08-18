@@ -1382,6 +1382,61 @@ describe("upsert_file_pending_update", () => {
 		expect(after.chunkTexts.join("")).toBe(yamlText);
 	});
 
+	test("frontmatter the parser cannot read saves the file without indexing it", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/pending-frontmatter-unreadable",
+				name: "pending-frontmatter-unreadable",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		// The parser reads one nesting level by calling itself again until the stack is full. 1000
+		// levels is enough under Node, which is what convex-test runs on; the real Convex runtime
+		// needs a deeper document. Flow style needs no indentation, so this whole file is about
+		// 5 KB: the byte caps never see a problem. The save must still finish, because the user
+		// cannot fix this by writing less and a refusal would trap their own text.
+		const unreadableMarkdown = `---\na: ${"{b: ".repeat(1000)}v${"}".repeat(1000)}\n---\n\n# Body`;
+		const upserted = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: unreadableMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+
+		const after = await t.run(async (ctx) => {
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			if (!row) {
+				throw new Error("Expected the pending update doc to exist");
+			}
+			const metadataDocs = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", row._id))
+				.collect();
+			const plainTextChunks = await list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: row._id });
+			return { metadataDocs, chunkTexts: plainTextChunks.map((chunk) => chunk.plainTextChunk) };
+		});
+		// The text is stored and searchable; only the frontmatter index is missing. The chunks hold
+		// the rendered plain text, not the raw markdown, so check the body survived rather than
+		// comparing the two strings.
+		expect(after.metadataDocs).toEqual([]);
+		expect(after.chunkTexts.join("")).toContain("Body");
+	});
+
 	test("the agent read path returns a plain-text file's pending content", async () => {
 		const t = test_convex();
 
