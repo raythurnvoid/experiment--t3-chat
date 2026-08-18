@@ -84,6 +84,20 @@ describe("bash_meta_command_create", () => {
 				plan: { op: "eq", qualifiedField: "frontmatter.amount", value: 120.5 },
 			},
 			{
+				where: '{"exists":"metadata.created-by"}',
+				plan: { op: "exists", qualifiedField: "metadata.created-by" },
+			},
+			{
+				// A colon is part of the key, not a separator.
+				where: '{"eq":["metadata.slack:message-id","1755500000.001"]}',
+				plan: { op: "eq", qualifiedField: "metadata.slack:message-id", value: "1755500000.001" },
+			},
+			{
+				// The write door accepts keys that are not written in English, so search must too.
+				where: '{"exists":"metadata.città"}',
+				plan: { op: "exists", qualifiedField: "metadata.città" },
+			},
+			{
 				where: '{"prefix":["frontmatter.subject","Inv"]}',
 				plan: { op: "prefix", qualifiedField: "frontmatter.subject", value: "Inv" },
 			},
@@ -139,6 +153,8 @@ describe("bash_meta_command_create", () => {
 			{ where: '{"neq":["frontmatter.cc","bob"]}', message: "positive predicates" },
 			{ where: '{"exists":"cc"}', message: "must be qualified" },
 			{ where: '{"exists":"email.from"}', message: "Unsupported metadata kind" },
+			// A metadata key is flat, so a dotted metadata field is a mistake and not nesting.
+			{ where: '{"exists":"metadata.owner.name"}', message: "metadata keys are flat" },
 			{ where: '{"eq":["frontmatter.cc",["bob"]]}', message: "not searchable" },
 			{ where: '{"prefix":["frontmatter.amount",12]}', message: "string values only" },
 		];

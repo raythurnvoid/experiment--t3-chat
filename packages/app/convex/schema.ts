@@ -506,13 +506,20 @@ const app_convex_schema = defineSchema({
 		.index("by_expiresAt", ["expiresAt"]),
 
 	/**
-	 * Indexed metadata docs for Markdown YAML frontmatter. Field docs support existence search
-	 * for presence-only metadata. Value docs support string, number, boolean, and maybe_date search.
-	 * Arrays insert one value doc for each primitive item. Date-like strings also insert a
-	 * maybe_date companion whose epoch-millisecond timestamp uses numberValue for range search.
+	 * Indexed metadata docs for a file. Field docs support existence search for presence-only
+	 * metadata. Value docs support string, number, boolean, and maybe_date search. Arrays insert one
+	 * value doc for each primitive item. Date-like strings also insert a maybe_date companion whose
+	 * epoch-millisecond timestamp uses numberValue for range search.
+	 *
+	 * Two field prefixes write here, and `qualifiedField` says which one owns a doc:
+	 * - `frontmatter.*` docs are extracted from a Markdown file's own YAML frontmatter, so a content
+	 *   save deletes and rewrites them.
+	 * - `metadata.*` docs are the file metadata a user or an agent wrote next to the file. They work
+	 *   for every file kind, including binary uploads, and a content save never touches them.
 	 *
 	 * Pending docs are user-scoped. Query code filters out other users' pending docs
-	 * and hides stale committed docs for files the acting user is editing.
+	 * and hides stale committed docs for files the acting user is editing. Only frontmatter docs are
+	 * ever pending, because file metadata is written straight to committed.
 	 */
 	files_metadata_docs: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
@@ -530,6 +537,12 @@ const app_convex_schema = defineSchema({
 		treePath: v.string(),
 		archiveOperationId: v.optional(v.string()),
 		qualifiedField: v.string(),
+		/**
+		 * Where this key sits in the file's metadata map, counting from 0. The metadata panel is a
+		 * YAML text editor, so reading the map back in index order would reorder the user's lines on
+		 * every save. Set on `metadata.*` value docs only; frontmatter docs leave it unset.
+		 */
+		entryIndex: v.optional(v.number()),
 		docKind: v.union(v.literal("field"), v.literal("value")),
 		valueKind: v.optional(
 			v.union(v.literal("string"), v.literal("number"), v.literal("boolean"), v.literal("maybe_date")),

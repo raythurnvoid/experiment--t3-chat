@@ -24,6 +24,7 @@ vi.mock("exa-js", () => ({
 import {
 	ai_chat_tool_create_bash,
 	ai_chat_tool_create_edit_file,
+	ai_chat_tool_create_set_file_metadata,
 	ai_chat_tool_create_web_search,
 	ai_chat_tool_create_execute_code,
 	replace_once_or_all,
@@ -1036,6 +1037,129 @@ test("edit_file's cross-class refusal names the class, not the path", async () =
 
 	// The refusal happens before any read, so the model's wrong path costs no backend call.
 	expect(runAction).not.toHaveBeenCalled();
+});
+
+describe("ai_chat_tool_create_set_file_metadata", () => {
+	const makeTool = (runMutationImpl: (ref: any, args: any) => Promise<any>) => {
+		const { ctx, runMutation } = makeCtx(async () => null, { runMutationImpl });
+		const tool = ai_chat_tool_create_set_file_metadata(
+			ctx,
+			server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_set_file_metadata>[1],
+		);
+		return { tool, runMutation };
+	};
+
+	const run = (tool: ReturnType<typeof ai_chat_tool_create_set_file_metadata>, path: string) =>
+		tool.execute?.(
+			{ path, set: [{ key: "created-by", value: "agent" }], remove: [] },
+			{ toolCallId: "test", messages: [] },
+		);
+
+	// Live QA caught this: without the rule the model pastes the bash mount path straight from
+	// `meta get` output, and the write answers "Not found" three times before it recovers.
+	test("tells the model to strip the bash workspace prefix from a path", () => {
+		const { ctx } = makeCtx(async () => null);
+		const tool = ai_chat_tool_create_set_file_metadata(
+			ctx,
+			server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_set_file_metadata>[1],
+		);
+
+		expect(tool.description).toContain(
+			"remove the /home/cloud-usr/w/<organization>/<workspace> current workspace path prefix",
+		);
+		expect(tool.description).toContain(
+			"/home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.",
+		);
+	});
+
+	// `meta get` prints `frontmatter.status` next to `metadata.owner`. The write tool already
+	// tells the model to strip `metadata.` and pass the bare key. Without the same warning for
+	// `frontmatter.`, the grammar refusal trains a retry as `status`, which writes the other store.
+	test("tells the model this tool does not write Markdown frontmatter", () => {
+		const { ctx } = makeCtx(async () => null);
+		const tool = ai_chat_tool_create_set_file_metadata(
+			ctx,
+			server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_set_file_metadata>[1],
+		);
+
+		expect(tool.description).toMatch(/frontmatter/i);
+	});
+
+	test("refuses the root and the read-only mounts before writing", async () => {
+		const { tool, runMutation } = makeTool(async () => ({ _yay: { path: "/x", entries: [] } }));
+
+		await expect(run(tool, "/")).rejects.toThrow("Path must be absolute and not root.");
+		await expect(run(tool, "/.mounts/gmail/inbox.md")).rejects.toThrow("read-only mount of an external source");
+		await expect(run(tool, "/.plugins/chitchat/README.md")).rejects.toThrow(
+			"read-only mount of installed plugin sources",
+		);
+		expect(runMutation).not.toHaveBeenCalled();
+	});
+
+	// Same as edit_file: a relative path is read as app-relative and made absolute, not refused.
+	test("makes a relative path absolute instead of refusing it", async () => {
+		const { tool, runMutation } = makeTool(async () => ({ _yay: { path: "/docs/hello.md", entries: [] } }));
+
+		await run(tool, "docs/hello.md");
+
+		const [, mutationArgs] = runMutation.mock.calls[0]!;
+		expect(mutationArgs.path).toBe("/docs/hello.md");
+	});
+
+	test("writes the set and remove lists and reports the stored map", async () => {
+		const { tool, runMutation } = makeTool(async () => ({
+			_yay: {
+				path: "/docs/hello.md",
+				entries: [
+					{ key: "created-by", value: "agent" },
+					{ key: "priority", value: 3 },
+					{ key: "archived", value: false },
+				],
+			},
+		}));
+
+		const result = await tool.execute?.(
+			{ path: "/docs/hello.md", set: [{ key: "created-by", value: "agent" }], remove: ["stale"] },
+			{ toolCallId: "test", messages: [] },
+		);
+
+		const [, mutationArgs] = runMutation.mock.calls[0]!;
+		expect(mutationArgs).toMatchObject({
+			path: "/docs/hello.md",
+			set: [{ key: "created-by", value: "agent" }],
+			remove: ["stale"],
+		});
+		expect(result).toMatchObject({
+			title: "/docs/hello.md",
+			metadata: { path: "/docs/hello.md" },
+			output: 'created-by = "agent"\npriority = 3\narchived = false',
+		});
+	});
+
+	test("says the file has no metadata when the last key was removed", async () => {
+		const { tool } = makeTool(async () => ({ _yay: { path: "/docs/hello.md", entries: [] } }));
+
+		const result = await tool.execute?.(
+			{ path: "/docs/hello.md", set: [], remove: ["created-by"] },
+			{ toolCallId: "test", messages: [] },
+		);
+
+		expect(result).toMatchObject({ output: "The file has no metadata now." });
+	});
+
+	// A read-only refusal is terminal: retrying the same path with another write tool cannot work,
+	// and the model has to be told that or it keeps trying.
+	test("tells the model not to retry a read-only file, and surfaces other refusals as they are", async () => {
+		const readOnly = makeTool(async () => ({
+			_nay: { name: "read_only", message: "This item is read-only." },
+		}));
+		await expect(run(readOnly.tool, "/docs/hello.md")).rejects.toThrow(
+			"Cannot set metadata on /docs/hello.md: This item is read-only. Do not retry this path with another write tool.",
+		);
+
+		const missing = makeTool(async () => ({ _nay: { name: "nay", message: "Not found" } }));
+		await expect(run(missing.tool, "/docs/gone.md")).rejects.toThrow("Cannot set metadata on /docs/gone.md: Not found");
+	});
 });
 
 test("web_search tool: Exa SDK uses fast search, highlights, and returns compact output", async () => {

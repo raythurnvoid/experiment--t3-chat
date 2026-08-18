@@ -2236,6 +2236,39 @@ describe("files_nodes.remove_eager_created_node_if_safe", () => {
 		});
 	});
 
+	test("keeps a node whose committed metadata was written since the eager create", async () => {
+		const t = test_convex();
+		// Current code still hard-deletes, so the R2 mock must be in place or this proof dies in
+		// cleanup instead of at the keep assertion below.
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, nodeId, eagerCreatedCommittedSequence } = await create_eager_node(t, "/eager-cleanup-metadata.md");
+
+		// Metadata is a committed write that applies right away. It must stamp the node as a real
+		// file the same way a content save does, or discarding the pending create wipes the map.
+		const written = await t.mutation(internal.files_metadata.update_entries_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/eager-cleanup-metadata.md",
+			set: [{ key: "created-by", value: "agent" }],
+			remove: [],
+		});
+		if (written._nay) throw new Error(written._nay.message);
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			eagerCreatedCommittedSequence,
+		});
+		expect(removed._yay.removed).toBe(false);
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).not.toBeNull();
+		});
+	});
+
 	test("reports removed false without throwing when the node is missing", async () => {
 		const t = test_convex();
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
@@ -7099,6 +7132,370 @@ test("metadata search updates indexed scope when files are archived and unarchiv
 	});
 	if (unarchived._nay) throw new Error(unarchived._nay.message);
 	expect((await search()).items.map((item) => item.path)).toEqual(["/metadata-archive/source.md"]);
+});
+
+test("file metadata is searchable next to frontmatter and survives a content save", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "File Metadata User",
+		email: "file-metadata-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const path = "/file-metadata/note.md";
+	const nodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		path,
+		["---", "title: From frontmatter", "---", "First body"].join("\n"),
+	);
+
+	const written = await asUser.mutation(api.files_metadata.set_entries, {
+		membershipId: db.membershipId,
+		fileNodeId: nodeId,
+		metadataYaml: [
+			"title: From metadata",
+			"created-by: slack",
+			"slack:message-id: '1755500000.001'",
+			"priority: 3",
+			"archived: false",
+			"released-on: 2026-08-18",
+		].join("\n"),
+	});
+	if (written._nay) throw new Error(written._nay.message);
+
+	const entries = () =>
+		asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: nodeId });
+
+	// Keys come back in the order they were typed, not in index order.
+	expect(await entries()).toEqual([
+		{ key: "title", value: "From metadata" },
+		{ key: "created-by", value: "slack" },
+		{ key: "slack:message-id", value: "1755500000.001" },
+		{ key: "priority", value: 3 },
+		{ key: "archived", value: false },
+		{ key: "released-on", value: "2026-08-18" },
+	]);
+
+	const search = (plan: files_metadata_SearchPlan, pathPrefix?: string) =>
+		asUser.query(internal.files_metadata.search, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			plan,
+			pathPrefix,
+			numItems: 10,
+			cursor: null,
+		});
+
+	// The same key name on both sources stays two separate fields.
+	expect((await search({ op: "eq", qualifiedField: "metadata.title", value: "From metadata" })).items).toMatchObject([
+		{ path, nodeId },
+	]);
+	expect(
+		(await search({ op: "eq", qualifiedField: "frontmatter.title", value: "From frontmatter" })).items,
+	).toMatchObject([{ path, nodeId }]);
+	expect((await search({ op: "eq", qualifiedField: "metadata.title", value: "From frontmatter" })).items).toEqual([]);
+
+	expect((await search({ op: "exists", qualifiedField: "metadata.slack:message-id" })).items).toMatchObject([
+		{ path, nodeId },
+	]);
+	expect(
+		(await search({ op: "range", qualifiedField: "metadata.priority", valueKind: "number", gte: 1, lt: 5 })).items,
+	).toMatchObject([{ path, nodeId }]);
+	expect((await search({ op: "eq", qualifiedField: "metadata.archived", value: false })).items).toMatchObject([
+		{ path, nodeId },
+	]);
+	// A date-like string gets the same maybe_date companion frontmatter gets.
+	expect(
+		(
+			await search({
+				op: "range",
+				qualifiedField: "metadata.released-on",
+				valueKind: "maybe_date",
+				gte: Date.UTC(2026, 7, 17),
+				lt: Date.UTC(2026, 7, 19),
+			})
+		).items,
+	).toMatchObject([{ path, nodeId }]);
+
+	// Saving the file's content re-indexes its frontmatter. The metadata written next to the file
+	// must not be wiped with it.
+	const nextYjsDoc = files_yjs_doc_create_from_text({
+		rootKind: "rich_text",
+		text: ["---", "title: Rewritten frontmatter", "---", "Second body"].join("\n"),
+	});
+	if ("_nay" in nextYjsDoc) throw new Error(nextYjsDoc._nay.message);
+	const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		membershipId: db.membershipId,
+		nodeId,
+		update: files_u8_to_array_buffer(encodeStateAsUpdate(nextYjsDoc)),
+		sessionId: "file-metadata-session",
+	});
+	nextYjsDoc.destroy();
+	if (pushed._nay) throw new Error(pushed._nay.message);
+	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		nodeId,
+		userId: db.userId,
+		targetSequence: 2,
+	});
+	if (materialized._nay) throw new Error(materialized._nay.message);
+
+	expect(await entries()).toEqual([
+		{ key: "title", value: "From metadata" },
+		{ key: "created-by", value: "slack" },
+		{ key: "slack:message-id", value: "1755500000.001" },
+		{ key: "priority", value: 3 },
+		{ key: "archived", value: false },
+		{ key: "released-on", value: "2026-08-18" },
+	]);
+	expect((await search({ op: "eq", qualifiedField: "metadata.title", value: "From metadata" })).items).toMatchObject([
+		{ path, nodeId },
+	]);
+	// Metadata docs carry their own copy of the file's tree path, so folder-scoped search must find
+	// them in the file's folder and must not find them under another one.
+	expect((await search({ op: "exists", qualifiedField: "metadata.title" }, "/file-metadata")).items).toMatchObject([
+		{ path, nodeId },
+	]);
+	expect((await search({ op: "exists", qualifiedField: "metadata.title" }, "/elsewhere")).items).toEqual([]);
+
+	// The save must also still delete the frontmatter docs it replaces. The push above merges a second
+	// Yjs document into the first one, and Yjs orders two concurrent inserts by a random client id, so
+	// which frontmatter block ends up on top is not decided here. Exactly one of the two titles must
+	// match: two matches would mean the narrowed delete stopped deleting.
+	const oldTitle = await search({ op: "eq", qualifiedField: "frontmatter.title", value: "From frontmatter" });
+	const newTitle = await search({ op: "eq", qualifiedField: "frontmatter.title", value: "Rewritten frontmatter" });
+	expect(oldTitle.items.length + newTitle.items.length).toBe(1);
+
+	// A second write replaces the whole map: the dropped keys stop being searchable.
+	const replaced = await asUser.mutation(api.files_metadata.set_entries, {
+		membershipId: db.membershipId,
+		fileNodeId: nodeId,
+		metadataYaml: "title: Only key left\n",
+	});
+	if (replaced._nay) throw new Error(replaced._nay.message);
+	expect(await entries()).toEqual([{ key: "title", value: "Only key left" }]);
+	expect((await search({ op: "exists", qualifiedField: "metadata.priority" })).items).toEqual([]);
+});
+
+test("file metadata stays visible while a pending content edit hides committed frontmatter", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "File Metadata Pending User",
+		email: "file-metadata-pending-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const path = "/file-metadata-pending/note.md";
+	const nodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		path,
+		["---", "from: committed@example.com", "---", "Body"].join("\n"),
+	);
+	const written = await asUser.mutation(api.files_metadata.set_entries, {
+		membershipId: db.membershipId,
+		fileNodeId: nodeId,
+		metadataYaml: "source: slack\n",
+	});
+	if (written._nay) throw new Error(written._nay.message);
+
+	const pending = await upsert_pending_update_internal_for_test(t, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId: db.userId,
+		nodeId,
+		unstagedMarkdown: ["---", "from: pending@example.com", "---", "Pending body"].join("\n"),
+	});
+	if (pending._nay) throw new Error(pending._nay.message);
+
+	const search = (plan: files_metadata_SearchPlan) =>
+		asUser.query(internal.files_metadata.search, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			plan,
+			numItems: 10,
+			cursor: null,
+		});
+
+	// The pending edit replaces what the file's own frontmatter says.
+	expect((await search({ op: "eq", qualifiedField: "frontmatter.from", value: "committed@example.com" })).items).toEqual(
+		[],
+	);
+	// It says nothing about the metadata written next to the file, so that stays findable.
+	expect((await search({ op: "eq", qualifiedField: "metadata.source", value: "slack" })).items).toMatchObject([
+		{ path, nodeId },
+	]);
+
+	const metadata = await asUser.query(internal.files_metadata.get_by_path, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId: db.userId,
+		path,
+		overlayUserId: db.userId,
+	});
+	// Assert the exact set, not just that the two expected entries are in it. The committed
+	// frontmatter doc must be dropped, or `meta get` would print two contradicting frontmatter.from
+	// lines, and an arrayContaining assertion would still pass.
+	expect(metadata?.sourceKind).toBe("pending");
+	expect(metadata?.fields).toEqual(["metadata.source", "frontmatter.from"]);
+	expect(metadata?.values.map((value) => [value.qualifiedField, value.stringValue])).toEqual([
+		["metadata.source", "slack"],
+		["frontmatter.from", "pending@example.com"],
+	]);
+});
+
+test("set_entries refuses bad YAML, folders, and read-only files", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "File Metadata Refusal User",
+		email: "file-metadata-refusal-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const nodeId = await test_materialize_markdown_file(t, asUser, db, "/file-metadata-refusal/note.md", "Body\n");
+	const setEntries = (fileNodeId: Id<"files_nodes">, metadataYaml: string) =>
+		asUser.mutation(api.files_metadata.set_entries, { membershipId: db.membershipId, fileNodeId, metadataYaml });
+
+	expect(await setEntries(nodeId, "title: [unclosed\n")).toMatchObject({
+		_nay: { message: expect.stringContaining("valid YAML") },
+	});
+	expect(await setEntries(nodeId, "owner:\n  name: nested\n")).toMatchObject({
+		_nay: { message: expect.stringContaining("must have a text, number, or true/false value") },
+	});
+	expect(await setEntries(nodeId, "with space: yes\n")).toMatchObject({
+		_nay: { message: expect.stringContaining("may contain only letters") },
+	});
+
+	const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		path: "metadata-folder",
+	});
+	if (folder._nay) throw new Error(folder._nay.message);
+	expect(await setEntries(folder._yay.nodeId, "title: on a folder\n")).toMatchObject({
+		_nay: { message: "Not found" },
+	});
+
+	const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		membershipId: db.membershipId,
+		nodeId,
+	});
+	if (locked._nay) throw new Error(locked._nay.message);
+	expect(await setEntries(nodeId, "title: on a locked file\n")).toMatchObject({ _nay: { name: "read_only" } });
+	expect(await asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: nodeId })).toEqual(
+		[],
+	);
+});
+
+test("update_entries_by_path lets the agent set and remove keys on an uploaded file", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "File Metadata Agent User",
+		email: "file-metadata-agent-user@example.com",
+	});
+
+	// A binary upload carries metadata too: it lives next to the file, not inside its content.
+	const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		filename: "contract.pdf",
+		contentType: "application/pdf",
+		size: 1234,
+	});
+	if (upload._nay) throw new Error(upload._nay.message);
+	const nodeId = upload._yay.nodeId;
+	const path = "/contract.pdf";
+
+	const setByPath = (set: { key: string; value: string | number | boolean }[], remove: string[]) =>
+		t.mutation(internal.files_metadata.update_entries_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path,
+			set,
+			remove,
+		});
+
+	const first = await setByPath(
+		[
+			{ key: "created-by", value: "agent" },
+			{ key: "status", value: "draft" },
+			{ key: "pages", value: 12 },
+		],
+		[],
+	);
+	if (first._nay) throw new Error(first._nay.message);
+	expect(first._yay).toEqual({
+		path,
+		entries: [
+			{ key: "created-by", value: "agent" },
+			{ key: "status", value: "draft" },
+			{ key: "pages", value: 12 },
+		],
+	});
+
+	// Changing a key keeps its place, removing one drops it, and a new key is appended.
+	const second = await setByPath(
+		[
+			{ key: "status", value: "signed" },
+			{ key: "signed-on", value: "2026-08-18" },
+		],
+		["pages"],
+	);
+	if (second._nay) throw new Error(second._nay.message);
+	expect(second._yay.entries).toEqual([
+		{ key: "created-by", value: "agent" },
+		{ key: "status", value: "signed" },
+		{ key: "signed-on", value: "2026-08-18" },
+	]);
+	expect(await asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: nodeId })).toEqual(
+		second._yay.entries,
+	);
+
+	expect(
+		(
+			await asUser.query(internal.files_metadata.search, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				plan: { op: "eq", qualifiedField: "metadata.status", value: "signed" },
+				numItems: 10,
+				cursor: null,
+			})
+		).items,
+	).toMatchObject([{ path, nodeId }]);
+
+	expect(await setByPath([{ key: "with space", value: "x" }], [])).toMatchObject({
+		_nay: { message: expect.stringContaining("may contain only letters") },
+	});
+
+	const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		membershipId: db.membershipId,
+		nodeId,
+	});
+	if (locked._nay) throw new Error(locked._nay.message);
+	expect(await setByPath([{ key: "status", value: "tampered" }], [])).toMatchObject({ _nay: { name: "read_only" } });
 });
 
 test("text_search_files scopes pending hits to a path prefix without sibling-prefix leakage", async () => {

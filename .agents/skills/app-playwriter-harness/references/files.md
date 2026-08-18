@@ -26,6 +26,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Comments tab: `#app_file_editor_sidebar_tabs_comments`.
 - Agent tab: `#app_file_editor_sidebar_tabs_agent`.
 - Pending tab: `#app_file_editor_sidebar_tabs_pending`.
+- Metadata tab: `#app_file_editor_sidebar_tabs_metadata` (file nodes only; a folder has no Metadata tab).
 
 ### File Node View
 
@@ -34,6 +35,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Comments region: `getByRole("complementary", { name: "Document comments" })`.
 - Diff editor root: `[aria-label="File diff editor"]`.
 - Review changes button: `[data-testid="review-changes-button"]`.
+- Metadata panel: `getByRole("region", { name: "File metadata" })`; its editor is Monaco with `aria-label="File metadata YAML"`, and its Save button is `getByRole("button", { name: "Save metadata" })`.
 
 ### Sidebar And Folder Browser
 
@@ -392,6 +394,19 @@ Selectors and a proven flow for the media embeds in the rich text editor (verifi
 - `Image`/`Video` open a real file chooser from the hidden inputs — intercept with `state.page.waitForEvent("filechooser")` started before the Enter, then `chooser.setFiles("C:/absolute/path")`. Works under a Windows relay.
 - `Embed file` opens `.FileEditorRichTextMediaEmbedPicker` (a `MySearchSelect` anchored to the caret): type to filter by path, Enter inserts the highlighted row's `bonobo-file://` reference, Escape closes and refocuses the editor. Rows are `-item-name` / `-item-path` spans.
 - `Image from URL` / `Video from URL` use `window.prompt` — stub it in `evaluate` (`window.prompt = () => url`) before triggering the item; a non-http(s) answer must produce the alert (stub `window.alert` to capture) and insert nothing.
+
+### File Metadata Panel
+
+The flat key-value map stored next to a file, edited as YAML (verified 2026-08-18). Spec: `.agents/skills/file-metadata/SKILL.md`.
+
+- Open a file, then click the `Metadata` tab (`#app_file_editor_sidebar_tabs_metadata`). A folder shows no such tab, so a run that lands on a folder finds nothing to click.
+- The editor is Monaco. Synthetic keyboard input does not reach it. Set the text through the editor handle from page context: `monaco.editor.getEditors().find((e) => e.getRawOptions().ariaLabel === "File metadata YAML").setValue(yaml)`. Get `monaco` from `await import("monaco-editor")` or from the editor instance the app already mounted.
+- `Save metadata` stays disabled until the draft differs from the stored map, so a `setValue` with the same text leaves the button disabled — that is correct, not a broken run.
+- The status line is one element: `role="status"` for `Metadata saved`, `role="alert"` for a refusal or a conflict. Read it by role, not by text position.
+- A refusal to check: `owner:\n  name: nested\n` is refused in the panel before any mutation runs, so the network stays quiet.
+- Read the stored map back from Convex instead of trusting the panel: `app_convex.query(app_convex_api.files_metadata.get_entries, { membershipId, fileNodeId })` from page context returns the entries in stored order.
+- Metadata works on uploads. Open a PDF node and the Metadata tab is there, with the same panel.
+- Agent side: ask the chat agent to run `meta get <file>` and to call `set_file_metadata`. The tool takes bare keys (`status`), and the model tends to paste the bash mount path — both are covered by the tool description now, but a run that fails with `Not found` is usually the path, not permissions.
 
 ## Script Pattern
 

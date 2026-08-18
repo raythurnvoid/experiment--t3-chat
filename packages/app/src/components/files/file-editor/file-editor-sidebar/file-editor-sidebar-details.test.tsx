@@ -41,6 +41,11 @@ vi.mock("@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-
 		return <div data-testid="agent-panel" />;
 	},
 }));
+vi.mock("@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-metadata.tsx", () => ({
+	FileEditorSidebarMetadata: function FileEditorSidebarMetadata() {
+		return <div data-testid="metadata-panel" />;
+	},
+}));
 vi.mock("@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending.tsx", () => ({
 	FileEditorSidebarPending: function FileEditorSidebarPending() {
 		return <div data-testid="pending-panel" />;
@@ -62,6 +67,7 @@ function makeNode(args: {
 	id: string;
 	name: string;
 	path: string;
+	kind?: "file" | "folder";
 	yjsRootKind?: "rich_text" | "plain_text";
 	contentType?: string;
 	hasEditableYjsState?: boolean;
@@ -75,7 +81,7 @@ function makeNode(args: {
 		workspaceId: "workspace_1",
 		path: args.path,
 		name: args.name,
-		kind: "file",
+		kind: args.kind ?? "file",
 		parentId: "root",
 		assetId: `asset_${args.id}`,
 		...(args.hasEditableYjsState === false
@@ -152,6 +158,29 @@ describe("FileEditorSidebar", () => {
 		expect(screen.getByRole("tab", { name: "Details", selected: true })).toBeTruthy();
 		// ...but the stored selection stays, so a rich-text file restores the user's real choice.
 		expect(app_local_storage_get_value("app_state::files_last_tab")).toBe("app_file_editor_sidebar_tabs_comments");
+	});
+
+	test("a file gets the Metadata tab and a folder does not", () => {
+		const file = makeNode({ id: "node_md", name: "notes.md", path: "docs/notes.md", yjsRootKind: "rich_text" });
+
+		const { unmount } = render(<FileEditorSidebar node={file} commentsContainerRef={() => {}} />);
+		expect(screen.getByRole("tab", { name: "Metadata" })).toBeTruthy();
+		unmount();
+
+		const folder = makeNode({ id: "node_folder", name: "docs", path: "docs", kind: "folder" });
+
+		render(<FileEditorSidebar node={folder} commentsContainerRef={() => {}} />);
+		expect(screen.queryByRole("tab", { name: "Metadata" })).toBeNull();
+	});
+
+	test("a stored Metadata selection falls back to the first tab on a folder", () => {
+		app_local_storage_set_value("app_state::files_last_tab", "app_file_editor_sidebar_tabs_metadata");
+		const folder = makeNode({ id: "node_folder", name: "docs", path: "docs", kind: "folder" });
+
+		render(<FileEditorSidebar node={folder} commentsContainerRef={() => {}} />);
+
+		expect(screen.getByRole("tab", { name: "Comments", selected: true })).toBeTruthy();
+		expect(app_local_storage_get_value("app_state::files_last_tab")).toBe("app_file_editor_sidebar_tabs_metadata");
 	});
 
 	test("a stored Agent selection survives the plain-text tab swap", () => {

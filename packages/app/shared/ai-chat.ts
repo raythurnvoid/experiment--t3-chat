@@ -5,6 +5,8 @@ import type {
 	ai_chat_tool_create_bash_ToolOutput,
 	ai_chat_tool_create_edit_file_ToolInput,
 	ai_chat_tool_create_edit_file_ToolOutput,
+	ai_chat_tool_create_set_file_metadata_ToolInput,
+	ai_chat_tool_create_set_file_metadata_ToolOutput,
 	ai_chat_tool_create_web_search_ToolInput,
 	ai_chat_tool_create_web_search_ToolOutput,
 	ai_chat_tool_create_execute_code_ToolInput,
@@ -92,11 +94,11 @@ type AiChatModeMetadata = {
 export const ai_chat_MODE_METADATA = {
 	agent: {
 		label: "Agent",
-		description: "Read, search, create folders with bash, and propose file edits for review.",
+		description: "Read, search, create folders with bash, propose file edits for review, and set file metadata.",
 	},
 	ask: {
 		label: "Ask",
-		description: "Read and search only. Cannot create folders or propose file edits.",
+		description: "Read and search only. Cannot create folders, propose file edits, or set file metadata.",
 	},
 } as const satisfies Record<ai_chat_ModeId, AiChatModeMetadata>;
 
@@ -108,6 +110,10 @@ export type ai_chat_UiTools = {
 	edit_file: {
 		input: ai_chat_tool_create_edit_file_ToolInput;
 		output: ai_chat_tool_create_edit_file_ToolOutput;
+	};
+	set_file_metadata: {
+		input: ai_chat_tool_create_set_file_metadata_ToolInput;
+		output: ai_chat_tool_create_set_file_metadata_ToolOutput;
 	};
 	web_search: {
 		input: ai_chat_tool_create_web_search_ToolInput;

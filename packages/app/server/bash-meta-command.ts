@@ -23,7 +23,11 @@ import {
 } from "./bash-utils.ts";
 
 const FIELD_SEGMENT_REGEX = /^[A-Za-z0-9_-]+$/u;
-const SUPPORTED_METADATA_KINDS = new Set(["frontmatter"]);
+// A `metadata.` key is one flat key, never a path, and it may hold a colon, so `slack:message-id`
+// is a single key. This repeats `METADATA_KEY_REGEX` in `shared/files-metadata.ts`, which is the
+// write door. Change both together, or a key a user can write becomes a key nobody can search for.
+const METADATA_KEY_REGEX = /^[\p{L}\p{N}_:-]+$/u;
+const SUPPORTED_METADATA_KINDS = new Set(["frontmatter", "metadata"]);
 
 type MetaCommandSearchFormat = "paths" | "json";
 type MetaCommandGetFormat = "text" | "json";
@@ -40,7 +44,7 @@ function parse_qualified_field(value: unknown) {
 	if (dotIndex <= 0 || dotIndex === value.length - 1) {
 		return Result({
 			_nay: {
-				message: "meta search fields must be qualified, for example frontmatter.from or system.createdAt.",
+				message: "meta search fields must be qualified, for example frontmatter.from or metadata.created-by.",
 			},
 		});
 	}
@@ -48,10 +52,25 @@ function parse_qualified_field(value: unknown) {
 	if (!SUPPORTED_METADATA_KINDS.has(kind)) {
 		return Result({
 			_nay: {
-				message: `Unsupported metadata kind "${kind}". Supported kinds: frontmatter.`,
+				message: `Unsupported metadata kind "${kind}". Supported kinds: frontmatter, metadata.`,
 			},
 		});
 	}
+
+	// A metadata key is flat, so everything after the first dot is one key and a second dot is a
+	// mistake. Frontmatter keeps its dotted path, because YAML frontmatter can nest.
+	if (kind === "metadata") {
+		if (!METADATA_KEY_REGEX.test(value.slice(dotIndex + 1))) {
+			return Result({
+				_nay: {
+					message:
+						"meta search metadata keys are flat and may contain only letters, numbers, underscores, hyphens, and colons, for example metadata.created-by.",
+				},
+			});
+		}
+		return Result({ _yay: value });
+	}
+
 	const segments = value.slice(dotIndex + 1).split(".");
 	if (segments.some((segment) => !FIELD_SEGMENT_REGEX.test(segment))) {
 		return Result({

@@ -12,6 +12,7 @@ import { v_result } from "../server/convex-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import { files_normalize_name, files_normalize_upload_file_name } from "../shared/files.ts";
+import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { server_path_normalize } from "../server/server-utils.ts";
 import {
@@ -460,7 +461,13 @@ export const verify_metadata = internalQuery({
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("sourceKind", "committed")
-						.eq("fileNodeId", node._id),
+						.eq("fileNodeId", node._id)
+						// Count frontmatter only. The same table also holds the `metadata.` map a user or an
+						// agent wrote next to the file, and counting those too would let this check pass for a
+						// file whose frontmatter never indexed. The bound stops at `frontmatter/` because `/`
+						// is the next character after `.`.
+						.gte("qualifiedField", files_metadata_FRONTMATTER_FIELD_PREFIX)
+						.lt("qualifiedField", "frontmatter/"),
 				)
 				.collect();
 			results.push({ path, metadataDocs: metadataDocs.length });

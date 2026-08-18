@@ -61,6 +61,7 @@ import {
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
+import { files_metadata_METADATA_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import {
@@ -1802,6 +1803,27 @@ export async function files_nodes_db_is_eager_node_safe_to_hard_delete(
 		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
 		.collect();
 	if (pendingUpdatesOnNode.some((row) => row._id !== args.pendingUpdate._id)) {
+		return false;
+	}
+
+	// File metadata is written straight to committed and never advances the Yjs sequence, so none of
+	// the checks above can see it. Somebody set a key on this file, so keep the node instead of
+	// deleting their map with it. Frontmatter docs do not count: those come from the very content
+	// this proposal created. The bound stops at `metadata/` because `/` is the next character
+	// after `.`.
+	const metadataDoc = await ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("sourceKind", "committed")
+				.eq("fileNodeId", args.nodeId)
+				.gte("qualifiedField", files_metadata_METADATA_FIELD_PREFIX)
+				.lt("qualifiedField", "metadata/"),
+		)
+		.first();
+	if (metadataDoc) {
 		return false;
 	}
 

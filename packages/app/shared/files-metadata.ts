@@ -1,8 +1,24 @@
-import { isAlias, isMap, isScalar, isSeq, parseDocument, type Node as YamlNode } from "yaml";
+import { Document, isAlias, isMap, isScalar, isSeq, parseDocument, type Node as YamlNode } from "yaml";
+
+import { Result } from "common/errors-as-values-utils.ts";
+import { files_get_utf8_byte_size } from "./files.ts";
 
 const FRONTMATTER_START = "---\n";
 const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---(?:\n|$)/u;
 const FIELD_SEGMENT_REGEX = /^[A-Za-z0-9_-]+$/u;
+
+/**
+ * Qualified-field prefix for docs extracted from Markdown frontmatter. `files_metadata_docs` now
+ * holds two sources, so the prefix is what tells them apart. Convex needs this to delete only the
+ * frontmatter docs when a save re-indexes a file's content.
+ */
+export const files_metadata_FRONTMATTER_FIELD_PREFIX = "frontmatter.";
+
+/**
+ * Qualified-field prefix for docs written next to the file, by a user or an agent, instead of
+ * being extracted from the file's own content.
+ */
+export const files_metadata_METADATA_FIELD_PREFIX = "metadata.";
 
 /**
  * Product cap on how many frontmatter fields one file can index. Each field becomes one metadata
@@ -306,7 +322,7 @@ export function files_metadata_extract_frontmatter(markdown: string): ExtractedM
 		}
 		collect_metadata_from_node({
 			node: node_or_null(pair.value),
-			qualifiedField: `frontmatter.${segment}`,
+			qualifiedField: `${files_metadata_FRONTMATTER_FIELD_PREFIX}${segment}`,
 			mut_fields: fields,
 			mut_values: values,
 		});
@@ -345,3 +361,319 @@ export function files_metadata_frontmatter_exceeds_index_caps(preflight: {
 }
 
 // #endregion frontmatter extraction
+
+// #region metadata entries
+
+/**
+ * Product cap on how many metadata keys one file can carry. Each key writes one field doc and one
+ * value doc, and a date-like string value adds one maybe_date companion, so 128 keys write at most
+ * 384 index docs. That stays under the frontmatter index-document cap above.
+ */
+const MAX_METADATA_KEYS = 128;
+
+/**
+ * The key becomes part of `qualifiedField`, which is an equality field in every `meta search`
+ * index, and a string value becomes `stringValue`, which is an indexed field too. Keep both short
+ * so one index entry stays small.
+ */
+const MAX_METADATA_KEY_LENGTH = 128;
+const MAX_METADATA_STRING_VALUE_LENGTH = 1024;
+
+/**
+ * Cap on the whole YAML document the panel sends, checked before anything parses it. The agent
+ * writes entries instead of YAML, so its door measures the document those entries would make.
+ */
+const MAX_METADATA_YAML_BYTES = 16 * 1024;
+
+/**
+ * Metadata keys are conventions, not rules, so this grammar is deliberately wide: `created-by` and
+ * `slack:message-id` are both ordinary keys, and `città` works too because letters are not limited
+ * to English. The dot is left out, because `metadata.a.b` would read like the real nesting that
+ * `frontmatter.a.b` means.
+ *
+ * `bash-meta-command.ts` repeats this grammar for `meta search`. Change both together, or a key a
+ * user can write becomes a key nobody can search for.
+ */
+const METADATA_KEY_REGEX = /^[\p{L}\p{N}_:-]+$/u;
+
+/**
+ * One metadata key and its scalar value. The map is flat: no nesting, no arrays, no null.
+ */
+export type files_metadata_Entry = {
+	key: string;
+	value: string | number | boolean;
+};
+
+/**
+ * Read one YAML scalar as a metadata value, or return null when it is not a plain scalar.
+ *
+ * YAML 1.2 core resolves `1.10` to 1.1, `0x10` to 16, and `010` to 10. Storing those numbers would
+ * not give the user back the text they typed, and a version or an id written that way would change
+ * meaning. So when the number printed back is not the same text the user typed, keep the raw text
+ * as a string instead. `Scalar.source` is the exact text the user wrote.
+ *
+ * Booleans do not get that treatment. `True` resolves to true and only the capital letter is lost,
+ * so keeping the text would turn a value the user meant as a boolean into a string that
+ * `meta search --where '{"eq":[...,true]}'` can never find.
+ */
+function scalar_entry_value(node: YamlNode | null) {
+	if (!isScalar(node) || node.tag != null) {
+		return null;
+	}
+
+	const value = node.value;
+	if (typeof value === "string" || typeof value === "boolean") {
+		return value;
+	}
+	if (typeof value === "number") {
+		const source = node.source ?? String(value);
+		return String(value) === source ? value : source;
+	}
+
+	return null;
+}
+
+/**
+ * Apply an agent's set/remove request to the map the file has now.
+ *
+ * A key that already exists keeps its position, so setting one key does not reshuffle the YAML the
+ * user sees in the panel. New keys are appended where the agent first named them.
+ */
+export function files_metadata_apply_set_and_remove(
+	currentEntries: files_metadata_Entry[],
+	args: { set: files_metadata_Entry[]; remove: string[] },
+) {
+	const removedKeys = new Set(args.remove);
+	// A key the agent listed twice keeps its last value, whether or not the file already has that key.
+	const setByKey = new Map(args.set.map((entry) => [entry.key, entry.value]));
+
+	// A key listed in both set and remove is removed. Remove wins, so a confused call can never leave
+	// behind a key the agent asked to delete.
+	const entries = currentEntries
+		.filter((entry) => !removedKeys.has(entry.key))
+		.map((entry) => (setByKey.has(entry.key) ? { key: entry.key, value: setByKey.get(entry.key)! } : entry));
+
+	const existingKeys = new Set(entries.map((entry) => entry.key));
+	for (const [key, value] of setByKey) {
+		if (!existingKeys.has(key) && !removedKeys.has(key)) {
+			existingKeys.add(key);
+			entries.push({ key, value });
+		}
+	}
+
+	return entries;
+}
+
+/**
+ * Say what is wrong with one metadata key, or return null when the key is fine.
+ */
+function metadata_key_problem(key: string) {
+	// Check the length before any message quotes the key, so an oversized key is never echoed back.
+	if (key.length > MAX_METADATA_KEY_LENGTH) {
+		return `Metadata keys must be at most ${MAX_METADATA_KEY_LENGTH} characters`;
+	}
+
+	// `meta get` and `meta search` print the search field name `metadata.<key>`. A caller who copies
+	// that name into a write sends a key that can never exist. Name the bare key to pass, because the
+	// grammar message below does not explain this mistake.
+	if (key.startsWith(files_metadata_METADATA_FIELD_PREFIX)) {
+		const bareKey = key.slice(files_metadata_METADATA_FIELD_PREFIX.length);
+		return `Metadata key "${key}" is a search field name. Pass the bare key "${bareKey}" instead`;
+	}
+	if (!METADATA_KEY_REGEX.test(key)) {
+		return `Metadata key "${key}" may contain only letters, numbers, "_", "-" and ":"`;
+	}
+
+	return null;
+}
+
+/**
+ * Check the keys a caller asked to remove.
+ *
+ * A removed key is never stored, so nothing downstream ever looks at it. Without this check a key
+ * that cannot exist removes nothing and the call still reports success, which reads as "the key is
+ * still there" to whoever asked.
+ */
+export function files_metadata_validate_remove_keys(removeKeys: string[]) {
+	for (const key of removeKeys) {
+		const problem = metadata_key_problem(key);
+		if (problem !== null) {
+			return Result({ _nay: { message: problem } });
+		}
+	}
+
+	return Result({ _yay: removeKeys });
+}
+
+/**
+ * Check a flat metadata map against the product caps and the key grammar.
+ *
+ * Both write doors run this: the panel's YAML goes through the parser below, and the agent's
+ * set/remove goes through here directly, so one rule set covers both.
+ */
+export function files_metadata_validate_entries(entries: files_metadata_Entry[]) {
+	if (entries.length > MAX_METADATA_KEYS) {
+		return Result({ _nay: { message: `Metadata can have at most ${MAX_METADATA_KEYS} keys` } });
+	}
+
+	const seenKeys = new Set<string>();
+	for (const entry of entries) {
+		const problem = metadata_key_problem(entry.key);
+		if (problem !== null) {
+			return Result({ _nay: { message: problem } });
+		}
+		if (seenKeys.has(entry.key)) {
+			return Result({ _nay: { message: `Metadata key "${entry.key}" is set twice` } });
+		}
+		seenKeys.add(entry.key);
+
+		const value = entry.value;
+		if (typeof value === "string" && value.length > MAX_METADATA_STRING_VALUE_LENGTH) {
+			return Result({
+				_nay: {
+					message: `Metadata key "${entry.key}" has a value longer than ${MAX_METADATA_STRING_VALUE_LENGTH} characters`,
+				},
+			});
+		}
+		if (typeof value === "number" && !Number.isFinite(value)) {
+			return Result({ _nay: { message: `Metadata key "${entry.key}" must have a finite number value` } });
+		}
+	}
+
+	// The panel caps the YAML document it sends, so the agent must respect that same cap. Otherwise the
+	// agent could write a map that the panel renders but refuses to save, and the user would have to
+	// delete somebody else's keys to fix their own typo. Measure the document both doors would show.
+	if (files_get_utf8_byte_size(files_metadata_stringify_entries_yaml(entries)) > MAX_METADATA_YAML_BYTES) {
+		return Result({
+			_nay: { message: `Metadata must be at most ${MAX_METADATA_YAML_BYTES / 1024} KiB when written as YAML` },
+		});
+	}
+
+	return Result({ _yay: { entries } });
+}
+
+/**
+ * Parse the YAML typed in the metadata panel into the flat map that gets stored.
+ *
+ * YAML is only the edit format, so this runs on the server too: the panel runs it first to show a
+ * mistake without spending a rate-limit token, and the mutation runs it again as the real door.
+ * Every `_nay.message` here is shown to the user as written.
+ */
+export function files_metadata_parse_entries_yaml(metadataYaml: string) {
+	// Cap the bytes first. Every message below can quote a key, and this is what bounds it.
+	if (files_get_utf8_byte_size(metadataYaml) > MAX_METADATA_YAML_BYTES) {
+		return Result({
+			_nay: { message: `Metadata must be at most ${MAX_METADATA_YAML_BYTES / 1024} KiB when written as YAML` },
+		});
+	}
+
+	// The parser walks nested collections with recursion, so a deeply nested document overflows the
+	// stack and throws instead of reporting an error. The byte cap does not stop it: 2000 nested `{`
+	// fit in 4 KB. A user can paste anything into the panel, so answer with a refusal instead of
+	// crashing the panel or failing the mutation with an unexpected error.
+	let doc: ReturnType<typeof parseDocument>;
+	try {
+		doc = parseDocument(metadataYaml, {
+			// Pin YAML 1.2 core. Under it `yes`, `no`, `on` and `2026-08-18` stay plain strings. An older
+			// version or a wider schema would read them as booleans and dates, so a stored value would
+			// change meaning. The stringifier below pins the same pair.
+			version: "1.2",
+			schema: "core",
+			// Keep explicit YAML tags unresolved so this strict app-owned format can refuse them.
+			resolveKnownTags: false,
+		});
+	} catch {
+		return Result({ _nay: { message: "Metadata must be valid YAML" } });
+	}
+
+	if (doc.errors.length > 0) {
+		// The library appends the offending lines and a caret under the message. That frame loses its
+		// shape once HTML collapses the whitespace, so keep the first line, which names line and column.
+		const [firstLine] = doc.errors[0]!.message.split("\n");
+		return Result({ _nay: { message: `Metadata must be valid YAML: ${firstLine}` } });
+	}
+
+	const entries: files_metadata_Entry[] = [];
+
+	const root = doc.contents;
+	// An empty panel means the file has no metadata. An empty document parses to a null scalar.
+	if (root === null || (isScalar(root) && root.value === null)) {
+		return Result({ _yay: { entries } });
+	}
+	if (!isMap(root)) {
+		return Result({ _nay: { message: "Metadata must be a YAML map of keys to values" } });
+	}
+
+	for (const pair of root.items) {
+		const keyNode = node_or_null(pair.key);
+		if (!isScalar(keyNode) || keyNode.tag != null) {
+			return Result({ _nay: { message: "Metadata keys must be plain text" } });
+		}
+
+		// A metadata key is always text, but YAML types an unquoted `2026` as a number and `true` as a
+		// boolean. Take the text the user wrote, so a year or an id works without quoting it.
+		const key = typeof keyNode.value === "string" ? keyNode.value : (keyNode.source ?? "");
+
+		const value = scalar_entry_value(node_or_null(pair.value));
+		if (value === null) {
+			return Result({
+				_nay: { message: `Metadata key "${key}" must have a text, number, or true/false value` },
+			});
+		}
+
+		entries.push({ key, value });
+	}
+
+	return files_metadata_validate_entries(entries);
+}
+
+/**
+ * Write the stored map back as the YAML the panel edits. Keys keep the order they were stored in.
+ *
+ * Build the document with `Document.set` instead of a plain object, so a key such as `__proto__`
+ * stays an ordinary key.
+ */
+export function files_metadata_stringify_entries_yaml(entries: files_metadata_Entry[]) {
+	if (entries.length === 0) {
+		return "";
+	}
+
+	// Same version and schema as the parser, so what the panel shows parses back to the same map.
+	const doc = new Document({}, { version: "1.2", schema: "core" });
+	for (const entry of entries) {
+		doc.set(entry.key, entry.value);
+	}
+
+	// Keep every value on one line, so the text the panel shows parses back to the same map.
+	return doc.toString({ lineWidth: 0 });
+}
+
+function metadata_index_value(qualifiedField: string, value: files_metadata_Entry["value"]): files_metadata_Value {
+	if (typeof value === "string") {
+		return { qualifiedField, valueKind: "string", value };
+	}
+	if (typeof value === "number") {
+		return { qualifiedField, valueKind: "number", value };
+	}
+
+	return { qualifiedField, valueKind: "boolean", value };
+}
+
+/**
+ * Build the index docs for one file's metadata: one field doc per key for existence search, and one
+ * value doc per key for value search. A date-like string also gets the maybe_date companion that
+ * range search needs, exactly like frontmatter.
+ */
+export function files_metadata_extract_entries(entries: files_metadata_Entry[]) {
+	const fields: string[] = [];
+	const values = new Map<string, files_metadata_Value>();
+	for (const entry of entries) {
+		const qualifiedField = `${files_metadata_METADATA_FIELD_PREFIX}${entry.key}`;
+		fields.push(qualifiedField);
+		add_value_with_maybe_date(values, metadata_index_value(qualifiedField, entry.value));
+	}
+
+	return { fields, values: [...values.values()] };
+}
+
+// #endregion metadata entries

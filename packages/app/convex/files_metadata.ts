@@ -3,14 +3,31 @@ import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { internalQuery } from "./_generated/server.js";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server.js";
 import app_convex_schema from "./schema.ts";
-import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
-import { should_never_happen } from "../shared/shared-utils.ts";
-import { convex_error } from "../server/convex-utils.ts";
 import {
+	access_control_db_authorize_membership,
+	access_control_db_can_act_on_file_node,
+	access_control_db_filter_readable_file_nodes,
+} from "./access_control.ts";
+import { files_node_require_writable } from "./files_nodes.ts";
+import { organizations_db_get_membership } from "./organizations.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { Result } from "common/errors-as-values-utils.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
+import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { convex_error, v_result } from "../server/convex-utils.ts";
+import {
+	files_metadata_FRONTMATTER_FIELD_PREFIX,
 	files_metadata_frontmatter_exceeds_index_caps,
+	files_metadata_apply_set_and_remove,
+	files_metadata_extract_entries,
+	files_metadata_METADATA_FIELD_PREFIX,
+	files_metadata_parse_entries_yaml,
+	files_metadata_validate_remove_keys,
 	files_metadata_preflight_frontmatter,
+	files_metadata_validate_entries,
+	type files_metadata_Entry,
 	type files_metadata_SearchPlan,
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
@@ -52,7 +69,14 @@ function value_doc_payload(value: files_metadata_Value) {
 	}
 }
 
-export async function files_metadata_db_delete_committed(
+/**
+ * Delete only the frontmatter docs of a file, so re-indexing its content leaves the file metadata
+ * a user or an agent wrote alone. Content materialization calls this before it re-inserts.
+ *
+ * The bound stops at `frontmatter/` because `/` is the next character after `.`, so the range
+ * covers every `frontmatter.` field and nothing else.
+ */
+export async function files_metadata_db_delete_committed_frontmatter(
 	ctx: MutationCtx,
 	args: {
 		organizationId: Doc<"files_metadata_docs">["organizationId"];
@@ -67,7 +91,9 @@ export async function files_metadata_db_delete_committed(
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
 				.eq("sourceKind", "committed")
-				.eq("fileNodeId", args.nodeId),
+				.eq("fileNodeId", args.nodeId)
+				.gte("qualifiedField", files_metadata_FRONTMATTER_FIELD_PREFIX)
+				.lt("qualifiedField", "frontmatter/"),
 		)
 		.collect();
 	await Promise.all(docs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
@@ -604,7 +630,15 @@ export const search = internalQuery({
 		let pendingNodeIds: Array<Id<"files_nodes">> = [];
 		const organizationId = args.organizationId;
 		const workspaceId = args.workspaceId;
-		if (!organizations_is_global_organization_id(organizationId) && !organizations_is_reserved_workspace_id(workspaceId)) {
+		// File metadata is not derived from content, so a pending content edit must not hide it. Every
+		// plan targets one qualified field. So the field prefix alone decides this for the whole query,
+		// and a metadata search never collects the pending overlay.
+		const isMetadataPlan = args.plan.qualifiedField.startsWith(files_metadata_METADATA_FIELD_PREFIX);
+		if (
+			!isMetadataPlan &&
+			!organizations_is_global_organization_id(organizationId) &&
+			!organizations_is_reserved_workspace_id(workspaceId)
+		) {
 			pendingNodeIds = await db_list_pending_file_node_ids(ctx, {
 				organizationId,
 				workspaceId,
@@ -622,7 +656,7 @@ export const search = internalQuery({
 		});
 		const result = await query.paginate({ cursor: args.cursor, numItems: args.numItems });
 
-		// Metadata rows carry the file path, so a hit inside a restricted folder would say the file is
+		// Metadata docs carry the file path, so a hit inside a restricted folder would say the file is
 		// there and what it is called. Each distinct file on the page is looked up once.
 		const pageNodeIds = [...new Set(result.page.map((metadataDoc) => metadataDoc.fileNodeId))];
 		const pageNodes = (await Promise.all(pageNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
@@ -771,22 +805,29 @@ export const get_by_path = internalQuery({
 			}
 		}
 
+		// `sourceKind` describes the frontmatter docs only. A pending content proposal replaces what
+		// the file's own frontmatter says, but it says nothing about the metadata written next to the
+		// file, so those docs are always read from committed and are always current.
 		const sourceKind = pendingUpdate ? ("pending" as const) : ("committed" as const);
+		const committedDocs = await ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", fileNode._id),
+			)
+			.collect();
 		const docs = pendingUpdate
-			? await ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
-					.collect()
-			: await ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("fileNodeId", fileNode._id),
-					)
-					.collect();
+			? [
+					...committedDocs.filter((doc) => doc.qualifiedField.startsWith(files_metadata_METADATA_FIELD_PREFIX)),
+					...(await ctx.db
+						.query("files_metadata_docs")
+						.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+						.collect()),
+				]
+			: committedDocs;
 
 		return {
 			// The overlay can present a moved node here: echo the requested path, not the
@@ -806,3 +847,364 @@ export type files_metadata_get_by_path_Result =
 		: never;
 
 // #endregion get by path
+
+// #region file metadata
+
+const metadata_entry_fields = {
+	key: v.string(),
+	value: v.union(v.string(), v.number(), v.boolean()),
+};
+
+/**
+ * Read the scalar back out of one value doc.
+ *
+ * The three value fields are optional in the schema because one doc fills only its own field.
+ * Both writers always fill it, so a doc that fills none is a bug and not a state to recover from.
+ */
+function read_entry_value(doc: Doc<"files_metadata_docs">) {
+	if (doc.valueKind === "string" && doc.stringValue !== undefined) {
+		return doc.stringValue;
+	}
+	if (doc.valueKind === "number" && doc.numberValue !== undefined) {
+		return doc.numberValue;
+	}
+	if (doc.valueKind === "boolean" && doc.booleanValue !== undefined) {
+		return doc.booleanValue;
+	}
+
+	const errorMessage = "metadata value doc has no value for its valueKind";
+	const errorData = {
+		metadataDocId: doc._id,
+		fileNodeId: doc.fileNodeId,
+		qualifiedField: doc.qualifiedField,
+		valueKind: doc.valueKind,
+	};
+	console.error(errorMessage, errorData);
+	throw should_never_happen(errorMessage, errorData);
+}
+
+/**
+ * Collect every `metadata.` doc of one file. The bound stops at `metadata/` because `/` is the
+ * next character after `.`, so the range covers every metadata field and no frontmatter field.
+ */
+async function db_query_metadata_docs(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Doc<"files_metadata_docs">["organizationId"];
+		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
+		fileNodeId: Id<"files_nodes">;
+	},
+) {
+	return await ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("sourceKind", "committed")
+				.eq("fileNodeId", args.fileNodeId)
+				.gte("qualifiedField", files_metadata_METADATA_FIELD_PREFIX)
+				.lt("qualifiedField", "metadata/"),
+		)
+		.collect();
+}
+
+/**
+ * Rebuild one file's metadata map from its index docs.
+ *
+ * Only value docs carry a value. A field doc exists so an existence search can find the key. A
+ * `maybe_date` doc is a second copy of a date-like string that range search needs. Both would
+ * repeat a key that a value doc already returned, so both are filtered out here. `entryIndex`
+ * restores the order the keys were written in, because the index sorts them by key.
+ */
+async function db_read_metadata(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Doc<"files_metadata_docs">["organizationId"];
+		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
+		fileNodeId: Id<"files_nodes">;
+	},
+) {
+	const docs = await db_query_metadata_docs(ctx, args);
+
+	return docs
+		.filter((doc) => doc.docKind === "value" && doc.valueKind !== "maybe_date")
+		.sort((left, right) => (left.entryIndex ?? 0) - (right.entryIndex ?? 0))
+		.map((doc) => ({
+			key: doc.qualifiedField.slice(files_metadata_METADATA_FIELD_PREFIX.length),
+			value: read_entry_value(doc),
+		}));
+}
+
+/**
+ * Replace one file's metadata in a single transaction: delete the `metadata.` docs it has now,
+ * then insert one field doc and one value doc per key. The file's frontmatter docs are untouched,
+ * so a Markdown file keeps both sources side by side.
+ *
+ * Copy `path`, `treePath` and `archiveOperationId` from the node like the frontmatter writers do.
+ * Search filters on those fields, so a doc without them would be invisible to a path-scoped or
+ * archive-scoped search until the next rename.
+ */
+async function db_write_metadata(
+	ctx: MutationCtx,
+	args: {
+		fileNode: Doc<"files_nodes">;
+		entries: files_metadata_Entry[];
+	},
+) {
+	const existingDocs = await db_query_metadata_docs(ctx, {
+		organizationId: args.fileNode.organizationId,
+		workspaceId: args.fileNode.workspaceId,
+		fileNodeId: args.fileNode._id,
+	});
+	await Promise.all(existingDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
+
+	const extracted = files_metadata_extract_entries(args.entries);
+	// `fields` is built in entry order, so a field's position in it is the entry's position in the
+	// map the user typed.
+	const entryIndexByField = new Map(extracted.fields.map((qualifiedField, index) => [qualifiedField, index]));
+
+	const scope = {
+		organizationId: args.fileNode.organizationId,
+		workspaceId: args.fileNode.workspaceId,
+		fileNodeId: args.fileNode._id,
+		sourceKind: "committed" as const,
+		path: args.fileNode.path,
+		treePath: args.fileNode.treePath,
+		archiveOperationId: args.fileNode.archiveOperationId,
+	};
+	await Promise.all([
+		...extracted.fields.map((qualifiedField) =>
+			ctx.db.insert("files_metadata_docs", {
+				...scope,
+				qualifiedField,
+				docKind: "field" as const,
+			}),
+		),
+		...extracted.values.map((value) =>
+			ctx.db.insert("files_metadata_docs", {
+				...scope,
+				qualifiedField: value.qualifiedField,
+				entryIndex: entryIndexByField.get(value.qualifiedField),
+				...value_doc_payload(value),
+			}),
+		),
+	]);
+}
+
+/**
+ * The write door for file metadata.
+ *
+ * Metadata uses the same `content.write` permission as the file's content, because metadata is part
+ * of what the file says. Keys have no owner. Anybody who may write the file may set any key, so
+ * there is no second permission to check. A read-only file refuses metadata writes too, exactly
+ * like its content.
+ */
+async function db_authorize_metadata_write(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		fileNodeId: Id<"files_nodes">;
+	},
+) {
+	const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
+	// Only files carry metadata, and a node from another workspace is not this member's to see, so
+	// both answer "Not found" instead of naming what exists.
+	if (
+		!fileNode ||
+		fileNode.organizationId !== args.membership.organizationId ||
+		fileNode.workspaceId !== args.membership.workspaceId ||
+		fileNode.kind !== "file"
+	) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth: args.userAuth,
+		membership: args.membership,
+		permission: "content.write",
+		fileNode,
+	});
+	if (authorized._nay) {
+		return authorized;
+	}
+
+	const writable = files_node_require_writable(fileNode);
+	if (writable._nay) {
+		return writable;
+	}
+
+	return Result({ _yay: fileNode });
+}
+
+export const get_entries = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		fileNodeId: v.id("files_nodes"),
+	},
+	returns: v.array(v.object(metadata_entry_fields)),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return [];
+		}
+
+		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
+		if (
+			!fileNode ||
+			fileNode.organizationId !== membership.organizationId ||
+			fileNode.workspaceId !== membership.workspaceId
+		) {
+			return [];
+		}
+
+		// Ask about the node, not the workspace, so a file inside a restricted folder is refused here
+		// even for somebody the workspace lets read everything else.
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+			fileNode,
+		});
+		if (authorized._nay) {
+			return [];
+		}
+
+		return await db_read_metadata(ctx, {
+			organizationId: fileNode.organizationId,
+			workspaceId: fileNode.workspaceId,
+			fileNodeId: fileNode._id,
+		});
+	},
+});
+
+export const set_entries = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		fileNodeId: v.id("files_nodes"),
+		metadataYaml: v.string(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const authorized = await db_authorize_metadata_write(ctx, {
+			userAuth,
+			membership,
+			fileNodeId: args.fileNodeId,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
+		// The panel parses the same text before it calls, so the user normally sees a mistake without
+		// spending a write. This is the real door: any other caller can send anything.
+		const parsed = files_metadata_parse_entries_yaml(args.metadataYaml);
+		if (parsed._nay) {
+			return parsed;
+		}
+
+		await db_write_metadata(ctx, { fileNode: authorized._yay, entries: parsed._yay.entries });
+
+		return Result({ _yay: null });
+	},
+});
+
+/**
+ * The agent's write door: set some keys, remove some others, leave the rest alone.
+ *
+ * The agent works with paths, so the node is resolved the same way its file reads resolve one. It
+ * has no membership doc, so permissions are checked against the user it acts for, exactly like the
+ * agent's content writes.
+ */
+export const update_entries_by_path = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		path: v.string(),
+		set: v.array(v.object(metadata_entry_fields)),
+		remove: v.array(v.string()),
+	},
+	returns: v_result({ _yay: v.object({ path: v.string(), entries: v.array(v.object(metadata_entry_fields)) }) }),
+	handler: async (ctx, args) => {
+		const fileNode = await files_db_get_visible_node_by_path(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			path: args.path,
+			overlayUserId: args.userId,
+		});
+		if (!fileNode || fileNode.kind !== "file") {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		if (
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNode,
+				permission: "content.write",
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		const writable = files_node_require_writable(fileNode);
+		if (writable._nay) {
+			return writable;
+		}
+
+		const currentEntries = await db_read_metadata(ctx, {
+			organizationId: fileNode.organizationId,
+			workspaceId: fileNode.workspaceId,
+			fileNodeId: fileNode._id,
+		});
+		// Check the removed keys before applying them. A key that cannot exist would remove nothing, and
+		// the call would still report success, so the caller would never learn it made a mistake.
+		const removeKeys = files_metadata_validate_remove_keys(args.remove);
+		if (removeKeys._nay) {
+			return removeKeys;
+		}
+
+		const entries = files_metadata_apply_set_and_remove(currentEntries, { set: args.set, remove: args.remove });
+
+		// The map the file ends up with is what gets checked, not just the keys this call touches:
+		// the caps are about the whole map.
+		const validated = files_metadata_validate_entries(entries);
+		if (validated._nay) {
+			return validated;
+		}
+
+		await db_write_metadata(ctx, { fileNode, entries: validated._yay.entries });
+
+		return Result({ _yay: { path: fileNode.path, entries: validated._yay.entries } });
+	},
+});
+
+// #endregion file metadata

@@ -53,6 +53,7 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
 	ai_chat_tool_create_bash,
 	ai_chat_tool_create_edit_file,
+	ai_chat_tool_create_set_file_metadata,
 	ai_chat_tool_create_web_search,
 	ai_chat_tool_create_execute_code,
 	ai_chat_tool_create_image_generation,
@@ -133,6 +134,7 @@ function ai_chat_system_prompt(args: {
 	organizationName: string;
 	workspaceName: string;
 	supportsImageGeneration: boolean;
+	canWriteFiles: boolean;
 }) {
 	const HOME = "/home/cloud-usr";
 	const appMountPath = `${HOME}/w`;
@@ -147,6 +149,13 @@ function ai_chat_system_prompt(args: {
 		"If a failed Bash command prints a `Try:` command that directly matches the user's request, run that `Try:` command next instead of only reporting the failure.",
 		"Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
 		"Bash app-file writes and `edit_file` create pending review changes for the user to apply; your own later reads (Bash readers, `search`, and the file tools) see them as already applied.",
+		// Ask mode has no write tools, so telling it to call this one would only produce a promise the
+		// model cannot keep. `edit_file` is named above as a description, not as an instruction.
+		...(args.canWriteFiles
+			? [
+					"Use `set_file_metadata` to set or remove keys in the flat key-value metadata stored next to a file. It works on every file kind, uploads included, it applies right away with nothing for the user to accept, and it does not change the file's content. Read it back with `meta get <file>`, find files that have a key with `meta search --where '{\"exists\":\"metadata.<key>\"}'`, and files with a key and a value with `meta search --where '{\"eq\":[\"metadata.<key>\",\"<value>\"]}'`.",
+				]
+			: []),
 		"Use tools to clarify uncertain reads, searches, and path lookups instead of inventing content or paths.",
 		"Use `web_search` for current public facts, official documentation, release notes, news, and other information outside this organization when file tools are not enough.",
 		"Summarize `web_search` highlight snippets in your own words.",
@@ -436,6 +445,7 @@ function build_agent_configuration(input: {
 			allowDbFilesMkdir: modeId === "agent",
 		}),
 		edit_file: ai_chat_tool_create_edit_file(ctx, toolCtxData),
+		set_file_metadata: ai_chat_tool_create_set_file_metadata(ctx, toolCtxData),
 		web_search: ai_chat_tool_create_web_search(),
 		execute_code: ai_chat_tool_create_execute_code(ctx, toolCtxData),
 	};
@@ -474,7 +484,7 @@ function build_agent_configuration(input: {
 
 	const activeTools = Object.keys(tools) as Array<keyof typeof validationTools>;
 
-	const systemPrompt = ai_chat_system_prompt({ ...ctxData, supportsImageGeneration });
+	const systemPrompt = ai_chat_system_prompt({ ...ctxData, supportsImageGeneration, canWriteFiles: modeId !== "ask" });
 
 	return {
 		systemPrompt: modeId === "ask" ? `${systemPrompt}\n${ASK_MODE_SYSTEM_PROMPT_SUFFIX}` : systemPrompt,
@@ -2577,6 +2587,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const build_agent_configuration_expected_tool_keys = [
 		"bash",
 		"edit_file",
+		"set_file_metadata",
 		"web_search",
 		"execute_code",
 		"image_generation",
@@ -2676,6 +2687,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(configuration.activeTools).toEqual([
 				"bash",
 				"edit_file",
+				"set_file_metadata",
 				"web_search",
 				"execute_code",
 				"image_generation",
@@ -2700,6 +2712,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(Object.keys(configuration.tools)).toEqual(["bash", "web_search", "execute_code", "image_generation"]);
 			expect(configuration.activeTools).toEqual(["bash", "web_search", "execute_code", "image_generation"]);
 			expect("edit_file" in configuration.tools).toBe(false);
+			expect("set_file_metadata" in configuration.tools).toBe(false);
 
 			// The list used to validate messages still holds every tool. It has to accept the
 			// `edit_file` parts that an earlier agent-mode turn stored in the same thread.
@@ -2820,6 +2833,22 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(configuration.systemPrompt).toContain(
 				"Ask mode is for reading, searching, and answering. Durable folder and file changes are handled in Agent mode; /tmp scratch is durable per chat thread but is not app file storage.",
 			);
+		});
+
+		test("does not tell Ask mode to call set_file_metadata", () => {
+			const { ctx } = makeCtx();
+			const configuration = build_agent_configuration({
+				ctx,
+				ctxData: build_agent_configuration_test_ctx_data,
+				args: {
+					modelId: build_agent_configuration_test_model_id,
+					modeId: "ask",
+				},
+				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+			});
+
+			expect(Object.keys(configuration.tools)).not.toContain("set_file_metadata");
+			expect(configuration.systemPrompt).not.toMatch(/Use `set_file_metadata`/);
 		});
 
 		test("describes bash as the app file shell without synonym rules", () => {

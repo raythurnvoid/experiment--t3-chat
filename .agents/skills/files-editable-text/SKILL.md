@@ -124,4 +124,5 @@ Exact content uses `files_text_chunks.textChunk` for both document classes. Sear
 - `../files-agent-pending-updates/SKILL.md` — the paged pending-state pipeline that door 2 protects.
 - `../convex-admin-ops/SKILL.md` — the operator runbook for the markers and the repair action.
 - `../ai-chat-agent/SKILL.md` — the agent tools that read and write both classes.
+- `../file-metadata/SKILL.md` — the flat key-value map stored next to a file. It is not part of the document, so neither write door sees it, but it shares the read-only lock and the `content.write` permission.
 - `../public-api/SKILL.md` — the public routes; `/files/write` stays Markdown-only by contract.

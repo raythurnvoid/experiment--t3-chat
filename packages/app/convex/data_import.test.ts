@@ -624,4 +624,47 @@ describe("data_import.verify_metadata", () => {
 			{ path: "/emails/thread/other.md", metadataDocs: null },
 		]);
 	});
+
+	// The same table also holds the `metadata.` map a user or an agent wrote next to the file. If
+	// those counted, this check would pass for a file whose frontmatter never indexed.
+	test("counts frontmatter docs only, not the file metadata written next to the file", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+
+		await t.run(async (ctx) => {
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				parentId: files_ROOT_ID,
+				path: "/emails/thread/message.md",
+				kind: "file",
+				now: Date.now(),
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+
+			const node = await ctx.db.get("files_nodes", created._yay);
+			for (const qualifiedField of ["frontmatter.subject", "metadata.created-by", "metadata.status"]) {
+				await ctx.db.insert("files_metadata_docs", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					fileNodeId: created._yay,
+					sourceKind: "committed",
+					path: "/emails/thread/message.md",
+					treePath: node!.treePath,
+					qualifiedField,
+					docKind: "field",
+				});
+			}
+		});
+
+		const results = await t.query(internal.data_import.verify_metadata, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			paths: ["/emails/thread/message.md"],
+		});
+		expect(results).toEqual([{ path: "/emails/thread/message.md", metadataDocs: 1 }]);
+	});
 });

@@ -79,7 +79,7 @@ import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_authorize_node, access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { files_metadata_db_delete_committed, files_metadata_db_insert_committed } from "./files_metadata.ts";
+import { files_metadata_db_delete_committed_frontmatter, files_metadata_db_insert_committed } from "./files_metadata.ts";
 import {
 	files_metadata_frontmatter_exceeds_index_caps,
 	files_metadata_preflight_frontmatter,
@@ -313,7 +313,7 @@ export async function db_replace_file_chunks(
 					.eq("fileNodeId", args.nodeId),
 			)
 			.collect(),
-		files_metadata_db_delete_committed(ctx, args),
+		files_metadata_db_delete_committed_frontmatter(ctx, args),
 	]).then(([plainTextChunkDocs, textChunkDocs]) =>
 		Promise.all([
 			...plainTextChunkDocs.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),
