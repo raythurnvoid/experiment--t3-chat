@@ -2095,7 +2095,7 @@ describe("r2 asset content", () => {
 		);
 		expect(docs.asset?.processingWorkId).toBeNull();
 		// The over-cap frontmatter is committed as chunk content but never indexed.
-		expect(docs.metadataDocs).toHaveLength(0);
+		expect(docs.metadataDocs.filter((doc) => doc.qualifiedField.startsWith("frontmatter."))).toHaveLength(0);
 		// Only stored-blob exits dispatch the plugin upload event. This publish is a
 		// successful conversion, so it keeps the suppression every other conversion has.
 		expect(docs.pluginRun).toBeNull();
@@ -2191,7 +2191,7 @@ describe("r2 asset content", () => {
 			files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
 		);
 		expect(docs.asset?.processingWorkId).toBeNull();
-		expect(docs.metadataDocs).toHaveLength(0);
+		expect(docs.metadataDocs.filter((doc) => doc.qualifiedField.startsWith("frontmatter."))).toHaveLength(0);
 	});
 
 	test("falls back to the stored blob on invalid UTF-8 and dispatches the plugin upload event", async () => {

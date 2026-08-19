@@ -26,7 +26,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Comments tab: `#app_file_editor_sidebar_tabs_comments`.
 - Agent tab: `#app_file_editor_sidebar_tabs_agent`.
 - Pending tab: `#app_file_editor_sidebar_tabs_pending`.
-- Metadata tab: `#app_file_editor_sidebar_tabs_metadata` (file nodes only; a folder has no Metadata tab).
+- There is no Metadata tab. The key-value map moved into the Properties modal; see "File Properties Modal" below.
 
 ### File Node View
 
@@ -35,7 +35,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Comments region: `getByRole("complementary", { name: "Document comments" })`.
 - Diff editor root: `[aria-label="File diff editor"]`.
 - Review changes button: `[data-testid="review-changes-button"]`.
-- Metadata panel: `getByRole("region", { name: "File metadata" })`; its editor is Monaco with `aria-label="File metadata YAML"`, and its Save button is `getByRole("button", { name: "Save metadata" })`.
+- Properties button in the breadcrumb: `getByRole("button", { name: /^Properties of / })`. It still carries `data-file-read-only` with the node's lock state.
 
 ### Sidebar And Folder Browser
 
@@ -395,18 +395,65 @@ Selectors and a proven flow for the media embeds in the rich text editor (verifi
 - `Embed file` opens `.FileEditorRichTextMediaEmbedPicker` (a `MySearchSelect` anchored to the caret): type to filter by path, Enter inserts the highlighted row's `bonobo-file://` reference, Escape closes and refocuses the editor. Rows are `-item-name` / `-item-path` spans.
 - `Image from URL` / `Video from URL` use `window.prompt` — stub it in `evaluate` (`window.prompt = () => url`) before triggering the item; a non-http(s) answer must produce the alert (stub `window.alert` to capture) and insert nothing.
 
-### File Metadata Panel
+### File Properties Modal
 
-The flat key-value map stored next to a file, edited as YAML (verified 2026-08-18). Spec: `.agents/skills/file-metadata/SKILL.md`.
+One dialog holding the file's facts, its read-only lock, and the flat key-value map edited as YAML
+(verified 2026-08-18). Spec: `.agents/skills/file-metadata/SKILL.md` and
+`.agents/skills/files-read-only/SKILL.md`. It replaced both the sidebar `Metadata` tab and the old
+`Read-only settings` modal, so a recipe that clicks either of those is out of date.
 
-- Open a file, then click the `Metadata` tab (`#app_file_editor_sidebar_tabs_metadata`). A folder shows no such tab, so a run that lands on a folder finds nothing to click.
-- The editor is Monaco. Synthetic keyboard input does not reach it. Set the text through the editor handle from page context: `monaco.editor.getEditors().find((e) => e.getRawOptions().ariaLabel === "File metadata YAML").setValue(yaml)`. Get `monaco` from `await import("monaco-editor")` or from the editor instance the app already mounted.
-- `Save metadata` stays disabled until the draft differs from the stored map, so a `setValue` with the same text leaves the button disabled — that is correct, not a broken run.
-- The status line is one element: `role="status"` for `Metadata saved`, `role="alert"` for a refusal or a conflict. Read it by role, not by text position.
-- A refusal to check: `owner:\n  name: nested\n` is refused in the panel before any mutation runs, so the network stays quiet.
-- Read the stored map back from Convex instead of trusting the panel: `app_convex.query(app_convex_api.files_metadata.get_entries, { membershipId, fileNodeId })` from page context returns the entries in stored order.
-- Metadata works on uploads. Open a PDF node and the Metadata tab is there, with the same panel.
-- Agent side: ask the chat agent to run `meta get <file>` and to call `set_file_metadata`. The tool takes bare keys (`status`), and the model tends to paste the bash mount path — both are covered by the tool description now, but a run that fails with `Not found` is usually the path, not permissions.
+- Two ways in: right-click a sidebar row (or click its ⋮ button, `getByRole("button", { name: "More actions for <name>" })`)
+  and pick `Properties`, or click the breadcrumb button, `getByRole("button", { name: /^Properties of / })`.
+- **Two dialogs are mounted**, the sidebar's and the file view's, and the closed one keeps its class
+  and its `data-files-properties-modal` attribute at `display: none`. Scope every query to
+  `[data-files-properties-modal][data-open="true"]`. A plain `.FilesPropertiesModal` resolves to the
+  hidden one first, and `waitForSelector` then times out on a dialog that is plainly on screen.
+- The read-only control is a `MyCheckboxButton`, whose real `input` is 1px and covered. Clicking
+  `getByRole("checkbox")` fails with `<div class="FilesPropertiesModalReadOnly"> intercepts pointer
+  events`. Click `.FilesPropertiesModalReadOnly-checkbox` (the label) and read the state from the
+  input.
+- The dialog holds three sections, reachable by their region names: `General` (a `<dl>` of facts),
+  `Protection` (the read-only checkbox), and `Metadata` (the YAML editor). A folder gets
+  the first two only — `set_entries` refuses a non-file, so there is no editor to find.
+- Read-only is now one checkbox, `getByRole("checkbox")` inside the dialog. It writes as soon as it
+  is clicked; there is no Save for it. The line under the label says which lock is in force, and it
+  is the only thing that distinguishes the four states, so assert on that text, not on the tick
+  alone. Under an inherited lock the box is `disabled` and two buttons appear instead:
+  `Manage /<path>` and `Also lock here` — but only when the caller can manage the lock. A member
+  without `content.permissions.manage` gets the disabled box and no buttons at all.
+- The checkbox row is a `.MyButton`-styled `<label>`, so it inherits `justify-content: center` and
+  `white-space: nowrap`. Only `white-space` is overridden. `justify-content: center` is still in
+  force and is made harmless by `flex: 1` on `.FilesPropertiesModalReadOnly-text`, which makes the
+  text fill the row so there is no free space left to centre. A regression shows as
+  the checkbox and its text floating in the middle of the outlined card: measure
+  `.MyCheckboxButton-box` left minus `.FilesPropertiesModalReadOnly-checkbox` left, which must equal
+  the 12px padding and not roughly half the row.
+- The editor is Monaco. Synthetic keyboard input does not reach it. Set the text through the editor
+  handle from page context:
+  `monaco.editor.getEditors().find((e) => e.getRawOptions().ariaLabel === "File metadata YAML").setValue(yaml)`.
+  Get `monaco` with `await import("/@id/monaco-editor")` — the bare specifier `"monaco-editor"` does not
+  resolve in page context under the Vite dev server, it throws `Failed to resolve module specifier`.
+- Monaco inside this dialog hoists nothing, unlike the file editors. Its suggest and hover widgets
+  clip at the editor box on purpose — see the layering note in `known-hazards.md`. Do not "fix" a
+  clipped widget by pointing `overflowWidgetsDomNode` at `#app_monaco_hoisting_container`.
+- On a read-only file, or without write permission, the button carries `aria-disabled` and
+  `MyButton-state-disabled` instead of the `disabled` property, and the status line above it says
+  why. Read `aria-disabled` there, not `disabled`.
+- `Save metadata` stays disabled until the draft differs from the stored map, so a `setValue` with
+  the same text leaves the button disabled — that is correct, not a broken run.
+- The status line is one element: `role="status"` for `Metadata saved`, `role="alert"` for a
+  refusal or a conflict. Read it by role, not by text position.
+- A refusal to check: `owner:\n  name: nested\n` is refused in the dialog before any mutation runs,
+  so the network stays quiet.
+- Closing throws an unsaved draft away. The footer shows `Unsaved metadata will be lost.` while a
+  draft is dirty; there is no confirm step.
+- Read the stored map back from Convex instead of trusting the dialog:
+  `app_convex.query(app_convex_api.files_metadata.get_entries, { membershipId, fileNodeId })` from
+  page context returns the entries in stored order.
+- Properties work on uploads. Open a PDF node and the same dialog is there.
+- Agent side: ask the chat agent to run `meta get <file>` and to call `set_file_metadata`. The tool
+  takes bare keys (`status`), and the model tends to paste the bash mount path — both are covered by
+  the tool description now, but a run that fails with `Not found` is usually the path, not permissions.
 
 ## Script Pattern
 

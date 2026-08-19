@@ -69,28 +69,45 @@ await state.page.getByTestId('composer-plus-btn').click()
 
 Observed accessible label: `Add files and more`.
 
-2. Select the `Create image` tool from the menu:
+2. **Fill the prompt first.** `fill()` replaces everything in the composer, and the image-mode marker
+   lives inside the composer text (see step 4), so filling after selecting the tool wipes it:
 
 ```js
-await state.page.getByRole('menuitemradio', { name: 'Create image' }).click()
+await state.page.getByRole('textbox', { name: 'Chat with ChatGPT' }).fill(prompt)
+```
+
+3. Select the `Create image` tool from the menu. The menu items carry **no ARIA role**, so match on
+   the class and the text:
+
+```js
+await state.page.locator('div.__menu-item').filter({ hasText: 'Create image' }).first().click()
 ```
 
 You must explicitly select `Create image` in this menu. This is the step that forces the model to return a generated image. If you skip it, ChatGPT answers the prompt with text instead, even when the prompt clearly asks for an image, and you get a written reply such as a `Verification Report Image` heading with no actual image to download.
 
-In the ChatGPT composer plus menu, the relevant item is the `Create image` tool (a `menuitemradio` labeled `Create image`). Select it before submitting any prompt.
+There is no `[role=menu]` either, so to check that the menu opened, read `aria-expanded` on
+`[data-testid=composer-plus-btn]` rather than looking for a menu role.
 
-3. Confirm the composer changed into image mode.
-   - The textbox remains `getByRole('textbox', { name: 'Chat with ChatGPT' })`.
-   - The placeholder text changes to `Describe or edit an image`.
-   - A selected tool chip appears as `role=button[name="Image, click to remove"]`.
-   - The aspect ratio control appears as `Choose image aspect ratio`.
-
-Do not submit the prompt until image mode is visibly active. If the selected tool chip, image placeholder, or aspect-ratio control is missing, open the plus menu again and select `Create image` again.
-
-4. Fill the prompt and submit:
+4. Confirm the composer changed into image mode. Image mode shows as **text appended inside the
+   composer's contenteditable**, at the very end — not as a chip button:
 
 ```js
-await state.page.getByRole('textbox', { name: 'Chat with ChatGPT' }).fill(prompt)
+const active = await state.page.getByRole('textbox', { name: 'Chat with ChatGPT' }).evaluate(
+  (node) => /Create image/.test(node.innerText),
+)
+```
+
+Do not submit the prompt until that check passes. If it fails, open the plus menu and select
+`Create image` again.
+
+Older signals that no longer exist (verified gone 2026-08-18): the `Image, click to remove` chip
+button, the `Describe or edit an image` placeholder, and the `Choose image aspect ratio` control.
+A guard written on those reads image mode as absent while it is genuinely on, and blocks the send.
+Ask for the aspect ratio in the prompt text instead — a 16:9 request came back as 1672x941.
+
+5. Submit:
+
+```js
 await state.page.getByTestId('send-button').click()
 ```
 
@@ -163,7 +180,14 @@ The fullscreen dialog exposes:
 - `button[name="Show more"]`
 - `data-testid="fullscreen-shell-body"` with the final image
 
-First try a normal browser download with the `Save` button:
+Prefer the Blob route below. `download.saveAs()` fails in extension mode even under a Windows relay:
+it throws `ENOENT … copyfile 'C:\…\Temp\playwright-artifacts-…\<uuid>' -> <dest>`, and writing into
+`os.tmpdir()` first does not help, because the file that is missing is the *source* artifact, not
+the destination. The download itself still succeeds and lands in `C:\Users\rt0\Downloads\<suggestedFilename>`,
+so the reliable recipe is: trigger the Blob download, then `Move-Item` the file out of `~/Downloads`
+into the dated personal-AI folder (verified byte-exact against `blob.size`, 2026-08-18).
+
+The `Save` button route, for a relay where `saveAs` does work:
 
 ```js
 const path = require('node:path')

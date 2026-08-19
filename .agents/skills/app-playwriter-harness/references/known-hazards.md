@@ -168,8 +168,8 @@ Two caveats: only rendered lines exist in the DOM (fine for short fixtures, wron
 - Monaco can take well over 20s to mount on the `/files` route. A check at ~9s reports `monaco visible: false` for an editor that is merely still loading. Do NOT raise `--timeout` to cover this (keep it under 5000ms per the rule above) — poll `.monaco-editor` across several short execute calls and observe between them.
 - `context.grantPermissions([...], { origin })` fails in extension mode with `No tab found for method Browser.grantPermissions`, but `navigator.clipboard.writeText` from `page.evaluate` still succeeds. In a headless direct-CDP session `grantPermissions` works, and `clipboard.readText` needs it.
 - Monaco applies an app-driven `executeEdits` write slightly after the call returns, so a pane read in the same execute call can still show the old text. Assert the new text in the next observe step instead of treating the first read as a failure.
-- `auditAccessibility` always flags Monaco's own input host. `div.native-edit-context` (role `textbox`) is reported as a small target (measured 436x19 for a 220px-tall editor) and as covered by the `.view-line` above it. Both are Monaco internals, not app bugs: the real hit target is the editor box around them. Discount them the same way as `.MyCheckboxButton-control`, and read `controlCount` to check the audit found the panel at all (verified 2026-08-18 on the Metadata panel: controlCount 2, no unlabeled controls).
-- **Monaco traps Tab by default, which is a keyboard trap in any small embedded editor.** A user who tabs into the editor can never tab out to the Save button. The fix is `tabFocusMode: true` in the editor options (the Metadata panel sets it; verified 2026-08-18). Include a Tab-out check whenever a route embeds Monaco next to other controls. The plugin configuration YAML editor still has this trap.
+- `auditAccessibility` always flags Monaco's own input host. `div.native-edit-context` (role `textbox`) is reported as a small target (measured 436x19 for a 220px-tall editor) and as covered by the `.view-line` above it. Both are Monaco internals, not app bugs: the real hit target is the editor box around them. Discount them the same way as `.MyCheckboxButton-control`, and read `controlCount` to check the audit found the panel at all (verified 2026-08-18 on the Properties modal's Metadata section: controlCount 2, no unlabeled controls).
+- **Monaco traps Tab by default, which is a keyboard trap in any small embedded editor.** A user who tabs into the editor can never tab out to the Save button. The fix is `tabFocusMode: true` in the editor options (the Properties modal's Metadata editor sets it; verified 2026-08-18). Include a Tab-out check whenever a route embeds Monaco next to other controls. The plugin configuration YAML editor still has this trap.
 
 ## Diff editor
 
@@ -363,3 +363,99 @@ So when a browser check needs a deployed function to hit a recursion limit, esca
 against the deployment and read the durable state, instead of reusing the depth that failed in the
 test. Reading `convex data files_nodes` for the marker fields separated the two outcomes here; the
 `convex logs` warning line named the exact code path.
+
+## A modal popover is the wrong home for hoisted Monaco widgets
+
+`MyModalPopover` is an Ariakit dialog with `modal` and `portal`, and it sets `contain: content`. Two
+things follow, and both bite a Monaco editor placed inside it.
+
+The app-wide `#app_monaco_hoisting_container` is outside the dialog, so Ariakit marks it inert and
+aria-hidden while the dialog is open. Widgets hoisted there paint behind the dialog and refuse the
+keyboard. Moving the container inside the dialog does not fix it either: `contain: paint` makes the
+popover the containing block for `position: fixed`, and `fixedOverflowWidgets` writes viewport
+coordinates, so the widget lands at the wrong place by the popover's own offset.
+
+So an editor inside a modal hoists nothing. `files-properties-modal.tsx` omits both
+`overflowWidgetsDomNode` and `fixedOverflowWidgets` on purpose, and its suggest and hover widgets
+clip at the editor box. Do not "fix" a clipped widget there by pointing it at the app container.
+Verified by reading the layering 2026-08-18; the file editors outside modals still hoist normally.
+
+## chatgpt.com composer: the image-mode selectors in the skill are stale
+
+Hit 2026-08-18 while driving the `chatgpt-image-generator` skill. Three of its documented signals no
+longer exist, and the guard built on them blocks sends that would have worked:
+
+- The plus-menu entries carry **no ARIA role at all**, so `getByRole('menuitemradio', { name: 'Create image' })`
+  matches nothing. Use `page.locator("div.__menu-item").filter({ hasText: "Create image" }).first()`.
+  There is no `[role=menu]` either — probe `[data-testid=composer-plus-btn]`'s `aria-expanded` to
+  tell whether the menu opened.
+- Image mode shows as **text inside the contenteditable**, at the very end, not as a composer chip
+  button. Check `/Create image/.test(contenteditable.innerText)`. The skill's three confirmations
+  (chip button, `Describe or edit an image` placeholder, aspect-ratio control) all read as absent
+  while image mode is genuinely on.
+- `fill()` wipes that inline chip. Fill the prompt **first**, then open the plus menu and pick
+  `Create image`, which appends the chip at the end.
+- There is no aspect-ratio control any more. Ask for the ratio in the prompt text; a 16:9 request
+  came back as 1672x941.
+- `snapshot()` first is expensive there: the conversation sidebar floods any button enumeration with
+  dozens of `Pin <conversation>` entries. Scope probes to `document.querySelector("form")`.
+
+## `download.saveAs()` fails in extension mode even under a Windows relay
+
+Extends the download entry above. `saveAs` throws `ENOENT … copyfile 'C:\…\Temp\playwright-artifacts-…\<uuid>' -> <dest>`,
+and writing into `os.tmpdir()` first does not help, because the missing file is the *source*
+artifact, not the destination. The download itself does succeed and lands in `C:\Users\rt0\Downloads\<suggestedFilename>`
+(verified byte-exact against `blob.size` twice, 2026-08-18). The reliable recipe is a page-context
+Blob download followed by `Move-Item` from `~/Downloads`.
+
+## Harness helpers follow `bindOpenTab`, not a hand-assigned `state.page`
+
+A runner that picks its own tab with `state.page = context.pages().find(...)` drives Playwright
+fine, but every `state.appPlaywriterHarness.*` helper still targets whatever tab was bound last.
+`auditAccessibility` then fails with `page.waitForSelector: Timeout 15000ms exceeded` on a selector
+that is plainly on screen — and it fails the same way on `.FilesSidebar`, so the message points at
+the selector while the real cause is the binding. Hit 2026-08-18.
+
+Call `await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/files" })` first; it sets
+`state.page` too, so the hand assignment is not needed. When a helper times out on a selector you
+can see in a screenshot, re-probe it against a selector that certainly exists (`.FilesSidebar`)
+before editing the selector — a helper that fails on both is not a selector problem.
+
+## `path.resolve` in a runner resolves against the relay's repo, not yours
+
+The relay process is shared across repositories, and whichever one started it owns its working
+directory. A runner that builds a fixture path with `path.resolve(".agents/skills/...")` then points
+at the *other* repo — hit 2026-08-18 as
+`ENOENT … 'C:\Users\rt0\Documents\workspace\rt0\personal-market-radar\.agents\skills\…'` while
+running from `t3-chat`. Write fixture paths as absolute literals. This is the same relay-ownership
+root cause as the WSL entry above, in a form that survives a Windows-only relay, so `session list`
+showing a clean Windows CWD does not rule it out.
+
+## Turning a CSS declaration off in the live page only proves anything if the content still fits
+
+Toggling `element.style.*` inside `page.evaluate` is the fastest way to find which declaration
+actually fixes a layout, but the content you measure with decides the answer. Hit 2026-08-18 on the
+file Properties dialog: the probe replaced the checkbox description with a long sentence so it would
+wrap, then reported that removing `justify-content`, `flex: 1` and `width: 100%` all changed nothing.
+That was true and useless — a text block wider than the row clamps to the row in every variant, so
+free space on the line is zero and there is nothing left for the alignment properties to do.
+
+Measure alignment with the content the user really sees, and only swap in longer text for the
+wrapping question. Re-run with the short string and the same probe separated the three declarations
+immediately: `width: 100%` was dead, `justify-content: start` was redundant, and `flex: 1` on the
+text was the whole fix. Toggle one declaration at a time and include an all-off variant — if the
+all-off variant does not reproduce the original bug, the probe is not measuring the bug.
+
+## `auditAccessibility` returns `blockedHitTargets`, and a summary script reading another name reports "none"
+
+The result keys are `unlabeled`, `blockedHitTargets`, `smallTargets` and `negativeTabIndex`. A
+wrapper that reads `audit.blocked` or `audit.blockedTargets` gets `undefined`, and a
+`?? []` fallback next to it then prints an empty list. The run looks clean and nothing warns you,
+because reading a key that does not exist is not an error in JavaScript. Hit 2026-08-19: a summary
+runner reported "no blocked hit targets" for the file Properties dialog while the raw result held
+one entry.
+
+Return the raw audit object, or read the four names above exactly. Also expect two benign entries on
+any dialog holding a Monaco editor: Monaco's `div.native-edit-context` appears in `smallTargets` and
+in `blockedHitTargets`, covered by its own `div.view-line`. A `MyCheckboxButton` adds a third, its
+1px `input.MyCheckboxButton-control`, whose `<label>` is the real click target.

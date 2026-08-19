@@ -224,7 +224,27 @@ Locked rows stay selectable, openable, searchable, and expandable; the lock mark
 - `<name>, read-only from a protected folder` for an inherited lock with a hidden source.
 - `<name>, contains read-only items` for an unlocked visible ancestor.
 
-Tooltips use `Read-only`, `Read-only from /docs`, and `Contains read-only items`. The lock control labels are `Make read-only`, `Make writable`, `Remove direct lock` (explicit lock under an outer lock, driven by `hasInheritedParentLock`), and `Add direct lock` (on an inherited node, to keep it locked if the outer lock is removed). Top-status strings: `This file is read-only.`, `Read-only because /docs is locked.`, `This folder contains read-only items. It cannot be renamed, moved, or archived.`
+Tooltips use `Read-only`, `Read-only from /docs`, and `Contains read-only items`. Top-status strings: `This file is read-only.`, `Read-only because /docs is locked.`, `This folder contains read-only items. It cannot be renamed, moved, or archived.`
+
+## The lock control is one checkbox
+
+The lock lives in the `Protection` section of the Properties modal (`packages/app/src/components/files/files-properties-modal.tsx`), opened from the sidebar row menu or the breadcrumb button. It is one checkbox, ticked whenever the node is read-only by any route.
+
+A checkbox cannot say which of the four states the node is in, so the line under the label carries that, and it is the part a test must assert on:
+
+| `readOnlyState` | `hasInheritedParentLock` | Checkbox | Description under the label | What unticking does |
+| --- | --- | --- | --- | --- |
+| `writable` | — | off | `Anyone with permission to edit can change this <kind>.` | — |
+| `self` | false | on | `Locked here. Unchecking makes this <kind> writable again.` | `set_node_writable` → writable |
+| `self` | true | on | `Locked here and by <source>. Unchecking removes only the lock set here, so this <kind> stays read-only.` | `set_node_writable` → drops to the inherited lock |
+| `inherited` | true | on, **disabled** | `Read-only because <source> is locked. Unlock it there to make this <kind> writable.` | nothing; the box cannot be unticked here |
+
+Two extra rules the checkbox alone does not carry:
+
+- An inherited lock is owned by a folder above, so this node cannot release it. The box is disabled. When the caller can manage the lock, two buttons appear instead: `Manage <source path>` (navigates, only when the source is readable) and `Also lock here`, which calls `set_node_read_only`. That direct lock changes nothing today; it keeps the node read-only if somebody unlocks the folder above later.
+- `canManage === false` disables the box and appends `You cannot change this.` to the description.
+
+The checkbox writes as soon as it is clicked. There is no Save for the lock — the modal's `Save metadata` button belongs to the key-value map only.
 
 # Requirements
 

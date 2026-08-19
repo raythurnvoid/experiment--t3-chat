@@ -414,7 +414,7 @@ const MAX_METADATA_KEY_LENGTH = 128;
 const MAX_METADATA_STRING_VALUE_LENGTH = 1024;
 
 /**
- * Cap on the whole YAML document the panel sends, checked before anything parses it. The agent
+ * Cap on the whole YAML document the modal sends, checked before anything parses it. The agent
  * writes entries instead of YAML, so its door measures the document those entries would make.
  */
 const MAX_METADATA_YAML_BYTES = 16 * 1024;
@@ -471,7 +471,7 @@ function scalar_entry_value(node: YamlNode | null) {
  * Apply an agent's set/remove request to the map the file has now.
  *
  * A key that already exists keeps its position, so setting one key does not reshuffle the YAML the
- * user sees in the panel. New keys are appended where the agent first named them.
+ * user sees in the modal. New keys are appended where the agent first named them.
  */
 export function files_metadata_apply_set_and_remove(
 	currentEntries: files_metadata_Entry[],
@@ -542,7 +542,7 @@ export function files_metadata_validate_remove_keys(removeKeys: string[]) {
 /**
  * Check a flat metadata map against the product caps and the key grammar.
  *
- * Both write doors run this: the panel's YAML goes through the parser below, and the agent's
+ * Both write doors run this: the modal's YAML goes through the parser below, and the agent's
  * set/remove goes through here directly, so one rule set covers both.
  */
 export function files_metadata_validate_entries(entries: files_metadata_Entry[]) {
@@ -574,8 +574,8 @@ export function files_metadata_validate_entries(entries: files_metadata_Entry[])
 		}
 	}
 
-	// The panel caps the YAML document it sends, so the agent must respect that same cap. Otherwise the
-	// agent could write a map that the panel renders but refuses to save, and the user would have to
+	// The modal caps the YAML document it sends, so the agent must respect that same cap. Otherwise the
+	// agent could write a map that the modal renders but refuses to save, and the user would have to
 	// delete somebody else's keys to fix their own typo. Measure the document both doors would show.
 	if (files_get_utf8_byte_size(files_metadata_stringify_entries_yaml(entries)) > MAX_METADATA_YAML_BYTES) {
 		return Result({
@@ -587,9 +587,9 @@ export function files_metadata_validate_entries(entries: files_metadata_Entry[])
 }
 
 /**
- * Parse the YAML typed in the metadata panel into the flat map that gets stored.
+ * Parse the YAML typed in the Properties modal into the flat map that gets stored.
  *
- * YAML is only the edit format, so this runs on the server too: the panel runs it first to show a
+ * YAML is only the edit format, so this runs on the server too: the modal runs it first to show a
  * mistake without spending a rate-limit token, and the mutation runs it again as the real door.
  * Every `_nay.message` here is shown to the user as written.
  */
@@ -603,8 +603,8 @@ export function files_metadata_parse_entries_yaml(metadataYaml: string) {
 
 	// The parser walks nested collections with recursion, so a deeply nested document overflows the
 	// stack and throws instead of reporting an error. The byte cap does not stop it: 2000 nested `{`
-	// fit in 4 KB. A user can paste anything into the panel, so answer with a refusal instead of
-	// crashing the panel or failing the mutation with an unexpected error.
+	// fit in 4 KB. A user can paste anything into the modal, so answer with a refusal instead of
+	// crashing the modal or failing the mutation with an unexpected error.
 	let doc: ReturnType<typeof parseDocument>;
 	try {
 		doc = parseDocument(metadataYaml, {
@@ -630,7 +630,7 @@ export function files_metadata_parse_entries_yaml(metadataYaml: string) {
 	const entries: files_metadata_Entry[] = [];
 
 	const root = doc.contents;
-	// An empty panel means the file has no metadata. An empty document parses to a null scalar.
+	// An empty editor means the file has no metadata. An empty document parses to a null scalar.
 	if (root === null || (isScalar(root) && root.value === null)) {
 		return Result({ _yay: { entries } });
 	}
@@ -662,7 +662,7 @@ export function files_metadata_parse_entries_yaml(metadataYaml: string) {
 }
 
 /**
- * Write the stored map back as the YAML the panel edits. Keys keep the order they were stored in.
+ * Write the stored map back as the YAML the modal edits. Keys keep the order they were stored in.
  *
  * Build the document with `Document.set` instead of a plain object, so a key such as `__proto__`
  * stays an ordinary key.
@@ -672,13 +672,13 @@ export function files_metadata_stringify_entries_yaml(entries: files_metadata_En
 		return "";
 	}
 
-	// Same version and schema as the parser, so what the panel shows parses back to the same map.
+	// Same version and schema as the parser, so what the modal shows parses back to the same map.
 	const doc = new Document({}, { version: "1.2", schema: "core" });
 	for (const entry of entries) {
 		doc.set(entry.key, entry.value);
 	}
 
-	// Keep every value on one line, so the text the panel shows parses back to the same map.
+	// Keep every value on one line, so the text the modal shows parses back to the same map.
 	return doc.toString({ lineWidth: 0 });
 }
 

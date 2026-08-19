@@ -873,7 +873,7 @@ export type files_metadata_get_by_path_Result =
 
 // #region file metadata
 
-const metadata_entry_fields = {
+export const files_metadata_entry_fields = {
 	key: v.string(),
 	value: v.union(v.string(), v.number(), v.boolean()),
 };
@@ -967,8 +967,17 @@ async function db_read_metadata(
  * Copy `path`, `treePath` and `archiveOperationId` from the node like the frontmatter writers do.
  * Search filters on those fields, so a doc without them would be invisible to a path-scoped or
  * archive-scoped search until the next rename.
+ *
+ * This writer checks nothing. The two user-facing doors below check the permission and the
+ * read-only lock before they call it.
+ *
+ * The file-creation flows also call it directly, inside the same transaction that creates the node.
+ * At that moment no permission has been set on the new file yet. Mount files and plugin source
+ * mirrors go further: they are created read-only with a SYSTEM author on purpose. If those flows
+ * went through the doors, the read-only check would refuse the very write that records where the
+ * file came from.
  */
-async function db_write_metadata(
+export async function files_metadata_db_write_entries(
 	ctx: MutationCtx,
 	args: {
 		fileNode: Doc<"files_nodes">;
@@ -1013,6 +1022,35 @@ async function db_write_metadata(
 			}),
 		),
 	]);
+}
+
+/**
+ * Set some metadata keys on a file without touching the keys it already has.
+ *
+ * The upload publish uses this. A create stamps what it knows, and the publish adds the keys only
+ * the finished upload knows. A plain replace would delete the create-time keys, so the current map
+ * is read first and the new keys are merged into it.
+ *
+ * This function checks nothing either, for the same reason `files_metadata_db_write_entries` checks
+ * nothing. The publish finishes an upload that the create already accepted.
+ */
+export async function files_metadata_db_merge_entries(
+	ctx: MutationCtx,
+	args: {
+		fileNode: Doc<"files_nodes">;
+		set: files_metadata_Entry[];
+	},
+) {
+	const currentEntries = await db_read_metadata(ctx, {
+		organizationId: args.fileNode.organizationId,
+		workspaceId: args.fileNode.workspaceId,
+		fileNodeId: args.fileNode._id,
+	});
+
+	await files_metadata_db_write_entries(ctx, {
+		fileNode: args.fileNode,
+		entries: files_metadata_apply_set_and_remove(currentEntries, { set: args.set, remove: [] }),
+	});
 }
 
 /**
@@ -1066,7 +1104,7 @@ export const get_entries = query({
 		membershipId: v.id("organizations_workspaces_users"),
 		fileNodeId: v.id("files_nodes"),
 	},
-	returns: v.array(v.object(metadata_entry_fields)),
+	returns: v.array(v.object(files_metadata_entry_fields)),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -1152,7 +1190,7 @@ export const set_entries = mutation({
 			return parsed;
 		}
 
-		await db_write_metadata(ctx, { fileNode: authorized._yay, entries: parsed._yay.entries });
+		await files_metadata_db_write_entries(ctx, { fileNode: authorized._yay, entries: parsed._yay.entries });
 
 		return Result({ _yay: null });
 	},
@@ -1171,10 +1209,10 @@ export const update_entries_by_path = internalMutation({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		path: v.string(),
-		set: v.array(v.object(metadata_entry_fields)),
+		set: v.array(v.object(files_metadata_entry_fields)),
 		remove: v.array(v.string()),
 	},
-	returns: v_result({ _yay: v.object({ path: v.string(), entries: v.array(v.object(metadata_entry_fields)) }) }),
+	returns: v_result({ _yay: v.object({ path: v.string(), entries: v.array(v.object(files_metadata_entry_fields)) }) }),
 	handler: async (ctx, args) => {
 		const fileNode = await files_db_get_visible_node_by_path(ctx, {
 			organizationId: args.organizationId,
@@ -1224,7 +1262,7 @@ export const update_entries_by_path = internalMutation({
 			return validated;
 		}
 
-		await db_write_metadata(ctx, { fileNode, entries: validated._yay.entries });
+		await files_metadata_db_write_entries(ctx, { fileNode, entries: validated._yay.entries });
 
 		return Result({ _yay: { path: fileNode.path, entries: validated._yay.entries } });
 	},

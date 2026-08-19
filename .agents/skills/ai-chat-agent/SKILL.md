@@ -296,7 +296,7 @@ These tools are **deleted**. The sections below stay only so an old assistant me
 
 - Sets or removes keys in the flat metadata map stored next to a file. The spec is the `file-metadata` skill; this section only covers the agent side.
 - Factory `ai_chat_tool_create_set_file_metadata` in `../../../packages/app/server/server-ai-tools.ts`. It is in `ai_chat_WRITE_TOOL_NAMES`, so ask mode drops it from the `tools` record. The system-prompt line that tells the model to use it is gated the same way (`canWriteFiles` in `ai_chat_system_prompt`), because instructing ask mode to call a tool it does not have only produces a promise the model cannot keep. The `edit_file` lines in that prompt stay ungated: they describe what the tool does, they do not tell the model to call it.
-- It changes only the keys it names. Keys it does not name are left alone, unlike the Metadata panel, which replaces the whole map.
+- It changes only the keys it names. Keys it does not name are left alone, unlike the Properties modal, which replaces the whole map.
 - A key listed in both `set` and `remove` is removed.
 - Keys are bare (`status`), never the search field name (`metadata.status`). The tool refuses a `metadata.`-prefixed key on both sides and names the bare key to use.
 - It never writes Markdown frontmatter. `meta get` prints `frontmatter.*` lines next to `metadata.*` lines, and the description says so, because otherwise the grammar refusal on `frontmatter.title` trains the model to retry with the bare `title` and write the other store.

@@ -808,7 +808,7 @@ export type ai_chat_tool_create_edit_file_ToolOutput = InferToolOutput<ai_chat_t
  * Unlike `edit_file`, this applies straight away instead of proposing a pending update. Metadata is
  * not file content: it is a small key-value map beside the file, the pending-update system only
  * models content branches and move/copy/archive intents, and the same write is already available to
- * the user in the file's Metadata panel.
+ * the user in the file's Properties modal.
  */
 export function ai_chat_tool_create_set_file_metadata(
 	ctx: ActionCtx,

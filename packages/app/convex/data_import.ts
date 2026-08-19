@@ -227,6 +227,13 @@ export const create_upload_targets = internalMutation({
 				kind: "file",
 				contentType: item.contentType,
 				assetId,
+				// Say the file arrived through an operator import, so `meta search` can tell imported
+				// content from what somebody uploaded here. The size and the media type are
+				// client-declared at this point. The R2 event publish stamps the real ones.
+				metadata: [
+					{ key: "source", value: "import" },
+					{ key: "original-name", value: path_name_of(item.path) },
+				],
 				now,
 			});
 			// Validation already checked name conflicts, parent conflicts, locks, and owner permission.

@@ -2127,6 +2127,7 @@ export const publish_file_write = internalMutation({
 			// the file's first version snapshot.
 			assetId: stage.contentSnapshotAssetId,
 			expectsTextContent: true,
+			metadata: [{ key: "source", value: "api" }],
 			now,
 		});
 		if (created._nay) {
@@ -2568,6 +2569,7 @@ export const publish_file_touch = internalMutation({
 			// also becomes the file's first version snapshot.
 			assetId: stage.contentSnapshotAssetId,
 			expectsTextContent: true,
+			metadata: [{ key: "source", value: "api" }],
 			now,
 		});
 		if (created._nay) {
@@ -3022,6 +3024,7 @@ export const create_file_upload_targets = internalMutation({
 				kind: "file",
 				contentType: item.contentType,
 				assetId,
+				metadata: [{ key: "source", value: "api" }],
 				now,
 			});
 			// The validation pass cleared every failure this helper can hit (collisions, ancestor

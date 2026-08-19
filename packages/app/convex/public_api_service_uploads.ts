@@ -726,6 +726,13 @@ export const create_upload_target = internalMutation({
 			kind: "file",
 			contentType: storedContentType,
 			assetId,
+			// Name the plugin that uploaded the file, so a member reading the file later can see
+			// which installation put it there.
+			metadata: [
+				{ key: "source", value: "plugin" },
+				{ key: "original-name", value: name },
+				{ key: "plugin-name", value: installation.pluginName },
+			],
 			now,
 		});
 		// The validation above cleared every failure this helper can hit. Throw so a surprise rolls

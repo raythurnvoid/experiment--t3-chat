@@ -61,7 +61,8 @@ import {
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
-import { files_metadata_METADATA_FIELD_PREFIX } from "../shared/files-metadata.ts";
+import { files_metadata_METADATA_FIELD_PREFIX, type files_metadata_Entry } from "../shared/files-metadata.ts";
+import { path_name_of } from "../shared/paths.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import {
@@ -90,7 +91,7 @@ import {
 	files_normalize_name,
 	files_normalize_upload_file_name,
 } from "../shared/files.ts";
-import { files_metadata_db_patch_file_scope } from "./files_metadata.ts";
+import { files_metadata_db_patch_file_scope, files_metadata_db_write_entries } from "./files_metadata.ts";
 import {
 	r2_get_download_url,
 	r2_generate_upload_url,
@@ -1293,6 +1294,17 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		/** Forwarded to `db_insert_node` for the leaf only; see the arg doc there. */
 		expectsTextContent?: true;
+		/**
+		 * File metadata that says where this file came from. It is written on the leaf node only.
+		 * The folders this walk creates on the way get nothing, because `files_metadata.set_entries`
+		 * refuses a node that is not a file. Nobody could ever change or clear a map that sat on a
+		 * folder.
+		 *
+		 * Never pass this for the agent's eager-created nodes. A node with committed `metadata.` docs
+		 * can no longer be hard-deleted (`files_nodes_db_is_eager_node_safe_to_hard_delete`), so
+		 * discarding the proposal would leave the empty file behind forever.
+		 */
+		metadata?: files_metadata_Entry[];
 		now: number;
 		/**
 		 * When set, receives the `_id` of every intermediate folder this call creates (reused
@@ -1442,6 +1454,19 @@ export async function files_nodes_db_create_node_recursively_at_path(
 
 		// Return the requested leaf; otherwise continue creating below the new folder.
 		if (isLeaf) {
+			// Stamp the file's origin in the same transaction that creates it, so a `meta search`
+			// finds it as soon as the file exists. Folders are skipped: only files carry a map.
+			if (args.metadata && kind === "file") {
+				const leafNode = await ctx.db.get("files_nodes", nodeIdResult._yay);
+				if (!leafNode) {
+					const errorMessage = "created file node is missing right after insert";
+					const errorData = { nodeId: nodeIdResult._yay };
+					console.error(errorMessage, errorData);
+					throw should_never_happen(errorMessage, errorData);
+				}
+				await files_metadata_db_write_entries(ctx, { fileNode: leafNode, entries: args.metadata });
+			}
+
 			return Result({ _yay: nodeIdResult._yay });
 		}
 
@@ -2424,6 +2449,12 @@ export const create_upload_node = mutation({
 			kind: "file",
 			contentType: storedContentType,
 			assetId,
+			// The size and the media type are not stamped here: both are client-declared at this
+			// point. The R2 event publish stamps the real ones.
+			metadata: [
+				{ key: "source", value: "upload" },
+				{ key: "original-name", value: args.filename },
+			],
 			now,
 		});
 		if (nodeIdResult._nay) {
@@ -2832,6 +2863,13 @@ export const create_upload_nodes = mutation({
 				kind: "file",
 				contentType: item.contentType,
 				assetId,
+				// A folder import also records the path the file had inside the imported folder. Once
+				// the import is placed under another parent, the stored path no longer shows it.
+				metadata: [
+					{ key: "source", value: "upload" },
+					{ key: "original-name", value: path_name_of(item.relativePath) },
+					{ key: "import-relative-path", value: item.relativePath },
+				],
 				now,
 			});
 			// The checks above should make this branch unreachable.

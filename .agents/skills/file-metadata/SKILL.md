@@ -1,6 +1,6 @@
 ---
 name: file-metadata
-description: Spec for the flat key-value metadata stored next to a file — the `metadata.*` half of `files_metadata_docs`, the YAML edit format, the two write doors (`files_metadata.set_entries` for the panel and `update_entries_by_path` for the agent), the key grammar and caps, and how it sits beside Markdown frontmatter in `meta search`. Use when changing `packages/app/shared/files-metadata.ts`, the metadata region of `packages/app/convex/files_metadata.ts`, the Metadata panel in `packages/app/src/components/files/file-editor/file-editor-sidebar/`, the `set_file_metadata` agent tool in `packages/app/server/server-ai-tools.ts`, or `meta search` / `meta get` in `packages/app/server/bash-meta-command.ts`.
+description: Spec for the flat key-value metadata stored next to a file — the `metadata.*` half of `files_metadata_docs`, the YAML edit format, the two write doors (`files_metadata.set_entries` for the Properties modal and `update_entries_by_path` for the agent), the key grammar and caps, and how it sits beside Markdown frontmatter in `meta search`. Use when changing `packages/app/shared/files-metadata.ts`, the metadata region of `packages/app/convex/files_metadata.ts`, the Properties modal in `packages/app/src/components/files/files-properties-modal.tsx`, the `set_file_metadata` agent tool in `packages/app/server/server-ai-tools.ts`, or `meta search` / `meta get` in `packages/app/server/bash-meta-command.ts`.
 ---
 
 # Mental Model
@@ -19,7 +19,7 @@ ordinary keys that some team agreed on. If a folder has a house convention, it b
 folder's `README.md`, not in code.
 
 The stored form is validated structured data, not a text blob. YAML is only the edit format the
-Metadata panel shows and parses. Nothing stores YAML.
+Properties modal shows and parses. Nothing stores YAML.
 
 # Data Shape
 
@@ -32,16 +32,16 @@ Entries are indexed in the same `files_metadata_docs` table that Markdown frontm
 | Source | Prefix | Written by |
 | --- | --- | --- |
 | Markdown YAML frontmatter | `frontmatter.` | content materialization, from the file's own text |
-| Metadata next to the file | `metadata.` | a user in the panel, or an agent |
+| Metadata next to the file | `metadata.` | a user in the Properties modal, or an agent |
 
 Both prefixes are exported from `shared/files-metadata.ts`. A range over one source bounds at
 `frontmatter/` or `metadata/`, because `/` (0x2F) is the next character after `.` (0x2E), so the
 range covers exactly that prefix and nothing else.
 
-Per key, `db_write_metadata` writes one `field` doc (existence search) and one `value` doc (value
+Per key, `files_metadata_db_write_entries` writes one `field` doc (existence search) and one `value` doc (value
 search). A date-like string value also gets the `maybe_date` companion, exactly like frontmatter, so
 range search over dates works. Value docs carry `entryIndex`, the key's position in the map the user
-typed — reading the map back in index order would reorder the panel's lines on every save.
+typed — reading the map back in index order would reorder the dialog's lines on every save.
 Frontmatter docs leave `entryIndex` unset.
 
 `metadata.*` docs are always `sourceKind: "committed"`. There is no pending overlay for them: a
@@ -49,7 +49,7 @@ pending content proposal changes the file's text, and metadata is not text.
 
 # Rules
 
-- **The whole map is replaced by a panel save.** `set_entries` takes the whole YAML document, so a
+- **The whole map is replaced by one save.** `set_entries` takes the whole YAML document, so a
   key missing from it is deleted. The agent door is the opposite: `update_entries_by_path` changes only
   the keys it names.
 - **A key already in the map keeps its position.** New keys are appended where the caller first named
@@ -69,7 +69,7 @@ pending content proposal changes the file's text, and metadata is not text.
 - **Caps** (all in `shared/files-metadata.ts`): 128 keys, 128 characters per key, 1024 characters per
   string value, and 16 KiB for the YAML document. Both doors enforce the document cap — the agent
   writes entries, so its door measures the document those entries would make. Without that the agent
-  could store a map the panel renders but refuses to save.
+  could store a map the dialog renders but refuses to save.
 - **Key grammar** is `/^[\p{L}\p{N}_:-]+$/u`: letters (in any language), numbers, `_`, `-` and `:`. A
   colon is part of the key, so `slack:message-id` is one key. The dot is left out, because
   `metadata.a.b` would read like the real nesting `frontmatter.a.b` means.
@@ -112,7 +112,7 @@ object assignment, so a key such as `__proto__` stays an ordinary key.
 `files_metadata_extract_frontmatter` returns `Result`. Both parsers guard the same `parseDocument`
 throw, but they answer it differently on purpose:
 
-- The panel parser refuses and shows the user a message. The user is editing that YAML by hand, so
+- The Properties parser refuses and shows the user a message. The user is editing that YAML by hand, so
   they need to know why Save did nothing.
 - The frontmatter parser returns `_nay` and every caller keeps saving. The user is saving a *file*
   and the frontmatter is only part of it. Refusing would leave them unable to store their own text,
@@ -145,7 +145,7 @@ of the same shape without complaint. If a later version reports it in `doc.error
 
 Both live in the `// #region file metadata` of `packages/app/convex/files_metadata.ts`.
 
-`set_entries` — the panel's door, a public mutation:
+`set_entries` — the Properties modal's door, a public mutation:
 
 1. auth
 2. `files_tree_write` rate limit (the bucket other per-node property writes use)
@@ -166,10 +166,68 @@ branches and move/copy/archive intents.
 `get_entries` is a public query and returns `[]` for a non-member or an unreadable node. It throws
 only when Convex auth has no usable identity.
 
+# Metadata Written By The File-Creation Flows
+
+The two doors above are the only doors a person or an agent can knock on. The file-creation flows
+write the map directly with `files_metadata_db_write_entries` (create) and
+`files_metadata_db_merge_entries` (publish), both exported from `files_metadata.ts`.
+
+Those two writers check nothing on purpose. A create runs before anybody could have an opinion about
+that file, and mount files and plugin source mirrors are created read-only with a SYSTEM author, so
+`db_authorize_metadata_write` and `files_node_require_writable` would refuse the very writes that
+say where the file came from. Keep both doors as they are for user writes.
+
+`files_nodes_db_create_node_recursively_at_path` takes `metadata` and applies it to the
+**leaf only**. The folders it creates on the way get nothing: `set_entries` refuses a node that is
+not a file, so a folder carrying a map could never be edited back.
+
+| Flow | Entrypoint | Keys |
+| --- | --- | --- |
+| Browser file upload | `files_nodes.create_upload_node` | `source: upload`, `original-name` |
+| Browser folder import | `files_nodes.create_upload_nodes` | `source: upload`, `original-name`, `import-relative-path` |
+| Plugin service-grant upload | `public_api_service_uploads.create_upload_target` | `source: plugin`, `original-name`, `plugin-name` |
+| Public API write / touch / upload-urls | `public_api.ts` (three creates) | `source: api` |
+| Operator data import | `data_import.create_upload_targets` | `source: import`, `original-name` |
+| GitHub mount file | `files_nodes_content.create_file_node_internal`, GITHUB scope | `source: github-mount`, `repo-path` |
+| Plugin source mirror | `files_nodes_content.create_file_node_internal`, PLUGINS scope | `source: plugin-source` |
+
+`repo-path` is the path inside the repository. The stored path starts with the mount name and the
+commit sha, so that root is cut off before the value is stored.
+
+## Two flows stamp nothing, on purpose
+
+- **The agent's eager-created nodes.** Agent-mode `cp` and a bash write to a missing path create the
+  node right away through `create_file_by_path` → `action_create_file_node`. A node with committed
+  `metadata.` docs can no longer be hard-deleted (see the eager-create rule above), so stamping at
+  creation would make every one of them permanent and leave an empty file behind whenever a proposal
+  is discarded. `action_create_file_node` never passes `metadata`; only
+  `create_file_node_internal` does. That is the whole separation — keep it.
+- **App-created text files** (`create_text_node`, `create_home_file`). They share
+  `action_create_file_node` with the eager path, and a user creating a file in the app already knows
+  where it came from.
+
+## Why `size` and `mime-type` are stamped at publish, not at create
+
+At create time both values are client input. The declared size is only what the browser said, and
+the stored media type is the client's until the upload conversion replaces it with the classifier's.
+So both keys are written later, merged into whatever the create already stamped:
+
+- `r2.process_uploaded_asset_event` — every upload passes here once, with the size R2 really stored.
+  It writes `size` from the event and `mime-type` from the node's current `contentType`.
+- `db_finalize_editable_text_file_node_from_r2_assets` in `r2.ts` — the upload conversion replaces
+  the node's media type with the classifier's and its bytes with the normalized text, so it writes
+  both keys again with the published values. Without this second write, a folder-imported `.md`
+  would keep the client-declared type forever.
+
+Merging matters: a plain `files_metadata_db_write_entries` would delete the create-time keys.
+
 # Surfaces
 
-- **Metadata panel**: `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-metadata.tsx`.
-  A Monaco YAML editor in the file sidebar, shown for a file node and hidden for a folder.
+- **Properties modal**: `packages/app/src/components/files/files-properties-modal.tsx`.
+  One dialog per node, opened from the sidebar row menu (`Properties`) or the breadcrumb button. It
+  holds the node's facts, the read-only checkbox, and a Monaco YAML editor for the map. The editor
+  section renders for a file only, because `set_entries` refuses a non-file. It replaced the sidebar
+  `Metadata` tab and the separate `Read-only settings` modal; both are gone.
 - **Agent tool**: `set_file_metadata` in `packages/app/server/server-ai-tools.ts`. It is in
   `ai_chat_WRITE_TOOL_NAMES`, so Ask mode drops it from the tool record, not only from `activeTools`.
 - **Agent search**: `meta search --where '{"exists":"metadata.<key>"}'` and `meta get <file>`, both in
@@ -177,14 +235,14 @@ only when Convex auth has no usable identity.
   together; its `source:` line describes the frontmatter lines only, because `metadata.*` is always
   the committed map.
 
-# Panel Reconciliation
+# Dialog Reconciliation
 
-The panel is the only place where a stored map and typed text have to be kept in step, and that is
+The Properties dialog is the only place where a stored map and typed text have to be kept in step, and that is
 where its complexity is. Read this before editing it.
 
 The server stores a map, not text, so what comes back is the map rendered again. It rarely matches
 what was sent character for character: Monaco can use CRLF, a comment is not stored, `4.0` comes back
-quoted, and the render always ends with a newline. The panel remembers the exact text it sent
+quoted, and the render always ends with a newline. The dialog remembers the exact text it sent
 (`sentDraftRef`) so the reconcile effect can tell its own echo apart from an edit by somebody else.
 
 Three rules the tests pin but cannot explain. Read them before you change the effect:
@@ -192,7 +250,7 @@ Three rules the tests pin but cannot explain. Read them before you change the ef
 - **Never write a ref inside a `setState` updater here.** The app runs in `StrictMode`, which invokes
   the updater twice, and the second pass would see the cleared ref and fall into the conflict branch.
   This shipped as a false "Metadata changed elsewhere" on every save until live QA found it. The
-  panel's tests render under `StrictMode` for exactly this reason.
+  dialog's tests render under `StrictMode` for exactly this reason.
 - **Report the save result through the updater form**, never by writing a whole state object read
   from a ref. The reactive query push and the mutation promise can land in the same tick, and a whole
   object write would undo the adoption.
@@ -239,8 +297,12 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 - `packages/app/shared/files-metadata.test.ts` — parse, stringify, validate, apply-changes, index docs.
 - `packages/app/convex/files_nodes.test.ts` — the `metadata` tests: search next to frontmatter,
   surviving a content save, the pending-overlay exemption, refusals, and the agent door on an upload.
+  The `create-time metadata` describe covers the create-flow stamps: an upload's keys, a
+  folder import's relative path with empty folders, the eager-create exclusion, and the publish
+  merge.
 - `packages/app/convex/files_pending_updates.test.ts` — a save whose frontmatter the parser cannot
   read still stores the text and writes no metadata docs.
 - `packages/app/server/server-ai-tools.test.ts` — the `set_file_metadata` tool.
 - `packages/app/server/bash-meta-command.test.ts` — `metadata.*` field parsing.
-- `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-metadata.test.tsx` — the panel.
+- `packages/app/src/components/files/files-properties-modal.test.tsx` — the Properties dialog: the
+  read-only checkbox in each of its four states, and the YAML draft reconciliation.

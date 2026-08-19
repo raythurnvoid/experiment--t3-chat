@@ -27,6 +27,7 @@ import {
 	FolderPlus,
 	FolderUp,
 	Hash,
+	Info,
 	Link2,
 	LockKeyhole,
 	Search,
@@ -59,7 +60,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { FilesNameInputControl } from "./files-name-input.tsx";
 import { FilesShareModal } from "./files-share-modal.tsx";
-import { FilesReadOnlyModal } from "./files-read-only-modal.tsx";
+import { FilesPropertiesModal } from "./files-properties-modal.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -999,7 +1000,7 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	onCopyNodeId: () => void;
 	onRename: () => void;
 	onShare: () => void;
-	onReadOnly: () => void;
+	onProperties: () => void;
 	onExpandSubtree: () => void;
 	onCollapseSubtree: () => void;
 	onArchive: () => void;
@@ -1027,7 +1028,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		onCopyNodeId,
 		onRename,
 		onShare,
-		onReadOnly,
+		onProperties,
 		onExpandSubtree,
 		onCollapseSubtree,
 		onArchive,
@@ -1161,12 +1162,12 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 								<MyMenuItemContentPrimary>Share</MyMenuItemContentPrimary>
 							</MyMenuItemContent>
 						</MyMenuItem>
-						<MyMenuItem hideOnClick onClick={onReadOnly}>
+						<MyMenuItem hideOnClick onClick={onProperties}>
 							<MyMenuItemContent>
 								<MyMenuItemContentIcon>
-									<LockKeyhole />
+									<Info />
 								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Read-only settings</MyMenuItemContentPrimary>
+								<MyMenuItemContentPrimary>Properties</MyMenuItemContentPrimary>
 							</MyMenuItemContent>
 						</MyMenuItem>
 					</MyMenuItemsGroup>
@@ -1735,7 +1736,7 @@ type FilesSidebarTreeItem_Props = {
 	onCopyLink: (nodeId: string) => void;
 	onCopyNodeId: (nodeId: string) => void;
 	onShare: (nodeId: string) => void;
-	onReadOnly: (nodeId: app_convex_Id<"files_nodes">, returnFocusElement: HTMLElement | null) => void;
+	onProperties: (nodeId: app_convex_Id<"files_nodes">, returnFocusElement: HTMLElement | null) => void;
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -1765,7 +1766,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		onCopyLink,
 		onCopyNodeId,
 		onShare,
-		onReadOnly,
+		onProperties,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -1964,9 +1965,9 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		onUnarchive(itemId);
 	});
 
-	const handleReadOnlyClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onReadOnly"]>(() => {
+	const handlePropertiesClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onProperties"]>(() => {
 		if (files_is_node(itemData)) {
-			onReadOnly(itemData._id, wrapperElementRef.current);
+			onProperties(itemData._id, wrapperElementRef.current);
 		}
 	});
 
@@ -2147,7 +2148,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					onCopyNodeId={handleCopyNodeIdClick}
 					onRename={handleRenameClick}
 					onShare={handleShareClick}
-					onReadOnly={handleReadOnlyClick}
+					onProperties={handlePropertiesClick}
 					onExpandSubtree={handleExpandSubtreeClick}
 					onCollapseSubtree={handleCollapseSubtreeClick}
 					onArchive={handleArchiveClick}
@@ -2421,7 +2422,7 @@ type FilesSidebarTree_Props = {
 	onCopyLink: (nodeId: string) => void;
 	onCopyNodeId: (nodeId: string) => void;
 	onShare: (nodeId: string) => void;
-	onReadOnly: FilesSidebarTreeItem_Props["onReadOnly"];
+	onProperties: FilesSidebarTreeItem_Props["onProperties"];
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -2452,7 +2453,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		onCopyLink,
 		onCopyNodeId,
 		onShare,
-		onReadOnly,
+		onProperties,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -2671,7 +2672,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 									onCopyLink={onCopyLink}
 									onCopyNodeId={onCopyNodeId}
 									onShare={onShare}
-									onReadOnly={onReadOnly}
+									onProperties={onProperties}
 									onArchive={onArchive}
 									onUnarchive={onUnarchive}
 								/>
@@ -3840,8 +3841,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const [renameErrorByNodeId, setRenameErrorByNodeId] = useState<Map<string, string>>(new Map());
 	/** The node whose share dialog is open, or `null` when it is closed. */
 	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
-	const [readOnlyNodeId, setReadOnlyNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
-	const readOnlyReturnFocusRef = useRef<HTMLElement | null>(null);
+	const [propertiesNodeId, setPropertiesNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	const propertiesReturnFocusRef = useRef<HTMLElement | null>(null);
 	const isImportingFiles = useFilesImportStore((state) => state.phase !== "idle");
 	const importConflicts = useFilesImportStore((state) => state.conflicts);
 	// One gate for every upload affordance: the single-file PUT or a running folder import.
@@ -5316,16 +5317,16 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		setShareNodeId(null);
 	});
 
-	const handleReadOnly = useFn<FilesSidebarTree_Props["onReadOnly"]>((nodeId, returnFocusElement) => {
-		readOnlyReturnFocusRef.current = returnFocusElement;
-		setReadOnlyNodeId(nodeId);
+	const handleProperties = useFn<FilesSidebarTree_Props["onProperties"]>((nodeId, returnFocusElement) => {
+		propertiesReturnFocusRef.current = returnFocusElement;
+		setPropertiesNodeId(nodeId);
 	});
 
-	const handleReadOnlyModalClose = useFn(() => {
-		setReadOnlyNodeId(null);
+	const handlePropertiesModalClose = useFn(() => {
+		setPropertiesNodeId(null);
 	});
 
-	const handleReadOnlyNavigateNode = useFn((nodeId: app_convex_Id<"files_nodes">) => {
+	const handlePropertiesNavigateNode = useFn((nodeId: app_convex_Id<"files_nodes">) => {
 		onPrimaryAction(nodeId, "folder");
 	});
 
@@ -5792,21 +5793,21 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					onCopyLink={handleCopyLink}
 					onCopyNodeId={handleCopyNodeId}
 					onShare={handleShare}
-					onReadOnly={handleReadOnly}
+					onProperties={handleProperties}
 					onArchive={handleArchive}
 					onUnarchive={handleUnarchive}
 				/>
 			</div>
 
 			<FilesShareModal nodeId={shareNodeId} onClose={handleShareModalClose} />
-			<FilesReadOnlyModal
-				nodeId={readOnlyNodeId}
-				nodeName={treeNodesList?.find((node) => node._id === readOnlyNodeId)?.name ?? "file"}
-				nodeKind={treeNodesList?.find((node) => node._id === readOnlyNodeId)?.kind ?? "file"}
-				hasVisibleReadOnlyDescendant={readOnlyNodeId ? readOnlyAncestorIds.has(readOnlyNodeId) : false}
-				returnFocusRef={readOnlyReturnFocusRef}
-				onNavigateNode={handleReadOnlyNavigateNode}
-				onClose={handleReadOnlyModalClose}
+			<FilesPropertiesModal
+				nodeId={propertiesNodeId}
+				nodeName={treeNodesList?.find((node) => node._id === propertiesNodeId)?.name ?? "file"}
+				nodeKind={treeNodesList?.find((node) => node._id === propertiesNodeId)?.kind ?? "file"}
+				hasVisibleReadOnlyDescendant={propertiesNodeId ? readOnlyAncestorIds.has(propertiesNodeId) : false}
+				returnFocusRef={propertiesReturnFocusRef}
+				onNavigateNode={handlePropertiesNavigateNode}
+				onClose={handlePropertiesModalClose}
 			/>
 		</aside>
 	);

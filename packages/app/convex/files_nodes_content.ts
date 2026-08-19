@@ -79,10 +79,15 @@ import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_authorize_node, access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { files_metadata_db_delete_committed_frontmatter, files_metadata_db_insert_committed } from "./files_metadata.ts";
+import {
+	files_metadata_db_delete_committed_frontmatter,
+	files_metadata_db_insert_committed,
+	files_metadata_entry_fields,
+} from "./files_metadata.ts";
 import {
 	files_metadata_frontmatter_exceeds_index_caps,
 	files_metadata_preflight_frontmatter,
+	type files_metadata_Entry,
 } from "../shared/files-metadata.ts";
 import type { files_pending_updates_stage_trusted_yjs_update_Result } from "./files_pending_updates.ts";
 import {
@@ -773,6 +778,13 @@ export const create_file_node = internalMutation({
 		syncRunId: v.optional(v.string()),
 		/** Tenant assets already uploaded to R2. Add deletion jobs when this mutation refuses them. */
 		unpublishedAssetIds: v.optional(v.array(v.id("files_r2_assets"))),
+		/**
+		 * File metadata that says where the file came from, written on the created file only. Only
+		 * `create_file_node_internal` passes it, for the reserved-scope mirrors. The eager-create
+		 * path must never pass it. A node with committed `metadata.` docs can no longer be
+		 * hard-deleted, so discarding the proposal would leave the empty file behind forever.
+		 */
+		metadata: v.optional(v.array(v.object(files_metadata_entry_fields))),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -938,6 +950,7 @@ export const create_file_node = internalMutation({
 			assetId: args.assetId,
 			archiveOperationId: args.archiveOperationId,
 			expectsTextContent: true,
+			metadata: args.metadata,
 			now,
 			mut_createdAncestorIds: createdAncestorIds,
 		});
@@ -1149,6 +1162,16 @@ export const create_file_node_internal = internalAction({
 		if ((args.mountId == null) !== (args.syncRunId == null)) {
 			return Result({ _nay: { message: "External mount sync run requires mountId and syncRunId" } });
 		}
+
+		// Say where a mirrored file came from, so `meta search` can tell a GitHub mount file from a
+		// plugin source file. The workspace the file lands in is the only thing that separates them.
+		const metadata: files_metadata_Entry[] = [
+			{
+				key: "source",
+				value: args.workspaceId === organizations_GLOBAL_GITHUB_WORKSPACE_ID ? "github-mount" : "plugin-source",
+			},
+		];
+
 		if (args.mountId != null && args.syncRunId != null) {
 			// Sync-run validation is a GitHub-mirror concept; plugin source publishes never pass it.
 			if (args.workspaceId !== organizations_GLOBAL_GITHUB_WORKSPACE_ID) {
@@ -1159,9 +1182,13 @@ export const create_file_node_internal = internalAction({
 				return Result({ _nay: { message: "External mount sync was superseded" } });
 			}
 			// Materialized paths always live inside the run's pending commit root `/<name>/<sha>/...`.
-			if (mount.pendingCommitSha == null || !args.path.startsWith(`/${mount.name}/${mount.pendingCommitSha}/`)) {
+			const mountRoot = mount.pendingCommitSha == null ? null : `/${mount.name}/${mount.pendingCommitSha}/`;
+			if (mountRoot === null || !args.path.startsWith(mountRoot)) {
 				return Result({ _nay: { message: "External mount path does not belong to the pending sync root" } });
 			}
+			// The stored path starts with the mount name and the commit sha. Keep what follows, so the
+			// file also carries the path the repository itself uses.
+			metadata.push({ key: "repo-path", value: args.path.slice(mountRoot.length) });
 		}
 
 		const byteSize = files_get_utf8_byte_size(args.rawText);
@@ -1226,6 +1253,7 @@ export const create_file_node_internal = internalAction({
 					readOnly: true,
 					mountId: args.mountId,
 					syncRunId: args.syncRunId,
+					metadata,
 				})) as create_file_node_Result;
 			} catch (error) {
 				lastCreateError = error;

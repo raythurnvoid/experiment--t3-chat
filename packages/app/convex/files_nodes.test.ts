@@ -7446,9 +7446,13 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 		[],
 	);
 	if (first._nay) throw new Error(first._nay.message);
+	// The upload already stamped where the file came from, and the agent's door only changes the
+	// keys it names, so those two keys come first in the list.
 	expect(first._yay).toEqual({
 		path,
 		entries: [
+			{ key: "source", value: "upload" },
+			{ key: "original-name", value: "contract.pdf" },
 			{ key: "created-by", value: "agent" },
 			{ key: "status", value: "draft" },
 			{ key: "pages", value: 12 },
@@ -7465,6 +7469,8 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 	);
 	if (second._nay) throw new Error(second._nay.message);
 	expect(second._yay.entries).toEqual([
+		{ key: "source", value: "upload" },
+		{ key: "original-name", value: "contract.pdf" },
 		{ key: "created-by", value: "agent" },
 		{ key: "status", value: "signed" },
 		{ key: "signed-on", value: "2026-08-18" },
@@ -7496,6 +7502,204 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 	});
 	if (locked._nay) throw new Error(locked._nay.message);
 	expect(await setByPath([{ key: "status", value: "tampered" }], [])).toMatchObject({ _nay: { name: "read_only" } });
+});
+
+describe("create-time metadata", () => {
+	async function read_metadata_docs(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
+		return await t.run(async (ctx) =>
+			(await ctx.db.query("files_metadata_docs").collect()).filter(
+				(doc) => doc.fileNodeId === nodeId && doc.qualifiedField.startsWith("metadata."),
+			),
+		);
+	}
+
+	test("a browser upload stamps its source and the name the client sent", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Upload Metadata User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "quarterly-report.pdf",
+			contentType: "application/pdf",
+			size: 1234,
+		});
+		if (upload._nay) throw new Error(upload._nay.message);
+
+		expect(
+			await asUser.query(api.files_metadata.get_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: upload._yay.nodeId,
+			}),
+		).toEqual([
+			{ key: "source", value: "upload" },
+			{ key: "original-name", value: "quarterly-report.pdf" },
+		]);
+
+		// The publish owns the size and the media type, so the create must stamp neither. Check the
+		// stored docs, because the entries above are read back through the same writer that made them.
+		expect((await read_metadata_docs(t, upload._yay.nodeId)).map((doc) => doc.qualifiedField).sort()).toEqual([
+			"metadata.original-name",
+			"metadata.original-name",
+			"metadata.source",
+			"metadata.source",
+		]);
+
+		// The map is searchable straight away, without anybody opening the file.
+		expect(
+			(
+				await asUser.query(internal.files_metadata.search, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					plan: { op: "eq", qualifiedField: "metadata.source", value: "upload" },
+					numItems: 10,
+					cursor: null,
+				})
+			).items,
+		).toMatchObject([{ path: "/quarterly-report.pdf", nodeId: upload._yay.nodeId }]);
+	});
+
+	test("a folder import keeps the relative path and leaves its folders without a map", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Folder Import Metadata User",
+		});
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [{ relativePath: "notes/2026/summary.md", contentType: "text/markdown", size: 12 }],
+		});
+		if (imported._nay) throw new Error(imported._nay.message);
+		const created = imported._yay.created[0];
+		if (!created) throw new Error("Expected the import to create one file");
+
+		expect(
+			await asUser.query(api.files_metadata.get_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: created.nodeId,
+			}),
+		).toEqual([
+			{ key: "source", value: "upload" },
+			{ key: "original-name", value: "summary.md" },
+			{ key: "import-relative-path", value: "notes/2026/summary.md" },
+		]);
+
+		// The walk creates two folders on the way to the file. A folder must carry no map, because
+		// `set_entries` refuses a node that is not a file. Nobody could ever change or clear a map
+		// that sat on a folder.
+		const folderIds = await t.run(async (ctx) =>
+			(
+				await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId),
+					)
+					.collect()
+			)
+				.filter((node) => node.kind === "folder")
+				.map((node) => node._id),
+		);
+		expect(folderIds).toHaveLength(2);
+		for (const folderId of folderIds) {
+			expect(await read_metadata_docs(t, folderId)).toEqual([]);
+		}
+	});
+
+	test("an agent eager-created node gets no map and stays hard-deletable", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/eager-metadata.md",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		if (!created._yay.created || created._yay.createdCommittedSequence === undefined) {
+			throw new Error("Expected create_file_by_path to create a fresh node");
+		}
+
+		// A stamp here would be permanent: `files_nodes_db_is_eager_node_safe_to_hard_delete` keeps
+		// any node that has committed `metadata.` docs, so discarding the proposal would leave the
+		// empty file behind forever.
+		expect(await read_metadata_docs(t, created._yay.nodeId)).toEqual([]);
+
+		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId: created._yay.nodeId,
+			eagerCreatedCommittedSequence: created._yay.createdCommittedSequence,
+		});
+		expect(removed._yay.removed).toBe(true);
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", created._yay.nodeId)).toBeNull();
+		});
+	});
+
+	test("the upload publish merges the real size and media type into the create-time keys", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Upload Publish Metadata User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "scan.png",
+			contentType: "image/png",
+			// The client declares one size. The R2 event below reports another one.
+			size: 10,
+		});
+		if (upload._nay) throw new Error(upload._nay.message);
+
+		const stagingKey = await t.run(
+			async (ctx) => (await ctx.db.get("files_r2_assets", upload._yay.assetId))?.uploadStagingR2Key,
+		);
+		if (!stagingKey) throw new Error("Expected a staged upload asset");
+
+		await t.mutation(internal.r2.process_uploaded_asset_event, {
+			assetId: upload._yay.assetId,
+			r2Key: r2_create_asset_key({
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				assetId: upload._yay.assetId,
+			}),
+			uploadStagingR2Key: stagingKey,
+			size: 2048,
+			etag: "etag-upload-properties",
+			eventId: "upload-properties-event",
+		});
+
+		// The create-time keys survive, and the publish appends what only it knows.
+		expect(
+			await asUser.query(api.files_metadata.get_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: upload._yay.nodeId,
+			}),
+		).toEqual([
+			{ key: "source", value: "upload" },
+			{ key: "original-name", value: "scan.png" },
+			{ key: "size", value: 2048 },
+			{ key: "mime-type", value: "image/png" },
+		]);
+	});
 });
 
 test("text_search_files scopes pending hits to a path prefix without sibling-prefix leakage", async () => {
@@ -9088,7 +9292,10 @@ describe("external/system mount text materialization (Phase D)", () => {
 		expect(docs.plainTextChunks.map((chunk) => chunk.plainTextChunk).join("")).toBe(MOUNT_RAW_TEXT);
 		expect(docs.textChunks.every((chunk) => chunk.yjsSequence === undefined)).toBe(true);
 		expect(docs.plainTextChunks.every((chunk) => chunk.yjsSequence === undefined)).toBe(true);
-		expect(docs.metadataDocs).toEqual([]);
+		// A mount file indexes no frontmatter. Its only entry is the stamp that records where the
+		// file came from.
+		expect(docs.metadataDocs.map((doc) => doc.qualifiedField)).toEqual(["metadata.source", "metadata.source"]);
+		expect(docs.metadataDocs.find((doc) => doc.docKind === "value")?.stringValue).toBe("github-mount");
 		expect(docs.yjsSnapshots).toEqual([]);
 		expect(docs.yjsLastSequences).toEqual([]);
 	});

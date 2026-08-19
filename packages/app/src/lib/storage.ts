@@ -67,7 +67,6 @@ const storage_local_schema = {
 				case "app_file_editor_sidebar_tabs_agent":
 				case "app_file_editor_sidebar_tabs_pending":
 				case "app_file_editor_sidebar_tabs_details":
-				case "app_file_editor_sidebar_tabs_metadata":
 					return raw;
 				default:
 					return null;

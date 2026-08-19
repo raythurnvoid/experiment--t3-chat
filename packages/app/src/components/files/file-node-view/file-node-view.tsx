@@ -15,7 +15,7 @@ import {
 } from "@/components/files/file-editor/file-editor.tsx";
 import { FilesSidebarToggle } from "../files-sidebar-toggle.tsx";
 import { FilesShareModal } from "../files-share-modal.tsx";
-import { FilesReadOnlyModal } from "../files-read-only-modal.tsx";
+import { FilesPropertiesModal } from "../files-properties-modal.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -306,8 +306,8 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 				: "inherited";
 
 	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
-	const [readOnlyNodeId, setReadOnlyNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
-	const readOnlyTriggerRef = useRef<HTMLButtonElement>(null);
+	const [propertiesNodeId, setPropertiesNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	const propertiesTriggerRef = useRef<HTMLButtonElement>(null);
 
 	const handleEditorModeChange = useFn((mode: string) => {
 		onEditorModeChange(mode as FileEditor_Mode);
@@ -323,14 +323,14 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 		setShareNodeId(null);
 	});
 
-	const handleReadOnlyClick = useFn(() => {
+	const handlePropertiesClick = useFn(() => {
 		if (currentNode) {
-			setReadOnlyNodeId(currentNode._id);
+			setPropertiesNodeId(currentNode._id);
 		}
 	});
 
-	const handleReadOnlyModalClose = useFn(() => {
-		setReadOnlyNodeId(null);
+	const handlePropertiesModalClose = useFn(() => {
+		setPropertiesNodeId(null);
 	});
 
 	return (
@@ -365,12 +365,15 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 							</li>
 							<li>
 								<MyIconButton
-									ref={readOnlyTriggerRef}
+									ref={propertiesTriggerRef}
 									variant="ghost-highlightable"
-									tooltip={currentNode?.readOnlyState === "writable" ? "Read-only settings" : "Read-only"}
-									aria-label={`Read-only settings for ${currentNode?.name}`}
+									// The lock icon already shows whether the file is locked, so the tooltip says what
+									// the button opens instead of repeating that. Keep the word "read-only" in the
+									// tooltip of a locked file, because on a locked file the icon is the warning.
+									tooltip={currentNode?.readOnlyState === "writable" ? "Properties" : "Read-only. Open properties"}
+									aria-label={`Properties of ${currentNode?.name}`}
 									data-file-read-only={currentNode?.readOnlyState ?? undefined}
-									onClick={handleReadOnlyClick}
+									onClick={handlePropertiesClick}
 								>
 									<MyIconButtonIcon>
 										<LockKeyhole aria-hidden />
@@ -466,14 +469,14 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 			</div>
 
 			<FilesShareModal nodeId={shareNodeId} onClose={handleShareModalClose} />
-			<FilesReadOnlyModal
-				nodeId={readOnlyNodeId}
+			<FilesPropertiesModal
+				nodeId={propertiesNodeId}
 				nodeName={currentNode?.name ?? "file"}
 				nodeKind={currentNode?.kind ?? "file"}
 				hasVisibleReadOnlyDescendant={currentNode ? readOnlyAncestorIds.has(currentNode._id) : false}
-				returnFocusRef={readOnlyTriggerRef}
+				returnFocusRef={propertiesTriggerRef}
 				onNavigateNode={onNavigateNode}
-				onClose={handleReadOnlyModalClose}
+				onClose={handlePropertiesModalClose}
 			/>
 		</div>
 	);

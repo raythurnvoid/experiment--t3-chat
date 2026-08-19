@@ -538,7 +538,7 @@ const app_convex_schema = defineSchema({
 		archiveOperationId: v.optional(v.string()),
 		qualifiedField: v.string(),
 		/**
-		 * Where this key sits in the file's metadata map, counting from 0. The metadata panel is a
+		 * Where this key sits in the file's metadata map, counting from 0. The Properties modal is a
 		 * YAML text editor, so reading the map back in index order would reorder the user's lines on
 		 * every save. Set on `metadata.*` value docs only; frontmatter docs leave it unset.
 		 */

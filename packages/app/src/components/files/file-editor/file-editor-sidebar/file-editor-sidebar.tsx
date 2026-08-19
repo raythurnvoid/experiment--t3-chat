@@ -3,7 +3,6 @@ import { memo, type Ref } from "react";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { FileEditorSidebarAgent } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx";
 import { FileEditorSidebarDetails } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-details.tsx";
-import { FileEditorSidebarMetadata } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-metadata.tsx";
 import { FileEditorSidebarPending } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending.tsx";
 import {
 	FILE_EDITOR_SIDEBAR_TAB_ID_PENDING,
@@ -18,7 +17,6 @@ import { cn } from "@/lib/utils.ts";
 const FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS = "app_file_editor_sidebar_tabs_comments" satisfies AppElementId;
 const FILE_EDITOR_SIDEBAR_TAB_ID_AGENT = "app_file_editor_sidebar_tabs_agent" satisfies AppElementId;
 const FILE_EDITOR_SIDEBAR_TAB_ID_DETAILS = "app_file_editor_sidebar_tabs_details" satisfies AppElementId;
-const FILE_EDITOR_SIDEBAR_TAB_ID_METADATA = "app_file_editor_sidebar_tabs_metadata" satisfies AppElementId;
 
 // #region root
 export type FileEditorSidebar_ClassNames =
@@ -49,13 +47,10 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 		node.kind === "file" &&
 		files_node_has_editable_yjs_state(node) &&
 		node.yjsRootKind === "plain_text";
-	// Only a file carries metadata. A folder, and the empty selection, have no Metadata tab.
-	const fileNode = node !== null && node.kind === "file" ? node : null;
 	const availableTabIds: AppElementId[] = (
 		[
 			isPlainTextFile ? FILE_EDITOR_SIDEBAR_TAB_ID_DETAILS : FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS,
 			FILE_EDITOR_SIDEBAR_TAB_ID_AGENT,
-			fileNode ? FILE_EDITOR_SIDEBAR_TAB_ID_METADATA : null,
 			FILE_EDITOR_SIDEBAR_TAB_ID_PENDING,
 		] satisfies (AppElementId | null)[]
 	).filter((tabId) => tabId !== null);
@@ -89,7 +84,6 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 							<MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}>Comments</MyTabsTab>
 						)}
 						<MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT}>Agent</MyTabsTab>
-						{fileNode ? <MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_METADATA}>Metadata</MyTabsTab> : null}
 						<MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_PENDING}>
 							Pending changes
 							<FileEditorSidebarPendingTabBadge />
@@ -125,21 +119,6 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 					>
 						<FileEditorSidebarAgent rootTabId={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT} />
 					</MyTabsPanel>
-					{fileNode ? (
-						<MyTabsPanel
-							className={cn("FileEditorSidebar-panel" satisfies FileEditorSidebar_ClassNames)}
-							tabId={FILE_EDITOR_SIDEBAR_TAB_ID_METADATA}
-							// Keep Monaco out of the DOM until the tab is opened, so opening any file does not
-							// build a code editor nobody looked at.
-							unmountOnHide
-						>
-							<FileEditorSidebarMetadata
-								// Start from the new file's own metadata when another file opens.
-								key={fileNode._id}
-								node={fileNode}
-							/>
-						</MyTabsPanel>
-					) : null}
 					<MyTabsPanel
 						className={cn("FileEditorSidebar-panel" satisfies FileEditorSidebar_ClassNames)}
 						tabId={FILE_EDITOR_SIDEBAR_TAB_ID_PENDING}

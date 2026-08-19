@@ -1,0 +1,195 @@
+@layer components {
+	/* #region root */
+	.FilesPropertiesModal {
+		width: min(38rem, calc(100vw - 2rem));
+	}
+
+	.FilesPropertiesModal-body {
+		display: flex;
+		flex-direction: column;
+	}
+
+	/* Separate the three groups with one thin line, instead of putting a card around each group. */
+	.FilesPropertiesModal-section {
+		padding: 14px 0;
+
+		border-top: 1px solid var(--color-base-1-05);
+
+		&:first-child {
+			padding-top: 0;
+			border-top: none;
+		}
+
+		&:last-child {
+			padding-bottom: 0;
+		}
+	}
+
+	.FilesPropertiesModal-section-heading {
+		margin: 0 0 10px;
+
+		font-size: 13px;
+		font-weight: 600;
+		letter-spacing: 0.01em;
+		color: var(--color-fg-11);
+	}
+
+	.FilesPropertiesModal-unsaved {
+		margin: 0;
+
+		font-size: 12px;
+		color: var(--color-fg-08);
+	}
+
+	.FilesPropertiesModal-footer-spacer {
+		flex: 1;
+	}
+	/* #endregion root */
+
+	/* #region facts */
+	.FilesPropertiesModalFacts {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+
+		margin: 0;
+	}
+
+	.FilesPropertiesModalFacts-row {
+		display: grid;
+		grid-template-columns: 130px minmax(0, 1fr);
+		gap: 16px;
+		align-items: baseline;
+	}
+
+	.FilesPropertiesModalFacts-label {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--color-fg-08);
+	}
+
+	.FilesPropertiesModalFacts-value {
+		margin: 0;
+
+		overflow-wrap: anywhere;
+
+		font-size: 13px;
+		color: var(--color-fg-11);
+	}
+
+	.FilesPropertiesModalFacts-skeleton {
+		height: 16px;
+		width: 90px;
+	}
+	/* #endregion facts */
+
+	/* #region read-only */
+	.FilesPropertiesModalReadOnly {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	/* `.MyButton` is built for a short centered label on one line. This one carries a sentence, so
+	   allow wrapping. Without it the description only wraps because of its own `text-wrap: pretty`,
+	   and removing that typography property would silently push the text out of the box. */
+	.FilesPropertiesModalReadOnly-checkbox {
+		align-items: start;
+
+		height: auto;
+
+		padding: 12px;
+
+		white-space: normal;
+		text-align: start;
+	}
+
+	.FilesPropertiesModalReadOnly-text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		/* Fill the line. `.MyButton` centers its content, so a text block narrower than the row is
+		   pushed to the middle, and the description wraps at its own width instead of the row width. */
+		flex: 1;
+		min-width: 0;
+	}
+
+	.FilesPropertiesModalReadOnly-label {
+		font-size: 13px;
+		font-weight: 500;
+	}
+
+	.FilesPropertiesModalReadOnly-description {
+		font-size: 12px;
+		line-height: 1.4;
+		font-weight: 400;
+		color: var(--color-fg-08);
+
+		text-wrap: pretty;
+	}
+
+	.FilesPropertiesModalReadOnly-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.FilesPropertiesModalReadOnly-error {
+		margin: 0;
+
+		font-size: 13px;
+		color: var(--color-red-11);
+	}
+	/* #endregion read-only */
+
+	/* #region metadata */
+	.FilesPropertiesModalMetadata {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.FilesPropertiesModalMetadata-description {
+		margin: 0;
+
+		font-size: 12px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+
+		text-wrap: pretty;
+	}
+
+	.FilesPropertiesModalMetadata-editor {
+		overflow: hidden;
+
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+
+		background: var(--color-base-1-01);
+	}
+
+	.FilesPropertiesModalMetadata-skeleton {
+		height: 160px;
+	}
+
+	.FilesPropertiesModalMetadata-actions {
+		display: flex;
+		align-items: center;
+		justify-content: end;
+		gap: 12px;
+	}
+
+	.FilesPropertiesModalMetadata-status {
+		margin: 0 auto 0 0;
+
+		font-size: 13px;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+	}
+
+	.FilesPropertiesModalMetadata-status-error {
+		color: var(--color-red-11);
+	}
+	/* #endregion metadata */
+}
