@@ -2937,6 +2937,46 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		expect(await get_deletion_job_by_key(t, upload.liveKey)).toBeNull();
 	});
 
+	test("deletes the kept placeholder on the next sweep once the lock is gone", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture(t, db, "sweeper-unlocked.png");
+		const now = Date.now() + 8 * DAY_MS + 16 * 60 * 1000;
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", upload.nodeId, {
+				readOnlyScopeNodeId: upload.nodeId,
+			});
+			await ctx.db.patch("files_r2_assets", upload.assetId, {
+				unfinalizedExpiresAt: now - 1,
+			});
+		});
+
+		const keptSweep = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+			_test_now: now,
+			_test_disableReschedule: true,
+		});
+		expect(keptSweep).toEqual({ deletedCount: 0, done: true });
+
+		// The lock only delays the cleanup, it does not cancel it. After a manager unlocks the file,
+		// the recheck the sweep scheduled finishes the abandoned upload. Otherwise one lock would keep
+		// a failed placeholder and its two R2 keys alive forever.
+		await t.run(async (ctx) =>
+			ctx.db.patch("files_nodes", upload.nodeId, {
+				readOnlyScopeNodeId: undefined,
+			}),
+		);
+		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+			_test_now: now + 7 * DAY_MS + 1,
+			_test_disableReschedule: true,
+		});
+
+		expect(swept).toEqual({ deletedCount: 1, done: true });
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", upload.nodeId))).toBeNull();
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toBeNull();
+		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({ reason: "upload_staging" });
+		expect(await get_deletion_job_by_key(t, upload.liveKey)).toMatchObject({ reason: "untracked_asset_event" });
+	});
+
 	test("recovers a text upload whose compressed head answer hides the object size", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));

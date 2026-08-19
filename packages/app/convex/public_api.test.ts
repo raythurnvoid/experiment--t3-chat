@@ -3669,6 +3669,10 @@ describe("files read-only locks", () => {
 		}
 		expect(await find_active_node({ t, db: writer.db, path: "/locked-dir/other.md" })).toBeNull();
 		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+		// The refusal happened while preparing, before the stage uploaded anything. A refusal that
+		// only came at publish time would have uploaded both R2 objects first and left cleanup jobs
+		// for them behind.
+		expect(await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toEqual([]);
 
 		// Unlock the folder and prove the same write now works.
 		await set_lock({ writer, nodeId: folder!._id, locked: false });

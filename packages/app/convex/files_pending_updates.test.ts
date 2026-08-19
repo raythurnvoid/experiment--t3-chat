@@ -17141,4 +17141,641 @@ describe("pending update read-only checks", () => {
 			).toContain("Source");
 		});
 	});
+
+	test("a locked file refuses the content batch before any Yjs state is staged", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-batch-door.md",
+				name: "pending-read-only-batch-door.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only batch door user",
+		});
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+
+		// The editor asks for a batch before it uploads any branch state. Refusing here keeps the
+		// client from uploading Yjs pages that could never be committed.
+		const batch = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(batch._nay?.name).toBe("read_only");
+		expect(await t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect())).toEqual([]);
+	});
+
+	test("the agent proposal path refuses a locked file", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-agent-path.md",
+				name: "pending-read-only-agent-path.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only agent path user",
+		});
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+
+		// The agent creates its batch server-side, so it never passes the public batch door above.
+		// An agent write is still a normal write and has to stop at the lock.
+		const proposed = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "# Agent draft",
+		});
+		expect(proposed._nay?.name).toBe("read_only");
+		expect(
+			await t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+				}),
+			),
+		).toBeNull();
+	});
+
+	test("a lock taken while the content action runs refuses the commit mutation", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-commit-barrier.md",
+				name: "pending-read-only-commit-barrier.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only commit barrier user",
+		});
+
+		// Hold the action inside its snapshot read, then lock. The action already checked the lock,
+		// so only the commit mutation can still refuse this write.
+		const normalFetch = globalThis.fetch;
+		let releaseSnapshotFetch: (() => void) | undefined;
+		const snapshotFetchBlocked = new Promise<void>((resolve) => {
+			releaseSnapshotFetch = resolve;
+		});
+		let announceSnapshotFetch: (() => void) | undefined;
+		const snapshotFetchStarted = new Promise<void>((resolve) => {
+			announceSnapshotFetch = resolve;
+		});
+		let blocked = false;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				if (!blocked && url.startsWith("https://r2.test/object?key=")) {
+					blocked = true;
+					announceSnapshotFetch?.();
+					await snapshotFetchBlocked;
+				}
+				return await normalFetch(input, init);
+			}),
+		);
+
+		const proposing = upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "# Draft",
+		});
+		await snapshotFetchStarted;
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+		releaseSnapshotFetch?.();
+		const proposed = await proposing;
+
+		expect(proposed._nay?.name).toBe("read_only");
+		expect(
+			await t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+				}),
+			),
+		).toBeNull();
+	});
+
+	test("a lock before the refresh final mutation refuses and keeps the proposal", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-refresh-refusal.md",
+				name: "pending-read-only-refresh-refusal.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only refresh refusal user",
+		});
+		const proposed = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "# Draft",
+		});
+		expect(proposed._nay).toBeUndefined();
+		const pendingRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!pendingRow) {
+			throw new Error("Missing proposal before refresh refusal");
+		}
+		const batch = await t.mutation(
+			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+			{
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			},
+		);
+		if (batch._nay) {
+			throw new Error(batch._nay.message);
+		}
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+
+		// A refresh rewrites the stored branches, so it is a write and the lock stops it. The
+		// proposal itself stays, so the user can still read or discard it.
+		const refreshed = await t.mutation(internal.files_pending_updates.refresh_file_pending_update_in_db, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			operationBatchId: batch._yay.operationBatchId,
+			pendingUpdateId: pendingRow._id,
+			expectedUpdatedAt: pendingRow.updatedAt,
+		});
+		expect(refreshed._nay?.name).toBe("read_only");
+		expect((await t.run((ctx) => ctx.db.get("files_pending_updates", pendingRow._id)))?.updatedAt).toBe(
+			pendingRow.updatedAt,
+		);
+	});
+
+	test("a lock before the rebase final mutation refuses and keeps the proposal", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-rebase-refusal.md",
+				name: "pending-read-only-rebase-refusal.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only rebase refusal user",
+		});
+		const proposed = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "# Draft",
+		});
+		expect(proposed._nay).toBeUndefined();
+		const [pendingRow, fileState] = await Promise.all([
+			t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+				}),
+			),
+			t.run((ctx) =>
+				read_file_yjs_state({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					nodeId: seeded.nodeId,
+				}),
+			),
+		]);
+		if (!pendingRow) {
+			throw new Error("Missing proposal before rebase refusal");
+		}
+		const staged = await stage_and_seal_input_family_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			baseYjsUpdate: fileState.yjsUpdate,
+			stagedBranchYjsUpdate: fileState.yjsUpdate,
+			unstagedBranchYjsUpdate: fileState.yjsUpdate,
+		});
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+
+		// A rebase replaces the stored branch states, so it writes and the lock stops it.
+		const rebased = await asUser.mutation(internal.files_pending_updates.commit_file_pending_update_rebase_in_db, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: pendingRow._id,
+			operationBatchId: staged.operationBatchId,
+			expectedUpdatedAt: pendingRow.updatedAt,
+			baseYjsSequence: fileState.yjsSequence,
+			baseLineageGeneration: 0,
+			baseStateId: staged.base.stateId,
+			stagedStateId: staged.staged.stateId,
+			unstagedStateId: staged.unstaged.stateId,
+			baseStateDigest: staged.base.digest,
+			stagedStateDigest: staged.staged.digest,
+			unstagedStateDigest: staged.unstaged.digest,
+			unstagedText: seeded.baseMarkdown,
+		});
+		expect(rebased._nay?.name).toBe("read_only");
+		expect((await t.run((ctx) => ctx.db.get("files_pending_updates", pendingRow._id)))?.updatedAt).toBe(
+			pendingRow.updatedAt,
+		);
+	});
+
+	test("a lock taken while the save action runs refuses the save mutation", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-save-barrier.md",
+				name: "pending-read-only-save-barrier.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only save barrier user",
+		});
+		const proposed = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: "# Save barrier draft",
+			unstagedMarkdown: "# Save barrier draft",
+		});
+		expect(proposed._nay).toBeUndefined();
+
+		// Hold the save action inside its snapshot read, then lock. The action already checked the
+		// lock, so only the final save mutation can still refuse this write.
+		const normalFetch = globalThis.fetch;
+		let releaseSnapshotFetch: (() => void) | undefined;
+		const snapshotFetchBlocked = new Promise<void>((resolve) => {
+			releaseSnapshotFetch = resolve;
+		});
+		let announceSnapshotFetch: (() => void) | undefined;
+		const snapshotFetchStarted = new Promise<void>((resolve) => {
+			announceSnapshotFetch = resolve;
+		});
+		let blocked = false;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				if (!blocked && url.startsWith("https://r2.test/object?key=")) {
+					blocked = true;
+					announceSnapshotFetch?.();
+					await snapshotFetchBlocked;
+				}
+				return await normalFetch(input, init);
+			}),
+		);
+
+		const saving = asUser.action(api.ai_chat.save_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		await snapshotFetchStarted;
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+		releaseSnapshotFetch?.();
+		const saved = await saving;
+
+		expect(saved._nay?.name).toBe("read_only");
+		await t.run(async (ctx) => {
+			expect(
+				await read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+				}),
+			).not.toBeNull();
+			expect(
+				await read_file_markdown_from_yjs({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					nodeId: seeded.nodeId,
+				}),
+			).not.toContain("Save barrier draft");
+		});
+	});
+
+	test("a locked move source or a locked file inside a moved folder refuses the move proposal", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) => {
+			const membership = await test_mocks_fill_db_with.membership(ctx);
+			const file = await seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-move-leaf.md",
+				name: "pending-read-only-move-leaf.md",
+				markdown: "# Leaf",
+				membership,
+			});
+			const folderId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				path: "/pending-read-only-move-folder",
+				name: "pending-read-only-move-folder",
+			});
+			const child = await seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-move-folder/child.md",
+				name: "child.md",
+				markdown: "# Child",
+				membership,
+			});
+			await ctx.db.patch("files_nodes", child.nodeId, { parentId: folderId });
+			return { ...membership, leafNodeId: file.nodeId, folderId, childNodeId: child.nodeId };
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only move source user",
+		});
+
+		// A move renames the node itself, so a lock on the moved file refuses the proposal.
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.leafNodeId);
+		const refusedLeaf = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.leafNodeId,
+			destParentId: files_ROOT_ID,
+			destName: "pending-read-only-move-leaf-renamed.md",
+		});
+		expect(refusedLeaf._nay?.name).toBe("read_only");
+
+		// Moving the folder moves every file under it too, so one locked child refuses the whole
+		// proposal even though the folder itself is writable.
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.childNodeId);
+		const refusedFolder = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.folderId,
+			destParentId: files_ROOT_ID,
+			destName: "pending-read-only-move-folder-renamed",
+		});
+		expect(refusedFolder._nay?.name).toBe("read_only");
+		expect(
+			await t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.folderId,
+				}),
+			),
+		).toBeNull();
+	});
+
+	test("a locked move destination or a locked file inside the replaced folder refuses the move proposal", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) => {
+			const membership = await test_mocks_fill_db_with.membership(ctx);
+			const file = await seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-move-dest-file.md",
+				name: "pending-read-only-move-dest-file.md",
+				markdown: "# Mover",
+				membership,
+			});
+			const destFolderId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				path: "/pending-read-only-move-dest",
+				name: "pending-read-only-move-dest",
+			});
+			const sourceFolderId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				path: "/pending-read-only-move-src-folder",
+				name: "pending-read-only-move-src-folder",
+			});
+			const occupantFolderId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				path: "/pending-read-only-move-occupant-folder",
+				name: "pending-read-only-move-occupant-folder",
+			});
+			const occupantChild = await seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-move-occupant-folder/child.md",
+				name: "child.md",
+				markdown: "# Occupant child",
+				membership,
+			});
+			await ctx.db.patch("files_nodes", occupantChild.nodeId, { parentId: occupantFolderId });
+			return {
+				...membership,
+				fileNodeId: file.nodeId,
+				destFolderId,
+				sourceFolderId,
+				occupantFolderId,
+				occupantChildNodeId: occupantChild.nodeId,
+			};
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only move destination user",
+		});
+
+		// Dropping a file into a folder adds a child entry to that folder, so a locked destination
+		// refuses the proposal.
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.destFolderId);
+		const refusedDestination = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.fileNodeId,
+			destParentId: seeded.destFolderId,
+			destName: "pending-read-only-move-dest-file.md",
+		});
+		expect(refusedDestination._nay?.name).toBe("read_only");
+
+		// A folder may replace a folder that has no active child. Accepting that replace archives the
+		// occupant with everything below it, so a locked archived file under it refuses the proposal.
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: seeded.membershipId,
+			nodeIds: [seeded.occupantChildNodeId],
+		});
+		expect(archived._nay).toBeUndefined();
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.occupantChildNodeId);
+		const refusedOccupant = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.sourceFolderId,
+			destParentId: files_ROOT_ID,
+			destName: "pending-read-only-move-occupant-folder",
+			replace: true,
+		});
+		expect(refusedOccupant._nay?.name).toBe("read_only");
+		expect(
+			await t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.sourceFolderId,
+				}),
+			),
+		).toBeNull();
+	});
+
+	test("a locked file refuses its own archive proposal", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-archive-self.md",
+				name: "pending-read-only-archive-self.md",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only archive self user",
+		});
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+
+		const proposed = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		expect(proposed._nay?.name).toBe("read_only");
+		expect(
+			await t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+				}),
+			),
+		).toBeNull();
+	});
+
+	test("a lock on the file or on an active descendant refuses the archive accept", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) => {
+			const membership = await test_mocks_fill_db_with.membership(ctx);
+			const file = await seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-archive-accept.md",
+				name: "pending-read-only-archive-accept.md",
+				markdown: "# Base",
+				membership,
+			});
+			const folderId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				path: "/pending-read-only-archive-accept-folder",
+				name: "pending-read-only-archive-accept-folder",
+			});
+			const child = await seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-archive-accept-folder/child.md",
+				name: "child.md",
+				markdown: "# Child",
+				membership,
+			});
+			await ctx.db.patch("files_nodes", child.nodeId, { parentId: folderId });
+			return { ...membership, fileNodeId: file.nodeId, folderId, childNodeId: child.nodeId };
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only archive accept user",
+		});
+		for (const nodeId of [seeded.fileNodeId, seeded.folderId]) {
+			const proposed = await upsert_file_pending_archive_for_test({
+				t,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId,
+			});
+			if (proposed._nay) {
+				throw new Error(proposed._nay.message);
+			}
+		}
+
+		// Both proposals were made while everything was writable. Accept checks the current lock
+		// again: once on the node itself, and once on every active file the archive would sweep.
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.fileNodeId);
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.childNodeId);
+		const refusedFile = await asUser.mutation(api.files_pending_updates.apply_file_pending_archive, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.fileNodeId,
+		});
+		expect(refusedFile._nay?.name).toBe("read_only");
+		const refusedFolder = await asUser.mutation(api.files_pending_updates.apply_file_pending_archive, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.folderId,
+		});
+		expect(refusedFolder._nay?.name).toBe("read_only");
+		await t.run(async (ctx) => {
+			expect((await ctx.db.get("files_nodes", seeded.fileNodeId))?.archiveOperationId).toBeUndefined();
+			expect((await ctx.db.get("files_nodes", seeded.folderId))?.archiveOperationId).toBeUndefined();
+		});
+	});
 });

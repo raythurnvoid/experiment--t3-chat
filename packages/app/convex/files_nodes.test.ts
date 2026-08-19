@@ -11605,6 +11605,48 @@ describe("files_nodes.set_node_writable", () => {
 	});
 });
 
+describe("files_nodes.get_node_read_only_management_state", () => {
+	test("a node with no lock above it reports the writable state", async () => {
+		const t = test_convex();
+		const { db, asUser, siblingId } = await seed_read_only_lock_tree(t);
+
+		// The Properties dialog draws its checkbox and its description line from this result, so a
+		// node nobody locked must report no lock, no parent lock, and no source to name.
+		const state = await asUser.query(api.files_nodes.get_node_read_only_management_state, {
+			membershipId: db.membershipId,
+			nodeId: siblingId,
+		});
+		expect(state).toEqual({
+			nodeId: siblingId,
+			canManage: true,
+			readOnlyState: "writable",
+			hasInheritedParentLock: false,
+			source: null,
+		});
+	});
+
+	test("a direct lock with no locked parent reports self and names no source", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+
+		// For a direct lock the source means "a lock above this node", never the node itself.
+		// `/outer` sits at the root, so unticking the box here makes it writable at once and the
+		// dialog must not offer to manage another folder.
+		const state = await asUser.query(api.files_nodes.get_node_read_only_management_state, {
+			membershipId: db.membershipId,
+			nodeId: outerId,
+		});
+		expect(state).toEqual({
+			nodeId: outerId,
+			canManage: true,
+			readOnlyState: "self",
+			hasInheritedParentLock: false,
+			source: null,
+		});
+	});
+});
+
 describe("files_node_require_writable", () => {
 	test("a node with no pointer is writable", () => {
 		expect(files_node_require_writable({ readOnlyScopeNodeId: undefined })._nay).toBeUndefined();
@@ -12615,6 +12657,48 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 			throw new Error(pushed._nay.message);
 		}
 		expect(pushed._yay.newSequence).toBe(1);
+	});
+});
+
+describe("files_nodes read-only reads", () => {
+	test("a locked file still reads its content", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Only Read User",
+		});
+
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "locked-source",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+		const source = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay.nodeId,
+			path: "source.md",
+		});
+		if (source._nay) {
+			throw new Error(source._nay.message);
+		}
+		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
+
+		// A lock stops writes, never reads. Copying a locked file out starts with this read, so a
+		// lock check added here would break copy-out and every agent read as well.
+		const read = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/locked-source/source.md",
+			mode: { kind: "full", maxBytes: files_get_utf8_byte_size(files_INITIAL_CONTENT) + 1000 },
+		});
+		expect(read?.content).toBe(files_INITIAL_CONTENT);
 	});
 });
 
