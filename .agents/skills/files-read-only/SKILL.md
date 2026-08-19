@@ -241,6 +241,7 @@ A checkbox cannot say which of the four states the node is in, so the line under
 
 Two extra rules the checkbox alone does not carry:
 
+- While the lock write is in flight the box stays enabled and carries `aria-busy="true"`; `handleCheckedChange` ignores the second press instead. Do not disable it for the in-flight state. A browser blurs a focused element as soon as it becomes disabled, so a keyboard user who pressed Space would be thrown out of the dialog onto `<body>`. Only the static reasons (no manage permission, an inherited lock) disable the box, and both are already true before anybody can focus it.
 - An inherited lock is owned by a folder above, so this node cannot release it. The box is disabled. When the caller can manage the lock, two buttons appear instead: `Manage <source path>` (navigates, only when the source is readable) and `Also lock here`, which calls `set_node_read_only`. That direct lock changes nothing today; it keeps the node read-only if somebody unlocks the folder above later.
 - `canManage === false` disables the box and appends `You cannot change this.` to the description.
 

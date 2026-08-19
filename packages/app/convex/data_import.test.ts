@@ -92,6 +92,37 @@ describe("data_import.create_upload_targets", () => {
 		);
 	});
 
+	test("stamps the import source and the original name on every created file", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+
+		const created = await t.mutation(internal.data_import.create_upload_targets, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			items: [{ path: "/meetings/team-sync/video.mp4", contentType: "video/mp4", size: 1234 }],
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const metadataDocs = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", created._yay[0]!.nodeId),
+				)
+				.collect(),
+		);
+		const stamps = Object.fromEntries(
+			metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.qualifiedField, doc.stringValue]),
+		);
+		expect(stamps).toEqual({ "metadata.source": "import", "metadata.original-name": "video.mp4" });
+	});
+
 	test("finalizing an imported Markdown asset records the object without starting processing", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));

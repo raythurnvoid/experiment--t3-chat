@@ -459,3 +459,26 @@ Return the raw audit object, or read the four names above exactly. Also expect t
 any dialog holding a Monaco editor: Monaco's `div.native-edit-context` appears in `smallTargets` and
 in `blockedHitTargets`, covered by its own `div.view-line`. A `MyCheckboxButton` adds a third, its
 1px `input.MyCheckboxButton-control`, whose `<label>` is the real click target.
+
+## Disabling a focused control mid-action throws keyboard focus to `<body>`
+
+A control that disables itself while its own async work runs looks correct and tests green, but the
+browser blurs a focused element the moment it becomes disabled, and nothing restores focus when it
+is re-enabled. In a modal that is a focus-trap escape: the next Tab restarts from the top of the
+document. Found 2026-08-19 on the read-only checkbox in the file Properties dialog, on the happy
+path, not only on a refusal.
+
+jsdom does not reproduce the blur, so a unit test asserting focus passes while the real app fails.
+Catch it in the browser by recording the trail rather than sampling the end state — add `focusin` /
+`focusout` listeners plus a `MutationObserver` on the control's `disabled` attribute, then read them
+after the action:
+
+```
+focusout input.MyCheckboxButton-control
+checkbox disabled=true  active=body   ← the write disables it
+checkbox disabled=false active=body   ← re-enabled, focus never returns
+```
+
+The fix is the pattern the repo already uses for a blocked Save: keep the element focusable, report
+the transient state with `aria-busy`, and let the click handler ignore the repeat press. Reserve the
+real `disabled` property for static reasons that are already true before the control can be focused.

@@ -57,6 +57,7 @@ import { files_metadata_MAX_FRONTMATTER_FIELDS, type files_metadata_SearchPlan }
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
@@ -7687,7 +7688,8 @@ describe("create-time metadata", () => {
 			eventId: "upload-properties-event",
 		});
 
-		// The create-time keys survive, and the publish appends what only it knows.
+		// The create-time keys survive the publish. Size and media type are not here on purpose: the
+		// node and its asset already hold them, and the Properties dialog reads them from there.
 		expect(
 			await asUser.query(api.files_metadata.get_entries, {
 				membershipId: db.membershipId,
@@ -7696,8 +7698,6 @@ describe("create-time metadata", () => {
 		).toEqual([
 			{ key: "source", value: "upload" },
 			{ key: "original-name", value: "scan.png" },
-			{ key: "size", value: 2048 },
-			{ key: "mime-type", value: "image/png" },
 		]);
 	});
 });
@@ -9298,6 +9298,38 @@ describe("external/system mount text materialization (Phase D)", () => {
 		expect(docs.metadataDocs.find((doc) => doc.docKind === "value")?.stringValue).toBe("github-mount");
 		expect(docs.yjsSnapshots).toEqual([]);
 		expect(docs.yjsLastSequences).toEqual([]);
+	});
+
+	// The stamp value is one ternary on the workspace, and the test above only walks the GitHub
+	// side of it. Swapping the two words would leave every test green while `meta search` for
+	// plugin sources returned mount files instead.
+	test("stamps a plugin source file with its own source value", async () => {
+		const t = test_convex();
+		install_r2_object_capture();
+
+		// The publish stores each file under the version id, the way plugins.publish_version does.
+		const created = await t.action(internal.files_nodes_content.create_file_node_internal, {
+			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+			path: "/plugin_version_1/src/main.ts",
+			rawText: "export const main = () => {};",
+		});
+		if (created._nay) {
+			throw new Error(`Expected plugin source node creation to succeed: ${created._nay.message}`);
+		}
+
+		const metadataDocs = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+					q
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.eq("fileNodeId", created._yay.nodeId),
+				)
+				.collect(),
+		);
+		expect(metadataDocs.map((doc) => doc.qualifiedField)).toEqual(["metadata.source", "metadata.source"]);
+		expect(metadataDocs.find((doc) => doc.docKind === "value")?.stringValue).toBe("plugin-source");
 	});
 
 	test("grep-style line matching maps to raw source line numbers", async () => {

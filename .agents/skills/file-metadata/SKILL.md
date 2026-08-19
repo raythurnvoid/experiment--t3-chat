@@ -32,7 +32,7 @@ Entries are indexed in the same `files_metadata_docs` table that Markdown frontm
 | Source | Prefix | Written by |
 | --- | --- | --- |
 | Markdown YAML frontmatter | `frontmatter.` | content materialization, from the file's own text |
-| Metadata next to the file | `metadata.` | a user in the Properties modal, or an agent |
+| Metadata next to the file | `metadata.` | a user in the Properties modal, an agent, or a file-creation flow (see "Metadata Written By The File-Creation Flows") |
 
 Both prefixes are exported from `shared/files-metadata.ts`. A range over one source bounds at
 `frontmatter/` or `metadata/`, because `/` (0x2F) is the next character after `.` (0x2E), so the
@@ -112,7 +112,7 @@ object assignment, so a key such as `__proto__` stays an ordinary key.
 `files_metadata_extract_frontmatter` returns `Result`. Both parsers guard the same `parseDocument`
 throw, but they answer it differently on purpose:
 
-- The Properties parser refuses and shows the user a message. The user is editing that YAML by hand, so
+- The entries parser refuses and shows the user a message. The user is editing that YAML by hand, so
   they need to know why Save did nothing.
 - The frontmatter parser returns `_nay` and every caller keeps saving. The user is saving a *file*
   and the frontmatter is only part of it. Refusing would leave them unable to store their own text,
@@ -169,10 +169,10 @@ only when Convex auth has no usable identity.
 # Metadata Written By The File-Creation Flows
 
 The two doors above are the only doors a person or an agent can knock on. The file-creation flows
-write the map directly with `files_metadata_db_write_entries` (create) and
-`files_metadata_db_merge_entries` (publish), both exported from `files_metadata.ts`.
+write the map directly with `files_metadata_db_write_entries`, exported from `files_metadata.ts`.
+They write it once, at create time, and nothing writes metadata later.
 
-Those two writers check nothing on purpose. A create runs before anybody could have an opinion about
+That writer checks nothing on purpose. A create runs before anybody could have an opinion about
 that file, and mount files and plugin source mirrors are created read-only with a SYSTEM author, so
 `db_authorize_metadata_write` and `files_node_require_writable` would refuse the very writes that
 say where the file came from. Keep both doors as they are for user writes.
@@ -206,20 +206,15 @@ commit sha, so that root is cut off before the value is stored.
   `action_create_file_node` with the eager path, and a user creating a file in the app already knows
   where it came from.
 
-## Why `size` and `mime-type` are stamped at publish, not at create
+## Size and media type are not metadata
 
-At create time both values are client input. The declared size is only what the browser said, and
-the stored media type is the client's until the upload conversion replaces it with the classifier's.
-So both keys are written later, merged into whatever the create already stamped:
+The file's size lives on its `files_r2_assets` doc and its media type on `files_nodes.contentType`.
+Both are real columns the app already reads, and the Properties dialog shows them as facts above the
+map. So do not copy them into the map. A copy would go stale the moment the upload conversion
+replaces the bytes or the classifier picks a different type, and the user could delete or edit it,
+because everything in the map is the user's to change.
 
-- `r2.process_uploaded_asset_event` — every upload passes here once, with the size R2 really stored.
-  It writes `size` from the event and `mime-type` from the node's current `contentType`.
-- `db_finalize_editable_text_file_node_from_r2_assets` in `r2.ts` — the upload conversion replaces
-  the node's media type with the classifier's and its bytes with the normalized text, so it writes
-  both keys again with the published values. Without this second write, a folder-imported `.md`
-  would keep the client-declared type forever.
-
-Merging matters: a plain `files_metadata_db_write_entries` would delete the create-time keys.
+The map is for what only the creating flow knows: where the file came from, and under what name.
 
 # Surfaces
 
@@ -298,8 +293,8 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 - `packages/app/convex/files_nodes.test.ts` — the `metadata` tests: search next to frontmatter,
   surviving a content save, the pending-overlay exemption, refusals, and the agent door on an upload.
   The `create-time metadata` describe covers the create-flow stamps: an upload's keys, a
-  folder import's relative path with empty folders, the eager-create exclusion, and the publish
-  merge.
+  folder import's relative path with empty folders, the eager-create exclusion, the plugin source
+  mirror's own `source` value, and the publish leaving the create-time map alone.
 - `packages/app/convex/files_pending_updates.test.ts` — a save whose frontmatter the parser cannot
   read still stores the text and writes no metadata docs.
 - `packages/app/server/server-ai-tools.test.ts` — the `set_file_metadata` tool.

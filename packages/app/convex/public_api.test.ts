@@ -769,6 +769,60 @@ describe("public files API", () => {
 		});
 	});
 
+	// A file the public API creates says so, so a member can tell API-written files from what
+	// somebody uploaded or the agent wrote.
+	test("POST /api/v1/files/write stamps the api source on a file it creates", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-stamp" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-stamp",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Stamp writer",
+			scopes: ["files:read", "files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		const credential = created._yay!.credential;
+
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/api-stamped/report.md", content: "# Title\n" }),
+		});
+		expect(written.status).toBe(200);
+
+		const metadataDocs = await t.run(async (ctx) => {
+			const node = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("path", "/api-stamped/report.md")
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			if (!node) {
+				throw new Error("Expected the written file node");
+			}
+			return await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", node._id),
+				)
+				.collect();
+		});
+		expect(
+			Object.fromEntries(
+				metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.qualifiedField, doc.stringValue]),
+			),
+		).toEqual({ "metadata.source": "api" });
+	});
+
 	test("POST /api/v1/files/write with CRLF content stores LF everywhere", async () => {
 		const t = test_convex();
 		install_r2_object_reads();

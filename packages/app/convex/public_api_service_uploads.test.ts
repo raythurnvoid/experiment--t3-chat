@@ -570,6 +570,36 @@ describe("service upload targets", () => {
 		expect(conflicting.status).toBe(409);
 	});
 
+	test("stamps the plugin source, the original name and the plugin name on a created target", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+
+		const target = (await read_targets(t))[0]!;
+		const metadataDocs = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("fileNodeId", target.nodeId),
+				)
+				.collect(),
+		);
+		expect(
+			Object.fromEntries(
+				metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.qualifiedField, doc.stringValue]),
+			),
+		).toEqual({
+			"metadata.source": "plugin",
+			"metadata.original-name": "recording.mp4",
+			"metadata.plugin-name": "council",
+		});
+	});
+
 	test("a markdown target runs the upload conversion and still settles committed", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);

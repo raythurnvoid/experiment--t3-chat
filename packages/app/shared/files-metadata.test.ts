@@ -361,7 +361,7 @@ describe("files_metadata_parse_entries_yaml", () => {
 	});
 
 	// The library adds the offending lines and a caret below its message. Keep one line, because the
-	// panel and the toast both collapse the whitespace that frame is drawn with.
+	// modal and the toast both collapse the whitespace that frame is drawn with.
 	test("refuses invalid YAML and duplicate keys, with a one-line reason", () => {
 		expect(files_metadata_parse_entries_yaml("a: [1, 2")._nay?.message).toMatch(/^Metadata must be valid YAML: /u);
 		expect(files_metadata_parse_entries_yaml("a: 1\na: 2")._nay?.message).toBe(
@@ -433,8 +433,8 @@ describe("files_metadata_validate_entries", () => {
 	});
 
 	// The agent writes entries directly, so without this the agent could store a map that stays under
-	// the key and value caps but no longer fits the YAML document the panel is allowed to save.
-	test("refuses a map that would not fit the panel's YAML cap", () => {
+	// the key and value caps but no longer fits the YAML document the modal is allowed to save.
+	test("refuses a map that would not fit the modal's YAML cap", () => {
 		const entries = Array.from({ length: 32 }, (_unused, index) => ({
 			key: `key-${index}`,
 			value: "x".repeat(1000),

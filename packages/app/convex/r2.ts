@@ -62,9 +62,7 @@ import {
 	files_metadata_MAX_FRONTMATTER_FIELDS,
 	files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
 	files_metadata_preflight_frontmatter,
-	type files_metadata_Entry,
 } from "../shared/files-metadata.ts";
-import { files_metadata_db_merge_entries } from "./files_metadata.ts";
 import app_convex_schema from "./schema.ts";
 import {
 	db_get_file_content_materialization_db_state,
@@ -949,25 +947,6 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		}),
 	]);
 
-	// The conversion changed two things about the node. It replaced the media type with the one the
-	// classifier picked, and it replaced the bytes with the normalized text. The R2 event already
-	// stamped `size` and `mime-type`, using the upload's own size and the type the client declared.
-	// Both are wrong now, so write those two keys again with what the file really is.
-	const publishedNode = await ctx.db.get("files_nodes", args.fileNodeId);
-	if (!publishedNode) {
-		const errorMessage = "args.fileNodeId points to a missing files_nodes doc";
-		const errorData = { fileNodeId: args.fileNodeId };
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-	await files_metadata_db_merge_entries(ctx, {
-		fileNode: publishedNode,
-		set: [
-			{ key: "size", value: args.versionSnapshotSize },
-			{ key: "mime-type", value: args.contentType },
-		],
-	});
-
 	return Result({ _yay: null });
 }
 
@@ -1365,15 +1344,6 @@ export const process_uploaded_asset_event = internalMutation({
 			});
 			return Result({ _yay: null });
 		}
-
-		// Stamp the two values the create could not know. The size the client declared is not the size
-		// that landed, and this event reports what R2 really stored. Merge, so the keys the create
-		// stamped (source, original name, …) stay.
-		const publishedEntries: files_metadata_Entry[] = [{ key: "size", value: args.size }];
-		if (fileNode.contentType !== undefined) {
-			publishedEntries.push({ key: "mime-type", value: fileNode.contentType });
-		}
-		await files_metadata_db_merge_entries(ctx, { fileNode, set: publishedEntries });
 
 		// Route by the classifier over the node NAME, never by the client-declared contentType:
 		// `.md` converts to a rich text document, the plain-text allow-list converts to `Y.Text`

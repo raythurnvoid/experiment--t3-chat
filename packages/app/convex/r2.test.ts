@@ -2096,6 +2096,17 @@ describe("r2 asset content", () => {
 		expect(docs.asset?.processingWorkId).toBeNull();
 		// The over-cap frontmatter is committed as chunk content but never indexed.
 		expect(docs.metadataDocs.filter((doc) => doc.qualifiedField.startsWith("frontmatter."))).toHaveLength(0);
+		// The publish writes no metadata of its own, so the map is still exactly what the create
+		// stamped. A publish-time write that replaced instead of merging would delete these.
+		const metadataValues = Object.fromEntries(
+			docs.metadataDocs
+				.filter((doc) => doc.docKind === "value" && doc.qualifiedField.startsWith("metadata."))
+				.map((doc) => [doc.qualifiedField, doc.stringValue ?? doc.numberValue]),
+		);
+		expect(metadataValues).toEqual({
+			"metadata.source": "upload",
+			"metadata.original-name": "frontmatter-overcap.md",
+		});
 		// Only stored-blob exits dispatch the plugin upload event. This publish is a
 		// successful conversion, so it keeps the suppression every other conversion has.
 		expect(docs.pluginRun).toBeNull();

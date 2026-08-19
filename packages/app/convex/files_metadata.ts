@@ -1025,35 +1025,6 @@ export async function files_metadata_db_write_entries(
 }
 
 /**
- * Set some metadata keys on a file without touching the keys it already has.
- *
- * The upload publish uses this. A create stamps what it knows, and the publish adds the keys only
- * the finished upload knows. A plain replace would delete the create-time keys, so the current map
- * is read first and the new keys are merged into it.
- *
- * This function checks nothing either, for the same reason `files_metadata_db_write_entries` checks
- * nothing. The publish finishes an upload that the create already accepted.
- */
-export async function files_metadata_db_merge_entries(
-	ctx: MutationCtx,
-	args: {
-		fileNode: Doc<"files_nodes">;
-		set: files_metadata_Entry[];
-	},
-) {
-	const currentEntries = await db_read_metadata(ctx, {
-		organizationId: args.fileNode.organizationId,
-		workspaceId: args.fileNode.workspaceId,
-		fileNodeId: args.fileNode._id,
-	});
-
-	await files_metadata_db_write_entries(ctx, {
-		fileNode: args.fileNode,
-		entries: files_metadata_apply_set_and_remove(currentEntries, { set: args.set, remove: [] }),
-	});
-}
-
-/**
  * The write door for file metadata.
  *
  * Metadata uses the same `content.write` permission as the file's content, because metadata is part
@@ -1183,7 +1154,7 @@ export const set_entries = mutation({
 			return authorized;
 		}
 
-		// The panel parses the same text before it calls, so the user normally sees a mistake without
+		// The modal parses the same text before it calls, so the user normally sees a mistake without
 		// spending a write. This is the real door: any other caller can send anything.
 		const parsed = files_metadata_parse_entries_yaml(args.metadataYaml);
 		if (parsed._nay) {

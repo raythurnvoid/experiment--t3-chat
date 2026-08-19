@@ -3,6 +3,7 @@ import { StrictMode, createRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { users_SYSTEM_AUTHOR } from "../../../shared/users.ts";
 
 const {
 	mutationMock,
@@ -149,6 +150,8 @@ type ManagementState = {
 
 function mockQueries(args: {
 	management?: ManagementState;
+	node?: typeof NODE;
+	asset?: { size: number } | null;
 	entries?: { key: string; value: string | number | boolean }[];
 	canWrite?: boolean;
 }) {
@@ -162,10 +165,10 @@ function mockQueries(args: {
 			);
 		}
 		if (query === "get_file_node_for_membership") {
-			return NODE;
+			return args.node ?? NODE;
 		}
 		if (query === "get_asset_by_file_node_id") {
-			return { size: 2048 };
+			return args.asset === undefined ? { size: 2048 } : args.asset;
 		}
 		if (query === "get_anagraphic") {
 			return { displayName: "Ada" };
@@ -250,6 +253,73 @@ describe("FilesPropertiesModalFacts", () => {
 		expect(screen.queryByText("Content type")).toBeNull();
 		expect(screen.queryByText("Size")).toBeNull();
 	});
+
+	// The test above reads the row names. The work is in the values: two author lookups, a skipped
+	// lookup for the author the app uses for its own writes, and the size of the stored blob.
+	test("shows the value in every row, and System for a file the app itself last wrote", () => {
+		mockQueries({ node: { ...NODE, updatedBy: users_SYSTEM_AUTHOR }, entries: [], canWrite: true });
+
+		renderModal();
+
+		const labels = Array.from(document.querySelectorAll(".FilesPropertiesModalFacts-label")).map(
+			(element) => element.textContent,
+		);
+		expect(labels).toEqual([
+			"Content type",
+			"Size",
+			"Location",
+			"Created",
+			"Created by",
+			"Last edited",
+			"Last edited by",
+		]);
+		const rowValue = (label: string) =>
+			Array.from(document.querySelectorAll(".FilesPropertiesModalFacts-row"))
+				.find((row) => row.querySelector(".FilesPropertiesModalFacts-label")?.textContent === label)
+				?.querySelector(".FilesPropertiesModalFacts-value")?.textContent;
+		expect(rowValue("Content type")).toBe("text/markdown");
+		expect(rowValue("Size")).toBe("2.0 KB");
+		expect(rowValue("Location")).toBe("/docs");
+		expect(rowValue("Created by")).toBe("Ada");
+		expect(rowValue("Last edited by")).toBe("System");
+
+		// SYSTEM is not a real user id, so its lookup must be skipped instead of sent.
+		expect(useQueryMock).toHaveBeenCalledWith("get_anagraphic", { userId: "user_1" });
+		expect(useQueryMock).toHaveBeenCalledWith("get_anagraphic", "skip");
+	});
+
+	// A file written in the app keeps its text in chunks and has no stored blob, so there is no
+	// size to report.
+	test("shows the size as Unknown for a file with no stored asset", () => {
+		mockQueries({ asset: null, entries: [], canWrite: true });
+
+		renderModal();
+
+		const sizeRow = Array.from(document.querySelectorAll(".FilesPropertiesModalFacts-row")).find(
+			(row) => row.querySelector(".FilesPropertiesModalFacts-label")?.textContent === "Size",
+		);
+		expect(sizeRow?.querySelector(".FilesPropertiesModalFacts-value")?.textContent).toBe("Unknown");
+	});
+
+	// The two author lookups answer after the node does. Rendering the rows as soon as the node
+	// arrives would leave both author values blank for a moment, so every row waits for all of them.
+	test("keeps skeleton rows while the author lookups are still loading", () => {
+		useQueryMock.mockImplementation((query: unknown) => {
+			if (query === "get_file_node_for_membership") {
+				return NODE;
+			}
+			if (query === "get_asset_by_file_node_id") {
+				return { size: 2048 };
+			}
+			return undefined;
+		});
+
+		renderModal();
+
+		expect(document.querySelectorAll(".FilesPropertiesModalFacts-row")).toHaveLength(7);
+		expect(document.querySelectorAll(".FilesPropertiesModalFacts-skeleton").length).toBeGreaterThan(0);
+		expect(screen.queryByText("Content type")).toBeNull();
+	});
 });
 
 describe("FilesPropertiesModalReadOnly", () => {
@@ -322,9 +392,13 @@ describe("FilesPropertiesModalReadOnly", () => {
 
 		renderModal();
 		const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
+		checkbox.focus();
 		fireEvent.click(checkbox);
 
-		expect(checkbox.disabled).toBe(true);
+		// The box must stay enabled while the write runs. A browser blurs a focused element as soon as
+		// it becomes disabled, and live QA showed that throws a keyboard user out to <body>.
+		expect(checkbox.disabled).toBe(false);
+		expect(document.activeElement).toBe(checkbox);
 		expect(checkbox.getAttribute("aria-busy")).toBe("true");
 
 		fireEvent.click(checkbox);
