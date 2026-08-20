@@ -182,6 +182,7 @@ Note: `paginationOpts` is an object with the following properties:
 - Always import the schema definition functions from `convex/server`.
 - System fields are automatically added to all documents and are prefixed with an underscore. The two system fields that are automatically added to all documents are `_creationTime` which has the validator `v.number()` and `_id` which has the validator `v.id(tableName)`.
 - Always include all index fields in the index name using underscore-separated camelCase parts. For example, if an index is defined as `["field1", "field2"]`, the index name should be `by_field1_field2`.
+- Keep every index name at 64 characters or fewer. Convex rejects longer names during the push even when TypeScript and unit tests pass; shorten repeated field words consistently when the full name would exceed the limit.
 - For object ID fields, name the indexed object instead of repeating the field's `Id` suffix. For example, `["userId", "organizationId", "lastMessageAt"]` should use an index name like `by_user_organization_lastMessageAt`.
 - Index fields must be queried in the same order they are defined. If you want to be able to query by "field1" then "field2" and by "field2" then "field1", you must create separate indexes.
 - Do not store unbounded lists as an array field inside a document (e.g. `v.array(v.object({...}))`). As the array grows it will hit the 1MB document size limit, and every update rewrites the entire document. Instead, create a separate table for the child items with a foreign key back to the parent.

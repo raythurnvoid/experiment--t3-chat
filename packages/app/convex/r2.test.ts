@@ -4300,6 +4300,7 @@ describe("r2_enqueue_object_deletion_job", () => {
 		const farFuture = Date.now() + 60 * 60 * 1000;
 		const enqueue = async (args: {
 			r2Key: string;
+			assetId?: Id<"files_r2_assets">;
 			putMayArriveUntil?: number;
 			r2EventId?: string;
 			mode?: "advance" | "ensure";
@@ -4344,6 +4345,12 @@ describe("r2_enqueue_object_deletion_job", () => {
 		// "ensure" never advances an existing job but creates a missing one.
 		await enqueue({ r2Key: "test/ledger-key", mode: "ensure" });
 		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({ generation: 4 });
+		const linkedUpload = await create_upload_fixture(t, db, "ensure-linked.png");
+		await enqueue({ r2Key: "test/ledger-key", mode: "ensure", assetId: linkedUpload.assetId });
+		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({
+			generation: 4,
+			assetId: linkedUpload.assetId,
+		});
 		await enqueue({ r2Key: "test/ledger-other", mode: "ensure", putMayArriveUntil: farFuture });
 		expect(await get_deletion_job_by_key(t, "test/ledger-other")).toMatchObject({ generation: 1 });
 

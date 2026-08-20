@@ -3078,6 +3078,10 @@ export const discard_failed_upload_node = mutation({
 		if (asset.kind !== "upload" || asset.r2Key !== undefined) {
 			return Result({ _yay: { removed: false } });
 		}
+		const serviceTarget = await ctx.db
+			.query("plugin_service_storage_targets")
+			.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
+			.first();
 
 		// Keep the failed upload node while it is read-only.
 		// This cleanup deletes the node, so the lock must also block it.
@@ -3086,6 +3090,7 @@ export const discard_failed_upload_node = mutation({
 			return nodeWritable;
 		}
 
+		const now = Date.now();
 		const liveR2Key = r2_create_asset_key({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -3098,7 +3103,7 @@ export const discard_failed_upload_node = mutation({
 			r2Key: uploadStagingR2Key,
 			reason: "upload_staging",
 			putMayArriveUntil:
-				(asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? Date.now()) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+				(asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
 		});
 		if (liveR2Key !== uploadStagingR2Key) {
 			// The copy may reach the final key before the event saves `r2Key`.
@@ -3108,6 +3113,21 @@ export const discard_failed_upload_node = mutation({
 				workspaceId: membership.workspaceId,
 				r2Key: liveR2Key,
 				reason: "untracked_asset_event",
+				// A service event may already be copying staging bytes here. Keep the job until that
+				// accepted work has enough time to finish.
+				putMayArriveUntil:
+					serviceTarget?.state === "pending"
+						? now + files_UPLOAD_URL_TTL_MS + r2_PUT_MAY_ARRIVE_MARGIN_MS
+						: undefined,
+			});
+		}
+
+		// This member action ends a service upload too. Release its replay state in the same transaction
+		// that removes the asset, so a late R2 event can settle any extra stored bytes exactly once.
+		if (serviceTarget?.state === "pending") {
+			await ctx.db.patch("plugin_service_storage_targets", serviceTarget._id, {
+				state: "released",
+				updatedAt: now,
 			});
 		}
 

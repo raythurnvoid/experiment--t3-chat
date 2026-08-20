@@ -4708,6 +4708,18 @@ describe("delete_workspace", () => {
 				workspaceId: extraWorkspace._yay!.workspaceId,
 				tag: "delete-ws",
 			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "plugin_service_storage_bytes",
+				organizationId: created._yay!.organizationId,
+				workspaceId: extraWorkspace._yay!.workspaceId,
+				now: Date.now(),
+			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "public_api_upload_bytes",
+				organizationId: created._yay!.organizationId,
+				workspaceId: extraWorkspace._yay!.workspaceId,
+				now: Date.now(),
+			});
 		});
 
 		const result = await asUser.mutation(api.organizations.delete_workspace, {
@@ -4721,7 +4733,7 @@ describe("delete_workspace", () => {
 				requests,
 				user,
 				organizationQuota,
-				apiCredentialQuotaDocs,
+				workspaceQuotaDocs,
 				roleAssignments,
 				permissionGrants,
 				files,
@@ -4739,9 +4751,7 @@ describe("delete_workspace", () => {
 				}),
 				ctx.db
 					.query("quotas")
-					.withIndex("by_workspace_quotaName", (q) =>
-						q.eq("workspaceId", extraWorkspace._yay!.workspaceId).eq("quotaName", "active_api_credentials"),
-					)
+					.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", extraWorkspace._yay!.workspaceId))
 					.collect(),
 				ctx.db
 					.query("access_control_role_assignments")
@@ -4776,7 +4786,7 @@ describe("delete_workspace", () => {
 				),
 				user,
 				organizationQuota,
-				apiCredentialQuotaDocs,
+				workspaceQuotaDocs,
 				roleAssignments,
 				permissionGrants,
 				files: files.filter(
@@ -4813,7 +4823,11 @@ describe("delete_workspace", () => {
 		expect(after_delete.aiMessages).toHaveLength(1);
 		expect(after_delete.chatMessages).toHaveLength(1);
 		expect(after_delete.organizationQuota?.usedCount).toBe(0);
-		expect(after_delete.apiCredentialQuotaDocs).toHaveLength(0);
+		// The service budget stays through retention so a late R2 event can still settle its target.
+		expect(after_delete.workspaceQuotaDocs.map((doc) => doc.quotaName)).toEqual([
+			"plugin_service_storage_bytes",
+			"public_api_upload_bytes",
+		]);
 		expect(after_delete.roleAssignments).toHaveLength(0);
 		expect(after_delete.permissionGrants).toHaveLength(0);
 		expect(after_delete.user?.defaultOrganizationId).toBe(personalDefaultIds.organizationId);
@@ -4823,13 +4837,18 @@ describe("delete_workspace", () => {
 			requestId: after_delete.requests[0]!._id,
 		});
 
-		const purgeRequestsAfter = await t.run(async (ctx) =>
-			(await ctx.db.query("data_deletion_requests").collect()).filter(
+		const { purgeRequestsAfter, workspaceQuotaDocsAfter } = await t.run(async (ctx) => ({
+			purgeRequestsAfter: (await ctx.db.query("data_deletion_requests").collect()).filter(
 				(row) =>
 					row.organizationId === created._yay!.organizationId && row.workspaceId === extraWorkspace._yay!.workspaceId,
 			),
-		);
+			workspaceQuotaDocsAfter: await ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", extraWorkspace._yay!.workspaceId))
+				.collect(),
+		}));
 		expect(purgeRequestsAfter).toHaveLength(0);
+		expect(workspaceQuotaDocsAfter).toHaveLength(0);
 	});
 
 	test("requires workspace.delete from a non-owner", async () => {

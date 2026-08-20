@@ -277,7 +277,9 @@ async function discover_tracks(env: Env, step: WorkflowStep, meeting: council_Me
 				}
 				return { done: false, fileNames: [] as string[], stillRecording: true };
 			}
-			if (recording._yay.trackFiles.length > 0) {
+			// The provider may expose a partial file list while it is still uploading. Wait for the
+			// terminal recording so retries always choose the same complete set.
+			if (recording._yay.status === "UPLOADED" || recording._yay.status === "STOPPED") {
 				const now = Date.now();
 				for (const file of recording._yay.trackFiles) {
 					await env.COUNCIL_DB.prepare(
@@ -288,11 +290,6 @@ async function discover_tracks(env: Env, step: WorkflowStep, meeting: council_Me
 						.run();
 				}
 				return { done: true, fileNames: recording._yay.trackFiles.map((file) => file.fileName) };
-			}
-			// A terminal recording with zero tracks is the "nothing usable was captured" case, not a
-			// wait-longer case.
-			if (recording._yay.status === "UPLOADED" || recording._yay.status === "STOPPED") {
-				return { done: true, fileNames: [] as string[] };
 			}
 			return { done: false, fileNames: [] as string[], stillRecording: false };
 		});
@@ -647,8 +644,8 @@ async function upload_artifact(
 		committed = target._yay;
 	} else {
 		let pending = target._yay;
-		// The signed URL lives fifteen minutes. When a replay hands back a stale one, remint a
-		// fresh URL for the same staging key — nothing is recharged and no second node appears.
+		// The signed URL lives fifteen minutes. When a replay hands back a stale one, remint the same
+		// target. Nothing is recharged and no second node appears; stale cleanup may replace its asset.
 		if (pending.uploadUrlExpiresAt <= Date.now()) {
 			const fresh = await council_convex_uploads_remint(env, args.grantToken, {
 				idempotencyKey: meeting_upload_key(args.meeting),

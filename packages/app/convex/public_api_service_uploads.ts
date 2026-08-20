@@ -3,16 +3,18 @@
  * `public_api_service_uploads_http.ts`.
  *
  * A sealed processing-phase service grant uploads a closed meeting's files here: it creates one
- * upload target per file under the grant's destination prefix, and finalizes each target after the
- * R2 pipeline confirmed the object. When the meeting is deleted later, a fresh grant sealed to the
- * same destination archives that whole folder, because deleting a file in this product means
- * archiving it. The generic `/api/v1/files/*` routes stay closed to service grants on purpose; this
- * narrower door is the only file surface a service reaches.
+ * upload target per file under the grant's destination prefix. The R2 event confirms and commits
+ * the target; the service polls finalize for that answer. When the meeting is deleted later, a fresh
+ * grant sealed to the same destination archives that whole folder, because deleting a file in this
+ * product means archiving it. The generic `/api/v1/files/*` routes stay closed to service grants on
+ * purpose; this narrower door is the only file surface a service reaches.
  *
- * Accounting: creating a target charges its declared size to the workspace's
- * `plugin_service_storage_bytes` quota, and that counter only grows. Deleting a stored file gives
- * nothing back, exactly like `public_api_upload_bytes` on the normal upload path. A file whose real
- * object turns out bigger than declared is charged the difference when it settles.
+ * Accounting: creating a target charges nothing. The size in the request is only the service's
+ * guess, and a signed PUT does not bind how many bytes actually arrive. The workspace is charged
+ * once, for the size R2 confirms for the stored object. Creating a target only refuses a workspace
+ * whose `plugin_service_storage_bytes` quota is already full, which stops the next file rather than
+ * the current one. That counter only grows: deleting a stored file gives nothing back, exactly like
+ * `public_api_upload_bytes` on the normal upload path.
  *
  * The quota is a budget, not a guard. A signed PUT does not bind the object's length, so a service
  * can always store more than it declared; the settle below charges it, it does not prevent it.
@@ -31,7 +33,7 @@ import {
 	files_nodes_db_hard_delete_node,
 	files_nodes_db_require_swept_nodes_writable,
 } from "./files_nodes.ts";
-import { quotas_db_ensure } from "./quotas.ts";
+import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import {
 	r2_create_asset_key,
 	r2_create_upload_staging_key,
@@ -59,6 +61,10 @@ import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
 
 /** Same window as `/api/v1/files/upload-urls` mints (FILES_UPLOAD_URL_TTL_MS in public_api.ts). */
 const UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
+/** Bound placeholder and target growth for one service processing run. */
+const MAX_TARGETS_PER_UPLOAD_RUN = 16;
+/** Bound live cross-run cleanup for one target key inside one sealed destination. */
+const MAX_LIVE_TARGETS_PER_DELETE_GROUP = 16;
 
 /**
  * Names for the refusals whose HTTP status is not the default 400, read by the route module the
@@ -199,15 +205,6 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 	return Result({ _yay: { installation } });
 }
 
-async function db_get_quota(ctx: MutationCtx, workspaceId: Id<"organizations_workspaces">) {
-	return await ctx.db
-		.query("quotas")
-		.withIndex("by_workspace_quotaName", (q) =>
-			q.eq("workspaceId", workspaceId).eq("quotaName", "plugin_service_storage_bytes"),
-		)
-		.first();
-}
-
 // #endregion shared
 
 // #region targets
@@ -235,53 +232,336 @@ async function db_get_target(
 		.first();
 }
 
+async function db_get_destination(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		installationId: Id<"plugins_workspace_installations">;
+		destinationPath: string;
+	},
+) {
+	return await ctx.db
+		.query("plugin_service_storage_destinations")
+		.withIndex("by_organization_workspace_installation_destinationPath", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("installationId", args.installationId)
+				.eq("destinationPath", args.destinationPath),
+		)
+		.first();
+}
+
+async function db_open_destination_epoch(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		installationId: Id<"plugins_workspace_installations">;
+		destinationPath: string;
+		now: number;
+	},
+) {
+	const existing = await db_get_destination(ctx, args);
+	if (!existing) {
+		await ctx.db.insert("plugin_service_storage_destinations", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			installationId: args.installationId,
+			destinationPath: args.destinationPath,
+			currentEpoch: 1,
+			closedEpoch: 0,
+			updatedAt: args.now,
+		});
+		return 1;
+	}
+	if (existing.currentEpoch > existing.closedEpoch) {
+		return existing.currentEpoch;
+	}
+	const nextEpoch = existing.currentEpoch + 1;
+	await ctx.db.patch("plugin_service_storage_destinations", existing._id, {
+		currentEpoch: nextEpoch,
+		updatedAt: args.now,
+	});
+	return nextEpoch;
+}
+
+async function db_close_destination(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		installationId: Id<"plugins_workspace_installations">;
+		destinationPath: string;
+		throughEpoch: number;
+		now: number;
+	},
+) {
+	const existing = await db_get_destination(ctx, args);
+	if (existing) {
+		await ctx.db.patch("plugin_service_storage_destinations", existing._id, {
+			currentEpoch: Math.max(existing.currentEpoch, args.throughEpoch),
+			closedEpoch: Math.max(existing.closedEpoch, args.throughEpoch),
+			closedAt: args.now,
+			updatedAt: args.now,
+		});
+		return;
+	}
+	await ctx.db.insert("plugin_service_storage_destinations", {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		installationId: args.installationId,
+		destinationPath: args.destinationPath,
+		currentEpoch: args.throughEpoch,
+		closedEpoch: args.throughEpoch,
+		closedAt: args.now,
+		updatedAt: args.now,
+	});
+}
+
+async function db_target_destination_is_closed(ctx: MutationCtx, target: Doc<"plugin_service_storage_targets">) {
+	const destination = await db_get_destination(ctx, {
+		organizationId: target.organizationId,
+		workspaceId: target.workspaceId,
+		installationId: target.installationId,
+		destinationPath: target.destinationPath,
+	});
+	return destination !== null && (target.destinationEpoch ?? 1) <= destination.closedEpoch;
+}
+
+/** Recheck the live file before a grant reads or extends an existing target. */
+async function db_authorize_live_target_node(
+	ctx: MutationCtx,
+	args: { target: Doc<"plugin_service_storage_targets">; principal: ServiceUploadPrincipal },
+) {
+	// Target keys are installation-wide, so the stored destination is the boundary between two
+	// processing grants from the same installation.
+	if (args.target.destinationPath !== args.principal.pathPrefix) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	if (args.target.movedOutAt !== undefined) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+
+	const node = await ctx.db.get("files_nodes", args.target.nodeId);
+	if (!node) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	if (!public_api_is_path_inside_prefix(node.path, args.principal.pathPrefix)) {
+		const now = Date.now();
+		await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
+			movedOutAt: now,
+			updatedAt: now,
+		});
+		return Result({ _nay: { message: "Not found" } });
+	}
+	if (node.archiveOperationId !== undefined) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	if (
+		!(await access_control_db_can_act_on_file_node(ctx, {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			userId: args.principal.actorUserId,
+			fileNode: node,
+			permission: "content.write",
+		}))
+	) {
+		return Result({ _nay: { message: "Permission denied" } });
+	}
+
+	// Do not check the file lock here. Creating the target accepted the upload, so a later lock does
+	// not cancel its R2 completion or the retry URL needed to finish it.
+	return Result({ _yay: node });
+}
+
+async function db_get_live_delete_group_targets(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		installationId: Id<"plugins_workspace_installations">;
+		destinationPath: string;
+		targetKey: string;
+	},
+) {
+	const queryState = async (state: "pending" | "committed") =>
+		await ctx.db
+			.query("plugin_service_storage_targets")
+			.withIndex("by_delete_group_state", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("installationId", args.installationId)
+					.eq("destinationPath", args.destinationPath)
+					.eq("targetKey", args.targetKey)
+					.eq("state", state)
+					.eq("movedOutAt", undefined)
+					.eq("deleteRequestedAt", undefined),
+			)
+			.take(MAX_LIVE_TARGETS_PER_DELETE_GROUP + 1);
+
+	const pending = await queryState("pending");
+	const committed = await queryState("committed");
+	const now = Date.now();
+	const destination = await db_get_destination(ctx, args);
+	const attachedTargets: Array<Doc<"plugin_service_storage_targets">> = [];
+	for (const target of [...pending, ...committed]) {
+		if (destination && (target.destinationEpoch ?? 1) <= destination.closedEpoch) {
+			await ctx.db.patch("plugin_service_storage_targets", target._id, {
+				movedOutAt: now,
+				updatedAt: now,
+			});
+			continue;
+		}
+		const node = await ctx.db.get("files_nodes", target.nodeId);
+		if (node && !public_api_is_path_inside_prefix(node.path, target.destinationPath)) {
+			await ctx.db.patch("plugin_service_storage_targets", target._id, {
+				movedOutAt: now,
+				updatedAt: now,
+			});
+			continue;
+		}
+		attachedTargets.push(target);
+	}
+	// A full page can hide more old rows. Save the detachments found on this page, then make the
+	// caller retry instead of allowing an unbounded group through on partial information.
+	if (
+		pending.length > MAX_LIVE_TARGETS_PER_DELETE_GROUP ||
+		committed.length > MAX_LIVE_TARGETS_PER_DELETE_GROUP
+	) {
+		return null;
+	}
+	return attachedTargets.length > MAX_LIVE_TARGETS_PER_DELETE_GROUP ? null : attachedTargets;
+}
+
+async function db_get_target_by_asset(ctx: MutationCtx, assetId: Id<"files_r2_assets">) {
+	return await ctx.db
+		.query("plugin_service_storage_targets")
+		.withIndex("by_asset", (q) => q.eq("assetId", assetId))
+		.first();
+}
+
 /**
- * Move an upload from "declared" to "stored". The R2 pipeline confirmed the object and patched the
- * asset's real size, so the target records what was really stored.
+ * Charge the real stored size of one target, once.
+ *
+ * Nothing is charged when a target is created, so `actualBytes` is both the size we recorded and
+ * the amount this target has already been billed for. A redelivered event for the same object
+ * reports the same size and adds nothing. If a bigger object later replaces it under the same
+ * target, only the difference is charged, so the counter never bills the same bytes twice.
  */
+async function db_charge_observed_bytes(
+	ctx: MutationCtx,
+	args: {
+		target: Doc<"plugin_service_storage_targets">;
+		observedBytes: number;
+		now: number;
+	},
+) {
+	const alreadyChargedBytes = args.target.actualBytes ?? 0;
+	if (args.observedBytes <= alreadyChargedBytes) {
+		return alreadyChargedBytes;
+	}
+
+	const quota = await quotas_db_get(ctx, {
+		quotaName: "plugin_service_storage_bytes",
+		organizationId: args.target.organizationId,
+		workspaceId: args.target.workspaceId,
+	});
+	// The object already exists, so its bytes are charged even when they cross the ceiling. A signed
+	// PUT cannot be held to a size, so this budget bills what was stored; it cannot prevent it.
+	await ctx.db.patch("quotas", quota._id, {
+		usedCount: quota.usedCount + (args.observedBytes - alreadyChargedBytes),
+		updatedAt: args.now,
+	});
+	await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
+		actualBytes: args.observedBytes,
+		updatedAt: args.now,
+	});
+
+	return args.observedBytes;
+}
+
+/** Record the canonical object's confirmed size and charge it. */
 async function db_settle_canonicalized_target(
 	ctx: MutationCtx,
 	args: {
 		target: Doc<"plugin_service_storage_targets">;
-		asset: Doc<"files_r2_assets">;
+		actualBytes: number;
 		now: number;
 	},
 ) {
-	const actualBytes = args.asset.size;
-	// A signed PUT does not bind the object's length, so the real object can be bigger than the
-	// declaration. Charge the difference now, over the ceiling if it must be — the object already
-	// exists, so refusing here would only make the books lie. A smaller object gives nothing back:
-	// this counter only grows.
-	const residual = actualBytes - args.target.declaredBytes;
-	if (residual > 0) {
-		const quota = await db_get_quota(ctx, args.target.workspaceId);
-		if (quota) {
-			console.warn("Service upload stored more than it declared", {
-				targetId: args.target._id,
-				declaredBytes: args.target.declaredBytes,
-				actualBytes,
-				residual,
-			});
-			await ctx.db.patch("quotas", quota._id, {
-				usedCount: quota.usedCount + residual,
-				updatedAt: args.now,
-			});
-		}
-	}
+	await db_charge_observed_bytes(ctx, {
+		target: args.target,
+		observedBytes: args.actualBytes,
+		now: args.now,
+	});
 
 	await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
 		state: "committed",
-		actualBytes,
 		updatedAt: args.now,
 	});
 
-	return actualBytes;
+	return args.actualBytes;
+}
+
+/** Settle a service target in the same transaction that records its canonical R2 object. */
+export async function public_api_service_uploads_db_settle_canonicalized_asset(
+	ctx: MutationCtx,
+	args: { assetId: Id<"files_r2_assets">; actualBytes: number; nodePath: string | null; now: number },
+) {
+	const target = await db_get_target_by_asset(ctx, args.assetId);
+	if (!target) {
+		return;
+	}
+	if (
+		target.movedOutAt === undefined &&
+		args.nodePath !== null &&
+		!public_api_is_path_inside_prefix(args.nodePath, target.destinationPath)
+	) {
+		await ctx.db.patch("plugin_service_storage_targets", target._id, {
+			movedOutAt: args.now,
+			updatedAt: args.now,
+		});
+	}
+	if (target.state !== "pending") {
+		return;
+	}
+	await db_settle_canonicalized_target(ctx, { target, actualBytes: args.actualBytes, now: args.now });
+}
+
+/** Charge a late object event for a target whose upload nobody finished. */
+export async function public_api_service_uploads_db_record_untracked_asset_bytes(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		assetId: Id<"files_r2_assets">;
+		observedBytes: number;
+		now: number;
+	},
+) {
+	const target = await db_get_target_by_asset(ctx, args.assetId);
+	if (!target || target.organizationId !== args.organizationId || target.workspaceId !== args.workspaceId) {
+		return;
+	}
+	// A committed target already recorded its size, and a delete the service asked for is finished
+	// work. What is left is an upload that was cancelled or discarded after the bytes reached R2.
+	// They are stored, so they are charged.
+	if (target.state !== "released" || target.deleteRequestedAt !== undefined) {
+		return;
+	}
+	await db_charge_observed_bytes(ctx, {
+		target,
+		observedBytes: args.observedBytes,
+		now: args.now,
+	});
 }
 
 /**
- * An upload that can never finish: the unfinalized-asset cleanup deleted its asset doc. Delete the
- * placeholder file so the service can retry under a new target key. The bytes it declared stay
- * charged, because this quota never gives anything back.
+ * If a pending target has lost its asset doc, remove its unusable placeholder so the service can
+ * retry under a new target key. Nothing was charged for it, because no object ever reached R2.
  */
 async function db_release_expired_target(
 	ctx: MutationCtx,
@@ -385,27 +665,47 @@ export const create_upload_target = internalMutation({
 			targetKey: targetKey._yay,
 		});
 		if (existingTarget) {
+			if (existingTarget.destinationPath !== args.principal.pathPrefix) {
+				return Result({ _nay: { message: "Not found" } });
+			}
+			if (existingTarget.movedOutAt !== undefined) {
+				return Result({ _nay: { message: "Not found" } });
+			}
+			if (await db_target_destination_is_closed(ctx, existingTarget)) {
+				return Result({ _nay: { message: "Not found" } });
+			}
 			if (existingTarget.requestFingerprint !== requestFingerprint) {
 				return Result({
 					_nay: { name: REFUSAL_CONFLICT, message: "This target key was already used for a different file" },
 				});
 			}
-			if (existingTarget.state === "released") {
+			if (existingTarget.state === "released" || existingTarget.deleteRequestedAt !== undefined) {
 				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This target was already released" } });
 			}
+			const liveNode = await db_authorize_live_target_node(ctx, {
+				target: existingTarget,
+				principal: args.principal,
+			});
+			if (liveNode._nay) {
+				return liveNode;
+			}
+			const liveTarget =
+				liveNode._yay.path === existingTarget.path
+					? existingTarget
+					: { ...existingTarget, path: liveNode._yay.path };
 			if (existingTarget.state === "committed") {
 				return Result({
 					_yay: {
 						state: "committed" as const,
-						path: existingTarget.path,
+						path: liveNode._yay.path,
 						nodeId: String(existingTarget.nodeId),
 						actualBytes: existingTarget.actualBytes ?? existingTarget.declaredBytes,
 					},
 				});
 			}
 
-			// A pending replay behaves like a remint: the same staging key gets a fresh URL, nothing new
-			// is created and nothing more is charged.
+			// A pending replay behaves like a remint: it gets a fresh URL. The target stays the same and
+			// still charges nothing.
 			const asset = await ctx.db.get("files_r2_assets", existingTarget.assetId);
 			if (!asset) {
 				await db_release_expired_target(ctx, { target: existingTarget, now });
@@ -414,7 +714,7 @@ export const create_upload_target = internalMutation({
 			if (asset.r2Key !== undefined) {
 				const actualBytes = await db_settle_canonicalized_target(ctx, {
 					target: existingTarget,
-					asset,
+					actualBytes: asset.size,
 					now,
 				});
 				return Result({
@@ -426,7 +726,31 @@ export const create_upload_target = internalMutation({
 					},
 				});
 			}
-			return await db_remint_pending_target(ctx, { target: existingTarget, asset, now });
+			return await db_remint_pending_target(ctx, { target: liveTarget, asset, now });
+		}
+
+		const runTargets = await ctx.db
+			.query("plugin_service_storage_targets")
+			.withIndex("by_organization_workspace_installation_idempotencyKey_targetKey", (q) =>
+				q
+					.eq("organizationId", args.principal.organizationId)
+					.eq("workspaceId", args.principal.workspaceId)
+					.eq("installationId", installation._id)
+					.eq("idempotencyKey", idempotencyKey._yay),
+			)
+			.take(MAX_TARGETS_PER_UPLOAD_RUN);
+		if (runTargets.length >= MAX_TARGETS_PER_UPLOAD_RUN) {
+			return Result({ _nay: { message: "An upload run holds at most 16 targets" } });
+		}
+		const liveDeleteGroup = await db_get_live_delete_group_targets(ctx, {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			installationId: installation._id,
+			destinationPath: args.principal.pathPrefix,
+			targetKey: targetKey._yay,
+		});
+		if (liveDeleteGroup === null || liveDeleteGroup.length >= MAX_LIVE_TARGETS_PER_DELETE_GROUP) {
+			return Result({ _nay: { message: "A destination holds at most 16 live targets under one target key" } });
 		}
 
 		// A service never overwrites. A meeting's files land on fresh paths; a collision means either a
@@ -496,11 +820,12 @@ export const create_upload_target = internalMutation({
 			}
 		}
 
-		// Charge the declared bytes once the path and permissions passed, the same place and the same
-		// way `/api/v1/files/upload-urls` charges `public_api_upload_bytes`. The counter is monotonic
-		// on purpose: deleting the file later gives nothing back, so this is a coarse per-workspace
-		// budget rather than storage accounting. Seeded lazily because existing workspaces have no doc
-		// for this quota.
+		// Nothing is charged here. The size in the request is only the service's guess, and a signed
+		// PUT does not bind how many bytes actually arrive, so charging it would bill a number nobody
+		// can hold the caller to. The real size is charged once, when R2 confirms the stored object.
+		// What this door does is refuse a workspace that is already over its budget, which stops the
+		// next file rather than the current one. Seeded lazily because existing workspaces have no
+		// doc for this quota.
 		// TODO: gate uploads by plan tier here once free and anonymous workspaces stop being allowed
 		// to store plugin service files at all.
 		const quotaId = await quotas_db_ensure(ctx, {
@@ -514,15 +839,11 @@ export const create_upload_target = internalMutation({
 			// Unreachable: quotas_db_ensure returned this id in the same transaction.
 			throw should_never_happen("quotas_db_ensure returned a missing quota doc", { quotaId });
 		}
-		if (quota.usedCount + args.size > quota.maxCount) {
+		if (quota.usedCount >= quota.maxCount) {
 			return Result({
 				_nay: { name: REFUSAL_STORAGE_FULL, message: "This workspace has used its plugin service storage" },
 			});
 		}
-		await ctx.db.patch("quotas", quota._id, {
-			usedCount: quota.usedCount + args.size,
-			updatedAt: now,
-		});
 
 		// A recognized text extension runs the same upload conversion as a member upload, so a
 		// service-uploaded `.md` or `.txt` becomes a normal editable file. Everything else stays a
@@ -564,7 +885,7 @@ export const create_upload_target = internalMutation({
 			now,
 		});
 		// The validation above cleared every failure this helper can hit. Throw so a surprise rolls
-		// the whole call back instead of leaving charged quota bytes with no file.
+		// the whole call back instead of leaving a target row with no file.
 		if (nodeIdResult._nay) {
 			const errorMessage = "create_node_recursively_at_path failed after service upload validation";
 			const errorData = { path: args.path, nay: nodeIdResult._nay };
@@ -594,6 +915,13 @@ export const create_upload_target = internalMutation({
 			uploadUrlExpiresAt,
 		});
 		const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
+		const destinationEpoch = await db_open_destination_epoch(ctx, {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			installationId: installation._id,
+			destinationPath: args.principal.pathPrefix,
+			now,
+		});
 
 		await ctx.db.insert("plugin_service_storage_targets", {
 			organizationId: args.principal.organizationId,
@@ -604,6 +932,7 @@ export const create_upload_target = internalMutation({
 			requestFingerprint,
 			destinationPath: args.principal.pathPrefix,
 			destinationNodeId: destination._id,
+			destinationEpoch,
 			path: args.path,
 			contentType: storedContentType,
 			declaredBytes: args.size,
@@ -634,9 +963,8 @@ export type public_api_service_uploads_create_upload_target_Result =
 		: never;
 
 /**
- * Reissue an upload URL for a pending target's existing staging key. Nothing new is created and
- * nothing more is charged; the URL window and the cleanup deadline move forward because the service
- * is visibly still working on this upload.
+ * Reissue an upload URL for a pending target. Nothing is charged here. There is no resume, so the
+ * caller sends the whole file again to the same staging key.
  */
 async function db_remint_pending_target(
 	ctx: MutationCtx,
@@ -650,7 +978,23 @@ async function db_remint_pending_target(
 		});
 	}
 
+	const cleanupJob = await ctx.db
+		.query("files_r2_object_deletion_jobs")
+		.withIndex("by_r2_key", (q) => q.eq("r2Key", uploadStagingR2Key))
+		.first();
+	// Wait for the old delete to finish. An in-flight R2 delete can remove bytes uploaded with a
+	// newly minted URL before its generation check runs.
+	if (cleanupJob) {
+		return Result({
+			_nay: { name: REFUSAL_CONFLICT, message: "This target's previous upload is still being cleaned up" },
+		});
+	}
+
 	const uploadUrlExpiresAt = args.now + UPLOAD_URL_TTL_MS;
+	// Hand back the same staging key. The gate above already refused while a cleanup job for these
+	// bytes is still open, so nothing is queued to delete what this retry is about to write. When a
+	// finished cleanup cleared the unfinalized marker, re-arm it so the asset is a normal pending
+	// upload again.
 	await ctx.db.patch("files_r2_assets", args.asset._id, {
 		uploadUrlExpiresAt,
 		unfinalizedExpiresAt: args.now + r2_UNFINALIZED_ASSET_TTL_MS,
@@ -696,16 +1040,30 @@ export const remint_upload_target = internalMutation({
 		if (!target) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (target.state === "released") {
+		if (target.destinationPath !== args.principal.pathPrefix) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (target.movedOutAt !== undefined) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (await db_target_destination_is_closed(ctx, target)) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (target.state === "released" || target.deleteRequestedAt !== undefined) {
 			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This target was already released" } });
 		}
+		const liveNode = await db_authorize_live_target_node(ctx, { target, principal: args.principal });
+		if (liveNode._nay) {
+			return liveNode;
+		}
+		const liveTarget = liveNode._yay.path === target.path ? target : { ...target, path: liveNode._yay.path };
 
 		const now = Date.now();
 		if (target.state === "committed") {
 			return Result({
 				_yay: {
 					state: "committed" as const,
-					path: target.path,
+					path: liveNode._yay.path,
 					nodeId: String(target.nodeId),
 					actualBytes: target.actualBytes ?? target.declaredBytes,
 				},
@@ -720,13 +1078,17 @@ export const remint_upload_target = internalMutation({
 		// The object already reached its canonical key: a fresh URL would be useless, so answer
 		// committed instead, settling the books on the way.
 		if (asset.r2Key !== undefined) {
-			const actualBytes = await db_settle_canonicalized_target(ctx, { target, asset, now });
+			const actualBytes = await db_settle_canonicalized_target(ctx, {
+				target,
+				actualBytes: asset.size,
+				now,
+			});
 			return Result({
-				_yay: { state: "committed" as const, path: target.path, nodeId: String(target.nodeId), actualBytes },
+				_yay: { state: "committed" as const, path: liveNode._yay.path, nodeId: String(target.nodeId), actualBytes },
 			});
 		}
 
-		return await db_remint_pending_target(ctx, { target, asset, now });
+		return await db_remint_pending_target(ctx, { target: liveTarget, asset, now });
 	},
 });
 
@@ -766,43 +1128,73 @@ export const finalize_upload_target = internalMutation({
 		if (!target) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		if (target.destinationPath !== args.principal.pathPrefix) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (target.movedOutAt !== undefined) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (await db_target_destination_is_closed(ctx, target)) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (target.state === "released" || target.deleteRequestedAt !== undefined) {
+			return Result({
+				_yay: {
+					state: "released" as const,
+					path: target.path,
+					nodeId: String(target.nodeId),
+					actualBytes: target.actualBytes,
+				},
+			});
+		}
+		const liveNode = await db_authorize_live_target_node(ctx, { target, principal: args.principal });
+		if (liveNode._nay) {
+			return liveNode;
+		}
 		if (target.state === "committed") {
 			return Result({
 				_yay: {
 					state: "committed" as const,
-					path: target.path,
+					path: liveNode._yay.path,
 					nodeId: String(target.nodeId),
 					actualBytes: target.actualBytes ?? target.declaredBytes,
 				},
 			});
 		}
-		if (target.state === "released") {
-			return Result({
-				_yay: { state: "released" as const, path: target.path, nodeId: String(target.nodeId), actualBytes: null },
-			});
-		}
-
 		const now = Date.now();
 		const asset = await ctx.db.get("files_r2_assets", target.assetId);
-		// The cleanup gave up on this upload and deleted its asset doc, so the object can never be
-		// confirmed. Release the target so the declared bytes go back to the envelope and the service
-		// can retry under a new target key.
+		// A missing asset cannot finish. Release the target so the service can retry under a new key.
+		// It charged nothing, because no object ever reached R2.
 		if (!asset) {
 			await db_release_expired_target(ctx, { target, now });
 			return Result({
-				_yay: { state: "released" as const, path: target.path, nodeId: String(target.nodeId), actualBytes: null },
+				_yay: {
+					state: "released" as const,
+					path: liveNode._yay.path,
+					nodeId: String(target.nodeId),
+					actualBytes: null,
+				},
 			});
 		}
 		// Not canonicalized yet: the PUT or the R2 event is still in flight. The service polls again.
 		if (asset.r2Key === undefined) {
 			return Result({
-				_yay: { state: "pending" as const, path: target.path, nodeId: String(target.nodeId), actualBytes: null },
+				_yay: {
+					state: "pending" as const,
+					path: liveNode._yay.path,
+					nodeId: String(target.nodeId),
+					actualBytes: null,
+				},
 			});
 		}
 
-		const actualBytes = await db_settle_canonicalized_target(ctx, { target, asset, now });
+		const actualBytes = await db_settle_canonicalized_target(ctx, {
+			target,
+			actualBytes: asset.size,
+			now,
+		});
 		return Result({
-			_yay: { state: "committed" as const, path: target.path, nodeId: String(target.nodeId), actualBytes },
+			_yay: { state: "committed" as const, path: liveNode._yay.path, nodeId: String(target.nodeId), actualBytes },
 		});
 	},
 });
@@ -817,24 +1209,23 @@ export type public_api_service_uploads_finalize_upload_target_Result =
 // #region delete
 
 /**
- * Delete the files a target key names, for a service that must really remove what its run stored.
- * The Council delete does not: it archives its whole destination folder through
- * `archive_destination` below, because archiving is what deleting a file means to a member. The
- * lookup goes by installation and target key, fenced to the presenting grant's sealed destination:
- * a grant sealed to another folder must not even learn that the key exists.
+ * Delete the files a target key names. A committed upload is a normal member file, so deleting it
+ * archives the file and keeps its content. An unfinished upload only has an empty placeholder, so
+ * deleting it cancels the upload and removes that placeholder. The lookup goes by installation,
+ * sealed destination, and target key. It reads only live targets;
+ * one representative deleting or released target gives a bounded replay answer.
  *
- * Every match inside the fence is deleted. A second processing run can store another file under the
- * same target key on a different path, and a caller asking for that key wants both gone; refusing
- * the ambiguity instead would wedge the caller with no way out.
+ * Every live match still inside the fence is handled. A second processing run can store another file
+ * under the same target key on a different path, and a caller asking for that key wants both gone.
+ * The group is capped where targets are created, so this all-or-nothing mutation stays bounded.
  *
  * An upload that never finished is cancelled here too: its placeholder file is empty, so there is
  * nothing to keep. This is also the only way to get rid of one, which is why the route deletes it
  * instead of refusing while it is still pending.
  *
  * Deleting never gives quota bytes back. The counter only grows, so the bytes this run charged stay
- * charged. `deleteRequestedAt` marks a committed target so the physical settlement in
- * `settle_object_deletion_job` keeps a released tombstone instead of consuming the doc, which is
- * what makes a replayed delete keep answering.
+ * charged. `deleteRequestedAt` marks an archived committed target so a late staging event keeps the
+ * immutable canonical size. The released target is also what makes a replayed delete keep answering.
  */
 export const delete_upload_target = internalMutation({
 	args: {
@@ -844,7 +1235,7 @@ export const delete_upload_target = internalMutation({
 	},
 	returns: v_result({
 		_yay: v.object({
-			state: v.union(v.literal("deleting"), v.literal("deleted")),
+			state: v.literal("deleted"),
 			paths: v.array(v.string()),
 		}),
 	}),
@@ -864,50 +1255,107 @@ export const delete_upload_target = internalMutation({
 			return targetKey;
 		}
 
-		const candidates = await ctx.db
+		const liveTargets = await db_get_live_delete_group_targets(ctx, {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			installationId: installation._id,
+			destinationPath: args.principal.pathPrefix,
+			targetKey: targetKey._yay,
+		});
+		if (liveTargets === null) {
+			return Result({ _nay: { message: "A destination holds at most 16 live targets under one target key" } });
+		}
+
+		const matches: Array<{
+			target: Doc<"plugin_service_storage_targets">;
+			node: Doc<"files_nodes"> | null;
+			path: string;
+		}> = [];
+		for (const target of liveTargets) {
+			const node = await ctx.db.get("files_nodes", target.nodeId);
+			// A member may move a service file after upload. The old seal no longer reaches that live
+			// node, and its new path must not appear in this response.
+			if (node && !public_api_is_path_inside_prefix(node.path, args.principal.pathPrefix)) {
+				continue;
+			}
+			matches.push({ target, node, path: node?.path ?? target.path });
+		}
+
+		const releasedCandidate = await ctx.db
 			.query("plugin_service_storage_targets")
-			.withIndex("by_organization_workspace_installation_targetKey", (q) =>
+			.withIndex("by_delete_group_state", (q) =>
 				q
 					.eq("organizationId", args.principal.organizationId)
 					.eq("workspaceId", args.principal.workspaceId)
 					.eq("installationId", installation._id)
-					.eq("targetKey", targetKey._yay),
+					.eq("destinationPath", args.principal.pathPrefix)
+					.eq("targetKey", targetKey._yay)
+					.eq("state", "released")
+					.eq("movedOutAt", undefined),
 			)
-			.collect();
-		const matches = candidates.filter((target) =>
-			public_api_is_path_inside_prefix(target.path, args.principal.pathPrefix),
-		);
-		if (matches.length === 0) {
+			.order("desc")
+			.first();
+		const releasedTarget =
+			releasedCandidate && !(await db_target_destination_is_closed(ctx, releasedCandidate))
+				? releasedCandidate
+				: null;
+		if (matches.length === 0 && !releasedTarget) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		// A lock is a member saying "leave this alone". Hard-delete stays the door this route is, but
-		// it must refuse a locked file the same way archive does. Check every match before the first
-		// write, so one locked file refuses the whole call instead of half-deleting the rest.
-		for (const target of matches) {
-			if (target.state === "released" || target.deleteRequestedAt !== undefined) {
+
+		// Ask every live node before the first write. Workspace permission from the grant is not enough
+		// inside a restricted scope, and a lock still means "leave this alone".
+		for (const match of matches) {
+			if (!match.node) {
 				continue;
 			}
-			const node = await ctx.db.get("files_nodes", target.nodeId);
-			if (!node) {
-				continue;
+			if (
+				!(await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: args.principal.organizationId,
+					workspaceId: args.principal.workspaceId,
+					userId: args.principal.actorUserId,
+					fileNode: match.node,
+					permission: "content.write",
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
 			}
-			const writable = files_node_require_writable(node);
+			const writable = files_node_require_writable(match.node);
 			if (writable._nay) {
 				return writable;
 			}
 		}
 
 		const now = Date.now();
-		for (const target of matches) {
-			// A replay (deleteRequestedAt set) and a released tombstone are already handled; touching
-			// their deletion jobs again would only advance job generations for nothing.
-			if (target.state === "released" || target.deleteRequestedAt !== undefined) {
+		const committedNodeIds = matches.flatMap((match) =>
+			match.target.state === "committed" && match.node && match.node.archiveOperationId === undefined
+				? [match.node._id]
+				: [],
+		);
+		if (committedNodeIds.length > 0) {
+			// Archive every committed match together, like one member delete action.
+			await files_nodes_db_archive_nodes(ctx, {
+				nodeIds: committedNodeIds,
+				updatedBy: args.principal.actorUserId,
+				now,
+			});
+		}
+
+		for (const match of matches) {
+			const { target } = match;
+			if (target.state === "committed") {
+				await ctx.db.patch("plugin_service_storage_targets", target._id, {
+					state: "released",
+					deleteRequestedAt: now,
+					...(match.path === target.path ? {} : { path: match.path }),
+					updatedAt: now,
+				});
 				continue;
 			}
 
 			// Enqueue the cleanup jobs before deleting the docs, so a crash between the two still leaves
-			// every key a job. The canonical key is deterministic, so a missing asset doc cannot orphan
-			// the object.
+			// every key a job. A pending event may already be copying staging bytes to the canonical key.
+			// Keep that job through a fresh upload window so the copy cannot arrive after its final delete.
 			const asset = await ctx.db.get("files_r2_assets", target.assetId);
 			const liveR2Key =
 				asset?.r2Key ??
@@ -921,6 +1369,7 @@ export const delete_upload_target = internalMutation({
 				workspaceId: target.workspaceId,
 				r2Key: liveR2Key,
 				reason: "untracked_asset_event",
+				putMayArriveUntil: now + UPLOAD_URL_TTL_MS + r2_PUT_MAY_ARRIVE_MARGIN_MS,
 			});
 			if (asset?.uploadStagingR2Key !== undefined && asset.uploadStagingR2Key !== liveR2Key) {
 				await r2_enqueue_object_deletion_job(ctx, {
@@ -945,21 +1394,21 @@ export const delete_upload_target = internalMutation({
 				await ctx.db.delete("files_r2_assets", assetAfter._id);
 			}
 
-			// A committed file waits for R2 to confirm the canonical object is gone, and that settlement
-			// turns this mark into a released tombstone. An upload that never finished has no confirmed
-			// object to wait for, so it is released right here.
+			// An unfinished upload has no confirmed object to keep, so release it right here.
 			await ctx.db.patch("plugin_service_storage_targets", target._id, {
-				...(target.state === "committed" ? { deleteRequestedAt: now } : { state: "released" as const }),
+				state: "released",
+				...(match.path === target.path ? {} : { path: match.path }),
 				updatedAt: now,
 			});
 		}
 
-		// Committed matches wait for their physical deletion to settle; cancelled and released ones are
-		// done. The reply reads the pre-patch docs on purpose: a target deleted in this very call is
-		// "deleting", not "deleted".
-		const state = matches.some((target) => target.state === "committed") ? ("deleting" as const) : ("deleted" as const);
+		const replayPath = releasedTarget?.path;
+		const paths = matches.map((match) => match.path);
+		if (replayPath && !paths.includes(replayPath)) {
+			paths.push(replayPath);
+		}
 		return Result({
-			_yay: { state, paths: matches.map((target) => target.path).sort() },
+			_yay: { state: "deleted", paths: paths.sort() },
 		});
 	},
 });
@@ -1022,8 +1471,8 @@ async function db_collect_bounded_descendants(
  * The meeting is gone, so its files must leave the workspace tree. They are real committed files
  * though, and in this product deleting a file means archiving it, so the service archives too. One
  * operation id covers the folder and its whole subtree, which is what lets a member restore the
- * set later. The stored bytes stay charged, because the files still exist: only the confirmed
- * physical deletion of an object refunds them, and nothing here deletes an object.
+ * set later. The stored bytes stay charged. This quota only grows, so neither archive nor physical
+ * deletion gives bytes back.
  *
  * The seal is the fence. The door takes no path, so a grant can only ever archive its own
  * destination, and `workspace.files.write` plus that seal is what makes archiving inside it a write
@@ -1044,6 +1493,7 @@ export const archive_destination = internalMutation({
 		if (authorized._nay) {
 			return authorized;
 		}
+		const now = Date.now();
 
 		const stableTarget = await ctx.db
 			.query("plugin_service_storage_targets")
@@ -1054,42 +1504,20 @@ export const archive_destination = internalMutation({
 					.eq("installationId", authorized._yay.installation._id)
 					.eq("destinationPath", args.principal.pathPrefix),
 			)
+			// A later run can recreate an archived destination at the same path. Follow that newest
+			// generation, while the stable node id still preserves a member rename.
+			.order("desc")
 			.first();
-		const legacyTarget = stableTarget
-			? null
-			: await ctx.db
-					.query("plugin_service_storage_targets")
-					.withIndex("by_organization_workspace_installation_path", (q) =>
-						q
-							.eq("organizationId", args.principal.organizationId)
-							.eq("workspaceId", args.principal.workspaceId)
-							.eq("installationId", authorized._yay.installation._id)
-							.gte("path", `${args.principal.pathPrefix}/`)
-							.lt("path", `${args.principal.pathPrefix}0`),
-					)
-					.first();
-		const targetAtDestination = stableTarget ?? legacyTarget;
-		if (stableTarget && !stableTarget.destinationNodeId) {
-			return Result({
-				_nay: { name: REFUSAL_CONFLICT, message: "This destination is missing its stable folder identity" },
-			});
-		}
-		const destination = targetAtDestination?.destinationNodeId
-			? await ctx.db.get("files_nodes", targetAtDestination.destinationNodeId)
-			: await files_db_get_visible_node_by_path(ctx, {
-					organizationId: args.principal.organizationId,
-					workspaceId: args.principal.workspaceId,
-					path: args.principal.pathPrefix,
-				});
-		if (!destination) {
-			// A target proves this folder once existed. Refuse old, unbackfilled data instead of treating
-			// a renamed folder as a successful delete.
-			if (targetAtDestination) {
-				return Result({
-					_nay: { name: REFUSAL_CONFLICT, message: "This destination needs its stable folder identity backfilled" },
-				});
-			}
+		if (!stableTarget) {
 			return Result({ _yay: { archivedNodes: 0 } });
+		}
+		if (await db_target_destination_is_closed(ctx, stableTarget)) {
+			return Result({ _yay: { archivedNodes: 0 } });
+		}
+		let destination = await ctx.db.get("files_nodes", stableTarget.destinationNodeId);
+		if (!destination) {
+			// A target proves this folder existed. Refuse instead of telling the caller its delete worked.
+			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This destination folder no longer exists" } });
 		}
 		if (
 			destination.organizationId !== args.principal.organizationId ||
@@ -1099,7 +1527,50 @@ export const archive_destination = internalMutation({
 			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This destination is no longer a meeting folder" } });
 		}
 		if (destination.archiveOperationId !== undefined) {
-			return Result({ _yay: { archivedNodes: 0 } });
+			// A member can restore an older generation after a newer folder used the same path. Follow
+			// that active folder only when a target proves this installation created that exact node.
+			const restoredDestination = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.principal.organizationId)
+						.eq("workspaceId", args.principal.workspaceId)
+						.eq("path", args.principal.pathPrefix)
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			const restoredTarget =
+				restoredDestination?.kind === "folder"
+					? await ctx.db
+							.query("plugin_service_storage_targets")
+							.withIndex(
+								"by_org_workspace_installation_destinationPath_destinationNode",
+								(q) =>
+									q
+										.eq("organizationId", args.principal.organizationId)
+										.eq("workspaceId", args.principal.workspaceId)
+										.eq("installationId", authorized._yay.installation._id)
+										.eq("destinationPath", args.principal.pathPrefix)
+										.eq("destinationNodeId", restoredDestination._id),
+							)
+							.first()
+					: null;
+			if (
+				!restoredDestination ||
+				!restoredTarget ||
+				(await db_target_destination_is_closed(ctx, restoredTarget))
+			) {
+				await db_close_destination(ctx, {
+					organizationId: args.principal.organizationId,
+					workspaceId: args.principal.workspaceId,
+					installationId: authorized._yay.installation._id,
+					destinationPath: args.principal.pathPrefix,
+					throughEpoch: stableTarget.destinationEpoch ?? 1,
+					now,
+				});
+				return Result({ _yay: { archivedNodes: 0 } });
+			}
+			destination = restoredDestination;
 		}
 
 		// The grant carries workspace `content.write`, and a restricted folder subtracts from that: it
@@ -1170,10 +1641,43 @@ export const archive_destination = internalMutation({
 			return archivedProtected;
 		}
 
+		await db_close_destination(ctx, {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			installationId: authorized._yay.installation._id,
+			destinationPath: args.principal.pathPrefix,
+			throughEpoch: stableTarget.destinationEpoch ?? 1,
+			now,
+		});
+		// A service archive ends this destination's service lifecycle. Keep the files restorable for
+		// members, but do not let their old targets consume the cap or reopen old service calls.
+		for (const node of descendants) {
+			if (node.kind !== "file") {
+				continue;
+			}
+			const target = await ctx.db
+				.query("plugin_service_storage_targets")
+				.withIndex("by_node", (q) => q.eq("nodeId", node._id))
+				.first();
+			if (
+				target &&
+				target.organizationId === args.principal.organizationId &&
+				target.workspaceId === args.principal.workspaceId &&
+				target.installationId === authorized._yay.installation._id &&
+				target.destinationPath === args.principal.pathPrefix &&
+				target.movedOutAt === undefined
+			) {
+				await ctx.db.patch("plugin_service_storage_targets", target._id, {
+					movedOutAt: now,
+					updatedAt: now,
+				});
+			}
+		}
+
 		await files_nodes_db_archive_nodes(ctx, {
 			nodeIds: [destination._id, ...activeDescendants.map((descendant) => descendant._id)],
 			updatedBy: args.principal.actorUserId,
-			now: Date.now(),
+			now,
 		});
 
 		return Result({ _yay: { archivedNodes: activeDescendants.length + 1 } });
@@ -1196,8 +1700,8 @@ export type public_api_service_uploads_archive_destination_Result =
  * An uninstall touches no files at all. The uploaded files belong to the workspace, not to the
  * plugin that put them there, so removing the plugin must leave every one of them alone — including
  * a placeholder whose upload never finished, which is just an empty file a member can delete.
- * Only a workspace-wide drain (null installation) deletes the target docs, because the workspace's
- * files and quota docs are being deleted with it.
+ * Only a workspace-wide drain (null installation) deletes the destination and target docs, because
+ * the workspace's files and quota docs are being deleted with them.
  */
 export async function public_api_service_uploads_db_drain_batch(
 	ctx: MutationCtx,
@@ -1209,6 +1713,18 @@ export async function public_api_service_uploads_db_drain_batch(
 	},
 ) {
 	if (args.installationId === null) {
+		const destinations = await ctx.db
+			.query("plugin_service_storage_destinations")
+			.withIndex("by_organization_workspace", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+			)
+			.take(args.batchSize);
+		if (destinations.length > 0) {
+			await Promise.all(
+				destinations.map((destination) => ctx.db.delete("plugin_service_storage_destinations", destination._id)),
+			);
+			return { done: false, deletedCount: destinations.length };
+		}
 		const targets = await ctx.db
 			.query("plugin_service_storage_targets")
 			.withIndex("by_organization_workspace_installation_targetKey", (q) =>

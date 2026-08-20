@@ -9,8 +9,8 @@
  *   member it is for.
  * - `/api/v1/plugin-data/*` — bearer is the `psg_` grant alone.
  * - `/api/v1/files/service-uploads/*` — bearer is the sealed processing `psg_` grant alone. Bodies
- *   are strict JSON: an unknown key is a 400, and a replayed `idempotencyKey` answers only for an
- *   identical body, so callers replay stored bodies instead of rebuilding them.
+ *   are strict JSON, so an unknown key is a 400. Create, remint, and finalize identify a target by
+ *   its upload run and target key. Delete uses the target key across upload runs.
  */
 
 import { Result } from "./result.ts";
@@ -22,8 +22,9 @@ function convex_url(env: Env, path: string) {
 
 /**
  * POST one JSON body and parse one JSON answer. `_nay.name` carries the HTTP status class so
- * callers can tell a stale grant (401/403/409, fail closed and stop) from a transient failure
- * (retry later) without string-matching messages.
+ * callers can branch without string-matching messages. The helper separates the named storage-full
+ * 403 from ordinary authorization refusals. A 409 is route-specific: grant verification fails
+ * closed, while upload create/remint may retry after stale staging cleanup finishes.
  */
 async function convex_post(
 	env: Env,
@@ -322,7 +323,7 @@ function parse_target_state(body: Record<string, unknown>, path: string) {
 
 /**
  * Mint one upload target inside the sealed prefix. The path must be STRICTLY inside the grant's
- * prefix with a canonical dotted lowercase file name, at most 16 targets per reservation. A replay
+ * prefix with a canonical dotted lowercase file name, at most 16 targets per upload run. A replay
  * of a committed target answers `committed` instead of a fresh URL.
  */
 export async function council_convex_uploads_create_target(
@@ -339,9 +340,9 @@ export async function council_convex_uploads_create_target(
 }
 
 /**
- * A fresh signed URL for the same staging key: nothing is recharged and no second node appears.
- * Called when a pending target's previous URL expired. A target whose upload window is gone
- * answers 409.
+ * A fresh signed URL for the same target: nothing is recharged and no second node appears. It keeps
+ * the staging key during the normal retry window. After stale-byte cleanup it replaces the asset and
+ * uses new staging and canonical keys. A target whose cleanup job is still open answers 409.
  */
 export async function council_convex_uploads_remint(
 	env: Env,

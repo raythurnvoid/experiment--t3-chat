@@ -380,6 +380,44 @@ describe("council_run_processing", () => {
 		await expect(council_run_processing(env, test_step(), PROCESS_PARAMS)).rejects.toThrow(/never published/u);
 	});
 
+	test("waits for the uploaded recording before choosing its track files", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		let reads = 0;
+		const mock = install_fetch(
+			processing_fetch_overrides({
+				"/recordings/rec-1": (call) => {
+					if (call.method === "PUT" && call.bodyJson?.action === "stop") {
+						return Response.json({ success: true, data: { status: "UPLOADING" } });
+					}
+					reads += 1;
+					const downloadUrls = {
+						[ALICE_FILE]: { download_url: "https://tracks.example/alice" },
+						...(reads === 1 ? {} : { [BOB_FILE]: { download_url: "https://tracks.example/bob" } }),
+					};
+					return Response.json({
+						success: true,
+						data: {
+							status: reads === 1 ? "UPLOADING" : "UPLOADED",
+							download_url: { links: [{ download_urls: downloadUrls }] },
+						},
+					});
+				},
+			}),
+		);
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		const outcome = await council_run_processing(env, test_step(), PROCESS_PARAMS);
+		expect(outcome).toBe("ready");
+		expect(reads).toBeGreaterThan(1);
+		expect(counter.runs).toBe(2);
+		const trackArtifacts = await env.COUNCIL_DB.prepare(
+			"SELECT COUNT(*) AS n FROM meeting_artifacts WHERE kind = 'track_audio'",
+		).first<{ n: number }>();
+		expect(trackArtifacts?.n).toBe(2);
+	});
+
 	test("a crashed run replays onto the same artifact set: no second upload, no second transcription", async () => {
 		const counter = { runs: 0 };
 		const { env } = make_test_env({ AI: make_whisper_mock(counter) });

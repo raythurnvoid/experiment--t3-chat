@@ -96,15 +96,16 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 
 ## Plugin service upload storage
 
-- `public_api_service_uploads.create_upload_target` ensures the workspace `"plugin_service_storage_bytes"` quota lazily, refuses the target when its declared `size` would cross `maxCount` (`storage_full` → 403), and charges those bytes in the same mutation that inserts the target doc and its placeholder file.
-- This counter only grows, exactly like `public_api_upload_bytes`. Nothing refunds: not an upload the service abandoned, not a cancelled placeholder, not the confirmed physical deletion of a stored file's canonical R2 object. That settlement (`settle_object_deletion_job` in `r2_client.ts`) only retires the `plugin_service_storage_targets` doc — consumed for app-side deletions, patched to a `released` tombstone when the service's `delete` route asked for it.
-- One flow moves it up outside create-target: a settled upload whose real object exceeded the declared size charges the difference, so `usedCount` may exceed `maxCount` (precedent: the forced ownership handoff above). This is deliberate. A signed PUT does not bind the object's length, so the quota can only bill what was stored, never prevent it.
-- Invariant to preserve: `usedCount` equals the declared bytes of every target ever created, plus the excess of every object that turned out bigger than declared.
+- `public_api_service_uploads.create_upload_target` ensures the workspace `"plugin_service_storage_bytes"` quota lazily and charges nothing. The `size` in the request is only the service's guess, and a signed PUT does not bind how many bytes actually arrive, so billing it would charge a number nobody can be held to. The door only refuses a workspace whose `usedCount` already reached `maxCount` (`storage_full` → 403), which stops the next file rather than the current one.
+- This counter only grows, exactly like `public_api_upload_bytes`. Nothing refunds: not an upload the service abandoned, not a cancelled placeholder, not archiving a committed service file, and not a later physical deletion of its canonical R2 object. The service `delete` route archives committed files and releases their target tombstones. It hard-deletes only pending placeholders.
+- The R2 event is what charges. It settles the target and bills the confirmed stored size, so `usedCount` may exceed `maxCount` (precedent: the forced ownership handoff above). A signed PUT does not bind the object's length, so the quota can only bill what was stored, never prevent it. Finalize reports this settlement and can reconcile an older canonical asset.
+- A late event after a pending target was cancelled, or after the member discarded its failed placeholder, charges the stored bytes too: they are in the bucket, so they are billed. `actualBytes` is both the size that was recorded and the amount already charged for that target, so a duplicate or smaller event adds nothing and a bigger object charges only the difference. Nothing gives bytes back.
+- Invariant to preserve: `usedCount` equals the sum of every target's `actualBytes`, which is the largest object size R2 confirmed for that target. A target whose upload never reached R2 has charged nothing.
 
 ## Delete flows
 
 - `delete_workspace` reads the organization extra-workspace quota and decrements `usedCount` directly when deleting a non-default workspace.
-- Workspace structural deletion deletes `active_api_credentials` quota docs by `workspaceId`. Admin data-only reset keeps the current user's default-workspace quota doc and sets `usedCount` to `0` after deleting that user's API credential docs.
+- The immediate `delete_workspace` phase deletes active API credential quota docs but keeps `public_api_upload_bytes` and `plugin_service_storage_bytes` through retention. The queued content purge deletes those two budgets only after service targets, assets, and files are gone, so late accepted R2 events can still settle first. Internal workspace structural deletion removes any remaining workspace quota docs. Admin data-only reset keeps the current user's active API credential quota doc and sets its `usedCount` to `0`, while the content purge removes the two upload budgets so their next use starts fresh.
 - `delete_organization` reads the owner from `organizations.ownerUserId`, decrements that owner's extra-organization quota directly, and defers deleting the organization quota doc until `data_deletion.process_organization_deletion_request`.
 - Account deletion uses the same direct owner quota decrement when the backend queues a still-owned organization for deletion instead of the frontend transferring it first.
 - `data_deletion.process_organization_deletion_request` deletes all quota docs for the organization id.
@@ -132,7 +133,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 
 - Main coverage lives in `packages/app/convex/organizations.test.ts`.
 - API credential counter coverage lives in `packages/app/convex/public_api.test.ts`.
-- Plugin service storage quota coverage (charge, refusal, release refund, deletion settlement, expiry cron) lives in `packages/app/convex/public_api_service_uploads.test.ts`.
+- Plugin service storage quota coverage (create charges nothing, full-workspace refusal, R2 event settlement, late-event billing, deletion settlement, and abandoned-placeholder cleanup) lives in `packages/app/convex/public_api_service_uploads.test.ts`.
 - Account-deletion quota behavior is also covered in `packages/app/convex/data_deletion.test.ts` and `packages/app/convex/users.test.ts`.
 - Tests and setup must seed quota docs through `quotas_db_ensure(...)` or the real user/membership bootstrap path before exercising the related quota write flow.
 - Focused verification for this feature is:

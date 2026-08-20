@@ -3383,6 +3383,12 @@ describe("process_organization_deletion_request", () => {
 				workspaceId: extraWorkspace.workspaceId,
 				tag: "organization-request-extra-page",
 			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "plugin_service_storage_bytes",
+				organizationId: organization.organizationId,
+				workspaceId: extraWorkspace.workspaceId,
+				now: Date.now(),
+			});
 		});
 
 		const { organizationRequestId, workspaceRequestId } = await t.run(async (ctx) => {
@@ -3609,6 +3615,20 @@ describe("hard_delete_user_data", () => {
 				tag: "reset-default-page",
 			});
 			const now = Date.now();
+			const serviceStorageQuotaId = await quotas_db_ensure(ctx, {
+				quotaName: "plugin_service_storage_bytes",
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				now,
+			});
+			await ctx.db.patch("quotas", serviceStorageQuotaId, { usedCount: 123, updatedAt: now });
+			const publicUploadQuotaId = await quotas_db_ensure(ctx, {
+				quotaName: "public_api_upload_bytes",
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				now,
+			});
+			await ctx.db.patch("quotas", publicUploadQuotaId, { usedCount: 456, updatedAt: now });
 			const defaultCustomRoleId = await ctx.db.insert("access_control_roles", {
 				organizationId: user.defaultOrganizationId,
 				name: "Reset reader",
@@ -3762,6 +3782,8 @@ describe("hard_delete_user_data", () => {
 				personalWorkspaceQuota,
 				userOrganizationQuota,
 				activeApiCredentialQuota,
+				serviceStorageQuota,
+				publicUploadQuota,
 				userRequest,
 				defaultOrganizationRequest,
 				defaultWorkspaceRequest,
@@ -3828,6 +3850,18 @@ describe("hard_delete_user_data", () => {
 							.eq("quotaName", "active_api_credentials"),
 					)
 					.first(),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) =>
+						q.eq("workspaceId", user.defaultWorkspaceId).eq("quotaName", "plugin_service_storage_bytes"),
+					)
+					.first(),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) =>
+						q.eq("workspaceId", user.defaultWorkspaceId).eq("quotaName", "public_api_upload_bytes"),
+					)
+					.first(),
 				ctx.db.get("data_deletion_requests", seeded.userRequestId),
 				ctx.db.get("data_deletion_requests", seeded.defaultOrganizationRequestId),
 				ctx.db.get("data_deletion_requests", seeded.defaultWorkspaceRequestId),
@@ -3853,6 +3887,8 @@ describe("hard_delete_user_data", () => {
 				personalWorkspaceQuota,
 				userOrganizationQuota,
 				activeApiCredentialQuota,
+				serviceStorageQuota,
+				publicUploadQuota,
 				userRequest,
 				defaultOrganizationRequest,
 				defaultWorkspaceRequest,
@@ -3880,6 +3916,8 @@ describe("hard_delete_user_data", () => {
 		expect(after.personalWorkspaceQuota?.usedCount).toBe(0);
 		expect(after.userOrganizationQuota?.usedCount).toBe(0);
 		expect(after.activeApiCredentialQuota?.usedCount).toBe(0);
+		expect(after.serviceStorageQuota).toBeNull();
+		expect(after.publicUploadQuota).toBeNull();
 		expect(after.userRequest).toBeNull();
 		expect(after.defaultOrganizationRequest).toBeNull();
 		expect(after.defaultWorkspaceRequest).toBeNull();

@@ -260,14 +260,15 @@ The lifecycle this implies (plan-3 E8):
 2. **Processing** streams each artifact through create-target → signed PUT (exactly the returned
    headers) → finalize, polling finalize with bounded backoff until the storage event settles as
    `committed`. Every call carries the same derived key, `council-uploads-<meetingId>`, and
-   `targetKey` names one file inside that run. Create-target charges the declared size to the
-   workspace's plugin service storage quota and creates the file straight away; a `403`
-   `storage_full` fails the run. Reaching `ready` or `failed` releases nothing — the counter only
+   `targetKey` names one file inside that run. Create-target charges nothing and creates the file
+   straight away; the workspace's plugin service storage quota is charged once, for the size R2
+   confirms for the stored file. A `403` `storage_full` fails the run, and it means the workspace is
+   already full. Reaching `ready` or `failed` releases nothing — the counter only
    grows. An operator redrive of a `failed` meeting (the cron and
    `council_request_processing_redrive` bump `processing_generation` and insert a fresh outbox row;
    moving `failed -> processing` on the same generation dispatches a row that never runs) keeps the
-   same upload key on purpose: a file that never finished uploading is re-used instead of charged
-   again, and files that already committed are skipped by their D1 status. The redrive needs the
+   same upload key on purpose: a file that never finished uploading is re-used, and files that
+   already committed are skipped by their D1 status. The redrive needs the
    sealed processing grant to still be alive (six days), which stays inside the provider's
    seven-day recording retention.
 3. **Delete** (page-initiated) seals a fresh grant, archives the meeting folder, then runs the

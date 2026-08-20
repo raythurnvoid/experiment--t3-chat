@@ -64,9 +64,11 @@ delete flow does not prove that the file was deleted.
 - The processor reads `{ jobId, generation }` before it calls `deleteR2Object`. It may finish that job
   only when the stored generation still matches. A newer PUT increases the generation, so an older
   delete result cannot finish newer cleanup work.
-- `putMayArriveUntil` is the last time another PUT may still arrive. For a user-facing signed URL, it
-  is at least `uploadUrlExpiresAt` plus five minutes. Public write stages use `stage.expiresAt` plus
-  the same margin. Internal PUTs that already finished before cleanup do not need this field.
+- `putMayArriveUntil` is the last time another PUT or an already-started staging-to-live copy may still
+  arrive. For a user-facing signed URL, it is at least `uploadUrlExpiresAt` plus five minutes. A
+  pending service cancel starts a fresh 15-minute window plus that margin for its live-key job. Public
+  write stages use `stage.expiresAt` plus the same margin. Internal PUTs that already finished before
+  cleanup do not need this field.
 - A successful delete before `putMayArriveUntil` keeps the job as a tombstone. It sets
   `nextAttemptAt = putMayArriveUntil`. A second confirmed delete at or after that time may remove the
   job and clear the asset deadline.
@@ -186,17 +188,43 @@ staging file.
 If the live copy succeeds but publication or an event retry fails, keep `unfinalizedExpiresAt`. The
 hourly unfinalized-asset sweep schedules the same safe staging-to-live action again and moves the
 deadline forward. Recovery retries hourly for the first 30 hours after the latest signed URL was
-issued, then once a week. After eight days it deletes the failed placeholder and hands both possible
-keys to the durable deletion ledger. If the placeholder is read-only, cleanup keeps it and checks
-again a week later. Releasing a plugin-service upload envelope follows the same lock rule; only a
-named workspace deletion bypasses it. The slow retry exists because an hourly copy attempt for an
-upload the caller abandoned costs more than it can ever recover.
+issued, then once a week. After eight days an ordinary upload deletes the failed placeholder and
+hands both possible keys to the durable deletion ledger. If any upload placeholder is read-only,
+cleanup keeps it and checks again a week later. A writable pending plugin service upload is
+different: cleanup keeps its empty placeholder and asset doc, and hands only the stale staging key
+to the ledger. Remint and an exact pending create replay answer 409 until that deletion job settles,
+then they reuse the same asset and staging key: once the job is gone, nothing is queued to delete
+what the retry writes. A read-only service placeholder has no cleanup job, so both retry
+doors stay open and the accepted upload can still finish. Only a named workspace deletion bypasses
+the lock. The slow retry exists because an hourly copy attempt for an upload the caller abandoned
+costs more than it can ever recover.
 
-When an unfinished upload is discarded, create deletion jobs for both possible keys before deleting
-its docs. The staging key keeps the signed-URL arrival window. The deterministic live key has no
-arrival window. The live-key job covers a crash after the copy but before the mutation stored `r2Key`.
-Stale operator-repair uploads use this durable table for real tenants. Reserved scopes still use the
-limited component cleanup.
+Those retry doors still recheck the target's original destination seal, active current path, and
+restricted-file ACL. The lock is the one check they skip because it happened after upload acceptance.
+If a service call observes that a member moved the file outside the seal, it closes those doors
+permanently for that target. The accepted R2 event can still finish and charge the file's real size.
+
+The service `delete` route also respects the lock before any write. It archives a committed upload,
+because that file may now hold normal editable state and history. It hard-deletes only a pending
+service placeholder, which has no accepted content yet.
+
+The R2 event settles a service target's actual bytes in the same transaction that records the
+canonical object. If the service cancelled the pending target, or the member discarded its failed
+placeholder first, the target is already released. A late staging event records the largest observed
+size and enqueues both the staging key and deterministic live key for deletion in one transaction. It
+also refreshes the live-key generation and arrival window, so an older delete cannot finish while
+another event action is copying. Those bytes are stored, so they are charged: `actualBytes` is both
+the recorded size and the amount already charged, so only the difference above it is billed. A
+committed target keeps its canonical size when later staging events arrive. Duplicate and smaller
+events do not charge twice, and deleting the file never refunds quota bytes.
+
+When an ordinary unfinished upload is discarded, create deletion jobs for both possible keys before
+deleting its docs. The staging key keeps the signed-URL arrival window. The deterministic live key has
+no arrival window. A service placeholder is the exception: member discard releases its service target
+and gives the deterministic live-key job a fresh upload window, just like the service cancel route.
+The live-key job covers a crash after the copy but before the mutation stored `r2Key`. Stale
+operator-repair uploads use this durable table for real tenants. Reserved scopes still use the limited
+component cleanup.
 
 After acceptance, a lock only changes what may start next. The R2 event still publishes the file, text conversion still creates the editable representation, and upload-completed plugins still receive the event. The finished node keeps its direct or inherited lock. New edits, replacements, renames, moves, and deletes remain blocked.
 
@@ -270,7 +298,7 @@ The checkbox writes as soon as it is clicked. There is no Save for the lock — 
 
 - `convex/files_nodes.test.ts` — pointer/cascade states, tree operations, current-lock Yjs/snapshot/repair checks, lock → unlock success, upload-node and failed-upload-discard refusals, copy-out controls.
 - `convex/files_pending_updates.test.ts` — proposal/accept/discard behavior, current-lock final checks, lock → unlock completion, and eager-created cleanup.
-- `convex/public_api.test.ts` — 409 `conflict` contract, batch semantics, current-lock final checks, target identity conflicts, lock → unlock success, and zero partial output.
+- `convex/public_api.test.ts` — 409 `conflict` contract, batch semantics, current-lock final checks, target identity conflicts, lock → unlock success, and zero partial output. `convex/public_api_service_uploads.test.ts` also proves that the service delete checks every live node's current path, restricted ACL, and lock before its first write, archives committed files, and hard-deletes only pending placeholders.
 - `convex/plugins.test.ts` — locked plugin output, zero writes, source-only lock still allows a writable destination.
 - `convex/r2.test.ts` — post-lock accepted upload publication, lock → unlock completion, immutable staging/live behavior, conversion completion, deletion-job generations/tombstones/durability, and crash-orphan recovery.
 - `convex/data_deletion.test.ts` — lifecycle bypass and deletion-job ownership across purge.

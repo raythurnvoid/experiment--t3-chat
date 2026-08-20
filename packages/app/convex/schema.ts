@@ -1829,9 +1829,9 @@ const app_convex_schema = defineSchema({
 
 	/**
 	 * One file a service upload stores in a workspace. The doc is the durable answer to a replayed
-	 * create/remint/finalize call, and it captures ownership and the actual stored size, so a later
-	 * deletion of the exact canonical R2 object can find what this file charged — even after the
-	 * installation is gone.
+	 * create/remint/finalize call and the R2 event. It captures ownership and the actual stored size,
+	 * so a later deletion of the exact canonical R2 object can find what this file charged — even
+	 * after the installation is gone.
 	 */
 	plugin_service_storage_targets: defineTable({
 		organizationId: v.id("organizations"),
@@ -1846,31 +1846,37 @@ const app_convex_schema = defineSchema({
 		targetKey: v.string(),
 		/** A different request under the same run and target key is refused, not stored twice. */
 		requestFingerprint: v.string(),
+		/** The authoritative sealed replay fence and its stable destination node id at create time. */
+		destinationPath: v.string(),
+		destinationNodeId: v.id("files_nodes"),
 		/**
-		 * The sealed folder path and its stable node id when this target was created. Existing dev docs
-		 * predate these fields; backfill them before making the fields required.
+		 * Logical service lifecycle under this destination. Older dev targets omit it and belong to
+		 * epoch 1. The first create after an archive opens the next epoch.
 		 */
-		destinationPath: v.optional(v.string()),
-		destinationNodeId: v.optional(v.id("files_nodes")),
+		destinationEpoch: v.optional(v.number()),
 		path: v.string(),
 		contentType: v.string(),
-		/** The size the service declared at create time. Charged to the workspace quota right then. */
+		/** The size the service guessed at create time. Nothing is charged for it. */
 		declaredBytes: v.number(),
-		/** The size R2 confirmed at finalization. Null until the target is committed. */
+		/**
+		 * The stored size R2 confirmed, and the amount already charged for this target. `null` until an
+		 * object event arrives. Nothing is charged before that, so this one number is both.
+		 */
 		actualBytes: v.union(v.number(), v.null()),
 		nodeId: v.id("files_nodes"),
 		assetId: v.id("files_r2_assets"),
 		/**
 		 * `pending` until the canonical object is confirmed and settled, then `committed`. `released`
 		 * means the target holds no live file any more: the upload expired, the service cancelled it
-		 * before it finished, or the committed object was physically deleted. The bytes it already
+		 * before it finished, or the per-target delete archived the committed file. The bytes it already
 		 * charged stay charged either way.
 		 */
 		state: v.union(v.literal("pending"), v.literal("committed"), v.literal("released")),
+		/** Set after the file leaves this service door through a member move or service destination archive. */
+		movedOutAt: v.optional(v.number()),
 		/**
-		 * Set when the service's delete route asked for this committed file to go away. The physical
-		 * deletion settlement then keeps the doc as a released tombstone instead of consuming it, so
-		 * the service can replay the delete and still get an answer.
+		 * Set when the service's delete route archived a committed file. It marks that actualBytes is
+		 * the immutable canonical size and keeps the released target as the replay answer.
 		 */
 		deleteRequestedAt: v.optional(v.number()),
 		/** The member whose sealed grant created this target. Kept for audit and file authorship. */
@@ -1888,11 +1894,33 @@ const app_convex_schema = defineSchema({
 		])
 		// Physical deletion settlement finds the charged target by the deleted canonical asset.
 		.index("by_asset", ["assetId"])
+		// A service destination archive detaches only the targets for the file nodes it archives.
+		.index("by_node", ["nodeId"])
+		// A restored older destination generation proves its service ownership by stable folder id.
+		.index("by_org_workspace_installation_destinationPath_destinationNode", [
+			"organizationId",
+			"workspaceId",
+			"installationId",
+			"destinationPath",
+			"destinationNodeId",
+		])
 		.index("by_organization_workspace_installation_destinationPath", [
 			"organizationId",
 			"workspaceId",
 			"installationId",
 			"destinationPath",
+		])
+		// Bound live cross-run cleanup to one sealed destination and target key. Released history is
+		// deliberately outside the live state prefixes used by create and delete.
+		.index("by_delete_group_state", [
+			"organizationId",
+			"workspaceId",
+			"installationId",
+			"destinationPath",
+			"targetKey",
+			"state",
+			"movedOutAt",
+			"deleteRequestedAt",
 		])
 		// The archive route finds one target under the sealed destination without scanning an
 		// installation's full upload history. The stable node id then survives a folder rename.
@@ -1905,6 +1933,25 @@ const app_convex_schema = defineSchema({
 			"installationId",
 			"targetKey",
 		]),
+
+	/** Close every older target generation when the service archives one sealed destination. */
+	plugin_service_storage_destinations: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		destinationPath: v.string(),
+		currentEpoch: v.number(),
+		closedEpoch: v.number(),
+		closedAt: v.optional(v.number()),
+		updatedAt: v.number(),
+	})
+		.index("by_organization_workspace_installation_destinationPath", [
+			"organizationId",
+			"workspaceId",
+			"installationId",
+			"destinationPath",
+		])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	// #endregion plugins
 

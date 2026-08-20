@@ -465,6 +465,27 @@ Before reporting one, walk the element's ancestors and compare its rect with the
 not covered, and the finding is noise. A real overlap has the blocker inside or above the same
 container.
 
+## Playwriter's own toolbar covers the top-right header controls
+
+Playwriter injects `<div data-playwriter-toolbar="1">` as a direct child of `<html>`, fixed at the
+top right with `z-index: 2147483647`. It sits over the header buttons in that corner. On the files
+route, `auditAccessibility` then lists "Search file contents" and "Notifications" in
+`blockedHitTargets` with an unnamed `div` as the blocker, and a real `click()` on them fails with
+"<div data-playwriter-toolbar="1"> intercepts pointer events". Hit 2026-08-21 at a 1432px viewport.
+
+The blocker is the tool, not the app. Its `name` is empty and its parent is `html`, so any blocked
+finding whose blocker is an unnamed element outside `body` is noise. To confirm, hide it, re-run the
+audit, and put it back:
+
+```js
+await state.page.evaluate(() => { document.querySelector("[data-playwriter-toolbar]").style.display = "none"; });
+const report = await state.appPlaywriterHarness.auditAccessibility({});
+await state.page.evaluate(() => { document.querySelector("[data-playwriter-toolbar]").style.display = ""; });
+```
+
+The toolbar's own "Close Playwriter toolbar" button is not clickable through Playwright: it lives in
+the same overlay, so `getByRole` waits forever. Hide it from the page instead.
+
 ## `auditAccessibility` returns `blockedHitTargets`, and a summary script reading another name reports "none"
 
 The result keys are `unlabeled`, `blockedHitTargets`, `smallTargets` and `negativeTabIndex`. A

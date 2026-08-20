@@ -2058,6 +2058,7 @@ export const delete_workspace = mutation({
 			),
 			ctx.db
 				.query("quotas")
+				// Upload budgets stay until the delayed content purge drains targets and late R2 events.
 				.withIndex("by_workspace_quotaName", (q) =>
 					q.eq("workspaceId", workspace._id).eq("quotaName", "active_api_credentials"),
 				)

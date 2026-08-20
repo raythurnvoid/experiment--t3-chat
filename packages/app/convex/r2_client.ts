@@ -420,7 +420,8 @@ export const r2_confirmed_object_delete = {
  *
  * Increase `generation` when new bytes may have reached the key. A delete started for an older
  * generation cannot remove the newer job. Repeating the same R2 event makes no change.
- * `mode: "ensure"` creates a missing job but does not change an existing job.
+ * `mode: "ensure"` creates a missing job without restarting an existing job. It may attach the
+ * asset that waits for the existing job so the final delete can clear that asset's deadline.
  */
 export async function r2_enqueue_object_deletion_job(
 	ctx: MutationCtx,
@@ -467,6 +468,9 @@ export async function r2_enqueue_object_deletion_job(
 	}
 
 	if (args.mode === "ensure") {
+		if (existing.assetId === undefined && args.assetId !== undefined) {
+			await ctx.db.patch("files_r2_object_deletion_jobs", existing._id, { assetId: args.assetId });
+		}
 		return;
 	}
 
@@ -601,16 +605,7 @@ export const settle_object_deletion_job = internalMutation({
 				.withIndex("by_asset", (q) => q.eq("assetId", deletedAssetId))
 				.first();
 			if (serviceTarget && serviceTarget.state === "committed") {
-				// The service's delete route replays by target key, so a delete it asked for keeps a
-				// released tombstone as the durable answer. Other deletion paths consume the doc.
-				if (serviceTarget.deleteRequestedAt !== undefined) {
-					await ctx.db.patch("plugin_service_storage_targets", serviceTarget._id, {
-						state: "released",
-						updatedAt: Date.now(),
-					});
-				} else {
-					await ctx.db.delete("plugin_service_storage_targets", serviceTarget._id);
-				}
+				await ctx.db.delete("plugin_service_storage_targets", serviceTarget._id);
 			}
 		}
 

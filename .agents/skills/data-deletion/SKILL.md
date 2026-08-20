@@ -50,8 +50,8 @@ Load each companion skill that owns the affected boundary:
 - `db_drain_user_notifications_batch`: deletes one bounded batch of notifications where the deleted user is the recipient, via `by_user`. Both user-deletion paths drain these to zero before `db_finalize_deleted_user`. The per-user cap sweep in `notifications.cleanup_extra_notifications` walks the `users` table, so without this drain a purged user record would leave its notifications unreachable forever. Notifications that only name the deleted user as `actorUserId` stay in the recipient's inbox with the deleted user's name (product decision 2026-08-09: keep the name, do not anonymize).
 - `prepare_user_for_hard_deletion`: tombstones the user and drains bounded plugin UI session, publisher-doc, and recipient-notification batches before the admin action performs external provider writes. The action reads the current Polar subscription before calling this mutation.
 - `db_finalize_deleted_user`: phase 2 for a tombstoned user. It deletes user-scoped docs and returns organizations that became empty. Its user-scoped drains include the paged pending-state family and its operation scaffolding via `by_user`: `files_pending_update_yjs_states` (with their pages), `files_pending_update_text_inputs`, `files_pending_update_operation_batches`, and `files_yjs_trusted_update_stages`.
-- `db_purge_organization_workspace_content_batch`: deletes tenant content for one `(organizationId, workspaceId)` in bounded batches.
-- `db_delete_workspace_structure_batch`: deletes workspace notifications, memberships, active API credential quota docs, access-control docs, and then the workspace doc after content is gone.
+- `db_purge_organization_workspace_content_batch`: deletes tenant content for one `(organizationId, workspaceId)` in bounded batches, then deletes the workspace-level public and service upload budget docs after every target, asset, and file is gone.
+- `db_delete_workspace_structure_batch`: deletes workspace notifications, memberships, every workspace-scoped quota doc, access-control docs, and then the workspace doc after content is gone.
 - `db_delete_workspace_batch`: full workspace deletion used by organization deletion and admin reset flows where the workspace doc may still exist.
 - `db_delete_organization_batch`: drains queued workspace content, deletes remaining workspaces, deletes organization structure, then deletes the organization doc.
 - `process_user_deletion_request`, `process_organization_deletion_request`, and `process_workspace_deletion_request`: own one queued request at a time and leave the queue doc in place while covered work remains.
@@ -123,16 +123,16 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - Rejects default workspaces.
 - Queues a workspace-scope request.
 - Releases one `extra_workspaces` quota unit.
-- Removes workspace invite notifications, memberships, active API credential quota docs, role assignments, permission grants, then deletes the workspace doc.
+- Removes workspace invite notifications, memberships, active API credential quota docs, role assignments, permission grants, then deletes the workspace doc. It keeps the workspace upload budgets during retention so late accepted R2 events can still settle.
 - The queued workspace request later purges heavy content for the deleted workspace id, even though the workspace doc is already gone.
 
 `process_workspace_deletion_request`:
 
 - Only owns workspace-scope request docs.
 - Requires both `organizationId` and `workspaceId`; invalid docs are removed.
-- Calls `db_purge_organization_workspace_content_batch`. Active API credential quota docs are workspace structure, so the UI-facing delete removes them in phase 1 and internal full-delete flows remove them through `db_delete_workspace_structure_batch`.
+- Calls `db_purge_organization_workspace_content_batch`. After service targets, assets, and files are gone, that content purge deletes `public_api_upload_bytes` and `plugin_service_storage_bytes`. This ordering keeps service settlement valid during retention and resets a preserved admin-data-reset workspace to fresh upload budgets.
 - Keeps the queue doc while content remains.
-- Does not delete workspace structure. The UI-facing `organizations.delete_workspace` path already removed workspace memberships, access docs, active API credential quota docs, released one `extra_workspaces` usage unit, and deleted the workspace doc during phase 1. Use `db_delete_workspace_batch` only from flows that still need full content-plus-structure workspace deletion.
+- Does not delete the remaining workspace structure. The UI-facing `organizations.delete_workspace` path already removed memberships, access docs, active API credential quota docs, released one `extra_workspaces` usage unit, and deleted the workspace doc during phase 1. The content purge itself removes the two workspace upload-budget docs last. Use `db_delete_workspace_batch` only from flows that still need full content-plus-structure workspace deletion.
 
 ## Organization Delete
 
@@ -168,7 +168,7 @@ Current purge coverage includes:
 - `public_api_grants`
 - `public_api_file_write_stages` via `public_api_db_cleanup_file_write_stage`, before the calls/runs/assets passes: staged asset docs have no `r2Key` yet, so the stage cleanup derives the R2 object keys itself and deletes the objects before their asset docs
 - `plugins_event_run_calls`, `plugins_event_runs` with `plugins_runtime_workpool` run cancellation (plugin event runs execute on that dedicated component; R2 asset `processingWorkId` jobs stay on `files_upload_conversion_workpool`), `plugins_workspace_event_handlers`, `plugins_workspace_installation_secrets`, then the plugin document store, then `plugins_workspace_installations` one installation per pass: its `plugins_ui_sessions` (via `by_installation`) drain one bounded batch per transaction, and the installation doc is deleted only once no sessions remain
-- The plugin document store through `plugins_data_db_drain_batch` with `installationId: null`, which covers every installation in the workspace in one pass. It deletes `plugins_data_reservations`, `plugins_data_revision_tombstones`, `plugins_data`, `plugin_service_grants`, then `plugin_service_storage_targets` (only on this workspace-wide drain), then `plugins_data_usage`. The accounting doc goes last so it is never the survivor: a leftover accounting doc with no documents behind it would look like a real installation. It runs before the installation pass, so no row is left pointing at an installation that is already gone. An installation-scoped drain (uninstall) writes to no `files_nodes` row and deletes no `plugin_service_storage_targets` doc: the uploaded files belong to the workspace, not to the plugin that put them there, and `workspace.plugins.manage` is not permission to delete a member's file or unlock a read-only one. A placeholder whose upload never finished stays as an empty file a member can delete.
+- The plugin document store through `plugins_data_db_drain_batch` with `installationId: null`, which covers every installation in the workspace in one pass. It deletes `plugins_data_reservations`, `plugins_data_revision_tombstones`, `plugins_data`, `plugin_service_grants`, then the service destination fences and `plugin_service_storage_targets` (only on this workspace-wide drain), then `plugins_data_usage`. The accounting doc goes last so it is never the survivor: a leftover accounting doc with no documents behind it would look like a real installation. It runs before the installation pass, so no row is left pointing at an installation that is already gone. An installation-scoped drain (uninstall) writes to no `files_nodes` row and deletes no service destination fence or storage target: the uploaded files belong to the workspace, not to the plugin that put them there, and `workspace.plugins.manage` is not permission to delete a member's file or unlock a read-only one. A placeholder whose upload never finished stays as an empty file a member can delete.
 - `activities` after the plugin passes. The run-retention path normally deletes an activity together with its plugin run, but this purge deletes run docs directly, so it drains the leftover activities by the workspace index. Every activity producer needs a live run doc, so no new rows can appear once the run pass is empty.
 - `chat_messages`
 - `files_metadata_docs`
@@ -182,8 +182,13 @@ Current purge coverage includes:
   asset docs in the workspace and this pass deletes them with the rest. A picture whose message was
   never stored keeps its `unfinalizedExpiresAt` deadline and `cleanup_expired_unfinalized_assets`
   deletes it a day later. A referenced upload retries for at most eight days after its latest signed
-  URL; the terminal pass removes its placeholder and hands both possible keys to the deletion ledger. Before
-  deleting an asset doc, create a deletion job for the stored live key or its deterministic live key.
+  URL. The terminal pass for an ordinary upload removes its placeholder and hands both possible keys
+  to the deletion ledger. A pending plugin service upload keeps its empty placeholder, asset doc, and
+  target. It hands only its stale staging key to the ledger. Remint and an exact pending create replay
+  wait until that job settles, then reuse the same asset and staging key: there is no resume, so the
+  service sends the whole file again. If the placeholder is read-only, cleanup defers that handoff and both
+  retry doors stay open so the accepted upload can still finish.
+  Before deleting an asset doc, create a deletion job for the stored live key or its deterministic live key.
   Also create one for `uploadStagingR2Key` when present. The staging job keeps
   `putMayArriveUntil` through `uploadUrlExpiresAt` plus the normal margin. An older upload without a
   staging key uses the same tombstone on its live key because its signed URL wrote there directly.
@@ -206,9 +211,17 @@ tenant or asset docs. Each job stays until its processor confirms the R2 file is
 signed URL can no longer be used. The job's final confirm (`settle_object_deletion_job`) is also where a
 plugin service upload target is retired: a canonical `assets/<assetId>` key with a committed
 `plugin_service_storage_targets` doc consumes that doc. Nothing is refunded — the
-`plugin_service_storage_bytes` quota only grows. The doc is kept instead of consumed when the
-service's `/api/v1/files/service-uploads/delete` route marked it with `deleteRequestedAt`: then it
-becomes a `released` tombstone so the service's delete replays keep getting an answer.
+`plugin_service_storage_bytes` quota only grows.
+
+An R2 staging event can arrive after the service cancels a pending target, or after the member
+discards its failed placeholder. In the same transaction,
+`record_untracked_asset_event` hands both the staging key and deterministic live key to the deletion
+ledger. This covers a staging-to-live copy that was already running when the asset was deleted. It
+charges those stored bytes to the released target. `actualBytes` is both the recorded size and the
+amount already charged, so a bigger object charges only the difference. Member discard already releases the service target and keeps the deterministic live-key
+job through a fresh upload window in the same transaction that deletes the asset. A target that
+committed before deletion keeps its canonical size when later staging events arrive. Duplicate and
+smaller events do not charge twice. The target stays released, and the quota is never refunded.
 
 During the retention window, tombstoning an anonymous user also does not revoke every anonymous access path. See the current security gap in [auth-system](../auth-system/SKILL.md#known-anonymous-deletion-gap).
 

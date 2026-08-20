@@ -741,6 +741,20 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: fileNodes.length };
 	}
 
+	// Keep monotonic upload budgets until every service target and asset is gone. An R2 event may
+	// still settle accepted bytes during a workspace's retention window. A preserved data-reset
+	// workspace also starts with fresh upload budgets after its content has been cleared.
+	for (const quotaName of ["public_api_upload_bytes", "plugin_service_storage_bytes"] as const) {
+		const quotaDocs = await ctx.db
+			.query("quotas")
+			.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", workspaceId).eq("quotaName", quotaName))
+			.take(batchSize);
+		if (quotaDocs.length > 0) {
+			await Promise.all(quotaDocs.map((doc) => ctx.db.delete("quotas", doc._id)));
+			return { done: false, deletedCount: quotaDocs.length };
+		}
+	}
+
 	return { done: true, deletedCount: 0 };
 }
 
@@ -833,15 +847,13 @@ async function db_delete_workspace_structure_batch(
 		return { done: false, deletedCount: memberships.length };
 	}
 
-	const apiCredentialQuotaDocs = await ctx.db
+	const workspaceQuotaDocs = await ctx.db
 		.query("quotas")
-		.withIndex("by_workspace_quotaName", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("quotaName", "active_api_credentials"),
-		)
+		.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", args.workspaceId))
 		.take(args.batchSize);
-	if (apiCredentialQuotaDocs.length > 0) {
-		await Promise.all(apiCredentialQuotaDocs.map((doc) => ctx.db.delete("quotas", doc._id)));
-		return { done: false, deletedCount: apiCredentialQuotaDocs.length };
+	if (workspaceQuotaDocs.length > 0) {
+		await Promise.all(workspaceQuotaDocs.map((doc) => ctx.db.delete("quotas", doc._id)));
+		return { done: false, deletedCount: workspaceQuotaDocs.length };
 	}
 
 	const roleAssignments = await ctx.db

@@ -1354,7 +1354,7 @@ describe("plugins Phase 0", () => {
 		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
 			membershipId: membership.membershipId,
 			parentId: "root",
-			filename: "service-artifact.png",
+			filename: "meetings/meeting-1/service-artifact.png",
 			contentType: "image/png",
 			size: 1024,
 		});
@@ -1366,6 +1366,19 @@ describe("plugins Phase 0", () => {
 		// A plugin service stored this file: the target row is what marks the asset.
 		const targetId = await t.run(async (ctx) => {
 			const now = Date.now();
+			const destination = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("path", "/meetings/meeting-1")
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			if (!destination) {
+				throw new Error("Expected the service target destination folder");
+			}
 			return await ctx.db.insert("plugin_service_storage_targets", {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -1373,6 +1386,8 @@ describe("plugins Phase 0", () => {
 				idempotencyKey: "meeting-1",
 				targetKey: "artifact",
 				requestFingerprint: "{}",
+				destinationPath: destination.path,
+				destinationNodeId: destination._id,
 				path: "/meetings/meeting-1/service-artifact.png",
 				contentType: "image/png",
 				declaredBytes: 1024,

@@ -622,6 +622,16 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   first restricted path it hits. The caller already holds workspace `content.write`, and the payload
   still never says why beyond the literal. Accepted at this speed; if it ever matters, lower the
   bucket rather than blurring the per-item errors, which importers need.
+- **Service-upload delete checks the live file.** `/api/v1/files/service-uploads/delete` starts
+  from a sealed destination and target key, but a member may have moved or restricted a matching file
+  since upload. The mutation loads every bounded live match before its first write, drops nodes now
+  outside the seal, and asks `content.write` on each remaining node. Workspace permission from the
+  processing grant never opens a restricted file by itself. It archives committed files and
+  hard-deletes only unfinished placeholders.
+- **Service-upload target retries check the live file too.** Exact create replay, remint, and
+  finalize bind the target to its original destination seal, then check its active current path and
+  the presenting actor's `content.write` access. This prevents another grant in the installation,
+  or a grant whose placeholder was moved or restricted, from extending the signed PUT window.
 - **Nothing proves a shared tenant before naming a user.** `users.get_anagraphic` requires an
   identity and hides other people's email, but any signed-in caller still turns any `users` id into a
   display name and avatar. Closing that needs a relationship check the query has no argument for

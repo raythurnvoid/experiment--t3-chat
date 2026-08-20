@@ -5,6 +5,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
+import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -196,6 +197,15 @@ async function read_quota(t: ReturnType<typeof test_convex>, fixture: Awaited<Re
 	});
 }
 
+async function set_quota_used(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_installation>>,
+	usedCount: number,
+) {
+	const quota = await read_quota(t, fixture);
+	await t.run(async (ctx) => await ctx.db.patch("quotas", quota!._id, { usedCount }));
+}
+
 async function read_targets(t: ReturnType<typeof test_convex>) {
 	return await t.run(async (ctx) => await ctx.db.query("plugin_service_storage_targets").collect());
 }
@@ -367,49 +377,98 @@ describe("service upload authorization", () => {
 		const crossDelete = await call(t, DELETE_PATH, sealedA, { idempotencyKey: "meeting-b", targetKey: "recording" });
 		expect(crossDelete.status).toBe(404);
 
-		// Only B's workspace quota was charged, and B still holds its one file.
+		// B's stored bytes are charged to B alone, and B still holds its one file.
+		await simulate_finalizer(t, fixtureB, (await read_targets(t))[0]!, { size: 3 * MIB });
 		const quotaA = await read_quota(t, fixtureA);
 		const quotaB = await read_quota(t, fixtureB);
 		expect(quotaA?.usedCount ?? 0).toBe(0);
-		expect(quotaB?.usedCount).toBe(4 * MIB);
+		expect(quotaB?.usedCount).toBe(3 * MIB);
 		expect(await read_targets(t)).toHaveLength(1);
 	});
-});
 
-describe("service upload quota", () => {
-	test("refuses a target that would cross the workspace quota, and charges nothing", async () => {
+	test("a grant for another destination cannot remint or inspect a target in the same installation", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const meetingGrant = await seal_token(t, fixture, "/meetings");
+		expect((await call(t, CREATE_TARGET_PATH, meetingGrant, target_body())).status).toBe(200);
+		const otherGrant = await seal_token(t, fixture, "/exports");
+
+		for (const [path, body] of [
+			[REMINT_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+			[FINALIZE_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+		] as const) {
+			const response = await call(t, path, otherGrant, body);
+			expect(response.status, path).toBe(404);
+			expect(await response.json(), path).toEqual({ message: "Not found" });
+		}
+	});
+
+	test("an archived placeholder cannot receive a fresh URL or expose target state", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
-		// Push the counter to one byte under the ceiling so any real target must refuse.
-		await t.run(async (ctx) => {
-			const quota = await ctx.db
-				.query("quotas")
-				.withIndex("by_workspace_quotaName", (q) =>
-					q.eq("workspaceId", fixture.workspaceId).eq("quotaName", "plugin_service_storage_bytes"),
-				)
-				.first();
-			await ctx.db.patch("quotas", quota!._id, { usedCount: quota!.maxCount - 1 });
-		});
+		expect((await call(t, ARCHIVE_PATH, sealed, {})).status).toBe(200);
 
+		for (const [path, body] of [
+			[CREATE_TARGET_PATH, target_body()],
+			[REMINT_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+			[FINALIZE_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+		] as const) {
+			const response = await call(t, path, sealed, body);
+			expect(response.status, path).toBe(404);
+			expect(await response.json(), path).toEqual({ message: "Not found" });
+		}
+	});
+});
+
+describe("service upload quota", () => {
+	test("creating a target charges nothing and refuses only a workspace that is already full", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		// The size in the request is only the service's guess, so this door bills nothing for it.
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+
+		// One byte of room is still room. This door stops the next file, not the current one, so a
+		// declared size that would cross the ceiling is accepted.
+		const ceiling = (await read_quota(t, fixture))!.maxCount;
+		await set_quota_used(t, fixture, ceiling - 1);
+		expect(
+			(
+				await call(
+					t,
+					CREATE_TARGET_PATH,
+					sealed,
+					target_body({
+						targetKey: "slides",
+						path: "/meetings/meeting-1/slides.pdf",
+						contentType: "application/pdf",
+						size: MIB,
+					}),
+				)
+			).status,
+		).toBe(200);
+
+		await set_quota_used(t, fixture, ceiling);
 		const refused = await call(
 			t,
 			CREATE_TARGET_PATH,
 			sealed,
 			target_body({
-				targetKey: "slides",
-				path: "/meetings/meeting-1/slides.pdf",
+				targetKey: "notes",
+				path: "/meetings/meeting-1/notes.pdf",
 				contentType: "application/pdf",
 				size: MIB,
 			}),
 		);
 		expect(refused.status).toBe(403);
-		expect(await read_targets(t)).toHaveLength(1);
-		expect((await read_quota(t, fixture))?.usedCount).toBe((await read_quota(t, fixture))!.maxCount - 1);
+		expect(await read_targets(t)).toHaveLength(2);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(ceiling);
 	});
 
-	test("a stored object bigger than declared is charged the difference, even past the ceiling", async () => {
+	test("a stored object bigger than declared is charged in full, even past the ceiling", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
@@ -417,24 +476,35 @@ describe("service upload quota", () => {
 		const target = (await read_targets(t))[0]!;
 
 		// A signed PUT does not bind the object's length, so the service can always store more than
-		// it declared. Sit one byte under the ceiling to prove the settle charges the extra bytes
+		// it declared. Sit one byte under the ceiling to prove the settle charges the stored bytes
 		// instead of refusing them: the quota is a budget, not a guard.
 		const ceiling = (await read_quota(t, fixture))!.maxCount;
-		await t.run(async (ctx) => {
-			const quota = await ctx.db
-				.query("quotas")
-				.withIndex("by_workspace_quotaName", (q) =>
-					q.eq("workspaceId", fixture.workspaceId).eq("quotaName", "plugin_service_storage_bytes"),
-				)
-				.first();
-			await ctx.db.patch("quotas", quota!._id, { usedCount: ceiling - 1 });
+		await set_quota_used(t, fixture, ceiling - 1);
+		const canonicalKey = await simulate_finalizer(t, fixture, target, { size: 6 * MIB });
+
+		// The R2 event owns settlement. The service does not need to make another API call for the
+		// target or quota to become correct.
+		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 6 * MIB });
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).toMatchObject({
+			r2Key: canonicalKey,
+			size: 6 * MIB,
 		});
-		await simulate_finalizer(t, fixture, target, { size: 6 * MIB });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(ceiling - 1 + 6 * MIB);
+
+		// A later event can only describe the mutable staging object. It must not change the immutable
+		// canonical size or charge the target again.
+		await simulate_finalizer(t, fixture, target, { size: 9 * MIB });
+		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 6 * MIB });
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).toMatchObject({
+			r2Key: canonicalKey,
+			size: 6 * MIB,
+		});
+		expect((await read_quota(t, fixture))?.usedCount).toBe(ceiling - 1 + 6 * MIB);
 
 		const settled = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(settled.status).toBe(200);
 		expect(await settled.json()).toMatchObject({ state: "committed", actualBytes: 6 * MIB });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(ceiling - 1 + 2 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(ceiling - 1 + 6 * MIB);
 	});
 });
 
@@ -510,7 +580,62 @@ describe("service upload drain", () => {
 });
 
 describe("service upload targets", () => {
-	test("creates a target with a forced-skipProcessing asset and answers a replay without charging twice", async () => {
+	test("allows 16 targets per upload run, including exact replays, and refuses a seventeenth", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		const bodies = Array.from({ length: 16 }, (_, index) =>
+			target_body({
+				targetKey: `file-${index}`,
+				path: `/meetings/meeting-1/file-${index}.bin`,
+				contentType: "application/octet-stream",
+				size: 1,
+			}),
+		);
+
+		for (const body of bodies) {
+			expect((await call(t, CREATE_TARGET_PATH, sealed, body)).status).toBe(200);
+		}
+		expect(await read_targets(t)).toHaveLength(16);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+
+		// The limit bounds new targets, not idempotent retries of a target already inside the run.
+		expect((await call(t, CREATE_TARGET_PATH, sealed, bodies[15])).status).toBe(200);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+
+		const refused = await call(
+			t,
+			CREATE_TARGET_PATH,
+			sealed,
+			target_body({
+				targetKey: "file-16",
+				path: "/meetings/meeting-1/file-16.bin",
+				contentType: "application/octet-stream",
+				size: 1,
+			}),
+		);
+		expect(refused.status).toBe(400);
+		expect(await refused.json()).toEqual({ message: "An upload run holds at most 16 targets" });
+		expect(await read_targets(t)).toHaveLength(16);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await t.run(async (ctx) => ctx.db.query("files_r2_assets").collect())).toHaveLength(16);
+		expect(
+			await t.run(async (ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", fixture.organizationId)
+							.eq("workspaceId", fixture.workspaceId)
+							.eq("path", "/meetings/meeting-1/file-16.bin")
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+			),
+		).toBeNull();
+	});
+
+	test("creates a target with a forced-skipProcessing asset and answers a replay with the same file", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
@@ -539,7 +664,7 @@ describe("service upload targets", () => {
 		const asset = await t.run(async (ctx) => await ctx.db.get("files_r2_assets", targets[0]!.assetId));
 		expect(asset?.processingWorkId).toBeNull();
 
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
 
 		const replay = await call(t, CREATE_TARGET_PATH, sealed, body);
 		expect(replay.status).toBe(200);
@@ -547,7 +672,7 @@ describe("service upload targets", () => {
 		expect(replayBody.state).toBe("pending");
 		expect(replayBody.nodeId).toBe(firstBody.nodeId);
 		expect(await read_targets(t)).toHaveLength(1);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
 
 		// The same target key describing a different file is a conflict, not a second file.
 		const conflicting = await call(t, CREATE_TARGET_PATH, sealed, { ...body, size: 5 * MIB });
@@ -645,16 +770,16 @@ describe("service upload targets", () => {
 		expect(body.nodeId).toBe(String(targetBefore.nodeId));
 		expect(body.uploadUrl).toContain(assetBefore!.uploadStagingR2Key!);
 
-		// Nothing new was created and nothing more was charged.
+		// Nothing new was created, and creating a target never charges.
 		expect(await read_targets(t)).toHaveLength(1);
 		const assets = await t.run(async (ctx) => await ctx.db.query("files_r2_assets").collect());
 		expect(assets).toHaveLength(1);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
 		// The URL window moved forward so the next PUT fits inside it.
 		expect(assets[0]!.uploadUrlExpiresAt).toBeGreaterThanOrEqual(assetBefore!.uploadUrlExpiresAt!);
 	});
 
-	test("finalize answers pending before the object is confirmed, then settles the actual bytes once", async () => {
+	test("finalize reports the R2 event settlement and replays it without another charge", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
@@ -672,15 +797,15 @@ describe("service upload targets", () => {
 		expect(settled.status).toBe(200);
 		expect(await settled.json()).toMatchObject({ state: "committed", actualBytes: 3 * MIB });
 
-		// The 1 MiB the file never used stays charged. The counter only grows, so an over-declaration
-		// is the service's own loss, exactly like the normal upload path.
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		// The stored size is charged, not the 4 MiB the service declared. The guess never reaches the
+		// books; only what R2 confirmed does.
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 
-		// Settling is idempotent: a replay answers the same and moves no bytes.
+		// A finalize replay answers the same and moves no bytes.
 		const replay = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(replay.status).toBe(200);
 		expect(await replay.json()).toMatchObject({ state: "committed", actualBytes: 3 * MIB });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 
 		// Remint after canonicalization also answers committed instead of minting a useless URL.
 		const remint = await call(t, REMINT_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
@@ -698,7 +823,7 @@ describe("service upload targets", () => {
 		expect((await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
 			200,
 		);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 
 		// R2 confirms the canonical object is physically gone. The target doc is consumed, but the
 		// bytes it charged stay charged.
@@ -719,19 +844,19 @@ describe("service upload targets", () => {
 			deletedAt: Date.now(),
 		});
 
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 		// Nothing asked for this delete, so the settlement consumes the doc instead of keeping a
 		// tombstone.
 		expect(await read_targets(t)).toHaveLength(0);
 	});
 
-	test("an upload whose asset was cleaned up is released and stays charged", async () => {
+	test("a pending target whose asset is missing is released and charges nothing", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
-		// The unfinalized-asset cleanup gave up on this upload and deleted its asset doc.
+		// Simulate a pending target whose associated asset no longer exists.
 		await t.run(async (ctx) => {
 			await ctx.db.delete("files_r2_assets", target.assetId);
 		});
@@ -739,77 +864,258 @@ describe("service upload targets", () => {
 		const finalized = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(finalized.status).toBe(200);
 		expect(((await finalized.json()) as { state: string }).state).toBe("released");
-		// The upload never produced a file, but its declared bytes stay charged: the counter only
-		// grows, so a service that abandons uploads pays for them.
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		// The upload never produced a file and no bytes reached R2, so this target charged nothing.
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
 
 		const reminted = await call(t, REMINT_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(reminted.status).toBe(409);
 	});
+
+	test("keeps an abandoned service placeholder after staging cleanup and remints only after cleanup settles", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const assetBefore = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
+		if (!assetBefore?.uploadStagingR2Key || assetBefore.uploadUrlExpiresAt === undefined) {
+			throw new Error("Expected a staged service upload asset");
+		}
+		const recoveryStartedAt = assetBefore.uploadUrlExpiresAt - 15 * 60 * 1000;
+		const cleanupNow = recoveryStartedAt + 8 * 24 * 60 * 60 * 1000;
+
+		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+			_test_now: cleanupNow,
+			_test_disableReschedule: true,
+		});
+		expect(swept).toEqual({ deletedCount: 0, done: true });
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).toMatchObject({
+			unfinalizedExpiresAt: expect.any(Number),
+		});
+		expect((await read_targets(t))[0]).toMatchObject({ state: "pending" });
+		// No bytes ever reached R2, so this target never charged anything.
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+
+		const jobs = await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+		expect(jobs).toHaveLength(1);
+		expect(jobs[0]).toMatchObject({
+			r2Key: assetBefore.uploadStagingR2Key,
+			reason: "upload_staging",
+			assetId: target.assetId,
+		});
+
+		const blockedReplay = await call(t, CREATE_TARGET_PATH, sealed, target_body());
+		expect(blockedReplay.status).toBe(409);
+		expect(await blockedReplay.json()).toEqual({ message: "This target's previous upload is still being cleaned up" });
+
+		const blockedRemint = await call(t, REMINT_PATH, sealed, {
+			idempotencyKey: "meeting-1",
+			targetKey: "recording",
+		});
+		expect(blockedRemint.status).toBe(409);
+		expect(await blockedRemint.json()).toEqual({ message: "This target's previous upload is still being cleaned up" });
+
+		await t.mutation(internal.r2_client.settle_object_deletion_job, {
+			jobId: jobs[0]!._id,
+			generation: jobs[0]!.generation,
+			deletedAt: Math.max(cleanupNow, jobs[0]!.putMayArriveUntil ?? 0),
+		});
+		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId)))?.unfinalizedExpiresAt).toBeUndefined();
+		const reminted = await call(t, REMINT_PATH, sealed, {
+			idempotencyKey: "meeting-1",
+			targetKey: "recording",
+		});
+		expect(reminted.status).toBe(200);
+		const assetAfterRemint = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
+		const targetAfterRemint = (await read_targets(t))[0]!;
+		// There is no resume, so the retry sends the whole file again to the same staging key. The
+		// finished cleanup had cleared the unfinalized marker, and the remint arms it again.
+		expect(targetAfterRemint.assetId).toBe(target.assetId);
+		expect(assetAfterRemint).toMatchObject({
+			uploadStagingR2Key: assetBefore.uploadStagingR2Key,
+			unfinalizedExpiresAt: expect.any(Number),
+		});
+		expect(targetAfterRemint).toMatchObject({ state: "pending", actualBytes: null });
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
+			assetId: target.assetId,
+		});
+		// The settled cleanup left no deletion job, so nothing is queued to delete what the retry writes.
+		expect(await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toEqual([]);
+
+		// The retry finishes. The stored size R2 confirmed is charged once, here.
+		await simulate_finalizer(t, fixture, targetAfterRemint, { size: 6 * MIB });
+		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 6 * MIB });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
+
+		// Workspace deletion removes destination fences before targets, in bounded passes.
+		const drainResults = [];
+		for (let pass = 0; pass < 3; pass += 1) {
+			drainResults.push(
+				await t.run(async (ctx) =>
+					public_api_service_uploads_db_drain_batch(ctx, {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.workspaceId,
+						installationId: null,
+						batchSize: 1,
+					}),
+				),
+			);
+		}
+		expect(drainResults).toEqual([
+			{ done: false, deletedCount: 1 },
+			{ done: false, deletedCount: 1 },
+			{ done: true, deletedCount: 0 },
+		]);
+		expect(await t.run(async (ctx) => ctx.db.query("plugin_service_storage_destinations").collect())).toEqual([]);
+		expect(await read_targets(t)).toEqual([]);
+	});
+
+	test("defers stale staging cleanup while a service placeholder is read-only", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
+		if (asset?.uploadUrlExpiresAt === undefined) {
+			throw new Error("Expected a staged service upload asset");
+		}
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: target.nodeId });
+		});
+
+		const recoveryStartedAt = asset.uploadUrlExpiresAt - 15 * 60 * 1000;
+		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+			_test_now: recoveryStartedAt + 8 * 24 * 60 * 60 * 1000,
+			_test_disableReschedule: true,
+		});
+		expect(swept).toEqual({ deletedCount: 0, done: true });
+		expect(await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toHaveLength(0);
+		expect((await read_targets(t))[0]).toMatchObject({ state: "pending" });
+
+		// The lock must not cancel an upload the member already accepted. Both retry doors stay open.
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		expect(
+			(
+				await call(t, REMINT_PATH, sealed, {
+					idempotencyKey: "meeting-1",
+					targetKey: "recording",
+				})
+			).status,
+		).toBe(200);
+		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId)))?.uploadStagingR2Key).toBe(
+			asset.uploadStagingR2Key,
+		);
+	});
 });
 
 describe("service upload delete", () => {
-	test("deletes a committed file under a newly sealed grant and keeps its bytes charged", async () => {
+	test("archives a committed file under a newly sealed grant and keeps its content and bytes", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const canonicalKey = await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
+		const finalizedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
+		if (!finalizedAsset?.uploadStagingR2Key) {
+			throw new Error("Expected the committed target's staging key");
+		}
 		expect((await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
 			200,
 		);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
+		const metadataId = await t.run((ctx) =>
+			ctx.db.insert("files_metadata_docs", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				fileNodeId: target.nodeId,
+				sourceKind: "committed",
+				yjsSequence: 0,
+				path: target.path,
+				treePath: target.path,
+				qualifiedField: "service.recording",
+				docKind: "field",
+			}),
+		);
 
 		// Days later the meeting is deleted under a brand new grant sealed to the same destination.
 		const laterSealed = await seal_token(t, fixture);
 		const body = { idempotencyKey: "delete-meeting-1", targetKey: "recording" };
 		const first = await call(t, DELETE_PATH, laterSealed, body);
 		expect(first.status).toBe(200);
-		expect(await first.json()).toEqual({ state: "deleting", paths: ["/meetings/meeting-1/recording.mp4"] });
+		expect(await first.json()).toEqual({ state: "deleted", paths: ["/meetings/meeting-1/recording.mp4"] });
 
-		// The file left the workspace and the canonical key has a deletion job.
-		expect(await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId))).toBeNull();
-		expect(await t.run(async (ctx) => await ctx.db.get("files_r2_assets", target.assetId))).toBeNull();
-		const job = await t.run(
-			async (ctx) =>
-				await ctx.db
-					.query("files_r2_object_deletion_jobs")
-					.withIndex("by_r2_key", (q) => q.eq("r2Key", canonicalKey))
-					.first(),
-		);
-		expect(job).toMatchObject({ generation: 1 });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		// A committed upload is a real member file. Delete archives it and preserves every dependent
+		// row instead of running the placeholder-only hard delete helper over normal file history.
+		const archived = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", target.nodeId),
+			asset: await ctx.db.get("files_r2_assets", target.assetId),
+			metadata: await ctx.db.get("files_metadata_docs", metadataId),
+			canonicalJob: await ctx.db
+				.query("files_r2_object_deletion_jobs")
+				.withIndex("by_r2_key", (q) => q.eq("r2Key", canonicalKey))
+				.first(),
+		}));
+		expect(archived.node?.archiveOperationId).toBeTypeOf("string");
+		expect(archived.asset).toMatchObject({ r2Key: canonicalKey, size: 3 * MIB });
+		expect(archived.metadata).not.toBeNull();
+		expect(archived.canonicalJob).toBeNull();
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 		const marked = (await read_targets(t))[0]!;
-		expect(marked.state).toBe("committed");
+		expect(marked).toMatchObject({ state: "released", actualBytes: 3 * MIB });
 		expect(marked.deleteRequestedAt).toBeTypeOf("number");
 
-		// A replay answers the same and does not touch the deletion job again.
+		// Create and remint must not claim the archived file is still committed. Finalize reports the
+		// released API state while the ordinary Files restore door still owns the archived node.
+		const createDuringDelete = await call(t, CREATE_TARGET_PATH, sealed, target_body());
+		expect(createDuringDelete.status).toBe(409);
+		expect(await createDuringDelete.json()).toEqual({ message: "This target was already released" });
+		const remintDuringDelete = await call(t, REMINT_PATH, sealed, {
+			idempotencyKey: "meeting-1",
+			targetKey: "recording",
+		});
+		expect(remintDuringDelete.status).toBe(409);
+		expect(await remintDuringDelete.json()).toEqual({ message: "This target was already released" });
+		const finalizeDuringDelete = await call(t, FINALIZE_PATH, sealed, {
+			idempotencyKey: "meeting-1",
+			targetKey: "recording",
+		});
+		expect(finalizeDuringDelete.status).toBe(200);
+		expect(await finalizeDuringDelete.json()).toMatchObject({ state: "released", actualBytes: 3 * MIB });
+
+		// An R2 action that resolved the old staging event before archive may still finish. It cleans
+		// only the staging key and cannot replace or rebill the immutable committed object.
+		await t.mutation(internal.r2.process_uploaded_asset_event, {
+			assetId: target.assetId,
+			r2Key: canonicalKey,
+			uploadStagingR2Key: finalizedAsset.uploadStagingR2Key,
+			size: 8 * MIB,
+			etag: "late-staging-after-archive",
+			eventId: "late_staging_after_committed_delete",
+		});
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: 3 * MIB });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
+		const afterLateEvent = await t.run(
+			async (ctx) =>
+				({
+					asset: await ctx.db.get("files_r2_assets", target.assetId),
+					canonicalJob: await ctx.db
+						.query("files_r2_object_deletion_jobs")
+						.withIndex("by_r2_key", (q) => q.eq("r2Key", canonicalKey))
+						.first(),
+				}),
+		);
+		expect(afterLateEvent.asset).toMatchObject({ r2Key: canonicalKey, size: 3 * MIB });
+		expect(afterLateEvent.canonicalJob).toBeNull();
+
+		// A replay answers the same without archiving the node again.
+		const archiveOperationId = archived.node!.archiveOperationId;
 		const replay = await call(t, DELETE_PATH, laterSealed, body);
 		expect(replay.status).toBe(200);
-		expect(await replay.json()).toEqual({ state: "deleting", paths: ["/meetings/meeting-1/recording.mp4"] });
-		const jobAfterReplay = await t.run(
-			async (ctx) =>
-				await ctx.db
-					.query("files_r2_object_deletion_jobs")
-					.withIndex("by_r2_key", (q) => q.eq("r2Key", canonicalKey))
-					.first(),
-		);
-		expect(jobAfterReplay).toMatchObject({ generation: 1 });
-
-		// R2 confirms the delete: the bytes stay charged and the target becomes a tombstone that keeps
-		// answering replays as deleted.
-		await t.mutation(internal.r2_client.settle_object_deletion_job, {
-			jobId: job!._id,
-			generation: job!.generation,
-			deletedAt: Date.now(),
-		});
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
-		expect((await read_targets(t))[0]!.state).toBe("released");
-
-		const afterSettle = await call(t, DELETE_PATH, laterSealed, body);
-		expect(afterSettle.status).toBe(200);
-		expect(await afterSettle.json()).toEqual({ state: "deleted", paths: ["/meetings/meeting-1/recording.mp4"] });
+		expect(await replay.json()).toEqual({ state: "deleted", paths: ["/meetings/meeting-1/recording.mp4"] });
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId)))?.archiveOperationId).toBe(archiveOperationId);
 	});
 
 	test("cancels a target that is still uploading and deletes its empty placeholder", async () => {
@@ -827,12 +1133,201 @@ describe("service upload delete", () => {
 		expect(await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId))).toBeNull();
 		expect(await t.run(async (ctx) => await ctx.db.get("files_r2_assets", target.assetId))).toBeNull();
 		expect((await read_targets(t))[0]).toMatchObject({ state: "released" });
-		// The declared bytes stay charged: cancelling gives nothing back.
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		// The upload never finished, so there are no stored bytes to charge.
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
 		// The staging key the signed URL could still write to has a deletion job.
 		expect(
 			(await t.run(async (ctx) => await ctx.db.query("files_r2_object_deletion_jobs").collect())).length,
 		).toBeGreaterThanOrEqual(1);
+	});
+
+	test("bounds cross-run cleanup and ignores released history when a later run creates the same key", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		for (let index = 0; index < 16; index += 1) {
+			const response = await call(
+				t,
+				CREATE_TARGET_PATH,
+				sealed,
+				target_body({
+					idempotencyKey: `run-${index}`,
+					path: `/meetings/meeting-1/recording-${index}.mp4`,
+					size: 1,
+				}),
+			);
+			expect(response.status).toBe(200);
+		}
+
+		// Exact replay wins before the live-group cap, just like it wins before the per-run cap.
+		expect(
+			(
+				await call(
+					t,
+					CREATE_TARGET_PATH,
+					sealed,
+					target_body({ idempotencyKey: "run-0", path: "/meetings/meeting-1/recording-0.mp4", size: 1 }),
+				)
+			).status,
+		).toBe(200);
+		const refused = await call(
+			t,
+			CREATE_TARGET_PATH,
+			sealed,
+			target_body({ idempotencyKey: "run-16", path: "/meetings/meeting-1/recording-16.mp4", size: 1 }),
+		);
+		expect(refused.status).toBe(400);
+		expect(await refused.json()).toEqual({
+			message: "A destination holds at most 16 live targets under one target key",
+		});
+		expect((await read_targets(t)).length).toBe(16);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+
+		const deleted = await call(t, DELETE_PATH, sealed, { idempotencyKey: "cleanup", targetKey: "recording" });
+		expect(deleted.status).toBe(200);
+		const deletedBody = (await deleted.json()) as { state: string; paths: string[] };
+		expect(deletedBody).toMatchObject({ state: "deleted", paths: expect.any(Array) });
+		expect(deletedBody.paths).toHaveLength(16);
+		expect((await read_targets(t)).every((target) => target.state === "released")).toBe(true);
+
+		// Released tombstones do not grow the live lookup or block a later processing run.
+		const afterHistory = await call(
+			t,
+			CREATE_TARGET_PATH,
+			sealed,
+			target_body({ idempotencyKey: "run-17", path: "/meetings/meeting-1/recording-17.mp4", size: 1 }),
+		);
+		expect(afterHistory.status).toBe(200);
+		expect((await read_targets(t)).filter((target) => target.state === "pending")).toHaveLength(1);
+	});
+
+	test("charges a larger late R2 object after a pending target was cancelled", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
+		if (!asset?.uploadStagingR2Key) {
+			throw new Error("Expected a staged service upload asset");
+		}
+
+		expect(
+			(await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-1", targetKey: "recording" })).status,
+		).toBe(200);
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null });
+		const canonicalKey = `organizations/${fixture.organizationId}/workspaces/${fixture.workspaceId}/assets/${target.assetId}`;
+		const firstCanonicalJob = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_r2_object_deletion_jobs")
+				.withIndex("by_r2_key", (q) => q.eq("r2Key", canonicalKey))
+				.first(),
+		);
+		if (!firstCanonicalJob) {
+			throw new Error("Expected the pending cancel's canonical cleanup job");
+		}
+		if (!firstCanonicalJob.putMayArriveUntil) {
+			throw new Error("Expected the pending cancel's canonical cleanup window");
+		}
+		expect(firstCanonicalJob.putMayArriveUntil).toBeGreaterThan(Date.now());
+		// Model the race where the first delete sees no canonical object, then an in-flight copy lands.
+		await t.mutation(internal.r2_client.settle_object_deletion_job, {
+			jobId: firstCanonicalJob._id,
+			generation: firstCanonicalJob.generation,
+			deletedAt: firstCanonicalJob.putMayArriveUntil - 1,
+		});
+		expect(
+			await t.run(async (ctx) =>
+				ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", canonicalKey))
+					.first(),
+			),
+		).toMatchObject({
+			generation: firstCanonicalJob.generation,
+			nextAttemptAt: firstCanonicalJob.putMayArriveUntil,
+		});
+
+		await t.mutation(internal.r2.record_untracked_asset_event, {
+			bucket: asset.r2Bucket,
+			key: asset.uploadStagingR2Key,
+			size: 6 * MIB,
+			eventId: "late_service_upload_1",
+		});
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: 6 * MIB });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
+		const refreshedCanonicalJob = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_r2_object_deletion_jobs")
+				.withIndex("by_r2_key", (q) => q.eq("r2Key", canonicalKey))
+				.first(),
+		);
+		expect(refreshedCanonicalJob).toMatchObject({
+			reason: "untracked_asset_event",
+			generation: firstCanonicalJob.generation + 1,
+			lastR2EventId: "late_service_upload_1",
+		});
+		expect(refreshedCanonicalJob!.putMayArriveUntil).toBeGreaterThanOrEqual(
+			firstCanonicalJob.putMayArriveUntil,
+		);
+
+		// A duplicate does not charge twice. A later larger PUT charges only its new excess.
+		await t.mutation(internal.r2.record_untracked_asset_event, {
+			bucket: asset.r2Bucket,
+			key: asset.uploadStagingR2Key,
+			size: 6 * MIB,
+			eventId: "late_service_upload_1",
+		});
+		await t.mutation(internal.r2.record_untracked_asset_event, {
+			bucket: asset.r2Bucket,
+			key: asset.uploadStagingR2Key,
+			size: 8 * MIB,
+			eventId: "late_service_upload_2",
+		});
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: 8 * MIB });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(8 * MIB);
+	});
+
+	test("charges a late R2 object after the member discarded the pending placeholder", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
+		if (!asset?.uploadStagingR2Key) {
+			throw new Error("Expected a staged service upload asset");
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		expect(
+			await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
+				membershipId: fixture.membershipId,
+				nodeId: target.nodeId,
+			}),
+		).toEqual({ _yay: { removed: true } });
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null });
+		const canonicalKey = `organizations/${fixture.organizationId}/workspaces/${fixture.workspaceId}/assets/${target.assetId}`;
+		const canonicalJob = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_r2_object_deletion_jobs")
+				.withIndex("by_r2_key", (q) => q.eq("r2Key", canonicalKey))
+				.first(),
+		);
+		expect(canonicalJob?.putMayArriveUntil).toBeGreaterThan(Date.now());
+
+		await t.mutation(internal.r2.record_untracked_asset_event, {
+			bucket: asset.r2Bucket,
+			key: asset.uploadStagingR2Key,
+			size: 6 * MIB,
+			eventId: "late_after_member_discard",
+		});
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: 6 * MIB });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
 	});
 
 	test("a read-only placeholder refuses the cancel and keeps the pending target", async () => {
@@ -888,6 +1383,329 @@ describe("service upload delete", () => {
 		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
 	});
 
+	test("a restricted file the grant actor cannot write refuses replay, remint, finalize, and delete", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const ownerGrant = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, ownerGrant, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+
+		const memberUserId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				active: true,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			await ctx.db.patch("files_nodes", target.nodeId, { restrictedScopeNodeId: target.nodeId });
+			return userId;
+		});
+		const memberGrant = await seal_token(t, fixture, "/meetings", memberUserId);
+		const jobsBefore = await t.run(async (ctx) => await ctx.db.query("files_r2_object_deletion_jobs").collect());
+
+		for (const [path, body] of [
+			[CREATE_TARGET_PATH, target_body()],
+			[REMINT_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+			[FINALIZE_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+		] as const) {
+			const refused = await call(t, path, memberGrant, body);
+			expect(refused.status, path).toBe(403);
+			expect(await refused.json(), path).toEqual({ message: "Permission denied" });
+		}
+
+		const response = await call(t, DELETE_PATH, memberGrant, {
+			idempotencyKey: "delete-1",
+			targetKey: "recording",
+		});
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).not.toBeNull();
+		expect((await read_targets(t))[0]!.state).toBe("pending");
+		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
+		expect(await t.run(async (ctx) => await ctx.db.query("files_r2_object_deletion_jobs").collect())).toEqual(
+			jobsBefore,
+		);
+	});
+
+	test("a target moved outside the sealed prefix cannot be replayed, finalized, or deleted", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		const meetingsFolder = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("path", "/meetings")
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+		if (!meetingsFolder) {
+			throw new Error("Expected the service upload's parent folder");
+		}
+		expect(
+			await asUser.mutation(api.files_nodes.rename_node, {
+				membershipId: fixture.membershipId,
+				nodeId: meetingsFolder._id,
+				path: "private",
+			}),
+		).toEqual({ _yay: null });
+
+		// Let the R2 event be the first service-side observer of the move. It must set the sticky fence
+		// while it commits and charges the accepted upload.
+		await simulate_finalizer(t, fixture, target, { size: 6 * MIB });
+		expect((await read_targets(t))[0]).toMatchObject({
+			state: "committed",
+			actualBytes: 6 * MIB,
+			movedOutAt: expect.any(Number),
+		});
+		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
+
+		for (const [path, body] of [
+			[CREATE_TARGET_PATH, target_body()],
+			[REMINT_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+			[FINALIZE_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+		] as const) {
+			const refused = await call(t, path, sealed, body);
+			expect(refused.status, path).toBe(404);
+			expect(await refused.json(), path).toEqual({ message: "Not found" });
+		}
+
+		const response = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-1", targetKey: "recording" });
+		expect(response.status).toBe(404);
+		expect(await response.json()).toEqual({ message: "Not found" });
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
+			path: "/private/meeting-1/recording.mp4",
+		});
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).not.toBeNull();
+		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", movedOutAt: expect.any(Number) });
+		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
+		expect(
+			await asUser.mutation(api.files_nodes.rename_node, {
+				membershipId: fixture.membershipId,
+				nodeId: meetingsFolder._id,
+				path: "meetings",
+			}),
+		).toEqual({ _yay: null });
+		const replayAfterMoveBack = await call(t, CREATE_TARGET_PATH, sealed, target_body());
+		expect(replayAfterMoveBack.status).toBe(404);
+		expect(await replayAfterMoveBack.json()).toEqual({ message: "Not found" });
+	});
+
+	test("a moved-out target stays hidden after the member discards its placeholder", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		const meetingsFolder = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("path", "/meetings")
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+		if (!meetingsFolder) {
+			throw new Error("Expected the service upload's parent folder");
+		}
+		expect(
+			await asUser.mutation(api.files_nodes.rename_node, {
+				membershipId: fixture.membershipId,
+				nodeId: meetingsFolder._id,
+				path: "private",
+			}),
+		).toEqual({ _yay: null });
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(404);
+
+		expect(
+			await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
+				membershipId: fixture.membershipId,
+				nodeId: target.nodeId,
+			}),
+		).toEqual({ _yay: { removed: true } });
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", movedOutAt: expect.any(Number) });
+
+		for (const [path, body] of [
+			[CREATE_TARGET_PATH, target_body()],
+			[REMINT_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+			[FINALIZE_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+			[DELETE_PATH, { idempotencyKey: "delete-1", targetKey: "recording" }],
+		] as const) {
+			const refused = await call(t, path, sealed, body);
+			expect(refused.status, path).toBe(404);
+			expect(await refused.json(), path).toEqual({ message: "Not found" });
+		}
+	});
+
+	test("an archived outside node records the sticky fence before returning not found", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		const meetingsFolder = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("path", "/meetings")
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+		if (!meetingsFolder) {
+			throw new Error("Expected the service upload's parent folder");
+		}
+		expect(
+			await asUser.mutation(api.files_nodes.rename_node, {
+				membershipId: fixture.membershipId,
+				nodeId: meetingsFolder._id,
+				path: "private",
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await asUser.mutation(api.files_nodes.archive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(meetingsFolder._id)],
+			}),
+		).toEqual({ _yay: null });
+
+		const observedOutside = await call(t, REMINT_PATH, sealed, {
+			idempotencyKey: "meeting-1",
+			targetKey: "recording",
+		});
+		expect(observedOutside.status).toBe(404);
+		expect((await read_targets(t))[0]).toMatchObject({ movedOutAt: expect.any(Number) });
+
+		expect(
+			await asUser.mutation(api.files_nodes.unarchive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(meetingsFolder._id)],
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await asUser.mutation(api.files_nodes.rename_node, {
+				membershipId: fixture.membershipId,
+				nodeId: meetingsFolder._id,
+				path: "meetings",
+			}),
+		).toEqual({ _yay: null });
+		const replayAfterRestore = await call(t, REMINT_PATH, sealed, {
+			idempotencyKey: "meeting-1",
+			targetKey: "recording",
+		});
+		expect(replayAfterRestore.status).toBe(404);
+		expect(await replayAfterRestore.json()).toEqual({ message: "Not found" });
+	});
+
+	test("reconciles moved-out targets before enforcing the live-group cap", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		for (let index = 0; index < 16; index += 1) {
+			const created = await call(
+				t,
+				CREATE_TARGET_PATH,
+				sealed,
+				target_body({
+					idempotencyKey: `old-run-${index}`,
+					path: `/meetings/old-${index}.mp4`,
+					size: 1,
+				}),
+			);
+			expect(created.status).toBe(200);
+		}
+		const oldTargets = await read_targets(t);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		const meetingsFolder = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("path", "/meetings")
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+		if (!meetingsFolder) {
+			throw new Error("Expected the service upload's destination folder");
+		}
+		expect(
+			await asUser.mutation(api.files_nodes.rename_node, {
+				membershipId: fixture.membershipId,
+				nodeId: meetingsFolder._id,
+				path: "private",
+			}),
+		).toEqual({ _yay: null });
+
+		// No replay observed the old rows. The new create must reconcile the bounded group itself,
+		// free the moved slots, and recreate the old destination.
+		const replacement = await call(
+			t,
+			CREATE_TARGET_PATH,
+			sealed,
+			target_body({ idempotencyKey: "replacement", path: "/meetings/replacement.mp4", size: 1 }),
+		);
+		expect(replacement.status).toBe(200);
+		expect((await read_targets(t)).filter((candidate) => candidate.movedOutAt !== undefined)).toHaveLength(16);
+		expect((await read_targets(t)).filter((candidate) => candidate.movedOutAt === undefined)).toHaveLength(1);
+
+		const deleted = await call(t, DELETE_PATH, sealed, {
+			idempotencyKey: "cleanup",
+			targetKey: "recording",
+		});
+		expect(deleted.status).toBe(200);
+		expect(await deleted.json()).toEqual({ state: "deleted", paths: ["/meetings/replacement.mp4"] });
+		for (const target of oldTargets) {
+			expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
+				path: expect.stringMatching(/^\/private\//u),
+			});
+			expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).not.toBeNull();
+		}
+	});
+
 	test("a grant sealed to another destination cannot see the target", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -931,7 +1749,7 @@ describe("service upload archive", () => {
 		expect((await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
 			200,
 		);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 
 		// A member put their own notes in the meeting folder. The archive sweeps the subtree, so their
 		// file and its folder travel with the meeting folder instead of being left behind.
@@ -970,7 +1788,7 @@ describe("service upload archive", () => {
 		expect(parent?.archiveOperationId).toBeUndefined();
 
 		// The files still exist, so the books do not move and no object is deleted.
-		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 		expect((await read_targets(t))[0]!.state).toBe("committed");
 		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
 		expect(
@@ -1032,6 +1850,261 @@ describe("service upload archive", () => {
 		).toEqual(["/meetings/meeting-2", "/meetings/meeting-2/recording.mp4"]);
 	});
 
+	test("archives a destination again after a later run recreates the same path", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const firstTarget = (await read_targets(t))[0]!;
+		expect((await call(t, ARCHIVE_PATH, sealed, {})).status).toBe(200);
+
+		expect(
+			(
+				await call(
+					t,
+					CREATE_TARGET_PATH,
+					sealed,
+					target_body({ idempotencyKey: "meeting-2" }),
+				)
+			).status,
+		).toBe(200);
+		const secondTarget = (await read_targets(t)).find((target) => target.idempotencyKey === "meeting-2");
+		if (!firstTarget.destinationNodeId || !secondTarget?.destinationNodeId) {
+			throw new Error("Expected both upload runs to keep their destination folder ids");
+		}
+		expect(secondTarget.destinationNodeId).not.toBe(firstTarget.destinationNodeId);
+
+		const secondArchive = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(secondArchive.status).toBe(200);
+		expect(await secondArchive.json()).toEqual({ archivedNodes: 2 });
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", secondTarget.destinationNodeId!))).toMatchObject({
+			archiveOperationId: expect.any(String),
+		});
+
+		const replay = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(replay.status).toBe(200);
+		expect(await replay.json()).toEqual({ archivedNodes: 0 });
+	});
+
+	test("opens a new destination epoch when archive and recreate share one clock tick", async () => {
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+		try {
+			const t = test_convex();
+			const fixture = await seed_installation(t);
+			const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+			expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+			expect((await call(t, ARCHIVE_PATH, sealed, {})).status).toBe(200);
+			expect(
+				(
+					await call(
+						t,
+						CREATE_TARGET_PATH,
+						sealed,
+						target_body({ idempotencyKey: "meeting-2" }),
+					)
+				).status,
+			).toBe(200);
+
+			const targets = await read_targets(t);
+			expect(targets.map((target) => target.destinationEpoch)).toEqual([1, 2]);
+			const remint = await call(t, REMINT_PATH, sealed, {
+				idempotencyKey: "meeting-2",
+				targetKey: "recording",
+			});
+			expect(remint.status).toBe(200);
+		} finally {
+			dateNow.mockRestore();
+		}
+	});
+
+	test("does not archive a service-archived destination after a member restores it", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		expect((await call(t, ARCHIVE_PATH, sealed, {})).status).toBe(200);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		expect(
+			await asUser.mutation(api.files_nodes.unarchive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(target.destinationNodeId)],
+			}),
+		).toEqual({ _yay: null });
+
+		const replay = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(replay.status).toBe(200);
+		expect(await replay.json()).toEqual({ archivedNodes: 0 });
+		const restoredDestination = await t.run(async (ctx) => ctx.db.get("files_nodes", target.destinationNodeId));
+		expect(restoredDestination).not.toBeNull();
+		expect(restoredDestination?.archiveOperationId).toBeUndefined();
+	});
+
+	test("archives an older destination generation after a member restores it", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const firstTarget = (await read_targets(t))[0]!;
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		expect(
+			await asUser.mutation(api.files_nodes.archive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(firstTarget.destinationNodeId)],
+			}),
+		).toEqual({ _yay: null });
+
+		expect(
+			(
+				await call(
+					t,
+					CREATE_TARGET_PATH,
+					sealed,
+					target_body({ idempotencyKey: "meeting-2" }),
+				)
+			).status,
+		).toBe(200);
+		const secondTarget = (await read_targets(t)).find((target) => target.idempotencyKey === "meeting-2");
+		if (!secondTarget) {
+			throw new Error("Expected the recreated destination target");
+		}
+		expect(
+			await asUser.mutation(api.files_nodes.archive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(secondTarget.destinationNodeId)],
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await asUser.mutation(api.files_nodes.unarchive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(firstTarget.destinationNodeId)],
+			}),
+		).toEqual({ _yay: null });
+
+		const response = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ archivedNodes: 2 });
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", firstTarget.destinationNodeId))).toMatchObject({
+			archiveOperationId: expect.any(String),
+		});
+	});
+
+	test("service archive closes targets from member-archived destination generations", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const firstTarget = (await read_targets(t))[0]!;
+		expect(
+			(
+				await call(
+					t,
+					CREATE_TARGET_PATH,
+					sealed,
+					target_body({
+						idempotencyKey: "meeting-release",
+						targetKey: "obsolete",
+						path: "/meetings/meeting-1/obsolete.mp4",
+					}),
+				)
+			).status,
+		).toBe(200);
+		expect(
+			(
+				await call(t, DELETE_PATH, sealed, {
+					idempotencyKey: "delete-obsolete",
+					targetKey: "obsolete",
+				})
+			).status,
+		).toBe(200);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		expect(
+			await asUser.mutation(api.files_nodes.archive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(firstTarget.destinationNodeId)],
+			}),
+		).toEqual({ _yay: null });
+
+		expect(
+			(
+				await call(
+					t,
+					CREATE_TARGET_PATH,
+					sealed,
+					target_body({ idempotencyKey: "meeting-2" }),
+				)
+			).status,
+		).toBe(200);
+		const archived = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(archived.status).toBe(200);
+		expect(await archived.json()).toEqual({ archivedNodes: 2 });
+		expect(
+			await asUser.mutation(api.files_nodes.unarchive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(firstTarget.destinationNodeId)],
+			}),
+		).toEqual({ _yay: null });
+
+		const remint = await call(t, REMINT_PATH, sealed, {
+			idempotencyKey: "meeting-1",
+			targetKey: "recording",
+		});
+		expect(remint.status).toBe(404);
+		expect(await remint.json()).toEqual({ message: "Not found" });
+		const createReplay = await call(t, CREATE_TARGET_PATH, sealed, target_body());
+		expect(createReplay.status).toBe(404);
+		expect(await createReplay.json()).toEqual({ message: "Not found" });
+		const finalize = await call(t, FINALIZE_PATH, sealed, {
+			idempotencyKey: "meeting-1",
+			targetKey: "recording",
+		});
+		expect(finalize.status).toBe(404);
+		expect(await finalize.json()).toEqual({ message: "Not found" });
+		const deleteReplay = await call(t, DELETE_PATH, sealed, {
+			idempotencyKey: "delete-obsolete-again",
+			targetKey: "obsolete",
+		});
+		expect(deleteReplay.status).toBe(404);
+		expect(await deleteReplay.json()).toEqual({ message: "Not found" });
+	});
+
+	test("service-archived destinations do not consume the live target cap", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+
+		for (let index = 0; index < 17; index += 1) {
+			const created = await call(
+				t,
+				CREATE_TARGET_PATH,
+				sealed,
+				target_body({ idempotencyKey: `meeting-${index}` }),
+			);
+			expect(created.status).toBe(200);
+			if (index < 16) {
+				const archived = await call(t, ARCHIVE_PATH, sealed, {});
+				expect(archived.status).toBe(200);
+				expect(await archived.json()).toEqual({ archivedNodes: 2 });
+			}
+		}
+
+		const targets = await read_targets(t);
+		expect(targets.filter((target) => target.movedOutAt !== undefined)).toHaveLength(16);
+		expect(targets.filter((target) => target.movedOutAt === undefined)).toHaveLength(1);
+	});
+
 	test("archives the same destination after a member renames the folder", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -1041,27 +2114,6 @@ describe("service upload archive", () => {
 		if (!target.destinationNodeId) {
 			throw new Error("Expected the upload target to keep its destination folder id");
 		}
-		// An older target can sort first by file path. The archive lookup must prefer the current
-		// destination-id index instead of falling back to this unbackfilled doc.
-		await t.run(async (ctx) => {
-			await ctx.db.insert("plugin_service_storage_targets", {
-				organizationId: target.organizationId,
-				workspaceId: target.workspaceId,
-				installationId: target.installationId,
-				idempotencyKey: target.idempotencyKey,
-				targetKey: "legacy-target",
-				requestFingerprint: "legacy-target",
-				path: "/meetings/meeting-1/aaa-old.mp4",
-				contentType: target.contentType,
-				declaredBytes: target.declaredBytes,
-				actualBytes: target.actualBytes,
-				nodeId: target.nodeId,
-				assetId: target.assetId,
-				state: target.state,
-				createdBy: target.createdBy,
-				updatedAt: target.updatedAt,
-			});
-		});
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: fixture.userId,

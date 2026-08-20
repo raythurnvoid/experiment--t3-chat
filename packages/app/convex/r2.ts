@@ -48,6 +48,10 @@ import {
 } from "./access_control.ts";
 import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
 import {
+	public_api_service_uploads_db_record_untracked_asset_bytes,
+	public_api_service_uploads_db_settle_canonicalized_asset,
+} from "./public_api_service_uploads.ts";
+import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_editable_text_content_type,
 	files_get_editable_text_yjs_root_kind,
@@ -1291,6 +1295,13 @@ export const process_uploaded_asset_event = internalMutation({
 		const now = Date.now();
 		const putMayArriveUntil =
 			(asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS;
+		await public_api_service_uploads_db_settle_canonicalized_asset(ctx, {
+			assetId: asset._id,
+			// Once the live object exists, later staging events cannot change its confirmed size.
+			actualBytes: asset.r2Key === undefined ? args.size : asset.size,
+			nodePath: fileNode?.path ?? null,
+			now,
+		});
 
 		// The final object already exists. A later event can only describe the temporary object. Update
 		// only its cleanup job.
@@ -1461,6 +1472,7 @@ export const record_untracked_asset_event = internalMutation({
 	args: {
 		bucket: v.string(),
 		key: v.string(),
+		size: v.number(),
 		eventId: v.string(),
 	},
 	returns: v.union(v.literal("recorded"), v.literal("ignored")),
@@ -1488,15 +1500,34 @@ export const record_untracked_asset_event = internalMutation({
 		}
 
 		const now = Date.now();
+		const putMayArriveUntil =
+			keyKind === "upload-staging" ? now + UPLOAD_SIGNED_URL_TTL_MS + r2_PUT_MAY_ARRIVE_MARGIN_MS : undefined;
+		await public_api_service_uploads_db_record_untracked_asset_bytes(ctx, {
+			organizationId,
+			workspaceId,
+			assetId,
+			observedBytes: args.size,
+			now,
+		});
+		// An event action may have copied these staging bytes after the first canonical delete. Refresh
+		// that deterministic job so an older delete cannot settle while the copy is still arriving.
+		if (keyKind === "upload-staging") {
+			await r2_enqueue_object_deletion_job(ctx, {
+				organizationId,
+				workspaceId,
+				r2Key: r2_create_asset_key({ organizationId, workspaceId, assetId }),
+				reason: "untracked_asset_event",
+				putMayArriveUntil,
+				r2EventId: args.eventId,
+			});
+		}
 		await r2_enqueue_object_deletion_job(ctx, {
 			organizationId,
 			workspaceId,
 			r2Key: args.key,
 			reason: "untracked_asset_event",
-			// A signed URL can upload the temporary object again. Wait for the URL to expire. Users cannot
-			// upload to the final key, so cleanup for that key does not wait.
-			putMayArriveUntil:
-				keyKind === "upload-staging" ? now + UPLOAD_SIGNED_URL_TTL_MS + r2_PUT_MAY_ARRIVE_MARGIN_MS : undefined,
+			// A signed URL can upload the temporary object again. Wait for the URL to expire.
+			putMayArriveUntil,
 			r2EventId: args.eventId,
 		});
 		return "recorded";
@@ -1557,7 +1588,7 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 				workspaceId: asset.workspaceId,
 				assetId: asset._id,
 			});
-			const [referencingNode, referencingYjsSnapshot, referencingSnapshot] = await Promise.all([
+			const [referencingNode, referencingYjsSnapshot, referencingSnapshot, serviceTarget] = await Promise.all([
 				ctx.db
 					.query("files_nodes")
 					.withIndex("by_organization_workspace_asset", (q) =>
@@ -1570,6 +1601,10 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 					.first(),
 				ctx.db
 					.query("files_snapshots")
+					.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
+					.first(),
+				ctx.db
+					.query("plugin_service_storage_targets")
 					.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
 					.first(),
 			]);
@@ -1596,6 +1631,26 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 						// Keep a failed upload placeholder while the user has locked it. Recheck after the
 						// lock may have changed instead of bypassing the file's current read-only state.
 						if (files_node_require_writable(referencingNode)._nay) {
+							await ctx.db.patch("files_r2_assets", asset._id, {
+								unfinalizedExpiresAt: now + UNFINALIZED_ASSET_RECHECK_DELAY_MS,
+								updatedAt: now,
+							});
+							continue;
+						}
+						// Keep the service placeholder. It is a real workspace file even when the service did
+						// not finish the upload. Delete only the staging bytes and retry that exact cleanup.
+						if (serviceTarget?.state === "pending") {
+							await r2_enqueue_object_deletion_job(ctx, {
+								organizationId: recoveryScope.organizationId,
+								workspaceId: recoveryScope.workspaceId,
+								r2Key: asset.uploadStagingR2Key,
+								reason: "upload_staging",
+								assetId: asset._id,
+								putMayArriveUntil:
+									(asset.uploadUrlExpiresAt ?? recoveryStartedAt + UPLOAD_SIGNED_URL_TTL_MS) +
+									r2_PUT_MAY_ARRIVE_MARGIN_MS,
+								mode: "ensure",
+							});
 							await ctx.db.patch("files_r2_assets", asset._id, {
 								unfinalizedExpiresAt: now + UNFINALIZED_ASSET_RECHECK_DELAY_MS,
 								updatedAt: now,
@@ -1640,8 +1695,8 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 						workspaceId: recoveryScope.workspaceId,
 						assetId: asset._id,
 					});
-					// Slow old retries down. The terminal window above later removes the placeholder and
-					// hands both possible keys to the durable deletion ledger.
+					// Slow old retries down. The terminal window above later removes an ordinary upload
+					// placeholder. Service uploads keep their file and delete only the staging bytes.
 					const recoveryDelay =
 						now - recoveryStartedAt < UNFINALIZED_UPLOAD_RECOVERY_FAST_WINDOW_MS
 							? UNFINALIZED_UPLOAD_RECOVERY_RECHECK_DELAY_MS
@@ -1822,6 +1877,7 @@ export async function r2_http_event(ctx: ActionCtx, request: Request) {
 				const recorded = (await ctx.runMutation(internal.r2.record_untracked_asset_event, {
 					bucket: body._yay.event.bucket,
 					key: body._yay.event.object.key,
+					size: body._yay.event.object.size,
 					eventId: body._yay.cloudflareMessageId,
 				})) as record_untracked_asset_event_Result;
 				if (recorded === "recorded") {
