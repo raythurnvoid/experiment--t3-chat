@@ -150,10 +150,6 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/upload-urls": ReturnType<typeof public_api_http_routes>["/api/v1/files/upload-urls"];
 
-	"/api/v1/files/service-uploads/reserve": ReturnType<
-		typeof public_api_service_uploads_http_routes
-	>["/api/v1/files/service-uploads/reserve"];
-
 	"/api/v1/files/service-uploads/create-target": ReturnType<
 		typeof public_api_service_uploads_http_routes
 	>["/api/v1/files/service-uploads/create-target"];
@@ -165,10 +161,6 @@ export interface api_schemas_Main {
 	"/api/v1/files/service-uploads/finalize": ReturnType<
 		typeof public_api_service_uploads_http_routes
 	>["/api/v1/files/service-uploads/finalize"];
-
-	"/api/v1/files/service-uploads/release": ReturnType<
-		typeof public_api_service_uploads_http_routes
-	>["/api/v1/files/service-uploads/release"];
 
 	"/api/v1/files/service-uploads/delete": ReturnType<
 		typeof public_api_service_uploads_http_routes

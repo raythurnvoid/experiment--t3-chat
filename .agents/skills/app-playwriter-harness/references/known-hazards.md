@@ -416,6 +416,13 @@ fine, but every `state.appPlaywriterHarness.*` helper still targets whatever tab
 that is plainly on screen — and it fails the same way on `.FilesSidebar`, so the message points at
 the selector while the real cause is the binding. Hit 2026-08-18.
 
+Worse: the timeout is the *loud* version. `install-harness.js` seeds its pinned page from the
+global `page` when `state.page` does not exist yet, so installing the harness before you open your
+tab pins whatever unrelated app the shared browser already had open. Every helper then answers about
+that tab without failing — `auditAccessibility` returns a clean report for another product and
+`latestLogs` returns `[]`, which reads as "no console errors on my route". Hit 2026-08-20, where an
+audit of the files route came back describing `personal-market-radar` widgets.
+
 Call `await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/files" })` first; it sets
 `state.page` too, so the hand assignment is not needed. When a helper times out on a selector you
 can see in a screenshot, re-probe it against a selector that certainly exists (`.FilesSidebar`)
@@ -445,6 +452,18 @@ wrapping question. Re-run with the short string and the same probe separated the
 immediately: `width: 100%` was dead, `justify-content: start` was redundant, and `flex: 1` on the
 text was the whole fix. Toggle one declaration at a time and include an all-off variant — if the
 all-off variant does not reproduce the original bug, the probe is not measuring the bug.
+
+## A half-scrolled item inside a scroll container is reported as a blocked hit target
+
+`auditAccessibility` hit-tests an element at its own centre. When a scroll container has scrolled an
+item half out of view, that centre lands below the container, and whatever is painted there — usually
+the next pinned control — is reported as the blocker. Hit 2026-08-20 in a 550px-tall window: the last
+main-nav plugin link came back "blocked by Theme", which reads like a click-through bug.
+
+Before reporting one, walk the element's ancestors and compare its rect with the nearest
+`overflow-y: auto` ancestor's rect. When the item extends past the scroll area's bottom, it is clipped,
+not covered, and the finding is noise. A real overlap has the blocker inside or above the same
+container.
 
 ## `auditAccessibility` returns `blockedHitTargets`, and a summary script reading another name reports "none"
 

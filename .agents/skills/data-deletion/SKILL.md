@@ -168,7 +168,7 @@ Current purge coverage includes:
 - `public_api_grants`
 - `public_api_file_write_stages` via `public_api_db_cleanup_file_write_stage`, before the calls/runs/assets passes: staged asset docs have no `r2Key` yet, so the stage cleanup derives the R2 object keys itself and deletes the objects before their asset docs
 - `plugins_event_run_calls`, `plugins_event_runs` with `plugins_runtime_workpool` run cancellation (plugin event runs execute on that dedicated component; R2 asset `processingWorkId` jobs stay on `files_upload_conversion_workpool`), `plugins_workspace_event_handlers`, `plugins_workspace_installation_secrets`, then the plugin document store, then `plugins_workspace_installations` one installation per pass: its `plugins_ui_sessions` (via `by_installation`) drain one bounded batch per transaction, and the installation doc is deleted only once no sessions remain
-- The plugin document store through `plugins_data_db_drain_batch` with `installationId: null`, which covers every installation in the workspace in one pass. It deletes `plugins_data_reservations`, `plugins_data_revision_tombstones`, `plugins_data`, `plugin_service_grants`, then the service upload storage (`plugin_service_storage_reservations` and, for this workspace-wide drain, `plugin_service_storage_targets` — live reservations are released first so their held bytes return to the workspace quota while it still exists), then `plugins_data_usage`. The accounting doc goes last so it is never the survivor: a leftover accounting doc with no documents behind it would look like a real installation. It runs before the installation pass, so no row is left pointing at an installation that is already gone. An installation-scoped drain (uninstall) keeps committed `plugin_service_storage_targets` on purpose: the uploaded files stay in the workspace, so their stored bytes must stay charged until the files are physically deleted, at which point `settle_object_deletion_job` in `r2_client.ts` refunds the quota and consumes the target doc.
+- The plugin document store through `plugins_data_db_drain_batch` with `installationId: null`, which covers every installation in the workspace in one pass. It deletes `plugins_data_reservations`, `plugins_data_revision_tombstones`, `plugins_data`, `plugin_service_grants`, then `plugin_service_storage_targets` (only on this workspace-wide drain), then `plugins_data_usage`. The accounting doc goes last so it is never the survivor: a leftover accounting doc with no documents behind it would look like a real installation. It runs before the installation pass, so no row is left pointing at an installation that is already gone. An installation-scoped drain (uninstall) writes to no `files_nodes` row and deletes no `plugin_service_storage_targets` doc: the uploaded files belong to the workspace, not to the plugin that put them there, and `workspace.plugins.manage` is not permission to delete a member's file or unlock a read-only one. A placeholder whose upload never finished stays as an empty file a member can delete.
 - `activities` after the plugin passes. The run-retention path normally deletes an activity together with its plugin run, but this purge deletes run docs directly, so it drains the leftover activities by the workspace index. Every activity producer needs a live run doc, so no new rows can appear once the run pass is empty.
 - `chat_messages`
 - `files_metadata_docs`
@@ -203,13 +203,12 @@ do, so moving the component to declared environment values is separate follow-up
 
 Keep existing job docs and advance them through the normal exact-key helper. The processor does not need
 tenant or asset docs. Each job stays until its processor confirms the R2 file is absent after the
-signed URL can no longer be used. The job's final confirm (`settle_object_deletion_job`) is also the
-settlement point for plugin service upload storage: a canonical `assets/<assetId>` key with a
-committed `plugin_service_storage_targets` doc refunds the workspace's
-`plugin_service_storage_bytes` quota exactly once. The refund ends the charge record: the doc is
-consumed, unless the service's `/api/v1/files/service-uploads/delete` route marked it with
-`deleteRequestedAt` — then it becomes a `released` tombstone so the service's delete replays keep
-getting an answer.
+signed URL can no longer be used. The job's final confirm (`settle_object_deletion_job`) is also where a
+plugin service upload target is retired: a canonical `assets/<assetId>` key with a committed
+`plugin_service_storage_targets` doc consumes that doc. Nothing is refunded — the
+`plugin_service_storage_bytes` quota only grows. The doc is kept instead of consumed when the
+service's `/api/v1/files/service-uploads/delete` route marked it with `deleteRequestedAt`: then it
+becomes a `released` tombstone so the service's delete replays keep getting an answer.
 
 During the retention window, tombstoning an anonymous user also does not revoke every anonymous access path. See the current security gap in [auth-system](../auth-system/SKILL.md#known-anonymous-deletion-gap).
 

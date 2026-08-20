@@ -32,9 +32,7 @@ import {
 	council_convex_uploads_archive_destination,
 	council_convex_uploads_create_target,
 	council_convex_uploads_finalize,
-	council_convex_uploads_release,
 	council_convex_uploads_remint,
-	council_convex_uploads_reserve,
 } from "./convex-api.ts";
 import { council_read_stream_with_limit, council_transcribe_track, council_TRACK_TRANSCRIBE_MAX_BYTES } from "./ai.ts";
 import {
@@ -60,7 +58,9 @@ const RECORDING_POLL_LIMIT = 40;
 const TRANSCRIPT_POLL_LIMIT = 10;
 const POLL_SLEEP = "30 seconds";
 
-/** The reservation allows 16 targets; the transcript and the provider diagnostic take two. */
+/**
+ * The host allows 16 upload targets per run; the transcript and the provider diagnostic take two.
+ */
 const UPLOADED_TRACKS_MAX = 14;
 
 function target_key(kind: string, fileName: string) {
@@ -98,144 +98,33 @@ export async function council_run_processing(env: Env, step: WorkflowStep, param
 			now,
 			set: { failure_reason: String(error instanceof Error ? error.message : error).slice(0, 200) },
 		});
-		// `failed` is terminal for uploads: the envelope goes back to the workspace. Release keeps
-		// committed files and freezes new targets, so a later redrive can only replay already
-		// committed work.
-		const released = await release_upload_reservation(env, params.meetingId);
-		if (released._nay) {
-			console.warn("Releasing the upload reservation after failure did not succeed", {
-				meetingId: params.meetingId,
-				reason: released._nay.message,
-			});
-		}
+		// Nothing to hand back: an upload that never finished leaves an empty file in the workspace,
+		// which a member can delete like any other file. A later redrive re-uses the same targets.
 		await council_project_meeting(env, params.meetingId, now);
 		throw error;
 	}
 }
 
 /**
- * Release the meeting's upload byte envelope with the reservation's own stored idempotency key.
- * The reserve body was persisted at open exactly as it was sent, and release identifies the
- * reservation by that key. Safe to replay: an already-released reservation answers success.
+ * The host resolves an upload BY the request's idempotency key: the key names one upload run (the
+ * meeting), and `targetKey` names one file inside it. Every create-target, remint, and finalize
+ * call must present the meeting's own key, or the host answers `Not found`.
+ *
+ * The key is derived from the meeting id, so it survives a crash without being stored anywhere. A
+ * redrive keeps the same key on purpose: a target that never finished uploading is re-used, so the
+ * workspace is not charged a second time for the same file.
  */
-/**
- * The host resolves the reservation BY the request's idempotency key: the key names one
- * reservation (the meeting), and `targetKey` names one file inside it. Every create-target,
- * remint, and finalize call must present the meeting's own stored reserve key, or the host
- * answers `Not found`.
- */
-function meeting_reserve_key(meeting: { reserve_body: string | null }) {
-	if (!meeting.reserve_body) {
-		throw new Error("Meeting has no stored reserve body");
-	}
-	return (JSON.parse(meeting.reserve_body) as { idempotencyKey: string }).idempotencyKey;
-}
-
-async function release_upload_reservation(env: Env, meetingId: string) {
-	const meeting = await council_get_meeting(env.COUNCIL_DB, meetingId);
-	if (!meeting || !meeting.reservation_id || !meeting.reserve_body || !meeting.processing_grant_id) {
-		return { _yay: { skipped: true as const }, _nay: undefined };
-	}
-	const grant = await council_get_service_grant(env.COUNCIL_DB, meeting.processing_grant_id);
-	if (!grant) {
-		return { _yay: { skipped: true as const }, _nay: undefined };
-	}
-	const token = await council_decrypt(env.COUNCIL_ROOM_COOKIE_SECRET, grant.token_encrypted);
-	const reserveBody = JSON.parse(meeting.reserve_body) as { idempotencyKey: string };
-	return await council_convex_uploads_release(env, token, { idempotencyKey: reserveBody.idempotencyKey });
-}
-
-/**
- * Make sure the meeting's upload envelope is alive before any upload work. A normal run replays
- * the reservation made at open, and the host answers that replay idempotently. On an operator
- * redrive after a failure the envelope was already given back, and the host refuses a released
- * idempotency key forever — so reserve a fresh envelope under a new key, store it as the meeting's
- * reserve body, and clear the pending artifacts' stored upload bodies so they re-mint their
- * targets under the new key. Artifacts that already committed are skipped by their D1 status and
- * never touch the fresh envelope.
- */
-async function ensure_upload_reservation(env: Env, meeting: council_MeetingRow, grantToken: string) {
-	const db = env.COUNCIL_DB;
-	// A meeting that never opened admission has no reservation; the too-short path still uploads
-	// the empty transcript, so this only skips when there is truly nothing stored to replay.
-	if (!meeting.reserve_body) {
-		return { ensured: false as const };
-	}
-	const storedBody = JSON.parse(meeting.reserve_body) as {
-		idempotencyKey: string;
-		reservedBytes: number;
-		expiresAt: number;
-	};
-
-	const replayed = await council_convex_uploads_reserve(env, grantToken, storedBody);
-	if (!replayed._nay) {
-		// Keep the recorded reservation id in sync. After a crash between the body rotation below
-		// and its reserve call, this replay is the call that actually creates the fresh reservation.
-		await db
-			.prepare("UPDATE meetings SET reservation_id = ? WHERE id = ?")
-			.bind(replayed._yay.reservationId, meeting.id)
-			.run();
-		return { ensured: true as const, rotated: false };
-	}
-	if (replayed._nay.name !== "conflict") {
-		throw new Error(`Upload reservation is not available: ${replayed._nay.message}`);
-	}
-
-	// The failure handler released this key. Persist the exact fresh body before the call, like the
-	// open does, so a crashed retry re-sends these stored bytes instead of minting yet another key.
-	const freshBody = JSON.stringify({
-		idempotencyKey: `council-uploads-${meeting.id}-g${meeting.processing_generation}-r${crypto.randomUUID()}`,
-		reservedBytes: storedBody.reservedBytes,
-		expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-	});
-	await db
-		.prepare("UPDATE meetings SET reserve_body = ? WHERE id = ? AND reserve_body = ?")
-		.bind(freshBody, meeting.id, meeting.reserve_body)
-		.run();
-	// Pending artifacts persisted their create-target bodies with the released key; clear them so
-	// the upload step re-persists against the fresh reservation. Finalized rows keep theirs.
-	await db
-		.prepare("UPDATE meeting_artifacts SET upload_body = NULL WHERE meeting_id = ? AND status = 'pending'")
-		.bind(meeting.id)
-		.run();
-
-	const stored = await council_get_meeting(db, meeting.id);
-	if (!stored?.reserve_body) {
-		throw new Error("Meeting lost its stored reserve body");
-	}
-	const reserveBody = JSON.parse(stored.reserve_body) as {
-		idempotencyKey: string;
-		reservedBytes: number;
-		expiresAt: number;
-	};
-	const reserved = await council_convex_uploads_reserve(env, grantToken, reserveBody);
-	if (reserved._nay) {
-		throw new Error(`Failed to reserve a fresh upload envelope: ${reserved._nay.message}`);
-	}
-	await db
-		.prepare("UPDATE meetings SET reservation_id = ?, updated_at = ? WHERE id = ?")
-		.bind(reserved._yay.reservationId, Date.now(), meeting.id)
-		.run();
-	return { ensured: true as const, rotated: true };
+function meeting_upload_key(meeting: { id: string }) {
+	return `council-uploads-${meeting.id}`;
 }
 
 async function run_processing_steps(env: Env, step: WorkflowStep, meetingId: string) {
 	const db = env.COUNCIL_DB;
-	const preloaded = await council_get_meeting(db, meetingId);
-	if (!preloaded) {
-		throw new Error("Meeting row disappeared while processing");
-	}
-	const grantToken = await processing_grant_token(env, preloaded);
-
-	await step.do("ensure-reservation", async () => {
-		return await ensure_upload_reservation(env, preloaded, grantToken);
-	});
-	// The ensure step may have rotated the reserve body; every later step must read the meeting
-	// with the body that is actually reserved, not the pre-step snapshot.
 	const meeting = await council_get_meeting(db, meetingId);
 	if (!meeting) {
 		throw new Error("Meeting row disappeared while processing");
 	}
+	const grantToken = await processing_grant_token(env, meeting);
 
 	// A recording the host stopped within seconds holds no speech. Skip the provider polling —
 	// its track files may never materialize — and finish with the explicit empty transcript.
@@ -257,12 +146,12 @@ async function run_processing_steps(env: Env, step: WorkflowStep, meetingId: str
 				(council_parse_track_file_name(right)?.recordedAtMs ?? 0),
 		);
 
-		// The reservation allows at most 16 targets, and two are spent on the transcript and the
-		// provider diagnostic. A 25-participant meeting can produce more tracks than the remaining
+		// The host allows at most 16 upload targets per run, and two are spent on the transcript and
+		// the provider diagnostic. A 25-participant meeting can produce more tracks than the remaining
 		// budget; every track is still transcribed — the attributed transcript stays complete — but
 		// raw audio past the budget is not archived.
 		if (trackFileNames.length > UPLOADED_TRACKS_MAX) {
-			console.warn("More tracks than the reservation's target budget; extra raw audio is not stored", {
+			console.warn("More tracks than the upload target budget; extra raw audio is not stored", {
 				meetingId: meeting.id,
 				trackCount: trackFileNames.length,
 				uploadBudget: UPLOADED_TRACKS_MAX,
@@ -294,15 +183,6 @@ async function run_processing_steps(env: Env, step: WorkflowStep, meetingId: str
 			to: "ready",
 			now,
 		});
-		// Every artifact is committed, so the unused part of the envelope goes back to the
-		// workspace now. Best effort: the reservation also expires on its own clock.
-		const released = await release_upload_reservation(env, meeting.id);
-		if (released._nay) {
-			console.warn("Releasing the upload reservation after ready did not succeed", {
-				meetingId: meeting.id,
-				reason: released._nay.message,
-			});
-		}
 		await council_project_meeting(env, meeting.id, now);
 		return { done: true };
 	});
@@ -729,7 +609,7 @@ async function upload_artifact(
 	// body rebuilt from fresh values could differ and the host would answer 409.
 	if (!artifact.upload_body) {
 		const createBody = JSON.stringify({
-			idempotencyKey: meeting_reserve_key(args.meeting),
+			idempotencyKey: meeting_upload_key(args.meeting),
 			targetKey: args.targetKey,
 			// Strictly inside the sealed prefix, canonical lowercase file name.
 			path: `${args.meeting.destination_path}/${args.fileName.toLowerCase()}`,
@@ -771,7 +651,7 @@ async function upload_artifact(
 		// fresh URL for the same staging key — nothing is recharged and no second node appears.
 		if (pending.uploadUrlExpiresAt <= Date.now()) {
 			const fresh = await council_convex_uploads_remint(env, args.grantToken, {
-				idempotencyKey: meeting_reserve_key(args.meeting),
+				idempotencyKey: meeting_upload_key(args.meeting),
 				targetKey: args.targetKey,
 			});
 			if (fresh._nay) {
@@ -800,7 +680,7 @@ async function upload_artifact(
 
 			// Finalize is the poll: `pending` means the storage event has not settled yet. Bounded
 			// backoff inside the step; running out lets the step's own retry take over later.
-			const finalizeBody = { idempotencyKey: meeting_reserve_key(args.meeting), targetKey: args.targetKey };
+			const finalizeBody = { idempotencyKey: meeting_upload_key(args.meeting), targetKey: args.targetKey };
 			let delayMs = 500;
 			for (let attempt = 0; attempt < FINALIZE_POLL_ATTEMPTS && !committed; attempt++) {
 				const finalized = await council_convex_uploads_finalize(env, args.grantToken, finalizeBody);
@@ -855,34 +735,6 @@ export async function council_run_deletion(env: Env, step: WorkflowStep, params:
 				}
 			}
 			return { done: true };
-		});
-
-		await step.do("release-reservation", async () => {
-			// The upload release runs before the archive on purpose. It deletes the placeholder files
-			// of uploads that never finished, so the archive below only ever covers real stored files.
-			// Do not release the projection reservation here. delete-versioned below still needs that
-			// hold when the meeting never stored a document. Convex now also accepts a released
-			// never-stored retry for the same key, but keeping the live reservation means a crash
-			// between release and delete cannot spend a second slot.
-			const grantId = meeting.processing_grant_id ?? meeting.service_grant_id;
-			const grant = grantId ? await council_get_service_grant(db, grantId) : null;
-			if (!grant) {
-				return { released: false };
-			}
-			const token = await council_decrypt(env.COUNCIL_ROOM_COOKIE_SECRET, grant.token_encrypted);
-
-			// The upload byte envelope, when the meeting ever opened. This refunds whatever was never
-			// finalized; the stored files keep their bytes, because the archive below keeps them.
-			if (meeting.reservation_id && meeting.reserve_body) {
-				const reserveBody = JSON.parse(meeting.reserve_body) as { idempotencyKey: string };
-				const releasedUploads = await council_convex_uploads_release(env, token, {
-					idempotencyKey: reserveBody.idempotencyKey,
-				});
-				if (releasedUploads._nay) {
-					throw new Error(`Releasing the upload reservation failed: ${releasedUploads._nay.message}`);
-				}
-			}
-			return { released: true };
 		});
 
 		await step.do("archive-files", async () => {

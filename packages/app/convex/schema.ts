@@ -1828,60 +1828,23 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_actorUser", ["organizationId", "workspaceId", "actorUserId"]),
 
 	/**
-	 * Storage held for one meeting's files before the service uploads them. A processing-phase
-	 * service grant reserves the whole meeting envelope up front, so a full workspace quota refuses
-	 * the meeting before the recording starts instead of refusing the upload after it ended.
-	 * A replay of the same reserve request is answered from this doc instead of reserving twice.
-	 */
-	plugin_service_storage_reservations: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		installationId: v.id("plugins_workspace_installations"),
-		pluginName: v.string(),
-		/** The service principal that owns this reservation. It survives token rotation. */
-		ownerPrincipalKey: v.string(),
-		/** Unique per installation and principal. It is what makes a replay recognizable. */
-		idempotencyKey: v.string(),
-		/**
-		 * The canonical encoding of the reserve request, compared as a whole string. A replay with
-		 * different fields is refused, not reserved.
-		 */
-		requestFingerprint: v.string(),
-		/** The full envelope charged to the workspace quota when this reservation was created. */
-		reservedBytes: v.number(),
-		/** Bytes no target has claimed yet. Creating a target moves its declared size out of here. */
-		remainingBytes: v.number(),
-		/** `released` keeps the doc as a retry record until `retryHorizonExpiresAt`. */
-		state: v.union(v.literal("live"), v.literal("released")),
-		/** Frozen at release so a replayed release answers the same thing twice. */
-		releaseResult: v.optional(v.object({ releasedBytes: v.number() })),
-		releasedAt: v.optional(v.number()),
-		/** A live reservation past this time is released by the expiry cron. */
-		expiresAt: v.number(),
-		/** After this time the released retry record and its non-committed targets are deleted. */
-		retryHorizonExpiresAt: v.number(),
-		updatedAt: v.number(),
-	})
-		.index("by_installation_principal_idempotencyKey", ["installationId", "ownerPrincipalKey", "idempotencyKey"])
-		// `state` comes first so the expiry cron reads only live docs.
-		.index("by_state_expiresAt", ["state", "expiresAt"])
-		.index("by_retryHorizonExpiresAt", ["retryHorizonExpiresAt"])
-		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
-
-	/**
-	 * One file a service upload reservation pays for. The doc is the durable answer to a replayed
-	 * create/remint/finalize call, and it captures ownership and the actual stored size, so the
-	 * workspace quota can give the bytes back when the exact canonical R2 object is later deleted —
-	 * even after the installation or the reservation doc is gone.
+	 * One file a service upload stores in a workspace. The doc is the durable answer to a replayed
+	 * create/remint/finalize call, and it captures ownership and the actual stored size, so a later
+	 * deletion of the exact canonical R2 object can find what this file charged — even after the
+	 * installation is gone.
 	 */
 	plugin_service_storage_targets: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
-		reservationId: v.id("plugin_service_storage_reservations"),
-		/** Stable per-reservation idempotency key for this one file. */
+		/**
+		 * The upload run this file belongs to, chosen by the service. One processing run reuses one
+		 * key for all its files, so the same `targetKey` in a later run is a different file.
+		 */
+		idempotencyKey: v.string(),
+		/** Stable key for this one file inside its upload run. */
 		targetKey: v.string(),
-		/** Same replay rule as the reservation: a different request under the same key is refused. */
+		/** A different request under the same run and target key is refused, not stored twice. */
 		requestFingerprint: v.string(),
 		/**
 		 * The sealed folder path and its stable node id when this target was created. Existing dev docs
@@ -1891,7 +1854,7 @@ const app_convex_schema = defineSchema({
 		destinationNodeId: v.optional(v.id("files_nodes")),
 		path: v.string(),
 		contentType: v.string(),
-		/** The size the service declared at create time. Spent from the reservation's remaining bytes. */
+		/** The size the service declared at create time. Charged to the workspace quota right then. */
 		declaredBytes: v.number(),
 		/** The size R2 confirmed at finalization. Null until the target is committed. */
 		actualBytes: v.union(v.number(), v.null()),
@@ -1899,8 +1862,9 @@ const app_convex_schema = defineSchema({
 		assetId: v.id("files_r2_assets"),
 		/**
 		 * `pending` until the canonical object is confirmed and settled, then `committed`. `released`
-		 * means the target no longer charges the quota: the upload expired, the reservation was
-		 * released, or the committed object was physically deleted.
+		 * means the target holds no live file any more: the upload expired, the service cancelled it
+		 * before it finished, or the committed object was physically deleted. The bytes it already
+		 * charged stay charged either way.
 		 */
 		state: v.union(v.literal("pending"), v.literal("committed"), v.literal("released")),
 		/**
@@ -1913,7 +1877,15 @@ const app_convex_schema = defineSchema({
 		createdBy: v.id("users"),
 		updatedAt: v.number(),
 	})
-		.index("by_reservation_targetKey", ["reservationId", "targetKey"])
+		// Create, remint and finalize find one file by the run it belongs to and its key inside that
+		// run. Two runs may reuse a target key for different files, so the run key comes first.
+		.index("by_organization_workspace_installation_idempotencyKey_targetKey", [
+			"organizationId",
+			"workspaceId",
+			"installationId",
+			"idempotencyKey",
+			"targetKey",
+		])
 		// Physical deletion settlement finds the charged target by the deleted canonical asset.
 		.index("by_asset", ["assetId"])
 		.index("by_organization_workspace_installation_destinationPath", [

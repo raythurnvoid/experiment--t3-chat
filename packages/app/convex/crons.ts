@@ -68,15 +68,6 @@ crons.cron("cleanup expired plugin ui sessions", "45 6 * * *", internal.plugins_
 // rows that just became eligible and hold their slots for another day.
 crons.cron("cleanup expired plugin data", "20 * * * *", internal.plugins_data.cleanup_expired_plugin_data, {});
 
-// Once hourly — release service upload envelopes a crashed service never released, so their held
-// bytes go back to the workspace quota, then delete released docs past the retry window.
-crons.cron(
-	"cleanup expired service upload reservations",
-	"25 * * * *",
-	internal.public_api_service_uploads.cleanup_expired_service_upload_reservations,
-	{},
-);
-
 // Once hourly — clean up files uploaded by interrupted publishes whose scheduled cleanup run never happened (crash, failed retry).
 crons.cron(
 	"cleanup stale plugin publish artifacts",

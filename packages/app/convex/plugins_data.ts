@@ -2681,9 +2681,9 @@ export async function plugins_data_db_drain_batch(
 		return { done: false, deletedCount: grants.length };
 	}
 
-	// The service upload reservations live in their own module because they charge a workspace
-	// quota, not the plugin-data counters. Their drain releases live envelopes back to the quota
-	// before deleting, so it runs as its own pass here.
+	// The service upload targets live in their own module because they charge a workspace quota,
+	// not the plugin-data counters. An uninstall leaves them alone: only a workspace teardown
+	// deletes them, so this pass does nothing for an installation-scoped drain.
 	const serviceUploads = await public_api_service_uploads_db_drain_batch(ctx, args);
 	if (!serviceUploads.done) {
 		return { done: false, deletedCount: serviceUploads.deletedCount };

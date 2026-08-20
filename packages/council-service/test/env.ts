@@ -99,7 +99,6 @@ export function install_fetch(overrides: Record<string, FetchHandler> = {}) {
 	const calls: RecordedCall[] = [];
 	const original = globalThis.fetch;
 
-	released_upload_keys.clear();
 	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 		const method = init?.method ?? (input instanceof Request ? input.method : "GET");
@@ -141,11 +140,6 @@ export function install_fetch(overrides: Record<string, FetchHandler> = {}) {
 }
 
 let addParticipantCounter = 0;
-
-// Released upload reservations, by idempotency key. The real host refuses a released key forever,
-// so the mock must remember releases — a forgetful mock would wrongly show a post-failure retry
-// uploading into a reservation that no longer exists.
-const released_upload_keys = new Set<string>();
 
 function default_handler(call: RecordedCall): Response | null {
 	const { url } = call;
@@ -200,31 +194,18 @@ function default_handler(call: RecordedCall): Response | null {
 		return Response.json({ deleted: true, revision: call.bodyJson?.revision ?? 1 });
 	}
 
-	// Convex service upload routes (the real wave-2 contract). The host resolves the reservation BY
-	// the request's idempotencyKey — the key names one reservation (the meeting), never one call.
-	// Mirror that: any key outside the reservation-key namespace answers the host's real 404, so a
-	// per-call key in the worker fails here the same way it fails against real Convex.
-	const uploadReservationKey = (bodyJson: Record<string, unknown> | null) =>
+	// Convex service upload routes. The host resolves an upload BY the request's idempotencyKey —
+	// the key names one upload run (the meeting), never one call. Mirror that: any key outside the
+	// meeting-key namespace answers the host's real 404, so a per-call key in the worker fails here
+	// the same way it fails against real Convex.
+	const uploadRunKey = (bodyJson: Record<string, unknown> | null) =>
 		/^council-uploads-[\w-]+$/u.test(String(bodyJson?.idempotencyKey ?? ""));
-	if (url.includes("/api/v1/files/service-uploads/reserve")) {
-		if (released_upload_keys.has(String(call.bodyJson?.idempotencyKey ?? ""))) {
-			return Response.json({ message: "This reservation was already released" }, { status: 409 });
-		}
-		const expiresAt = Number(call.bodyJson?.expiresAt ?? 0);
-		if (expiresAt - Date.now() > 8 * 24 * 60 * 60 * 1000) {
-			return Response.json({ message: "expiresAt is too far in the future" }, { status: 400 });
-		}
-		return Response.json({ reservationId: "res-up-1", remainingBytes: 557842432, expiresAt });
-	}
 	if (
 		url.includes("/api/v1/files/service-uploads/create-target") ||
 		url.includes("/api/v1/files/service-uploads/remint")
 	) {
-		if (!uploadReservationKey(call.bodyJson)) {
+		if (!uploadRunKey(call.bodyJson)) {
 			return Response.json({ message: "Not found" }, { status: 404 });
-		}
-		if (released_upload_keys.has(String(call.bodyJson?.idempotencyKey ?? ""))) {
-			return Response.json({ message: "This reservation was already released" }, { status: 409 });
 		}
 		const targetKey = String(call.bodyJson?.targetKey ?? "unknown");
 		return Response.json({
@@ -237,18 +218,11 @@ function default_handler(call: RecordedCall): Response | null {
 		});
 	}
 	if (url.includes("/api/v1/files/service-uploads/finalize")) {
-		if (!uploadReservationKey(call.bodyJson)) {
+		if (!uploadRunKey(call.bodyJson)) {
 			return Response.json({ message: "Not found" }, { status: 404 });
-		}
-		if (released_upload_keys.has(String(call.bodyJson?.idempotencyKey ?? ""))) {
-			return Response.json({ message: "This reservation was already released" }, { status: 409 });
 		}
 		const targetKey = String(call.bodyJson?.targetKey ?? "unknown");
 		return Response.json({ state: "committed", path: `/meetings/unknown/${targetKey}`, nodeId: `node-${targetKey}`, actualBytes: 1 });
-	}
-	if (url.includes("/api/v1/files/service-uploads/release")) {
-		released_upload_keys.add(String(call.bodyJson?.idempotencyKey ?? ""));
-		return Response.json({ releasedBytes: 0 });
 	}
 	if (url.includes("/api/v1/files/service-uploads/delete")) {
 		return Response.json({ deleted: true });
@@ -351,7 +325,6 @@ export async function seed_meeting(
 		title: string;
 		serviceGrantId: string | null;
 		processingGrantId: string | null;
-		reservationId: string | null;
 		providerMeetingId: string | null;
 		providerSessionId: string | null;
 		providerRecordingId: string | null;
@@ -366,22 +339,9 @@ export async function seed_meeting(
 ) {
 	const id = args?.id ?? "meeting-1";
 	const code = args?.code ?? "a".repeat(64);
-	// A meeting past `created` carries the reservation open claimed, with the exact reserve body the
-	// host expects on replay. Seeds default to that shape so lifecycle code can rely on it.
-	const reservationId = args?.reservationId === undefined ? "res-up-1" : args.reservationId;
-	// The expiry mirrors what the open really stores (now + 7 days): the mock's reserve guard
-	// refuses an expiry further than 8 days out, exactly like the host.
-	const reserveBody =
-		reservationId === null
-			? null
-			: JSON.stringify({
-					idempotencyKey: `council-uploads-${id}`,
-					reservedBytes: 557842432,
-					expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-				});
 	await env.COUNCIL_DB.prepare(
-		`INSERT INTO meetings (id, code_hash, organization_id, workspace_id, installation_id, plugin_name, title, created_by_user_id, service_grant_id, processing_grant_id, reservation_id, reserve_body, destination_path, provider_meeting_id, provider_session_id, provider_recording_id, status, deadline_at, opened_at, closed_at, recording_started_at, participant_count, processing_generation, created_at, updated_at)
-		VALUES (?, ?, 'org-1', 'ws-1', ?, 'council', ?, 'user-1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO meetings (id, code_hash, organization_id, workspace_id, installation_id, plugin_name, title, created_by_user_id, service_grant_id, processing_grant_id, destination_path, provider_meeting_id, provider_session_id, provider_recording_id, status, deadline_at, opened_at, closed_at, recording_started_at, participant_count, processing_generation, created_at, updated_at)
+		VALUES (?, ?, 'org-1', 'ws-1', ?, 'council', ?, 'user-1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 		.bind(
 			id,
@@ -390,8 +350,6 @@ export async function seed_meeting(
 			args?.title ?? "Test meeting",
 			args?.serviceGrantId === undefined ? "grant-1" : args.serviceGrantId,
 			args?.processingGrantId ?? null,
-			reservationId,
-			reserveBody,
 			`/meetings/${id}`,
 			args?.providerMeetingId === undefined ? "pm-1" : args.providerMeetingId,
 			args?.providerSessionId ?? null,

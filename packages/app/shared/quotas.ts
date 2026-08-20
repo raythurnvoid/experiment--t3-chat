@@ -30,7 +30,7 @@ export const quotas = {
 		disabledReason: "This workspace has used its 10 GB of plugin service storage",
 		maxCount: 10 * 1024 * 1024 * 1024,
 		tooltip_explanation:
-			"Counts the bytes plugin services reserve and store in this workspace through the service upload path. Deleting those stored files gives the space back.",
+			"Counts the declared bytes of files plugin services store in this workspace through the service upload path. The counter only grows: deleting those files does not give the budget back.",
 	},
 } as const satisfies Record<
 	Doc<"quotas">["quotaName"],

@@ -29,8 +29,8 @@ import { Result } from "./result.ts";
  * 2. The provider session is ended best-effort. A failure here is not a failed close; everyone
  *    leaving ends the session anyway and the recording has its own `max_seconds` cap.
  * 3. With a recording, the meeting enters `processing` and the outbox row exists in one atomic
- *    batch. The sealed grant and the byte reservation already exist — the open claimed them — so
- *    a crash leaves either a closed meeting the cron can re-drive or a fully handed-off one.
+ *    batch. The sealed grant already exists — the open claimed it — so a crash leaves either a
+ *    closed meeting the cron can re-drive or a fully handed-off one.
  */
 export async function council_close_meeting(env: Env, meetingId: string, now: number) {
 	const db = env.COUNCIL_DB;
@@ -170,8 +170,8 @@ export async function council_seal_meeting_grant(env: Env, meeting: council_Meet
 
 /**
  * Move a closed meeting with a recording into `processing`, with the outbox row in the same
- * atomic batch. Idempotent per generation. The sealed grant and reservation were claimed when the
- * meeting opened, so nothing here talks to Convex.
+ * atomic batch. Idempotent per generation. The sealed grant was claimed when the meeting opened,
+ * so nothing here talks to Convex.
  */
 export async function council_seal_and_start_processing(env: Env, meetingId: string, now: number) {
 	const db = env.COUNCIL_DB;

@@ -59,13 +59,11 @@ async function convex_post(
 	}
 	if (!response.ok) {
 		// A full workspace is its own refusal: the caller turns it into a product answer ("no
-		// capacity, no meeting"), which a generic 403 must not be collapsed into. The refusal name
-		// never crosses HTTP — the host sends only these two exact messages for its storage ceilings.
+		// capacity, no recording"), which a generic 403 must not be collapsed into. The refusal name
+		// never crosses HTTP — the host sends this exact message for its storage ceiling.
 		const bodyRecord = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : null;
 		const storageFull =
-			response.status === 403 &&
-			(bodyRecord?.message === "This workspace has used its plugin service storage" ||
-				bodyRecord?.message === "This file does not fit the reservation's remaining bytes");
+			response.status === 403 && bodyRecord?.message === "This workspace has used its plugin service storage";
 		const name = storageFull
 			? "storage_full"
 			: response.status === 401 || response.status === 403
@@ -272,30 +270,11 @@ export async function council_convex_data_delete_versioned(
 // #region service uploads
 
 /**
- * Reserve the meeting's full recording byte envelope. Called once when the meeting opens: a
- * workspace without capacity refuses the meeting before it exists (`storage_full`). A replay of
- * the same `idempotencyKey` with the identical body returns the live reservation.
- */
-export async function council_convex_uploads_reserve(
-	env: Env,
-	psgToken: string,
-	args: { idempotencyKey: string; reservedBytes: number; expiresAt: number },
-) {
-	const path = "/api/v1/files/service-uploads/reserve";
-	const answer = await convex_post(env, { path, bearer: psgToken, body: { ...args } });
-	if (answer._nay) {
-		return answer;
-	}
-	const reservationId = require_string(answer._yay.reservationId, "reservationId", path);
-	if (reservationId._nay) return reservationId;
-	return Result({ _yay: { reservationId: reservationId._yay } });
-}
-
-/**
  * One upload target's state, as create-target, remint, and finalize report it. `pending` carries a
  * signed staging PUT (15-minute TTL) that must be used with exactly the returned headers;
  * `committed` means the file exists and its target key answers the same way forever; `released`
- * (finalize only) means the reservation was released before this target committed.
+ * (finalize only) means the upload was given up on before it committed, so the target holds no
+ * file any more.
  */
 export type council_UploadTargetState =
 	| {
@@ -408,26 +387,6 @@ export async function council_convex_uploads_finalize(
 		return Result({ _yay: { state: "released" as const, nodeId: null, actualBytes: null } });
 	}
 	return Result({ _yay: { state: "pending" as const, nodeId: null, actualBytes: null } });
-}
-
-/**
- * Release the reservation: refund unfinalized bytes and delete pending targets. Committed files
- * survive. Terminal — create-target and remint answer 409 afterwards — so this runs only when the
- * meeting's processing is over or the meeting is being deleted.
- */
-export async function council_convex_uploads_release(env: Env, psgToken: string, args: { idempotencyKey: string }) {
-	const path = "/api/v1/files/service-uploads/release";
-	const answer = await convex_post(env, { path, bearer: psgToken, body: { ...args } });
-	if (answer._nay) {
-		// A reservation that is already released or already gone is the state release wants.
-		if (answer._nay.name === "conflict" || answer._nay.name === "not_found") {
-			return Result({ _yay: { releasedBytes: 0 } });
-		}
-		return answer;
-	}
-	return Result({
-		_yay: { releasedBytes: typeof answer._yay.releasedBytes === "number" ? answer._yay.releasedBytes : 0 },
-	});
 }
 
 /**

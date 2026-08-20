@@ -207,59 +207,30 @@ describe("council_handle_page_api /api/meetings/open", () => {
 		expect(response.status).toBe(404);
 	});
 
-	test("opening seals the processing grant and reserves the full recording envelope", async () => {
+	test("opening seals the processing grant to the meeting folder", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch();
 		restoreFetch = mock.restore;
 		await seed_grant(env);
-		await seed_meeting(env, { status: "created", reservationId: null });
+		await seed_meeting(env, { status: "created" });
 
 		const response = await worker.fetch(page_post("/api/meetings/open", { meetingId: "meeting-1" }), env);
 		expect(response.status).toBe(200);
 
-		// Capacity is claimed while the meeting opens, not when processing starts: the sealed grant
-		// and the reservation exist before any guest can join.
+		// File authority is claimed while the meeting opens, not when processing starts: the sealed
+		// grant exists before any guest can join, so the pipeline never needs the member's page.
 		const meeting = await env.COUNCIL_DB.prepare(
-			"SELECT processing_grant_id, reservation_id, reserve_body FROM meetings WHERE id = 'meeting-1'",
-		).first<{ processing_grant_id: string | null; reservation_id: string | null; reserve_body: string | null }>();
+			"SELECT processing_grant_id FROM meetings WHERE id = 'meeting-1'",
+		).first<{ processing_grant_id: string | null }>();
 		expect(meeting?.processing_grant_id).not.toBeNull();
-		expect(meeting?.reservation_id).toBe("res-up-1");
 
 		const grant = await env.COUNCIL_DB.prepare("SELECT phase, destination_path_prefix FROM service_grants WHERE id = ?")
 			.bind(meeting?.processing_grant_id)
 			.first<{ phase: string; destination_path_prefix: string }>();
 		expect(grant).toEqual({ phase: "processing", destination_path_prefix: "/meetings/meeting-1" });
 
-		// The reserve call asked for the full 532 MiB envelope, and the exact body it sent is stored
-		// so a replay can re-send it unchanged.
-		const reserveCall = mock.calls.find((call) => call.url.includes("/service-uploads/reserve"));
-		expect(reserveCall?.bodyJson?.reservedBytes).toBe(557842432);
-		expect(meeting?.reserve_body).toBe(reserveCall?.bodyText);
-	});
-
-	test("a full workspace refuses the open before any admission exists", async () => {
-		const { env } = make_test_env();
-		const mock = install_fetch({
-			"/service-uploads/reserve": () =>
-				Response.json({ message: "This workspace has used its plugin service storage" }, { status: 403 }),
-		});
-		restoreFetch = mock.restore;
-		await seed_grant(env);
-		await seed_meeting(env, { status: "created", reservationId: null });
-
-		// No capacity, no meeting: the open is refused and nothing opened. The message is the
-		// storage-specific one, so a generic reserve failure cannot pass as this product refusal.
-		const response = await worker.fetch(page_post("/api/meetings/open", { meetingId: "meeting-1" }), env);
-		expect(response.status).toBe(409);
-		expect(((await response.json()) as { message: string }).message).toBe(
-			"The workspace has no storage space for a meeting recording",
-		);
-		const stored = await env.COUNCIL_DB.prepare("SELECT status, reservation_id FROM meetings WHERE id = 'meeting-1'").first<{
-			status: string;
-			reservation_id: string | null;
-		}>();
-		expect(stored?.status).toBe("created");
-		expect(stored?.reservation_id).toBeNull();
+		// Opening books no storage. The workspace is charged per file, when the pipeline creates it.
+		expect(mock.calls.some((call) => call.url.includes("/service-uploads/"))).toBe(false);
 	});
 });
 

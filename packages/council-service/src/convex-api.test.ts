@@ -7,8 +7,6 @@ import {
 	council_convex_uploads_create_target,
 	council_convex_uploads_archive_destination,
 	council_convex_uploads_finalize,
-	council_convex_uploads_release,
-	council_convex_uploads_reserve,
 	council_convex_verify_live,
 } from "./convex-api.ts";
 import { install_fetch, make_test_env } from "../test/env.ts";
@@ -114,46 +112,44 @@ describe("council_convex_data_write_versioned", () => {
 	});
 });
 
-describe("council_convex_uploads_reserve", () => {
+describe("council_convex_uploads_create_target", () => {
 	test("is bearer-only and surfaces a full workspace as its own refusal", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch();
 		restoreFetch = mock.restore;
 
-		const reserved = await council_convex_uploads_reserve(env, "psg_processing", {
+		const body = {
 			idempotencyKey: "council-uploads-meeting-1",
-			reservedBytes: 557842432,
-			expiresAt: 1000,
-		});
-		expect(reserved._yay?.reservationId).toBe("res-up-1");
+			targetKey: "transcript_markdown:transcript.md",
+			path: "/meetings/meeting-1/transcript.md",
+			contentType: "text/markdown",
+			size: 10,
+		};
+		expect((await council_convex_uploads_create_target(env, "psg_processing", body))._yay?.state).toBe("pending");
 
 		const call = mock.calls[0];
-		expect(call.url).toBe("https://convex.example/api/v1/files/service-uploads/reserve");
+		expect(call.url).toBe("https://convex.example/api/v1/files/service-uploads/create-target");
 		expect(call.headers.get("X-Bonobo-Service-Authorization")).toBeNull();
-		expect(call.bodyJson).toEqual({ idempotencyKey: "council-uploads-meeting-1", reservedBytes: 557842432, expiresAt: 1000 });
+		expect(call.bodyJson).toEqual(body);
 
+		// A full workspace must stay its own refusal name: the caller turns it into "no capacity, no
+		// recording" instead of collapsing it into a generic permission error.
 		mock.restore();
 		const fullMock = install_fetch({
-			"/service-uploads/reserve": () =>
+			"/service-uploads/create-target": () =>
 				Response.json({ message: "This workspace has used its plugin service storage" }, { status: 403 }),
 		});
 		restoreFetch = fullMock.restore;
-		const refused = await council_convex_uploads_reserve(env, "psg_processing", {
-			idempotencyKey: "council-uploads-meeting-1",
-			reservedBytes: 557842432,
-			expiresAt: 1000,
-		});
+		const refused = await council_convex_uploads_create_target(env, "psg_processing", body);
 		expect(refused._nay?.name).toBe("storage_full");
 	});
-});
 
-describe("council_convex_uploads_create_target", () => {
 	test("parses the pending and committed halves of the target union", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch();
 		restoreFetch = mock.restore;
 
-		// The key names the meeting's one reservation — the host resolves the reservation by it.
+		// The key names the meeting's one upload run — the host resolves the upload by it.
 		const body = {
 			idempotencyKey: "council-uploads-meeting-1",
 			targetKey: "transcript_markdown:transcript.md",
@@ -192,19 +188,6 @@ describe("council_convex_uploads_finalize", () => {
 			targetKey: "transcript_markdown:transcript.md",
 		});
 		expect(settled._yay?.state).toBe("pending");
-	});
-});
-
-describe("council_convex_uploads_release", () => {
-	test("an already-released reservation answers success, not a wedge", async () => {
-		const { env } = make_test_env();
-		const mock = install_fetch({
-			"/service-uploads/release": () => Response.json({ message: "Reservation already released" }, { status: 409 }),
-		});
-		restoreFetch = mock.restore;
-
-		const released = await council_convex_uploads_release(env, "psg_processing", { idempotencyKey: "council-uploads-meeting-1" });
-		expect(released._yay?.releasedBytes).toBe(0);
 	});
 });
 

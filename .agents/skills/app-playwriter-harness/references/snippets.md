@@ -34,6 +34,34 @@ console.log(JSON.stringify({ status: response.status, body: (await response.text
 
 The Convex client is exported as `app_convex`, not `app_convex_client`. `/api/chat` allows about one request per 15s (`ai_chat_http`, capacity 1), so send one request per run and do other work in between instead of sleeping inside the runner; a `429` answers with `retryAfterMs`.
 
+## Drive The Plugin Service Upload Routes With A Minted Grant
+
+The `/api/v1/files/service-uploads/*` routes only answer a sealed **processing-phase** plugin service grant, which the plugin runtime normally mints during an event run. For QA, mint one yourself against an installation that already accepted `plugin.service.connect` and `workspace.files.write`, then drive the routes from Node — no browser involved.
+
+```bash
+# 1. Mint the grant. Send the output to a scratch file: the response contains a live token.
+cd packages/app
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable \
+  public_api:create_plugin_service_grant \
+  "{\"organizationId\":\"<org>\",\"workspaceId\":\"<ws>\",\"installationId\":\"<installation>\",\"actorUserId\":\"<user>\",\"requestedScopes\":[\"files:write\"],\"destinationPathPrefix\":\"/meetings/qa-<run-id>\",\"phase\":\"processing\",\"now\":$(date +%s000)}" \
+  > "$SCRATCH/grant.json"
+```
+
+```js
+// 2. Read the token out of the file inside the runner and never print it.
+const raw = fs.readFileSync(grantFile, "utf8");
+const token = JSON.parse(raw.slice(raw.indexOf("{")))._yay.token; // `convex run` prints a banner first
+// create-target -> signed PUT -> finalize, all with { idempotencyKey, targetKey }
+```
+
+What cost time on the first run:
+
+- `convex run` prints a deployment banner before the JSON, so `JSON.parse` needs `raw.slice(raw.indexOf("{"))`.
+- The grant's `destinationPathPrefix` is the fence. `create-target` creates the destination folder itself, so the path does not have to exist.
+- `finalize` answers `200` with `state: "pending"` and `actualBytes: null` while the R2 event has not arrived yet. Call it again a few seconds later to see `committed`. The R2 queue decides when, not the route.
+- `idempotencyKey` is the whole lookup dimension. The same key returns the same target instead of charging the workspace again, and another run's key answers `404 Not found` for a target that plainly exists.
+- Clean up with the `delete` route plus `archive-destination` (empty body — the destination comes from the grant's seal). Deleting does **not** give quota bytes back. `plugin_service_storage_bytes` only counts up.
+
 ## Create Session
 
 ```powershell

@@ -18,11 +18,7 @@ import { council_random_token, council_sha256_hex } from "./crypto.ts";
 import { council_get_bearer, council_json, council_read_json_body, council_read_string_field } from "./http.ts";
 import { council_page_auth, council_verify_grant, council_verify_meeting_grant, type council_PageActor } from "./grants.ts";
 import { council_provider_create_meeting } from "./provider.ts";
-import {
-	council_convex_data_release_reservation,
-	council_convex_data_reserve,
-	council_convex_uploads_reserve,
-} from "./convex-api.ts";
+import { council_convex_data_release_reservation, council_convex_data_reserve } from "./convex-api.ts";
 import { council_decrypt } from "./crypto.ts";
 import { council_get_service_grant } from "./db.ts";
 import { council_close_meeting, council_request_meeting_delete, council_seal_meeting_grant } from "./lifecycle.ts";
@@ -34,9 +30,6 @@ const TICKET_TTL_MS = 2 * 60 * 1000;
 
 /** The Plan 2 value-size envelope reserved for one meeting document. */
 const PROJECTION_MAX_BYTES = 16 * 1024;
-
-/** The full recording byte envelope one meeting reserves at open: the host's 532 MiB maximum. */
-const RESERVED_UPLOAD_BYTES = 557842432;
 
 /** A created meeting that is never opened expires after a day. */
 export const council_UNOPENED_MEETING_TTL_MS = 24 * 60 * 60 * 1000;
@@ -288,11 +281,9 @@ async function handle_open(context: PageContext) {
 		return respond(429, { message: "Too many opens; try again later" }, limited.retryAfterSeconds);
 	}
 
-	// Plan-3 E8: processing authority and the full recording byte envelope are claimed HERE, before
-	// any admission exists. A workspace without capacity refuses the meeting now instead of failing
-	// its processing later, and the pipeline never depends on the member's page session.
+	// Plan-3 E8: processing authority is claimed HERE, before any admission exists, so the pipeline
+	// never depends on the member's page session.
 	let processingGrantId = meeting._yay.processing_grant_id;
-	let processingToken: string;
 	if (!processingGrantId) {
 		// Seal from the caller's live interactive grant, not the create-time pin. The pin lives 24
 		// hours; open can happen near the end of that window, and join still verifies the pin.
@@ -309,60 +300,16 @@ async function handle_open(context: PageContext) {
 			});
 		}
 		processingGrantId = sealed._yay.processingGrantId;
-		processingToken = sealed._yay.token;
 		await env.COUNCIL_DB.prepare("UPDATE meetings SET processing_grant_id = ?, updated_at = ? WHERE id = ?")
 			.bind(processingGrantId, now, meeting._yay.id)
 			.run();
 	} else {
-		// A retry after a crash between seal and reserve: reuse the stored grant, but still recheck
-		// liveness before opening admission.
+		// A retry after a crash between sealing and opening admission: reuse the stored grant, but
+		// still recheck liveness first.
 		const live = await council_verify_meeting_grant(env, meeting._yay, now);
 		if (live._nay) {
 			return respond(409, { message: "The meeting's authority is no longer live" });
 		}
-		const grant = await council_get_service_grant(env.COUNCIL_DB, processingGrantId);
-		if (!grant) {
-			return respond(500, { message: "Failed to open the meeting" });
-		}
-		processingToken = await council_decrypt(env.COUNCIL_ROOM_COOKIE_SECRET, grant.token_encrypted);
-	}
-
-	if (!meeting._yay.reservation_id) {
-		// Persist the exact reserve body before the call. The host answers a replayed idempotency
-		// key only for an identical body, so a retry must re-send these stored bytes, never a body
-		// rebuilt from a newer clock.
-		if (!meeting._yay.reserve_body) {
-			const body = JSON.stringify({
-				idempotencyKey: `council-uploads-${meeting._yay.id}`,
-				reservedBytes: RESERVED_UPLOAD_BYTES,
-				expiresAt: now + 7 * 24 * 60 * 60 * 1000,
-			});
-			await env.COUNCIL_DB.prepare("UPDATE meetings SET reserve_body = ? WHERE id = ? AND reserve_body IS NULL")
-				.bind(body, meeting._yay.id)
-				.run();
-		}
-		const stored = await council_get_meeting(env.COUNCIL_DB, meeting._yay.id);
-		if (!stored?.reserve_body) {
-			return respond(500, { message: "Failed to open the meeting" });
-		}
-		const reserveBody = JSON.parse(stored.reserve_body) as {
-			idempotencyKey: string;
-			reservedBytes: number;
-			expiresAt: number;
-		};
-		const reserved = await council_convex_uploads_reserve(env, processingToken, reserveBody);
-		if (reserved._nay) {
-			// No capacity, no meeting: this is the product behavior, not a transient failure.
-			if (reserved._nay.name === "storage_full") {
-				return respond(409, { message: "The workspace has no storage space for a meeting recording" });
-			}
-			return respond(reserved._nay.name === "unauthorized" ? 409 : 502, {
-				message: "Failed to reserve recording storage",
-			});
-		}
-		await env.COUNCIL_DB.prepare("UPDATE meetings SET reservation_id = ?, updated_at = ? WHERE id = ?")
-			.bind(reserved._yay.reservationId, now, meeting._yay.id)
-			.run();
 	}
 
 	const deadline = now + council_max_minutes(env) * 60 * 1000;
@@ -450,8 +397,7 @@ async function handle_delete(context: PageContext) {
 
 	// Seal a FRESH processing grant for the delete workflow, from the requesting member's own live
 	// grant — the meeting's pinned grant lives 24 hours and a delete can come weeks later. The
-	// workflow's file deletes and the reservation release need live authority over the same
-	// `/meetings/<id>` prefix.
+	// workflow's file archive needs live authority over the same `/meetings/<id>` prefix.
 	if (meeting._yay.status !== "deleting" && meeting._yay.status !== "deleted_tombstone") {
 		const sealed = await council_seal_meeting_grant(env, meeting._yay, now, actor.serviceGrantId);
 		if (sealed._nay) {

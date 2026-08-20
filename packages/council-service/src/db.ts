@@ -56,8 +56,6 @@ export type council_MeetingRow = {
 	created_by_user_id: string;
 	service_grant_id: string | null;
 	processing_grant_id: string | null;
-	reservation_id: string | null;
-	reserve_body: string | null;
 	destination_path: string;
 	provider_meeting_id: string | null;
 	provider_session_id: string | null;

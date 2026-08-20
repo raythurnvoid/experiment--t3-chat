@@ -312,15 +312,15 @@ describe("council_run_processing", () => {
 		// The operator must see the stop refusal, not a track-files message pointing at the wrong step.
 		expect(failed?.failure_reason).toContain("never stopped");
 
-		// The failure is projected — the page shows the reason — and the reserved envelope goes back.
+		// The failure is projected: the page shows the reason.
 		const projected = await env.COUNCIL_DB.prepare(
 			"SELECT payload FROM projection_outbox ORDER BY revision DESC LIMIT 1",
 		).first<{ payload: string }>();
 		const payload = JSON.parse(projected?.payload ?? "{}") as { status: string; failureReason: string | null };
 		expect(payload.status).toBe("failed");
 		expect(payload.failureReason).toContain("never stopped");
-		const release = mock.calls.find((call) => call.url.includes("/service-uploads/release"));
-		expect(release?.bodyJson).toEqual({ idempotencyKey: "council-uploads-meeting-1" });
+		// A failed run hands nothing back: the workspace keeps whatever the uploads already charged.
+		expect(mock.calls.find((call) => call.url.includes("/service-uploads/release"))).toBeUndefined();
 	});
 
 	test("a recording seen RECORDING once and then unreadable still reports the stop refusal", async () => {
@@ -429,20 +429,17 @@ describe("council_run_processing", () => {
 		const artifacts = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meeting_artifacts").first<{ n: number }>();
 		expect(artifacts?.n).toBe(4);
 
-		// The failure gave the envelope back, so the redrive could not reuse the released
-		// reservation: it reserved a fresh envelope under a new generation-scoped key, and the
-		// transcript's retried target was minted under that key.
-		const reserveKeys = mock.calls
-			.filter((call) => call.url.includes("/service-uploads/reserve"))
+		// The redrive keeps the meeting's own upload key. The transcript target the failed run left
+		// pending is re-used, so the workspace is not charged a second time for the same file.
+		const targetKeys = mock.calls
+			.filter(
+				(call) =>
+					call.url.includes("/service-uploads/create-target") &&
+					String(call.bodyJson?.targetKey).startsWith("transcript_markdown"),
+			)
 			.map((call) => String(call.bodyJson?.idempotencyKey));
-		expect(reserveKeys[0]).toBe("council-uploads-meeting-1");
-		expect(reserveKeys.at(-1)).toMatch(/^council-uploads-meeting-1-g2-r[0-9a-f-]{36}$/u);
-		const retriedTargets = mock.calls.filter(
-			(call) =>
-				call.url.includes("/service-uploads/create-target") &&
-				String(call.bodyJson?.targetKey).startsWith("transcript_markdown"),
-		);
-		expect(String(retriedTargets.at(-1)?.bodyJson?.idempotencyKey)).toBe(reserveKeys.at(-1));
+		expect(targetKeys.length).toBeGreaterThan(1);
+		expect(new Set(targetKeys)).toEqual(new Set(["council-uploads-meeting-1"]));
 	});
 
 	test("a hostile display name cannot smuggle HTML into the Markdown", async () => {
@@ -505,7 +502,7 @@ describe("council_run_processing", () => {
 		expect(mock.calls.some((call) => call.url.includes("/recordings/rec-1"))).toBe(false);
 	});
 
-	test("reaching ready releases the reserved envelope with the stored reserve key", async () => {
+	test("every upload call carries the meeting's own key, and nothing is released at ready", async () => {
 		const counter = { runs: 0 };
 		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
 		const mock = install_fetch(processing_fetch_overrides());
@@ -515,10 +512,14 @@ describe("council_run_processing", () => {
 		const outcome = await council_run_processing(env, test_step(), PROCESS_PARAMS);
 		expect(outcome).toBe("ready");
 
-		// The envelope was reserved when the meeting opened; ready is the moment the unused bytes go
-		// back to the workspace. The release replays the reservation's own stored idempotency key.
-		const release = mock.calls.find((call) => call.url.includes("/service-uploads/release"));
-		expect(release?.bodyJson).toEqual({ idempotencyKey: "council-uploads-meeting-1" });
+		// The host resolves an upload by this key, and it is derived from the meeting id, not stored.
+		const uploadKeys = mock.calls
+			.filter((call) => call.url.includes("/service-uploads/") && !call.url.includes("archive-destination"))
+			.map((call) => String(call.bodyJson?.idempotencyKey));
+		expect(uploadKeys.length).toBeGreaterThan(0);
+		expect(new Set(uploadKeys)).toEqual(new Set(["council-uploads-meeting-1"]));
+		// There is no envelope to hand back: a stored file keeps its charged bytes.
+		expect(mock.calls.some((call) => call.url.includes("/service-uploads/release"))).toBe(false);
 	});
 
 	test("a stale generation is a no-op", async () => {
@@ -608,11 +609,9 @@ describe("council_run_deletion", () => {
 		}>();
 		expect(artifactStates.results.map((row) => row.status)).toEqual(["deleted"]);
 
-		// The live upload reservation was released too, refunding whatever was never finalized. It
-		// runs before the archive so the placeholder files of unfinished uploads are gone by then.
-		const release = mock.calls.find((call) => call.url.includes("/service-uploads/release"));
-		expect(release?.bodyJson).toEqual({ idempotencyKey: "council-uploads-meeting-1" });
-		expect(mock.calls.indexOf(release!)).toBeLessThan(mock.calls.indexOf(archiveCalls[0]!));
+		// Nothing is released first: an upload that never finished left a real empty file in the
+		// folder, and the archive above takes it away with everything else.
+		expect(mock.calls.some((call) => call.url.includes("/service-uploads/release"))).toBe(false);
 
 		// The stale pending write was superseded and the terminal delete was delivered after it.
 		const projections = await env.COUNCIL_DB.prepare(

@@ -3,7 +3,7 @@
  *
  * They are the only file surface a plugin service grant reaches. The generic `/api/v1/files/*`
  * routes never list `plugin_service` in their `allowedKinds`, so a service cannot write, touch, or
- * list files; it can only run this narrow reserve → upload → finalize pipeline — plus the delete
+ * list files; it can only run this narrow create-target → upload → finalize pipeline — plus the delete
  * route for the files it stored and the archive route for its own destination folder — and only
  * with a sealed processing-phase grant bound to one destination prefix.
  *
@@ -21,9 +21,7 @@ import type {
 	public_api_service_uploads_create_upload_target_Result,
 	public_api_service_uploads_delete_upload_target_Result,
 	public_api_service_uploads_finalize_upload_target_Result,
-	public_api_service_uploads_release_envelope_Result,
 	public_api_service_uploads_remint_upload_target_Result,
-	public_api_service_uploads_reserve_envelope_Result,
 } from "./public_api_service_uploads.ts";
 import { public_api_authorize_request } from "./public_api_http_auth.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
@@ -109,59 +107,6 @@ async function authorize_service_upload_request(ctx: ActionCtx, request: Request
 }
 
 // #endregion shared
-
-// #region reserve
-
-const reserve_body_validator = z
-	.object({
-		idempotencyKey: z.string().min(1).max(128),
-		reservedBytes: z.number().int().min(1),
-		expiresAt: z.number(),
-	})
-	.strict();
-
-export type public_api_service_uploads_http_reserve_Body = z.infer<typeof reserve_body_validator>;
-
-export async function public_api_service_uploads_http_reserve(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/service-uploads/reserve",
-) {
-	const auth = await authorize_service_upload_request(ctx, request, path);
-	if (auth._nay) {
-		return auth._nay;
-	}
-
-	const body = await server_request_json_parse_and_validate(request, reserve_body_validator);
-	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
-	}
-
-	const reserved: public_api_service_uploads_reserve_envelope_Result = await ctx.runMutation(
-		internal.public_api_service_uploads.reserve_envelope,
-		{
-			principal: auth._yay,
-			idempotencyKey: body._yay.idempotencyKey,
-			reservedBytes: body._yay.reservedBytes,
-			expiresAt: body._yay.expiresAt,
-		},
-	);
-	if (reserved._nay) {
-		return upload_failure(reserved._nay);
-	}
-
-	return {
-		status: 200,
-		body: {
-			reservationId: reserved._yay.reservationId,
-			remainingBytes: reserved._yay.remainingBytes,
-			expiresAt: reserved._yay.expiresAt,
-		},
-		headers: { "Cache-Control": "no-store" },
-	} as const;
-}
-
-// #endregion reserve
 
 // #region create target
 
@@ -309,51 +254,6 @@ export async function public_api_service_uploads_http_finalize(
 }
 
 // #endregion finalize
-
-// #region release
-
-const release_body_validator = z
-	.object({
-		idempotencyKey: z.string().min(1).max(128),
-	})
-	.strict();
-
-export type public_api_service_uploads_http_release_Body = z.infer<typeof release_body_validator>;
-
-export async function public_api_service_uploads_http_release(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/service-uploads/release",
-) {
-	const auth = await authorize_service_upload_request(ctx, request, path);
-	if (auth._nay) {
-		return auth._nay;
-	}
-
-	const body = await server_request_json_parse_and_validate(request, release_body_validator);
-	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
-	}
-
-	const released: public_api_service_uploads_release_envelope_Result = await ctx.runMutation(
-		internal.public_api_service_uploads.release_envelope,
-		{
-			principal: auth._yay,
-			idempotencyKey: body._yay.idempotencyKey,
-		},
-	);
-	if (released._nay) {
-		return upload_failure(released._nay);
-	}
-
-	return {
-		status: 200,
-		body: { releasedBytes: released._yay.releasedBytes },
-		headers: { "Cache-Control": "no-store" },
-	} as const;
-}
-
-// #endregion release
 
 // #region delete
 

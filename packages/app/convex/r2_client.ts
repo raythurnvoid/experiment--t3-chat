@@ -589,10 +589,10 @@ export const settle_object_deletion_job = internalMutation({
 		await ctx.runMutation(components.r2.lib.deleteMetadata, { bucket: R2_BUCKET_FILES, key: job.r2Key });
 		await ctx.db.delete("files_r2_object_deletion_jobs", job._id);
 
-		// Plugin service uploads charge the `plugin_service_storage_bytes` quota while their canonical
-		// object exists. This confirmed delete is the one moment the object is provably gone, so the
-		// charged bytes go back here, exactly once: the charge record leaves the committed state below,
-		// so a second settlement cannot find it again.
+		// A plugin service upload keeps a target doc next to its canonical object. This confirmed
+		// delete is the one moment the object is provably gone, so the doc is retired here. The
+		// charged quota bytes are not given back: `plugin_service_storage_bytes` only counts up, the
+		// same way the normal upload quota does.
 		const canonicalMatch = /^organizations\/[^/]+\/workspaces\/[^/]+\/assets\/([^/]+)$/.exec(job.r2Key);
 		const deletedAssetId = canonicalMatch ? ctx.db.normalizeId("files_r2_assets", canonicalMatch[1]) : null;
 		if (deletedAssetId) {
@@ -601,18 +601,6 @@ export const settle_object_deletion_job = internalMutation({
 				.withIndex("by_asset", (q) => q.eq("assetId", deletedAssetId))
 				.first();
 			if (serviceTarget && serviceTarget.state === "committed") {
-				const quota = await ctx.db
-					.query("quotas")
-					.withIndex("by_workspace_quotaName", (q) =>
-						q.eq("workspaceId", serviceTarget.workspaceId).eq("quotaName", "plugin_service_storage_bytes"),
-					)
-					.first();
-				if (quota) {
-					await ctx.db.patch("quotas", quota._id, {
-						usedCount: Math.max(0, quota.usedCount - (serviceTarget.actualBytes ?? serviceTarget.declaredBytes)),
-						updatedAt: Date.now(),
-					});
-				}
 				// The service's delete route replays by target key, so a delete it asked for keeps a
 				// released tombstone as the durable answer. Other deletion paths consume the doc.
 				if (serviceTarget.deleteRequestedAt !== undefined) {

@@ -18,7 +18,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- each organization gets `home` plus at most **5** extra workspaces (**6** total workspaces)
 	- each user can have at most **20** active API keys in one workspace
 	- each workspace gets a **50 GB** budget of declared upload bytes through the public API; the counter only grows (deleting files does not give bytes back)
-	- each workspace gets **10 GiB** of plugin service storage; this counter moves in both directions — releasing an upload envelope refunds its unspent bytes, and the confirmed physical deletion of a stored service upload refunds its actual bytes (see `../public-api/SKILL.md#service-upload-routes`)
+	- each workspace gets **10 GiB** of plugin service storage; this counter only grows, exactly like `public_api_upload_bytes` — deleting a service-uploaded file gives nothing back (see `../public-api/SKILL.md#service-upload-routes`)
 - Default entities do **not** consume quota usage:
 	- default organization `personal`
 	- default workspace `home`
@@ -34,7 +34,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- recomputes `usedCount` from live docs
 	- substitutes code `maxCount` defaults when a quota doc is missing
 - Missing required quota docs in write flows should fail intentionally via `should_never_happen(...)` so bootstrap bugs stay visible.
-- Exception: `public_api_upload_bytes` and `plugin_service_storage_bytes` have no bootstrap owner, so the first consumer seeds them with `quotas_db_ensure` — the first `/api/v1/files/upload-urls` mint inside `public_api.create_file_upload_targets`, and the first service upload reservation inside `public_api_service_uploads.reserve_envelope`. A missing doc means nothing was consumed yet, and the public `quotas.get` arm returns the doc or `null` instead of failing.
+- Exception: `public_api_upload_bytes` and `plugin_service_storage_bytes` have no bootstrap owner, so the first consumer seeds them with `quotas_db_ensure` — the first `/api/v1/files/upload-urls` mint inside `public_api.create_file_upload_targets`, and the first service upload target inside `public_api_service_uploads.create_upload_target`. A missing doc means nothing was consumed yet, and the public `quotas.get` arm returns the doc or `null` instead of failing.
 - Public quota queries may return `null` for stale identities or unauthorized quota scopes. Missing quota docs for authorized scopes fail intentionally.
 
 # Schema
@@ -96,9 +96,10 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 
 ## Plugin service upload storage
 
-- `public_api_service_uploads.reserve_envelope` ensures the workspace `"plugin_service_storage_bytes"` quota lazily, refuses the reservation when the envelope would cross `maxCount` (`storage_full` → 403), and charges the whole envelope in the same mutation that inserts the reservation doc.
-- This counter is NOT monotonic. Three flows move it down: releasing an envelope refunds `remainingBytes` plus deleted pending targets' declared bytes; the hourly expiry cron does the same for abandoned reservations; and the confirmed physical deletion of a committed upload's canonical R2 object (`settle_object_deletion_job` in `r2_client.ts`) refunds the file's actual bytes and ends its `plugin_service_storage_targets` charge record — consumed for app-side deletions, patched to a `released` tombstone when the service's `delete` route asked for it. The `delete` route itself never refunds: it only enqueues the deletion jobs, so the refund always lands at the physical settlement. One flow moves it up outside reserve: a settled upload whose real object exceeded the envelope charges the residual directly, so `usedCount` may exceed `maxCount` (precedent: the forced ownership handoff above).
-- Invariant to preserve: `usedCount` equals live reservations' held bytes (remaining + their pending targets' declared bytes) plus committed targets' actual bytes.
+- `public_api_service_uploads.create_upload_target` ensures the workspace `"plugin_service_storage_bytes"` quota lazily, refuses the target when its declared `size` would cross `maxCount` (`storage_full` → 403), and charges those bytes in the same mutation that inserts the target doc and its placeholder file.
+- This counter only grows, exactly like `public_api_upload_bytes`. Nothing refunds: not an upload the service abandoned, not a cancelled placeholder, not the confirmed physical deletion of a stored file's canonical R2 object. That settlement (`settle_object_deletion_job` in `r2_client.ts`) only retires the `plugin_service_storage_targets` doc — consumed for app-side deletions, patched to a `released` tombstone when the service's `delete` route asked for it.
+- One flow moves it up outside create-target: a settled upload whose real object exceeded the declared size charges the difference, so `usedCount` may exceed `maxCount` (precedent: the forced ownership handoff above). This is deliberate. A signed PUT does not bind the object's length, so the quota can only bill what was stored, never prevent it.
+- Invariant to preserve: `usedCount` equals the declared bytes of every target ever created, plus the excess of every object that turned out bigger than declared.
 
 ## Delete flows
 
@@ -124,7 +125,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 - Use `api.quotas.get({ quotaName: "extra_workspaces", organizationId })` for organization quotas.
 - Use `api.quotas.get({ quotaName: "active_api_credentials", membershipId })` for the current user's active API credential quota in that membership's workspace.
 - Use `api.quotas.get({ quotaName: "public_api_upload_bytes", membershipId })` for that membership workspace's declared upload-byte budget; it returns `null` until the first mint seeds the doc.
-- Use `api.quotas.get({ quotaName: "plugin_service_storage_bytes", membershipId })` for that membership workspace's plugin service storage; it returns `null` until the first reservation seeds the doc.
+- Use `api.quotas.get({ quotaName: "plugin_service_storage_bytes", membershipId })` for that membership workspace's plugin service storage; it returns `null` until the first upload target seeds the doc.
 - Returned objects are the persisted quota docs. Frontend callers derive remaining capacity from `usedCount` and `maxCount`, and use `packages/app/shared/quotas.ts` for quota-specific display copy.
 
 # Tests

@@ -194,7 +194,7 @@ export const get = query({
 			return null;
 		}
 
-		// Seeded lazily at the first public-API upload mint (or the first service upload reservation),
+		// Seeded lazily at the first public-API upload mint (or the first service upload target),
 		// so a missing doc means nothing was consumed yet, not quota drift.
 		if (args.quotaName === "public_api_upload_bytes" || args.quotaName === "plugin_service_storage_bytes") {
 			return await db_find_quota(ctx, {

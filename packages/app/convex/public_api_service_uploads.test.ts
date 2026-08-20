@@ -11,11 +11,9 @@ import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts"
 import type { plugins_Capability } from "../shared/plugins.ts";
 
 const SEAL_PROCESSING_PATH = "/api/internal/plugins/service-grants/seal-processing";
-const RESERVE_PATH = "/api/v1/files/service-uploads/reserve";
 const CREATE_TARGET_PATH = "/api/v1/files/service-uploads/create-target";
 const REMINT_PATH = "/api/v1/files/service-uploads/remint";
 const FINALIZE_PATH = "/api/v1/files/service-uploads/finalize";
-const RELEASE_PATH = "/api/v1/files/service-uploads/release";
 const DELETE_PATH = "/api/v1/files/service-uploads/delete";
 const ARCHIVE_PATH = "/api/v1/files/service-uploads/archive-destination";
 
@@ -175,14 +173,6 @@ async function call(t: ReturnType<typeof test_convex>, path: string, bearer: str
 	});
 }
 
-function reserve_body(args: { idempotencyKey?: string; reservedBytes?: number; expiresAt?: number } = {}) {
-	return {
-		idempotencyKey: args.idempotencyKey ?? "meeting-1",
-		reservedBytes: args.reservedBytes ?? 10 * MIB,
-		expiresAt: args.expiresAt ?? Date.now() + 24 * 60 * 60 * 1000,
-	};
-}
-
 function target_body(
 	args: { idempotencyKey?: string; targetKey?: string; path?: string; contentType?: string; size?: number } = {},
 ) {
@@ -204,10 +194,6 @@ async function read_quota(t: ReturnType<typeof test_convex>, fixture: Awaited<Re
 			)
 			.first();
 	});
-}
-
-async function read_reservations(t: ReturnType<typeof test_convex>) {
-	return await t.run(async (ctx) => await ctx.db.query("plugin_service_storage_reservations").collect());
 }
 
 async function read_targets(t: ReturnType<typeof test_convex>) {
@@ -247,18 +233,16 @@ describe("service upload authorization", () => {
 		const pageToken = await seed_page_token(t, fixture);
 
 		for (const [path, body] of [
-			[RESERVE_PATH, reserve_body()],
 			[CREATE_TARGET_PATH, target_body()],
 			[REMINT_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
 			[FINALIZE_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
-			[RELEASE_PATH, { idempotencyKey: "meeting-1" }],
 			[DELETE_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
 			[ARCHIVE_PATH, {}],
 		] as const) {
 			const response = await call(t, path, pageToken, body);
 			expect(response.status, path).toBe(403);
 		}
-		expect(await read_reservations(t)).toHaveLength(0);
+		expect(await read_targets(t)).toHaveLength(0);
 	});
 
 	test("refuses an interactive grant even when it somehow carries files:write and a prefix", async () => {
@@ -287,10 +271,10 @@ describe("service upload authorization", () => {
 			});
 		});
 
-		const response = await call(t, RESERVE_PATH, token, reserve_body());
+		const response = await call(t, CREATE_TARGET_PATH, token, target_body());
 		expect(response.status).toBe(403);
 		expect(await response.json()).toEqual({ message: "Permission denied" });
-		expect(await read_reservations(t)).toHaveLength(0);
+		expect(await read_targets(t)).toHaveLength(0);
 	});
 
 	test("refuses a processing grant once workspace.files.write is taken back", async () => {
@@ -303,9 +287,9 @@ describe("service upload authorization", () => {
 			});
 		});
 
-		const response = await call(t, RESERVE_PATH, sealed, reserve_body());
+		const response = await call(t, CREATE_TARGET_PATH, sealed, target_body());
 		expect(response.status).toBe(403);
-		expect(await read_reservations(t)).toHaveLength(0);
+		expect(await read_targets(t)).toHaveLength(0);
 	});
 
 	test("refuses a processing grant whose installation was disabled", async () => {
@@ -316,9 +300,9 @@ describe("service upload authorization", () => {
 			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" });
 		});
 
-		const response = await call(t, RESERVE_PATH, sealed, reserve_body());
+		const response = await call(t, CREATE_TARGET_PATH, sealed, target_body());
 		expect(response.status).toBe(401);
-		expect(await read_reservations(t)).toHaveLength(0);
+		expect(await read_targets(t)).toHaveLength(0);
 	});
 
 	test("refuses a processing grant after the actor loses the workspace", async () => {
@@ -329,9 +313,9 @@ describe("service upload authorization", () => {
 			await ctx.db.patch("organizations_workspaces_users", fixture.membershipId, { active: false });
 		});
 
-		const response = await call(t, RESERVE_PATH, sealed, reserve_body());
+		const response = await call(t, CREATE_TARGET_PATH, sealed, target_body());
 		expect(response.status).toBe(401);
-		expect(await read_reservations(t)).toHaveLength(0);
+		expect(await read_targets(t)).toHaveLength(0);
 	});
 
 	test("refuses an expired processing grant", async () => {
@@ -344,17 +328,15 @@ describe("service upload authorization", () => {
 			await ctx.db.patch("plugin_service_grants", processing._id, { expiresAt: Date.now() - 1000 });
 		});
 
-		const response = await call(t, RESERVE_PATH, sealed, reserve_body());
+		const response = await call(t, CREATE_TARGET_PATH, sealed, target_body());
 		expect(response.status).toBe(401);
-		expect(await read_reservations(t)).toHaveLength(0);
+		expect(await read_targets(t)).toHaveLength(0);
 	});
 
 	test("refuses a target path outside the sealed destination", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		const reserved = await call(t, RESERVE_PATH, sealed, reserve_body());
-		expect(reserved.status).toBe(200);
 
 		// Outside entirely, a sibling that only shares the prefix string, and the destination folder
 		// itself. Each one must refuse and create nothing.
@@ -368,63 +350,39 @@ describe("service upload authorization", () => {
 		expect(nodes).toHaveLength(0);
 	});
 
-	test("a grant from workspace A cannot touch workspace B's reservation", async () => {
+	test("a grant from workspace A cannot touch workspace B's upload target", async () => {
 		const t = test_convex();
 		const fixtureA = await seed_installation(t, { organizationName: "org-a", workspaceName: "ws-a" });
 		const fixtureB = await seed_installation(t, { organizationName: "org-b", workspaceName: "ws-b" });
 		const sealedA = await seal_token(t, fixtureA);
 		const sealedB = await seal_token(t, fixtureB);
 
-		const reservedB = await call(t, RESERVE_PATH, sealedB, reserve_body({ idempotencyKey: "meeting-b" }));
-		expect(reservedB.status).toBe(200);
+		const createdB = await call(t, CREATE_TARGET_PATH, sealedB, target_body({ idempotencyKey: "meeting-b" }));
+		expect(createdB.status).toBe(200);
 
-		// A's grant naming B's idempotency key finds nothing: reservations are keyed inside A's own
-		// installation, so B's meeting is not reachable, let alone spendable.
-		const crossTarget = await call(t, CREATE_TARGET_PATH, sealedA, target_body({ idempotencyKey: "meeting-b" }));
-		expect(crossTarget.status).toBe(404);
-		const crossRelease = await call(t, RELEASE_PATH, sealedA, { idempotencyKey: "meeting-b" });
-		expect(crossRelease.status).toBe(404);
+		// A's grant naming B's keys finds nothing: targets are keyed inside A's own installation, so
+		// B's file is not reachable, let alone reusable.
+		const crossRemint = await call(t, REMINT_PATH, sealedA, { idempotencyKey: "meeting-b", targetKey: "recording" });
+		expect(crossRemint.status).toBe(404);
+		const crossDelete = await call(t, DELETE_PATH, sealedA, { idempotencyKey: "meeting-b", targetKey: "recording" });
+		expect(crossDelete.status).toBe(404);
 
-		// Only B's workspace quota was charged.
+		// Only B's workspace quota was charged, and B still holds its one file.
 		const quotaA = await read_quota(t, fixtureA);
 		const quotaB = await read_quota(t, fixtureB);
 		expect(quotaA?.usedCount ?? 0).toBe(0);
-		expect(quotaB?.usedCount).toBe(10 * MIB);
+		expect(quotaB?.usedCount).toBe(4 * MIB);
+		expect(await read_targets(t)).toHaveLength(1);
 	});
 });
 
-describe("service upload reservations and quota", () => {
-	test("reserve charges the workspace quota once, and a replay answers from the live reservation", async () => {
+describe("service upload quota", () => {
+	test("refuses a target that would cross the workspace quota, and charges nothing", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-
-		const body = reserve_body();
-		const first = await call(t, RESERVE_PATH, sealed, body);
-		expect(first.status).toBe(200);
-		const firstBody = (await first.json()) as { reservationId: string; remainingBytes: number };
-		expect(firstBody.remainingBytes).toBe(10 * MIB);
-
-		const replay = await call(t, RESERVE_PATH, sealed, body);
-		expect(replay.status).toBe(200);
-		const replayBody = (await replay.json()) as { reservationId: string; remainingBytes: number };
-		expect(replayBody.reservationId).toBe(firstBody.reservationId);
-
-		expect(await read_reservations(t)).toHaveLength(1);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(10 * MIB);
-
-		// The same key with different fields is a different request, not a replay.
-		const conflicting = await call(t, RESERVE_PATH, sealed, { ...body, reservedBytes: 12 * MIB });
-		expect(conflicting.status).toBe(409);
-	});
-
-	test("refuses a reservation that would cross the workspace quota, and charges nothing", async () => {
-		const t = test_convex();
-		const fixture = await seed_installation(t);
-		const sealed = await seal_token(t, fixture);
-		const first = await call(t, RESERVE_PATH, sealed, reserve_body());
-		expect(first.status).toBe(200);
-		// Push the counter to one byte under the ceiling so any real envelope must refuse.
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		// Push the counter to one byte under the ceiling so any real target must refuse.
 		await t.run(async (ctx) => {
 			const quota = await ctx.db
 				.query("quotas")
@@ -437,89 +395,117 @@ describe("service upload reservations and quota", () => {
 
 		const refused = await call(
 			t,
-			RESERVE_PATH,
+			CREATE_TARGET_PATH,
 			sealed,
-			reserve_body({ idempotencyKey: "meeting-2", reservedBytes: MIB }),
+			target_body({
+				targetKey: "slides",
+				path: "/meetings/meeting-1/slides.pdf",
+				contentType: "application/pdf",
+				size: MIB,
+			}),
 		);
 		expect(refused.status).toBe(403);
-		expect(await read_reservations(t)).toHaveLength(1);
+		expect(await read_targets(t)).toHaveLength(1);
 		expect((await read_quota(t, fixture))?.usedCount).toBe((await read_quota(t, fixture))!.maxCount - 1);
 	});
 
-	test("release refunds the unspent envelope, cleans pending uploads, and answers a replay the same", async () => {
+	test("a stored object bigger than declared is charged the difference, even past the ceiling", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
-		const created = await call(t, CREATE_TARGET_PATH, sealed, target_body());
-		expect(created.status).toBe(200);
-		const target = (await read_targets(t))[0]!;
-
-		const released = await call(t, RELEASE_PATH, sealed, { idempotencyKey: "meeting-1" });
-		expect(released.status).toBe(200);
-		// 6 MiB the targets never claimed plus the 4 MiB pending upload that will never finish.
-		expect(await released.json()).toEqual({ releasedBytes: 10 * MIB });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
-
-		// The pending upload's placeholder file and asset doc are gone, and the exact keys the signed
-		// URL could still write to have deletion jobs.
-		const node = await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId));
-		expect(node).toBeNull();
-		const asset = await t.run(async (ctx) => await ctx.db.get("files_r2_assets", target.assetId));
-		expect(asset).toBeNull();
-		expect((await read_targets(t))[0]).toMatchObject({ state: "released", destinationNodeId: expect.any(String) });
-		const jobs = await t.run(async (ctx) => await ctx.db.query("files_r2_object_deletion_jobs").collect());
-		expect(jobs.length).toBeGreaterThanOrEqual(1);
-
-		const replay = await call(t, RELEASE_PATH, sealed, { idempotencyKey: "meeting-1" });
-		expect(replay.status).toBe(200);
-		expect(await replay.json()).toEqual({ releasedBytes: 10 * MIB });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
-	});
-
-	test("release keeps a pending upload while its placeholder is read-only", async () => {
-		const t = test_convex();
-		const fixture = await seed_installation(t);
-		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
-		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: target.nodeId });
-		});
 
-		const refused = await call(t, RELEASE_PATH, sealed, { idempotencyKey: "meeting-1" });
-		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
-		expect((await read_reservations(t))[0]).toMatchObject({ state: "live", remainingBytes: 6 * MIB });
-		expect((await read_targets(t))[0]).toMatchObject({ state: "pending" });
-		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
-		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).not.toBeNull();
-		expect((await read_quota(t, fixture))?.usedCount).toBe(10 * MIB);
-
+		// A signed PUT does not bind the object's length, so the service can always store more than
+		// it declared. Sit one byte under the ceiling to prove the settle charges the extra bytes
+		// instead of refusing them: the quota is a budget, not a guard.
+		const ceiling = (await read_quota(t, fixture))!.maxCount;
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: undefined });
+			const quota = await ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) =>
+					q.eq("workspaceId", fixture.workspaceId).eq("quotaName", "plugin_service_storage_bytes"),
+				)
+				.first();
+			await ctx.db.patch("quotas", quota!._id, { usedCount: ceiling - 1 });
 		});
-		expect((await call(t, RELEASE_PATH, sealed, { idempotencyKey: "meeting-1" })).status).toBe(200);
+		await simulate_finalizer(t, fixture, target, { size: 6 * MIB });
+
+		const settled = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toMatchObject({ state: "committed", actualBytes: 6 * MIB });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(ceiling - 1 + 2 * MIB);
 	});
+});
 
-	test("the expiry cron releases a live reservation whose deadline passed", async () => {
+describe("service upload drain", () => {
+	test("uninstalling the plugin leaves every service-uploaded file alone", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
+
+		// One committed file, one placeholder whose upload never finished, and one placeholder a
+		// member locked. Uninstalling must leave all three exactly where they are.
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		for (const targetKey of ["slides", "notes"]) {
+			const created = await call(
+				t,
+				CREATE_TARGET_PATH,
+				sealed,
+				target_body({
+					targetKey,
+					path: `/meetings/meeting-1/${targetKey}.pdf`,
+					contentType: "application/pdf",
+				}),
+			);
+			expect(created.status, targetKey).toBe(200);
+		}
+		const targets = await read_targets(t);
+		expect(targets).toHaveLength(3);
+		const committed = targets.find((target) => target.targetKey === "recording")!;
+		const locked = targets.find((target) => target.targetKey === "notes")!;
+		await simulate_finalizer(t, fixture, committed, { size: 4 * MIB });
+		expect((await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
+			200,
+		);
 		await t.run(async (ctx) => {
-			const reservation = (await ctx.db.query("plugin_service_storage_reservations").collect())[0]!;
-			await ctx.db.patch("plugin_service_storage_reservations", reservation._id, { expiresAt: Date.now() - 1000 });
+			await ctx.db.patch("files_nodes", locked.nodeId, { readOnlyScopeNodeId: locked.nodeId });
 		});
+		// Canonicalizing the committed upload already queued its staging key for deletion. Count the
+		// jobs now so the check below measures only what the drain adds.
+		const jobsBefore = await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
 
-		await t.mutation(internal.public_api_service_uploads.cleanup_expired_service_upload_reservations, {
-			_test_disableReschedule: true,
-		});
+		let passes = 0;
+		for (;;) {
+			const drained = await t.mutation(internal.plugins_data.drain_uninstalled_installation, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				installationId: fixture.installationId,
+				_test_disableReschedule: true,
+			});
+			if (drained.done) {
+				break;
+			}
 
-		const reservations = await read_reservations(t);
-		expect(reservations[0]!.state).toBe("released");
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+			passes += 1;
+			if (passes > 20) {
+				throw new Error("The drain never finished");
+			}
+		}
+
+		// Uninstalling a plugin is not a workspace deletion: the files belong to the workspace, so
+		// every node, target and stored object survives, locked or not.
+		for (const target of targets) {
+			expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId)), target.targetKey).not.toBeNull();
+		}
+		expect(await read_targets(t)).toHaveLength(3);
+		expect(await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toHaveLength(
+			jobsBefore.length,
+		);
+
+		// Positive control: the drain really ran. It deletes the installation's service grants, so an
+		// empty grant table is what proves the assertions above are not just a no-op that never fired.
+		expect(await t.run(async (ctx) => ctx.db.query("plugin_service_grants").collect())).toHaveLength(0);
 	});
 });
 
@@ -528,7 +514,6 @@ describe("service upload targets", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 
 		const body = target_body();
 		const first = await call(t, CREATE_TARGET_PATH, sealed, body);
@@ -554,8 +539,7 @@ describe("service upload targets", () => {
 		const asset = await t.run(async (ctx) => await ctx.db.get("files_r2_assets", targets[0]!.assetId));
 		expect(asset?.processingWorkId).toBeNull();
 
-		const reservations = await read_reservations(t);
-		expect(reservations[0]!.remainingBytes).toBe(6 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 
 		const replay = await call(t, CREATE_TARGET_PATH, sealed, body);
 		expect(replay.status).toBe(200);
@@ -563,7 +547,7 @@ describe("service upload targets", () => {
 		expect(replayBody.state).toBe("pending");
 		expect(replayBody.nodeId).toBe(firstBody.nodeId);
 		expect(await read_targets(t)).toHaveLength(1);
-		expect((await read_reservations(t))[0]!.remainingBytes).toBe(6 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 
 		// The same target key describing a different file is a conflict, not a second file.
 		const conflicting = await call(t, CREATE_TARGET_PATH, sealed, { ...body, size: 5 * MIB });
@@ -574,7 +558,6 @@ describe("service upload targets", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 
 		const target = (await read_targets(t))[0]!;
@@ -604,7 +587,6 @@ describe("service upload targets", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 
 		const created = await call(
 			t,
@@ -648,22 +630,10 @@ describe("service upload targets", () => {
 		expect(await finalized.json()).toMatchObject({ state: "committed", actualBytes: 1024 });
 	});
 
-	test("refuses a target larger than the reservation's remaining bytes", async () => {
-		const t = test_convex();
-		const fixture = await seed_installation(t);
-		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body({ reservedBytes: 3 * MIB }))).status).toBe(200);
-
-		const response = await call(t, CREATE_TARGET_PATH, sealed, target_body({ size: 4 * MIB }));
-		expect(response.status).toBe(403);
-		expect(await read_targets(t)).toHaveLength(0);
-	});
-
 	test("remint reissues a URL for the same staging key without new nodes, assets, or charges", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const targetBefore = (await read_targets(t))[0]!;
 		const assetBefore = await t.run(async (ctx) => await ctx.db.get("files_r2_assets", targetBefore.assetId));
@@ -679,7 +649,7 @@ describe("service upload targets", () => {
 		expect(await read_targets(t)).toHaveLength(1);
 		const assets = await t.run(async (ctx) => await ctx.db.query("files_r2_assets").collect());
 		expect(assets).toHaveLength(1);
-		expect((await read_reservations(t))[0]!.remainingBytes).toBe(6 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 		// The URL window moved forward so the next PUT fits inside it.
 		expect(assets[0]!.uploadUrlExpiresAt).toBeGreaterThanOrEqual(assetBefore!.uploadUrlExpiresAt!);
 	});
@@ -688,7 +658,6 @@ describe("service upload targets", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 
 		const early = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
@@ -703,43 +672,36 @@ describe("service upload targets", () => {
 		expect(settled.status).toBe(200);
 		expect(await settled.json()).toMatchObject({ state: "committed", actualBytes: 3 * MIB });
 
-		// The 1 MiB the file never used went back into the envelope.
-		expect((await read_reservations(t))[0]!.remainingBytes).toBe(7 * MIB);
+		// The 1 MiB the file never used stays charged. The counter only grows, so an over-declaration
+		// is the service's own loss, exactly like the normal upload path.
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 
 		// Settling is idempotent: a replay answers the same and moves no bytes.
 		const replay = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(replay.status).toBe(200);
 		expect(await replay.json()).toMatchObject({ state: "committed", actualBytes: 3 * MIB });
-		expect((await read_reservations(t))[0]!.remainingBytes).toBe(7 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 
 		// Remint after canonicalization also answers committed instead of minting a useless URL.
 		const remint = await call(t, REMINT_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(remint.status).toBe(200);
 		expect(await remint.json()).toMatchObject({ state: "committed", actualBytes: 3 * MIB });
-
-		// After release, only the stored file stays charged.
-		const released = await call(t, RELEASE_PATH, sealed, { idempotencyKey: "meeting-1" });
-		expect(released.status).toBe(200);
-		expect(await released.json()).toEqual({ releasedBytes: 7 * MIB });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 	});
 
-	test("only deleting the charged canonical object gives the stored bytes back", async () => {
+	test("deleting the stored object retires the target and keeps its bytes charged", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const canonicalKey = await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
 		expect((await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
 			200,
 		);
-		expect((await call(t, RELEASE_PATH, sealed, { idempotencyKey: "meeting-1" })).status).toBe(200);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 
-		// R2 confirms the canonical object is physically gone; that settlement is what releases the
-		// stored bytes, exactly once.
+		// R2 confirms the canonical object is physically gone. The target doc is consumed, but the
+		// bytes it charged stay charged.
 		const jobId = await t.run(async (ctx) => {
 			return await ctx.db.insert("files_r2_object_deletion_jobs", {
 				organizationId: fixture.organizationId,
@@ -757,16 +719,16 @@ describe("service upload targets", () => {
 			deletedAt: Date.now(),
 		});
 
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
-		// The charged target doc is consumed by the settlement, so it cannot refund twice.
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		// Nothing asked for this delete, so the settlement consumes the doc instead of keeping a
+		// tombstone.
 		expect(await read_targets(t)).toHaveLength(0);
 	});
 
-	test("an upload that expired before finishing is released instead of staying charged", async () => {
+	test("an upload whose asset was cleaned up is released and stays charged", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		// The unfinalized-asset cleanup gave up on this upload and deleted its asset doc.
@@ -777,8 +739,9 @@ describe("service upload targets", () => {
 		const finalized = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(finalized.status).toBe(200);
 		expect(((await finalized.json()) as { state: string }).state).toBe("released");
-		// The declared bytes went back into the envelope for a retried target under a new key.
-		expect((await read_reservations(t))[0]!.remainingBytes).toBe(10 * MIB);
+		// The upload never produced a file, but its declared bytes stay charged: the counter only
+		// grows, so a service that abandons uploads pays for them.
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 
 		const reminted = await call(t, REMINT_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(reminted.status).toBe(409);
@@ -786,19 +749,17 @@ describe("service upload targets", () => {
 });
 
 describe("service upload delete", () => {
-	test("deletes a committed file under a newly sealed grant and refunds only at physical settlement", async () => {
+	test("deletes a committed file under a newly sealed grant and keeps its bytes charged", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const canonicalKey = await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
 		expect((await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
 			200,
 		);
-		expect((await call(t, RELEASE_PATH, sealed, { idempotencyKey: "meeting-1" })).status).toBe(200);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 
 		// Days later the meeting is deleted under a brand new grant sealed to the same destination.
 		const laterSealed = await seal_token(t, fixture);
@@ -807,8 +768,7 @@ describe("service upload delete", () => {
 		expect(first.status).toBe(200);
 		expect(await first.json()).toEqual({ state: "deleting", paths: ["/meetings/meeting-1/recording.mp4"] });
 
-		// The file left the workspace and the canonical key has a deletion job, but the stored bytes
-		// stay charged until R2 confirms the object is physically gone.
+		// The file left the workspace and the canonical key has a deletion job.
 		expect(await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId))).toBeNull();
 		expect(await t.run(async (ctx) => await ctx.db.get("files_r2_assets", target.assetId))).toBeNull();
 		const job = await t.run(
@@ -819,7 +779,7 @@ describe("service upload delete", () => {
 					.first(),
 		);
 		expect(job).toMatchObject({ generation: 1 });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 		const marked = (await read_targets(t))[0]!;
 		expect(marked.state).toBe("committed");
 		expect(marked.deleteRequestedAt).toBeTypeOf("number");
@@ -837,14 +797,14 @@ describe("service upload delete", () => {
 		);
 		expect(jobAfterReplay).toMatchObject({ generation: 1 });
 
-		// R2 confirms the delete: the stored bytes come back exactly once and the target becomes a
-		// tombstone that keeps answering replays as deleted.
+		// R2 confirms the delete: the bytes stay charged and the target becomes a tombstone that keeps
+		// answering replays as deleted.
 		await t.mutation(internal.r2_client.settle_object_deletion_job, {
 			jobId: job!._id,
 			generation: job!.generation,
 			deletedAt: Date.now(),
 		});
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 		expect((await read_targets(t))[0]!.state).toBe("released");
 
 		const afterSettle = await call(t, DELETE_PATH, laterSealed, body);
@@ -852,35 +812,66 @@ describe("service upload delete", () => {
 		expect(await afterSettle.json()).toEqual({ state: "deleted", paths: ["/meetings/meeting-1/recording.mp4"] });
 	});
 
-	test("refuses to delete a target that is still uploading", async () => {
+	test("cancels a target that is still uploading and deletes its empty placeholder", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
 
 		const response = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-1", targetKey: "recording" });
-		expect(response.status).toBe(409);
+		expect(response.status).toBe(200);
+		// An unfinished upload has no confirmed object to wait for, so the cancel is done right away.
+		expect(await response.json()).toEqual({ state: "deleted", paths: ["/meetings/meeting-1/recording.mp4"] });
 
-		// The unfinished upload and its placeholder file are untouched; release owns pending targets.
+		expect(await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId))).toBeNull();
+		expect(await t.run(async (ctx) => await ctx.db.get("files_r2_assets", target.assetId))).toBeNull();
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released" });
+		// The declared bytes stay charged: cancelling gives nothing back.
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
+		// The staging key the signed URL could still write to has a deletion job.
+		expect(
+			(await t.run(async (ctx) => await ctx.db.query("files_r2_object_deletion_jobs").collect())).length,
+		).toBeGreaterThanOrEqual(1);
+	});
+
+	test("a read-only placeholder refuses the cancel and keeps the pending target", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
-		expect(target.state).toBe("pending");
-		expect(target.deleteRequestedAt).toBeUndefined();
-		expect(await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: target.nodeId });
+		});
+
+		const refused = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-1", targetKey: "recording" });
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect((await read_targets(t))[0]).toMatchObject({ state: "pending" });
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).not.toBeNull();
+
+		// Positive control: unlock the placeholder and the same call goes through, so the refusal came
+		// from the lock and not from something else about a pending target.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: undefined });
+		});
+		expect(
+			(await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-1", targetKey: "recording" })).status,
+		).toBe(200);
 	});
 
 	test("a read-only file refuses the hard delete and keeps the node", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
 		expect((await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
 			200,
 		);
-		expect((await call(t, RELEASE_PATH, sealed, { idempotencyKey: "meeting-1" })).status).toBe(200);
 
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: target.nodeId });
@@ -901,7 +892,6 @@ describe("service upload delete", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
@@ -935,15 +925,13 @@ describe("service upload archive", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const canonicalKey = await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
 		expect((await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
 			200,
 		);
-		expect((await call(t, RELEASE_PATH, sealed, { idempotencyKey: "meeting-1" })).status).toBe(200);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 
 		// A member put their own notes in the meeting folder. The archive sweeps the subtree, so their
 		// file and its folder travel with the meeting folder instead of being left behind.
@@ -982,7 +970,7 @@ describe("service upload archive", () => {
 		expect(parent?.archiveOperationId).toBeUndefined();
 
 		// The files still exist, so the books do not move and no object is deleted.
-		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(4 * MIB);
 		expect((await read_targets(t))[0]!.state).toBe("committed");
 		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
 		expect(
@@ -1015,13 +1003,11 @@ describe("service upload archive", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const first = await seal_token(t, fixture, "/meetings/meeting-1");
-		expect((await call(t, RESERVE_PATH, first, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, first, target_body())).status).toBe(200);
 
 		// A second meeting, stored the same way. Both folders exist, so the refusal below cannot come
 		// from an empty path — only the seal decides which one this grant reaches.
 		const second = await seal_token(t, fixture, "/meetings/meeting-2");
-		expect((await call(t, RESERVE_PATH, second, reserve_body({ idempotencyKey: "meeting-2" }))).status).toBe(200);
 		expect(
 			(
 				await call(
@@ -1050,7 +1036,6 @@ describe("service upload archive", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		if (!target.destinationNodeId) {
@@ -1063,7 +1048,7 @@ describe("service upload archive", () => {
 				organizationId: target.organizationId,
 				workspaceId: target.workspaceId,
 				installationId: target.installationId,
-				reservationId: target.reservationId,
+				idempotencyKey: target.idempotencyKey,
 				targetKey: "legacy-target",
 				requestFingerprint: "legacy-target",
 				path: "/meetings/meeting-1/aaa-old.mp4",
@@ -1096,18 +1081,19 @@ describe("service upload archive", () => {
 		expect(destination).toMatchObject({ path: "/meetings/renamed-meeting", archiveOperationId: expect.any(String) });
 	});
 
-	test("keeps the destination identity after releasing a pending upload", async () => {
+	test("keeps the destination identity after cancelling a pending upload", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		if (!target.destinationNodeId) {
 			throw new Error("Expected the upload target to keep its destination folder id");
 		}
 
-		expect((await call(t, RELEASE_PATH, sealed, { idempotencyKey: "meeting-1" })).status).toBe(200);
+		expect(
+			(await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-1", targetKey: "recording" })).status,
+		).toBe(200);
 		expect((await read_targets(t))[0]).toMatchObject({
 			state: "released",
 			destinationNodeId: target.destinationNodeId,
@@ -1121,7 +1107,7 @@ describe("service upload archive", () => {
 			await asUser.mutation(api.files_nodes.rename_node, {
 				membershipId: fixture.membershipId,
 				nodeId: target.destinationNodeId,
-				path: "renamed-after-release",
+				path: "renamed-after-cancel",
 			}),
 		).toEqual({ _yay: null });
 
@@ -1129,7 +1115,7 @@ describe("service upload archive", () => {
 		expect(response.status).toBe(200);
 		expect(await response.json()).toEqual({ archivedNodes: 1 });
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.destinationNodeId!))).toMatchObject({
-			path: "/meetings/renamed-after-release",
+			path: "/meetings/renamed-after-cancel",
 			archiveOperationId: expect.any(String),
 		});
 	});
@@ -1138,7 +1124,6 @@ describe("service upload archive", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		if (!target.destinationNodeId) {
@@ -1177,7 +1162,6 @@ describe("service upload archive", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const owned = await seal_token(t, fixture, "/meetings/meeting-1");
-		expect((await call(t, RESERVE_PATH, owned, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, owned, target_body())).status).toBe(200);
 
 		// The seal names a folder nobody made. It must not fall back to anything that does exist.
@@ -1194,7 +1178,6 @@ describe("service upload archive", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const owned = await seal_token(t, fixture, "/meetings/meeting-1");
-		expect((await call(t, RESERVE_PATH, owned, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, owned, target_body())).status).toBe(200);
 
 		// The organization owner passes every restricted scope, so this refusal only means something
@@ -1241,7 +1224,6 @@ describe("service upload archive", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
-		expect((await call(t, RESERVE_PATH, sealed, reserve_body())).status).toBe(200);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await t.run(async (ctx) => {

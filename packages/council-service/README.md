@@ -47,19 +47,21 @@ Three origins, one Worker:
 Page API (`POST`, CORS locked to `COUNCIL_PLUGIN_ORIGIN`, bearer `plu_` page token exchanged
 through Convex):
 
-- `/api/meetings/create` — reserve quota, create the provider meeting, return the join code once.
+- `/api/meetings/create` — reserve the projection's document-store envelope, create the provider
+  meeting, return the join code once. This books plugin-data bytes only; file storage is not booked
+  anywhere.
 - `/api/meetings/list`, `/api/meetings/get` — D1-backed views with artifacts.
-- `/api/meetings/open` — seal the processing grant, reserve the full 532 MiB recording envelope
-  (a full workspace refuses the open: no capacity, no meeting), then set the deadline and open
-  admission.
+- `/api/meetings/open` — seal the processing grant to the meeting folder, then set the deadline and
+  open admission. Nothing is booked here: the workspace is charged per file, when the pipeline
+  creates it.
 - `/api/meetings/room-ticket` — mint a one-time host ticket for the room origin. The ticket stores
   the exact interactive grant that authorized it; another page exchange must not change which
   grant this room later verifies.
 - `/api/meetings/close` — close admission, end the provider session, and STOP the recording
   explicitly — the provider does not stop a track recording when the session ends, and its track
   files publish only after the stop. With a recording, hand the meeting to processing (the grant
-  and reservation already exist from open; the pipeline's discover poll repeats the stop until the
-  recording leaves `RECORDING`, so a refused stop only costs poll attempts). Without a recording,
+  already exists from open; the pipeline's discover poll repeats the stop until the recording
+  leaves `RECORDING`, so a refused stop only costs poll attempts). Without a recording,
   close settles the meeting straight to `ready`: nothing else would ever transition it, and the
   plugin page polls `closed` as transitional.
 - `/api/meetings/delete` — seal a FRESH processing grant from the requesting member's live grant
@@ -156,7 +158,7 @@ vp env exec pnpx wrangler d1 execute bonobo-council --remote --config packages/c
 | Resource | Name | Note |
 | --- | --- | --- |
 | Worker | `bonobo-council-service` | Deployed at `https://bonobo-council-service.ray-thurne-void.workers.dev` |
-| D1 database | `bonobo-council` | `b32e1b59-11ad-4086-9c92-72480e820e16`, region WEUR, migrations `0001` through `0004` applied to remote. Do not re-apply `0004`. |
+| D1 database | `bonobo-council` | `b32e1b59-11ad-4086-9c92-72480e820e16`, region WEUR, migrations `0001` through `0005` applied to remote. Do not re-apply `0004` or `0005`. |
 | Queue | `bonobo-council-events` | 8-day message retention; consumer on this Worker, `max_batch_size` 1, `max_retries` 5 |
 | Dead-letter queue | `bonobo-council-events-dlq` | 8-day message retention; consumed by this Worker to mark outbox rows `dead` |
 | Workflow | `bonobo-council-workflow` | Binding `COUNCIL_WORKFLOW`, class `CouncilWorkflow`; created on first deploy |
@@ -246,44 +248,46 @@ provider URL — hashes and HMACs only — and every Convex HTTP call lives in o
 - `/api/internal/plugins/service-grants/seal-processing` — trades the live interactive grant for a
   processing grant sealed to `/meetings/<meetingId>` (canonical lowercase prefix), carrying
   `files:write`, expiring six FIXED days after the seal. Renew rotates the token, never the expiry.
-- `/api/v1/files/service-uploads/reserve|create-target|remint|finalize|release|archive-destination`
-  — bearer is the processing `psg_` grant alone. Strict JSON bodies; a replayed `idempotencyKey` answers only
-  for an identical body, so the exact reserve body lives in `meetings.reserve_body` and each
-  create-target body in `meeting_artifacts.upload_body`, and replays re-send the stored bytes.
+- `/api/v1/files/service-uploads/create-target|remint|finalize|archive-destination` — bearer is the
+  processing `psg_` grant alone. Strict JSON bodies; a replayed `idempotencyKey` answers only for an
+  identical body, so each create-target body lives in `meeting_artifacts.upload_body` and replays
+  re-send the stored bytes. The upload key itself is derived (`council-uploads-<meetingId>`), so a
+  crash cannot lose it.
 
 The lifecycle this implies (plan-3 E8):
 
-1. **Open** seals the grant and reserves the full 532 MiB envelope (`expiresAt` = open + 7 days).
-   403 `storage_full` refuses the open — no capacity, no meeting.
+1. **Open** seals the grant to `/meetings/<meetingId>` and opens admission. No storage is claimed.
 2. **Processing** streams each artifact through create-target → signed PUT (exactly the returned
    headers) → finalize, polling finalize with bounded backoff until the storage event settles as
-   `committed`. Reaching `ready` or `failed` releases the envelope; committed files survive. The
-   host refuses a released idempotency key forever, so every run starts with an
-   `ensure-reservation` step: a normal run replays the open's reservation idempotently, and an
-   operator redrive of a `failed` meeting (the cron and `council_request_processing_redrive` bump
-   `processing_generation` and insert a fresh outbox row; moving `failed -> processing` on the same
-   generation dispatches a row that never runs) reserves a fresh envelope under a new generation-scoped key, clears the pending artifacts'
-   stored create-target bodies, and re-uploads only the files that never committed. The redrive
-   needs the sealed processing grant to still be alive (six days), which stays inside the
-   provider's seven-day recording retention.
-3. **Delete** (page-initiated) seals a fresh grant, releases any live reservation, archives the
-   meeting folder, then runs the D1/projection/tombstone arm. The release goes first because it
-   deletes the placeholder files of uploads that never finished, so the archive only ever covers
-   real stored files. The archive takes no path — the seal names the folder — and it removes the
-   folder and everything inside it from the file tree in one archive operation a member can
-   restore. Deleting a file in this product means archiving it, and a stored transcript is a real
-   file, so the meeting delete archives the files instead of deleting them; the stored bytes stay charged,
-   because the files still exist. It runs even when the meeting stored nothing, so a failed
-   meeting does not leave its empty folder behind. A member lock or a dead grant fails the delete
-   immediately (`delete_failed`, no Workflow step retries): those refusals will not clear themselves.
-   A network error still retries. The delete works again once they clear the lock.
+   `committed`. Every call carries the same derived key, `council-uploads-<meetingId>`, and
+   `targetKey` names one file inside that run. Create-target charges the declared size to the
+   workspace's plugin service storage quota and creates the file straight away; a `403`
+   `storage_full` fails the run. Reaching `ready` or `failed` releases nothing — the counter only
+   grows. An operator redrive of a `failed` meeting (the cron and
+   `council_request_processing_redrive` bump `processing_generation` and insert a fresh outbox row;
+   moving `failed -> processing` on the same generation dispatches a row that never runs) keeps the
+   same upload key on purpose: a file that never finished uploading is re-used instead of charged
+   again, and files that already committed are skipped by their D1 status. The redrive needs the
+   sealed processing grant to still be alive (six days), which stays inside the provider's
+   seven-day recording retention.
+3. **Delete** (page-initiated) seals a fresh grant, archives the meeting folder, then runs the
+   D1/projection/tombstone arm. The archive takes no path — the seal names the folder — and it
+   removes the folder and everything inside it from the file tree in one archive operation a member
+   can restore. Deleting a file in this product means archiving it, and a stored transcript is a
+   real file, so the meeting delete archives the files instead of deleting them; the stored bytes
+   stay charged, because the files still exist. An upload that never finished left an empty file in
+   the same folder, and the archive takes that away too. It runs even when the meeting stored
+   nothing, so a failed meeting does not leave its empty folder behind. A member lock or a dead
+   grant fails the delete immediately (`delete_failed`, no Workflow step retries): those refusals
+   will not clear themselves. A network error still retries. The delete works again once they clear
+   the lock.
 
 The host treats these uploads like member uploads: an editable-text name (`transcript.md`,
 `provider-transcript.json`) converts into a normal editable document, so members open and edit the
 transcript in the app's editors like any app-created file. Audio tracks stay stored blobs, and no
 service upload ever starts plugin upload events.
 
-One real cap to know: a reservation allows at most **16 targets**, and two are spent on the
+One real cap to know: an upload run allows at most **16 targets**, and two are spent on the
 transcript and the provider diagnostic, so at most 14 raw audio tracks are stored. Every track is
 still transcribed — the attributed transcript stays complete — but a large meeting's extra raw
 audio is not stored, and the pipeline logs when that happens.

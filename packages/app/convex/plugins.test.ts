@@ -1363,29 +1363,14 @@ describe("plugins Phase 0", () => {
 		}
 		await t.run((ctx) => ctx.db.patch("files_r2_assets", upload._yay.assetId, { r2Key: "uploads/service.png" }));
 
-		// A plugin service stored this file: the reservation/target pair is what marks the asset.
+		// A plugin service stored this file: the target row is what marks the asset.
 		const targetId = await t.run(async (ctx) => {
 			const now = Date.now();
-			const reservationId = await ctx.db.insert("plugin_service_storage_reservations", {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				installationId: installed._yay.installationId,
-				pluginName: "media",
-				ownerPrincipalKey: "principal-test",
-				idempotencyKey: "meeting-1",
-				requestFingerprint: "{}",
-				reservedBytes: 1024,
-				remainingBytes: 0,
-				state: "live",
-				expiresAt: now + 60_000,
-				retryHorizonExpiresAt: now + 60_000,
-				updatedAt: now,
-			});
 			return await ctx.db.insert("plugin_service_storage_targets", {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				installationId: installed._yay.installationId,
-				reservationId,
+				idempotencyKey: "meeting-1",
 				targetKey: "artifact",
 				requestFingerprint: "{}",
 				path: "/meetings/meeting-1/service-artifact.png",
