@@ -560,6 +560,84 @@ describe("council_run_processing", () => {
 		expect(mock.calls.some((call) => call.url.includes("/service-uploads/release"))).toBe(false);
 	});
 
+	test("a plan refusal fails the run at once instead of spending the step's retries", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		let createCalls = 0;
+		const mock = install_fetch(
+			processing_fetch_overrides({
+				"/service-uploads/create-target": () => {
+					createCalls += 1;
+					return Response.json(
+						{ message: "This workspace's plan does not include plugin service file storage" },
+						{ status: 403 },
+					);
+				},
+			}),
+		);
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		await expect(council_run_processing(env, retrying_step(), PROCESS_PARAMS)).rejects.toBeInstanceOf(
+			NonRetryableError,
+		);
+
+		// The plan cannot change while the step retries, so asking twice only makes the member wait.
+		expect(createCalls).toBe(1);
+		const meeting = await env.COUNCIL_DB.prepare(
+			"SELECT status, failure_reason FROM meetings WHERE id = 'meeting-1'",
+		).first<{ status: string; failure_reason: string }>();
+		expect(meeting?.status).toBe("failed");
+		// The member reads this on the page and has to learn that the plan is what blocks them.
+		expect(meeting?.failure_reason).toContain("This workspace's plan does not include plugin service file storage");
+	});
+
+	test("a full workspace fails the run at once too", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		let createCalls = 0;
+		const mock = install_fetch(
+			processing_fetch_overrides({
+				"/service-uploads/create-target": () => {
+					createCalls += 1;
+					return Response.json({ message: "This workspace has used its plugin service storage" }, { status: 403 });
+				},
+			}),
+		);
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		await expect(council_run_processing(env, retrying_step(), PROCESS_PARAMS)).rejects.toBeInstanceOf(
+			NonRetryableError,
+		);
+
+		// The storage counter only counts up, so a retry cannot find room that the first call missed.
+		expect(createCalls).toBe(1);
+	});
+
+	test("a create-target server error still retries", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		let createCalls = 0;
+		const mock = install_fetch(
+			processing_fetch_overrides({
+				"/service-uploads/create-target": () => {
+					createCalls += 1;
+					return Response.json({ message: "Server Error" }, { status: 500 });
+				},
+			}),
+		);
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		// The control for the two tests above: a refusal that CAN clear must keep its retries, or the
+		// fail-fast branch would be turning every upload hiccup into a failed meeting.
+		await expect(council_run_processing(env, retrying_step(2), PROCESS_PARAMS)).rejects.not.toBeInstanceOf(
+			NonRetryableError,
+		);
+		expect(createCalls).toBeGreaterThan(1);
+	});
+
 	test("a stale generation is a no-op", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch();

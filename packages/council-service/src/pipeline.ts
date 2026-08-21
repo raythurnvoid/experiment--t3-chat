@@ -632,7 +632,16 @@ async function upload_artifact(
 
 	const target = await council_convex_uploads_create_target(env, args.grantToken, createBody);
 	if (target._nay) {
-		throw new Error(`Upload target refused: ${target._nay.message}`);
+		const message = `Upload target refused: ${target._nay.message}`;
+		// Neither of these two clears itself. The plan does not change while the run is going, and the
+		// storage counter only counts up, because deleting a stored file gives no bytes back. Retrying
+		// asks the same question and gets the same answer, so it only delays the reason the member
+		// reads on the page. The hourly redrive starts a new generation once the plan is raised or the
+		// ceiling is lifted. Network errors stay retryable because they are a plain Error.
+		if (target._nay.name === "plan_required" || target._nay.name === "storage_full") {
+			throw new NonRetryableError(message);
+		}
+		throw new Error(message);
 	}
 	if (target._yay.state === "released") {
 		throw new Error("The upload target was released before this artifact committed");

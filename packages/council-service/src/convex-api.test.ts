@@ -144,6 +144,41 @@ describe("council_convex_uploads_create_target", () => {
 		expect(refused._nay?.name).toBe("storage_full");
 	});
 
+	test("a plan refusal and an ordinary 403 do not read as the same answer", async () => {
+		const { env } = make_test_env();
+
+		// The host closes this door to `Free` entirely. It answers 403 like a permission refusal, so
+		// only the message tells them apart, and the caller has to tell them apart: a plan refusal
+		// cannot clear while the Workflow retries, and a permission refusal might.
+		const planMock = install_fetch({
+			"/service-uploads/create-target": () =>
+				Response.json(
+					{ message: "This workspace's plan does not include plugin service file storage" },
+					{ status: 403 },
+				),
+		});
+		restoreFetch = planMock.restore;
+		const body = {
+			idempotencyKey: "council-uploads-meeting-1",
+			targetKey: "transcript_markdown:transcript.md",
+			path: "/meetings/meeting-1/transcript.md",
+			contentType: "text/markdown",
+			size: 10,
+		};
+		const planRefused = await council_convex_uploads_create_target(env, "psg_processing", body);
+		expect(planRefused._nay?.name).toBe("plan_required");
+		// The member reads this reason on the page, so the host's own words have to survive the hop.
+		expect(planRefused._nay?.message).toContain("This workspace's plan does not include plugin service file storage");
+
+		planMock.restore();
+		const deniedMock = install_fetch({
+			"/service-uploads/create-target": () => Response.json({ message: "Permission denied" }, { status: 403 }),
+		});
+		restoreFetch = deniedMock.restore;
+		const denied = await council_convex_uploads_create_target(env, "psg_processing", body);
+		expect(denied._nay?.name).toBe("unauthorized");
+	});
+
 	test("parses the pending and committed halves of the target union", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch();

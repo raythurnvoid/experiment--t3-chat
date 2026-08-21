@@ -22,9 +22,10 @@ function convex_url(env: Env, path: string) {
 
 /**
  * POST one JSON body and parse one JSON answer. `_nay.name` carries the HTTP status class so
- * callers can branch without string-matching messages. The helper separates the named storage-full
- * 403 from ordinary authorization refusals. A 409 is route-specific: grant verification fails
- * closed, while upload create/remint may retry after stale staging cleanup finishes.
+ * callers can branch without string-matching messages. The helper separates the two named 403s —
+ * a full workspace and a plan that does not include service storage — from ordinary authorization
+ * refusals. A 409 is route-specific: grant verification fails closed, while upload create/remint
+ * may retry after stale staging cleanup finishes.
  */
 async function convex_post(
 	env: Env,
@@ -59,23 +60,30 @@ async function convex_post(
 		body = null;
 	}
 	if (!response.ok) {
-		// A full workspace is its own refusal: the caller turns it into a product answer ("no
-		// capacity, no recording"), which a generic 403 must not be collapsed into. The refusal name
-		// never crosses HTTP — the host sends this exact message for its storage ceiling.
+		// Two 403s are their own refusals: a full workspace and a plan without service storage. The
+		// caller turns each into a product answer ("no capacity, no recording" / "raise the plan"),
+		// which a generic 403 must not be collapsed into, and it stops retrying on both because
+		// neither clears on its own. The refusal name never crosses HTTP — the host sends these
+		// exact messages for its storage ceiling and its plan door.
 		const bodyRecord = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : null;
 		const storageFull =
 			response.status === 403 && bodyRecord?.message === "This workspace has used its plugin service storage";
+		const planRequired =
+			response.status === 403 &&
+			bodyRecord?.message === "This workspace's plan does not include plugin service file storage";
 		const name = storageFull
 			? "storage_full"
-			: response.status === 401 || response.status === 403
-				? "unauthorized"
-				: response.status === 404
-					? "not_found"
-					: response.status === 409
-						? "conflict"
-						: response.status === 429
-							? "rate_limited"
-							: "refused";
+			: planRequired
+				? "plan_required"
+				: response.status === 401 || response.status === 403
+					? "unauthorized"
+					: response.status === 404
+						? "not_found"
+						: response.status === 409
+							? "conflict"
+							: response.status === 429
+								? "rate_limited"
+								: "refused";
 		// Carry the host's own reason when it sent one. Without it a stored failure says only which
 		// route answered 409, so an operator reading it cannot tell a locked file from a full quota,
 		// and cannot tell the member which one to clear.

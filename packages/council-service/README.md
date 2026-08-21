@@ -265,9 +265,12 @@ The lifecycle this implies (plan-3 E8):
    confirms for the stored file. A `403` fails the run. `storage_full` means the workspace is already
    full. The host also refuses a workspace whose plan does not include service file storage at all —
    only `Pay As You Go` and `Pro` do, and an owner-billed organization answers to the owner's plan.
-   The step retries either one and keeps getting the same answer until the run fails; a member has
-   to raise the plan or free space before a redrive can work. Reaching `ready` or `failed` releases nothing — the counter only
-   grows. An operator redrive of a `failed` meeting (the cron and
+   Both fail the run at once (no Workflow step retries), the same way a member lock fails a delete:
+   the plan does not change mid-run, and the storage counter only counts up, so every retry gets the
+   same refusal back and only delays the reason the member reads. Every other create-target failure
+   still retries. The plan has to be raised, or the storage ceiling lifted, before a redrive can
+   work. Reaching `ready` or `failed` releases nothing — the counter only grows. An operator redrive
+   of a `failed` meeting (the cron and
    `council_request_processing_redrive` bump `processing_generation` and insert a fresh outbox row;
    moving `failed -> processing` on the same generation dispatches a row that never runs) keeps the
    same upload key on purpose: a file that never finished uploading is re-used, and files that
