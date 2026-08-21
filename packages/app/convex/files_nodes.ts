@@ -49,6 +49,7 @@ import {
 	files_get_signed_download_serving,
 	files_validate_file_rename_class,
 	files_get_utf8_byte_size,
+	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_pending_update_content_of,
 	files_db_cancel_pending_update_cleanup_tasks,
@@ -319,6 +320,25 @@ export async function enqueue_file_content_materialization(
 		}),
 		...existingJobs.map((job) => files_content_materialization_workpool.cancel(ctx, job.jobId)),
 		...existingJobs.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
+	]);
+}
+
+/**
+ * Stop materialization for one file and forget its job docs.
+ *
+ * Cancel the workpool item before deleting the tracking doc. Deleting the doc alone leaves the
+ * worker running, and that worker still writes the file's Yjs snapshot object to R2 after the
+ * caller removed it. The workspace purge cancels in this order for the same reason.
+ */
+export async function cancel_file_content_materialization(ctx: MutationCtx, args: { nodeId: Id<"files_nodes"> }) {
+	const jobs = await ctx.db
+		.query("files_content_materialization_jobs")
+		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
+		.collect();
+
+	await Promise.all([
+		...jobs.map((job) => files_content_materialization_workpool.cancel(ctx, job.jobId)),
+		...jobs.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
 	]);
 }
 
@@ -3524,7 +3544,7 @@ async function db_apply_node_move(
 	// media type together with the name, in the same patch. The class rule already refused every
 	// crossing, so a null answer here only means an extensionless swap name (keep the stored
 	// type) or a non-editable file (its extension and stored type never change).
-	const renamedContentType = files_node_has_editable_yjs_state(args.node)
+	const renamedContentType = files_node_has_editable_text_content(args.node)
 		? files_get_editable_text_content_type(args.destName)
 		: null;
 	await ctx.db.patch("files_nodes", args.node._id, {
@@ -6158,7 +6178,21 @@ async function db_resolve_committed_chunk_source(
 		return { nodeId: fileNode._id, byteSize, counts: await resolve_counts() };
 	}
 
-	if (!files_node_has_editable_yjs_state(fileNode)) return null;
+	if (!files_node_has_editable_yjs_state(fileNode)) {
+		if (!files_node_has_editable_text_content(fileNode)) return null;
+
+		// A non-collaborative file has no Yjs document and so no materialization state. Its
+		// committed chunks are always current, and its byte size comes from the linked content
+		// asset, the same way the reserved scope above reads it. Do not check the asset kind:
+		// `node.assetId` always holds the file's current bytes but the kind varies, as
+		// `db_get_file_content_materialization_header` explains.
+		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
+		const byteSize =
+			asset && asset.organizationId === args.organizationId && asset.workspaceId === args.workspaceId
+				? asset.size
+				: 0;
+		return { nodeId: fileNode._id, byteSize, counts: await resolve_counts() };
+	}
 
 	// Tenant scope (the guards above narrowed both ids): bind them so the narrowing reaches the
 	// `withIndex` callback — TS drops property narrowing at closure boundaries.
@@ -6452,6 +6486,12 @@ export const read_file_content_from_chunks = internalQuery({
 			content: v.string(),
 			moreLines: v.boolean(),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
+			/**
+			 * The node's current content asset, set only when collaboration is off for this file.
+			 * The agent's write doors save that file by replacing the whole text, and they pass
+			 * this back as the asset the save must still be sitting on. Null for every other file.
+			 */
+			nonCollaborativeBaseAssetId: v.union(v.id("files_r2_assets"), v.null()),
 		}),
 		v.null(),
 	),
@@ -6491,9 +6531,15 @@ export const read_file_content_from_chunks = internalQuery({
 						workspaceId: requestedWorkspaceId,
 					};
 		const isEditableTextFile = files_node_has_editable_yjs_state(fileNode);
-		const isReadOnlyPlainTextFile = !isEditableTextFile && (fileNode.contentType?.startsWith("text/plain") ?? false);
+		// A non-collaborative file is editable text with no Yjs document. It skips the pending and
+		// materialization branches below and reads its committed chunks directly.
+		const isNonCollaborativeTextFile = !isEditableTextFile && files_node_has_editable_text_content(fileNode);
+		const isReadOnlyPlainTextFile =
+			!isEditableTextFile &&
+			!isNonCollaborativeTextFile &&
+			(fileNode.contentType?.startsWith("text/plain") ?? false);
 		if (realTenantScope) {
-			if (!isEditableTextFile && !isReadOnlyPlainTextFile) return null;
+			if (!isEditableTextFile && !isNonCollaborativeTextFile && !isReadOnlyPlainTextFile) return null;
 
 			if (isEditableTextFile) {
 				// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
@@ -6549,12 +6595,19 @@ export const read_file_content_from_chunks = internalQuery({
 										content: "",
 										moreLines: false,
 										pendingUpdateId: pendingUpdate._id,
+										nonCollaborativeBaseAssetId: null,
 									};
 						}
 
 						const content = files_merge_contiguous_chunks(collectedChunks);
 						if (content == null || files_get_utf8_byte_size(content) > args.mode.maxBytes) return null;
-						return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: pendingUpdate._id };
+						return {
+							nodeId: fileNode._id,
+							content,
+							moreLines: false,
+							pendingUpdateId: pendingUpdate._id,
+							nonCollaborativeBaseAssetId: null,
+						};
 					}
 
 					const startLine = Math.max(1, Math.trunc(args.mode.startLine));
@@ -6575,6 +6628,7 @@ export const read_file_content_from_chunks = internalQuery({
 						content: range.content,
 						moreLines: range.moreLines,
 						pendingUpdateId: pendingUpdate._id,
+						nonCollaborativeBaseAssetId: null,
 					};
 				}
 			} else if (args.pendingUpdateId != null) {
@@ -6604,14 +6658,21 @@ export const read_file_content_from_chunks = internalQuery({
 			byteSize = materializationState.asset.size;
 		} else {
 			const asset = fileNode.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
+			// A non-collaborative file points at the version snapshot its last save wrote, not at an
+			// upload row, so the kind check that fits an external mount would read its size as 0 and
+			// stop enforcing `maxBytes`. `node.assetId` always holds the file's current bytes either
+			// way, as `db_get_file_content_materialization_header` explains.
+			const allowedAssetKind = isNonCollaborativeTextFile ? "content_snapshot" : "content";
 			byteSize =
 				asset &&
 				asset.organizationId === args.organizationId &&
 				asset.workspaceId === args.workspaceId &&
-				asset.kind === "content"
+				asset.kind === allowedAssetKind
 					? asset.size
 					: 0;
 		}
+
+		const nonCollaborativeBaseAssetId = isNonCollaborativeTextFile ? (fileNode.assetId ?? null) : null;
 
 		if (args.mode.kind === "full") {
 			// Full reads use the byte size as the cheap cap check, then merge the materialized chunks
@@ -6629,12 +6690,20 @@ export const read_file_content_from_chunks = internalQuery({
 				)
 				.collect();
 			if (chunks.length === 0) {
-				return byteSize > 0 ? null : { nodeId: fileNode._id, content: "", moreLines: false, pendingUpdateId: null };
+				return byteSize > 0
+					? null
+					: {
+							nodeId: fileNode._id,
+							content: "",
+							moreLines: false,
+							pendingUpdateId: null,
+							nonCollaborativeBaseAssetId,
+						};
 			}
 
 			const content = files_merge_contiguous_chunks(chunks);
 			if (content == null) return null;
-			return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: null };
+			return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: null, nonCollaborativeBaseAssetId };
 		}
 
 		// Line reads use the lineEnd index to seek near the requested start line
@@ -6669,7 +6738,13 @@ export const read_file_content_from_chunks = internalQuery({
 			if (!anyChunk && byteSize > 0) return null;
 		}
 
-		return { nodeId: fileNode._id, content: range.content, moreLines: range.moreLines, pendingUpdateId: null };
+		return {
+			nodeId: fileNode._id,
+			content: range.content,
+			moreLines: range.moreLines,
+			pendingUpdateId: null,
+			nonCollaborativeBaseAssetId,
+		};
 	},
 });
 
@@ -7269,7 +7344,7 @@ export const match_text_file_lines = internalQuery({
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
 			!organizations_is_reserved_workspace_id(args.workspaceId) &&
-			!files_node_has_editable_yjs_state(fileNode)
+			!files_node_has_editable_text_content(fileNode)
 		)
 			return null;
 
@@ -7364,10 +7439,12 @@ export const match_text_file_lines = internalQuery({
 		}
 
 		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
-		// (reserved) nodes have no Yjs/materialization state and read committed chunks by node id.
+		// (reserved) nodes have no Yjs/materialization state and read committed chunks by node id. A
+		// non-collaborative file has no Yjs sequence either, so its committed chunks are always current.
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId)
+			!organizations_is_reserved_workspace_id(args.workspaceId) &&
+			files_node_has_editable_yjs_state(fileNode)
 		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
 				organizationId: args.organizationId,
@@ -7496,7 +7573,7 @@ export const match_plain_text_file_lines = internalQuery({
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
 			!organizations_is_reserved_workspace_id(args.workspaceId) &&
-			!files_node_has_editable_yjs_state(fileNode)
+			!files_node_has_editable_text_content(fileNode)
 		)
 			return null;
 
@@ -7557,10 +7634,12 @@ export const match_plain_text_file_lines = internalQuery({
 		}
 
 		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
-		// (reserved) nodes have no Yjs/materialization state and read committed chunks by node id.
+		// (reserved) nodes have no Yjs/materialization state and read committed chunks by node id. A
+		// non-collaborative file has no Yjs sequence either, so its committed chunks are always current.
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId)
+			!organizations_is_reserved_workspace_id(args.workspaceId) &&
+			files_node_has_editable_yjs_state(fileNode)
 		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
 				organizationId: args.organizationId,
@@ -7606,7 +7685,13 @@ export type files_nodes_match_plain_text_file_lines_Result =
 
 export const get_file_last_yjs_sequence = query({
 	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
-	returns: v.union(v.object({ lastSequence: v.number() }), v.null()),
+	returns: v.union(
+		v.object({
+			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
+			lastSequence: v.number(),
+		}),
+		v.null(),
+	),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -7660,7 +7745,10 @@ export const get_file_last_yjs_sequence = query({
 			throw should_never_happen(errorMessage, errorData);
 		}
 
-		return { lastSequence: lastYjsSequenceDoc.lastSequence };
+		return {
+			yjsLastSequenceId: lastYjsSequenceDoc._id,
+			lastSequence: lastYjsSequenceDoc.lastSequence,
+		};
 	},
 });
 
@@ -8422,6 +8510,7 @@ export const yjs_prepare_doc_last_snapshot = action({
 		v.object({
 			snapshot: doc(app_convex_schema, "files_yjs_snapshots"),
 			snapshotUrl: v.string(),
+			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 			// The resolved shape, not the optional schema field: stored absence is legal (absent
 			// means rich_text), response absence is not — the client has no node doc to resolve
 			// the default from.
@@ -8462,6 +8551,7 @@ export const yjs_prepare_doc_last_snapshot = action({
 					expiresIn: 15 * 60,
 				},
 			}),
+			yjsLastSequenceId: data.yjsLastSequenceDoc._id,
 			yjsRootKind: data.fileNode.yjsRootKind,
 		};
 	},
@@ -8493,6 +8583,8 @@ export async function yjs_reserve_and_increment_last_sequence(
 		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
 		userId: Id<"users">;
+		/** Refuse when this write was built for a Yjs document that the file no longer uses. */
+		expectedYjsLastSequenceId: Id<"files_yjs_docs_last_sequences">;
 		/** Byte size of the `files_yjs_updates.update` value the caller inserts at the new sequence. */
 		updateByteLength: number;
 	},
@@ -8505,8 +8597,18 @@ export async function yjs_reserve_and_increment_last_sequence(
 	}
 
 	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-	if (!fileNode) {
+	if (
+		!fileNode ||
+		fileNode.organizationId !== args.organizationId ||
+		fileNode.workspaceId !== args.workspaceId ||
+		!files_node_has_editable_yjs_state(fileNode)
+	) {
 		return Result({ _nay: { message: "Not found" } });
+	}
+	if (fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId) {
+		return Result({
+			_nay: { message: "This file changed while you were editing. Copy your local changes before reloading, then try again." },
+		});
 	}
 	// A durable refusal marker means materialization already refused this file's state and an
 	// operator repair is the only exit; accepting more updates would only grow the broken log.
@@ -8514,13 +8616,20 @@ export async function yjs_reserve_and_increment_last_sequence(
 		return Result({ _nay: { message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
 	}
 
-	let lastSequenceData = await ctx.db
-		.query("files_yjs_docs_last_sequences")
-		.withIndex("by_organization_workspace_fileNode", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-		)
-		.order("desc")
-		.first();
+	const lastSequenceData = await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequenceId);
+	if (
+		!lastSequenceData ||
+		lastSequenceData.organizationId !== args.organizationId ||
+		lastSequenceData.workspaceId !== args.workspaceId ||
+		lastSequenceData.fileNodeId !== args.nodeId
+	) {
+		const errorMessage = "fileNode.yjsLastSequenceId points to a missing or mismatched last-sequence doc";
+		console.error(errorMessage, { nodeId: args.nodeId, yjsLastSequenceId: args.expectedYjsLastSequenceId });
+		throw should_never_happen(errorMessage, {
+			nodeId: args.nodeId,
+			yjsLastSequenceId: args.expectedYjsLastSequenceId,
+		});
+	}
 
 	// Enforce the aggregate budget before the increment. On a would-cross, materialize what is
 	// already stored right away and ask the caller to retry: nothing is written here, so the
@@ -8553,30 +8662,20 @@ export async function yjs_reserve_and_increment_last_sequence(
 		}
 	}
 
-	const newSequence = lastSequenceData ? lastSequenceData.lastSequence + 1 : 0;
+	await ctx.db.patch("files_yjs_docs_last_sequences", lastSequenceData._id, {
+		lastSequence: lastSequenceData.lastSequence + 1,
+		unmaterializedUpdateCount: lastSequenceData.unmaterializedUpdateCount + 1,
+		unmaterializedUpdateBytes: lastSequenceData.unmaterializedUpdateBytes + args.updateByteLength,
+	});
 
-	// Update or create lastSequence tracking
-	if (lastSequenceData) {
-		await ctx.db.patch("files_yjs_docs_last_sequences", lastSequenceData._id, {
-			lastSequence: newSequence,
+	return Result({
+		_yay: {
+			...lastSequenceData,
+			lastSequence: lastSequenceData.lastSequence + 1,
 			unmaterializedUpdateCount: lastSequenceData.unmaterializedUpdateCount + 1,
 			unmaterializedUpdateBytes: lastSequenceData.unmaterializedUpdateBytes + args.updateByteLength,
-		});
-		lastSequenceData = (await ctx.db.get("files_yjs_docs_last_sequences", lastSequenceData._id))!;
-	} else {
-		const lastSequenceDataId = await ctx.db.insert("files_yjs_docs_last_sequences", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			fileNodeId: args.nodeId,
-			lastSequence: 0,
-			unmaterializedUpdateCount: 1,
-			unmaterializedUpdateBytes: args.updateByteLength,
-			lineageGeneration: 0,
-		});
-		lastSequenceData = (await ctx.db.get("files_yjs_docs_last_sequences", lastSequenceDataId))!;
-	}
-
-	return Result({ _yay: lastSequenceData });
+		},
+	});
 }
 
 export async function files_db_yjs_push_update(
@@ -8588,6 +8687,7 @@ export async function files_db_yjs_push_update(
 		update: ArrayBuffer;
 		sessionId: string;
 		userId: Id<"users">;
+		expectedYjsLastSequenceId: Id<"files_yjs_docs_last_sequences">;
 		/**
 		 * The shape stored on the node (`yjsRootKind`). Both callers already hold the node; this
 		 * function does not load it, so the scan below needs the value here.
@@ -8634,6 +8734,7 @@ export async function files_db_yjs_push_update(
 		workspaceId: args.workspaceId,
 		nodeId: args.nodeId,
 		userId: args.userId,
+		expectedYjsLastSequenceId: args.expectedYjsLastSequenceId,
 		updateByteLength: args.update.byteLength,
 	});
 	if (reserved._nay) {
@@ -8679,6 +8780,7 @@ export const yjs_push_update = mutation({
 		nodeId: v.id("files_nodes"),
 		update: v.bytes(),
 		sessionId: v.string(),
+		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -8783,6 +8885,7 @@ export const yjs_push_update = mutation({
 			update: args.update,
 			sessionId: args.sessionId,
 			userId: user._id,
+			expectedYjsLastSequenceId: args.expectedYjsLastSequenceId,
 			rootKind: fileNode.yjsRootKind,
 			// Live editor keystream: keep the materialization debounce.
 			materializeImmediately: false,
@@ -8826,7 +8929,7 @@ export const yjs_push_update = mutation({
 							organizationId: fileNode.organizationId,
 							workspaceId: fileNode.workspaceId,
 							nodeId: args.nodeId,
-							yjsSequence: String(pushResult._yay.newSequence),
+							version: String(pushResult._yay.newSequence),
 						},
 					}),
 				},
@@ -8844,6 +8947,7 @@ export const yjs_get_incremental_updates = query({
 	},
 	returns: v.union(
 		v.object({
+			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 			updates: v.array(doc(app_convex_schema, "files_yjs_updates")),
 		}),
 		v.null(),
@@ -8881,6 +8985,10 @@ export const yjs_get_incremental_updates = query({
 			return null;
 		}
 
+		if (!fileNode.yjsLastSequenceId) {
+			return null;
+		}
+
 		const updates = await ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
@@ -8892,11 +9000,9 @@ export const yjs_get_incremental_updates = query({
 			.order("desc")
 			.collect();
 
-		if (updates.length === 0) {
-			return null;
-		}
-
-		return { updates };
+		// Return the exact lineage even when the log is empty. Clients fetch the snapshot and update
+		// log separately, so they need this token to refuse a mixed-lineage read.
+		return { yjsLastSequenceId: fileNode.yjsLastSequenceId, updates };
 	},
 });
 

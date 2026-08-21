@@ -148,7 +148,7 @@ function ai_chat_system_prompt(args: {
 		"Run the exact printed `Next page:` command to continue a listing, and when the user asks for one continuation, run only the first one and then stop.",
 		"If a failed Bash command prints a `Try:` command that directly matches the user's request, run that `Try:` command next instead of only reporting the failure.",
 		"Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
-		"Bash app-file writes and `edit_file` create pending review changes for the user to apply; your own later reads (Bash readers, `search`, and the file tools) see them as already applied.",
+		"Bash app-file writes and `edit_file` normally create pending review changes for the user to apply; your own later reads see them as already applied. If collaboration is off for an existing file, the write saves immediately instead, and the tool output says there is nothing to review.",
 		// Ask mode has no write tools, so telling it to call this one would only produce a promise the
 		// model cannot keep. `edit_file` is named above as a description, not as an instruction.
 		...(args.canWriteFiles
@@ -2883,6 +2883,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(agentSurface).toContain(
 				"It is not shared with new chats and is not app file storage; use app file tools for durable user-visible files.",
+			);
+			expect(agentSurface).toContain(
+				"If collaboration is off for an existing file, the write saves immediately instead",
 			);
 			expect(agentSurface).toContain(
 				"Do not call /tmp ephemeral or temporary in a way that implies same-chat data loss.",

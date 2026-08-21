@@ -1,7 +1,28 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+const { convexActionMock, convexQueryMock } = vi.hoisted(() => ({
+	convexActionMock: vi.fn(),
+	convexQueryMock: vi.fn(),
+}));
+
+vi.mock("@/lib/app-convex-client.ts", () => ({
+	app_convex: {
+		action: (...args: unknown[]) => convexActionMock(...args),
+		query: (...args: unknown[]) => convexQueryMock(...args),
+	},
+	app_convex_api: {
+		files_nodes: {
+			get_file_last_yjs_sequence: "get_file_last_yjs_sequence",
+			yjs_get_incremental_updates: "yjs_get_incremental_updates",
+			yjs_prepare_doc_last_snapshot: "yjs_prepare_doc_last_snapshot",
+		},
+	},
+}));
+
 import {
 	files_clear_node_path_cached_validation_messages,
+	files_editor_view_values,
+	files_fetch_file_yjs_state_and_text,
 	files_get_node_path_cached_validation_message,
 	files_get_node_path_validation,
 	files_get_node_path_validation_cache_key,
@@ -66,18 +87,77 @@ describe("files_normalize_upload_file_name", () => {
 
 describe("files_resolve_effective_editor_view", () => {
 	test("redirects only the rich view on a plain-text document", () => {
-		expect(files_resolve_effective_editor_view({ requestedView: "diff_editor", rootKind: "plain_text" })).toBe(
-			"diff_editor",
-		);
-		expect(files_resolve_effective_editor_view({ requestedView: "plain_text_editor", rootKind: "plain_text" })).toBe(
-			"plain_text_editor",
-		);
-		expect(files_resolve_effective_editor_view({ requestedView: "rich_text_editor", rootKind: "plain_text" })).toBe(
-			"plain_text_editor",
-		);
-		expect(files_resolve_effective_editor_view({ requestedView: "rich_text_editor", rootKind: "rich_text" })).toBe(
-			"rich_text_editor",
-		);
+		expect(
+			files_resolve_effective_editor_view({
+				requestedView: "diff_editor",
+				rootKind: "plain_text",
+				nonCollaborative: false,
+			}),
+		).toBe("diff_editor");
+		expect(
+			files_resolve_effective_editor_view({
+				requestedView: "plain_text_editor",
+				rootKind: "plain_text",
+				nonCollaborative: false,
+			}),
+		).toBe("plain_text_editor");
+		expect(
+			files_resolve_effective_editor_view({
+				requestedView: "rich_text_editor",
+				rootKind: "plain_text",
+				nonCollaborative: false,
+			}),
+		).toBe("plain_text_editor");
+		expect(
+			files_resolve_effective_editor_view({
+				requestedView: "rich_text_editor",
+				rootKind: "rich_text",
+				nonCollaborative: false,
+			}),
+		).toBe("rich_text_editor");
+	});
+
+	test("sends every view to the plain text editor when collaboration is off", () => {
+		// Both the rich view and the diff view need a Yjs document, and this file has none.
+		for (const requestedView of files_editor_view_values) {
+			expect(
+				files_resolve_effective_editor_view({ requestedView, rootKind: "rich_text", nonCollaborative: true }),
+			).toBe("plain_text_editor");
+		}
+	});
+});
+
+describe("files_fetch_file_yjs_state_and_text", () => {
+	test("waits 250 ms before retrying a mixed collaboration lineage", async () => {
+		vi.useFakeTimers();
+		try {
+			convexActionMock.mockResolvedValue({ yjsLastSequenceId: "snapshot-lineage" });
+			convexQueryMock.mockImplementation((functionName: string) =>
+				functionName === "yjs_get_incremental_updates"
+					? Promise.resolve({ updates: [], yjsLastSequenceId: "updates-lineage" })
+					: Promise.resolve({ lastSequence: 0, yjsLastSequenceId: "sequence-lineage" }),
+			);
+
+			const readPromise = files_fetch_file_yjs_state_and_text({
+				membershipId: "membership" as Id<"organizations_workspaces_users">,
+				nodeId: "node" as Id<"files_nodes">,
+			});
+			const refusal = readPromise.catch((error: unknown) => error);
+			await vi.advanceTimersByTimeAsync(249);
+
+			expect(convexActionMock).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(convexActionMock).toHaveBeenCalledTimes(2);
+			await vi.advanceTimersByTimeAsync(500);
+			expect(await refusal).toEqual(
+				expect.objectContaining({ message: "The file collaboration state kept changing while it loaded" }),
+			);
+			expect(convexActionMock).toHaveBeenCalledTimes(3);
+		} finally {
+			vi.useRealTimers();
+			convexActionMock.mockReset();
+			convexQueryMock.mockReset();
+		}
 	});
 });
 

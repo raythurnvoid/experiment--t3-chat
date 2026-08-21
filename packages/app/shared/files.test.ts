@@ -826,6 +826,20 @@ describe("files_validate_file_rename_class", () => {
 		});
 	});
 
+	test("a non-collaborative file follows the same class rule as a collaborative one", () => {
+		// Collaboration off drops the Yjs pointers but keeps the text and its class, so the rule
+		// still reads the class from yjsRootKind.
+		const nonCollaborativeRichNode = { ...richNode, yjsSnapshotId: undefined, yjsLastSequenceId: undefined } as const;
+		const nonCollaborativePlainNode = { ...plainNode, yjsSnapshotId: undefined, yjsLastSequenceId: undefined } as const;
+
+		expect(
+			files_validate_file_rename_class({ node: nonCollaborativeRichNode, destName: "notes.json" })._nay?.message,
+		).toBe("A Markdown file must keep the .md extension");
+		expect(files_validate_file_rename_class({ node: nonCollaborativePlainNode, destName: "notes.yaml" })).toEqual({
+			_yay: { contentType: "application/yaml" },
+		});
+	});
+
 	test("an extensionless destination claims no class, so a swap can park a file on a folder name", () => {
 		expect(files_validate_file_rename_class({ node: richNode, destName: "swap-temp" })).toEqual({
 			_yay: { contentType: null },

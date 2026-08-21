@@ -170,7 +170,12 @@ export type AppCompositeIds = {
 				organizationId: string,
 				workspaceId: string,
 				nodeId: string,
-				yjsSequence: number,
+				/**
+				 * Which version of the file this save produced: the new Yjs sequence for a
+				 * collaborative save, or the new version snapshot id for a non-collaborative one.
+				 * It only has to make the id unique per save.
+				 */
+				version: string | number,
 		  ]
 		| [
 				name: "monthly_credit",

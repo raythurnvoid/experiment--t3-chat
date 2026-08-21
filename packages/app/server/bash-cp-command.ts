@@ -12,14 +12,17 @@ import type {
 } from "../convex/files_nodes_content.ts";
 import {
 	files_SYNTHETIC_ROOT_FOLDER,
+	files_copy_class_mismatch_message,
 	files_get_normalized_node_path_segments,
+	files_node_has_editable_text_content,
 	files_pending_path_overlay_translate_path,
+	type files_YjsRootKind,
 } from "../shared/files.ts";
 import { organizations_is_global_organization_id, organizations_is_reserved_workspace_id } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { path_join } from "./server-utils.ts";
-import { files_agent_upsert_file_pending_update, type files_agent_upsert_file_pending_update_Result, bash_DbFilesContentUnavailableError, bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_normalize_path, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_TMP_MOUNT, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { files_agent_write_file_text, type files_agent_write_file_text_Result, bash_DbFilesContentUnavailableError, bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_normalize_path, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_TMP_MOUNT, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
@@ -244,6 +247,32 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
+
+				// Copying onto a file with collaboration turned off saves the text right away, so the
+				// class rule the pending door owns has to be asked here instead.
+				//
+				// Every local below is annotated on purpose. This command sits inside the generated-API
+				// type graph (convex/bash.ts -> server/bash.ts -> here), so a `return` whose value
+				// TypeScript can only type by looking at a node read from that API makes this function's
+				// inferred return type depend on itself. TypeScript then gives up and types the whole
+				// generated API as `any`.
+				let destNonCollaborativeBaseAssetId: Id<"files_r2_assets"> | undefined;
+				if (occupant?.nonCollaborative === true && files_node_has_editable_text_content(occupant)) {
+					const destRootKind: files_YjsRootKind = occupant.yjsRootKind;
+					const sourceRootKind: files_YjsRootKind | null = files_node_has_editable_text_content(sourceNode)
+						? sourceNode.yjsRootKind
+						: null;
+					if (sourceRootKind != null && sourceRootKind !== destRootKind) {
+						const classMismatchMessage: string = files_copy_class_mismatch_message({ sourceRootKind, destRootKind });
+						return {
+							stdout: "",
+							stderr: `cp: cannot copy '${operands[0]}' to '${destPath}': ${classMismatchMessage}\n`,
+							exitCode: bash_COMMAND_EXIT_FAILURE,
+						};
+					}
+					destNonCollaborativeBaseAssetId = occupant.assetId;
+				}
+
 				let destNodeId: Id<"files_nodes">;
 				let replacesExisting: boolean;
 				let eagerCreatedCommittedSequence: number | undefined;
@@ -329,9 +358,9 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					}
 					return ` — an empty file was left behind at '${destPath}'; remove it in Files if it is not wanted`;
 				};
-				let upserted: files_agent_upsert_file_pending_update_Result;
+				let written: files_agent_write_file_text_Result;
 				try {
-					upserted = await files_agent_upsert_file_pending_update(ctx, {
+					written = await files_agent_write_file_text(ctx, {
 						organizationId,
 						workspaceId,
 						userId,
@@ -343,6 +372,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						// parent folders this cp eagerly created.
 						eagerCreatedAncestorIds: createdAncestorIds,
 						threadId: threadId ?? undefined,
+						nonCollaborativeBaseAssetId: destNonCollaborativeBaseAssetId,
 					});
 				} catch (error) {
 					if (eagerCreatedCommittedSequence === undefined) {
@@ -355,19 +385,24 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
-				if (upserted._nay) {
+				if (written._nay) {
 					return {
 						stdout: "",
-						stderr: `cp: cannot copy '${operands[0]}': ${upserted._nay.message}${await eager_created_failure_note()}\n`,
+						stderr: `cp: cannot copy '${operands[0]}': ${written._nay.message}${await eager_created_failure_note()}\n`,
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 				// Later commands chained in this same bash call must see the new proposal.
 				dbFilesRoots.app.fs.resetProposalCaches();
-				return {
-					stdout: replacesExisting
+				// A destination with collaboration turned off was saved above, so telling the agent to
+				// review a proposal in Files would send it looking for something that does not exist.
+				const copiedStdout: string = destNonCollaborativeBaseAssetId
+					? `copied: ${sourceDbFilesPath} -> ${destPath} — collaboration is off for the destination, so the new content is already saved\n`
+					: replacesExisting
 						? `pending copy created: ${sourceDbFilesPath} -> ${destPath} — replaces the existing file's content when accepted; review in Files\n`
-						: `pending copy created: ${sourceDbFilesPath} -> ${destPath} — review in Files\n`,
+						: `pending copy created: ${sourceDbFilesPath} -> ${destPath} — review in Files\n`;
+				return {
+					stdout: copiedStdout,
 					stderr: "",
 					exitCode: 0,
 				};
@@ -401,7 +436,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				stderr: dbFilesRoots.app.fs.allowDbFilesMkdir
 					? `cp: cannot write to app file '${operands[1]}': only app files can be copied within the app tree.\n` +
 						(sourceIsFile
-							? `To propose that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(operands[0])} > ${bash_shell_arg_quote(redirectDestShellPath)} — it creates a pending proposal the user reviews in Files.\n`
+							? `To write that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(operands[0])} > ${bash_shell_arg_quote(redirectDestShellPath)} — a collaborative destination creates a pending proposal; a collaboration-off destination saves immediately, and Bash says which happened.\n`
 							: "")
 					: `cp: cannot write to app file '${operands[1]}' in Ask mode.\n` +
 						"App file writes are available in Agent mode; Ask mode is read-only for app files.\n",

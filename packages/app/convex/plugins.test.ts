@@ -10222,6 +10222,44 @@ describe("plugins run_installation_on_files", () => {
 		expect(runs).toEqual([]);
 	});
 
+	test("skips a non-collaborative markdown node with the stored-upload refusal", async () => {
+		const t = test_convex();
+		const { membership, asOwner, installationId } = await install_media_plugin_with_upload(t);
+
+		const markdown = await asOwner.action(api.files_nodes_content.create_text_node, {
+			membershipId: membership.membershipId,
+			parentId: "root",
+			path: "/notes.md",
+		});
+		if (markdown._nay) {
+			throw new Error(markdown._nay.message);
+		}
+		const turnedOff = await asOwner.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: membership.membershipId,
+			nodeId: markdown._yay.nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		if (turnedOff._nay) {
+			throw new Error(turnedOff._nay.message);
+		}
+
+		const result = await t.mutation(internal.plugins.run_installation_on_files, {
+			installationId,
+			nodeIds: [markdown._yay.nodeId],
+		});
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
+
+		// Turning collaboration off drops the Yjs pointers, so a predicate that asks for them would
+		// read this file as a stored blob and answer "File upload is not ready" instead.
+		expect(result._yay.runs).toEqual([
+			{ nodeId: markdown._yay.nodeId, runId: null, message: "Plugin backfill supports stored upload blobs only" },
+		]);
+		const nonCollaborativeRuns = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		expect(nonCollaborativeRuns).toEqual([]);
+	});
+
 	test("rejects disabled installations", async () => {
 		const t = test_convex();
 		const { installationId, upload } = await install_media_plugin_with_upload(t);

@@ -83,7 +83,7 @@ import {
 	files_get_node_path_validation,
 	files_get_normalized_node_path_segments,
 	files_get_upload_pipeline_state,
-	files_node_has_editable_yjs_state,
+	files_node_has_editable_text_content,
 	files_pending_update_has_yjs_content,
 	files_resolve_effective_editor_view,
 	type files_EditorView,
@@ -699,7 +699,9 @@ type FileNodeViewFileEditor_Props = {
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	rootKind: FileEditor_Props["rootKind"];
 	monacoLanguageId: FileEditor_Props["monacoLanguageId"];
+	nonCollaborative: FileEditor_Props["nonCollaborative"];
 	serverSequence?: number;
+	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	editorMode: FileEditor_Mode;
 	topSafeArea?: number;
 	presenceStore: FileEditor_Props["presenceStore"];
@@ -716,7 +718,9 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
+		nonCollaborative,
 		serverSequence,
+		yjsLastSequenceId,
 		editorMode,
 		topSafeArea,
 		presenceStore,
@@ -733,7 +737,9 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 			pendingUpdateId={pendingUpdateId}
 			rootKind={rootKind}
 			monacoLanguageId={monacoLanguageId}
+			nonCollaborative={nonCollaborative}
 			serverSequence={serverSequence}
+			yjsLastSequenceId={yjsLastSequenceId}
 			editorMode={editorMode}
 			topSafeArea={topSafeArea}
 			presenceStore={presenceStore}
@@ -752,6 +758,7 @@ type FileNodeViewFile_Props = {
 	readOnlyAncestorIds: FileNodeViewHeader_Props["readOnlyAncestorIds"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
+	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	topSafeArea: number;
 	editorMode: FileEditor_Mode;
 	filesSidebarOpen: boolean;
@@ -771,6 +778,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		readOnlyAncestorIds,
 		pendingUpdateId,
 		serverSequence,
+		yjsLastSequenceId,
 		topSafeArea,
 		editorMode,
 		filesSidebarOpen,
@@ -802,7 +810,9 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				pendingUpdateId={pendingUpdateId}
 				rootKind={node.yjsRootKind}
 				monacoLanguageId={files_get_monaco_language_id(node.name)}
+				nonCollaborative={node.nonCollaborative === true}
 				serverSequence={serverSequence}
+				yjsLastSequenceId={yjsLastSequenceId}
 				topSafeArea={topSafeArea}
 				editorMode={editorMode}
 				presenceStore={presenceStore}
@@ -1224,6 +1234,7 @@ type FileNodeViewFolder_Props = {
 	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
+	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	topSafeArea: number;
 	editorMode: FileEditor_Mode;
 	presenceStore: FileEditor_Props["presenceStore"];
@@ -1239,6 +1250,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		readOnlyAncestorIds,
 		pendingUpdateId,
 		serverSequence,
+		yjsLastSequenceId,
 		topSafeArea,
 		editorMode,
 		presenceStore,
@@ -1488,7 +1500,9 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			readmeNodeId={readmeNodeId}
 			readOnlyState={readmeNode?.readOnlyState ?? "writable"}
 			pendingUpdateId={pendingUpdateId}
+			nonCollaborative={readmeNode?.nonCollaborative === true}
 			serverSequence={serverSequence}
+			yjsLastSequenceId={yjsLastSequenceId}
 			editorMode={editorMode}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
@@ -2586,7 +2600,9 @@ type FileNodeViewFolderReadmeEditor_Props = {
 	readmeNodeId: app_convex_Id<"files_nodes">;
 	readOnlyState: files_VisibleTreeNode["readOnlyState"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	nonCollaborative: FileEditor_Props["nonCollaborative"];
 	serverSequence?: number;
+	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	editorMode: FileEditor_Mode;
 	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
@@ -2602,7 +2618,9 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 		readmeNodeId,
 		readOnlyState,
 		pendingUpdateId,
+		nonCollaborative,
 		serverSequence,
+		yjsLastSequenceId,
 		editorMode,
 		presenceStore,
 		commentsPortalHost,
@@ -2622,7 +2640,9 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 				// text document by definition.
 				rootKind="rich_text"
 				monacoLanguageId="markdown"
+				nonCollaborative={nonCollaborative}
 				serverSequence={serverSequence}
+				yjsLastSequenceId={yjsLastSequenceId}
 				editorMode={editorMode}
 				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
@@ -2643,6 +2663,7 @@ type FileNodeViewContent_Props = {
 	readOnlyAncestorIds: FileNodeViewHeader_Props["readOnlyAncestorIds"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
+	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	topSafeArea: number;
 	editorMode: FileEditor_Mode;
 	filesSidebarOpen: boolean;
@@ -2662,6 +2683,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		readOnlyAncestorIds,
 		pendingUpdateId,
 		serverSequence,
+		yjsLastSequenceId,
 		topSafeArea,
 		editorMode,
 		filesSidebarOpen,
@@ -2695,6 +2717,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					readOnlyAncestorIds={readOnlyAncestorIds}
 					pendingUpdateId={pendingUpdateId}
 					serverSequence={serverSequence}
+					yjsLastSequenceId={yjsLastSequenceId}
 					topSafeArea={topSafeArea}
 					editorMode={editorMode}
 					presenceStore={presenceStore}
@@ -2732,6 +2755,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					readOnlyAncestorIds={readOnlyAncestorIds}
 					pendingUpdateId={pendingUpdateId}
 					serverSequence={serverSequence}
+					yjsLastSequenceId={yjsLastSequenceId}
 					topSafeArea={topSafeArea}
 					editorMode={editorMode}
 					presenceStore={presenceStore}
@@ -2743,7 +2767,9 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		);
 	}
 
-	if (!files_node_has_editable_yjs_state(node)) {
+	// A file with collaboration turned off has no Yjs pointers but is still editable text, so it
+	// opens in an editor instead of the stored-blob card.
+	if (!files_node_has_editable_text_content(node)) {
 		return (
 			<FileNodeViewStoredFile
 				// Reset the selected tab when another file opens.
@@ -2766,6 +2792,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 			readOnlyAncestorIds={readOnlyAncestorIds}
 			pendingUpdateId={pendingUpdateId}
 			serverSequence={serverSequence}
+			yjsLastSequenceId={yjsLastSequenceId}
 			topSafeArea={topSafeArea}
 			editorMode={editorMode}
 			filesSidebarOpen={filesSidebarOpen}
@@ -2871,38 +2898,44 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const resolvedNodeId = isRootNodeSelected ? files_ROOT_ID : (resolvedNode?._id ?? null);
 	// Keep create actions scoped to the visible folder/root selection; file views use this toolbar only for editor actions.
 	const targetFolderId = isRootNodeSelected ? files_ROOT_ID : resolvedNode?.kind === "folder" ? resolvedNode._id : null;
-	const resolvedNodeHasEditableYjsState = files_node_has_editable_yjs_state(resolvedNode);
-
-	// Clamp the requested view to the resolved node's document shape. The clamped value drives
-	// everything below — the header switch, the rendered editor, and the sequence subscription —
-	// so a plain-text node opened with ?view=rich_text_editor still syncs like a plain view.
-	const requestedView: files_EditorView = searchParams.view ?? "rich_text_editor";
-	const effectiveView =
-		resolvedNode && resolvedNode.kind === "file" && resolvedNodeHasEditableYjsState
-			? files_resolve_effective_editor_view({
-					requestedView,
-					rootKind: resolvedNode.yjsRootKind,
-				})
-			: requestedView;
+	const resolvedNodeHasEditableTextContent = files_node_has_editable_text_content(resolvedNode);
 
 	// Treat a folder README as the active editor node so pending-update and sync subscriptions
 	// have the same owner for selected files and folder README editors.
 	const activeEditorNodeId = isRootNodeSelected
 		? get_folder_readme_node_id(fileNodesList, files_ROOT_ID)
 		: resolvedNode && resolvedNode.kind === "file"
-			? resolvedNodeHasEditableYjsState
+			? resolvedNodeHasEditableTextContent
 				? resolvedNode._id
 				: null
 			: resolvedNode?.kind === "folder"
 				? get_folder_readme_node_id(fileNodesList, resolvedNode._id)
 				: null;
+	const activeEditorTreeNode = fileNodesList?.find((item) => item._id === activeEditorNodeId);
+	const activeEditorNode =
+		resolvedNode?.kind === "file" && resolvedNodeHasEditableTextContent ? resolvedNode : activeEditorTreeNode;
+
+	// Clamp against the actual editor node. For a selected folder that node is its README, not the
+	// folder itself, so the header and layout must follow the README's collaboration mode too.
+	const requestedView: files_EditorView = searchParams.view ?? "rich_text_editor";
+	const effectiveView =
+		activeEditorNode && files_node_has_editable_text_content(activeEditorNode)
+			? files_resolve_effective_editor_view({
+					requestedView,
+					rootKind: activeEditorNode.yjsRootKind,
+					nonCollaborative: activeEditorNode.nonCollaborative === true,
+				})
+			: requestedView;
+	// The editor node can be a folder's README instead of the selected node, so read its mode from
+	// the tree. A file with collaboration turned off has no Yjs sequence to watch.
+	const activeEditorNodeIsCollaborative = activeEditorNode?.nonCollaborative !== true;
 
 	const allPendingUpdatesResult = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, {
 		membershipId,
 	});
 	const activeEditorServerSequenceData = useQuery(
 		app_convex_api.files_nodes.get_file_last_yjs_sequence,
-		activeEditorNodeId && effectiveView !== "rich_text_editor"
+		activeEditorNodeId && activeEditorNodeIsCollaborative
 			? {
 					membershipId,
 					nodeId: activeEditorNodeId,
@@ -3198,6 +3231,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				readOnlyAncestorIds={readOnlyAncestorIds}
 				pendingUpdateId={currentPendingUpdate?._id}
 				serverSequence={activeEditorServerSequenceData?.lastSequence}
+				yjsLastSequenceId={activeEditorServerSequenceData?.yjsLastSequenceId}
 				topSafeArea={topSafeArea}
 				editorMode={effectiveView}
 				filesSidebarOpen={filesSidebarOpen}

@@ -25,9 +25,10 @@ import {
 	db_insert_file_text_content,
 	files_nodes_create_yjs_snapshot_update_from_text,
 	files_nodes_db_fill_text_node_content,
+	files_nodes_db_insert_file_content_docs,
 } from "./files_nodes_content.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_get_file_yjs_pointers, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	files_MAX_UPLOADS_BYTES,
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -35,11 +36,14 @@ import {
 	files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT,
 	files_MAX_YJS_RECONSTRUCTED_STATE_BYTES,
 	files_MAX_YJS_WIRE_BYTES,
+	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_ROOT_ID,
 	files_INITIAL_CONTENT,
 	files_UPLOAD_PATH_TAKEN_MESSAGE,
 	files_YJS_DOC_KEYS,
+	files_get_editable_text_content_type,
+	files_get_editable_text_yjs_root_kind,
 	files_get_utf8_byte_size,
 	files_u8_to_array_buffer,
 } from "../server/files.ts";
@@ -2155,12 +2159,13 @@ describe("files_nodes.remove_eager_created_node_if_safe", () => {
 		if ("_nay" in savedYjsDoc) {
 			throw new Error(savedYjsDoc._nay.message);
 		}
-		await t.run((ctx) =>
+		await t.run(async (ctx) =>
 			files_db_yjs_push_update(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
 				nodeId,
+				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
 				rootKind: "rich_text",
 				update: files_u8_to_array_buffer(encodeStateAsUpdate(savedYjsDoc)),
 				sessionId: "eager-cleanup-saved-session",
@@ -2517,12 +2522,13 @@ describe("files_nodes.remove_eager_created_node_if_safe", () => {
 		if ("_nay" in savedYjsDoc) {
 			throw new Error(savedYjsDoc._nay.message);
 		}
-		await t.run((ctx) =>
+		await t.run(async (ctx) =>
 			files_db_yjs_push_update(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
 				nodeId,
+				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
 				rootKind: "rich_text",
 				update: files_u8_to_array_buffer(encodeStateAsUpdate(savedYjsDoc)),
 				sessionId: "eager-cleanup-ancestors-saved-session",
@@ -4831,6 +4837,7 @@ test("membership-scoped file and yjs APIs reject cross-user membership ids", asy
 	const unauthorizedYjsPush = await asOtherUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
 		update: new ArrayBuffer(0),
 		sessionId: "cross-user-membership",
 	});
@@ -4934,7 +4941,33 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 			archivedAt: 0,
 		});
 
-		return { snapshotId, currentSnapshotAssetId, restoredSnapshotAssetId };
+		const expectedYjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			fileNodeId: db.files.file_root_1._id,
+			lastSequence: 0,
+			unmaterializedUpdateCount: 0,
+			unmaterializedUpdateBytes: 0,
+			lineageGeneration: 0,
+		});
+		const expectedYjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			fileNodeId: db.files.file_root_1._id,
+			sequence: 0,
+			assetId: currentSnapshotAssetId,
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			updatedAt: Date.now(),
+		});
+
+		return {
+			snapshotId,
+			currentSnapshotAssetId,
+			restoredSnapshotAssetId,
+			expectedYjsLastSequenceId,
+			expectedYjsSnapshotId,
+		};
 	});
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
@@ -4955,6 +4988,9 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 	const blocked = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_1._id,
+		// The rate limit must win before any file or lineage validation.
+		expectedYjsLastSequenceId: restoreAssets.expectedYjsLastSequenceId,
+		expectedYjsSnapshotId: restoreAssets.expectedYjsSnapshotId,
 		snapshotId: restoreAssets.snapshotId,
 		sessionId: "snapshot-rate-limit",
 		snapshotMarkdownContent: "",
@@ -5157,6 +5193,7 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
 		sessionId: "materialize-session",
 	});
@@ -5182,6 +5219,7 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		nodeId: createdFile._yay.nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
 		throughSequence: 1,
 	});
 
@@ -5309,6 +5347,7 @@ async function test_materialize_markdown_file(
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
 		sessionId: `mat-${path}`,
 	});
@@ -5345,6 +5384,7 @@ test("materialize_file_content rolls back Convex writes when committed chunking 
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(nextYjsDoc)),
 		sessionId: "chunk-failure-session",
 	});
@@ -5462,6 +5502,7 @@ test("materialize_file_content marks over-cap content too large and leaves the n
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(overCapYjsDoc)),
 		sessionId: "too-large-session",
 	});
@@ -5552,6 +5593,7 @@ test("materialize_file_content settles over-cap frontmatter with the marker pair
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(overCapYjsDoc)),
 		sessionId: "frontmatter-cap-session",
 	});
@@ -5609,6 +5651,7 @@ test("materialize_file_content settles over-cap frontmatter with the marker pair
 	const fittingPush = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(fittingDiff),
 		sessionId: "frontmatter-cap-session",
 	});
@@ -5656,6 +5699,7 @@ test("materialize_file_content clears the too-large mark once the content fits a
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(trimmedYjsDoc)),
 		sessionId: "trimmed-session",
 	});
@@ -5776,6 +5820,7 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
 		sessionId: "chunk-read-session",
 	});
@@ -6450,6 +6495,1606 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	expect(available.pendingUpdateId).toBeNull();
 });
 
+describe("non-collaborative files", () => {
+	// Build the shape a non-collaborative create leaves behind: a tenant node with committed chunks,
+	// a content-snapshot asset, and no Yjs docs at all. This runs the real creation branch, so the
+	// test also proves that branch writes nothing Yjs-shaped.
+	/**
+	 * Run the bounded continuations a toggle schedules.
+	 *
+	 * `ctx.scheduler.runAfter(0, ...)` registers a real timer, and the harness only waits for jobs
+	 * whose timer already fired. So yield the event loop first, and repeat, because one
+	 * continuation can reschedule itself while work remains.
+	 */
+	async function drain_scheduled_continuations(t: ReturnType<typeof test_convex>) {
+		for (let round = 0; round < 5; round += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			await t.finishInProgressScheduledFunctions();
+		}
+	}
+
+	async function seed_non_collaborative_file(
+		t: ReturnType<typeof test_convex>,
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+		path: string,
+		markdown: string,
+	) {
+		return await t.run(async (ctx) => {
+			const now = Date.now();
+			const name = path.split("/").filter(Boolean).at(-1);
+			if (!name) throw new Error("Expected a root-level file path");
+			const rootKind = files_get_editable_text_yjs_root_kind(name);
+			const contentType = files_get_editable_text_content_type(name);
+			if (!rootKind || !contentType) throw new Error("Expected an editable text file name");
+
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				r2Key: `content-snapshot${path}`,
+				size: files_get_utf8_byte_size(markdown),
+				createdBy: db.userId,
+				updatedAt: now,
+			});
+			const nodeId = await ctx.db.insert("files_nodes", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				parentId: files_ROOT_ID,
+				path,
+				treePath: path,
+				pathDepth: 1,
+				lowercaseExtension: name.split(".").at(-1) ?? null,
+				name,
+				kind: "file",
+				contentType,
+				assetId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				updatedAt: now,
+			});
+
+			await files_nodes_db_insert_file_content_docs(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId,
+				path,
+				contentType,
+				rootKind,
+				textContent: markdown,
+				readOnly: false,
+				nonCollaborative: true,
+				userId: db.userId,
+				now,
+			});
+
+			return { nodeId, assetId };
+		});
+	}
+
+	test("the create branch writes committed content and frontmatter, and no Yjs docs", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const markdown = "---\ntitle: Release notes\nowner: ada\n---\n\n# Release notes\n\nFirst line here.\n";
+		const { nodeId } = await seed_non_collaborative_file(t, db, "/notes.md", markdown);
+
+		const written = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			return {
+				nonCollaborative: node?.nonCollaborative,
+				yjsRootKind: node?.yjsRootKind,
+				yjsSnapshotId: node?.yjsSnapshotId,
+				yjsLastSequenceId: node?.yjsLastSequenceId,
+				statsId: node?.statsId,
+				yjsSnapshots: (await ctx.db.query("files_yjs_snapshots").collect()).length,
+				yjsLastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
+				yjsUpdates: (await ctx.db.query("files_yjs_updates").collect()).length,
+				yjsSnapshotAssets: (await ctx.db.query("files_r2_assets").collect()).filter(
+					(asset) => asset.kind === "yjs_snapshot",
+				).length,
+				textChunks: (await ctx.db.query("files_text_chunks").collect()).length,
+				metadataFields: (await ctx.db.query("files_metadata_docs").collect())
+					.map((entry) => entry.qualifiedField)
+					.sort(),
+			};
+		});
+
+		// Objective 1: a non-collaborative file carries no Yjs state of any kind.
+		expect(written.nonCollaborative).toBe(true);
+		expect(written.yjsSnapshotId).toBeUndefined();
+		expect(written.yjsLastSequenceId).toBeUndefined();
+		expect(written.yjsSnapshots).toBe(0);
+		expect(written.yjsLastSequences).toBe(0);
+		expect(written.yjsUpdates).toBe(0);
+		expect(written.yjsSnapshotAssets).toBe(0);
+
+		// Objective 2: it keeps every committed representation, including the frontmatter index.
+		// The shape stays `rich_text`, so the Markdown chunker ran and frontmatter was indexed —
+		// this is what the read-only mount branch would have destroyed by forcing plain text.
+		expect(written.yjsRootKind).toBe("rich_text");
+		expect(written.textChunks).toBeGreaterThan(0);
+		expect(written.statsId).toBeDefined();
+		expect(written.metadataFields).toEqual([
+			"frontmatter.owner",
+			"frontmatter.owner",
+			"frontmatter.title",
+			"frontmatter.title",
+		]);
+	});
+
+	test("every committed read door serves a non-collaborative markdown file", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const lines = [
+			"# Handbook",
+			"",
+			"quietneedle one",
+			"a middle line",
+			"quietneedle two",
+			"the last line",
+		];
+		const markdown = lines.join("\n");
+		const path = "/handbook.md";
+		const { nodeId } = await seed_non_collaborative_file(t, db, path, markdown);
+
+		const readScope = { organizationId: db.organizationId, workspaceId: db.workspaceId } as const;
+
+		// read_file_content_from_chunks, full: the door behind bash `cat` and the agent file tools.
+		const full = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			...readScope,
+			userId: db.userId,
+			path,
+			mode: { kind: "full", maxBytes: files_get_utf8_byte_size(markdown) + 1000 },
+		});
+		expect(full).not.toBeNull();
+		if (!full) throw new Error("expected a full read");
+		expect(full.content).toBe(markdown);
+		expect(full.pendingUpdateId).toBeNull();
+
+		// The same door refuses text over the caller's cap. Before the byte-size fallback learned
+		// about content-snapshot assets this read `0` and returned the whole file instead.
+		const overCap = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			...readScope,
+			userId: db.userId,
+			path,
+			mode: { kind: "full", maxBytes: 4 },
+		});
+		expect(overCap).toBeNull();
+
+		// read_file_content_from_chunks, lines: the door behind `head` and `tail`.
+		const lineRead = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			...readScope,
+			userId: db.userId,
+			path,
+			mode: { kind: "lines", startLine: 1, maxLines: 3 },
+		});
+		expect(lineRead).not.toBeNull();
+		if (!lineRead) throw new Error("expected a line read");
+		expect(lineRead.content).toBe(files_line_range_from_text(markdown, 1, 3).content);
+
+		// read_committed_file_chunk_stats: the door behind `wc`.
+		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
+			...readScope,
+			userId: db.userId,
+			path,
+		});
+		expect(stats.usable).toBe(true);
+		if (!stats.usable) throw new Error("expected usable stats");
+		expect(stats.byteCount).toBe(files_get_utf8_byte_size(markdown));
+		expect(stats.lineCount).toBe((markdown.match(/\n/gu) ?? []).length);
+
+		// match_plain_text_file_lines: the door behind `grep` and `sed`.
+		const grep = await t.query(internal.files_nodes.match_plain_text_file_lines, {
+			...readScope,
+			userId: db.userId,
+			fileNodeId: nodeId,
+			pattern: "quietneedle",
+			ignoreCase: false,
+			fixedStrings: true,
+			invert: false,
+		});
+		expect(grep).not.toBeNull();
+		if (!grep) throw new Error("expected a grep result");
+		expect(grep.lines.map(({ lineNumber }) => lineNumber)).toEqual([3, 5]);
+
+		// get_file_text_content_db_state_by_path: the door behind the app editor and `edit_file`.
+		const state = await t.query(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
+			...readScope,
+			userId: db.userId,
+			path,
+		});
+		expect(state).not.toBeNull();
+		if (!state) throw new Error("expected a content state");
+		expect(state.content).toBe(markdown);
+		// No Yjs document, so nothing to materialize and nothing for the caller to rebuild.
+		expect(state.materializationState).toBeNull();
+
+		// Workspace search already read committed chunks with no Yjs term. Objective 20.
+		const search = await t.query(internal.files_nodes.text_search_files, {
+			...readScope,
+			userId: db.userId,
+			hasWorkspaceRead: true,
+			query: "quietneedle",
+			numItems: 10,
+			cursor: null,
+		});
+		expect(search.items.map((item) => item.path)).toContain(path);
+	});
+
+	test("the editor read door returns the committed text with its asset and refuses a collaborative file", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read Door User",
+			email: "read-door-user@example.com",
+		});
+
+		const markdown = "# Read\n\nbody\n";
+		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/read.md", markdown);
+
+		const read = await asUser.query(api.files_nodes_content.get_non_collaborative_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		// The asset comes back with the text so the editor's next save names the version this text
+		// was read from.
+		expect(read._yay).toEqual({ text: markdown, assetId, yjsRootKind: "rich_text" });
+
+		// A collaborative file is loaded from its Yjs document, so this door must not answer for it.
+		const collaborative = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "collaborative.md",
+		});
+		if (collaborative._nay) {
+			throw new Error(collaborative._nay.message);
+		}
+		const refused = await asUser.query(api.files_nodes_content.get_non_collaborative_file_content, {
+			membershipId: db.membershipId,
+			nodeId: collaborative._yay.nodeId,
+		});
+		expect(refused._nay?.message).toBe("Not found");
+	});
+
+	test("the replace door saves new text, keeps zero Yjs docs, and writes a version", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Replace Door User",
+			email: "replace-door-user@example.com",
+		});
+		const r2Writes = test_setup_r2_capture();
+
+		const path = "/plan.md";
+		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, path, "# Plan\n\nold body\n");
+
+		const rawNextText = "\ufeff# Plan\r\n\r\nnew body with searchword\r\n";
+		const nextText = "# Plan\n\nnew body with searchword\n";
+		const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: rawNextText,
+			baseAssetId: assetId,
+		});
+		expect(saved._nay).toBeUndefined();
+
+		const after = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const snapshots = (await ctx.db.query("files_snapshots").collect()).filter(
+				(snapshot) => snapshot.fileNodeId === nodeId,
+			);
+			const newAsset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			const versionAsset = snapshots[0] ? await ctx.db.get("files_r2_assets", snapshots[0].assetId) : null;
+			return {
+				assetId: node?.assetId,
+				nonCollaborative: node?.nonCollaborative,
+				newAssetKind: newAsset?.kind,
+				newAssetKey: newAsset?.r2Key,
+				newAssetSize: newAsset?.size,
+				versionAssetId: versionAsset?._id,
+				versionAssetKey: versionAsset?.r2Key,
+				snapshotCount: snapshots.length,
+				yjsSnapshots: (await ctx.db.query("files_yjs_snapshots").collect()).length,
+				yjsLastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
+				yjsUpdates: (await ctx.db.query("files_yjs_updates").collect()).length,
+			};
+		});
+
+		// Objective 3: the replace landed and the file is still non-collaborative.
+		expect(after.nonCollaborative).toBe(true);
+		expect(after.assetId).not.toBe(assetId);
+		// The door hands back the asset it wrote, so an editor that stays open can save again
+		// without waiting for the node doc to reach it.
+		expect(saved._yay?.assetId).toBe(after.assetId);
+		expect(after.newAssetKind).toBe("content_snapshot");
+		expect(after.newAssetSize).toBe(files_get_utf8_byte_size(nextText));
+		expect(after.yjsSnapshots).toBe(0);
+		expect(after.yjsLastSequences).toBe(0);
+		expect(after.yjsUpdates).toBe(0);
+
+		// The version snapshot the save wrote points at the saved asset and its exact R2 body.
+		expect(after.snapshotCount).toBe(1);
+		expect(after.newAssetKey ? r2Writes.get(after.newAssetKey) : undefined).toBe(nextText);
+		expect(after.versionAssetId).toBe(after.assetId);
+		expect(after.versionAssetKey ? r2Writes.get(after.versionAssetKey) : undefined).toBe(nextText);
+
+		// The committed chunks were replaced, not appended: reading back gives exactly the new text.
+		const readBack = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path,
+			mode: { kind: "full", maxBytes: 100_000 },
+		});
+		expect(readBack?.content).toBe(nextText);
+	});
+
+	test("the replace door refuses a locked file, a stale base, and over-cap content", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Replace Door Guard User",
+			email: "replace-door-guard-user@example.com",
+		});
+		const r2Writes = test_setup_r2_capture();
+
+		const original = "# Guarded\n\noriginal body\n";
+		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/guarded.md", original);
+
+		const read_current_text = () =>
+			t.query(internal.files_nodes.read_file_content_from_chunks, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				path: "/guarded.md",
+				mode: { kind: "full", maxBytes: 100_000 },
+			});
+
+		// Objective 16: over-cap text is refused before anything is written, with a plain message —
+		// not by a late throw from the chunk insert.
+		const tooBig = await asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: "x".repeat(files_MAX_TEXT_CONTENT_BYTES + 1),
+			baseAssetId: assetId,
+		});
+		expect(tooBig._nay?.message).toContain("exceeds");
+
+		// Objective 16, second half: over-cap frontmatter is refused the same way.
+		const tooManyFields = Array.from(
+			{ length: files_metadata_MAX_FRONTMATTER_FIELDS + 5 },
+			(_, index) => `field${index}: value${index}`,
+		).join("\n");
+		const fatFrontmatter = await asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: `---\n${tooManyFields}\n---\n\nbody\n`,
+			baseAssetId: assetId,
+		});
+		// Same words as the pending-update preflight: both doors take a whole text from a person who
+		// can shorten it after reading the message.
+		expect(fatFrontmatter._nay?.message).toBe("Too many frontmatter fields");
+
+		// A save built on an older version refuses instead of overwriting text it never saw.
+		const staleBase = await asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: "# Guarded\n\nfrom a stale editor\n",
+			baseAssetId: (await t.run(async (ctx) =>
+				ctx.db.insert("files_r2_assets", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					kind: "content_snapshot",
+					r2Bucket: "test-bucket",
+					size: 1,
+					createdBy: db.userId,
+					updatedAt: Date.now(),
+				}),
+			)) as Id<"files_r2_assets">,
+		});
+		expect(staleBase._nay?.message).toContain("changed while you were saving");
+
+		// Objective 5: the read-only lock blocks this write door like every other one.
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(locked._nay).toBeUndefined();
+		const whileLocked = await asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: "# Guarded\n\nwritten through the lock\n",
+			baseAssetId: assetId,
+		});
+		expect(whileLocked._nay?.name).toBe("read_only");
+		expect(whileLocked._nay?.message).toBe("This item is read-only.");
+
+		// Every refusal above happened before an R2 PUT and left the committed text untouched.
+		expect(r2Writes.size).toBe(0);
+		expect((await read_current_text())?.content).toBe(original);
+		const afterRefusals = await t.run(async (ctx) => ({
+			assetId: (await ctx.db.get("files_nodes", nodeId))?.assetId,
+			assets: (await ctx.db.query("files_r2_assets").collect()).length,
+			versions: (await ctx.db.query("files_snapshots").collect()).filter(
+				(snapshot) => snapshot.fileNodeId === nodeId,
+			).length,
+		}));
+		expect(afterRefusals).toEqual({ assetId, assets: 2, versions: 0 });
+	});
+
+	test("the replacement finalizer rechecks a lock added after preflight", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Replacement Final Lock User",
+		});
+		const original = "# Final lock\n\noriginal body\n";
+		const nextText = "# Final lock\n\nreplacement body\n";
+		const { nodeId, assetId } = await seed_non_collaborative_file(
+			t,
+			db,
+			"/replacement-final-lock.md",
+			original,
+		);
+
+		const preflight = await t.query(internal.files_nodes_content.get_replace_file_content_preflight, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+		});
+		expect(preflight?.readOnlyScopeNodeId).toBeNull();
+		const versionSnapshotAssetId = await t.run(async (ctx) => {
+			const now = Date.now();
+			return await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: files_get_utf8_byte_size(nextText),
+				createdBy: db.userId,
+				unfinalizedExpiresAt: now + 60_000,
+				updatedAt: now,
+			});
+		});
+
+		// The action already passed its cheap check and uploaded. A lock added now must still stop
+		// the final transaction before it publishes the asset or changes the committed text.
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(locked._nay).toBeUndefined();
+		const refused = await t.mutation(internal.files_nodes_content.finalize_file_content_replacement, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			text: nextText,
+			textSize: files_get_utf8_byte_size(nextText),
+			baseAssetId: assetId,
+			versionSnapshotAssetId,
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+
+		const after = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", nodeId),
+			newAsset: await ctx.db.get("files_r2_assets", versionSnapshotAssetId),
+			versions: (await ctx.db.query("files_snapshots").collect()).filter(
+				(snapshot) => snapshot.fileNodeId === nodeId,
+			),
+		}));
+		expect(after.node?.assetId).toBe(assetId);
+		expect(after.newAsset?.r2Key).toBeUndefined();
+		expect(after.newAsset?.unfinalizedExpiresAt).toBeDefined();
+		expect(after.versions).toEqual([]);
+		const readBack = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/replacement-final-lock.md",
+			mode: { kind: "full", maxBytes: 100_000 },
+		});
+		expect(readBack?.content).toBe(original);
+	});
+
+	test("the replace door refuses a member who cannot write the file", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const r2Writes = test_setup_r2_capture();
+
+		const original = "# Restricted\n\noriginal body\n";
+		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/restricted.md", original);
+
+		// A plain workspace member with no grant on this file. The owner passes every permission
+		// check, so a refusal can only be proven with a second identity.
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_replace_door_member" });
+			const now = Date.now();
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			// Restrict the file to its own scope, so workspace-wide access no longer reaches it.
+			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+			return { userId, membershipId };
+		});
+
+		const asMember = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: member.userId,
+			name: "Replace Door Member",
+			email: "replace-door-member@example.com",
+		});
+
+		const refused = await asMember.action(api.files_nodes_content.replace_file_content, {
+			membershipId: member.membershipId,
+			nodeId,
+			text: "# Restricted\n\nwritten without permission\n",
+			baseAssetId: assetId,
+		});
+		// An action cannot read the database, so it only learns that its preflight query said no,
+		// not which check said it. It answers one message for all of them, the same way
+		// `restore_snapshot_r2` does. A mutation bubbles the exact refusal instead; see
+		// `both toggles refuse a member who cannot write the file`.
+		expect(refused._nay).toBeDefined();
+		expect(refused._nay?.name).not.toBe("read_only");
+
+		const stillOriginal = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/restricted.md",
+			mode: { kind: "full", maxBytes: 100_000 },
+		});
+		expect(stillOriginal?.content).toBe(original);
+
+		// The refusal left no orphan: no new version snapshot doc and no new content asset.
+		const leftovers = await t.run(async (ctx) => ({
+			snapshots: (await ctx.db.query("files_snapshots").collect()).filter(
+				(snapshot) => snapshot.fileNodeId === nodeId,
+			).length,
+			assets: (await ctx.db.query("files_r2_assets").collect()).length,
+		}));
+		expect(leftovers.snapshots).toBe(0);
+		expect(leftovers.assets).toBe(1);
+		expect(r2Writes.size).toBe(0);
+
+		// Positive control: the ONLY thing missing was the permission. Grant it and the same call
+		// goes through. Without this, a refusal caused by a wrong membership id or a wrong node
+		// shape would look exactly like a permission refusal.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				resourceKind: "file",
+				resourceId: nodeId,
+				principalKind: "user",
+				userId: member.userId,
+				permission: "content.write",
+				createdAt: now,
+				updatedAt: now,
+			});
+		});
+
+		// With the permission granted, the credit gate is the next thing that stops the save. This is
+		// the same gate the Yjs save door charges. Turning collaboration off is not a way to save
+		// without paying.
+		const unfunded = await asMember.action(api.files_nodes_content.replace_file_content, {
+			membershipId: member.membershipId,
+			nodeId,
+			text: "# Restricted\n\nwritten with permission\n",
+			baseAssetId: assetId,
+		});
+		expect(unfunded._nay?.message).toBe("Insufficient funds");
+		expect(r2Writes.size).toBe(0);
+
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, member.userId));
+		const allowed = await asMember.action(api.files_nodes_content.replace_file_content, {
+			membershipId: member.membershipId,
+			nodeId,
+			text: "# Restricted\n\nwritten with permission\n",
+			baseAssetId: assetId,
+		});
+		expect(allowed._nay).toBeUndefined();
+	});
+
+	test("every Yjs door still refuses a non-collaborative file", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Yjs Door User",
+			email: "yjs-door-user@example.com",
+		});
+		const { nodeId } = await seed_non_collaborative_file(t, db, "/locked.md", "# Locked\n\nbody\n");
+
+		// The predicate is what every Yjs door gates on, so this is the single fact that makes them
+		// all fail closed. The read predicate answers the opposite for the same node.
+		const verdicts = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			return {
+				hasYjs: files_node_has_editable_yjs_state(node),
+				hasText: files_node_has_editable_text_content(node),
+			};
+		});
+		expect(verdicts.hasYjs).toBe(false);
+		expect(verdicts.hasText).toBe(true);
+
+		// Drive the two public Yjs doors as well. The predicate above only proves the fixture; a
+		// door that forgot to ask would still write.
+		const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: "# Locked\n\nthrough Yjs\n" });
+		if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
+		const removedLineageId = await t.run(async (ctx) =>
+			ctx.db.insert("files_yjs_docs_last_sequences", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: nodeId,
+				lastSequence: 0,
+				unmaterializedUpdateCount: 0,
+				unmaterializedUpdateBytes: 0,
+				lineageGeneration: 0,
+			}),
+		);
+		const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId,
+			// A collaboration-off node has no live lineage, so any client token must fail closed.
+			expectedYjsLastSequenceId: removedLineageId,
+			update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
+			sessionId: "non-collaborative-door",
+		});
+		yjsDoc.destroy();
+		expect(pushed._nay?.message).toBe("Not found");
+		await t.run(async (ctx) => ctx.db.delete("files_yjs_docs_last_sequences", removedLineageId));
+
+		// This one answers `null` rather than a refusal: it is a read the editor polls, and a file
+		// with no document has no sequence to report.
+		const sequence = await asUser.query(api.files_nodes.get_file_last_yjs_sequence, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(sequence).toBeNull();
+
+		// The refused push wrote no update log and no sequence doc.
+		const yjsDocs = await t.run(async (ctx) => ({
+			updates: (await ctx.db.query("files_yjs_updates").collect()).length,
+			lastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
+		}));
+		expect(yjsDocs.updates).toBe(0);
+		expect(yjsDocs.lastSequences).toBe(0);
+	});
+
+	test("turning collaboration off and back on keeps the visible text", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Round Trip User",
+			email: "round-trip-user@example.com",
+		});
+		const r2Writes = test_setup_r2_capture();
+
+		const markdown = "# Round trip\n\nbody with searchword\n";
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/round-trip.md", markdown);
+
+		const read_current_text = () =>
+			t.query(internal.files_nodes.read_file_content_from_chunks, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				path: "/round-trip.md",
+				mode: { kind: "full", maxBytes: 100_000 },
+			});
+		const collaborative_doc_counts = () =>
+			t.run(async (ctx) => {
+				const node = await ctx.db.get("files_nodes", nodeId);
+				return {
+					nonCollaborative: node?.nonCollaborative,
+					hasPointers: node?.yjsSnapshotId !== undefined && node?.yjsLastSequenceId !== undefined,
+					snapshots: (await ctx.db.query("files_yjs_snapshots").collect()).length,
+					lastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
+					updates: (await ctx.db.query("files_yjs_updates").collect()).length,
+					materializationJobs: (await ctx.db.query("files_content_materialization_jobs").collect()).length,
+				};
+			});
+
+		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(off._nay).toBeUndefined();
+		await drain_scheduled_continuations(t);
+
+		// Objective 4, first half: the whole Yjs document is gone and the text survived it.
+		const afterOff = await collaborative_doc_counts();
+		expect(afterOff.nonCollaborative).toBe(true);
+		expect(afterOff.hasPointers).toBe(false);
+		expect(afterOff.snapshots).toBe(0);
+		expect(afterOff.lastSequences).toBe(0);
+		expect(afterOff.updates).toBe(0);
+		expect(afterOff.materializationJobs).toBe(0);
+		expect((await read_current_text())?.content).toBe(markdown);
+
+		// The old Yjs snapshot object is not deleted straight away: a materialization worker that
+		// is already running can still write it back, so the deletion job waits first.
+		const deletionJob = await t.run(async (ctx) => {
+			const jobs = await ctx.db.query("files_r2_object_deletion_jobs").collect();
+			return jobs.at(0);
+		});
+		expect(deletionJob?.reason).toBe("untracked_asset_event");
+		expect(deletionJob?.putMayArriveUntil).toBeGreaterThan(Date.now());
+
+		const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(on._nay).toBeUndefined();
+
+		// Objective 4, second half: one fresh document, and the same visible text again.
+		const afterOn = await collaborative_doc_counts();
+		expect(afterOn.nonCollaborative).toBeUndefined();
+		expect(afterOn.hasPointers).toBe(true);
+		expect(afterOn.snapshots).toBe(1);
+		expect(afterOn.lastSequences).toBe(1);
+		expect((await read_current_text())?.content).toBe(markdown);
+
+		// The fresh document starts its own history at sequence 0, so nothing built against the old
+		// one can be replayed onto it.
+		const freshDoc = await t.run(async (ctx) => {
+			const lastSequenceDoc = (await ctx.db.query("files_yjs_docs_last_sequences").collect()).at(0);
+			const snapshotDoc = (await ctx.db.query("files_yjs_snapshots").collect()).at(0);
+			const snapshotAsset = snapshotDoc ? await ctx.db.get("files_r2_assets", snapshotDoc.assetId) : null;
+			return {
+				lastSequence: lastSequenceDoc?.lastSequence,
+				snapshotSequence: snapshotDoc?.sequence,
+				snapshotR2Key: snapshotAsset?.r2Key,
+			};
+		});
+		expect(freshDoc.lastSequence).toBe(0);
+		expect(freshDoc.snapshotSequence).toBe(0);
+		if (!freshDoc.snapshotR2Key) throw new Error("Expected the fresh Yjs snapshot object");
+		const freshSnapshotBody = r2Writes.get(freshDoc.snapshotR2Key);
+		if (freshSnapshotBody === undefined) throw new Error("Expected the fresh Yjs snapshot bytes in R2");
+		const freshYjsDoc = new YjsDoc();
+		applyUpdate(freshYjsDoc, new Uint8Array(await new Response(freshSnapshotBody).arrayBuffer()));
+		const freshText = files_yjs_doc_get_text({ rootKind: "rich_text", yjsDoc: freshYjsDoc });
+		freshYjsDoc.destroy();
+		if (freshText._nay) throw new Error(freshText._nay.message);
+		expect(freshText._yay).toBe(markdown);
+
+		// Both toggles are idempotent, like the read-only checkbox beside them.
+		const onAgain = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(onAgain._nay).toBeUndefined();
+		expect((await collaborative_doc_counts()).snapshots).toBe(1);
+	});
+
+	test("turning collaboration on clears a stale cleanup marker after every old Yjs doc is gone", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Stale Cleanup User",
+			email: "stale-cleanup-user@example.com",
+		});
+		test_setup_r2_capture();
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/stale-cleanup.md", "# Kept\n");
+		const oldLineageId = (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId;
+
+		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(off._nay).toBeUndefined();
+		await drain_scheduled_continuations(t);
+
+		const remainingDocs = await t.run(async (ctx) => {
+			// Recreate a cleanup that deleted its last doc but failed before the final marker patch.
+			await ctx.db.patch("files_nodes", nodeId, {
+				collaborationCleanupYjsLastSequenceId: oldLineageId,
+			});
+			return {
+				snapshots: await ctx.db
+					.query("files_yjs_snapshots")
+					.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+						q
+							.eq("organizationId", db.organizationId)
+							.eq("workspaceId", db.workspaceId)
+							.eq("fileNodeId", nodeId),
+					)
+					.collect(),
+				updates: await ctx.db
+					.query("files_yjs_updates")
+					.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+						q
+							.eq("organizationId", db.organizationId)
+							.eq("workspaceId", db.workspaceId)
+							.eq("fileNodeId", nodeId),
+					)
+					.collect(),
+			};
+		});
+		expect(remainingDocs.snapshots).toHaveLength(0);
+		expect(remainingDocs.updates).toHaveLength(0);
+
+		const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(on._nay).toBeUndefined();
+		const enabledNode = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
+		expect(enabledNode?.nonCollaborative).toBeUndefined();
+		expect(enabledNode?.collaborationCleanupYjsLastSequenceId).toBeUndefined();
+		expect(enabledNode?.yjsLastSequenceId).toBeDefined();
+	});
+
+	test("old cleanup and workers cannot cross into a new collaboration lineage", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Lineage Race User",
+			email: "lineage-race-user@example.com",
+		});
+		const r2Writes = test_setup_r2_capture();
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/lineage-race.md", "# Before\n");
+		const oldLineage = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			if (!node?.yjsLastSequenceId || !node.yjsSnapshotId) throw new Error("Expected old Yjs pointers");
+			const lastSequence = await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId);
+			const snapshot = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
+			if (!lastSequence || !snapshot) throw new Error("Expected the old Yjs lineage");
+			return {
+				lastSequenceId: lastSequence._id,
+				snapshotId: snapshot._id,
+				throughSequence: lastSequence.lastSequence,
+				snapshotAssetId: snapshot.assetId,
+			};
+		});
+
+		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(off._nay).toBeUndefined();
+
+		// Do not reset sequence numbers while the old numeric cleanup can still run. This is the
+		// exact OFF -> ON race that used to delete sequence 1 from the new document.
+		const writesBeforeBlockedOn = r2Writes.size;
+		const blockedOn = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(blockedOn._nay?.message).toBe("The old collaboration history is still being removed. Try again in a moment.");
+		expect(r2Writes.size).toBe(writesBeforeBlockedOn);
+
+		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_covered_rows, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			throughSequence: oldLineage.throughSequence,
+			supersededYjsAssetId: oldLineage.snapshotAssetId,
+			nonCollaborativeCleanupYjsLastSequenceId: oldLineage.lastSequenceId,
+		});
+		const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(on._nay).toBeUndefined();
+		const freshPointers = await test_get_file_yjs_pointers(t, nodeId);
+		expect(freshPointers.yjsLastSequenceId).not.toBe(oldLineage.lastSequenceId);
+		expect(freshPointers.yjsSnapshotId).not.toBe(oldLineage.snapshotId);
+
+		const nextDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: "# After\n" });
+		if ("_nay" in nextDoc) throw new Error(nextDoc._nay.message);
+		const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId,
+			expectedYjsLastSequenceId: freshPointers.yjsLastSequenceId,
+			update: files_u8_to_array_buffer(encodeStateAsUpdate(nextDoc)),
+			sessionId: "fresh-lineage",
+		});
+		nextDoc.destroy();
+		expect(pushed._nay).toBeUndefined();
+
+		// A late provider from the old editor session must not write into the fresh sequence log.
+		const stalePush = await t.run(async (ctx) =>
+			files_db_yjs_push_update(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				nodeId,
+				expectedYjsLastSequenceId: oldLineage.lastSequenceId,
+				rootKind: "rich_text",
+				update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
+				sessionId: "stale-lineage",
+				materializeImmediately: false,
+			}),
+		);
+		expect(stalePush._nay?.message).toBe(
+			"This file changed while you were editing. Copy your local changes before reloading, then try again.",
+		);
+
+		// Old workers can have the same numeric target as the new sequence. Exact document ids,
+		// not the number, keep them from settling or deleting the fresh job and update.
+		await t.mutation(internal.files_nodes_content.mark_file_content_too_large, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			expectedYjsLastSequenceId: oldLineage.lastSequenceId,
+			expectedYjsSnapshotId: oldLineage.snapshotId,
+			sequence: 1,
+			targetSequence: 1,
+			byteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
+		});
+		await t.mutation(internal.files_nodes_content.cleanup_file_materialization_covered_rows, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			expectedYjsLastSequenceId: oldLineage.lastSequenceId,
+			throughSequence: oldLineage.throughSequence,
+		});
+		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_covered_rows, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			throughSequence: oldLineage.throughSequence,
+			supersededYjsAssetId: oldLineage.snapshotAssetId,
+			expectedActiveYjsLastSequenceId: oldLineage.lastSequenceId,
+		});
+		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_covered_rows, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			throughSequence: oldLineage.throughSequence,
+			supersededYjsAssetId: oldLineage.snapshotAssetId,
+			nonCollaborativeCleanupYjsLastSequenceId: oldLineage.lastSequenceId,
+		});
+
+		const afterStaleWork = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			return {
+				lastSequenceId: node?.yjsLastSequenceId,
+				tooLargeMarker: node?.contentTooLargeByteSize,
+				updates: (await ctx.db.query("files_yjs_updates").collect()).filter((update) => update.fileNodeId === nodeId),
+				jobs: (await ctx.db.query("files_content_materialization_jobs").collect()).filter(
+					(job) => job.fileNodeId === nodeId,
+				),
+			};
+		});
+		expect(afterStaleWork.lastSequenceId).toBe(freshPointers.yjsLastSequenceId);
+		expect(afterStaleWork.tooLargeMarker).toBeUndefined();
+		expect(afterStaleWork.updates.map((update) => update.sequence)).toEqual([1]);
+		expect(afterStaleWork.jobs.map((job) => job.targetSequence)).toEqual([1]);
+	});
+
+	test("both toggles refuse a locked file, and turning off refuses without the acknowledgement", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Toggle Guard User",
+			email: "toggle-guard-user@example.com",
+		});
+		const r2Writes = test_setup_r2_capture();
+
+		const markdown = "# Guarded toggle\n\nbody\n";
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/guarded-toggle.md", markdown);
+
+		// Objective 5: a destructive toggle without the acknowledgement is refused before any read.
+		const unacknowledged = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: false,
+		});
+		expect(unacknowledged._nay?.message).toContain("acknowledgement flag");
+
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(locked._nay).toBeUndefined();
+
+		// The read-only lock blocks the mode toggle like any other write door.
+		const offWhileLocked = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(offWhileLocked._nay?.name).toBe("read_only");
+		expect(offWhileLocked._nay?.message).toBe("This item is read-only.");
+
+		// The document is untouched, so unlocking and toggling off still works and the other
+		// direction can be checked on a locked non-collaborative file.
+		expect(
+			await t.run(async (ctx) => (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length),
+		).toBe(1);
+
+		await asUser.mutation(api.files_nodes.set_node_writable, { membershipId: db.membershipId, nodeId });
+		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(off._nay).toBeUndefined();
+		await drain_scheduled_continuations(t);
+
+		await asUser.mutation(api.files_nodes.set_node_read_only, { membershipId: db.membershipId, nodeId });
+		const objectsBeforeOn = r2Writes.size;
+		const onWhileLocked = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(onWhileLocked._nay?.name).toBe("read_only");
+
+		// The lock is answered before the uploads, so the refusal writes nothing into the bucket
+		// that the cleanup ledger would then have to delete.
+		expect(r2Writes.size).toBe(objectsBeforeOn);
+
+		// The refused toggle left no half-built document and no orphan assets behind.
+		const leftovers = await t.run(async (ctx) => ({
+			snapshots: (await ctx.db.query("files_yjs_snapshots").collect()).length,
+			lastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
+			unfinalizedAssets: (await ctx.db.query("files_r2_assets").collect()).filter(
+				(asset) => asset.r2Key === undefined,
+			).length,
+		}));
+		expect(leftovers.snapshots).toBe(0);
+		expect(leftovers.lastSequences).toBe(0);
+		expect(leftovers.unfinalizedAssets).toBe(0);
+	});
+
+	test("the collaboration-enable finalizer rechecks a lock added after preflight", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Collaboration Final Lock User",
+		});
+		const text = "# Enable final lock\n\nbody\n";
+		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/enable-final-lock.md", text);
+
+		const preflight = await t.query(internal.files_nodes_content.get_set_file_collaborative_preflight, {
+			membershipId: db.membershipId,
+			nodeId,
+			userId: db.userId,
+		});
+		expect(preflight?.readOnlyScopeNodeId).toBeNull();
+		expect(preflight?.alreadyCollaborative).toBe(false);
+		const assets = await seed_unpublished_asset_pair(t, db);
+
+		// The action already passed its cheap check and uploaded both objects. A lock added now must
+		// still stop the final transaction before it creates or publishes a new Yjs lineage.
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(locked._nay).toBeUndefined();
+		const refused = await asUser.mutation(
+			internal.files_nodes_content.finalize_file_collaboration_enable,
+			{
+				membershipId: db.membershipId,
+				nodeId,
+				text,
+				textSize: files_get_utf8_byte_size(text),
+				baseAssetId: assetId,
+				yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
+				yjsSnapshotSize: 2,
+				contentSnapshotAssetId: assets.contentSnapshotAssetId,
+			},
+		);
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+
+		const after = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", nodeId),
+			yjsSnapshots: await ctx.db.query("files_yjs_snapshots").collect(),
+			lastSequences: await ctx.db.query("files_yjs_docs_last_sequences").collect(),
+			yjsAsset: await ctx.db.get("files_r2_assets", assets.yjsSnapshotAssetId),
+			contentAsset: await ctx.db.get("files_r2_assets", assets.contentSnapshotAssetId),
+		}));
+		expect(after.node).toMatchObject({ nonCollaborative: true, assetId });
+		expect(after.node?.yjsSnapshotId).toBeUndefined();
+		expect(after.node?.yjsLastSequenceId).toBeUndefined();
+		expect(after.yjsSnapshots).toEqual([]);
+		expect(after.lastSequences).toEqual([]);
+		expect(after.yjsAsset?.r2Key).toBeUndefined();
+		expect(after.contentAsset?.r2Key).toBeUndefined();
+	});
+
+	test("both toggles refuse a member who cannot write the file", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Toggle Owner",
+			email: "toggle-owner@example.com",
+		});
+		const r2Writes = test_setup_r2_capture();
+
+		const markdown = "# Toggle acl\n\nbody\n";
+		const collaborativeNodeId = await test_materialize_markdown_file(t, asOwner, db, "/toggle-acl-on.md", markdown);
+		const { nodeId: nonCollaborativeNodeId } = await seed_non_collaborative_file(
+			t,
+			db,
+			"/toggle-acl-off.md",
+			markdown,
+		);
+		// The seed helper writes the asset doc but never uploads its object, and the ON toggle reads
+		// the committed text back from the bucket. Put it there so the positive control below
+		// reaches the permission check instead of a 404.
+		r2Writes.set("content-snapshot/toggle-acl-off.md", markdown);
+
+		// A plain workspace member with no grant on either file. The owner passes every permission
+		// check, so a refusal can only be proven with a second identity.
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_toggle_acl_member" });
+			const now = Date.now();
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			// Restrict both files to their own scope, so workspace-wide access no longer reaches them.
+			await ctx.db.patch("files_nodes", collaborativeNodeId, { restrictedScopeNodeId: collaborativeNodeId });
+			await ctx.db.patch("files_nodes", nonCollaborativeNodeId, { restrictedScopeNodeId: nonCollaborativeNodeId });
+			return { userId, membershipId };
+		});
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, member.userId));
+
+		const asMember = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: member.userId,
+			name: "Toggle Acl Member",
+			email: "toggle-acl-member@example.com",
+		});
+
+		const offRefused = await asMember.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: member.membershipId,
+			nodeId: collaborativeNodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		// A mutation asks the permission question itself, so it bubbles the shared helper's exact
+		// refusal: the member can see this workspace, they just may not write this file.
+		expect(offRefused._nay?.message).toBe("Permission denied");
+
+		// The other toggle is an action. It cannot read the database, so it only learns that its
+		// preflight query said no, and answers one message for every reason.
+		const onRefused = await asMember.action(api.files_nodes_content.set_file_collaborative, {
+			membershipId: member.membershipId,
+			nodeId: nonCollaborativeNodeId,
+		});
+		expect(onRefused._nay?.message).toBe("Not found");
+
+		// Neither refusal changed a mode or built a document.
+		const modes = await t.run(async (ctx) => ({
+			collaborative: (await ctx.db.get("files_nodes", collaborativeNodeId))?.nonCollaborative,
+			nonCollaborative: (await ctx.db.get("files_nodes", nonCollaborativeNodeId))?.yjsSnapshotId,
+			lastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
+		}));
+		expect(modes.collaborative).toBeUndefined();
+		expect(modes.nonCollaborative).toBeUndefined();
+		expect(modes.lastSequences).toBe(1);
+
+		// Positive control: the ONLY thing missing was the permission. Grant it on both files and
+		// the same two calls go through. Without this, a refusal caused by a wrong membership id or
+		// a wrong node shape would look exactly like a permission refusal.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const nodeId of [collaborativeNodeId, nonCollaborativeNodeId]) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					resourceKind: "file",
+					resourceId: nodeId,
+					principalKind: "user",
+					userId: member.userId,
+					permission: "content.write",
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+		});
+
+		const offAllowed = await asMember.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: member.membershipId,
+			nodeId: collaborativeNodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(offAllowed._nay).toBeUndefined();
+		const onAllowed = await asMember.action(api.files_nodes_content.set_file_collaborative, {
+			membershipId: member.membershipId,
+			nodeId: nonCollaborativeNodeId,
+		});
+		expect(onAllowed._nay).toBeUndefined();
+	});
+
+	test("turning collaboration off waits for temporary frontmatter recovery but not a durable marker", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Materialization Gate User",
+			email: "materialization-gate-user@example.com",
+		});
+		test_setup_r2_capture();
+
+		const markdown = "# Gate\n\nbody\n";
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/gate.md", markdown);
+
+		// Push one more edit and do NOT materialize it. The committed text is now behind the
+		// document, so dropping the document here would silently lose that edit.
+		const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: `${markdown}\nunsaved line\n` });
+		if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
+		const push = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
+			update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
+			sessionId: "gate-unmaterialized",
+		});
+		yjsDoc.destroy();
+		expect(push._nay).toBeUndefined();
+
+		const count_materialization_jobs = () =>
+			t.run(async (ctx) => (await ctx.db.query("files_content_materialization_jobs").collect()).length);
+		// The push scheduled a materialization worker. Without this the job-doc check below would
+		// pass on an empty table and prove nothing.
+		expect(await count_materialization_jobs()).toBe(1);
+
+		// Objective 17: refuse with a wait, not a dead end. Materialization is automatic and quick.
+		const stillSaving = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(stillSaving._nay?.message).toBe("This file is still saving. Try again in a moment.");
+
+		// The frontmatter pair is temporary. A later fitting edit can clear it, so the toggle must
+		// still wait for the newer text to materialize instead of silently dropping that text.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", nodeId, {
+				contentFrontmatterTooLargeFieldCount: files_metadata_MAX_FRONTMATTER_FIELDS + 1,
+				contentFrontmatterTooLargeIndexDocumentCount: 1,
+			});
+		});
+		const frontmatterCanRecover = await asUser.mutation(
+			api.files_nodes_content.set_file_non_collaborative,
+			{
+				membershipId: db.membershipId,
+				nodeId,
+				acknowledgeDropCollaborativeHistory: true,
+			},
+		);
+		expect(frontmatterCanRecover._nay?.message).toBe(
+			"This file is still saving. Try again in a moment.",
+		);
+		expect(await count_materialization_jobs()).toBe(1);
+
+		// A durable marker means materialization can never catch up on its own, so waiting would be
+		// a lie. The confirmation dialog names this loss, and the toggle goes ahead.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", nodeId, {
+				contentYjsStateTooLargeByteSize: 9_000_000,
+			});
+		});
+		const marked = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(marked._nay).toBeUndefined();
+
+		// Objective 19: the toggle stops the materialization worker and forgets its job doc in its
+		// own transaction, before any continuation runs. A worker left pointing at a file whose Yjs
+		// document is gone writes the snapshot object back into the bucket after the toggle deleted
+		// it, and nothing tracks that key afterwards.
+		expect(await count_materialization_jobs()).toBe(0);
+
+		// The Yjs and frontmatter markers are cleared with the newer document state they describe.
+		// The committed text is the last materialized text, exactly as the dialog promised.
+		const after = await t.run(async (ctx) => await ctx.db.get("files_nodes", nodeId));
+		expect(after?.contentYjsStateTooLargeByteSize).toBeUndefined();
+		expect(after?.contentFrontmatterTooLargeFieldCount).toBeUndefined();
+		expect(after?.contentFrontmatterTooLargeIndexDocumentCount).toBeUndefined();
+		expect(after?.nonCollaborative).toBe(true);
+		const readBack = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/gate.md",
+			mode: { kind: "full", maxBytes: 100_000 },
+		});
+		expect(readBack?.content).toBe(markdown);
+	});
+
+	test("turning collaboration off goes ahead when the text grew past the cap", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Too Large Gate User",
+			email: "too-large-gate-user@example.com",
+		});
+		test_setup_r2_capture();
+
+		const markdown = "# Too large\n\nbody\n";
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/too-large.md", markdown);
+
+		const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: `${markdown}\nunsaved line\n` });
+		if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
+		const push = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
+			update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
+			sessionId: "too-large-gate",
+		});
+		yjsDoc.destroy();
+		expect(push._nay).toBeUndefined();
+
+		// Settle that materialization the way the real worker does when the text no longer fits.
+		// The settle deletes the job docs itself, so the committed text can never catch up again
+		// and "still saving" would be a permanent lie.
+		const sequence = await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", nodeId);
+			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode!.yjsLastSequenceId!);
+			return lastSequenceDoc!.lastSequence;
+		});
+		await t.mutation(internal.files_nodes_content.mark_file_content_too_large, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
+			expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, nodeId)).yjsSnapshotId,
+			sequence,
+			targetSequence: sequence,
+			byteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
+		});
+		expect(await t.run(async (ctx) => (await ctx.db.query("files_content_materialization_jobs").collect()).length)).toBe(
+			0,
+		);
+
+		const marked = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(marked._nay).toBeUndefined();
+
+		// The over-cap text lived only in the dropped document, so the marker goes with it and the
+		// file reopens at the last text that fit.
+		const after = await t.run(async (ctx) => await ctx.db.get("files_nodes", nodeId));
+		expect(after?.contentTooLargeByteSize).toBeUndefined();
+		expect(after?.nonCollaborative).toBe(true);
+		const readBack = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/too-large.md",
+			mode: { kind: "full", maxBytes: 100_000 },
+		});
+		expect(readBack?.content).toBe(markdown);
+	});
+
+	test("turning collaboration off drops content proposals and keeps move proposals", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Pending Drop User",
+			email: "pending-drop-user@example.com",
+		});
+		test_setup_r2_capture();
+
+		const markdown = "# Pending\n\nbody\n";
+		const contentOnlyNodeId = await test_materialize_markdown_file(t, asUser, db, "/pending-content.md", markdown);
+		const contentAndMoveNodeId = await test_materialize_markdown_file(t, asUser, db, "/pending-both.md", markdown);
+
+		// Seed one content-only proposal and one content-plus-move proposal. The real upsert flow
+		// needs an operation batch and paged state staging; this test only cares about what the
+		// toggle does to the docs it finds.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const nodeId of [contentOnlyNodeId, contentAndMoveNodeId]) {
+				const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					fileNodeId: nodeId,
+					pendingMove:
+						nodeId === contentAndMoveNodeId
+							? { destParentId: "root", destName: "moved.md", fromPath: "/pending-both.md" }
+							: undefined,
+					size: 12,
+					updatedAt: now,
+				});
+				const [baseStateId, stagedStateId, unstagedStateId] = await Promise.all(
+					(["base", "staged", "unstaged"] as const).map((role) =>
+						ctx.db.insert("files_pending_update_yjs_states", {
+							organizationId: db.organizationId,
+							workspaceId: db.workspaceId,
+							userId: db.userId,
+							fileNodeId: nodeId,
+							owner: { kind: "active", pendingUpdateId, role },
+							lineageGeneration: 0,
+							sealed: true,
+							pageCount: 1,
+							totalBytes: 12,
+							digest: "0000000000000000",
+						}),
+					),
+				);
+				await ctx.db.patch("files_pending_updates", pendingUpdateId, {
+					baseYjsSequence: 1,
+					baseLineageGeneration: 0,
+					baseStateId,
+					stagedStateId,
+					unstagedStateId,
+				});
+				// The marker a real save leaves behind. It belongs to the document the toggle
+				// deletes, so it has to go with it.
+				await ctx.db.insert("files_pending_updates_last_sequence_saved", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					fileNodeId: nodeId,
+					lastSequenceSaved: 12,
+					updatedAt: now,
+				});
+			}
+		});
+
+		for (const nodeId of [contentOnlyNodeId, contentAndMoveNodeId]) {
+			const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+				membershipId: db.membershipId,
+				nodeId,
+				acknowledgeDropCollaborativeHistory: true,
+			});
+			expect(off._nay).toBeUndefined();
+		}
+		await drain_scheduled_continuations(t);
+
+		// Objective 18: a content-only proposal is deleted, because every door that could save or
+		// discard it refuses a file with no Yjs document. A proposal that also moves the file keeps
+		// the move and loses only its content.
+		const pendingAfter = await t.run(async (ctx) => {
+			const docs = await ctx.db.query("files_pending_updates").collect();
+			return {
+				docs: docs.map((doc) => ({
+					fileNodeId: doc.fileNodeId,
+					hasContent: doc.baseStateId !== undefined,
+					destName: doc.pendingMove?.destName,
+				})),
+				// The paged state families are re-owned to a cleanup task, not deleted here: one
+				// family can hold 12 MiB and this runs for every member at once.
+				activeStates: (await ctx.db.query("files_pending_update_yjs_states").collect()).filter(
+					(state) => state.owner.kind === "active",
+				).length,
+				lastSequenceSaved: (await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).length,
+			};
+		});
+		expect(pendingAfter.docs).toEqual([
+			{ fileNodeId: contentAndMoveNodeId, hasContent: false, destName: "moved.md" },
+		]);
+		expect(pendingAfter.activeStates).toBe(0);
+		// A leftover marker would make the diff editor refetch forever after collaboration is
+		// turned back on, because the fresh document starts counting at 1 again.
+		expect(pendingAfter.lastSequenceSaved).toBe(0);
+	});
+
+	test("renaming a non-collaborative file follows the editable-text class rule", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+			email: "test@example.com",
+		});
+		const { nodeId: markdownNodeId } = await seed_non_collaborative_file(t, db, "/notes.md", "# Notes\n\nbody\n");
+		const { nodeId: plainNodeId } = await seed_non_collaborative_file(t, db, "/data.json", "{}\n");
+
+		const crossedClass = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: markdownNodeId,
+			path: "notes.json",
+		});
+		expect(crossedClass._nay?.message).toBe("A Markdown file must keep the .md extension");
+
+		// A plain text subtype rename must relabel the stored media type in the same patch, the
+		// same as it does for a collaborative file.
+		const subtypeRename = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: plainNodeId,
+			path: "data.yaml",
+		});
+		if (subtypeRename._nay) {
+			throw new Error(subtypeRename._nay.message);
+		}
+		const renamed = await t.run(async (ctx) => ctx.db.get("files_nodes", plainNodeId));
+		expect(renamed?.path).toBe("/data.yaml");
+		expect(renamed?.contentType).toBe("application/yaml");
+		expect(renamed?.lowercaseExtension).toBe("yaml");
+
+		// Accepting a proposed move can rename too, and it patches the media type in its own place.
+		const movedBack = await t.run(async (ctx) =>
+			files_nodes_db_apply_pending_move(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId: plainNodeId,
+				destParentId: files_ROOT_ID,
+				destName: "data.json",
+				userId: db.userId,
+				updatedBy: db.userId,
+				authorizeCycleMember: async () => true,
+			}),
+		);
+		if (movedBack._nay) {
+			throw new Error(movedBack._nay.message);
+		}
+		const movedNode = await t.run(async (ctx) => ctx.db.get("files_nodes", plainNodeId));
+		expect(movedNode?.path).toBe("/data.json");
+		expect(movedNode?.contentType).toBe("application/json");
+	});
+});
+
 test("file_stats stay fresh after an edit: re-materialization patches the same doc in place", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -6479,6 +8124,7 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	const pushA = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
 		sessionId: "stats-edit-A",
 	});
@@ -6526,6 +8172,7 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	const pushB = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc, svA)),
 		sessionId: "stats-edit-B",
 	});
@@ -7336,6 +8983,7 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 	const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(nextYjsDoc)),
 		sessionId: "file-metadata-session",
 	});
@@ -8371,6 +10019,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(currentYjsDoc)),
 		sessionId: "restore-r2-current",
 	});
@@ -8473,6 +10122,7 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 	const pushArgs = {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
 		// Door 1 refuses zero-byte payloads, so use the legal two-byte v1 no-op as the cheap push.
 		update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
 		sessionId: "rate-limit-session",
@@ -8566,6 +10216,7 @@ test("yjs_push_update rate limit applies to anonymous JWT identities", async () 
 	const pushArgs = {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
 		// Door 1 refuses zero-byte payloads, so use the legal two-byte v1 no-op as the cheap push.
 		update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
 		sessionId: "rate-limit-anonymous-session",
@@ -8667,6 +10318,8 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 	const restoreResult = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
+		expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsSnapshotId,
 		snapshotId: restoreAssets.snapshotId,
 		sessionId: "restore-credit-test",
 		snapshotMarkdownContent: restoredMarkdown,
@@ -8967,6 +10620,8 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 	const restoreResult = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
+		expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsSnapshotId,
 		snapshotId: restoreAssets.snapshotId,
 		sessionId: "restore-billing-test",
 		snapshotMarkdownContent: restoredMarkdown,
@@ -9016,7 +10671,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					nodeId: createdFile._yay.nodeId,
-					yjsSequence: String(yjsUpdates[0]?.sequence),
+					version: String(yjsUpdates[0]?.sequence),
 				}),
 			}),
 		],
@@ -9911,6 +11566,7 @@ describe("plain text file stats and delete-all", () => {
 		const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 			update: files_u8_to_array_buffer(deleteAllDiff),
 			sessionId: "plain-delete-all",
 		});
@@ -9999,6 +11655,7 @@ describe("files_db_yjs_push_update door 1", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				nodeId,
+				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
 				update: files_u8_to_array_buffer(update),
 				sessionId: "door-1-test-session",
 				userId: db.userId,
@@ -10210,6 +11867,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				nodeId,
+				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
 				userId: db.userId,
 				updateByteLength: 10,
 			}),
@@ -10242,6 +11900,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				nodeId,
+				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
 				userId: db.userId,
 				updateByteLength: 10,
 			}),
@@ -10289,6 +11948,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				nodeId,
+				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
 				userId: db.userId,
 				updateByteLength: 10,
 			}),
@@ -10321,6 +11981,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				nodeId,
+				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
 				userId: db.userId,
 				updateByteLength: 10,
 			}),
@@ -10337,6 +11998,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				nodeId,
+				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
 				userId: db.userId,
 				updateByteLength: 0,
 			}),
@@ -10348,6 +12010,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				nodeId,
+				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
 				userId: db.userId,
 				updateByteLength: files_MAX_YJS_WIRE_BYTES + 1,
 			}),
@@ -10411,6 +12074,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 					contentSnapshotAssetId,
 					contentSize: 4,
 					fillUpdateStageId,
+					expectedYjsLastSequenceId: fileNode.yjsLastSequenceId,
 				});
 			}),
 		).rejects.toThrow(/compacted/);
@@ -10580,6 +12244,7 @@ describe("materialization guards", () => {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					nodeId,
+					expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
 					update: files_u8_to_array_buffer(update),
 					sessionId: "incremental-cap-test-session",
 					userId: db.userId,
@@ -10828,6 +12493,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		});
 
 		// The file advanced past the repair's frozen target: the final mutation must refuse.
+		const pointers = await test_get_file_yjs_pointers(t, nodeId);
 		const finalized = await t.mutation(internal.files_nodes_content.finalize_file_yjs_repair, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -10836,6 +12502,8 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			source: "latest_state",
 			acknowledgeDiscardUnmaterialized: false,
 			targetSequence: 999,
+			expectedYjsSnapshotId: pointers.yjsSnapshotId,
+			expectedYjsLastSequenceId: pointers.yjsLastSequenceId,
 			expectedLineageGeneration: 0,
 			text: "stale.",
 			textByteSize: files_get_utf8_byte_size("stale."),
@@ -10922,12 +12590,17 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 
 		// Capture the pre-repair committed content asset: it must survive the repair because the
 		// older files_snapshots history row owns it and old-version restore reads it back.
-		const preRepairAssetId = await t.run(async (ctx) => {
+		const preRepairPointers = await test_get_file_yjs_pointers(t, nodeId);
+		const preRepairAssets = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
-			if (!node?.assetId) {
-				throw new Error("Expected a committed content asset before the repair");
+			const snapshot = node?.yjsSnapshotId
+				? await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId)
+				: null;
+			const snapshotAsset = snapshot ? await ctx.db.get("files_r2_assets", snapshot.assetId) : null;
+			if (!node?.assetId || !snapshotAsset?.r2Key) {
+				throw new Error("Expected committed content and Yjs assets before the repair");
 			}
-			return node.assetId;
+			return { contentAssetId: node.assetId, yjsR2Key: snapshotAsset.r2Key };
 		});
 
 		const repaired = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
@@ -10953,6 +12626,8 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 
 			// The lineage generation advanced and the counters were reset.
 			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId);
+			expect(node.yjsLastSequenceId).not.toBe(preRepairPointers.yjsLastSequenceId);
+			expect(await ctx.db.get("files_yjs_docs_last_sequences", preRepairPointers.yjsLastSequenceId)).toBeNull();
 			expect(lastSequenceDoc?.lineageGeneration).toBe(1);
 			expect(lastSequenceDoc?.unmaterializedUpdateCount).toBe(0);
 			expect(lastSequenceDoc?.unmaterializedUpdateBytes).toBe(0);
@@ -10974,7 +12649,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 
 			// Retention: the superseded content asset and its object key survive for old-version
 			// restore; only the superseded Yjs asset is removed by the cleanup continuation.
-			const preRepairAsset = await ctx.db.get("files_r2_assets", preRepairAssetId);
+			const preRepairAsset = await ctx.db.get("files_r2_assets", preRepairAssets.contentAssetId);
 			expect(preRepairAsset).not.toBeNull();
 			expect(preRepairAsset?.r2Key).toBeTruthy();
 
@@ -10988,6 +12663,32 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			expect(chunks.length).toBeGreaterThan(0);
 			expect(chunks.map((chunk) => chunk.plainTextChunk).join("")).toContain("Repair me");
 		});
+
+		const stalePush = await t.run(async (ctx) =>
+			files_db_yjs_push_update(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				nodeId,
+				expectedYjsLastSequenceId: preRepairPointers.yjsLastSequenceId,
+				rootKind: "rich_text",
+				update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
+				sessionId: "stale-pre-repair",
+				materializeImmediately: false,
+			}),
+		);
+		expect(stalePush._nay?.message).toBe(
+			"This file changed while you were editing. Copy your local changes before reloading, then try again.",
+		);
+
+		for (let round = 0; round < 5; round += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			await t.finishInProgressScheduledFunctions();
+		}
+		const repairDeletionJob = (await read_deletion_jobs(t)).find(
+			(job) => job.r2Key === preRepairAssets.yjsR2Key,
+		);
+		expect(repairDeletionJob?.putMayArriveUntil).toBeGreaterThan(Date.now());
 	});
 
 	// Seed a file whose frontmatter marker settled: create, materialize once (so the Yjs snapshot
@@ -11028,6 +12729,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 			update: files_u8_to_array_buffer(encodeStateAsUpdate(overCapYjsDoc)),
 			sessionId: "frontmatter-repair-session",
 		});
@@ -11145,6 +12847,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		const fittingPush = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 			update: files_u8_to_array_buffer(fittingDiff),
 			sessionId: "frontmatter-repair-session",
 		});
@@ -12684,6 +14387,7 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 		const refused = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 			update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
 			sessionId: "read-only-push-direct",
 		});
@@ -12696,6 +14400,7 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 		const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 			update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
 			sessionId: "read-only-push-direct",
 		});
@@ -12736,6 +14441,7 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 		const refused = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId: createdFile._yay.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
 			update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
 			sessionId: "read-only-push-inherited",
 		});
@@ -12752,6 +14458,7 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 		const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 			update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
 			sessionId: "read-only-push-stale",
 		});
@@ -14241,6 +15948,8 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 		const refused = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 			membershipId: db.membershipId,
 			nodeId: seeded.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
+			expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsSnapshotId,
 			snapshotId: seeded.snapshotId,
 			sessionId: "restore-lock-test",
 			snapshotMarkdownContent: "# restored\n",
@@ -14286,6 +15995,8 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 			const refused = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 				membershipId: db.membershipId,
 				nodeId: seeded.nodeId,
+				expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
+				expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsSnapshotId,
 				snapshotId: seeded.snapshotId,
 				sessionId: "restore-retry-test",
 				snapshotMarkdownContent: "# restored\n",
@@ -14360,6 +16071,8 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 		const restored = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 			membershipId: db.membershipId,
 			nodeId: seeded.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
+			expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsSnapshotId,
 			snapshotId: seeded.snapshotId,
 			sessionId: "restore-unlocked-test",
 			snapshotMarkdownContent: restoredMarkdown,
@@ -14448,7 +16161,7 @@ async function seed_repair_finalize_target(
 	return { nodeId, yjsSnapshotAssetId, contentSnapshotAssetId, supersededYjsAssetId };
 }
 
-describe("files_nodes_content.cleanup_file_yjs_repair_covered_rows", () => {
+describe("files_nodes_content.cleanup_file_yjs_covered_rows", () => {
 	test("durably deletes the superseded Yjs object after a confirmed delete retry", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -14495,7 +16208,7 @@ describe("files_nodes_content.cleanup_file_yjs_repair_covered_rows", () => {
 			.spyOn(r2_confirmed_object_delete, "delete_object")
 			.mockRejectedValueOnce(new Error("simulated R2 outage"));
 
-		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_repair_covered_rows, {
+		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_covered_rows, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId: created._yay.nodeId,
@@ -14543,6 +16256,7 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 
 		// `targetSequence` is deliberately stale. A `read_only` result proves the lock check runs
 		// before the staleness checks, so no later check can publish first.
+		const pointers = await test_get_file_yjs_pointers(t, seeded.nodeId);
 		const refused = await t.mutation(internal.files_nodes_content.finalize_file_yjs_repair, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -14551,6 +16265,8 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 			source: "latest_state",
 			acknowledgeDiscardUnmaterialized: false,
 			targetSequence: 999,
+			expectedYjsSnapshotId: pointers.yjsSnapshotId,
+			expectedYjsLastSequenceId: pointers.yjsLastSequenceId,
 			expectedLineageGeneration: 0,
 			text: "repair.",
 			textByteSize: files_get_utf8_byte_size("repair."),

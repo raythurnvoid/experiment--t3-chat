@@ -57,6 +57,7 @@ import {
 	files_get_editable_text_yjs_root_kind,
 	files_get_signed_download_serving,
 	files_get_utf8_byte_size,
+	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_normalize_text_document_input,
 	type files_ContentType,
@@ -1037,7 +1038,7 @@ export const settle_upload_conversion_fallback = internalMutation({
 		});
 		// Do not start plugins when the node is missing, archived, or already editable. This matches
 		// the checks for a new upload.
-		if (!fileNode || fileNode.archiveOperationId !== undefined || files_node_has_editable_yjs_state(fileNode)) {
+		if (!fileNode || fileNode.archiveOperationId !== undefined || files_node_has_editable_text_content(fileNode)) {
 			return null;
 		}
 
@@ -1103,7 +1104,7 @@ export const finalize_uploaded_text_file = internalAction({
 
 		// A re-upload onto an already editable file keeps the editable document as-is. The node is
 		// not a stored blob, so this exit keeps today's dispatch suppression.
-		if (files_node_has_editable_yjs_state(fileNode)) {
+		if (files_node_has_editable_text_content(fileNode)) {
 			await ctx.runMutation(internal.r2.patch_asset, {
 				assetId: asset._id,
 				processingWorkId: null,
@@ -1348,7 +1349,7 @@ export const process_uploaded_asset_event = internalMutation({
 		if (!shouldStartProcessing) {
 			return Result({ _yay: null });
 		}
-		if (!fileNode || fileNode.archiveOperationId !== undefined || files_node_has_editable_yjs_state(fileNode)) {
+		if (!fileNode || fileNode.archiveOperationId !== undefined || files_node_has_editable_text_content(fileNode)) {
 			await ctx.db.patch("files_r2_assets", asset._id, {
 				processingWorkId: null,
 				updatedAt: now,

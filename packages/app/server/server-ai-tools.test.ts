@@ -87,6 +87,21 @@ function isNotAsyncIterable<T>(value: T | AsyncIterable<T>): value is T {
 }
 
 describe("ai_chat_tool_create_bash", () => {
+	test("describes direct saves when collaboration is off", () => {
+		const { ctx } = makeCtx(async () => null);
+		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
+			allowDbFilesMkdir: true,
+		});
+
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"If collaboration is off for an existing target, a shell write or edit_file saves immediately instead",
+				),
+			}),
+		);
+	});
+
 	test("forwards execution to the bash action after thread resolution", async () => {
 		const { ctx, runAction } = makeCtx(async () => null, {
 			runActionImpl: async () => ({
@@ -642,6 +657,22 @@ test("edit tool describes preserving nested app path suffixes", () => {
 	);
 });
 
+test("edit tool describes direct saves when collaboration is off", () => {
+	const { ctx } = makeCtx(async () => null);
+	const editTool = ai_chat_tool_create_edit_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
+	);
+
+	expect(editTool).toEqual(
+		expect.objectContaining({
+			description: expect.stringContaining(
+				"If collaboration is off for the file, it saves the edit immediately",
+			),
+		}),
+	);
+});
+
 test("edit_file tool treats an invalid pending update id as absent", async () => {
 	const { ctx, runQuery, runAction } = makeCtx(async () => null, {
 		runActionImpl: async () => null,
@@ -786,6 +817,70 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.matches).toBe(1);
 	expect(result.metadata.matcher).toBe("simple");
+});
+
+test("edit_file tool saves a non-collaborative file instead of proposing an update", async () => {
+	const nodeId = "p789";
+	const currentContent = {
+		nodeId,
+		displayNodeId: nodeId,
+		content: "Hello world",
+		pendingUpdateId: null,
+		nonCollaborativeBaseAssetId: "asset789",
+	};
+
+	let runActionCallCount = 0;
+	// Both mocks answer as the proposal path expects, so taking that path here would succeed and
+	// only the assertions below would notice.
+	const { ctx, runQuery, runMutation, runAction } = makeCtx(async () => null, {
+		runMutationImpl: async () => ({ _yay: { operationBatchId: "batch789", expiresAt: Date.now() + 60_000 } }),
+		runActionImpl: async () => {
+			runActionCallCount += 1;
+			return runActionCallCount === 1 ? currentContent : { _yay: null };
+		},
+	});
+	const tool = ai_chat_tool_create_edit_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
+	);
+	const result = await tool.execute?.(
+		{
+			path: "/docs/hello.md",
+			oldString: "world",
+			newString: "team",
+			replaceAll: false,
+		},
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	// The read is followed by the save itself: no operation batch, no staged text input, and no
+	// pending update to look up afterwards.
+	// Compare call counts, not the mocks: a failing `toHaveBeenCalled` prints the recorded
+	// arguments, and Convex function references throw while vitest formats them.
+	expect(runMutation.mock.calls.length).toBe(0);
+	expect(runQuery.mock.calls.length).toBe(0);
+	expect(runAction.mock.calls.length).toBe(2);
+	const [, saveArgs] = runAction.mock.calls[1]!;
+	expect(saveArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		userId: server_ai_tools_test_user_id,
+		nodeId,
+		text: "Hello team",
+		baseAssetId: "asset789",
+	});
+
+	expect(result.metadata.pendingUpdateId).toBe(null);
+	expect(result.output).toBe(
+		"Replaced 1 occurrence. Collaboration is off for this file, so the change is already saved and there is nothing to review.",
+	);
 });
 
 test("replace_once_or_all: line-trimmed matching preserves the following newline", () => {

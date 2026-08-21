@@ -367,6 +367,23 @@ export function files_editable_text_refusal_message(fileName: string) {
 }
 
 /**
+ * The refusal for a copy whose source and destination are different text classes.
+ *
+ * A copy never converts the text, so Markdown must land in a `.md` path and plain text in a plain
+ * text path. Both agent copy doors answer with this exact sentence: the pending proposal on a
+ * collaborative destination, and the direct save on a non-collaborative one.
+ */
+export function files_copy_class_mismatch_message(args: {
+	sourceRootKind: files_YjsRootKind;
+	destRootKind: files_YjsRootKind;
+}) {
+	const describe_class = (rootKind: files_YjsRootKind) =>
+		rootKind === "rich_text" ? "a Markdown (.md) file" : "a plain text file";
+
+	return `File classes do not match: the source is ${describe_class(args.sourceRootKind)} and the destination is ${describe_class(args.destRootKind)}. Copy Markdown into a .md path and plain text into a plain text path.`;
+}
+
+/**
  * Return the Monaco language id for a file name. Unmapped names render as plain text.
  */
 export function files_get_monaco_language_id(fileName: string) {
@@ -580,6 +597,26 @@ type FileNodeFieldsForEditability = Pick<
 	"kind" | "assetId" | "yjsSnapshotId" | "yjsLastSequenceId" | "yjsRootKind"
 >;
 
+/**
+ * True when the node is a text file the app can read and write, whether or not it is collaborative.
+ *
+ * Use this for anything that works on the text: reading the committed chunks, replacing the content,
+ * choosing the editor, deciding which renames are legal, indexing frontmatter. Use
+ * `files_node_has_editable_yjs_state` instead for anything that touches the Yjs document itself.
+ *
+ * `yjsRootKind` is the marker, not the Yjs pointers. Stored upload blobs and read-only mount files
+ * also have an `assetId` but never get a `yjsRootKind`, so they stay out.
+ */
+export function files_node_has_editable_text_content<Node extends FileNodeFieldsForEditability | null | undefined>(
+	node: Node,
+): node is NonNullable<Node> & {
+	kind: "file";
+	assetId: NonNullable<FileNodeFieldsForEditability["assetId"]>;
+	yjsRootKind: NonNullable<FileNodeFieldsForEditability["yjsRootKind"]>;
+} {
+	return node?.kind === "file" && node.assetId !== undefined && node.yjsRootKind !== undefined;
+}
+
 export function files_node_has_editable_yjs_state<Node extends FileNodeFieldsForEditability | null | undefined>(
 	node: Node,
 ): node is NonNullable<Node> & {
@@ -590,12 +627,12 @@ export function files_node_has_editable_yjs_state<Node extends FileNodeFieldsFor
 	yjsRootKind: NonNullable<FileNodeFieldsForEditability["yjsRootKind"]>;
 } {
 	// Treat Yjs pointers as the editor-ready signal instead of inferring readiness from MIME metadata.
+	// A non-collaborative file is editable text but has no Yjs document, so it fails this on purpose
+	// and every Yjs door refuses it.
 	return (
-		node?.kind === "file" &&
-		node.assetId !== undefined &&
+		files_node_has_editable_text_content(node) &&
 		node.yjsSnapshotId !== undefined &&
-		node.yjsLastSequenceId !== undefined &&
-		node.yjsRootKind !== undefined
+		node.yjsLastSequenceId !== undefined
 	);
 }
 
@@ -624,7 +661,7 @@ export function files_validate_file_rename_class(args: {
 		return Result({ _yay: { contentType: null } });
 	}
 
-	if (files_node_has_editable_yjs_state(args.node)) {
+	if (files_node_has_editable_text_content(args.node)) {
 		// No extension, no claim: keep the class and the stored type.
 		if (files_classifier_extension_of(args.destName) === null) {
 			return Result({ _yay: { contentType: null } });

@@ -403,6 +403,7 @@ export class bash_DbFilesFs implements IFileSystem {
 	private entryCache = new Map<string, DbFilesCacheEntry>();
 	private contentCache = new Map<string, string>();
 	private overlayPromise: Promise<files_PendingPathOverlay> | null = null;
+	private directSavedPaths = new Set<string>();
 	/** Command-owned per-run caches (cat's content cache) cleared together with resetProposalCaches. */
 	private linkedProposalCaches: Array<Map<string, string>> = [];
 
@@ -581,10 +582,9 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	/**
-	 * Propose an app-file write as a pending update for shell writes (`>`, `>>`, `tee`,
-	 * builtin `touch`), Agent mode only. The committed file never changes here: a missing
-	 * target is eagerly created empty (like `write_file`/`cp`) and the content lands on the
-	 * user's pending unstaged branch for review in Files.
+	 * Write an app file from shell redirection, `tee`, or builtin `touch`, Agent mode only.
+	 * Existing files with collaboration off save immediately. Other writes use the pending
+	 * unstaged branch; a missing target is eagerly created empty first.
 	 *
 	 * Thrown errors become the whole command's stderr (redirection has no per-write catch
 	 * in Just Bash), so every message must tell the model what to do instead.
@@ -671,6 +671,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			nodeId: Id<"files_nodes">;
 			content: string;
 			pendingUpdateId: Id<"files_pending_updates"> | null;
+			nonCollaborativeBaseAssetId: Id<"files_r2_assets"> | null;
 		} | null = (await this.ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId,
 			workspaceId,
@@ -796,9 +797,9 @@ export class bash_DbFilesFs implements IFileSystem {
 				`cannot write '${shellPath}': content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte app file limit${await eager_created_failure_note()}`,
 			);
 		}
-		let upserted: files_agent_upsert_file_pending_update_Result;
+		let written: files_agent_write_file_text_Result;
 		try {
-			upserted = await files_agent_upsert_file_pending_update(this.ctx, {
+			written = await files_agent_write_file_text(this.ctx, {
 				organizationId,
 				workspaceId,
 				userId,
@@ -810,6 +811,9 @@ export class bash_DbFilesFs implements IFileSystem {
 				// parent folders this write eagerly created.
 				eagerCreatedAncestorIds: createdAncestorIds,
 				threadId: threadId ?? undefined,
+				// A file created by this same write is collaborative, so the read is the only
+				// source of this and an eager create leaves it unset.
+				nonCollaborativeBaseAssetId: currentContent?.nonCollaborativeBaseAssetId ?? undefined,
 			});
 		} catch (error) {
 			if (eagerCreatedCommittedSequence === undefined) {
@@ -819,11 +823,22 @@ export class bash_DbFilesFs implements IFileSystem {
 				cause: error,
 			});
 		}
-		if (upserted._nay) {
-			throw new Error(`cannot write '${shellPath}': ${upserted._nay.message}${await eager_created_failure_note()}`);
+		if (written._nay) {
+			throw new Error(`cannot write '${shellPath}': ${written._nay.message}${await eager_created_failure_note()}`);
+		}
+		if (currentContent?.nonCollaborativeBaseAssetId) {
+			// The shell itself has no stdout for redirection. Keep a per-run path set so the tool can
+			// tell the agent that this write is already saved and must not be reviewed as pending.
+			this.directSavedPaths.add(shellPath);
 		}
 		// Later commands chained in this same bash call must see the new proposal.
 		this.resetProposalCaches();
+	}
+
+	consumeDirectSavedPaths() {
+		const paths = Array.from(this.directSavedPaths);
+		this.directSavedPaths.clear();
+		return paths;
 	}
 
 	async exists(path: string) {
@@ -2056,24 +2071,29 @@ export function bash_parse_limit(command: string, value: string | undefined, def
 }
 
 /**
- * The visible Result shape of the agent upsert flow. Kept as a local structural type on purpose:
+ * The visible Result shape of the agent write flow. Kept as a local structural type on purpose:
  * this helper sits inside the generated-API type graph (convex/bash.ts → server/bash.ts → here),
  * so inferring or importing the registered functions' Result types as its return type creates an
  * inference cycle that collapses the whole generated API to `any`.
  */
-export type files_agent_upsert_file_pending_update_Result =
+export type files_agent_write_file_text_Result =
 	| { _yay: null; _nay?: undefined }
 	| { _yay?: undefined; _nay: { name?: string; message: string } };
 
 /**
- * The agent-side upsert flow behind bash writes (`>`, `tee`, `sed -i`, `touch`, `cp`, `mv -f`)
- * and `edit_file`: create a server-side operation batch, stage the one bounded unstaged text
- * under it, then run the finishing internal action that carries only ids. A staging refusal
- * retires the batch first, or the abandoned "already in progress" batch would block this
- * user/node's next write until the TTL. Refusals return unchanged so every caller keeps its own
+ * Record the agent's new text for one file, behind bash writes (`>`, `tee`, `sed -i`, `touch`,
+ * `cp`, `mv -f`) and `edit_file`.
+ *
+ * A collaborative file gets a proposal the user reviews: create a server-side operation batch,
+ * stage the one bounded unstaged text under it, then run the finishing internal action that
+ * carries only ids. A staging refusal retires the batch first, or the abandoned "already in
+ * progress" batch would block this user/node's next write until the TTL.
+ *
+ * A file with collaboration turned off has no document to propose against, so the text is saved
+ * straight away instead. Refusals return unchanged either way, so every caller keeps its own
  * `_nay` surfacing.
  */
-export async function files_agent_upsert_file_pending_update(
+export async function files_agent_write_file_text(
 	ctx: ActionCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -2086,8 +2106,28 @@ export async function files_agent_upsert_file_pending_update(
 		eagerCreatedCommittedSequence?: number;
 		eagerCreatedAncestorIds?: Id<"files_nodes">[];
 		threadId?: Id<"ai_chat_threads">;
+		/**
+		 * Set only when the target file has collaboration turned off. It is the content asset the
+		 * caller's read returned, and the save refuses if another save landed on the file since.
+		 */
+		nonCollaborativeBaseAssetId?: Id<"files_r2_assets">;
 	},
-): Promise<files_agent_upsert_file_pending_update_Result> {
+): Promise<files_agent_write_file_text_Result> {
+	// Collaboration off: no branch to build, no review step. Save the whole text now.
+	if (args.nonCollaborativeBaseAssetId) {
+		const saved = (await ctx.runAction(internal.files_nodes_content.replace_file_content_internal_action, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: args.nodeId,
+			text: args.unstagedText,
+			baseAssetId: args.nonCollaborativeBaseAssetId,
+		})) as { _yay?: unknown; _nay?: { name?: string; message: string } };
+		// The save answers with the new content asset. Agent callers write once and read again
+		// before the next write, so drop it and keep one shape for every caller.
+		return saved._nay ? { _nay: saved._nay } : { _yay: null };
+	}
+
 	const batch = (await ctx.runMutation(
 		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 		{
@@ -2111,7 +2151,7 @@ export async function files_agent_upsert_file_pending_update(
 		operationBatchId,
 		role: "unstaged",
 		text: args.unstagedText,
-	})) as files_agent_upsert_file_pending_update_Result;
+	})) as files_agent_write_file_text_Result;
 	if (staged._nay) {
 		await ctx.runMutation(internal.files_pending_updates.retire_file_pending_update_operation_batch, {
 			operationBatchId,
@@ -2132,7 +2172,7 @@ export async function files_agent_upsert_file_pending_update(
 			: {}),
 		...(args.eagerCreatedAncestorIds !== undefined ? { eagerCreatedAncestorIds: args.eagerCreatedAncestorIds } : {}),
 		...(args.threadId ? { threadId: args.threadId } : {}),
-	})) as files_agent_upsert_file_pending_update_Result;
+	})) as files_agent_write_file_text_Result;
 }
 
 /**

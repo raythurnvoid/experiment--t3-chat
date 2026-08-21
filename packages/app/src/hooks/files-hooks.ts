@@ -10,6 +10,7 @@ import type { app_convex_Id } from "../lib/app-convex-client.ts";
 
 export type useFilesYjs_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
+	yjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences">;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	presenceStore: files_PresenceStore;
 	editable: boolean;
@@ -17,7 +18,7 @@ export type useFilesYjs_Props = {
 };
 
 export function useFilesYjs(props: useFilesYjs_Props) {
-	const { nodeId, membershipId, presenceStore, editable, editBlockReason } = props;
+	const { nodeId, yjsLastSequenceId, membershipId, presenceStore, editable, editBlockReason } = props;
 
 	const [yjsProvider, setYjsProvider] = useState<files_yjs_Provider | undefined>(undefined);
 	const [providerNodeId, setProviderNodeId] = useState<app_convex_Id<"files_nodes"> | undefined>(undefined);
@@ -55,6 +56,7 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 		const reactStrictWorkaroundTimer = setTimeout(() => {
 			const yjsProvider = new files_yjs_Provider({
 				nodeId: nodeId,
+				expectedYjsLastSequenceId: yjsLastSequenceId,
 				membershipId: membershipId,
 				presenceStore: presenceStore,
 				editable,
@@ -116,7 +118,7 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 			clearTimeout(reactStrictWorkaroundTimer);
 			onDestroyRef.current?.();
 		};
-	}, [editable, membershipId, nodeId, presenceStore]);
+	}, [editable, membershipId, nodeId, presenceStore, yjsLastSequenceId]);
 
 	return yjsProvider && providerNodeId
 		? {

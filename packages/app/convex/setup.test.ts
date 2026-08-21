@@ -102,6 +102,23 @@ export function test_convex() {
 	return t;
 }
 
+export async function test_get_file_yjs_pointers(
+	t: ReturnType<typeof test_convex>,
+	nodeId: Id<"files_nodes">,
+) {
+	return await t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", nodeId);
+		if (!node?.yjsLastSequenceId || !node.yjsSnapshotId) {
+			throw new Error("Expected the test file to have Yjs pointers");
+		}
+
+		return {
+			yjsLastSequenceId: node.yjsLastSequenceId,
+			yjsSnapshotId: node.yjsSnapshotId,
+		};
+	});
+}
+
 // #endregion
 
 // #region mocks

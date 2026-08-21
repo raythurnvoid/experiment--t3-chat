@@ -36,7 +36,7 @@ import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import type { files_PresenceStore } from "@/lib/files.ts";
-import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { RefreshCcw, Save } from "lucide-react";
 import { Doc as YDoc, applyUpdate } from "yjs";
 import { toast } from "sonner";
@@ -61,6 +61,11 @@ type FileEditorPlainTextToolbarActions_Props = {
 	isSyncDisabled: boolean;
 	isSaveDebouncing: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
+	/**
+	 * The asset the open text was read from, or `null` when the file is collaborative. It turns
+	 * Sync off and sends a version restore through the replace door instead of the Yjs door.
+	 */
+	nonCollaborativeBaseAssetId: app_convex_Id<"files_r2_assets"> | null;
 	sessionId: string;
 	toolbarPortalHost: HTMLElement;
 	getCurrentText: () => string;
@@ -79,6 +84,7 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 		isSyncDisabled,
 		isSaveDebouncing,
 		nodeId,
+		nonCollaborativeBaseAssetId,
 		sessionId,
 		toolbarPortalHost,
 		getCurrentText,
@@ -113,23 +119,27 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 				</MyButtonIcon>
 				Save
 			</MyButton>
-			<MyButton
-				variant="ghost-highlightable"
-				className={cn(
-					"FileEditorPlainTextToolbarActions-button" satisfies FileEditorPlainTextToolbarActions_ClassNames,
-				)}
-				disabled={isSyncDisabled}
-				onClick={onClickSync}
-			>
-				<MyButtonIcon
+			{/* Sync merges this editor's document with the shared one. A file with collaboration
+			    turned off has no shared document: saving replaces the whole text. */}
+			{!nonCollaborativeBaseAssetId && (
+				<MyButton
+					variant="ghost-highlightable"
 					className={cn(
-						"FileEditorPlainTextToolbarActions-icon" satisfies FileEditorPlainTextToolbarActions_ClassNames,
+						"FileEditorPlainTextToolbarActions-button" satisfies FileEditorPlainTextToolbarActions_ClassNames,
 					)}
+					disabled={isSyncDisabled}
+					onClick={onClickSync}
 				>
-					<RefreshCcw />
-				</MyButtonIcon>
-				Sync
-			</MyButton>
+					<MyButtonIcon
+						className={cn(
+							"FileEditorPlainTextToolbarActions-icon" satisfies FileEditorPlainTextToolbarActions_ClassNames,
+						)}
+					>
+						<RefreshCcw />
+					</MyButtonIcon>
+					Sync
+				</MyButton>
+			)}
 			{sizeBadge && (
 				<MyBadge
 					variant={sizeBadge.isOverCap ? "destructive" : "secondary"}
@@ -151,6 +161,7 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 				nodeId={nodeId}
 				sessionId={sessionId}
 				editable={editable}
+				nonCollaborativeBaseAssetId={nonCollaborativeBaseAssetId}
 				getCurrentText={getCurrentText}
 				onApplySnapshotText={onApplySnapshotText}
 			/>
@@ -243,6 +254,29 @@ type FileEditorPlainText_ClassNames =
 	| "FileEditorPlainText-editor"
 	| "FileEditorPlainText-refusal";
 
+/**
+ * What the editor loaded before it mounted.
+ *
+ * A collaborative file arrives as a Yjs document, and Save pushes the difference between two
+ * documents. A file with collaboration turned off arrives as plain text plus the asset it was read
+ * from, and Save replaces the whole text against that asset.
+ */
+type FileEditorPlainText_LoadedContent =
+	| {
+			kind: "collaborative";
+			text: string;
+			rootKind: files_YjsRootKind;
+			mut_yjsDoc: YDoc;
+			yjsSequence: number;
+			yjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences">;
+	  }
+	| {
+			kind: "non_collaborative";
+			text: string;
+			rootKind: files_YjsRootKind;
+			baseAssetId: app_convex_Id<"files_r2_assets">;
+	  };
+
 type FileEditorPlainTextInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
@@ -250,11 +284,7 @@ type FileEditorPlainTextInner_Props = {
 	rootKind: files_YjsRootKind;
 	/** The Monaco language id derived from the node name (`files_get_monaco_language_id`). */
 	monacoLanguageId: string;
-	initialData: {
-		text: string;
-		mut_yjsDoc: YDoc;
-		yjsSequence: number;
-	};
+	initialData: FileEditorPlainText_LoadedContent;
 	topSafeArea?: number;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
@@ -289,7 +319,17 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const editorRef = useRef<monaco_editor.IStandaloneCodeEditor | null>(null);
 	const [mountedEditor, setMountedEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
 	const modelRef = useRef<monaco_editor.ITextModel | null>(initialEditorModel);
-	const baselineYjsDocRef = useRef<YDoc>(initialData.mut_yjsDoc);
+	// Exactly one of the two is set: a collaborative file has a document and no base asset, and a
+	// file with collaboration turned off has a base asset and no document. The asset is state and
+	// not a ref because the toolbar reads it while rendering, to hide Sync and to send a version
+	// restore through the replace door.
+	const baselineYjsDocRef = useRef<YDoc | null>(initialData.kind === "collaborative" ? initialData.mut_yjsDoc : null);
+	const yjsLastSequenceIdRef = useRef<app_convex_Id<"files_yjs_docs_last_sequences"> | null>(
+		initialData.kind === "collaborative" ? initialData.yjsLastSequenceId : null,
+	);
+	const [nonCollaborativeBaseAssetId, setNonCollaborativeBaseAssetId] = useState(
+		initialData.kind === "non_collaborative" ? initialData.baseAssetId : null,
+	);
 	const baselineMarkdownRef = useRef<string>(initialData.text);
 
 	const [commentThreadIds, setCommentThreadIds] = useState<string[]>([]);
@@ -299,7 +339,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const [dirtyCheckState, setDirtyCheckState] = useState<"clean" | "checking" | "dirty">("clean");
 	const dirtyCheckTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-	const [workingYjsDocSequence, setWorkingYjsSequence] = useState(initialData.yjsSequence);
+	const initialYjsSequence = initialData.kind === "collaborative" ? initialData.yjsSequence : 0;
+	const [workingYjsDocSequence, setWorkingYjsSequence] = useState(initialYjsSequence);
 
 	const [isSyncing, setIsSyncing] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
@@ -308,7 +349,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 	const isSaveDebouncing = dirtyCheckState === "checking";
 	const isSaveDisabled = !editable || isSaving || isSyncing || dirtyCheckState !== "dirty";
-	const activeServerSequence = serverSequence ?? initialData.yjsSequence;
+	const activeServerSequence = serverSequence ?? initialYjsSequence;
 	const isSyncDisabled = !editable || isSyncing || isSaving || workingYjsDocSequence === activeServerSequence;
 	const hasTopViewZoneSlot = topViewZoneSlot != null && topViewZoneSlot !== false;
 	const editorTopPadding = Math.max(16, topSafeArea ?? 0);
@@ -454,6 +495,28 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const handleApplySnapshotText = useFn(() => {
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
+			// Collaboration off: the restore replaced the whole text, so re-read it together with the
+			// asset it now lives in. That asset is the base of the user's next save.
+			if (initialData.kind === "non_collaborative") {
+				const restored = await app_convex.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, {
+					membershipId,
+					nodeId,
+				});
+				if (restored._nay) {
+					console.error("[FileEditorPlainText.handleApplySnapshotText] Error while reading the restored content", {
+						nay: restored._nay,
+					});
+					toast.error("Failed to refresh the editor after the restore. Reload the file.");
+					return;
+				}
+
+				pushChangeToEditor(restored._yay.text);
+				updateDirtyBaseline(restored._yay.text);
+				updateThreadIds(restored._yay.text);
+				setNonCollaborativeBaseAssetId(restored._yay.assetId);
+				return;
+			}
+
 			const remoteData = await files_fetch_file_yjs_state_and_text({
 				membershipId,
 				nodeId,
@@ -477,6 +540,10 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				toast.error("Failed to refresh the editor after the restore. Reload the file.");
 				return;
 			}
+			if (remoteData.yjsLastSequenceId !== yjsLastSequenceIdRef.current) {
+				toast.error("This file changed while you were editing. Copy your local changes before reloading, then try again.");
+				return;
+			}
 
 			// Write into the current model instead of building a new one. A new model starts with an
 			// empty undo stack, and `setModel` also rebuilds the editor view, which drops the top view
@@ -485,6 +552,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			updateDirtyBaseline(remoteData.text._yay);
 			updateThreadIds(remoteData.text._yay);
 			baselineYjsDocRef.current = remoteData.yjsDoc;
+			yjsLastSequenceIdRef.current = remoteData.yjsLastSequenceId;
 			setWorkingYjsSequence(remoteData.yjsSequence);
 		})()
 			.catch((err) => {
@@ -513,8 +581,6 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const baselineYjsDoc = baselineYjsDocRef.current;
-
 			const localMarkdown = editorModel.getValue();
 
 			// Nothing is persisted until this point, so the cap is enforced here instead of on
@@ -523,6 +589,45 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			if (localByteSize > files_MAX_TEXT_CONTENT_BYTES) {
 				toast.error(file_editor_get_size_error_message(localByteSize));
 				return;
+			}
+
+			// Collaboration off: no document to diff, no branch to merge. Send the whole text and
+			// name the asset it was built on, so a save that landed meanwhile is refused instead of
+			// silently overwritten.
+			if (nonCollaborativeBaseAssetId) {
+				const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
+					membershipId,
+					nodeId,
+					text: localMarkdown,
+					baseAssetId: nonCollaborativeBaseAssetId,
+				});
+				if (replaced._nay) {
+					console.error("[FileEditorPlainText.handleClickSave] Error while replacing the file content", {
+						nay: replaced._nay,
+					});
+					toast.error(replaced._nay.message);
+					return;
+				}
+
+				// The save wrote a new version, and the next save has to be based on it.
+				setNonCollaborativeBaseAssetId(replaced._yay.assetId);
+				updateDirtyBaseline(localMarkdown);
+				updateThreadIds(localMarkdown);
+				return;
+			}
+			if (initialData.kind !== "collaborative" || !yjsLastSequenceIdRef.current) {
+				throw should_never_happen("[FileEditorPlainText.handleClickSave] Missing collaborative content", {
+					nodeId,
+				});
+			}
+
+			const baselineYjsDoc = baselineYjsDocRef.current;
+			if (!baselineYjsDoc) {
+				const error = should_never_happen("[FileEditorPlainText.handleClickSave] Missing baselineYjsDoc", {
+					nodeId,
+				});
+				console.error(error);
+				throw error;
 			}
 
 			const workingYjsDoc = files_yjs_doc_clone({ yjsDoc: baselineYjsDoc });
@@ -560,6 +665,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					nodeId,
 					update: files_u8_to_array_buffer(diffUpdate),
 					sessionId: presenceStore.localSessionId,
+					expectedYjsLastSequenceId: yjsLastSequenceIdRef.current,
 				});
 
 				if (result._nay) {
@@ -620,7 +726,18 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const localMarkdown = model.getValue();
-			const workingYjsDoc = files_yjs_doc_clone({ yjsDoc: baselineYjsDocRef.current });
+			const baselineYjsDoc = baselineYjsDocRef.current;
+			// Sync merges two Yjs documents. The toolbar hides it when collaboration is off, where
+			// there is no second document to merge.
+			if (!baselineYjsDoc) {
+				const error = should_never_happen("[FileEditorPlainText.handleClickSync] Missing baselineYjsDoc", {
+					nodeId,
+				});
+				console.error(error);
+				throw error;
+			}
+
+			const workingYjsDoc = files_yjs_doc_clone({ yjsDoc: baselineYjsDoc });
 			const workingYjsDocFromText = files_yjs_doc_update_from_text({
 				mut_yjsDoc: workingYjsDoc,
 				text: localMarkdown,
@@ -665,6 +782,10 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				toast.error("Failed to sync: the file content cannot be read safely");
 				return;
 			}
+			if (remoteData.yjsLastSequenceId !== yjsLastSequenceIdRef.current) {
+				toast.error("This file changed while you were editing. Copy your local changes before reloading, then try again.");
+				return;
+			}
 
 			// Diff update from working to remote.
 			const diffUpdate = files_yjs_compute_diff_update_from_yjs_doc({
@@ -691,6 +812,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 			// The server content is the new baseline, even though the editor keeps the merged content.
 			baselineYjsDocRef.current = remoteData.yjsDoc;
+			yjsLastSequenceIdRef.current = remoteData.yjsLastSequenceId;
 			setWorkingYjsSequence(remoteData.yjsSequence);
 			updateDirtyBaseline(remoteData.text._yay);
 			updateThreadIds(remoteData.text._yay);
@@ -755,6 +877,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					isSyncDisabled={isSyncDisabled}
 					isSaveDebouncing={isSaveDebouncing}
 					nodeId={nodeId}
+					nonCollaborativeBaseAssetId={nonCollaborativeBaseAssetId}
 					sessionId={presenceStore.localSessionId}
 					toolbarPortalHost={toolbarPortalHost}
 					getCurrentText={getCurrentText}
@@ -794,6 +917,10 @@ export type FileEditorPlainText_Props = {
 	editable: boolean;
 	/** The Monaco language id derived from the node name (`files_get_monaco_language_id`). */
 	monacoLanguageId: string;
+	/** Collaboration is off for this file: it has no Yjs document, so Save replaces the whole text. */
+	nonCollaborative: boolean;
+	/** Reload the construction-owned baseline when the server replaces this exact lineage. */
+	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
@@ -808,6 +935,8 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 		nodeId,
 		editable,
 		monacoLanguageId,
+		nonCollaborative,
+		yjsLastSequenceId,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
@@ -820,16 +949,59 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const fileContentDataPromise = useMemo(() => {
-		return files_fetch_file_yjs_state_and_text({
-			membershipId,
-			nodeId,
-		});
-	}, [membershipId, nodeId]);
-	const fileContentData = usePromiseValue(fileContentDataPromise);
+		// Wait for the route's exact document token before starting the three-part Yjs read. The
+		// route query often resolves one render after the file, and a token-free read cannot be used.
+		if (!nonCollaborative && !yjsLastSequenceId) {
+			return Promise.resolve(undefined);
+		}
 
-	if (fileContentData?.text._nay) {
-		console.error("[FileEditorPlainText] Error while fetching file content data", fileContentData.text._nay);
-	}
+		// Collaboration off: there is no Yjs document to rebuild the text from, so the server sends
+		// the committed text and the asset the next save has to name.
+		if (nonCollaborative) {
+			return app_convex
+				.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, { membershipId, nodeId })
+				.then((result): FileEditorPlainText_LoadedContent | null => {
+					if (result._nay) {
+						console.error("[FileEditorPlainText] Error while reading the file content", result._nay);
+						return null;
+					}
+
+					return {
+						kind: "non_collaborative",
+						text: result._yay.text,
+						rootKind: result._yay.yjsRootKind,
+						baseAssetId: result._yay.assetId,
+					};
+				});
+		}
+
+		return files_fetch_file_yjs_state_and_text({ membershipId, nodeId }).then(
+			(result): FileEditorPlainText_LoadedContent | null => {
+				if (!result) {
+					return null;
+				}
+				// The route can move to a new lineage without showing the short mode change between
+				// OFF and ON. Use the route token here so this loader cannot keep its old promise.
+				if (!yjsLastSequenceId || result.yjsLastSequenceId !== yjsLastSequenceId) {
+					return null;
+				}
+				if (result.text._nay) {
+					console.error("[FileEditorPlainText] Error while fetching file content data", result.text._nay);
+					return null;
+				}
+
+				return {
+					kind: "collaborative",
+					text: result.text._yay,
+					rootKind: result.yjsRootKind,
+					mut_yjsDoc: result.yjsDoc,
+					yjsSequence: result.yjsSequence,
+					yjsLastSequenceId: result.yjsLastSequenceId,
+				};
+			},
+		);
+	}, [membershipId, nodeId, nonCollaborative, yjsLastSequenceId]);
+	const fileContentData = usePromiseValue(fileContentDataPromise);
 
 	// On a refused or missing read, do not mount the editor over a stand-in document.
 	// a fabricated empty baseline is legal in shape, so every later Save would diff the user's
@@ -838,7 +1010,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 	// empty file mounts with its real document and server sequence.
 	return fileContentData === undefined ? (
 		<FileEditorPlainTextSkeleton />
-	) : fileContentData === null || fileContentData.text._nay ? (
+	) : fileContentData === null ? (
 		<div className={"FileEditorPlainText" satisfies FileEditorPlainText_ClassNames}>
 			<div role="alert" className={"FileEditorPlainText-refusal" satisfies FileEditorPlainText_ClassNames}>
 				This file's content could not be read safely, so the editor stays closed to protect it. Reload the file or
@@ -847,16 +1019,16 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 		</div>
 	) : (
 		<FileEditorPlainTextInner
-			key={nodeId}
+			key={
+				fileContentData.kind === "collaborative"
+					? `collaborative:${fileContentData.yjsLastSequenceId}`
+					: `non_collaborative:${fileContentData.baseAssetId}`
+			}
 			nodeId={nodeId}
 			editable={editable}
-			rootKind={fileContentData.yjsRootKind}
+			rootKind={fileContentData.rootKind}
 			monacoLanguageId={monacoLanguageId}
-			initialData={{
-				text: fileContentData.text._yay,
-				mut_yjsDoc: fileContentData.yjsDoc,
-				yjsSequence: fileContentData.yjsSequence,
-			}}
+			initialData={fileContentData}
 			topSafeArea={topSafeArea}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}

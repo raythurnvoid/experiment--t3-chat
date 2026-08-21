@@ -36,11 +36,19 @@ export type files_EditorView = (typeof files_editor_view_values)[number];
  * document has no rich editor: mounting Tiptap on a `Y.Text` root would show an empty editor
  * and write keystrokes into a second root nobody reads. The plain (Monaco) and diff views are
  * valid for both shapes, so only the rich view is redirected.
+ *
+ * A file with collaboration turned off has no Yjs document at all. The rich text editor is built
+ * on one, and the diff view compares a proposal against one, so both fall back to the plain text
+ * editor, which edits an ordinary string.
  */
 export function files_resolve_effective_editor_view(args: {
 	requestedView: files_EditorView;
 	rootKind: files_YjsRootKind;
+	nonCollaborative: boolean;
 }): files_EditorView {
+	if (args.nonCollaborative) {
+		return "plain_text_editor";
+	}
 	if (args.rootKind === "plain_text" && args.requestedView === "rich_text_editor") {
 		return "plain_text_editor";
 	}
@@ -616,44 +624,57 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	nodeId: app_convex_Id<"files_nodes">;
 }) {
-	const [yjsSnapshotTarget, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([
-		app_convex.action(app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot, args),
-		app_convex
-			.query(app_convex_api.files_nodes.yjs_get_incremental_updates, args)
-			.then((updatesData) => updatesData?.updates ?? []),
-		app_convex.query(app_convex_api.files_nodes.get_file_last_yjs_sequence, args),
-	]);
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const [yjsSnapshotTarget, yjsUpdatesData, yjsLastSequenceDoc] = await Promise.all([
+			app_convex.action(app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot, args),
+			app_convex.query(app_convex_api.files_nodes.yjs_get_incremental_updates, args),
+			app_convex.query(app_convex_api.files_nodes.get_file_last_yjs_sequence, args),
+		]);
 
-	if (yjsSnapshotTarget == null) return null;
-
-	const yjsSnapshotUpdate = await fetch(yjsSnapshotTarget.snapshotUrl).then((response) => {
-		if (!response.ok) {
-			throw new Error("Failed to fetch Yjs snapshot from R2");
+		if (yjsSnapshotTarget == null) return null;
+		if (
+			yjsUpdatesData?.yjsLastSequenceId !== yjsSnapshotTarget.yjsLastSequenceId ||
+			yjsLastSequenceDoc?.yjsLastSequenceId !== yjsSnapshotTarget.yjsLastSequenceId
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			continue;
 		}
 
-		return response.arrayBuffer();
-	});
-	const yjsSnapshotDoc = yjsSnapshotTarget.snapshot;
+		const yjsSnapshotUpdate = await fetch(yjsSnapshotTarget.snapshotUrl).then((response) => {
+			if (!response.ok) {
+				throw new Error("Failed to fetch Yjs snapshot from R2");
+			}
 
-	// By default the API returns updates in descending order; normalize to ascending and filter
-	// to only include updates that are after the snapshot.
-	const filteredIncrementalUpdates = yjsUpdatesDocs
-		.filter((u: app_convex_Doc<"files_yjs_updates">) => u.sequence > yjsSnapshotDoc.sequence)
-		.reverse();
+			return response.arrayBuffer();
+		});
+		const yjsSnapshotDoc = yjsSnapshotTarget.snapshot;
 
-	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsSnapshotUpdate, {
-		additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map(
-			(u: app_convex_Doc<"files_yjs_updates">) => u.update,
-		),
-	});
-	// The shape comes from the server call that already loaded the node: there is no node doc on
-	// the client, and the snapshot response's `yjsRootKind` is the resolved required union.
-	const yjsRootKind = yjsSnapshotTarget.yjsRootKind;
-	const text = files_yjs_doc_get_text({ yjsDoc, rootKind: yjsRootKind });
+		// By default the API returns updates in descending order; normalize to ascending and filter
+		// to only include updates that are after the snapshot.
+		const filteredIncrementalUpdates = yjsUpdatesData.updates
+			.filter((u: app_convex_Doc<"files_yjs_updates">) => u.sequence > yjsSnapshotDoc.sequence)
+			.reverse();
 
-	const yjsSequence = yjsLastSequenceDoc?.lastSequence ?? yjsSnapshotDoc.sequence;
+		const yjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsSnapshotUpdate, {
+			additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map(
+				(u: app_convex_Doc<"files_yjs_updates">) => u.update,
+			),
+		});
+		// The shape comes from the server call that already loaded the node: there is no node doc on
+		// the client, and the snapshot response's `yjsRootKind` is the resolved required union.
+		const yjsRootKind = yjsSnapshotTarget.yjsRootKind;
+		const text = files_yjs_doc_get_text({ yjsDoc, rootKind: yjsRootKind });
 
-	return { text, yjsDoc, yjsSequence, yjsRootKind };
+		return {
+			text,
+			yjsDoc,
+			yjsSequence: yjsLastSequenceDoc.lastSequence,
+			yjsRootKind,
+			yjsLastSequenceId: yjsSnapshotTarget.yjsLastSequenceId,
+		};
+	}
+
+	throw new Error("The file collaboration state kept changing while it loaded");
 }
 
 // #region presence store

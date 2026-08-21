@@ -193,11 +193,13 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 
 ### File-save check and usage event
 
-File saves ([yjs_push_update](../../../packages/app/convex/files_nodes.ts), [save_file_pending_update](../../../packages/app/convex/files_pending_updates.ts), and snapshot restore through [restore_snapshot_r2](../../../packages/app/convex/files_nodes.ts) / [restore_snapshot](../../../packages/app/convex/files_nodes.ts)) fail fast before the yjs push or restore write:
+File saves ([yjs_push_update](../../../packages/app/convex/files_nodes.ts), [save_file_pending_update](../../../packages/app/convex/files_pending_updates.ts), the non-collaborative save door [replace_file_content](../../../packages/app/convex/files_nodes_content.ts), and snapshot restore through [restore_snapshot_r2](../../../packages/app/convex/files_nodes.ts) / [restore_snapshot](../../../packages/app/convex/files_nodes.ts)) fail fast before the yjs push, the content replacement, or the restore write:
 
 1. Resolve `organization` and `billedUser` inline (`billing_pick_billed_user_id` reads only `default`, `billingMode`, `ownerUserId`; no assignment is read), then call `billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 })`. When it returns `hasCredits: false`, the caller returns `_nay` with the literal `"Insufficient funds"` message to the frontend.
-2. Run the yjs push; obtain the new sequence.
-3. Emit the existing `billing_event("file_save")` through `billing_ingest_events` with `externalId = composite_id("billing", "file_save", billedUserId, actorUserId, organizationId, workspaceId, fileId, yjsSequence)` and literal `metadata.amount: 1`.
+2. Run the yjs push or the content replacement; obtain the version this save produced.
+3. Emit the existing `billing_event("file_save")` through `billing_ingest_events` with `externalId = composite_id("billing", "file_save", billedUserId, actorUserId, organizationId, workspaceId, fileId, version)` and literal `metadata.amount: 1`.
+
+The last id part is called `version` because the two save paths name a version differently. A collaborative save uses the new Yjs sequence. A non-collaborative save has no sequence, so it uses the id of the version snapshot asset it just wrote. The part only has to be unique per save, so both work.
 
 For signed-in users there is no local credit debit after save; Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. For anonymous users the shared ingest helper applies the same one-cent event locally after a successful save. Snapshot restore bills only when `write_markdown_to_yjs_sync` produced a new Yjs sequence. Do not reintroduce a shared `credits_FILE_SAVE_COST_CENTS` constant for the current one-cent file-save rule; keep the literal at the call sites unless the product rule changes.
 

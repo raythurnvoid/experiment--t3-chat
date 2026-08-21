@@ -652,6 +652,196 @@ describe("public files API", () => {
 		expect(stages).toEqual([]);
 	});
 
+	test("the write route creates a non-collaborative file with no Yjs docs", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-non-collaborative" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-non-collaborative",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Files writer",
+			scopes: ["files:list", "files:read", "files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		const credential = created._yay!.credential;
+
+		const content = "---\ntitle: Imported\nowner: ada\n---\n\n# Imported\n\nno collaboration here\n";
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/imported/report.md", content, nonCollaborative: true }),
+		});
+		expect(written.status).toBe(200);
+		const writtenBody = (await written.json()) as { nodeId: string };
+
+		const stored = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", writtenBody.nodeId as Id<"files_nodes">);
+			return {
+				nonCollaborative: node?.nonCollaborative,
+				yjsRootKind: node?.yjsRootKind,
+				hasPointers: node?.yjsSnapshotId !== undefined || node?.yjsLastSequenceId !== undefined,
+				yjsSnapshots: (await ctx.db.query("files_yjs_snapshots").collect()).length,
+				yjsLastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
+				yjsUpdates: (await ctx.db.query("files_yjs_updates").collect()).length,
+				assetKinds: (await ctx.db.query("files_r2_assets").collect()).map((asset) => asset.kind),
+				metadataFields: (await ctx.db.query("files_metadata_docs").collect())
+					.map((entry) => entry.qualifiedField)
+					.sort(),
+				stages: (await ctx.db.query("public_api_file_write_stages").collect()).length,
+			};
+		});
+
+		// The file is editable text — it keeps its shape — but it has no collaborative document at
+		// all, and no leftover Yjs snapshot asset from the staging step.
+		expect(stored.nonCollaborative).toBe(true);
+		expect(stored.yjsRootKind).toBe("rich_text");
+		expect(stored.hasPointers).toBe(false);
+		expect(stored.yjsSnapshots).toBe(0);
+		expect(stored.yjsLastSequences).toBe(0);
+		expect(stored.yjsUpdates).toBe(0);
+		expect(stored.assetKinds).toEqual(["content_snapshot"]);
+		expect(stored.stages).toBe(0);
+
+		// Frontmatter indexing still runs, so these files stay findable by metadata search. Each key
+		// produces a field doc and a value doc, and the route adds its own `source: api` key.
+		expect(stored.metadataFields).toEqual([
+			"frontmatter.owner",
+			"frontmatter.owner",
+			"frontmatter.title",
+			"frontmatter.title",
+			"metadata.source",
+			"metadata.source",
+		]);
+
+		// The read route serves the committed content, so a caller cannot tell the difference.
+		const readResponse = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/imported/report.md" }),
+		});
+		expect(readResponse.status).toBe(200);
+		expect(((await readResponse.json()) as { content: string }).content).toContain("no collaboration here");
+
+		// Without the flag the same route still creates a normal collaborative file. Without this
+		// the checks above could pass because the route ignores the flag and never builds a
+		// document at all.
+		const collaborative = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/imported/normal.md", content: "# Normal\n\nbody\n" }),
+		});
+		expect(collaborative.status).toBe(200);
+		const collaborativeNodeId = ((await collaborative.clone().json()) as { nodeId: string }).nodeId;
+		const collaborativeNode = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", collaborativeNodeId as Id<"files_nodes">);
+			return {
+				nonCollaborative: node?.nonCollaborative,
+				hasPointers: node?.yjsSnapshotId !== undefined && node?.yjsLastSequenceId !== undefined,
+			};
+		});
+		expect(collaborativeNode.nonCollaborative).toBeUndefined();
+		expect(collaborativeNode.hasPointers).toBe(true);
+
+		// The flag is read only when the write creates the file. Sending it over the collaborative
+		// file keeps that file collaborative: turning collaboration off deletes the edit history,
+		// and only the Properties dialog asks the user about that. An importer that always sends
+		// the flag must not flip a file behind their back.
+		const flagOnExisting = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				path: "/imported/normal.md",
+				content: "# Normal\n\nsecond body\n",
+				nonCollaborative: true,
+			}),
+		});
+		expect(flagOnExisting.status).toBe(200);
+		expect(((await flagOnExisting.clone().json()) as { nodeId: string }).nodeId).toBe(collaborativeNodeId);
+		const afterFlagOnExisting = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", collaborativeNodeId as Id<"files_nodes">);
+			return {
+				nonCollaborative: node?.nonCollaborative,
+				hasPointers: node?.yjsSnapshotId !== undefined && node?.yjsLastSequenceId !== undefined,
+				versions: (await ctx.db.query("files_snapshots").collect()).filter(
+					(snapshot) => snapshot.fileNodeId === (collaborativeNodeId as Id<"files_nodes">),
+				).length,
+			};
+		});
+		expect(afterFlagOnExisting.nonCollaborative).toBeUndefined();
+		expect(afterFlagOnExisting.hasPointers).toBe(true);
+		expect(afterFlagOnExisting.versions).toBe(2);
+		const readAfterFlag = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/imported/normal.md" }),
+		});
+		expect(readAfterFlag.status).toBe(200);
+		expect(((await readAfterFlag.json()) as { content: string }).content).toBe("# Normal\n\nsecond body\n");
+
+		// Writing again over the non-collaborative file replaces its text in place. Without this the
+		// write would archive the file and create a new one, so a repeated import would change the
+		// nodeId every run.
+		const replaced = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				path: "/imported/report.md",
+				content: "# Imported\n\nsecond import\n",
+			}),
+		});
+		expect(replaced.status).toBe(200);
+		expect(((await replaced.json()) as { nodeId: string }).nodeId).toBe(writtenBody.nodeId);
+
+		const afterReplace = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", writtenBody.nodeId as Id<"files_nodes">);
+			return {
+				nonCollaborative: node?.nonCollaborative,
+				archived: node?.archiveOperationId !== undefined,
+				yjsSnapshots: (await ctx.db.query("files_yjs_snapshots").collect()).length,
+				// One version per write on this file, plus the one the collaborative file created.
+				versions: (await ctx.db.query("files_snapshots").collect()).filter(
+					(snapshot) => snapshot.fileNodeId === (writtenBody.nodeId as Id<"files_nodes">),
+				).length,
+			};
+		});
+		expect(afterReplace.nonCollaborative).toBe(true);
+		expect(afterReplace.archived).toBe(false);
+		// The collaborative file made the only Yjs snapshot in the workspace; the replace made none.
+		expect(afterReplace.yjsSnapshots).toBe(1);
+		expect(afterReplace.versions).toBe(2);
+
+		const readAgain = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/imported/report.md" }),
+		});
+		expect(((await readAgain.json()) as { content: string }).content).toContain("second import");
+
+		// A re-import of the same text mints no new version.
+		const unchanged = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				path: "/imported/report.md",
+				content: "# Imported\n\nsecond import\n",
+				skipIfUnchanged: true,
+			}),
+		});
+		expect(unchanged.status).toBe(200);
+		expect((await unchanged.json()) as { unchanged?: boolean }).toMatchObject({ unchanged: true });
+		expect(
+			await t.run(async (ctx) =>
+				(await ctx.db.query("files_snapshots").collect()).filter(
+					(snapshot) => snapshot.fileNodeId === (writtenBody.nodeId as Id<"files_nodes">),
+				).length,
+			),
+		).toBe(2);
+	});
+
 	test("ordinary cleanup ledgers orphaned keys after the stage already vanished", async () => {
 		const t = test_convex();
 		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("keep jobs pending"));
@@ -4124,10 +4314,40 @@ describe("files read-only locks", () => {
 			yjsSnapshotSize: 0,
 		});
 		expect(prepared2._yay!.targetAnchor).toMatchObject({ kind: "existing" });
+		const lineageIds = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			if (!node?.yjsLastSequenceId) throw new Error("Expected the fill target to have a Yjs lineage");
+			const oldLineageId = node.yjsLastSequenceId;
+			const oldLineage = await ctx.db.get("files_yjs_docs_last_sequences", oldLineageId);
+			if (!oldLineage) throw new Error("Expected the fill target lineage doc");
+			const newLineageId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+				organizationId: oldLineage.organizationId,
+				workspaceId: oldLineage.workspaceId,
+				fileNodeId: oldLineage.fileNodeId,
+				lastSequence: oldLineage.lastSequence,
+				unmaterializedUpdateCount: oldLineage.unmaterializedUpdateCount,
+				unmaterializedUpdateBytes: oldLineage.unmaterializedUpdateBytes,
+				lineageGeneration: oldLineage.lineageGeneration,
+			});
+			await ctx.db.patch("files_nodes", nodeId, { yjsLastSequenceId: newLineageId });
+			return { oldLineageId, newLineageId };
+		});
+
+		// Numeric sequence and generation can repeat after a document reset. The exact sequence-doc
+		// id stops a staged fill from publishing into that new lineage.
+		const staleLineage = await t.mutation(internal.public_api.publish_file_fill, {
+			stageId: prepared2._yay!.stageId,
+			content: "# Change\n",
+			expectedNodeId: nodeId,
+			expectedYjsLastSequenceId: lineageIds.oldLineageId,
+		});
+		expect(staleLineage._nay?.message).toBe("The file changed during the write");
+
 		const published2 = await t.mutation(internal.public_api.publish_file_fill, {
 			stageId: prepared2._yay!.stageId,
 			content: "# Change\n",
 			expectedNodeId: nodeId,
+			expectedYjsLastSequenceId: lineageIds.newLineageId,
 		});
 		expect(published2._nay).toBeUndefined();
 	});

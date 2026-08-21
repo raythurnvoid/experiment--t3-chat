@@ -29,7 +29,7 @@ test("billing_event preserves the matching source-specific payload type", () => 
 			organizationId: "organization_1",
 			workspaceId: "workspace_1",
 			nodeId: "file_1",
-			yjsSequence: "1",
+			version: "1",
 		},
 	});
 
@@ -42,5 +42,5 @@ test("billing_event preserves the matching source-specific payload type", () => 
 	expectTypeOf(fileSaveEvent.metadata.organizationId).toBeString();
 	expectTypeOf(fileSaveEvent.metadata.workspaceId).toBeString();
 	expectTypeOf(fileSaveEvent.metadata.nodeId).toBeString();
-	expectTypeOf(fileSaveEvent.metadata.yjsSequence).toBeString();
+	expectTypeOf(fileSaveEvent.metadata.version).toBeString();
 });

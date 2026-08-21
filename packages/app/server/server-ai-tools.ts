@@ -24,7 +24,7 @@ import {
 	bash_EXTERNAL_MOUNTS_ROOT,
 	bash_PLUGINS_MOUNT_ROOT,
 	bash_is_path_under,
-	files_agent_upsert_file_pending_update,
+	files_agent_write_file_text,
 } from "./bash-utils.ts";
 
 /**
@@ -578,7 +578,7 @@ export function ai_chat_tool_create_bash(
 			To search content across files use search (or search --path <folder> for one folder); to find lines in a SINGLE file use grep [-n] [-i] [-F] PATTERN <file> over the file's stored text chunks. Normal single-file grep uses regex matching; -F/--fixed-strings uses literal substring matching; -n prints lineNumber:line, and without -n it prints raw matching lines; also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context. For rendered plain-text chunk scans, use textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file> for one app file (regex by default; -F/--fixed-strings uses literal substring matching; -v inverts; -c counts; -l prints the path if matched), or textgrep -R PATTERN <folder> for a recursive folder scan via indexed full-text search (not exact recursive regex/fixed-string grep). Single-file textgrep has no line numbers or context flags; use grep for -n or -A/-B/-C context. Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer search --path. Use tree [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape; unsupported native tree flags fail for app paths.
 			Keep commands simple: avoid strict-mode boilerplate such as set -euo pipefail because pipefail is unsupported, comments in command strings, and process substitution. For multi-command inspection or eval checks, do not use set -e or hide stderr with 2>/dev/null; later commands and visible stderr should still be observed. Only summarize actual Bash stdout/stderr; the blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents. Do not work around app read-only write or delete requests by copying app files to /tmp unless the user asked for a scratch copy.
 			App file tree mkdir is available only when this tool is configured for Agent mode; /tmp scratch does not create app file tree folders.
-			In Agent mode, shell writes under ${currentWorkspacePath} create pending proposals the user reviews in Files, exactly like edit_file: create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect, append with >>, tee writes each app target as a proposal, and touch on a new path creates an empty-file proposal (touch on an existing app file changes nothing). Writable file types: Markdown (.md) keeps rich text and serves back its rendered Markdown text, while these plain text extensions store bytes exactly as written: ${ai_chat_PLAIN_TEXT_EXTENSIONS_LIST}. An extensionless new file name becomes <name>.md, any other extension is refused with the supported list, and copies or renames cannot cross between Markdown and plain text (cp notes.md data.json is refused; cp data.json data.yaml is fine). Your own reads (bash and the file tools) see your pending proposals as if applied, while other users and the Files UI see the committed tree until the user accepts (a brand-new file appears to everyone right away as an empty placeholder). In Ask mode app files are read-only. rm <app-path> proposes a pending delete: accepting archives the file, and rm -r <app-folder> archives the folder with everything inside. Your own reads see a pending-deleted path as gone; rm on your own not-yet-accepted new file usually removes it immediately (stdout prints removed '<path>'; when it cannot be removed safely it becomes a normal pending delete). ln is not available for app files. mv <app-path> <app-path> proposes a pending move/rename (one source only); accepting a move onto an occupied path replaces that file. Plain mv never overwrites an existing destination; mv -f <app-file> <existing-app-file> proposes a replace: the destination file keeps its identity and gets the source's content as a pending content replacement, and accepting saves that as a new version of the destination and archives the source file (mv -f replaces files only; a plain folder move can replace an empty folder, and folders never replace files or the reverse). cp <app-file> <app-path> proposes a pending copy (one source only): a new destination file appears immediately with the copied content pending review, your reads at the destination show that pending content, accepting publishes it, and discarding removes the destination file. When the cp destination file already exists, the copy becomes a pending content replacement on that file, and discarding keeps the destination file with its committed content. Use cp -n or cp --no-clobber to leave an existing final destination unchanged without creating a replacement proposal. cp <app-file> /tmp/<name> stays an immediate durable per-thread scratch copy. Targeted edits to existing text files belong in edit_file with app paths such as /docs/readme.md or /data/config.json; the edit_file description states how to convert a bash path to an app path. If a user asks to delete a file, run rm on it; the delete still waits for their accept in Files.`,
+			In Agent mode, shell writes under ${currentWorkspacePath} normally create pending proposals the user reviews in Files, exactly like edit_file: create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect, append with >>, tee writes each app target as a proposal, and touch on a new path creates an empty-file proposal (touch on an existing app file changes nothing). If collaboration is off for an existing target, a shell write or edit_file saves immediately instead and its output says there is no pending change to review. Writable file types: Markdown (.md) keeps rich text and serves back its rendered Markdown text, while these plain text extensions store bytes exactly as written: ${ai_chat_PLAIN_TEXT_EXTENSIONS_LIST}. An extensionless new file name becomes <name>.md, any other extension is refused with the supported list, and copies or renames cannot cross between Markdown and plain text (cp notes.md data.json is refused; cp data.json data.yaml is fine). Your own reads (bash and the file tools) see your pending proposals as if applied, while other users and the Files UI see the committed tree until the user accepts (a brand-new file appears to everyone right away as an empty placeholder). In Ask mode app files are read-only. rm <app-path> proposes a pending delete: accepting archives the file, and rm -r <app-folder> archives the folder with everything inside. Your own reads see a pending-deleted path as gone; rm on your own not-yet-accepted new file usually removes it immediately (stdout prints removed '<path>'; when it cannot be removed safely it becomes a normal pending delete). ln is not available for app files. mv <app-path> <app-path> proposes a pending move/rename (one source only); accepting a move onto an occupied path replaces that file. Plain mv never overwrites an existing destination; mv -f <app-file> <existing-app-file> proposes a replace only when the destination is collaborative: the destination file keeps its identity and gets the source's content as a pending content replacement, and accepting saves that as a new version of the destination and archives the source file. mv -f refuses a collaboration-off destination because pending review cannot preserve that destination (a plain folder move can replace an empty folder, and folders never replace files or the reverse). cp <app-file> <app-path> proposes a pending copy (one source only): a new destination file appears immediately with the copied content pending review, your reads at the destination show that pending content, accepting publishes it, and discarding removes the destination file. When the cp destination file already exists, the copy becomes a pending content replacement on that file, and discarding keeps the destination file with its committed content. If collaboration is off for that existing destination, cp saves its new content immediately and says so. Use cp -n or cp --no-clobber to leave an existing final destination unchanged without creating a replacement proposal. cp <app-file> /tmp/<name> stays an immediate durable per-thread scratch copy. Targeted edits to existing text files belong in edit_file with app paths such as /docs/readme.md or /data/config.json; the edit_file description states how to convert a bash path to an app path. If a user asks to delete a file, run rm on it; the delete still waits for their accept in Files.`,
 		inputSchema: z.object({
 			command: z
 				.string()
@@ -645,7 +645,7 @@ function ai_chat_tool_edit_file_create_diff(path: string, before: string, after:
 /**
  * Inspired by `opencode/packages/opencode/src/tool/edit.ts`
  *
- * Tool for proposing a search-and-replace edit on a file (no direct apply).
+ * Tool for a search-and-replace edit on a file.
  * It mirrors OpenCode's edit semantics (unique match vs. replaceAll), operates on files files,
  * and stores a pending update for human-in-the-loop review.
  */
@@ -671,7 +671,7 @@ export function ai_chat_tool_create_edit_file(
 			- Preserve the full remaining suffix after that prefix; /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.
 			- A read-only refusal is terminal for this edit. Do not retry the path with bash redirects, tee, cp, mv, or another write tool; it cannot change until the user makes it writable.
 			- For a .md file the text must be valid GitHub Flavored Markdown; preserve valid Markdown structure (headings, code fences, lists). For any other text file, match the file's own format exactly (for example valid JSON in a .json file) and do not reformat the rest of the file.
-			- This tool does not apply changes directly; it saves a pending update for human review.`,
+			- This tool normally saves a pending update for human review. If collaboration is off for the file, it saves the edit immediately and its output says there is nothing to review.`,
 
 		inputSchema: z.object({
 			path: z
@@ -747,7 +747,10 @@ export function ai_chat_tool_create_edit_file(
 
 			const nodeId = currentFileContent.nodeId;
 
-			const upserted = await files_agent_upsert_file_pending_update(ctx, {
+			// A file with collaboration turned off is saved by this call instead of proposed, so the
+			// output below tells the model which of the two happened.
+			const nonCollaborativeBaseAssetId = currentFileContent.nonCollaborativeBaseAssetId ?? undefined;
+			const written = await files_agent_write_file_text(ctx, {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				userId: ctxData.userId,
@@ -755,29 +758,39 @@ export function ai_chat_tool_create_edit_file(
 				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
 				unstagedText: modifiedText,
 				threadId: ctxData.getThreadId() ?? undefined,
+				nonCollaborativeBaseAssetId,
 			});
-			// The node can be archived or deleted between the read above and this upsert;
-			// reporting success would let the model believe the proposal exists.
-			if (upserted._nay) {
-				if (upserted._nay.name === "read_only") {
+			// The node can be archived or deleted between the read above and this write;
+			// reporting success would let the model believe the change landed.
+			if (written._nay) {
+				if (written._nay.name === "read_only") {
 					throw new Error(
-						`Cannot edit ${normalizedPath}: ${upserted._nay.message} Do not retry this path with another write tool.`,
-						{ cause: upserted._nay },
+						`Cannot edit ${normalizedPath}: ${written._nay.message} Do not retry this path with another write tool.`,
+						{ cause: written._nay },
 					);
+				}
+				// The direct save refuses with reasons the model can act on: a newer save, the size
+				// caps, the credit gate. Keep them instead of the proposal path's generic sentence.
+				if (nonCollaborativeBaseAssetId) {
+					throw new Error(`Cannot edit ${normalizedPath}: ${written._nay.message}`, { cause: written._nay });
 				}
 				throw new Error(
 					`Cannot edit ${normalizedPath}: the file is gone or archived, so the proposal was not recorded. Re-check the path and try again.`,
-					{ cause: upserted._nay },
+					{ cause: written._nay },
 				);
 			}
-			const nextPendingUpdate = await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
-				userId: ctxData.userId,
-				nodeId,
-				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
-			});
+			// A non-collaborative file has no pending update to point at; the text is already saved.
+			const nextPendingUpdate = nonCollaborativeBaseAssetId
+				? null
+				: await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
+						organizationId: ctxData.organizationId,
+						workspaceId: ctxData.workspaceId,
+						userId: ctxData.userId,
+						nodeId,
+						pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
+					});
 
+			const replacedCount = args.replaceAll ? `Replaced ${matches} occurrences` : "Replaced 1 occurrence";
 			return {
 				title: normalizedPath,
 				metadata: {
@@ -790,7 +803,9 @@ export function ai_chat_tool_create_edit_file(
 					diff,
 					modifiedContent: modifiedText,
 				},
-				output: args.replaceAll ? `Replaced ${matches} occurrences` : "Replaced 1 occurrence",
+				output: nonCollaborativeBaseAssetId
+					? `${replacedCount}. Collaboration is off for this file, so the change is already saved and there is nothing to review.`
+					: replacedCount,
 			};
 		},
 	});

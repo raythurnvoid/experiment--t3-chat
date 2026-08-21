@@ -1081,14 +1081,18 @@ async function bash_fs_create(args: {
 
 			// Surface unexpected Just Bash failures as terminal stderr instead of
 			// failing the Convex action.
-			return await bash.exec(command).catch((error: unknown) => ({
+			const result = await bash.exec(command).catch((error: unknown) => ({
 				stdout: "",
 				stderr: `${error instanceof Error ? error.message : String(error)}\n`,
 				exitCode: bash_COMMAND_EXIT_FAILURE,
-				env: {
-					PWD: cwd,
-				},
+					env: {
+						PWD: cwd,
+					},
 			}));
+			for (const path of appDbFilesFs.consumeDirectSavedPaths()) {
+				result.stderr += `bash: saved '${path}' immediately because collaboration is off; there is no pending change to review.\n`;
+			}
+			return result;
 		},
 		nearest_existing_dir: (path: string) => nearest_existing_dir(fs, path),
 		project_pending_moved_path,
@@ -1607,6 +1611,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			brokenChunks?: boolean;
 			/** Upload-style node without editable yjs state (binary uploads, PDFs). */
 			withoutYjsState?: boolean;
+			/** Editable text file with collaboration turned off: committed chunks only, no Yjs docs. */
+			nonCollaborative?: boolean;
 			/** Store a real yjs snapshot in mock R2 so action-side base-state fetches work (pending upserts). */
 			withRealYjsSnapshot?: boolean;
 			/** Committed asset byte size override; defaults to the utf8 size of `content`. */
@@ -1733,6 +1739,23 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			test_r2_objects.set(r2Key, bytes);
 			if (spec.withoutYjsState) {
 				await ctx.db.patch("files_nodes", fileId, { assetId });
+				return;
+			}
+			// Collaboration off: the committed chunks are the whole file, so there is no Yjs asset,
+			// no snapshot doc, no sequence doc, and the chunks carry no sequence.
+			if (spec.nonCollaborative) {
+				await ctx.db.patch("files_nodes", fileId, { assetId, nonCollaborative: true });
+				const committed = await db_insert_file_text_content(ctx, {
+					organizationId: scope.organizationId,
+					workspaceId: scope.workspaceId,
+					nodeId: fileId,
+					path: spec.path,
+					rootKind: seedRootKind,
+					textContent: content,
+				});
+				if (committed._nay) {
+					throw new Error(`Seed chunking failed for ${spec.path}: ${committed._nay.message}`);
+				}
 				return;
 			}
 			let yjsSnapshotAssetFields: { r2Key?: string; size: number } = { size: 0 };
@@ -2271,6 +2294,32 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(movedChain.stderr).toBe("");
 			expect(movedChain.metadata.exitCode).toBe(0);
 			expect(movedChain.stdout.split("zeta").length - 1).toBe(2);
+		});
+
+		test("readers serve a non-collaborative file from its committed chunks", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/plain.md", content: "alpha\nbeta\ngamma\n", nonCollaborative: true }],
+			});
+
+			// Prove the seed really is non-collaborative, so the reads below cannot pass through a
+			// Yjs document that should not exist.
+			const seededNode = await get_seeded_node(runner, "/plain.md");
+			expect(seededNode.nonCollaborative).toBe(true);
+			expect(seededNode.yjsSnapshotId).toBeUndefined();
+			expect(seededNode.yjsLastSequenceId).toBeUndefined();
+
+			const printed = await runner.run(`cat ${test_db_files_mount}/plain.md`);
+			expect(printed.stderr).toBe("");
+			expect(printed.metadata.exitCode).toBe(0);
+			expect(printed.stdout).toBe("alpha\nbeta\ngamma\n");
+
+			const firstLines = await runner.run(`head -n 2 ${test_db_files_mount}/plain.md`);
+			expect(firstLines.stderr).toBe("");
+			expect(firstLines.stdout).toBe("alpha\nbeta\n");
+
+			const counted = await runner.run(`wc -l ${test_db_files_mount}/plain.md`);
+			expect(counted.stderr).toBe("");
+			expect(counted.stdout.trim().startsWith("3")).toBe(true);
 		});
 
 		test("reads current app file byte size after an unsaved edit is created", async () => {
@@ -5612,6 +5661,65 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		});
 
+		test("mv -f from a non-collaborative source still proposes on the collaborative target", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/docs/saved-source.md", content: "saved source\n", nonCollaborative: true },
+					{ path: "/docs/replace-me.md", content: "old target\n", withRealYjsSnapshot: true },
+				],
+			});
+			const sourceId = await get_seeded_node_id(runner, "/docs/saved-source.md");
+			const targetId = await get_seeded_node_id(runner, "/docs/replace-me.md");
+
+			const result = await runner.run(
+				`mv -f ${test_db_files_mount}/docs/saved-source.md ${test_db_files_mount}/docs/replace-me.md`,
+			);
+			expect(result.stderr).toBe("");
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe(
+				"pending replace created: /docs/saved-source.md -> /docs/replace-me.md — replaces the file's content and archives the source when accepted; review in Files\n",
+			);
+
+			// The proposal lives on the target, so only the target needs a document. Without this
+			// the command falls through to a structural move proposal, and accepting that one
+			// archives the target instead of the source, losing the target's history and comments.
+			const targetRows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+					.collect(),
+			);
+			expect(targetRows).toHaveLength(1);
+			expect(targetRows[0].copiedFrom).toMatchObject({ nodeId: sourceId, archivesSourceOnAccept: true });
+
+			// Nothing was archived yet: both files are still active and hold their own text.
+			const sourceNode = await get_seeded_node(runner, "/docs/saved-source.md");
+			expect(sourceNode._id).toBe(sourceId);
+			expect(sourceNode.archiveOperationId).toBeUndefined();
+			expect(sourceNode.nonCollaborative).toBe(true);
+			const targetNode = await get_seeded_node(runner, "/docs/replace-me.md");
+			expect(targetNode.archiveOperationId).toBeUndefined();
+			expect(targetNode.yjsSnapshotId).toBeDefined();
+		});
+
+		test("mv -f refuses a non-collaborative target instead of reversing which file survives", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/docs/saved-target.md", content: "saved target\n", nonCollaborative: true }],
+			});
+			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
+			const targetId = await get_seeded_node_id(runner, "/docs/saved-target.md");
+
+			const result = await runner.run(
+				`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/saved-target.md`,
+			);
+			expect(result.metadata.exitCode).not.toBe(0);
+			expect(result.stderr).toBe(
+				`mv: cannot replace '${test_db_files_mount}/docs/saved-target.md': collaboration is off for the destination\n`,
+			);
+			const pendingRows = await runner.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
+			expect(pendingRows.filter((row) => row.fileNodeId === sourceId || row.fileNodeId === targetId)).toEqual([]);
+		});
+
 		test("mv -f rejects a source path re-occupied by a different file mid-action", async () => {
 			const runner = await create_bash_runner({
 				// The pending upsert fetches the target's committed yjs snapshot from R2.
@@ -6586,6 +6694,39 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(pendingRows[0]!.eagerCreated).toBeUndefined();
 		});
 
+		test("redirect overwrite on a non-collaborative file saves it instead of proposing it", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/docs/saved.md", content: "committed body\n", nonCollaborative: true }],
+			});
+
+			const overwritten = await runner.run(
+				`printf replaced > ${test_db_files_mount}/docs/saved.md && cat ${test_db_files_mount}/docs/saved.md`,
+			);
+			expect(overwritten.stderr).toBe(
+				`bash: saved '${test_db_files_mount}/docs/saved.md' immediately because collaboration is off; there is no pending change to review.\n`,
+			);
+			expect(overwritten.metadata.exitCode).toBe(0);
+			// A save keeps the bytes the shell wrote. The collaborative path instead renders the
+			// pending Markdown document, which adds the trailing newline Markdown always ends with.
+			expect(overwritten.stdout).toBe("replaced");
+
+			// The text landed on the committed file, so there is nothing waiting for review.
+			expect(await list_pending_updates(runner)).toHaveLength(0);
+			const savedNode = await get_seeded_node(runner, "/docs/saved.md");
+			expect(savedNode.nonCollaborative).toBe(true);
+			expect(savedNode.yjsSnapshotId).toBeUndefined();
+
+			// A second write reads the asset the first save wrote, so appends keep working.
+			const appended = await runner.run(
+				`printf ' extra' >> ${test_db_files_mount}/docs/saved.md && cat ${test_db_files_mount}/docs/saved.md`,
+			);
+			expect(appended.stderr).toBe(
+				`bash: saved '${test_db_files_mount}/docs/saved.md' immediately because collaboration is off; there is no pending change to review.\n`,
+			);
+			expect(appended.stdout).toBe("replaced extra");
+			expect(await list_pending_updates(runner)).toHaveLength(0);
+		});
+
 		test("heredoc redirect writes a multi-line pending proposal", async () => {
 			const runner = await create_bash_runner();
 
@@ -7127,6 +7268,58 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const overlayRead = await runner.run(`cat ${test_db_files_mount}/docs/replace-target.md`);
 			expect(overlayRead.metadata.exitCode).toBe(0);
 			expect(overlayRead.stdout).toContain("unique-token");
+		});
+
+		test("cp onto a non-collaborative file saves the content instead of proposing it", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/docs/saved-target.md", content: "replace me\n", nonCollaborative: true }],
+			});
+			const targetId = await get_seeded_node_id(runner, "/docs/saved-target.md");
+
+			const result = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/saved-target.md`,
+			);
+			expect(result.stderr).toBe("");
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe(
+				"copied: /docs/readme.md -> /docs/saved-target.md — collaboration is off for the destination, so the new content is already saved\n",
+			);
+
+			// Nothing to review: the destination has no document to branch from, so the copy is a save.
+			const rows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+					.collect(),
+			);
+			expect(rows).toHaveLength(0);
+
+			// The saved file keeps collaboration off and gains no Yjs document.
+			const savedNode = await get_seeded_node(runner, "/docs/saved-target.md");
+			expect(savedNode.nonCollaborative).toBe(true);
+			expect(savedNode.yjsSnapshotId).toBeUndefined();
+			expect(savedNode.yjsLastSequenceId).toBeUndefined();
+
+			const savedRead = await runner.run(`cat ${test_db_files_mount}/docs/saved-target.md`);
+			expect(savedRead.metadata.exitCode).toBe(0);
+			expect(savedRead.stdout).toContain("unique-token");
+			expect(savedRead.stdout).not.toContain("replace me");
+		});
+
+		test("cp of a markdown file onto a non-collaborative plain text file refuses with the class message", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/data/settings.yaml", content: "a: 1\n", nonCollaborative: true }],
+			});
+
+			const crossClass = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/settings.yaml`,
+			);
+			expect(crossClass.metadata.exitCode).not.toBe(0);
+			expect(crossClass.stderr).toContain("File classes do not match");
+
+			// The refusal is a preflight, so the destination still holds its own text.
+			const unchanged = await runner.run(`cat ${test_db_files_mount}/data/settings.yaml`);
+			expect(unchanged.stdout).toBe("a: 1\n");
 		});
 
 		test("cp no-clobber leaves an existing app destination unchanged", async () => {

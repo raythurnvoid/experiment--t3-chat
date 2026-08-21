@@ -122,8 +122,13 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
   design. Lock and unlock require management permission, but they must be able to change the lock
   being managed.
 - Every final user-write transaction checks the current lock before its first write. This includes a
-  Yjs push, file create, snapshot restore, Yjs repair, pending Save or Accept, and public text publish.
-  A lock removed before this check does not refuse the write.
+  Yjs push, file create, snapshot restore, Yjs repair, pending Save or Accept, public text publish,
+  the non-collaborative content replacement (`replace_file_content`), and both collaboration toggles
+  (`set_file_non_collaborative` / `set_file_collaborative`). A lock removed before this check does not
+  refuse the write.
+- The two collaboration toggles are content writes, not permission changes. They ask for ACL
+  `content.write` and then the lock, in that order, like every other content door. They do NOT use
+  `content.permissions.manage`, which is what lock and unlock use.
 - Other safety checks still apply. A public replacement keeps the expected target node id. A pending
   replacement keeps the ordered source node ids. These checks stop the operation from changing
   different files from the ones the user reviewed.
@@ -296,7 +301,7 @@ The checkbox writes as soon as it is clicked. There is no Save for the lock — 
 
 # Test Map
 
-- `convex/files_nodes.test.ts` — pointer/cascade states, tree operations, current-lock Yjs/snapshot/repair checks, lock → unlock success, upload-node and failed-upload-discard refusals, copy-out controls.
+- `convex/files_nodes.test.ts` — pointer/cascade states, tree operations, current-lock Yjs/snapshot/repair checks, action-backed replacement/toggle final checks, lock → unlock success, upload-node and failed-upload-discard refusals, copy-out controls.
 - `convex/files_pending_updates.test.ts` — proposal/accept/discard behavior, current-lock final checks, lock → unlock completion, and eager-created cleanup.
 - `convex/public_api.test.ts` — 409 `conflict` contract, batch semantics, current-lock final checks, target identity conflicts, lock → unlock success, and zero partial output. `convex/public_api_service_uploads.test.ts` also proves that the service delete checks every live node's current path, restricted ACL, and lock before its first write, archives committed files, and hard-deletes only pending placeholders.
 - `convex/plugins.test.ts` — locked plugin output, zero writes, source-only lock still allows a writable destination.

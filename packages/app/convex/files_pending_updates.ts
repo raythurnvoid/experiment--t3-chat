@@ -51,6 +51,7 @@ import {
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_ROOT_ID,
+	files_copy_class_mismatch_message,
 	files_db_cancel_pending_update_cleanup_tasks,
 	files_db_expire_pending_update_operation_batch,
 	files_db_get_pending_path_overlay_data,
@@ -60,6 +61,7 @@ import {
 	files_db_load_pending_update_yjs_state_bytes,
 	files_db_retire_pending_update_yjs_states,
 	files_db_schedule_pending_update_cleanup,
+	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_pending_update_content_of,
 	files_pending_update_yjs_state_digest,
@@ -427,6 +429,103 @@ async function files_pending_update_db_delete_chunks(
 		...textChunks.map((chunk) => ctx.db.delete("files_text_chunks", chunk._id)),
 		files_metadata_db_delete_pending(ctx, args),
 	]);
+}
+
+/**
+ * Drop the content proposal on every user's pending update doc for one file, and keep whatever
+ * else those docs propose.
+ *
+ * Turning collaboration off deletes the Yjs document a content proposal is built on. Two things go
+ * wrong if the proposals stay. First they get stuck: every door that could save or discard the
+ * content refuses a file with no Yjs document, so the Discard button would do nothing and the doc
+ * would sit there until the four-hour sweep. Second, turning collaboration back on builds a fresh
+ * document whose lineage generation starts at 0 again, so an old proposal would look current to
+ * every gate that compares the two.
+ *
+ * A doc that proposed only content is deleted. A doc that also proposes a move or a delete keeps
+ * that part and loses its content.
+ *
+ * The saved-sequence markers go too. Each one records the Yjs sequence one member's save reached,
+ * and the diff editor refetches the file while its own snapshot is behind that number. A fresh
+ * document starts counting at 1, so a leftover marker from the old document would keep every
+ * reader refetching a sequence the file will not reach again for a long time.
+ */
+export async function files_pending_updates_db_drop_content_for_node(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+	},
+) {
+	const [pendingUpdates, lastSequenceSavedDocs] = await Promise.all([
+		ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
+			.collect(),
+		ctx.db
+			.query("files_pending_updates_last_sequence_saved")
+			.withIndex("by_organization_workspace_fileNode_user", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("fileNodeId", args.nodeId),
+			)
+			.collect(),
+	]);
+
+	await Promise.all(
+		lastSequenceSavedDocs.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
+	);
+
+	const now = Date.now();
+	await Promise.all(
+		pendingUpdates.map(async (pendingUpdate) => {
+			if (!files_pending_update_content_of(pendingUpdate)) {
+				return;
+			}
+
+			// Retire the paged state families instead of deleting the pages here. One family can
+			// hold 12 MiB, and this runs for every member at once, so an inline delete would blow
+			// the mutation write budget.
+			const retireStatesAndChunks = [
+				files_db_retire_pending_update_yjs_states(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					pendingUpdateId: pendingUpdate._id,
+				}),
+				files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
+			];
+
+			// Nothing else was proposed, so the whole doc goes.
+			if (!pendingUpdate.pendingMove && !pendingUpdate.pendingArchive) {
+				await Promise.all([
+					...retireStatesAndChunks,
+					files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: pendingUpdate._id }),
+					ctx.db.delete("files_pending_updates", pendingUpdate._id),
+				]);
+				return;
+			}
+
+			await Promise.all([
+				...retireStatesAndChunks,
+				ctx.db.patch("files_pending_updates", pendingUpdate._id, {
+					baseYjsSequence: undefined,
+					baseLineageGeneration: undefined,
+					baseStateId: undefined,
+					stagedStateId: undefined,
+					unstagedStateId: undefined,
+					copiedFrom: undefined,
+					size: 0,
+					updatedAt: now,
+				}),
+				files_db_schedule_pending_update_cleanup(ctx, {
+					pendingUpdateId: pendingUpdate._id,
+					expectedUpdatedAt: now,
+				}),
+			]);
+		}),
+	);
 }
 
 /**
@@ -1746,6 +1845,7 @@ export const get_data_for_pending_content_operation = internalQuery({
 	returns: v.union(
 		v.object({
 			fileNode: doc(app_convex_schema, "files_nodes"),
+			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 			lastSequence: v.number(),
 			lineageGeneration: v.number(),
 			batch: v.union(doc(app_convex_schema, "files_pending_update_operation_batches"), v.null()),
@@ -1814,6 +1914,7 @@ export const get_data_for_pending_content_operation = internalQuery({
 
 		return {
 			fileNode,
+			yjsLastSequenceId: lastSequenceDoc._id,
 			lastSequence: lastSequenceDoc.lastSequence,
 			lineageGeneration: lastSequenceDoc.lineageGeneration,
 			batch,
@@ -2393,6 +2494,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 		expectedUpdatedAt: v.union(v.number(), v.null()),
 		baseYjsSequence: v.number(),
 		baseLineageGeneration: v.number(),
+		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		/** Source file ids found before the action builds this replace proposal. */
 		expectedSourceNodeIds: v.array(v.id("files_nodes")),
 		baseStateId: v.id("files_pending_update_yjs_states"),
@@ -2508,15 +2610,16 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 				copySourceNode &&
 				copySourceNode.organizationId === args.organizationId &&
 				copySourceNode.workspaceId === args.workspaceId &&
-				files_node_has_editable_yjs_state(copySourceNode) &&
+				files_node_has_editable_text_content(copySourceNode) &&
 				files_node_has_editable_yjs_state(file) &&
 				copySourceNode.yjsRootKind !== file.yjsRootKind
 			) {
-				const describe_class = (rootKind: "rich_text" | "plain_text") =>
-					rootKind === "rich_text" ? "a Markdown (.md) file" : "a plain text file";
 				return Result({
 					_nay: {
-						message: `File classes do not match: the source is ${describe_class(copySourceNode.yjsRootKind)} and the destination is ${describe_class(file.yjsRootKind)}. Copy Markdown into a .md path and plain text into a plain text path.`,
+						message: files_copy_class_mismatch_message({
+							sourceRootKind: copySourceNode.yjsRootKind,
+							destRootKind: file.yjsRootKind,
+						}),
 					},
 				});
 			}
@@ -2535,9 +2638,10 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 
 		// A lineage repair between the action's read and this commit makes the whole staged
 		// operation stale: the outputs were built against a document that no longer exists.
-		const lastSequenceDoc = file.yjsLastSequenceId
-			? await ctx.db.get("files_yjs_docs_last_sequences", file.yjsLastSequenceId)
-			: null;
+		const lastSequenceDoc =
+			file.yjsLastSequenceId === args.expectedYjsLastSequenceId
+				? await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequenceId)
+				: null;
 		if (!lastSequenceDoc || lastSequenceDoc.lineageGeneration !== args.baseLineageGeneration) {
 			return Result({ _nay: { message: PENDING_BASE_STALE_MESSAGE } });
 		}
@@ -3087,6 +3191,7 @@ async function action_upsert_file_pending_update(
 			expectedUpdatedAt: existingPendingUpdate?.updatedAt ?? null,
 			baseYjsSequence,
 			baseLineageGeneration: data.lineageGeneration,
+			expectedYjsLastSequenceId: data.yjsLastSequenceId,
 			expectedSourceNodeIds,
 			baseStateId: base.stateId,
 			stagedStateId: staged.stateId,
@@ -4260,6 +4365,7 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 		expectedUpdatedAt: v.number(),
 		baseYjsSequence: v.number(),
 		baseLineageGeneration: v.number(),
+		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		baseStateId: v.id("files_pending_update_yjs_states"),
 		stagedStateId: v.id("files_pending_update_yjs_states"),
 		unstagedStateId: v.id("files_pending_update_yjs_states"),
@@ -4368,7 +4474,10 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 
 		// The live document must still be exactly where the action read it: a commit or a
 		// lineage repair that landed during the action makes the staged operation stale.
-		const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
+		const lastSequenceDoc =
+			fileNode.yjsLastSequenceId === args.expectedYjsLastSequenceId
+				? await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequenceId)
+				: null;
 		if (
 			lastSequenceDoc?.lastSequence !== args.baseYjsSequence ||
 			lastSequenceDoc.lineageGeneration !== args.baseLineageGeneration
@@ -4711,6 +4820,7 @@ export const persist_file_pending_update_rebased_state = action({
 				expectedUpdatedAt: existingPendingUpdate.updatedAt,
 				baseYjsSequence: args.baseYjsSequence,
 				baseLineageGeneration: data.lineageGeneration,
+				expectedYjsLastSequenceId: data.yjsLastSequenceId,
 				baseStateId: baseInput._id,
 				stagedStateId: stagedInput._id,
 				unstagedStateId: unstagedInput._id,
@@ -5173,6 +5283,7 @@ export const save_file_pending_update_in_db = internalMutation({
 		expectedUpdatedAt: v.number(),
 		baseYjsSequence: v.number(),
 		baseLineageGeneration: v.number(),
+		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		/** Source file ids found before this save starts. */
 		expectedSourceNodeIds: v.array(v.id("files_nodes")),
 		/** The staged accept diff to publish through door 1; absent when nothing staged changed. */
@@ -5320,9 +5431,10 @@ export const save_file_pending_update_in_db = internalMutation({
 
 		// The file must still have the Yjs sequence used to build this diff.
 		// Refuse before writes or billing if another save or repair changed that sequence.
-		const lastSequenceDoc = targetNode.yjsLastSequenceId
-			? await ctx.db.get("files_yjs_docs_last_sequences", targetNode.yjsLastSequenceId)
-			: null;
+		const lastSequenceDoc =
+			targetNode.yjsLastSequenceId === args.expectedYjsLastSequenceId
+				? await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequenceId)
+				: null;
 		if (lastSequenceDoc?.lastSequence !== args.baseYjsSequence) {
 			return Result({
 				_nay: {
@@ -5441,6 +5553,7 @@ export const save_file_pending_update_in_db = internalMutation({
 				update: stage.update,
 				sessionId: `files_pending_update:${user._id}`,
 				userId: user._id,
+				expectedYjsLastSequenceId: args.expectedYjsLastSequenceId,
 				rootKind: targetNode.yjsRootKind,
 				// A save is a one-shot commit, not a keystroke stream: materialize now so
 				// committed reads (bash cat, exports) see the accepted content right away.
@@ -5488,7 +5601,7 @@ export const save_file_pending_update_in_db = internalMutation({
 								organizationId: membership.organizationId,
 								workspaceId: membership.workspaceId,
 								nodeId: args.nodeId,
-								yjsSequence: String(result._yay.newSequence),
+								version: String(result._yay.newSequence),
 							},
 						}),
 					},
@@ -5880,6 +5993,7 @@ export const save_file_pending_update = action({
 				expectedUpdatedAt: pendingUpdate.updatedAt,
 				baseYjsSequence: data.lastSequence,
 				baseLineageGeneration: data.lineageGeneration,
+				expectedYjsLastSequenceId: data.yjsLastSequenceId,
 				expectedSourceNodeIds: sourcePreflight._yay.sourceNodeIds,
 				trustedStageId,
 			})) as save_file_pending_update_in_db_Result;
@@ -6013,6 +6127,7 @@ export const save_file_pending_update = action({
 				expectedUpdatedAt: pendingUpdate.updatedAt,
 				baseYjsSequence: data.lastSequence,
 				baseLineageGeneration: data.lineageGeneration,
+				expectedYjsLastSequenceId: data.yjsLastSequenceId,
 				expectedSourceNodeIds: sourcePreflight._yay.sourceNodeIds,
 				trustedStageId,
 				partial: {

@@ -140,7 +140,7 @@ import {
 	files_is_node,
 	files_MAX_UPLOADS_BYTES,
 	files_name_input_select_stem,
-	files_node_has_editable_yjs_state,
+	files_node_has_editable_text_content,
 	files_normalize_name,
 	files_normalize_file_rename_name,
 	files_normalize_markdown_name,
@@ -4632,9 +4632,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 
 		const renameData = ((/* iife */) => {
-			// Route on the node's editable state, not its MIME: a converted `.json` upload has an
-			// asset AND an editable document, and its rename follows the editable-file class rule.
-			if (itemData.assetId && !files_node_has_editable_yjs_state(itemData)) {
+			// Route on the node's editable text, not its MIME and not its document: a converted
+			// `.json` upload has an asset AND editable text, and a non-collaborative file has
+			// editable text with no document. Both follow the editable-file class rule, and both
+			// would take the stored-file branch under a document check.
+			if (itemData.assetId && !files_node_has_editable_text_content(itemData)) {
 				const renameValidation = get_uploaded_file_rename_validation({
 					treeItemsList: treeItems?.list,
 					nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
@@ -4831,9 +4833,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 		const trimmedValue = currentTree.getRenamingValue().trim();
 		if (files_is_node(itemData) && trimmedValue) {
-			// Mirror `handleRename`: route on the node's editable state, not its MIME.
+			// Mirror `handleRename`: route on the node's editable text, not its MIME.
 			const renameValidation =
-				itemData.assetId && !files_node_has_editable_yjs_state(itemData)
+				itemData.assetId && !files_node_has_editable_text_content(itemData)
 					? get_uploaded_file_rename_validation({
 							treeItemsList: treeItems?.list,
 							nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,

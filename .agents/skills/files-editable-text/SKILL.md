@@ -1,6 +1,6 @@
 ---
 name: files-editable-text
-description: Spec for editable text files and their Yjs shape system — the extension classifier, the stored `yjsRootKind`, the read-side shape guards, the two write doors, the size limits, the four durable refusal markers, and the operator repair path. Use when changing the classifier or editor maps in `packages/app/shared/files.ts`, the shape guards or update scans in `packages/app/shared/files-yjs.ts` / `files-tiptap.ts`, the Yjs write doors or materialization markers in `packages/app/convex/files_nodes.ts` / `files_nodes_content.ts`, the plain-text chunker, or upload text conversion in `packages/app/convex/r2.ts`.
+description: Spec for editable text files and their Yjs shape system — the extension classifier, the stored `yjsRootKind`, the read-side shape guards, the write doors, the collaborative/non-collaborative flag and its two toggles, the size limits, the four durable refusal markers, and the operator repair path. Use when changing the classifier or editor maps in `packages/app/shared/files.ts`, the shape guards or update scans in `packages/app/shared/files-yjs.ts` / `files-tiptap.ts`, the Yjs write doors or materialization markers in `packages/app/convex/files_nodes.ts` / `files_nodes_content.ts`, the plain-text chunker, or upload text conversion in `packages/app/convex/r2.ts`.
 ---
 
 # The Two Document Shapes
@@ -44,6 +44,63 @@ Door 1 — `files_db_yjs_push_update` (`packages/app/convex/files_nodes.ts`) che
 
 Door 2 — the pending-state seal (`packages/app/convex/files_pending_updates.ts`) checks every whole document state a client stages: non-empty, at most 4 MiB, v1 encoding, then the per-`rootKind` shape rule. The plain branch runs the parity check AND requires the plain root's `_map.size === 0` (`files_yjs_doc_plain_text_root_map_size`) — this is the root-map-size rule that closes the `Y.Map` hole parity cannot see. A whole state legitimately carries content an incremental plain diff never should, so door 1's content whitelist must not run on door 2's input.
 
+# Collaborative And Non-Collaborative Files
+
+Every editable text file is collaborative by default. `files_nodes.nonCollaborative` (`packages/app/convex/schema.ts`) is an optional boolean, and an absent field means collaborative, so every file written before the field existed keeps the behavior it always had.
+
+- Collaborative: the file has a Yjs document. Several people type at once, the edits merge, and comments stay anchored inside the document. The two Yjs doors above are its only content-write doors.
+- Non-collaborative: the file has NO Yjs document. No snapshot doc, no sequence doc, no update log, no materialization. Only the committed chunks, the content asset, and the version history exist. The file is still editable: a save replaces the whole text. Every save names the content asset it loaded. If another save changed that asset, the stale save is refused and the editor tells the user to copy local changes before reloading.
+
+`yjsRootKind` stays set on a non-collaborative file. It still decides Markdown versus plain text for the chunker, the editor choice, the rename class rule, and the copy class rule, and turning collaboration back on needs it to rebuild the right document shape.
+
+Two predicates in `packages/app/shared/files.ts` ask the two different questions, and picking the wrong one is the main bug risk in this area:
+
+- `files_node_has_editable_text_content(node)` — kind `file`, has `assetId`, has `yjsRootKind`. True for BOTH modes. This is the "is this editable text" question: reads, the editor choice, the class rules, and every not-a-stored-blob fork.
+- `files_node_has_editable_yjs_state(node)` — the same three plus `yjsSnapshotId` and `yjsLastSequenceId`. True only for a collaborative file. This is the "does this have a Yjs document" question: the Yjs doors, materialization, pending proposals, and snapshot restore.
+
+## The third write door
+
+`replace_file_content` (`packages/app/convex/files_nodes_content.ts`) is the only content-write door for a non-collaborative file. It is an action plus a final mutation, because a Convex mutation cannot reach R2 and this door writes a new version snapshot object.
+
+- The action checks auth and credits, runs the text cap and the frontmatter preflight, and PUTs the new content object. Over-cap frontmatter is refused with `Too many frontmatter fields`, the same words as the pending-update preflight: both are doors where a person hands over a whole text and can shorten it after reading the message. Materialization cannot refuse anybody, so it settles with the marker pair instead — see the `file-metadata` skill.
+- `finalize_file_content_replacement` re-runs auth → membership → ACL `content.write` → read-only lock → staleness, then replaces the chunks, points the node at the new asset, stores the version snapshot, and emits the `file_save` billing event.
+- Staleness is `baseAssetId`: the caller names the asset its text came from, and the door refuses when the node no longer points at it. The success value carries the NEW asset id, so an editor that stays open can save again at once instead of waiting for the reactive node doc to arrive.
+- The door refuses a collaborative file. That file's text lives in its Yjs document, and replacing the chunks under it would leave the two disagreeing.
+
+## The two toggles
+
+Both live in `packages/app/convex/files_nodes_content.ts`. Both need ACL `content.write`, because changing the mode changes how the file is written. Both are refused by the read-only lock, and both are rate-limited on `files_tree_write`. Calling either one on a file already in that mode succeeds and does nothing, like `set_node_read_only`.
+
+`set_file_non_collaborative` (mutation) turns collaboration OFF and is destructive:
+
+- It needs `acknowledgeDropCollaborativeHistory: true`, checked before anything is read or written.
+- It deletes the Yjs snapshot doc, the sequence doc, the whole update log, the superseded Yjs snapshot object, the saved-sequence markers (`files_pending_updates_last_sequence_saved`, which count in the deleted document's sequence numbers), and the staged content of every pending update. The comment docs in `chat_messages` are NOT deleted, but the marks that pinned them to the words are, so the threads disappear from the file and nothing can bring them back. The committed text, the version history, and the file metadata survive. The confirmation dialog names all three losses: history, comments, and proposals waiting for review.
+- It clears the three markers that describe the deleted document: `contentShapeMismatchAt`, `contentYjsStateTooLargeByteSize`, and `contentTooLargeByteSize`. The last one is set when the text INSIDE the document grew past the cap, so the committed text this toggle keeps is the older one that still fit, and leaving the marker would show a permanent "too large" banner on a file that is now small. If the toggle also drops newer unmaterialized state, it clears the frontmatter marker pair because those counts describe the dropped state, not the older committed text.
+- It refuses a file that still has unmaterialized updates: "This file is still saving. Try again in a moment." The committed text only reaches the last materialized sequence, so deleting the log now would silently drop everything typed after it. A file carrying `contentShapeMismatchAt`, `contentYjsStateTooLargeByteSize`, or `contentTooLargeByteSize` is the exception: normal materialization cannot close that gap, so asking the user to wait would be a lie, and the toggle goes ahead. The temporary frontmatter marker pair is not an exception. A later fitting edit can clear it, so the toggle must wait rather than drop newer text.
+- The mutation records the old sequence-doc id in `collaborationCleanupYjsLastSequenceId` before it schedules paged cleanup. Turning collaboration back on refuses while old Yjs snapshot or update docs still exist. If cleanup removed every old doc but failed before clearing the marker, the enable path clears that stale marker in its final transaction. Cleanup only deletes docs owned by that exact sequence doc, so old numeric sequence ranges cannot cross into a new document whose sequence restarts at zero.
+- It refuses a file that is still an eager-created pending node: "Accept or discard this new file before turning collaboration off." Such a node without a `yjsLastSequenceId` could never be hard-deleted again, so discard, expiry, and account deletion would all skip it and the sidebar would show it as "Added" forever.
+
+`set_file_collaborative` (action) turns collaboration ON without deleting committed history. It reads the committed content object, builds one fresh compact document for the stored `yjsRootKind`, and commits the text that new document produces — not the text that went in, because building a rich document normalizes Markdown. It borrows the operator repair's split (the action PUTs, the mutation publishes) but is built on the CREATION path: the repair patches Yjs docs a file already has, and this file has none. Its preflight returns the node's `readOnlyScopeNodeId` so the lock is answered BEFORE the two uploads; the publish mutation asks again, because somebody can lock the file while the objects upload.
+
+Every live writer carries the exact current `yjsLastSequenceId`, and materialization, restore, repair, and marker workers carry both exact Yjs pointer ids. Incremental reads also return this id, so a client never joins a snapshot from one lineage to update rows from another. Sequence numbers restart after a mode toggle, and repair rotates the exact last-sequence id even though it keeps the numeric target. The numbers alone do not identify a document lineage. Work from an older lineage must refuse or become a no-op before it changes rows or markers. Every bounded row-cleanup continuation carries the same exact id; superseded-asset cleanup stays independent because it reference-checks the asset before deleting it.
+
+The two toggles answer a permission refusal with different words, and that is not an oversight: the mutation asks the permission question itself and bubbles the shared helper's `Permission denied`, while the action only learns that its preflight query said no and answers `Not found` for every reason, exactly like `restore_snapshot_r2`.
+
+## Where the mode comes from
+
+There are exactly two sources. Nothing else sets the flag.
+
+- `POST /api/v1/files/write` and `/write-many` accept an optional `nonCollaborative` boolean in the body. It is read only when the write CREATES the file; a write over a file that already exists keeps the mode that file has. See the `public-api` skill.
+- The Collaboration checkbox in the Properties dialog (`packages/app/src/components/files/files-properties-modal.tsx`). Either direction remounts the editor, so the dialog confirms that only last-saved text is used and warns the user to save open editor changes first. The OFF confirmation also names the deleted history, comments, and pending proposal text.
+
+Uploads never create a non-collaborative file. There is also no lazy Yjs creation: a collaborative file still gets its document eagerly at creation.
+
+## What the editors do
+
+`files_resolve_effective_editor_view` (`packages/app/src/lib/files.ts`) sends every view of a non-collaborative file to the plain text editor, whatever its `yjsRootKind`. The rich text editor is built on a Yjs document and the diff view compares a proposal against one, so neither can open a file that has none. Monaco edits an ordinary string instead: the toolbar shows Save, and Save calls `replace_file_content`. There is no Sync button, because there is nothing to sync. Restoring an old version from the snapshots dialog also goes through the replace door.
+
+The editor loads its text with `get_non_collaborative_file_content`, which returns the committed text and the asset that text came from in one query, so the two cannot straddle somebody else's save.
+
 # Read-Only Check
 
 The file lock is checked after ACL and before both content-write doors. `yjs_push_update`, snapshot
@@ -71,7 +128,7 @@ Constants in `packages/app/shared/files.ts`:
 
 The unmaterialized budgets are counters on `files_yjs_docs_last_sequences`, maintained by the update writers and recomputed exactly at each successful materialization. A push that would cross a budget triggers an immediate materialization and asks the caller to retry.
 
-# The Four Durable Refusal Markers
+# The Four Materialization Refusal Fields
 
 Fields on `files_nodes` (`packages/app/convex/schema.ts`; read the docblocks there for lifecycle detail):
 
@@ -81,7 +138,7 @@ Fields on `files_nodes` (`packages/app/convex/schema.ts`; read the docblocks the
 
 While `contentShapeMismatchAt` or `contentYjsStateTooLargeByteSize` is set, door 1 refuses every update with the repair message — accepting more would only grow the broken log. The pre-existing `contentTooLargeByteSize` (visible text over 900,000 bytes) is a settle marker, not one of the four: content freezes at the last fitting sequence, but writes continue. When an unmaterialized budget trips on a settle-marked file, the reserve gate returns the repair message instead of a false "retry in a moment", because a settled materialization never shrinks the counters.
 
-Operator repair (`repair_file_yjs_state_from_visible_text` plus its staleness-gated `finalize_file_yjs_repair` in `packages/app/convex/files_nodes_content.ts`) is the ONLY recovery for the durable markers. It rebuilds one fresh compact document from the file's visible text, swaps every committed representation atomically, clears the markers, resets the counters, and increments `lineageGeneration` so pending proposals built against the old history become visibly stale. The old content asset stays under normal snapshot retention. Run it through the `convex-admin-ops` skill.
+Operator repair (`repair_file_yjs_state_from_visible_text` plus its staleness-gated `finalize_file_yjs_repair` in `packages/app/convex/files_nodes_content.ts`) is the ONLY recovery for `contentShapeMismatchAt` and `contentYjsStateTooLargeByteSize`. It can also rebuild a frontmatter-marked file, but normal materialization clears that temporary pair after the user reduces the metadata. Repair rebuilds one fresh compact document from the file's visible text, swaps every committed representation atomically, clears the markers, resets the counters, rotates `yjsLastSequenceId`, and increments `lineageGeneration`. The exact-id change stops pre-repair live writers and workers. The generation change makes pending proposals built against the old history visibly stale. The old content asset stays under normal snapshot retention. Run it through the `convex-admin-ops` skill.
 
 # Text Normalization Policy
 

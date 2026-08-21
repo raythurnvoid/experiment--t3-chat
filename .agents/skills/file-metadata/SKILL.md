@@ -31,7 +31,7 @@ Entries are indexed in the same `files_metadata_docs` table that Markdown frontm
 
 | Source | Prefix | Written by |
 | --- | --- | --- |
-| Markdown YAML frontmatter | `frontmatter.` | content materialization, from the file's own text |
+| Markdown YAML frontmatter | `frontmatter.` | content materialization, from the file's own text; for a file with collaboration turned off there is no materialization, so the content replacement door writes it instead |
 | Metadata next to the file | `metadata.` | a user in the Properties modal, an agent, or a file-creation flow (see "Metadata Written By The File-Creation Flows") |
 
 Both prefixes are exported from `shared/files-metadata.ts`. A range over one source bounds at
@@ -124,11 +124,19 @@ Depth is the limit, not size, and the depth that breaks depends on the runtime's
 in 25 KB. Never pick a test fixture depth from the Node number alone when the check has to fail
 inside a deployed function.
 
-Rules for the six callers (`files_metadata_db_insert_committed`, `files_metadata_db_replace_pending`,
-materialization and repair in `files_nodes_content.ts`, the upload publish in `r2.ts`, and the
-pending-update preflight in `files_pending_updates.ts`):
+Rules for the callers (`files_metadata_db_insert_committed`, `files_metadata_db_replace_pending`,
+materialization, repair and the non-collaborative content replacement in `files_nodes_content.ts`,
+the upload publish in `r2.ts`, and the pending-update preflight in `files_pending_updates.ts`):
 
 - Never fail the save on `_nay`. Index no frontmatter, log a warning, continue.
+- Over-cap frontmatter is different, and the non-collaborative content replacement is stricter than
+  materialization on purpose. Materialization keeps the file at the last sequence that fit and sets
+  the marker pair, because it runs in a retrying workpool with nobody watching. The replacement door
+  runs while the user waits, and it has no materialization to defer to, so it refuses the save and
+  the user fixes the text. It refuses with `Too many frontmatter fields`, the same words as the
+  pending-update preflight: both are doors where a person hands over a whole text and can shorten it
+  after reading the message. `Frontmatter exceeds the index caps` stays the materialization `_nay`,
+  which nobody reads but the workpool.
 - Never set the `contentFrontmatterTooLarge*` marker pair for it. Those markers mean over-cap and
   carry counts; an unreadable file has no counts to show.
 - Keep `_nay` separate from the `doc.errors` case, which returns empty metadata. Broken YAML really

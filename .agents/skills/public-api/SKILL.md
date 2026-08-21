@@ -134,6 +134,7 @@ Buckets live in `packages/app/convex/rate_limiter.ts`:
 - Both routes normalize the incoming content at the request boundary, ABOVE the byte count: one leading BOM is dropped and CRLF/lone CR become LF (`files_normalize_text_document_input`). The document, the R2 content snapshot, the committed chunks, and the stored size all see the same normalized string.
 
 - Writing over an existing **editable** Markdown file fills in place: the nodeId stays stable for open editors and links, and open Yjs sessions converge on the new content. Non-editable targets (stored uploads) archive-and-recreate.
+- `nonCollaborative: true` (optional, both routes) creates the file with no Yjs document: its text lives only in the committed chunks, and an editor saves it by replacing the whole text. The flag is read ONLY when this write creates the file. A write over a file that already exists keeps the mode that file has, so the flag can never flip an existing file — the Properties dialog owns that decision, because turning collaboration off deletes the edit history. The fill branch for a non-collaborative target has no document to project into, so it replaces the committed content instead, and `skipIfUnchanged` compares the plain text there. See the `files-editable-text` skill for the mode itself.
 - Paths must already be canonical: every name is checked with `files_normalize_name` and refused when the canonical form differs, unlike the app UI, which silently normalizes. One non-obvious corner: special names like `readme.md` canonicalize to uppercase `README.md`, so the lowercase spelling is refused (with the generic invalid-name message). Empty content is refused too — importers create empty placeholder files through `/api/v1/files/touch`.
 - `overwrite: "fail"` returns 409 `A file already exists at this path`; a folder at the path is always 409.
 - `skipIfUnchanged: true`: when projecting the incoming Markdown into the current doc is a semantic no-op (`fillUpdate === null`), the route returns 200 with `unchanged: true` before staging — no stage, no asset docs, no uploads, no new version snapshot. The skip first asks the same node-level write check the publish would ask; a caller the publish would refuse falls through to the normal write path and gets the same refusal, so the unchanged marker cannot confirm content to someone who cannot write the node. Only the fill path can be unchanged; comparison is Yjs-level, not byte-level, because materialized Markdown is not byte-stable. `null` never lies, but the reverse is not guaranteed: some semantically identical rewrites still publish.
@@ -143,6 +144,11 @@ Buckets live in `packages/app/convex/rate_limiter.ts`:
   lock. `prepare_file_write` checks the lock after auth and ACL. The publish mutation resolves the
   path again and checks current ACL and lock before its first write. A lock removed before publish
   does not refuse the write.
+- The existing-file fill publish checks the current node, tenant, ACL, and read-only lock before it
+  checks editable shape, collaboration mode, or Yjs lineage. An unauthorized caller cannot use
+  shape or lineage errors to inspect a restricted file. An allowed collaborative fill must carry
+  the exact `yjsLastSequenceId` returned by prepare; a stale lineage refuses even if its numeric
+  sequence matches the new document.
 - A stage for an existing target keeps that target's node id. This prevents stale work from
   overwriting a different node. Refused staged keys go to `files_r2_object_deletion_jobs`. Plugin runs
   do not bypass locks. Their call settles with `conflict` and writes no output.

@@ -9,6 +9,7 @@ import {
 	files_ROOT_ID,
 	files_SYNTHETIC_ROOT_FOLDER,
 	files_get_normalized_node_path_segments,
+	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_normalize_markdown_name,
 } from "../shared/files.ts";
@@ -16,7 +17,7 @@ import { organizations_is_global_organization_id, organizations_is_reserved_work
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { path_join } from "./server-utils.ts";
-import { files_agent_upsert_file_pending_update, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_db_files_path_to_current_workspace_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { files_agent_write_file_text, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_db_files_path_to_current_workspace_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
@@ -136,7 +137,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					`mv: cannot write to app file '${destOperand}': only app files can be moved within the app tree.\n` +
 					(dbFilesRoots.app.fs.allowDbFilesMkdir
 						? sourceIsFile
-							? `To propose that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(nonAppSourceOperand)} > ${bash_shell_arg_quote(destOperand)} — it creates a pending proposal the user reviews in Files.\n`
+							? `To write that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(nonAppSourceOperand)} > ${bash_shell_arg_quote(destOperand)} — a collaborative destination creates a pending proposal; a collaboration-off destination saves immediately, and Bash says which happened.\n`
 							: ""
 						: "App file writes are available in Agent mode; Ask mode is read-only for app files.\n") +
 					"Moving /tmp files into the app tree through bash is not supported.\n",
@@ -391,7 +392,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			// Plain text and stored files keep the bare name and let the class rule answer.
 			if (
 				!destName.includes(".") &&
-				files_node_has_editable_yjs_state(sourceNode) &&
+				files_node_has_editable_text_content(sourceNode) &&
 				sourceNode.yjsRootKind === "rich_text"
 			) {
 				const markdownDestName = files_normalize_markdown_name(destName);
@@ -408,12 +409,27 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			intendedDestOperand = destOperand;
 		}
 
-		// `mv -f` between editable files proposes a copy on the TARGET plus `archivesSourceOnAccept`:
-		// the target keeps its identity and history, and accepting saves the replacement as a new
-		// version and archives the source. Non-editable files (no history to keep) stay structural.
+		// `mv -f` onto a collaborative text file proposes a copy on the TARGET plus
+		// `archivesSourceOnAccept`: the target keeps its identity and history, and accepting saves
+		// the replacement as a new version and archives the source. The proposal lives on the
+		// target, so only the target needs a Yjs document; the source only has to be readable text,
+		// and a non-collaborative file is. Refuse a non-collaborative target because falling through
+		// to a structural move would archive the target instead and reverse which file survives.
+		if (
+			replaceTargetNode?.nonCollaborative === true &&
+			files_node_has_editable_text_content(sourceNode) &&
+			files_node_has_editable_text_content(replaceTargetNode)
+		) {
+			return {
+				stdout: "",
+				stderr: `mv: cannot replace '${intendedDestOperand}': collaboration is off for the destination\n`,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
+			};
+		}
+
 		if (
 			replaceTargetNode &&
-			files_node_has_editable_yjs_state(sourceNode) &&
+			files_node_has_editable_text_content(sourceNode) &&
 			files_node_has_editable_yjs_state(replaceTargetNode)
 		) {
 			// Copy what the agent sees: the last available markdown, including the calling user's
@@ -438,7 +454,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				};
 			}
 			if (sourceContent) {
-				const upserted = await files_agent_upsert_file_pending_update(ctx, {
+				const written = await files_agent_write_file_text(ctx, {
 					organizationId,
 					workspaceId,
 					userId,
@@ -447,10 +463,10 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath, archivesSourceOnAccept: true },
 					threadId: threadId ?? undefined,
 				});
-				if (upserted._nay) {
+				if (written._nay) {
 					return {
 						stdout: "",
-						stderr: `mv: cannot replace '${destOperand}': ${upserted._nay.message}\n`,
+						stderr: `mv: cannot replace '${destOperand}': ${written._nay.message}\n`,
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}

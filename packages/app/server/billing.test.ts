@@ -40,7 +40,7 @@ describe("billing_event", () => {
 				organizationId: "organization_1",
 				workspaceId: "workspace_1",
 				nodeId: "file_1",
-				yjsSequence: "42",
+				version: "42",
 			},
 		} satisfies billing_Event;
 

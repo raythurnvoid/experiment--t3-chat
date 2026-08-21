@@ -321,12 +321,13 @@ async function seed_pending_markdown_node(
 		mut_yjsDoc: yjsDoc,
 	});
 	if (updated._nay) throw new Error(updated._nay.message);
-	await t.run((ctx) =>
+	await t.run(async (ctx) =>
 		files_db_yjs_push_update(ctx, {
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			userId: fixture.membership.userId,
 			nodeId: created._yay.nodeId,
+			expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", created._yay.nodeId))!.yjsLastSequenceId!,
 			update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
 			sessionId: `plugin-ui-ttl-${filename}`,
 			rootKind: "rich_text",

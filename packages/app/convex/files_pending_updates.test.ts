@@ -3,7 +3,7 @@ import { RateLimiter } from "@convex-dev/rate-limiter";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_get_file_yjs_pointers, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
 import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared/billing.ts";
@@ -4625,7 +4625,7 @@ describe("save_file_pending_update", () => {
 						organizationId: seeded.organizationId,
 						workspaceId: seeded.workspaceId,
 						nodeId: seeded.nodeId,
-						yjsSequence: String(saveResult._yay.newSequence),
+						version: String(saveResult._yay.newSequence),
 					}),
 				}),
 			],
@@ -5124,6 +5124,7 @@ describe("save_file_pending_update", () => {
 		await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			update: remoteDiff,
 			sessionId: "remote-session",
 		});
@@ -5408,6 +5409,7 @@ describe("save_file_pending_update", () => {
 		const replayedSave = await asUser.mutation(internal.files_pending_updates.save_file_pending_update_in_db, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			pendingUpdateId: rowBeforeReplay._id,
 			expectedUpdatedAt: rowBeforeReplay.updatedAt,
 			baseYjsSequence: originalFileState.yjsSequence,
@@ -5499,6 +5501,7 @@ describe("save_file_pending_update", () => {
 		await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			update: otherUserDiff,
 			sessionId: "other-user-session",
 		});
@@ -5523,6 +5526,7 @@ describe("save_file_pending_update", () => {
 		const saved = await asUser.mutation(internal.files_pending_updates.save_file_pending_update_in_db, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			pendingUpdateId: rowBeforeStaleSave._id,
 			expectedUpdatedAt: rowBeforeStaleSave.updatedAt,
 			baseYjsSequence: actionReadFileState.yjsSequence,
@@ -5683,6 +5687,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 		await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			update: remoteDiff,
 			sessionId: "remote-session",
 		});
@@ -6003,6 +6008,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 		await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			update: remoteDiff,
 			sessionId: "remote-session",
 		});
@@ -6359,6 +6365,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 			{
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
+				expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 				pendingUpdateId: pendingRow._id,
 				operationBatchId: staleFamily.operationBatchId,
 				expectedUpdatedAt: rowAfterSave.updatedAt,
@@ -6484,6 +6491,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 			{
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
+				expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 				pendingUpdateId: mixedRow._id,
 				operationBatchId: staleFamily.operationBatchId,
 				expectedUpdatedAt: mixedRow.updatedAt,
@@ -11602,6 +11610,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 		const saved = await asUser.mutation(internal.files_pending_updates.save_file_pending_update_in_db, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			pendingUpdateId: rowWithDelete._id,
 			expectedUpdatedAt: rowWithDelete.updatedAt,
 			baseYjsSequence: 0,
@@ -13159,6 +13168,7 @@ describe("discard_file_pending_structural", () => {
 		await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: dest.membershipId,
 			nodeId: dest.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, dest.nodeId)).yjsLastSequenceId,
 			update: remoteDiff,
 			sessionId: "remote-session",
 		});
@@ -16526,6 +16536,7 @@ describe("pending update read-only checks", () => {
 		const rebased = await asUser.mutation(internal.files_pending_updates.commit_file_pending_update_rebase_in_db, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			pendingUpdateId: pendingRow._id,
 			operationBatchId: staged.operationBatchId,
 			expectedUpdatedAt: pendingRow.updatedAt,
@@ -16692,6 +16703,7 @@ describe("pending update read-only checks", () => {
 		const saved = await asUser.mutation(internal.files_pending_updates.save_file_pending_update_in_db, {
 			membershipId: firstSource.membershipId,
 			nodeId: dest.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, dest.nodeId)).yjsLastSequenceId,
 			pendingUpdateId: pendingRow._id,
 			expectedUpdatedAt: pendingRow.updatedAt,
 			baseYjsSequence: fileState.yjsSequence,
@@ -17343,6 +17355,7 @@ describe("pending update read-only checks", () => {
 		const rebased = await asUser.mutation(internal.files_pending_updates.commit_file_pending_update_rebase_in_db, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			pendingUpdateId: pendingRow._id,
 			operationBatchId: staged.operationBatchId,
 			expectedUpdatedAt: pendingRow.updatedAt,

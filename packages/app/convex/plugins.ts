@@ -37,7 +37,7 @@ import {
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
-	files_node_has_editable_yjs_state,
+	files_node_has_editable_text_content,
 } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
@@ -5199,7 +5199,7 @@ export const run_installation_on_files = internalMutation({
 			// Backfill stays stored-upload-only by decision: a converted editable document (even one
 			// born by upload) is no longer the stored blob a plugin run would read, so the refusal
 			// names the supported input instead of hinting the node is broken.
-			if (fileNode.kind !== "file" || fileNode.assetId === undefined || files_node_has_editable_yjs_state(fileNode)) {
+			if (fileNode.kind !== "file" || fileNode.assetId === undefined || files_node_has_editable_text_content(fileNode)) {
 				runs.push({ nodeId, runId: null, message: "Plugin backfill supports stored upload blobs only" });
 				continue;
 			}

@@ -35,7 +35,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Comments region: `getByRole("complementary", { name: "Document comments" })`.
 - Diff editor root: `[aria-label="File diff editor"]`.
 - Review changes button: `[data-testid="review-changes-button"]`.
-- Properties button in the breadcrumb: `getByRole("button", { name: /^Properties of / })`. It still carries `data-file-read-only` with the node's lock state.
+- Properties button in the breadcrumb: `getByRole("button", { name: /^Properties of / })`. It still carries `data-file-read-only` with the node's lock state. Its `.click()` can hang on "visible, enabled and stable" while `hitTest` shows the button itself on top and nothing covers it (hit 2026-08-21). Read its box in page context and click the middle with `page.mouse.click(x, y)`.
 
 ### Sidebar And Folder Browser
 
@@ -291,7 +291,7 @@ Use this after changing the bulk import flow (`run_folder_import` in `files-side
 - In Agent mode, ask Bash to `mv` a file to a new path and verify the Pending tab shows a move proposal before acceptance. Test both a rename and a move between folders.
 - Ask Bash to `cp` a file to a new path and to an occupied path. Verify the Pending tab shows the copy or replacement proposal and that committed files stay unchanged until acceptance.
 - For a mixed move plus content proposal, accept it and verify the move is applied before the updated content is saved.
-- In Agent mode, shell writes ARE supported and become reviewable pending proposals, not immediate commits: `cat > path <<'EOF' ... EOF`, `>`, `>>`, and app-to-app `mv`, `cp`, `rm` all show up in the Pending changes tab (`rm` archives on acceptance). Verified 2026-08-03; the older "writes are unsupported" note here was stale. Links are still not shell operations, and app-to-`/tmp` copy stays immediate thread scratch.
+- In Agent mode, shell writes ARE supported. `cat > path <<'EOF' ... EOF`, `>`, `>>`, and app-to-app `cp` normally create reviewable pending content. If the existing target has collaboration turned off, those content writes save immediately and their output says there is nothing to review. App-to-app `mv` and `rm` stay pending structural proposals (`rm` archives on acceptance). Verified 2026-08-21; the older "writes are unsupported" note here was stale. Links are still not shell operations, and app-to-`/tmp` copy stays immediate thread scratch.
 
 ### Indexed Frontmatter Metadata Through The Agent
 
@@ -412,9 +412,18 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
   `getByRole("checkbox")` fails with `<div class="FilesPropertiesModalReadOnly"> intercepts pointer
   events`. Click `.FilesPropertiesModalReadOnly-checkbox` (the label) and read the state from the
   input.
-- The dialog holds three sections, reachable by their region names: `General` (a `<dl>` of facts),
-  `Protection` (the read-only checkbox), and `Metadata` (the YAML editor). A folder gets
-  the first two only — `set_entries` refuses a non-file, so there is no editor to find.
+- The dialog holds four sections, reachable by their region names: `General` (a `<dl>` of facts),
+  `Protection` (the read-only checkbox), `Collaboration` (the collaborative-editing checkbox), and
+  `Metadata` (the YAML editor). A folder gets the first two only — `set_entries` refuses a non-file,
+  so there is no editor to find. `Collaboration` renders only for an editable text file, so an image
+  shows three sections and no empty strip.
+- The `Collaboration` checkbox is another `MyCheckboxButton`, so the same 1px-input rule applies:
+  click `.FilesPropertiesModalCollaboration-checkbox`, or `focus()` the input and press `Space`.
+  Turning it ON writes immediately. Turning it OFF opens an inline confirm step inside the same
+  section — `getByRole("button", { name: "Turn collaboration off" })` and `Cancel` — and nothing is
+  written until that button is clicked. Read the state from
+  `.FilesPropertiesModalCollaboration-description`, not from the tick: the Metadata section repeats
+  the same "read-only" and "no permission" sentences, so `getByText` finds several matches.
 - Read-only is now one checkbox, `getByRole("checkbox")` inside the dialog. It writes as soon as it
   is clicked; there is no Save for it. The line under the label says which lock is in force, and it
   is the only thing that distinguishes the four states, so assert on that text, not on the tick

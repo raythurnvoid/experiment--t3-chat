@@ -18,13 +18,14 @@ type MockIncrementalUpdate = {
 	};
 };
 
-type MockIncrementalUpdates = { updates: MockIncrementalUpdate[] } | null;
+type MockIncrementalUpdates = { yjsLastSequenceId: string; updates: MockIncrementalUpdate[] } | null;
 
 type MockPushUpdateArgs = {
 	membershipId: string;
 	nodeId: string;
 	update: ArrayBuffer;
 	sessionId: string;
+	expectedYjsLastSequenceId: string;
 };
 
 const appConvexMock = vi.hoisted(() => {
@@ -159,6 +160,7 @@ async function createReadyProvider(args: { editable?: boolean } = {}) {
 			sequence: 0,
 		},
 		snapshotUrl: "https://r2.test/snapshot",
+		yjsLastSequenceId: "last_sequence_id",
 	});
 	appConvexMock.app_convex.query.mockResolvedValue(null);
 	vi.stubGlobal(
@@ -169,11 +171,12 @@ async function createReadyProvider(args: { editable?: boolean } = {}) {
 	const provider = new files_yjs_Provider({
 		membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
 		nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+		expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
 		presenceStore,
 		editable: args.editable ?? true,
 	});
 
-	appConvexMock.emitIncrementalUpdates(null);
+	appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
 	await flushMicrotasks();
 	expect(provider.getStatus()).toBe("synchronized");
 
@@ -200,6 +203,7 @@ function getMutationUpdate(callIndex: number) {
 
 function emitLocalAck(args: { sequence: number; sessionId: string; update: ArrayBuffer }) {
 	appConvexMock.emitIncrementalUpdates({
+		yjsLastSequenceId: "last_sequence_id",
 		updates: [
 			{
 				sequence: args.sequence,
@@ -248,6 +252,7 @@ describe("files_yjs_Provider snapshot sync", () => {
 				sequence: 0,
 			},
 			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "last_sequence_id",
 		});
 		const fetchMock = vi
 			.fn()
@@ -258,11 +263,12 @@ describe("files_yjs_Provider snapshot sync", () => {
 		const provider = new files_yjs_Provider({
 			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
 			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
 			presenceStore,
 			editable: true,
 		});
 
-		appConvexMock.emitIncrementalUpdates(null);
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
 		await flushMicrotasks();
 
 		expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -272,6 +278,38 @@ describe("files_yjs_Provider snapshot sync", () => {
 
 		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(2);
 		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(provider.getStatus()).toBe("synchronized");
+
+		provider.destroy();
+	});
+
+	test("waits for incremental updates from the same lineage as the snapshot", async () => {
+		const presenceStore = createPresenceStore();
+		const emptySnapshotUpdate = createEmptySnapshotUpdate();
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "lineage_b",
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(emptySnapshotUpdate)),
+		);
+
+		const provider = new files_yjs_Provider({
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+			expectedYjsLastSequenceId: "lineage_b" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore,
+			editable: true,
+		});
+
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "lineage_a", updates: [] });
+		await flushMicrotasks();
+		expect(provider.getStatus()).toBe("loading");
+
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "lineage_b", updates: [] });
+		await advanceTimersByTime(500);
 		expect(provider.getStatus()).toBe("synchronized");
 
 		provider.destroy();
@@ -307,6 +345,9 @@ describe("files_yjs_Provider outgoing update queue", () => {
 		await advanceTimersByTime(500);
 		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
 		const firstAttemptUpdate = getMutationUpdate(0);
+		expect((appConvexMock.app_convex.mutation.mock.calls[0]![1] as MockPushUpdateArgs).expectedYjsLastSequenceId).toBe(
+			"last_sequence_id",
+		);
 		expect(provider.getStatus()).toBe("synchronizing");
 
 		await advanceTimersByTime(5000);

@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_get_file_yjs_pointers, test_mocks_fill_db_with } from "./setup.test.ts";
 import { encodeStateAsUpdate } from "yjs";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_create_empty_state_update } from "../shared/files-yjs.ts";
@@ -201,6 +201,7 @@ async function seed_markdown_file(args: {
 		workspaceId: args.workspaceId,
 		userId: args.userId,
 		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(args.t, nodeId)).yjsLastSequenceId,
 		operationBatchId: batch._yay.operationBatchId,
 		expectedUpdatedAt: null,
 		baseYjsSequence: 0,

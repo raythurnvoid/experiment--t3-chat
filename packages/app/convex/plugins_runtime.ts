@@ -24,7 +24,7 @@ import { type pluginRunnerApiSchema } from "common/api-schemas.ts";
 import { Result, Result_try_promise } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
-import { files_node_has_editable_yjs_state } from "../server/files.ts";
+import { files_node_has_editable_text_content } from "../server/files.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { activities_db_finish, activities_db_get_by_source_id } from "./activities.ts";
@@ -155,7 +155,7 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 	if (
 		args.fileNode.assetId !== args.asset._id ||
 		args.fileNode.kind !== "file" ||
-		files_node_has_editable_yjs_state(args.fileNode)
+		files_node_has_editable_text_content(args.fileNode)
 	) {
 		return { enqueued: 0 };
 	}

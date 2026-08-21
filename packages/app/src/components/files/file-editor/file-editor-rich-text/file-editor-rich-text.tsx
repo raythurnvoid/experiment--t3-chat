@@ -1108,6 +1108,7 @@ export type FileEditorRichText_FgColorCssVarKeys =
 
 export type FileEditorRichText_Props = React.ComponentProps<"div"> & {
 	nodeId: app_convex_Id<"files_nodes">;
+	yjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences">;
 	editable: boolean;
 	editBlockReason: files_yjs_EditBlockReason | null;
 	presenceStore: files_PresenceStore;
@@ -1119,6 +1120,7 @@ export type FileEditorRichText_Props = React.ComponentProps<"div"> & {
 export function FileEditorRichText(props: FileEditorRichText_Props) {
 	const {
 		nodeId,
+		yjsLastSequenceId,
 		editable,
 		editBlockReason,
 		presenceStore,
@@ -1132,6 +1134,7 @@ export function FileEditorRichText(props: FileEditorRichText_Props) {
 
 	const filesYjs = useFilesYjs({
 		nodeId: nodeId,
+		yjsLastSequenceId,
 		membershipId,
 		presenceStore,
 		editable,

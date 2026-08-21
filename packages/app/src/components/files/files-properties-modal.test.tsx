@@ -6,6 +6,7 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { users_SYSTEM_AUTHOR } from "../../../shared/users.ts";
 
 const {
+	actionMock,
 	mutationMock,
 	useQueryMock,
 	queryPushListeners,
@@ -14,6 +15,7 @@ const {
 	editorValues,
 	editorHandle,
 } = vi.hoisted(() => ({
+	actionMock: vi.fn(),
 	mutationMock: vi.fn(),
 	useQueryMock: vi.fn(),
 	queryPushListeners: new Set<() => void>(),
@@ -67,6 +69,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 // references keeps the call assertions readable.
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: {
+		action: (...args: unknown[]) => actionMock(...args),
 		mutation: (...args: unknown[]) => mutationMock(...args),
 	},
 	app_convex_api: {
@@ -80,6 +83,10 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			get_node_read_only_management_state: "get_node_read_only_management_state",
 			set_node_read_only: "set_node_read_only",
 			set_node_writable: "set_node_writable",
+		},
+		files_nodes_content: {
+			set_file_collaborative: "set_file_collaborative",
+			set_file_non_collaborative: "set_file_non_collaborative",
 		},
 		r2: {
 			get_asset_by_file_node_id: "get_asset_by_file_node_id",
@@ -141,6 +148,10 @@ const NODE = {
 	updatedAt: 1_700_000_000_000,
 };
 
+// A file whose text can be edited. `assetId` plus `yjsRootKind` is what marks one, and the plain
+// NODE above deliberately has neither, so an image gets no collaboration section.
+const TEXT_NODE = { ...NODE, assetId: "asset_1", yjsRootKind: "rich_text" as const };
+
 type ManagementState = {
 	canManage: boolean;
 	readOnlyState: "writable" | "self" | "inherited";
@@ -150,7 +161,7 @@ type ManagementState = {
 
 function mockQueries(args: {
 	management?: ManagementState;
-	node?: typeof NODE;
+	node?: typeof NODE & { assetId?: string; yjsRootKind?: "rich_text" | "plain_text"; nonCollaborative?: boolean };
 	asset?: { size: number } | null;
 	entries?: { key: string; value: string | number | boolean }[];
 	canWrite?: boolean;
@@ -229,6 +240,8 @@ beforeEach(() => {
 	useQueryMock.mockReturnValue(undefined);
 	mutationMock.mockReset();
 	mutationMock.mockResolvedValue({ _yay: null });
+	actionMock.mockReset();
+	actionMock.mockResolvedValue({ _yay: null });
 	editorChangeRef.current = null;
 	editorOptionsRef.current = null;
 	editorValues.length = 0;
@@ -563,6 +576,151 @@ describe("FilesPropertiesModalReadOnly", () => {
 
 		await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
 		await waitFor(() => expect(document.activeElement).toBe(returnFocusRef.current));
+	});
+});
+
+describe("FilesPropertiesModalCollaboration", () => {
+	const collaborationCheckbox = () => screen.getByRole("checkbox", { name: /Collaborative editing/ }) as HTMLInputElement;
+
+	// An image has no text to share, so there is no mode to choose. The section must not draw its
+	// divider line for one either.
+	test("shows the checkbox for a text file and nothing at all for a stored blob", () => {
+		mockQueries({ node: TEXT_NODE, entries: [], canWrite: true });
+		const { unmount } = renderModal();
+		expect(collaborationCheckbox().checked).toBe(true);
+		expect(
+			screen.getByText("Everybody can type in this file at the same time.", { exact: false }),
+		).toBeTruthy();
+		unmount();
+
+		mockQueries({ entries: [], canWrite: true });
+		renderModal();
+		expect(screen.queryByRole("checkbox", { name: /Collaborative editing/ })).toBeNull();
+		expect(document.querySelector(".FilesPropertiesModalCollaboration")).toBeNull();
+	});
+
+	test("explains whole-file conflict handling when collaboration is already off", () => {
+		mockQueries({ node: { ...TEXT_NODE, nonCollaborative: true }, entries: [], canWrite: true });
+
+		renderModal();
+
+		expect(collaborationCheckbox().checked).toBe(false);
+		expect(screen.getByText("If it changed elsewhere, reload it before saving.", { exact: false })).toBeTruthy();
+	});
+
+	// Turning it off cannot be undone, so one click must not write. The warning has to name every
+	// loss before anything happens.
+	test("asks before turning collaboration off and only writes after the confirm button", () => {
+		mockQueries({ node: TEXT_NODE, entries: [], canWrite: true });
+
+		renderModal();
+		fireEvent.click(collaborationCheckbox());
+
+		expect(mutationMock).not.toHaveBeenCalled();
+		const warning = screen.getByText("Turn collaboration off for this file?", { exact: false }).textContent ?? "";
+		expect(warning).toContain("edit history");
+		expect(warning).toContain("comment");
+		expect(warning).toContain("waiting for review");
+		expect(warning).toContain("last saved text");
+		expect(warning).toContain("open editor changes");
+		// The box still shows the state the server has, not the one the click asked for.
+		expect(collaborationCheckbox().checked).toBe(true);
+		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Turn collaboration off" }));
+
+		fireEvent.click(screen.getByRole("button", { name: "Turn collaboration off" }));
+
+		expect(mutationMock).toHaveBeenCalledWith("set_file_non_collaborative", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: NODE_ID,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+	});
+
+	test("cancelling the confirm step writes nothing and closes the warning", () => {
+		mockQueries({ node: TEXT_NODE, entries: [], canWrite: true });
+
+		renderModal();
+		fireEvent.click(collaborationCheckbox());
+		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+		expect(screen.queryByText("Turn collaboration off for this file?", { exact: false })).toBeNull();
+		expect(mutationMock).not.toHaveBeenCalled();
+		expect(document.activeElement).toBe(collaborationCheckbox());
+	});
+
+	test("warns about unsaved editor text before turning collaboration on", () => {
+		mockQueries({ node: { ...TEXT_NODE, nonCollaborative: true }, entries: [], canWrite: true });
+
+		renderModal();
+		fireEvent.click(collaborationCheckbox());
+
+		expect(actionMock).not.toHaveBeenCalled();
+		expect(screen.getByText("Only the last saved text is used.", { exact: false })).toBeTruthy();
+		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Turn collaboration on" }));
+		fireEvent.click(screen.getByRole("button", { name: "Turn collaboration on" }));
+		expect(actionMock).toHaveBeenCalledWith("set_file_collaborative", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: NODE_ID,
+		});
+	});
+
+	test("shows the cleanup refusal and keeps collaboration off", async () => {
+		mockQueries({ node: { ...TEXT_NODE, nonCollaborative: true }, entries: [], canWrite: true });
+		actionMock.mockResolvedValueOnce({
+			_nay: { message: "The old collaboration history is still being removed. Try again in a moment." },
+		});
+
+		renderModal();
+		fireEvent.click(collaborationCheckbox());
+		fireEvent.click(screen.getByRole("button", { name: "Turn collaboration on" }));
+
+		await waitFor(() => {
+			expect(screen.getByRole("alert").textContent).toContain("old collaboration history is still being removed");
+		});
+		expect(collaborationCheckbox().checked).toBe(false);
+	});
+
+	// The server asks for the write permission and refuses a locked file, so the box must not offer
+	// a write that is going to be refused.
+	test.each([
+		[{ canWrite: false, locked: false }, "You don't have permission to edit this file."],
+		[{ canWrite: true, locked: true }, "This file is read-only."],
+	] as const)("disables the box and says why when the server would refuse", (blocked, expectedText) => {
+		mockQueries({
+			node: TEXT_NODE,
+			entries: [],
+			canWrite: blocked.canWrite,
+			management: blocked.locked
+				? { canManage: true, readOnlyState: "self", hasInheritedParentLock: false, source: null }
+				: { canManage: true, readOnlyState: "writable", hasInheritedParentLock: false, source: null },
+		});
+
+		renderModal();
+
+		expect(collaborationCheckbox().disabled).toBe(true);
+		// The metadata section below reports the same two reasons, so read this one's own line.
+		expect(document.querySelector(".FilesPropertiesModalCollaboration-description")?.textContent).toContain(
+			expectedText,
+		);
+		fireEvent.click(collaborationCheckbox());
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	// The mutation refuses a file that is still saving, and a new file nobody accepted yet. The
+	// reason has to reach the user instead of the click looking like it did nothing.
+	test("shows the reason the server gave for refusing", async () => {
+		mockQueries({ node: TEXT_NODE, entries: [], canWrite: true });
+		mutationMock.mockResolvedValue({ _nay: { message: "This file is still saving. Try again in a moment." } });
+
+		renderModal();
+		fireEvent.click(collaborationCheckbox());
+		await act(async () => {
+			screen.getByRole("button", { name: "Turn collaboration off" }).click();
+		});
+
+		expect(screen.getByRole("alert").textContent).toBe("This file is still saving. Try again in a moment.");
+		// The confirm step stays open, so the user can try again after the save lands.
+		expect(screen.getByRole("button", { name: "Turn collaboration off" })).toBeTruthy();
 	});
 });
 

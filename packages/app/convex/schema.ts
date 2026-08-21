@@ -647,12 +647,38 @@ const app_convex_schema = defineSchema({
 		/** ID of the last YJS sequence for the file */
 		yjsSnapshotId: v.optional(v.id("files_yjs_snapshots")),
 		/**
-		 * Shape of this file's Yjs document: `rich_text` is the ProseMirror document Markdown
-		 * files use, `plain_text` is a plain `Y.Text` document. Folders, stored blobs, and
-		 * read-only mounts have no Yjs document and leave this unset. Every editable node stores
-		 * this field beside its Yjs pointers.
+		 * Shape of this file's text: `rich_text` is the ProseMirror document Markdown files use,
+		 * `plain_text` is a flat text document. Folders, stored blobs, and read-only mounts have no
+		 * editable text and leave this unset.
+		 *
+		 * A collaborative file stores this beside its Yjs pointers, and the two are always written
+		 * together. A non-collaborative file has no Yjs pointers but still stores this field,
+		 * because the shape decides which chunker runs, whether frontmatter is indexed, which
+		 * editor opens, and which renames are legal. So this field, not the Yjs pointers, is what
+		 * marks a node as an editable text file.
 		 */
 		yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
+		/**
+		 * Set to `true` on an editable text file that the user turned collaboration OFF for. Such a
+		 * file has no Yjs document at all: no snapshot, no sequence doc, no update log. Its text
+		 * lives only in the committed chunks, and a save replaces the whole text.
+		 *
+		 * Absent means collaborative, so every file created before this field existed keeps its
+		 * behaviour with no migration. The field and the Yjs pointers always change together in one
+		 * mutation: turning collaboration off sets this and clears both pointers, turning it back on
+		 * removes this and writes both pointers.
+		 *
+		 * Keep this field even though "no Yjs pointers" would be derivable. Several paths decide
+		 * from the file name whether to build a Yjs document — a re-upload onto the file is the main
+		 * one — and without a stored flag they would silently turn collaboration back on.
+		 */
+		nonCollaborative: v.optional(v.boolean()),
+		/**
+		 * The old Yjs lineage whose rows are still being deleted after collaboration is turned off.
+		 * Turning collaboration back on waits for this marker to clear. This stops the old cleanup
+		 * from deleting updates that belong to the fresh document, whose sequence starts at zero.
+		 */
+		collaborationCleanupYjsLastSequenceId: v.optional(v.id("files_yjs_docs_last_sequences")),
 		assetId: v.optional(v.id("files_r2_assets")),
 		/**
 		 * Byte size of the last materialization that produced text over

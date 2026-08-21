@@ -35,6 +35,7 @@ export type files_yjs_PushRefusalReason = files_yjs_EditBlockReason | "other";
 type FilesConvexYjsStream_Args = {
 	nodeId: app_convex_Id<"files_nodes">;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	expectedYjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences">;
 	presenceStore: files_PresenceStore;
 	onGoodUpdatePacket: (packet: FilesConvexIncrementalUpdates["updates"][number]) => void;
 	onAckUpdatePacket: (packet: FilesConvexIncrementalUpdates["updates"][number]) => void;
@@ -56,6 +57,7 @@ class FilesConvexYjsStream {
 		syncing: boolean;
 		ready: boolean;
 		appliedSeq: number;
+		yjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences"> | null;
 		incrementalUpdates: FilesConvexIncrementalUpdates | null;
 	};
 
@@ -84,6 +86,7 @@ class FilesConvexYjsStream {
 			syncing: false,
 			ready: false,
 			appliedSeq: 0,
+			yjsLastSequenceId: null,
 			incrementalUpdates: null,
 		};
 
@@ -115,6 +118,7 @@ class FilesConvexYjsStream {
 	private handleIncrementalUpdates(incrementalUpdates: FilesConvexIncrementalUpdates) {
 		if (this.disposed) return;
 		if (!this.state.ready || this.state.syncing) return;
+		if (incrementalUpdates.yjsLastSequenceId !== this.state.yjsLastSequenceId) return;
 
 		let appliedSeq = this.state.appliedSeq;
 
@@ -174,6 +178,12 @@ class FilesConvexYjsStream {
 
 			void Promise.try(async () => {
 				while (!this.disposed && this.pendingOutgoingBatches.length > 0) {
+					// Sync supplies the exact server lineage. Never send queued edits with only a
+					// node id, because OFF -> ON creates a different document at sequence zero.
+					if (!this.state.yjsLastSequenceId) {
+						await new Promise((resolve) => setTimeout(resolve, 500));
+						continue;
+					}
 					// Stop adding edits to this batch before sending it. New edits go into a new
 					// batch. A retry sends this same batch again.
 					const outgoingBatch = this.pendingOutgoingBatches[0];
@@ -199,6 +209,7 @@ class FilesConvexYjsStream {
 								nodeId: this.args.nodeId,
 								update: files_u8_to_array_buffer(outgoingBatch.update),
 								sessionId: this.args.presenceStore.localSessionId,
+								expectedYjsLastSequenceId: this.state.yjsLastSequenceId,
 							});
 
 							// Access may change while this request runs. Ignore the result if that change
@@ -350,6 +361,9 @@ class FilesConvexYjsStream {
 				}
 
 				if (this.disposed) break;
+				if (result.yjsLastSequenceId !== this.args.expectedYjsLastSequenceId) {
+					break;
+				}
 
 				let resultSnapshotUpdate: ArrayBuffer;
 				try {
@@ -372,18 +386,23 @@ class FilesConvexYjsStream {
 				}
 
 				if (this.disposed) break;
+				const incrementalUpdates = this.state.incrementalUpdates;
+				if (incrementalUpdates?.yjsLastSequenceId !== result.yjsLastSequenceId) {
+					await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+					continue;
+				}
 
 				const snapshotUpdate = new Uint8Array(resultSnapshotUpdate);
 
 				let lastSequence = result.snapshot.sequence;
 				let updatesAfterSnapshot;
 
-				if (this.state.incrementalUpdates?.updates.length) {
+				if (incrementalUpdates.updates.length) {
 					updatesAfterSnapshot = [] as Uint8Array[];
 
 					// Loop through updates in ascending order. The BE returns them in descending order.
-					for (let i = this.state.incrementalUpdates.updates.length - 1; i >= 0; i--) {
-						const updateData = this.state.incrementalUpdates?.updates[i];
+					for (let i = incrementalUpdates.updates.length - 1; i >= 0; i--) {
+						const updateData = incrementalUpdates.updates[i];
 						if (!updateData) continue;
 
 						if (updateData.sequence <= lastSequence) {
@@ -419,6 +438,7 @@ class FilesConvexYjsStream {
 				this.onSync(currentStateUpdate);
 				this.state.ready = true;
 				this.state.appliedSeq = lastSequence;
+				this.state.yjsLastSequenceId = result.yjsLastSequenceId;
 				this.onLoadFailedChange(false);
 
 				break;
@@ -441,13 +461,18 @@ class FilesConvexYjsStream {
 		// apply the same update twice without changing the document twice.
 		for (const batch of this.pendingOutgoingBatches) {
 			batch.sealed = true;
-			if (!batch.dropped && !files_yjs_doc_is_diff_update_empty(batch.update)) {
+			if (
+				!batch.dropped &&
+				this.state.yjsLastSequenceId &&
+				!files_yjs_doc_is_diff_update_empty(batch.update)
+			) {
 				app_convex
 					.mutation(app_convex_api.files_nodes.yjs_push_update, {
 						membershipId: this.args.membershipId,
 						nodeId: this.args.nodeId,
 						update: files_u8_to_array_buffer(batch.update),
 						sessionId: this.args.presenceStore.localSessionId,
+						expectedYjsLastSequenceId: this.state.yjsLastSequenceId,
 					})
 					.then((result) => {
 						if (result._nay) {
@@ -468,6 +493,7 @@ class FilesConvexYjsStream {
 
 export type files_yjs_Provider_Args = {
 	nodeId: app_convex_Id<"files_nodes">;
+	expectedYjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences">;
 	enablePermanentUserData?: boolean;
 	presenceStore: files_PresenceStore;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -601,6 +627,7 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 		stream = new FilesConvexYjsStream({
 			nodeId: this.args.nodeId,
 			membershipId: this.args.membershipId,
+			expectedYjsLastSequenceId: this.args.expectedYjsLastSequenceId,
 			presenceStore: args.presenceStore,
 			onGoodUpdatePacket: (updateItem) => {
 				args.yDocHandler.handleServerUpdate({

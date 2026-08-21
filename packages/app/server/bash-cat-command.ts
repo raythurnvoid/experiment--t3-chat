@@ -9,7 +9,11 @@ import type {
 import type { files_pending_updates_get_by_file_node_Result } from "../convex/files_pending_updates.ts";
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { files_node_has_editable_yjs_state, files_pending_update_has_yjs_content } from "../shared/files.ts";
+import {
+	files_node_has_editable_text_content,
+	files_node_has_editable_yjs_state,
+	files_pending_update_has_yjs_content,
+} from "../shared/files.ts";
 import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_enforce_reader_operand_cap, bash_format_multiline_hint, bash_GLOB_METACHARACTER_REGEX, bash_READ_HEAD_LARGE_FILE_MAX_LINES, bash_READ_INLINE_MAX_BYTES, bash_resolve_path, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
@@ -271,7 +275,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					// to print the native-looking failure for files, folders, or misses.
 					if (!page) {
 						if (dbFilesDoc?.kind === "file") {
-							stderr += files_node_has_editable_yjs_state(dbFilesDoc)
+							stderr += files_node_has_editable_text_content(dbFilesDoc)
 								? `cat: ${file}: content is not available from materialized chunks\n`
 								: bash_build_unreadable_file_advisory(
 										pathResolution.basePath,
@@ -342,7 +346,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				if (dbFilesDoc?.kind === "file") {
 					// Advisory belongs on stderr so `cat unreadable | grep ...` cannot match it
 					// as if it were file content.
-					stderr += files_node_has_editable_yjs_state(dbFilesDoc)
+					stderr += files_node_has_editable_text_content(dbFilesDoc)
 						? `cat: ${file}: content is not available from materialized chunks\n`
 						: bash_build_unreadable_file_advisory(pathResolution.basePath, target.dbFilesPath, dbFilesDoc.contentType);
 					exitCode = bash_COMMAND_EXIT_FAILURE;

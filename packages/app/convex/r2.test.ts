@@ -2,7 +2,12 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
-import { test_convex as test_convex_base, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex as test_convex_base,
+	test_get_file_yjs_pointers,
+	test_mocks,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import {
 	r2_confirmed_object_delete,
 	r2_enqueue_object_deletion_job,
@@ -725,6 +730,7 @@ describe("r2 asset content", () => {
 		const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId: created._yay.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, created._yay.nodeId)).yjsLastSequenceId,
 			update: files_u8_to_array_buffer(diffUpdate),
 			sessionId: "stale-read-session",
 		});
@@ -808,6 +814,7 @@ describe("r2 asset content", () => {
 		const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId: created._yay.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, created._yay.nodeId)).yjsLastSequenceId,
 			update: files_u8_to_array_buffer(diffUpdate),
 			sessionId: "revoked-download-session",
 		});
@@ -4199,6 +4206,7 @@ describe("materialize_file_content on a locked node", () => {
 		const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId: created._yay.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, created._yay.nodeId)).yjsLastSequenceId,
 			update: files_u8_to_array_buffer(diffUpdate),
 			sessionId: "locked-materialize-session",
 		});

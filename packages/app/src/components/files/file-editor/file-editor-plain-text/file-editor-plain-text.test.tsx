@@ -4,10 +4,19 @@ import { toast } from "sonner";
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
-const { tenantContextMock, pushMutationMock, fetchFileYjsStateAndTextMock, monacoHarness } = vi.hoisted(() => ({
+const {
+	tenantContextMock,
+	pushMutationMock,
+	fetchFileYjsStateAndTextMock,
+	convexQueryMock,
+	convexActionMock,
+	monacoHarness,
+} = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	pushMutationMock: vi.fn(),
 	fetchFileYjsStateAndTextMock: vi.fn(),
+	convexQueryMock: vi.fn(),
+	convexActionMock: vi.fn(),
 	// Shared state between the Editor mock and the tests: the created models with their language,
 	// and the model-change listeners the component registered on mount.
 	monacoHarness: {
@@ -34,11 +43,20 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 }));
 
 // The real module creates a live ConvexReactClient at import (needs VITE_CONVEX_URL).
+// A non-collaborative file never touches the Yjs mutation: it reads through the query and saves
+// through the action, so both are mocked here.
 vi.mock("@/lib/app-convex-client.ts", () => ({
-	app_convex: {},
+	app_convex: {
+		query: (...args: unknown[]) => convexQueryMock(...args),
+		action: (...args: unknown[]) => convexActionMock(...args),
+	},
 	app_convex_api: {
 		files_nodes: {
 			yjs_push_update: "yjs_push_update",
+		},
+		files_nodes_content: {
+			get_non_collaborative_file_content: "get_non_collaborative_file_content",
+			replace_file_content: "replace_file_content",
 		},
 	},
 }));
@@ -117,6 +135,8 @@ import { files_yjs_doc_create_from_text } from "../../../../../shared/files-tipt
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 const NODE_ID = "node_json" as app_convex_Id<"files_nodes">;
+const BASE_ASSET_ID = "asset_committed" as app_convex_Id<"files_r2_assets">;
+const LAST_SEQUENCE_ID = "last_sequence_a" as app_convex_Id<"files_yjs_docs_last_sequences">;
 
 const presenceStore = { localSessionId: "session_1" } as unknown as files_PresenceStore;
 
@@ -124,7 +144,7 @@ const presenceStore = { localSessionId: "session_1" } as unknown as files_Presen
  * Resolve the fetch mock with a real plain-text Y.Doc built from `text`, like the production
  * fetch would return for a converted `.json` upload.
  */
-function resolveFetchWithPlainTextDoc(text: string) {
+function resolveFetchWithPlainTextDoc(text: string, yjsLastSequenceId = LAST_SEQUENCE_ID) {
 	const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind: "plain_text" });
 	if ("_nay" in yjsDoc) {
 		throw new Error(yjsDoc._nay.message);
@@ -134,22 +154,42 @@ function resolveFetchWithPlainTextDoc(text: string) {
 		yjsDoc,
 		yjsSequence: 3,
 		yjsRootKind: "plain_text",
+		yjsLastSequenceId,
 	});
 }
 
-function renderPlainTextEditor(args?: { monacoLanguageId?: string; editable?: boolean }) {
+/**
+ * Answer the committed-content query the way the server does for a file with collaboration off.
+ */
+function resolveQueryWithNonCollaborativeContent(text: string) {
+	convexQueryMock.mockResolvedValue({
+		_yay: { text, yjsRootKind: "plain_text", assetId: BASE_ASSET_ID },
+	});
+}
+
+function renderPlainTextEditor(args?: {
+	monacoLanguageId?: string;
+	editable?: boolean;
+	nonCollaborative?: boolean;
+	withYjsLastSequenceId?: boolean;
+}) {
 	const toolbarPortalHost = document.createElement("div");
 	document.body.append(toolbarPortalHost);
-	return render(
+	const rendered = render(
 		<FileEditorPlainText
 			nodeId={NODE_ID}
 			editable={args?.editable ?? true}
+			nonCollaborative={args?.nonCollaborative ?? false}
+			yjsLastSequenceId={
+				args?.nonCollaborative || args?.withYjsLastSequenceId === false ? undefined : LAST_SEQUENCE_ID
+			}
 			monacoLanguageId={args?.monacoLanguageId ?? "json"}
 			presenceStore={presenceStore}
 			commentsPortalHost={null}
 			toolbarPortalHost={toolbarPortalHost}
 		/>,
 	);
+	return { ...rendered, toolbarPortalHost };
 }
 
 let hoistingContainer: HTMLDivElement;
@@ -165,6 +205,8 @@ beforeEach(() => {
 	pushMutationMock.mockReset();
 	pushMutationMock.mockResolvedValue({ _yay: { newSequence: 4 } });
 	fetchFileYjsStateAndTextMock.mockReset();
+	convexQueryMock.mockReset();
+	convexActionMock.mockReset();
 	monacoHarness.createdModels.length = 0;
 	monacoHarness.changeListeners.length = 0;
 	vi.mocked(toast.error).mockClear();
@@ -190,6 +232,7 @@ describe("view gating", () => {
 		const effectiveView = files_resolve_effective_editor_view({
 			requestedView: "rich_text_editor",
 			rootKind: rootKind ?? "rich_text",
+			nonCollaborative: false,
 		});
 		expect(effectiveView).toBe("plain_text_editor");
 
@@ -213,6 +256,15 @@ describe("view gating", () => {
 });
 
 describe("FileEditorPlainText", () => {
+	test("waits for the collaborative lineage before fetching file content", async () => {
+		const { container } = renderPlainTextEditor({ withYjsLastSequenceId: false });
+		await act(async () => {});
+
+		expect(container.querySelector(".FileEditorPlainTextSkeleton")).not.toBeNull();
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(fetchFileYjsStateAndTextMock).not.toHaveBeenCalled();
+	});
+
 	test("Save pushes the edit and surfaces a push refusal as a visible error", async () => {
 		vi.useFakeTimers();
 		try {
@@ -247,6 +299,7 @@ describe("FileEditorPlainText", () => {
 				nodeId: NODE_ID,
 				update: expect.any(ArrayBuffer),
 				sessionId: "session_1",
+				expectedYjsLastSequenceId: LAST_SEQUENCE_ID,
 			});
 			// The refused Save must not look like a no-op: the buffer keeps content that did not persist.
 			expect(toast.error).toHaveBeenCalledWith("Permission denied");
@@ -280,6 +333,206 @@ describe("FileEditorPlainText", () => {
 			expect(toast.error).not.toHaveBeenCalled();
 			// The pushed content is the new baseline, so Save disarms again.
 			expect(saveButton.hasAttribute("disabled")).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("reloads the same node when its collaboration mode and lineage change", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveFetchWithPlainTextDoc('{"mode":"collaborative-a"}\n');
+			const { rerender, toolbarPortalHost } = renderPlainTextEditor();
+			await act(async () => {});
+			expect(monacoHarness.createdModels.at(-1)?.model.getValue()).toBe('{"mode":"collaborative-a"}\n');
+
+			resolveQueryWithNonCollaborativeContent('{"mode":"off"}\n');
+			rerender(
+				<FileEditorPlainText
+					nodeId={NODE_ID}
+					editable={true}
+					nonCollaborative={true}
+					monacoLanguageId="json"
+					presenceStore={presenceStore}
+					commentsPortalHost={null}
+					toolbarPortalHost={toolbarPortalHost}
+				/>,
+			);
+			await act(async () => {});
+			expect(monacoHarness.createdModels.at(-1)?.model.getValue()).toBe('{"mode":"off"}\n');
+
+			const lastSequenceB = "last_sequence_b" as app_convex_Id<"files_yjs_docs_last_sequences">;
+			resolveFetchWithPlainTextDoc('{"mode":"collaborative-b"}\n', lastSequenceB);
+			rerender(
+				<FileEditorPlainText
+					nodeId={NODE_ID}
+					editable={true}
+					nonCollaborative={false}
+					yjsLastSequenceId={lastSequenceB}
+					monacoLanguageId="json"
+					presenceStore={presenceStore}
+					commentsPortalHost={null}
+					toolbarPortalHost={toolbarPortalHost}
+				/>,
+			);
+			await act(async () => {});
+
+			const currentModel = monacoHarness.createdModels.at(-1)?.model;
+			expect(currentModel?.getValue()).toBe('{"mode":"collaborative-b"}\n');
+			act(() => {
+				currentModel?.setValue('{"mode":"saved-b"}\n');
+				monacoHarness.changeListeners.at(-1)?.();
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+			fireEvent.click(screen.getByRole("button", { name: "Save" }));
+			await act(async () => {});
+			expect(pushMutationMock).toHaveBeenLastCalledWith(
+				expect.objectContaining({ expectedYjsLastSequenceId: lastSequenceB }),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("reloads the same collaborative mode when only its lineage changes", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveFetchWithPlainTextDoc('{"lineage":"a"}\n');
+			const { rerender, toolbarPortalHost } = renderPlainTextEditor();
+			await act(async () => {});
+
+			const lastSequenceB = "last_sequence_b" as app_convex_Id<"files_yjs_docs_last_sequences">;
+			resolveFetchWithPlainTextDoc('{"lineage":"b"}\n', lastSequenceB);
+			rerender(
+				<FileEditorPlainText
+					nodeId={NODE_ID}
+					editable={true}
+					nonCollaborative={false}
+					yjsLastSequenceId={lastSequenceB}
+					monacoLanguageId="json"
+					presenceStore={presenceStore}
+					commentsPortalHost={null}
+					toolbarPortalHost={toolbarPortalHost}
+				/>,
+			);
+			await act(async () => {});
+
+			const currentModel = monacoHarness.createdModels.at(-1)?.model;
+			expect(currentModel?.getValue()).toBe('{"lineage":"b"}\n');
+			act(() => {
+				currentModel?.setValue('{"lineage":"saved-b"}\n');
+				monacoHarness.changeListeners.at(-1)?.();
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+			fireEvent.click(screen.getByRole("button", { name: "Save" }));
+			await act(async () => {});
+			expect(pushMutationMock).toHaveBeenLastCalledWith(
+				expect.objectContaining({ expectedYjsLastSequenceId: lastSequenceB }),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a non-collaborative Save replaces the whole text and names the asset it was built on", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("{}\n");
+			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_saved" } });
+
+			renderPlainTextEditor({ nonCollaborative: true });
+			await act(async () => {});
+
+			// The committed text comes from the query, not from the Yjs fetch. A file with no
+			// document must never reach that fetch.
+			expect(convexQueryMock).toHaveBeenCalledWith("get_non_collaborative_file_content", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+			});
+			expect(fetchFileYjsStateAndTextMock).not.toHaveBeenCalled();
+
+			const saveButton = screen.getByRole("button", { name: "Save" });
+			const model = monacoHarness.createdModels[0]?.model;
+			act(() => {
+				model?.setValue('{"answer": 42}\n');
+				for (const listener of monacoHarness.changeListeners) listener();
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+
+			fireEvent.click(saveButton);
+			await act(async () => {});
+
+			// The whole buffer goes, with the asset this text was built on. No Yjs update is pushed.
+			expect(convexActionMock).toHaveBeenCalledWith("replace_file_content", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+				text: '{"answer": 42}\n',
+				baseAssetId: BASE_ASSET_ID,
+			});
+			expect(pushMutationMock).not.toHaveBeenCalled();
+			expect(toast.error).not.toHaveBeenCalled();
+			expect(saveButton.hasAttribute("disabled")).toBe(true);
+
+			// The next Save must name the asset this one wrote, or the server would call it stale.
+			act(() => {
+				model?.setValue('{"answer": 43}\n');
+				for (const listener of monacoHarness.changeListeners) listener();
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+			fireEvent.click(saveButton);
+			await act(async () => {});
+			expect(convexActionMock).toHaveBeenLastCalledWith("replace_file_content", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+				text: '{"answer": 43}\n',
+				baseAssetId: "asset_saved",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a refused non-collaborative Save shows the refusal and keeps the buffer dirty", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("{}\n");
+			convexActionMock.mockResolvedValue({
+				_nay: {
+					message:
+						"This file changed while you were saving. Copy your local changes before reloading, then try again.",
+				},
+			});
+
+			renderPlainTextEditor({ nonCollaborative: true });
+			await act(async () => {});
+
+			const saveButton = screen.getByRole("button", { name: "Save" });
+			const model = monacoHarness.createdModels[0]?.model;
+			act(() => {
+				model?.setValue('{"answer": 42}\n');
+				for (const listener of monacoHarness.changeListeners) listener();
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+
+			fireEvent.click(saveButton);
+			await act(async () => {});
+
+			// The refusal must be visible, and Save must stay armed: the text is still only local.
+			expect(toast.error).toHaveBeenCalledWith(
+				"This file changed while you were saving. Copy your local changes before reloading, then try again.",
+			);
+			expect(saveButton.hasAttribute("disabled")).toBe(false);
+			expect(model?.getValue()).toBe('{"answer": 42}\n');
 		} finally {
 			vi.useRealTimers();
 		}

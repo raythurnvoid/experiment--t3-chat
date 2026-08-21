@@ -41,6 +41,7 @@ import {
 	files_get_editable_text_content_type,
 	files_get_signed_download_serving,
 	files_get_utf8_byte_size,
+	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_normalize_text_document_input,
 	files_u8_to_array_buffer,
@@ -54,6 +55,7 @@ import {
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
 	type files_nodes_get_by_path_Result,
+	type files_nodes_read_file_content_from_chunks_Result,
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
 import {
@@ -1936,6 +1938,12 @@ export const publish_file_write = internalMutation({
 		content: v.string(),
 		/** The target state saved by `prepare_file_write`. Publish requires it to stay the same. */
 		targetAnchor: file_write_target_anchor_validator,
+		/**
+		 * Create the file with committed content only and no Yjs document. The action then never
+		 * PUT the staged Yjs snapshot object, so its asset doc is dropped below, the same way the
+		 * fill path drops the one it does not use.
+		 */
+		nonCollaborative: v.optional(v.boolean()),
 	},
 	returns: v_result({
 		_yay: v.object({ nodeId: v.id("files_nodes") }),
@@ -2147,18 +2155,26 @@ export const publish_file_write = internalMutation({
 			rootKind: "rich_text",
 			textContent: args.content,
 			readOnly: false,
-			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
+			nonCollaborative: args.nonCollaborative === true,
+			...(args.nonCollaborative === true ? {} : { yjsSnapshotAssetId: stage.yjsSnapshotAssetId }),
 			userId: stage.userId,
 			now,
 		});
+
+		// A non-collaborative file has no Yjs document, so the staged snapshot asset was never
+		// uploaded and nothing will ever point at it.
+		if (args.nonCollaborative === true) {
+			await ctx.db.delete("files_r2_assets", yjsSnapshotAsset._id);
+		}
 
 		await files_nodes_db_finalize_editable_text_node_creation(ctx, {
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
 			nodeId: created._yay,
 			userId: stage.userId,
-			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
-			yjsSnapshotSize: yjsSnapshotAsset.size,
+			...(args.nonCollaborative === true
+				? {}
+				: { yjsSnapshot: { assetId: stage.yjsSnapshotAssetId, size: yjsSnapshotAsset.size } }),
 			versionSnapshotAssetId: stage.contentSnapshotAssetId,
 			versionSnapshotSize: contentSnapshotAsset.size,
 		});
@@ -2216,6 +2232,12 @@ export const publish_file_fill = internalMutation({
 		content: v.string(),
 		expectedNodeId: v.id("files_nodes"),
 		fillUpdateStageId: v.optional(v.id("files_yjs_trusted_update_stages")),
+		expectedYjsLastSequenceId: v.optional(v.id("files_yjs_docs_last_sequences")),
+		/**
+		 * The target's collaboration mode as the route saw it. A non-collaborative file has no
+		 * document, so its fill is a plain content swap and carries no `fillUpdateStageId`.
+		 */
+		nonCollaborative: v.optional(v.boolean()),
 	},
 	returns: v_result({
 		_yay: v.object({ nodeId: v.id("files_nodes") }),
@@ -2253,16 +2275,13 @@ export const publish_file_fill = internalMutation({
 			return revalidated;
 		}
 
-		// The target must still be the exact active editable file the route diffed against.
-		// Anything else (archived, replaced, converted) is a conflict the caller reports as 409.
+		// Bind only the tenant and node before access checks. Path, archive, type, mode, and lineage
+		// are details a caller without node access must not learn from the conflict response.
 		const fileNode = await ctx.db.get("files_nodes", args.expectedNodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== stage.organizationId ||
-			fileNode.workspaceId !== stage.workspaceId ||
-			fileNode.path !== stage.path ||
-			fileNode.archiveOperationId !== undefined ||
-			!files_node_has_editable_yjs_state(fileNode)
+			fileNode.workspaceId !== stage.workspaceId
 		) {
 			return Result({ _nay: { message: "The file changed during the write" } });
 		}
@@ -2295,6 +2314,19 @@ export const publish_file_fill = internalMutation({
 			return writable;
 		}
 
+		// After ACL and lock checks, require the exact active editable target and collaboration
+		// lineage the route built its content projection from.
+		if (
+			fileNode.path !== stage.path ||
+			fileNode.archiveOperationId !== undefined ||
+			!files_node_has_editable_text_content(fileNode) ||
+			(fileNode.nonCollaborative === true) !== (args.nonCollaborative === true) ||
+			(fileNode.nonCollaborative !== true &&
+				fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId)
+		) {
+			return Result({ _nay: { message: "The file changed during the write" } });
+		}
+
 		const contentSnapshotAsset = await ctx.db.get("files_r2_assets", stage.contentSnapshotAssetId);
 		if (!contentSnapshotAsset) {
 			// Unreachable while the stage exists: cleanup deletes the asset docs and the stage together.
@@ -2318,6 +2350,7 @@ export const publish_file_fill = internalMutation({
 			contentSnapshotAssetId: stage.contentSnapshotAssetId,
 			contentSize: contentSnapshotAsset.size,
 			fillUpdateStageId: args.fillUpdateStageId,
+			expectedYjsLastSequenceId: args.expectedYjsLastSequenceId,
 		});
 		if (filled._nay) {
 			// Throw so Convex rolls back the snapshot and node writes done above.
@@ -2599,8 +2632,7 @@ export const publish_file_touch = internalMutation({
 			workspaceId: stage.workspaceId,
 			nodeId: created._yay,
 			userId: stage.userId,
-			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
-			yjsSnapshotSize: yjsSnapshotAsset.size,
+			yjsSnapshot: { assetId: stage.yjsSnapshotAssetId, size: yjsSnapshotAsset.size },
 			versionSnapshotAssetId: stage.contentSnapshotAssetId,
 			versionSnapshotSize: contentSnapshotAsset.size,
 		});
@@ -3289,6 +3321,11 @@ async function write_one_markdown_file(
 		contentBytes: number;
 		overwrite: "replace" | "fail";
 		skipIfUnchanged: boolean;
+		/**
+		 * Create the file without a collaborative document. Only used when this write creates the
+		 * file: writing over a file that already exists keeps whatever mode that file has.
+		 */
+		nonCollaborative: boolean;
 	},
 ) {
 	// Decide create-vs-fill before staging. Writing over an existing editable Markdown
@@ -3319,6 +3356,143 @@ async function write_one_markdown_file(
 			},
 		});
 	}
+	// Fill-in-place branch for a non-collaborative file. There is no document to project the new
+	// text into, so this is a plain content swap. Without this branch the write would fall to the
+	// create path below and archive the file to recreate it, which changes the nodeId on every
+	// re-import.
+	if (activeNode?.nonCollaborative === true && files_node_has_editable_text_content(activeNode)) {
+		// Re-running an import must not mint a new version for a file whose text did not change.
+		if (args.skipIfUnchanged) {
+			const current = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.visibilityUserId,
+				path: args.path,
+				mode: { kind: "full", maxBytes: files_MAX_TEXT_CONTENT_BYTES },
+			})) as files_nodes_read_file_content_from_chunks_Result;
+			// Skip only when the commit-time write check would also say yes. When it says no, fall
+			// through so the caller gets the same refusal a plain write gets. A 200 here would let
+			// a caller who cannot write the node confirm its exact content.
+			if (current?.content === args.content) {
+				const canWriteNode = (await ctx.runQuery(internal.public_api.check_file_node_write_permission, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					nodeId: activeNode._id,
+				})) as boolean;
+				if (canWriteNode) {
+					return Result({ _yay: { nodeId: activeNode._id, wroteInPlace: true, unchanged: true } });
+				}
+			}
+		}
+
+		const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			principalRef: args.principalRef,
+			path: args.path,
+			overwrite: args.overwrite,
+			contentSize: args.contentBytes,
+			// This path never uploads a Yjs snapshot object; publish_file_fill drops the staged
+			// asset doc.
+			yjsSnapshotSize: 0,
+		});
+		if (prepared._nay) {
+			if (prepared._nay.message === "Permission denied") {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: prepared._nay.message,
+						data: { status: 403, errorCode: "permission_denied" },
+					},
+				});
+			}
+			// A locked target is a conflict, not a permission error. A permission error would stop the
+			// whole batch. A conflict stops only this item.
+			if (prepared._nay.name === "read_only") {
+				return Result({
+					_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
+				});
+			}
+			return Result({
+				_nay: { name: "nay", message: prepared._nay.message, data: { status: 401, errorCode: "unauthenticated" } },
+			});
+		}
+
+		if (prepared._yay.targetAnchor.kind !== "existing" || prepared._yay.targetAnchor.nodeId !== activeNode._id) {
+			await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+				stageId: prepared._yay.stageId,
+				orphanedKeys: [],
+			});
+			return Result({
+				_nay: {
+					name: "nay",
+					message: "The file changed during the write",
+					data: { status: 409, errorCode: "conflict" },
+				},
+			});
+		}
+
+		const contentSnapshotKey = r2_create_asset_key({
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			assetId: prepared._yay.contentSnapshotAssetId,
+		});
+		try {
+			await r2_put_object(ctx, {
+				key: contentSnapshotKey,
+				body: args.content,
+				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			});
+		} catch (error) {
+			console.error("Failed to write staged file object", {
+				error,
+				stageId: prepared._yay.stageId,
+				path: args.path,
+			});
+			await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+				stageId: prepared._yay.stageId,
+				orphanedKeys: [contentSnapshotKey],
+				orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
+			});
+			return Result({
+				_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
+			});
+		}
+
+		const published: publish_file_fill_Result = await ctx.runMutation(internal.public_api.publish_file_fill, {
+			stageId: prepared._yay.stageId,
+			content: args.content,
+			expectedNodeId: activeNode._id,
+			nonCollaborative: true,
+		});
+		if (published._nay) {
+			// Conflict is the fallback: structural 409s pass their specific message through,
+			// while the auth and storage failures use fixed literals.
+			const failure =
+				published._nay.message === "Unauthenticated"
+					? { status: 401 as const, errorCode: "unauthenticated" as const }
+					: published._nay.message === "Permission denied"
+						? { status: 403 as const, errorCode: "permission_denied" as const }
+						: published._nay.message === "Write was not published"
+							? { status: 500 as const, errorCode: "storage_failure" as const }
+							: { status: 409 as const, errorCode: "conflict" as const };
+			// A read-only refusal already cleaned up the stage during publish. Running cleanup again
+			// would change the plugin call to the wrong unpublished_write/500 error.
+			if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
+				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+					stageId: prepared._yay.stageId,
+					orphanedKeys: [contentSnapshotKey],
+					orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
+				});
+			}
+			return Result({ _nay: { name: "nay", message: published._nay.message, data: failure } });
+		}
+
+		return Result({ _yay: { nodeId: published._yay.nodeId, wroteInPlace: true, unchanged: false } });
+	}
+
 	// Fill-in-place branch. A null materialization state means the node was archived or
 	// replaced between the two queries; the create path below then handles the write.
 	if (activeNode && files_node_has_editable_yjs_state(activeNode)) {
@@ -3495,6 +3669,7 @@ async function write_one_markdown_file(
 				stageId: prepared._yay.stageId,
 				content: args.content,
 				expectedNodeId: activeNode._id,
+				expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
 				...(fillUpdateStageId ? { fillUpdateStageId } : {}),
 			});
 			if (published._nay) {
@@ -3526,20 +3701,26 @@ async function write_one_markdown_file(
 		}
 	}
 
-	const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
-		text: args.content,
-		// The public write route is `.md`-gated (non-goal 4), so the created document is rich
-		// text by definition.
-		rootKind: "rich_text",
-	});
-	if (snapshotUpdate._nay) {
-		console.error("Failed to build Yjs snapshot for public file write", {
-			nay: snapshotUpdate._nay,
-			path: args.path,
+	// A non-collaborative file is created with committed content only, so there is no document to
+	// build and nothing to upload to the Yjs snapshot key.
+	let snapshotUpdate: ArrayBuffer | null = null;
+	if (!args.nonCollaborative) {
+		const built = files_nodes_create_yjs_snapshot_update_from_text({
+			text: args.content,
+			// The public write route is `.md`-gated (non-goal 4), so the created document is rich
+			// text by definition.
+			rootKind: "rich_text",
 		});
-		return Result({
-			_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
-		});
+		if (built._nay) {
+			console.error("Failed to build Yjs snapshot for public file write", {
+				nay: built._nay,
+				path: args.path,
+			});
+			return Result({
+				_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
+			});
+		}
+		snapshotUpdate = built._yay;
 	}
 
 	const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
@@ -3550,7 +3731,7 @@ async function write_one_markdown_file(
 		path: args.path,
 		overwrite: args.overwrite,
 		contentSize: args.contentBytes,
-		yjsSnapshotSize: snapshotUpdate._yay.byteLength,
+		yjsSnapshotSize: snapshotUpdate?.byteLength ?? 0,
 	});
 	if (prepared._nay) {
 		if (prepared._nay.message === "Permission denied") {
@@ -3579,15 +3760,17 @@ async function write_one_markdown_file(
 	});
 	// A plugin run may remove the stage before these R2 writes finish. Keep the exact keys so cleanup
 	// can still remove objects that arrive after the stage is gone.
-	const orphanedKeys = [yjsSnapshotKey, contentSnapshotKey];
+	const orphanedKeys = snapshotUpdate ? [yjsSnapshotKey, contentSnapshotKey] : [contentSnapshotKey];
 	// Wait for both writes before cleanup. Otherwise one failed write could start cleanup while the
 	// other write is still running, and the late object would have no remaining cleanup owner.
 	const putResults = await Promise.allSettled([
-		r2_put_object(ctx, {
-			key: yjsSnapshotKey,
-			body: snapshotUpdate._yay,
-			contentType: "application/octet-stream" satisfies files_ContentType,
-		}),
+		snapshotUpdate
+			? r2_put_object(ctx, {
+					key: yjsSnapshotKey,
+					body: snapshotUpdate,
+					contentType: "application/octet-stream" satisfies files_ContentType,
+				})
+			: Promise.resolve(null),
 		r2_put_object(ctx, {
 			key: contentSnapshotKey,
 			body: args.content,
@@ -3615,6 +3798,7 @@ async function write_one_markdown_file(
 		stageId,
 		content: args.content,
 		targetAnchor: prepared._yay.targetAnchor,
+		nonCollaborative: args.nonCollaborative,
 	});
 	if (published._nay) {
 		// Conflict is the fallback: structural 409s pass their specific message through,
@@ -3817,6 +4001,13 @@ const write_file_body_validator = z.object({
 	content: z.string(),
 	overwrite: z.enum(["replace", "fail"]).optional(),
 	skipIfUnchanged: z.boolean().optional(),
+	/**
+	 * Create the file with no collaborative document: its text lives only in the committed
+	 * content, and a later write replaces the whole text. Absent or `false` creates the normal
+	 * collaborative file. Only read when this write creates the file; writing over a file that
+	 * already exists keeps whatever mode that file has.
+	 */
+	nonCollaborative: z.boolean().optional(),
 });
 
 export type public_api_http_write_file_Body = z.infer<typeof write_file_body_validator>;
@@ -3952,6 +4143,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 		contentBytes,
 		overwrite,
 		skipIfUnchanged: body._yay.skipIfUnchanged ?? false,
+		nonCollaborative: body._yay.nonCollaborative ?? false,
 	});
 	if (written._nay) {
 		const failBody = await fail({
@@ -4029,6 +4221,8 @@ const write_many_body_validator = z.object({
 				path: z.string(),
 				content: z.string(),
 				overwrite: z.enum(["replace", "fail"]).optional(),
+				/** Same meaning as on the single write route. */
+				nonCollaborative: z.boolean().optional(),
 			}),
 		)
 		.min(1)
@@ -4079,6 +4273,7 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 		content: string;
 		contentBytes: number;
 		overwrite: "replace" | "fail";
+		nonCollaborative: boolean;
 	}> = [];
 	const seenPaths = new Set<string>();
 	for (const file of body.data.files) {
@@ -4135,6 +4330,7 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 			content,
 			contentBytes,
 			overwrite: file.overwrite ?? "replace",
+			nonCollaborative: file.nonCollaborative ?? false,
 		});
 	}
 
@@ -4182,6 +4378,7 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 			contentBytes: file.contentBytes,
 			overwrite: file.overwrite,
 			skipIfUnchanged: body.data.skipIfUnchanged ?? false,
+			nonCollaborative: file.nonCollaborative ?? false,
 		});
 		if (result._nay) {
 			// The credential died mid-batch (expired or revoked); every remaining item

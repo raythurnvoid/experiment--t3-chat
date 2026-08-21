@@ -1,7 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
-import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_get_file_yjs_pointers,
+	test_mocks_cancel_pending_home_file_seeds,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_has_permission,
@@ -5804,6 +5809,7 @@ describe("file sharing", () => {
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			nodeId: args.nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(args.t, args.nodeId)).yjsLastSequenceId,
 			operationBatchId,
 			expectedUpdatedAt: null,
 			baseYjsSequence: 0,

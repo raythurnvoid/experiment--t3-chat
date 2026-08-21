@@ -31,6 +31,7 @@ import {
 	files_metadata_parse_entries_yaml,
 	files_metadata_stringify_entries_yaml,
 } from "../../../shared/files-metadata.ts";
+import { files_node_has_editable_text_content } from "../../../shared/files.ts";
 import { users_SYSTEM_AUTHOR } from "../../../shared/users.ts";
 
 // #region facts
@@ -380,6 +381,243 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 	);
 });
 // #endregion read-only
+
+// #region collaboration
+type FilesPropertiesModalCollaboration_ClassNames =
+	| "FilesPropertiesModalCollaboration"
+	| "FilesPropertiesModalCollaboration-checkbox"
+	| "FilesPropertiesModalCollaboration-text"
+	| "FilesPropertiesModalCollaboration-label"
+	| "FilesPropertiesModalCollaboration-description"
+	| "FilesPropertiesModalCollaboration-confirm"
+	| "FilesPropertiesModalCollaboration-confirm-text"
+	| "FilesPropertiesModalCollaboration-actions"
+	| "FilesPropertiesModalCollaboration-error";
+
+type FilesPropertiesModalCollaboration_Props = {
+	nodeId: app_convex_Id<"files_nodes">;
+};
+
+/**
+ * One checkbox that turns the shared editing document of a text file on or off.
+ *
+ * On means the file has a Yjs document: several people type at once, the edits merge, and comments
+ * stay attached to the words they were written on. Off means the file is one saved text: an editor
+ * replaces the whole file when it saves and refuses if another save changed its base.
+ *
+ * Turning it off cannot be undone, so the box does not write straight away. It opens the confirm
+ * step below, which names what the file loses.
+ *
+ * This section owns its `<section>` element, unlike the other sections. Only a text file can be
+ * collaborative, and whether this file is one is known only after the node query answers. A wrapper
+ * in the root would already have drawn its divider line by then, and an image would show an empty
+ * strip.
+ */
+const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalCollaboration(
+	props: FilesPropertiesModalCollaboration_Props,
+) {
+	const { nodeId } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const descriptionId = useId();
+	const confirmId = useId();
+	const checkboxRef = useRef<HTMLInputElement>(null);
+	const confirmButtonRef = useRef<HTMLButtonElement>(null);
+	const [isRunning, setIsRunning] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const [pendingCollaborativeMode, setPendingCollaborativeMode] = useState<boolean | null>(null);
+
+	const node = useQuery(app_convex_api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId: nodeId });
+	const canWrite = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
+		membershipId,
+		nodeId,
+	});
+	const readOnlyManagement = useQuery(app_convex_api.files_nodes.get_node_read_only_management_state, {
+		membershipId,
+		nodeId,
+	});
+
+	const isCollaborative = node?.nonCollaborative !== true;
+	const isLocked = readOnlyManagement != null && readOnlyManagement.readOnlyState !== "writable";
+	// Changing the mode changes how the file is written, so the server asks for the write permission
+	// and refuses a locked file. Ask the same two questions here, in the same order.
+	const blockedReason =
+		canWrite === false ? "You don't have permission to edit this file." : isLocked ? "This file is read-only." : null;
+	const canToggle = blockedReason === null && canWrite !== undefined && readOnlyManagement !== undefined;
+
+	const runToggle = (collaborative: boolean) => {
+		setError(null);
+		setIsRunning(true);
+
+		Promise.try(() =>
+			collaborative
+				? app_convex.action(app_convex_api.files_nodes_content.set_file_collaborative, { membershipId, nodeId })
+				: app_convex.mutation(app_convex_api.files_nodes_content.set_file_non_collaborative, {
+						membershipId,
+						nodeId,
+						acknowledgeDropCollaborativeHistory: true,
+					}),
+		)
+			.then((result) => {
+				if (result._nay) {
+					setError(result._nay.message);
+					return;
+				}
+
+				checkboxRef.current?.focus();
+				setPendingCollaborativeMode(null);
+			})
+			.catch((caughtError: unknown) => {
+				console.error("[FilesPropertiesModalCollaboration.runToggle] Failed to change collaboration", {
+					error: caughtError,
+					nodeId,
+				});
+				setError("Failed to change collaboration");
+			})
+			.finally(() => {
+				setIsRunning(false);
+			});
+	};
+
+	const handleCheckedChange = useFn((checked: boolean) => {
+		if (isRunning || !canToggle) {
+			return;
+		}
+
+		// Either direction remounts the editor. Ask first because an open editor can still hold text
+		// that has not reached the server.
+		setError(null);
+		setPendingCollaborativeMode(checked);
+	});
+
+	const handleConfirmToggle = useFn(() => {
+		if (isRunning || pendingCollaborativeMode === null) {
+			return;
+		}
+
+		runToggle(pendingCollaborativeMode);
+	});
+
+	const handleCancelToggle = useFn(() => {
+		checkboxRef.current?.focus();
+		setPendingCollaborativeMode(null);
+	});
+
+	useEffect(() => {
+		if (pendingCollaborativeMode !== null) {
+			confirmButtonRef.current?.focus();
+		}
+	}, [pendingCollaborativeMode]);
+
+	// The node is still loading, is gone, or this member may not read it. The read-only section above
+	// already reports that, so render nothing here.
+	if (node === undefined || node === null) {
+		return null;
+	}
+
+	// Only editable text can carry a collaborative document. An image or another stored blob has no
+	// mode to choose, so it gets no section at all.
+	if (!files_node_has_editable_text_content(node)) {
+		return null;
+	}
+
+	const description = isCollaborative
+		? "Everybody can type in this file at the same time. The edits are merged, and comments stay attached to the text they were written on."
+		: "Saving replaces the whole file. If it changed elsewhere, reload it before saving.";
+
+	return (
+		<section
+			aria-label="Collaboration"
+			className={cn(
+				"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames,
+				"FilesPropertiesModalCollaboration" satisfies FilesPropertiesModalCollaboration_ClassNames,
+			)}
+		>
+			<MyCheckboxButton
+				ref={checkboxRef}
+				className={"FilesPropertiesModalCollaboration-checkbox" satisfies FilesPropertiesModalCollaboration_ClassNames}
+				variant="outline"
+				checked={isCollaborative}
+				// Same reason as the read-only checkbox: do not disable this while the write runs, or the
+				// browser throws a keyboard user out of the dialog. `handleCheckedChange` ignores a second
+				// press instead.
+				disabled={!canToggle}
+				aria-describedby={descriptionId}
+				aria-controls={pendingCollaborativeMode !== null ? confirmId : undefined}
+				aria-expanded={pendingCollaborativeMode !== null}
+				aria-busy={isRunning || undefined}
+				onCheckedChange={handleCheckedChange}
+			>
+				<span
+					className={"FilesPropertiesModalCollaboration-text" satisfies FilesPropertiesModalCollaboration_ClassNames}
+				>
+					<span
+						className={"FilesPropertiesModalCollaboration-label" satisfies FilesPropertiesModalCollaboration_ClassNames}
+					>
+						Collaborative editing
+					</span>
+					<span
+						id={descriptionId}
+						className={
+							"FilesPropertiesModalCollaboration-description" satisfies FilesPropertiesModalCollaboration_ClassNames
+						}
+					>
+						{description}
+						{blockedReason ? ` ${blockedReason}` : null}
+					</span>
+				</span>
+			</MyCheckboxButton>
+
+			{pendingCollaborativeMode !== null ? (
+				<div
+					className={"FilesPropertiesModalCollaboration-confirm" satisfies FilesPropertiesModalCollaboration_ClassNames}
+				>
+					<p
+						id={confirmId}
+						className={
+							"FilesPropertiesModalCollaboration-confirm-text" satisfies FilesPropertiesModalCollaboration_ClassNames
+						}
+					>
+						{pendingCollaborativeMode
+							? "Turn collaboration on for this file? Only the last saved text is used. Save any open editor changes first, or they will be lost."
+							: "Turn collaboration off for this file? The edit history is deleted. Every comment written inside the text loses the words it was attached to, so it disappears from the file for everybody. Changes waiting for review lose their new text. Nobody can bring these back. Only the last saved text and saved versions are kept. Save any open editor changes first, or they will be lost."}
+					</p>
+					<div
+						className={"FilesPropertiesModalCollaboration-actions" satisfies FilesPropertiesModalCollaboration_ClassNames}
+					>
+						<MyButton
+							ref={confirmButtonRef}
+							variant={pendingCollaborativeMode ? "default" : "destructive"}
+							disabled={isRunning}
+							aria-describedby={confirmId}
+							onClick={handleConfirmToggle}
+						>
+							{isRunning
+								? pendingCollaborativeMode
+									? "Turning on..."
+									: "Turning off..."
+								: pendingCollaborativeMode
+									? "Turn collaboration on"
+									: "Turn collaboration off"}
+						</MyButton>
+						<MyButton variant="ghost" disabled={isRunning} onClick={handleCancelToggle}>
+							Cancel
+						</MyButton>
+					</div>
+				</div>
+			) : null}
+
+			{error ? (
+				<p
+					className={"FilesPropertiesModalCollaboration-error" satisfies FilesPropertiesModalCollaboration_ClassNames}
+					role="alert"
+				>
+					{error}
+				</p>
+			) : null}
+		</section>
+	);
+});
+// #endregion collaboration
 
 // #region metadata
 type FilesPropertiesModalMetadata_ClassNames =
@@ -776,6 +1014,10 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 										onClose={handleClose}
 									/>
 								</section>
+
+								{/* Only a text file can have a collaborative document, and the section itself decides
+								    that from the node. A folder never can, so do not even ask. */}
+								{nodeKind === "file" ? <FilesPropertiesModalCollaboration nodeId={nodeId} /> : null}
 
 								{/* Only a file carries a metadata map. `set_entries` refuses a folder, so a folder
 								    gets no editor at all instead of one that always fails to save. */}

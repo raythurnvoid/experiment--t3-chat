@@ -13,6 +13,7 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
 	files_create_room_id,
 	files_PresenceStore,
+	files_resolve_effective_editor_view,
 	type files_EditorView,
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
@@ -364,6 +365,9 @@ type FileEditorRender_Props = {
 	rootKind: files_YjsRootKind;
 	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
 	monacoLanguageId: string;
+	/** Collaboration is off for this node: no Yjs document, so only the plain text editor runs. */
+	nonCollaborative: boolean;
+	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	editorMode: FileEditor_Mode;
 	editable: boolean;
 	editBlockReason: files_yjs_EditBlockReason | null;
@@ -383,6 +387,8 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
+		nonCollaborative,
+		yjsLastSequenceId,
 		editorMode,
 		editable,
 		editBlockReason,
@@ -409,9 +415,13 @@ function FileEditorRender(props: FileEditorRender_Props) {
 	}
 
 	if (editorMode === "rich_text_editor") {
+		if (!yjsLastSequenceId) {
+			return <FileEditorRichTextSkeleton />;
+		}
 		return (
 			<FileEditorRichText
 				nodeId={nodeId}
+				yjsLastSequenceId={yjsLastSequenceId}
 				editable={editable}
 				editBlockReason={editBlockReason}
 				presenceStore={presenceStore}
@@ -446,8 +456,10 @@ function FileEditorRender(props: FileEditorRender_Props) {
 	return (
 		<FileEditorPlainText
 			nodeId={nodeId}
+			yjsLastSequenceId={yjsLastSequenceId}
 			editable={editable}
 			monacoLanguageId={monacoLanguageId}
+			nonCollaborative={nonCollaborative}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
@@ -482,6 +494,9 @@ type FileEditorInner_Props = {
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	rootKind: files_YjsRootKind;
 	monacoLanguageId: string;
+	/** Collaboration is off for this node: no Yjs document, so only the plain text editor runs. */
+	nonCollaborative: boolean;
+	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
 	topSafeArea?: number;
@@ -501,6 +516,8 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
+		nonCollaborative,
+		yjsLastSequenceId,
 		serverSequence,
 		editorMode,
 		topSafeArea,
@@ -512,6 +529,15 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
+
+	// The route already clamps the view it puts in the URL, but a folder's README is opened by the
+	// folder view with the folder's own mode. Clamp here too so no caller can mount a Yjs view on a
+	// document that does not exist.
+	const effectiveEditorMode = files_resolve_effective_editor_view({
+		requestedView: editorMode,
+		rootKind,
+		nonCollaborative,
+	});
 
 	// Editing needs write permission and a writable node. Keep editing off while permission loads.
 	const { membershipId } = AppTenantProvider.useContext();
@@ -540,7 +566,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 	const hasTopSafeArea = topSafeArea != null && topSafeArea > 0;
 
 	const renderHostStyle =
-		editorMode === "rich_text_editor"
+		effectiveEditorMode === "rich_text_editor"
 			? !hasTopSafeArea
 				? {
 						flex: "0 0 auto",
@@ -563,9 +589,9 @@ function FileEditorInner(props: FileEditorInner_Props) {
 				};
 
 	const editorModeClass =
-		editorMode === "rich_text_editor"
+		effectiveEditorMode === "rich_text_editor"
 			? ("FileEditor-mode-rich-text" satisfies FileEditor_ClassNames)
-			: editorMode === "plain_text_editor"
+			: effectiveEditorMode === "plain_text_editor"
 				? ("FileEditor-mode-plain-text" satisfies FileEditor_ClassNames)
 				: ("FileEditor-mode-diff" satisfies FileEditor_ClassNames);
 
@@ -586,7 +612,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		>
 			<div
 				className={cn("FileEditor-editor-area" satisfies FileEditor_ClassNames)}
-				style={editorMode === "rich_text_editor" ? undefined : { overflowY: "visible" }}
+				style={effectiveEditorMode === "rich_text_editor" ? undefined : { overflowY: "visible" }}
 			>
 				<CatchBoundary
 					getResetKey={getCatchBoundaryResetKey}
@@ -599,7 +625,8 @@ function FileEditorInner(props: FileEditorInner_Props) {
 							pendingUpdateId={pendingUpdateId}
 							rootKind={rootKind}
 							monacoLanguageId={monacoLanguageId}
-							editorMode={editorMode}
+							nonCollaborative={nonCollaborative}
+							editorMode={effectiveEditorMode}
 							editable={editable}
 							editBlockReason={editBlockReason}
 							topSafeArea={topSafeArea}
@@ -607,6 +634,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 							commentsPortalHost={commentsPortalHost}
 							toolbarPortalHost={toolbarPortalHost}
 							serverSequence={serverSequence}
+							yjsLastSequenceId={yjsLastSequenceId}
 							onDiffExit={handleDiffExit}
 							topStickyFloatingSlot={topStickyFloatingSlot}
 							topViewZoneSlot={topViewZoneSlot}
@@ -631,6 +659,9 @@ export type FileEditor_Props = {
 	rootKind: files_YjsRootKind;
 	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
 	monacoLanguageId: string;
+	/** Collaboration is off for this node: no Yjs document, so only the plain text editor runs. */
+	nonCollaborative: boolean;
+	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
 	topSafeArea?: number;
@@ -650,6 +681,8 @@ export function FileEditor(props: FileEditor_Props) {
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
+		nonCollaborative,
+		yjsLastSequenceId,
 		serverSequence,
 		editorMode,
 		topSafeArea,
@@ -676,7 +709,9 @@ export function FileEditor(props: FileEditor_Props) {
 			pendingUpdateId={pendingUpdateId}
 			rootKind={rootKind}
 			monacoLanguageId={monacoLanguageId}
+			nonCollaborative={nonCollaborative}
 			serverSequence={serverSequence}
+			yjsLastSequenceId={yjsLastSequenceId}
 			editorMode={editorMode}
 			topSafeArea={topSafeArea}
 			presenceStore={presenceStore}
