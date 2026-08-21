@@ -68,6 +68,39 @@ export async function billing_db_check_credits(
 	return { hasCredits };
 }
 
+/**
+ * Answer whether this user pays for usage at all, for doors that are closed to `Free`.
+ *
+ * A credit balance cannot answer this. `Free` comes with credits every month, and a door that only
+ * looked at the balance would open for a plan that never pays. An anonymous user holds a synthetic
+ * snapshot carrying the real Free product id, so this refuses them through the same comparison.
+ * No billing state at all means no known plan, which is not a paid one.
+ */
+export async function billing_db_check_paid_plan(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		userId: Id<"users">;
+	},
+) {
+	const usageSnapshot = await ctx.db
+		.query("billing_usage_snapshots")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.first();
+	if (!usageSnapshot?.subscription) {
+		return { hasPaidPlan: false };
+	}
+
+	// Same lookup as `billing_polar.getProduct`, without loading the Polar SDK module.
+	const product = await ctx.runQuery(components.polar.lib.getProduct, {
+		id: usageSnapshot.subscription.productId,
+	});
+	if (!product) {
+		return { hasPaidPlan: false };
+	}
+
+	return { hasPaidPlan: product.name !== ("Free" satisfies keyof typeof billing_PRODUCTS) };
+}
+
 /** Route app-owned billing events by billed user row: Polar for signed-in payers, local snapshot updates for anonymous payers. */
 export async function billing_ingest_events(
 	ctx: ActionCtx | MutationCtx,

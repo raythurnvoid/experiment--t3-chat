@@ -1,12 +1,13 @@
 import { describe, expect, test, vi } from "vitest";
 import { Workpool } from "@convex-dev/workpool";
 
-import { api, internal } from "./_generated/api.js";
-import type { Doc } from "./_generated/dataModel";
+import { api, components, internal } from "./_generated/api.js";
+import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { billing_PRODUCTS } from "../shared/billing.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
@@ -30,6 +31,88 @@ const COUNCIL_CAPABILITIES: plugins_Capability[] = [
 	"workspace.files.write",
 ];
 
+const PLAN_PRODUCT_IDS: Record<keyof typeof billing_PRODUCTS, string> = {
+	Free: "prod_service_uploads_free",
+	"Pay As You Go": "prod_service_uploads_pay_as_you_go",
+	Pro: "prod_service_uploads_pro",
+};
+
+/**
+ * Put one user on a plan: a synced Polar product plus the usage snapshot that points at it. This is
+ * what the create-target plan gate reads. Same shape as the chat credit gate's fixture.
+ */
+async function seed_plan(
+	t: ReturnType<typeof test_convex>,
+	args: { userId: Id<"users">; plan: keyof typeof billing_PRODUCTS },
+) {
+	const productId = PLAN_PRODUCT_IDS[args.plan];
+	const product = await t.run(async (ctx) => await ctx.runQuery(components.polar.lib.getProduct, { id: productId }));
+	// Two fixtures in one test may share a plan, and the component rejects a duplicate id.
+	if (!product) {
+		await t.mutation(components.polar.lib.createProduct, {
+			product: {
+				id: productId,
+				organizationId: "service_uploads_test_org",
+				name: billing_PRODUCTS[args.plan].name,
+				description: null,
+				isRecurring: true,
+				isArchived: false,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: null,
+				recurringInterval: "month",
+				metadata: {},
+				prices: [
+					{
+						id: `${productId}_price`,
+						createdAt: "2026-01-01T00:00:00.000Z",
+						modifiedAt: null,
+						amountType: "free",
+						isArchived: false,
+						productId,
+						priceCurrency: "eur",
+						recurringInterval: "month",
+					},
+				],
+				medias: [],
+				benefits: [],
+			},
+		});
+	}
+
+	await t.run(async (ctx) => {
+		const subscription = {
+			id: `service_uploads_subscription_${args.userId}`,
+			productId,
+			currency: "eur",
+			currentPeriodStart: "2026-01-01T00:00:00.000Z",
+			currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+		};
+		const snapshot = await ctx.db
+			.query("billing_usage_snapshots")
+			.withIndex("by_user", (q) => q.eq("userId", args.userId))
+			.first();
+		// Called again to move a user between plans mid-test, the way a real upgrade or downgrade does.
+		if (snapshot) {
+			await ctx.db.patch("billing_usage_snapshots", snapshot._id, { subscription });
+			return;
+		}
+
+		await ctx.db.insert("billing_usage_snapshots", {
+			userId: args.userId,
+			polarCustomerId: `service_uploads_customer_${args.userId}`,
+			subscription,
+			meter: {
+				id: "meter_press_usage",
+				consumedUnits: 0,
+				creditedUnits: 1000,
+				balance: 1000,
+				amountDueCents: 0,
+			},
+			lastSyncedAt: Date.now(),
+		});
+	});
+}
+
 /**
  * Insert a ready plugin version and one enabled installation directly, the same way
  * `plugins_service.test.ts` does. The publish pipeline is not what these tests exercise.
@@ -40,9 +123,11 @@ async function seed_installation(
 		acceptedCapabilities?: plugins_Capability[];
 		organizationName?: string;
 		workspaceName?: string;
+		/** Service uploads are closed to `Free`, so the fixture pays by default. `null` leaves the payer with no billing state at all. */
+		plan?: keyof typeof billing_PRODUCTS | null;
 	} = {},
 ) {
-	return await t.run(async (ctx) => {
+	const installation = await t.run(async (ctx) => {
 		const now = Date.now();
 		const membership = await test_mocks_fill_db_with.membership(ctx, {
 			...(args.organizationName === undefined ? {} : { organizationName: args.organizationName }),
@@ -96,6 +181,12 @@ async function seed_installation(
 		});
 		return { ...membership, pluginVersionId, installationId } as const;
 	});
+
+	if (args.plan !== null) {
+		await seed_plan(t, { userId: installation.userId, plan: args.plan ?? "Pay As You Go" });
+	}
+
+	return installation;
 }
 
 async function seed_page_token(
@@ -419,6 +510,153 @@ describe("service upload authorization", () => {
 			expect(response.status, path).toBe(404);
 			expect(await response.json(), path).toEqual({ message: "Not found" });
 		}
+	});
+});
+
+describe("service upload plan gate", () => {
+	const PLAN_REFUSAL = "This workspace's plan does not include plugin service file storage";
+
+	test("refuses a target when the payer is on Free, and writes nothing", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t, { plan: "Free" });
+		const sealed = await seal_token(t, fixture);
+
+		const refused = await call(t, CREATE_TARGET_PATH, sealed, target_body());
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
+
+		// A refusing mutation still commits whatever it wrote before returning, so the gate has to run
+		// before the quota doc is seeded and before any file exists.
+		expect(await read_targets(t)).toHaveLength(0);
+		expect(await read_quota(t, fixture)).toBeNull();
+		expect(await t.run(async (ctx) => ctx.db.query("files_r2_assets").collect())).toHaveLength(0);
+		expect(
+			await t.run(async (ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", fixture.organizationId)
+							.eq("workspaceId", fixture.workspaceId)
+							.eq("path", "/meetings/meeting-1/recording.mp4")
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+			),
+		).toBeNull();
+	});
+
+	test("refuses a target when the payer has no billing state at all", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t, { plan: null });
+		const sealed = await seal_token(t, fixture);
+
+		const refused = await call(t, CREATE_TARGET_PATH, sealed, target_body());
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
+		expect(await read_targets(t)).toHaveLength(0);
+	});
+
+	test("refuses a target for an anonymous payer's synthetic Free snapshot", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t, { plan: null });
+		// An anonymous user carries the real Free product id with null Polar ids. Seed that exact shape
+		// instead of the signed-in one, because it is the only billing state an anonymous payer has.
+		await seed_plan(t, { userId: fixture.userId, plan: "Free" });
+		await t.run(async (ctx) => {
+			const snapshot = await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", fixture.userId))
+				.first();
+			await ctx.db.patch("billing_usage_snapshots", snapshot!._id, {
+				polarCustomerId: null,
+				subscription: { ...snapshot!.subscription!, id: null },
+				meter: { ...snapshot!.meter!, id: null },
+			});
+		});
+		const sealed = await seal_token(t, fixture);
+
+		const refused = await call(t, CREATE_TARGET_PATH, sealed, target_body());
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
+		expect(await read_targets(t)).toHaveLength(0);
+	});
+
+	test("an owner-billed organization reads the owner's plan, not the acting member's", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t, { plan: "Free" });
+		const ownerUserId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				active: true,
+			});
+			// Ownership carries every permission, so the acting member needs a role of their own once the
+			// organization belongs to someone else. `admin` is the role that has everything except billing.
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId: fixture.userId,
+				role: "admin",
+				now,
+			});
+			await ctx.db.patch("organizations", fixture.organizationId, {
+				billingMode: "organization_owner",
+				ownerUserId: userId,
+			});
+			return userId;
+		});
+		await seed_plan(t, { userId: ownerUserId, plan: "Pro" });
+		const sealed = await seal_token(t, fixture);
+
+		// The member is on Free and the owner pays, so the upload is allowed.
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+
+		// Move the owner to Free. The member's own plan never changed, so a refusal here can only come
+		// from reading the owner.
+		await seed_plan(t, { userId: ownerUserId, plan: "Free" });
+		const refused = await call(
+			t,
+			CREATE_TARGET_PATH,
+			sealed,
+			target_body({ targetKey: "slides", path: "/meetings/meeting-1/slides.pdf", contentType: "application/pdf" }),
+		);
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
+		expect(await read_targets(t)).toHaveLength(1);
+	});
+
+	test("an accepted upload still remints and finalizes after the plan drops to Free", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+
+		// Creating the target accepted the upload. A later downgrade must not strand a half-written
+		// file, the same way a later read-only lock does not cancel it.
+		await seed_plan(t, { userId: fixture.userId, plan: "Free" });
+		expect((await call(t, REMINT_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
+			200,
+		);
+		await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
+		const finalized = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
+		expect(finalized.status).toBe(200);
+		expect(await finalized.json()).toMatchObject({ state: "committed", actualBytes: 3 * MIB });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
+
+		// A new target under the same grant is a new upload, so it answers to the current plan.
+		const refused = await call(
+			t,
+			CREATE_TARGET_PATH,
+			sealed,
+			target_body({ targetKey: "slides", path: "/meetings/meeting-1/slides.pdf", contentType: "application/pdf" }),
+		);
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
 	});
 });
 

@@ -25,6 +25,7 @@ import type { RegisteredMutation } from "convex/server";
 import { internalMutation, type MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
+import { billing_db_check_paid_plan, billing_pick_billed_user_id } from "./billing_db.ts";
 import {
 	files_node_require_writable,
 	files_nodes_db_archive_nodes,
@@ -70,10 +71,15 @@ const MAX_LIVE_TARGETS_PER_DELETE_GROUP = 16;
  * Names for the refusals whose HTTP status is not the default 400, read by the route module the
  * same way `plugins_data_http.ts` reads `plugins_data_RefusalName`.
  */
-export type public_api_service_uploads_RefusalName = "conflict" | "storage_full" | "outside_destination";
+export type public_api_service_uploads_RefusalName =
+	| "conflict"
+	| "storage_full"
+	| "plan_required"
+	| "outside_destination";
 
 const REFUSAL_CONFLICT: public_api_service_uploads_RefusalName = "conflict";
 const REFUSAL_STORAGE_FULL: public_api_service_uploads_RefusalName = "storage_full";
+const REFUSAL_PLAN_REQUIRED: public_api_service_uploads_RefusalName = "plan_required";
 const REFUSAL_OUTSIDE_DESTINATION: public_api_service_uploads_RefusalName = "outside_destination";
 
 /**
@@ -820,14 +826,38 @@ export const create_upload_target = internalMutation({
 			}
 		}
 
+		// Storing files for a service costs real money, so only a workspace that pays for usage may
+		// start one. This is the door that can actually stop an upload: the quota below can only bill
+		// what R2 already stored, because a signed PUT does not bind how many bytes arrive. The plan
+		// belongs to whoever pays for this workspace, which in an owner-billed organization is the
+		// owner and not the member whose grant is presenting.
+		const organization = await ctx.db.get("organizations", args.principal.organizationId);
+		if (!organization) {
+			const errorMessage = "principal.organizationId points to a missing organizations doc";
+			const errorData = { organizationId: args.principal.organizationId, path: args.path };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		const billedUserId = billing_pick_billed_user_id({
+			userId: args.principal.actorUserId,
+			organization,
+		});
+		const paidPlan = await billing_db_check_paid_plan(ctx, { userId: billedUserId });
+		if (!paidPlan.hasPaidPlan) {
+			return Result({
+				_nay: {
+					name: REFUSAL_PLAN_REQUIRED,
+					message: "This workspace's plan does not include plugin service file storage",
+				},
+			});
+		}
+
 		// Nothing is charged here. The size in the request is only the service's guess, and a signed
 		// PUT does not bind how many bytes actually arrive, so charging it would bill a number nobody
 		// can hold the caller to. The real size is charged once, when R2 confirms the stored object.
 		// What this door does is refuse a workspace that is already over its budget, which stops the
 		// next file rather than the current one. Seeded lazily because existing workspaces have no
 		// doc for this quota.
-		// TODO: gate uploads by plan tier here once free and anonymous workspaces stop being allowed
-		// to store plugin service files at all.
 		const quotaId = await quotas_db_ensure(ctx, {
 			quotaName: "plugin_service_storage_bytes",
 			organizationId: args.principal.organizationId,

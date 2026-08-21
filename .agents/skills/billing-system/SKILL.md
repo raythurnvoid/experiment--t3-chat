@@ -153,8 +153,9 @@ Do not reintroduce a shared `credits_policy_allow_spend` helper for this rule. T
 
 ### Gate APIs
 
-There is one DB credit gate plus the action-facing query wrapper:
+There is one DB credit gate plus the action-facing query wrapper, and one plan-tier gate for doors that are closed to `Free` entirely:
 
+- `billing_db_check_paid_plan(ctx, { userId })` — loads the same synced Polar product and returns `{ hasPaidPlan }`, which is `product.name !== "Free"`. Use it for a door that no `Free` workspace may open, not for one that only needs credits: `Free` gets credits every month, so a balance check would let it through. Missing billing state and a missing product both return `hasPaidPlan: false`. An anonymous user carries the real Free `productId` in a synthetic snapshot, so the same comparison refuses them. Current caller: `public_api_service_uploads.create_upload_target`.
 - `billing_db_check_credits(ctx, { userId, minimumRequiredCents })` — loads the synced Polar product from `snapshot.subscription.productId`, reads `snapshot.meter?.balance ?? 0`, and returns `{ hasCredits }`. Missing billing state, missing products, and insufficient Free-plan balance return `hasCredits: false`; paid plans return `hasCredits: true` even with a negative balance.
 - `internal.billing.check_credits` — `internalQuery` wrapper for action code such as chat routes. Without `organizationId`, it returns `{ hasCredits }`. With `organizationId`, it resolves the organization payer and returns `{ hasCredits, billedUser }` so actions can freeze the billed user before paid work starts. Missing organization or billed-user docs are impossible states from membership-derived inputs and should throw instead of returning `Result` or `null`.
 - DB-capable file mutations resolve `organization` and `billedUser` inline (`billing_pick_billed_user_id`, also in `billing_db.ts`, reads only `default`, `billingMode`, `ownerUserId`; no assignment is read) before calling `billing_db_check_credits`. Keep that local instead of reintroducing an organization credit helper.
@@ -316,6 +317,13 @@ The indicator displays the current user's balance for personal organizations, `"
 - **Kind:** exported async helper
 - **Args:** `(ctx: QueryCtx | MutationCtx, { userId, minimumRequiredCents })`
 - **Role:** Read-only credit gate for mutations/queries that need to fail before doing paid work. Returns `{ hasCredits: false }` on missing billing state, missing products, or insufficient Free-plan balance; paid plans are allowed even with negative balance.
+
+#### `billing_db_check_paid_plan`
+
+- **Module:** [billing_db.ts](../../../packages/app/convex/billing_db.ts) — same module as the credit gate, for the same reason: gate callers skip the Polar SDK module-load cost.
+- **Kind:** exported async helper
+- **Args:** `(ctx: QueryCtx | MutationCtx, { userId })`
+- **Role:** Plan-tier gate for doors closed to `Free`. Returns `{ hasPaidPlan }` from the synced product name. No billing state, no product, `Free`, and an anonymous synthetic snapshot all return `false`. Callers that bill an organization must resolve the payer with `billing_pick_billed_user_id` first, the same as the credit gate.
 
 #### `check_credits`
 

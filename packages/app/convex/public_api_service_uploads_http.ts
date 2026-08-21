@@ -35,11 +35,13 @@ import type { public_api_Scope } from "../shared/public-api.ts";
  */
 const REFUSAL_CONFLICT: public_api_service_uploads_RefusalName = "conflict";
 const REFUSAL_STORAGE_FULL: public_api_service_uploads_RefusalName = "storage_full";
+const REFUSAL_PLAN_REQUIRED: public_api_service_uploads_RefusalName = "plan_required";
 const REFUSAL_OUTSIDE_DESTINATION: public_api_service_uploads_RefusalName = "outside_destination";
 
 /**
- * Turn one refusal from the storage module into a status. Storage ceilings and the destination
- * fence answer 403 like the other permission refusals; replays that no longer match answer 409.
+ * Turn one refusal from the storage module into a status. Storage ceilings, the plan gate, and the
+ * destination fence answer 403 like the other permission refusals; replays that no longer match
+ * answer 409.
  * `read_only` is what `files_node_require_writable` tags a locked ancestor with.
  */
 function upload_failure(failure: { name?: string; message: string }) {
@@ -49,6 +51,9 @@ function upload_failure(failure: { name?: string; message: string }) {
 		return { status: 409, body: { message } } as const;
 	}
 	if (failure.name === REFUSAL_STORAGE_FULL) {
+		return { status: 403, body: { message } } as const;
+	}
+	if (failure.name === REFUSAL_PLAN_REQUIRED) {
 		return { status: 403, body: { message } } as const;
 	}
 	if (failure.name === REFUSAL_OUTSIDE_DESTINATION) {
