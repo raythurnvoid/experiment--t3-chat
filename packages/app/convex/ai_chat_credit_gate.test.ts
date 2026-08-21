@@ -79,6 +79,8 @@ describe("/api/chat credit gate", () => {
 		const t = test_convex();
 		const seeded = await t.run(async (ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
+				// This test owns the billing state it needs, so the fixture must not seed a plan.
+				plan: null,
 				organizationName: "personal",
 				workspaceName: "home",
 			}),
@@ -132,6 +134,8 @@ describe("/api/chat credit gate", () => {
 			await ctx.db.insert("users", { clerkUserId: "clerk-chat-rate-limit-dummy" });
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-chat-rate-limit-user" });
 			return await test_mocks_fill_db_with.membership(ctx, {
+				// This test owns the billing state it needs, so the fixture must not seed a plan.
+				plan: null,
 				userId,
 				organizationName: "personal",
 				workspaceName: "home",
@@ -199,6 +203,8 @@ describe("/api/chat credit gate", () => {
 			await ctx.db.insert("users", { clerkUserId: "clerk-title-rate-limit-dummy-2" });
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-title-rate-limit-user" });
 			return await test_mocks_fill_db_with.membership(ctx, {
+				// This test owns the billing state it needs, so the fixture must not seed a plan.
+				plan: null,
 				userId,
 				organizationName: "personal",
 				workspaceName: "home",
@@ -259,6 +265,8 @@ describe("/api/chat credit gate", () => {
 		const t = test_convex();
 		const seeded = await t.run(async (ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
+				// This test owns the billing state it needs, so the fixture must not seed a plan.
+				plan: null,
 				organizationName: "personal",
 				workspaceName: "home",
 			}),

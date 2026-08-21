@@ -60,13 +60,28 @@ describe("BillingCheckoutButton", () => {
 			},
 		});
 
-		render(<BillingCheckoutButton productId="prod_checkout" />);
+		render(<BillingCheckoutButton productId="prod_checkout" planDisplayName="Pro" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Select plan" }));
+		fireEvent.click(screen.getByRole("button", { name: "Select plan: Pro" }));
 
 		await waitFor(() => {
 			expect(windowOpenSpy).toHaveBeenCalledWith("https://checkout.test/session", "_blank", "noopener,noreferrer");
 		});
+	});
+
+	test("names each plan, so two cards never read as the same button", () => {
+		render(
+			<>
+				<BillingCheckoutButton productId="prod_payg" planDisplayName="Pay As You Go" />
+				<BillingCheckoutButton productId="prod_pro" planDisplayName="Pro" />
+			</>,
+		);
+
+		// The visible text is the same on both cards, so the plan name is what a screen reader tells
+		// them apart by. `getByRole` also fails when two buttons share a name.
+		expect(screen.getByRole("button", { name: "Select plan: Pay As You Go" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "Select plan: Pro" })).not.toBeNull();
+		expect(screen.getAllByText("Select plan")).toHaveLength(2);
 	});
 
 	test("passes subscriptionId when provided", async () => {
@@ -76,9 +91,9 @@ describe("BillingCheckoutButton", () => {
 			},
 		});
 
-		render(<BillingCheckoutButton productId="prod_checkout" subscriptionId="sub_free" />);
+		render(<BillingCheckoutButton productId="prod_checkout" subscriptionId="sub_free" planDisplayName="Pro" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Select plan" }));
+		fireEvent.click(screen.getByRole("button", { name: "Select plan: Pro" }));
 
 		await waitFor(() => {
 			expect(actionMock).toHaveBeenCalledWith(app_convex_api.billing.generate_checkout_link, {
@@ -97,9 +112,9 @@ describe("BillingCheckoutButton", () => {
 			},
 		});
 
-		render(<BillingCheckoutButton productId="prod_checkout" />);
+		render(<BillingCheckoutButton productId="prod_checkout" planDisplayName="Pro" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Select plan" }));
+		fireEvent.click(screen.getByRole("button", { name: "Select plan: Pro" }));
 
 		await waitFor(() => {
 			expect(toastErrorMock).toHaveBeenCalledWith("Origin is not allowed for checkout");
@@ -111,9 +126,9 @@ describe("BillingCheckoutButton", () => {
 		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		actionMock.mockRejectedValue(new Error("[Request ID: abc] Server Error"));
 
-		render(<BillingCheckoutButton productId="prod_checkout" />);
+		render(<BillingCheckoutButton productId="prod_checkout" planDisplayName="Pro" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Select plan" }));
+		fireEvent.click(screen.getByRole("button", { name: "Select plan: Pro" }));
 
 		// A rejection is unexpected, so the raw error text must never reach the toast.
 		await waitFor(() => {

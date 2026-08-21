@@ -91,6 +91,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 
 ## Public API upload minting
 
+- Before this quota is touched at all, `public_api.create_file_upload_targets` refuses a workspace that does not pay for usage, exactly like the service route below: `billing_db_check_paid_plan` on the billed user, `"This workspace's plan does not include file uploads"` → 403 for `Free`, for an anonymous payer, and for a payer with no billing state. A refusing mutation still commits what it already wrote, so that gate must run before the lazy seeding below. A test asserts the refused call leaves no quota doc behind, which is what pins the order.
 - `public_api.create_file_upload_targets` (the mutation behind `/api/v1/files/upload-urls`) ensures the workspace `"public_api_upload_bytes"` quota lazily with `quotas_db_ensure`, refuses the whole batch when the declared bytes would cross `maxCount`, and consumes them in the same mutation that creates the nodes and assets.
 - The counter is monotonic on purpose: deleting files does not decrement it. It is a coarse declared-bytes ceiling, not an exact storage meter (the finalizer records the real object size without refunding the difference).
 

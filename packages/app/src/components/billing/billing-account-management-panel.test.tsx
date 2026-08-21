@@ -46,17 +46,24 @@ vi.mock("@/components/billing/billing-active-plan.tsx", () => ({
 }));
 
 vi.mock("@/components/billing/billing-checkout-button.tsx", () => ({
-	BillingCheckoutButton: function BillingCheckoutButton(props: { productId: string; subscriptionId?: string }) {
-		return <button type="button">{`checkout:${props.productId}:${props.subscriptionId ?? "none"}`}</button>;
+	BillingCheckoutButton: function BillingCheckoutButton(props: {
+		productId: string;
+		subscriptionId?: string;
+		planDisplayName: string;
+	}) {
+		return (
+			<button type="button">{`checkout:${props.productId}:${props.subscriptionId ?? "none"}:${props.planDisplayName}`}</button>
+		);
 	},
 }));
 
 vi.mock("@/components/billing/billing-change-plan-button.tsx", () => ({
 	BillingChangePlanButton: function BillingChangePlanButton(props: {
 		productId: string;
-		children: ReactNode;
+		label: string;
+		planDisplayName: string;
 	}) {
-		return <button type="button">{`change:${props.productId}:${props.children}`}</button>;
+		return <button type="button">{`change:${props.productId}:${props.label}:${props.planDisplayName}`}</button>;
 	},
 }));
 
@@ -177,9 +184,9 @@ describe("BillingAccountManagementPanel", () => {
 		render(<BillingAccountManagementPanel isAnonymous={false} />);
 
 		expect(screen.getByText("Available plans")).not.toBeNull();
-		expect(screen.getByRole("button", { name: "checkout:prod_free:none" })).not.toBeNull();
-		expect(screen.getByRole("button", { name: "checkout:prod_payg:none" })).not.toBeNull();
-		expect(screen.getByRole("button", { name: "checkout:prod_pro:none" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "checkout:prod_free:none:Free" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "checkout:prod_payg:none:Pay As You Go" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "checkout:prod_pro:none:Pro" })).not.toBeNull();
 		expect(screen.getAllByText(/^(Free|Pay As You Go|Pro)$/).map((element) => element.textContent)).toEqual([
 			"Free",
 			"Pay As You Go",
@@ -207,9 +214,9 @@ describe("BillingAccountManagementPanel", () => {
 		render(<BillingAccountManagementPanel isAnonymous={false} />);
 
 		expect(screen.getByText("Other plans")).not.toBeNull();
-		expect(screen.getByRole("button", { name: "change:prod_pro:Upgrade" })).not.toBeNull();
-		expect(screen.getByRole("button", { name: "change:prod_free:Downgrade at renewal" })).not.toBeNull();
-		expect(screen.queryByRole("button", { name: "checkout:prod_pro:none" })).toBeNull();
+		expect(screen.getByRole("button", { name: "change:prod_pro:Upgrade:Pro" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "change:prod_free:Downgrade at renewal:Free" })).not.toBeNull();
+		expect(screen.queryByRole("button", { name: "checkout:prod_pro:none:Pro" })).toBeNull();
 	});
 
 	test("shows a stable toast when opening the customer portal rejects unexpectedly", async () => {
@@ -257,9 +264,9 @@ describe("BillingAccountManagementPanel", () => {
 
 		render(<BillingAccountManagementPanel isAnonymous={false} />);
 
-		expect(screen.getByRole("button", { name: "checkout:prod_payg:sub_free" })).not.toBeNull();
-		expect(screen.getByRole("button", { name: "checkout:prod_pro:sub_free" })).not.toBeNull();
-		expect(screen.queryByText("change:prod_payg:Upgrade")).toBeNull();
+		expect(screen.getByRole("button", { name: "checkout:prod_payg:sub_free:Pay As You Go" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "checkout:prod_pro:sub_free:Pro" })).not.toBeNull();
+		expect(screen.queryByText("change:prod_payg:Upgrade:Pay As You Go")).toBeNull();
 	});
 
 	test("renders the active plan section even when the usage snapshot is still missing", () => {
@@ -309,6 +316,6 @@ describe("BillingAccountManagementPanel", () => {
 
 		expect(screen.getByText(/It changes to Pay As You Go on/)).not.toBeNull();
 		expect(screen.getByText("Scheduled:Pay As You Go")).not.toBeNull();
-		expect(screen.getByRole("button", { name: "change:prod_payg:Downgrade at renewal" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "change:prod_payg:Downgrade at renewal:Pay As You Go" })).not.toBeNull();
 	});
 });

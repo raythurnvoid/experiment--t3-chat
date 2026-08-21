@@ -26,6 +26,7 @@ import {
 	files_nodes_create_yjs_snapshot_update_from_text,
 	files_nodes_db_fill_text_node_content,
 } from "./files_nodes_content.ts";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	files_MAX_UPLOADS_BYTES,
@@ -52,7 +53,6 @@ import { r2_confirmed_object_delete, r2_create_asset_key, r2_server_side_copy } 
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
-import { billing_PRODUCTS } from "../shared/billing.ts";
 import { files_metadata_MAX_FRONTMATTER_FIELDS, type files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -157,64 +157,9 @@ describe("bounded read line helpers", () => {
 });
 
 async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
-	const usageSnapshot = await ctx.db
-		.query("billing_usage_snapshots")
-		.withIndex("by_user", (q) => q.eq("userId", userId))
-		.unique();
-	if (usageSnapshot) return;
-
-	const polarProductId = "files_test_free_product";
-	const existingProduct = await ctx.runQuery(components.polar.lib.getProduct, { id: polarProductId });
-	if (!existingProduct) {
-		await ctx.runMutation(components.polar.lib.createProduct, {
-			product: {
-				id: polarProductId,
-				organizationId: "files_test_org",
-				name: billing_PRODUCTS.Free.name,
-				description: null,
-				isRecurring: true,
-				isArchived: false,
-				createdAt: "2026-01-01T00:00:00.000Z",
-				modifiedAt: null,
-				recurringInterval: "month",
-				metadata: {},
-				prices: [
-					{
-						id: `${polarProductId}_price`,
-						createdAt: "2026-01-01T00:00:00.000Z",
-						modifiedAt: null,
-						amountType: "free",
-						isArchived: false,
-						productId: polarProductId,
-						priceCurrency: "eur",
-						recurringInterval: "month",
-					},
-				],
-				medias: [],
-				benefits: [],
-			},
-		});
-	}
-
-	await ctx.db.insert("billing_usage_snapshots", {
-		userId,
-		polarCustomerId: `files_test_customer_${userId}`,
-		subscription: {
-			id: `files_test_subscription_${userId}`,
-			productId: polarProductId,
-			currency: "eur",
-			currentPeriodStart: "2026-01-01T00:00:00.000Z",
-			currentPeriodEnd: "2026-02-01T00:00:00.000Z",
-		},
-		meter: {
-			id: "meter_press_usage",
-			consumedUnits: 0,
-			creditedUnits: 100_000,
-			balance: 100_000,
-			amountDueCents: 0,
-		},
-		lastSyncedAt: Date.now(),
-	});
+	// The shared membership fixture puts every seeded user on a paying plan. Move this one to
+	// `Free`, which is what every caller here is asking for.
+	await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Free" });
 }
 
 /**
@@ -3738,6 +3683,162 @@ describe("files_nodes.create_upload_nodes", () => {
 		// Unlike `data_import`, the finalizer must treat this like a single-file upload and enqueue
 		// the Markdown conversion work.
 		expect(enqueueActionSpy).toHaveBeenCalled();
+	});
+});
+
+describe("upload plan gate", () => {
+	const PLAN_REFUSAL = "This workspace's plan does not include file uploads";
+
+	async function read_upload_docs(t: ReturnType<typeof test_convex>) {
+		return await t.run(async (ctx) => ({
+			nodes: await ctx.db.query("files_nodes").collect(),
+			assets: await ctx.db.query("files_r2_assets").collect(),
+		}));
+	}
+
+	test("create_upload_node refuses a Free payer and writes nothing", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx, { plan: "Free" }));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+		const before = await read_upload_docs(t);
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "annual-report.pdf",
+			contentType: "application/pdf",
+			size: 1234,
+		});
+		expect(upload._nay?.message).toBe(PLAN_REFUSAL);
+
+		// The refusal has to land before the node and the asset are written, because a mutation that
+		// returns `_nay` still commits whatever it wrote first.
+		const after = await read_upload_docs(t);
+		expect(after.nodes).toHaveLength(before.nodes.length);
+		expect(after.assets).toHaveLength(before.assets.length);
+	});
+
+	test("create_upload_node refuses a payer with no billing state at all", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx, { plan: null }));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "annual-report.pdf",
+			contentType: "application/pdf",
+			size: 1234,
+		});
+		expect(upload._nay?.message).toBe(PLAN_REFUSAL);
+	});
+
+	test("create_upload_nodes refuses a Free payer and imports nothing", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx, { plan: "Free" }));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+		const before = await read_upload_docs(t);
+
+		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [
+				{ relativePath: "docs/report.pdf", contentType: "application/pdf", size: 1234 },
+				{ relativePath: "docs/img/logo.png", contentType: "image/png", size: 10 },
+			],
+		});
+		expect(imported._nay?.message).toBe(PLAN_REFUSAL);
+
+		// The whole import is refused, not reported as two skipped items, so the folders on the way
+		// must not be created either.
+		const after = await read_upload_docs(t);
+		expect(after.nodes).toHaveLength(before.nodes.length);
+		expect(after.assets).toHaveLength(before.assets.length);
+	});
+
+	test("an owner-billed organization reads the owner's plan, not the acting member's", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx, { plan: "Free" }));
+		const ownerUserId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+			});
+			// Ownership carries every permission, so the acting member needs a role of their own once the
+			// organization belongs to someone else. `admin` is the role that has everything except billing.
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				role: "admin",
+				now,
+			});
+			await ctx.db.patch("organizations", db.organizationId, {
+				billingMode: "organization_owner",
+				ownerUserId: userId,
+			});
+			return userId;
+		});
+		await t.run(async (ctx) => test_mocks_fill_db_with.plan(ctx, { userId: ownerUserId, plan: "Pro" }));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		// The member is on Free and the owner pays, so the upload is allowed.
+		const allowed = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "allowed.pdf",
+			contentType: "application/pdf",
+			size: 1234,
+		});
+		expect(allowed._nay).toBeUndefined();
+
+		// Move the owner to Free. The member's own plan never changed, so a refusal here can only come
+		// from reading the owner.
+		await t.run(async (ctx) => test_mocks_fill_db_with.plan(ctx, { userId: ownerUserId, plan: "Free" }));
+		const refused = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "refused.pdf",
+			contentType: "application/pdf",
+			size: 1234,
+		});
+		expect(refused._nay?.message).toBe(PLAN_REFUSAL);
+	});
+
+	test("a Free payer can still create a text file", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx, { plan: "Free" }));
+
+		// The gate is on uploads, not on writes. Text files answer to the credit gate instead, and
+		// `Free` passes it while it still has credits.
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/notes.md",
+		});
+		expect(created._nay).toBeUndefined();
 	});
 });
 
@@ -9750,8 +9851,9 @@ describe("plain text file stats and delete-all", () => {
 	// Do not refuse a legitimate delete-all: emptied is a normal state, not corruption.
 	test("a delete-all on a plain-text file materializes to empty without a refusal", async () => {
 		const t = test_convex();
+		// This test seeds its file by uploading it, so the user has to be on a paying plan. It only
+		// needs credits, which the fixture's plan has.
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: db.userId,

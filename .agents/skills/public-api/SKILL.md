@@ -119,7 +119,9 @@ Buckets live in `packages/app/convex/rate_limiter.ts`:
 - `public_api_files_write_bulk` (600/min, cap 100): `write-many` only. One up-front charge of `count: files.length` before any write; an over-budget batch is a whole-request 429 with zero files staged.
 - `public_api_plugin_data_write_bulk` (600/min, cap 100): `plugin-data/write-batch` only, charged the same way with `count: documents.length`.
 
-`public_api_upload_bytes` quota (org+workspace scope, 50 GB of declared bytes): consumed by `upload-urls` mints in the same mutation that creates the nodes and assets. Monotonic — deleting files does not refund. Seeded lazily at the first mint; see the quotas skill for the exception this creates.
+`upload-urls` plan gate: before anything else in the mutation, `billing_db_check_paid_plan` on the billed user (the workspace payer, so an owner-billed organization answers with the owner's plan). A `Free` payer, an anonymous payer, and a payer with no billing state all get 403 `This workspace's plan does not include file uploads`. Keeping a file in the bucket costs money every month, and the byte quota below can only bill what R2 already stored, so the plan is the only door that can refuse an upload. Same gate, same message, in the Files sidebar mutations — see the files-explorer-tree skill.
+
+`public_api_upload_bytes` quota (org+workspace scope, 50 GB of declared bytes): consumed by `upload-urls` mints in the same mutation that creates the nodes and assets. Monotonic — deleting files does not refund. Seeded lazily at the first mint, after the plan gate above; see the quotas skill for the exception this creates.
 
 `plugin_service_storage_bytes` quota (org+workspace scope, 10 GiB): the service-upload budget. Create-target charges nothing and only refuses a workspace that is already full; the separate plan gate above is what refuses a non-paying workspace outright. The stored size R2 confirms is charged once, when the target settles. Monotonic, exactly like `public_api_upload_bytes` — deleting a service-uploaded file gives nothing back. Also seeded lazily, at the first target.
 

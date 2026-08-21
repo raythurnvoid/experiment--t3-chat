@@ -51,6 +51,39 @@ Load `http://localhost:5173/`, wait a few seconds, then read the identity:
 - `window.Clerk?.user` stays `null`, which is the proof the context is really isolated.
 - The app gives the new user its own default `personal` organization, so the app shell renders normally.
 
+## 2b. The anonymous user is also the Free-plan fixture
+
+A freshly minted anonymous user is a real non-paying payer, so it is the cheapest way to test any door that is closed to `Free`. Its auto-seeded snapshot has no `subscription.productId` at all, which is the "payer with no billing state" case, and `billing_db_check_paid_plan` refuses it exactly like `Free`. It acts in its OWN default `personal`/`home` workspace, so no invite step is needed.
+
+Do not try the other route — patching the signed-in account's `billing_usage_snapshots` row. It bricks the app; see the entry in `known-hazards.md`.
+
+Upload plan gate, verified 2026-08-21 (both browser doors refuse with `This workspace's plan does not include file uploads`):
+
+```js
+const m = await import("/src/lib/app-convex-client.ts");
+const membership = await m.app_convex.query(
+	m.app_convex_api.organizations.get_membership_by_organization_workspace_name,
+	{ organizationName: "personal", workspaceName: "home" },
+);
+// single upload
+await m.app_convex.mutation(m.app_convex_api.files_nodes.create_upload_node, {
+	membershipId: membership._id,
+	parentId: "root",
+	filename: "x.txt",
+	contentType: "text/plain",
+	size: 25,
+});
+// folder import
+await m.app_convex.mutation(m.app_convex_api.files_nodes.create_upload_nodes, {
+	membershipId: membership._id,
+	parentId: "root",
+	onConflict: "skip",
+	items: [{ relativePath: "f/a.txt", contentType: "text/plain", size: 10 }],
+});
+```
+
+The sidebar shows the same string in a sonner toast, but that toast is short-lived: one `allInnerTexts()` after a fixed wait misses it. Poll in a loop (40 × 250ms) and collect into a `Set`. Text writes are NOT plan-gated — `files_nodes_content.create_text_node` still succeeds for this user, which is the control that proves the refusal came from the upload gate and not from the identity.
+
 ## 3. Invite it into a workspace
 
 `create_organization` refuses anonymous callers, and `invite_user_to_organization_workspace` refuses the **default** organization (`Cannot add user to default organization`). So the fixture org must be a new non-default org created by the signed-in user:

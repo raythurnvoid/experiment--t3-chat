@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
-import { test_convex, test_mocks_cancel_pending_home_file_seeds } from "./setup.test.ts";
+import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_has_permission,
@@ -33,6 +33,8 @@ async function access_control_test_bootstrap_user(t: TestConvex, args: { clerkUs
 		const now = Date.now();
 		const userId = await ctx.db.insert("users", { clerkUserId: args.clerkUserId });
 		await quotas_db_ensure(ctx, { quotaName: "extra_organizations", userId, now });
+		// Uploads are closed to `Free`, and these tests want to reach the permission answer.
+		await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
 		await organizations_db_ensure_default_organization_and_workspace_for_user(ctx, { userId, now });
 		await test_mocks_cancel_pending_home_file_seeds(ctx);
 		return userId;

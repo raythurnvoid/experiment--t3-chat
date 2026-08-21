@@ -54,15 +54,30 @@ describe("BillingChangePlanButton", () => {
 			_yay: null,
 		});
 
-		render(<BillingChangePlanButton productId="prod_change">Upgrade</BillingChangePlanButton>);
+		render(<BillingChangePlanButton productId="prod_change" label="Upgrade" planDisplayName="Pro" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
+		fireEvent.click(screen.getByRole("button", { name: "Upgrade: Pro" }));
 
 		await waitFor(() => {
 			expect(actionMock).toHaveBeenCalledWith(app_convex_api.billing.change_current_subscription, {
 				productId: "prod_change",
 			});
 		});
+	});
+
+	test("names each plan, so two downgrade cards never read as the same button", () => {
+		render(
+			<>
+				<BillingChangePlanButton productId="prod_payg" label="Downgrade at renewal" planDisplayName="Pay As You Go" />
+				<BillingChangePlanButton productId="prod_free" label="Downgrade at renewal" planDisplayName="Free" />
+			</>,
+		);
+
+		// A `Pro` account sees the same visible label on both other cards, so the plan name is what a
+		// screen reader tells them apart by.
+		expect(screen.getByRole("button", { name: "Downgrade at renewal: Pay As You Go" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "Downgrade at renewal: Free" })).not.toBeNull();
+		expect(screen.getAllByText("Downgrade at renewal")).toHaveLength(2);
 	});
 
 	test("shows a toast when the action returns nay", async () => {
@@ -72,9 +87,9 @@ describe("BillingChangePlanButton", () => {
 			},
 		});
 
-		render(<BillingChangePlanButton productId="prod_change">Upgrade</BillingChangePlanButton>);
+		render(<BillingChangePlanButton productId="prod_change" label="Upgrade" planDisplayName="Pro" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
+		fireEvent.click(screen.getByRole("button", { name: "Upgrade: Pro" }));
 
 		await waitFor(() => {
 			expect(toastErrorMock).toHaveBeenCalledWith("Subscription is locked and cannot be changed right now");
@@ -85,9 +100,9 @@ describe("BillingChangePlanButton", () => {
 		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		actionMock.mockRejectedValue(new Error("[Request ID: abc] Server Error"));
 
-		render(<BillingChangePlanButton productId="prod_change">Upgrade</BillingChangePlanButton>);
+		render(<BillingChangePlanButton productId="prod_change" label="Upgrade" planDisplayName="Pro" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
+		fireEvent.click(screen.getByRole("button", { name: "Upgrade: Pro" }));
 
 		// A rejection is unexpected, so the raw error text must never reach the toast.
 		await waitFor(() => {

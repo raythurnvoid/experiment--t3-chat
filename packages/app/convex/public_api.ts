@@ -19,6 +19,7 @@ import {
 	activities_db_get_by_source_id,
 	activities_db_start,
 } from "./activities.ts";
+import { billing_db_check_paid_plan, billing_pick_billed_user_id } from "./billing_db.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -2818,6 +2819,25 @@ export const create_file_upload_targets = internalMutation({
 			return revalidated;
 		}
 
+		// Keeping a file in the bucket costs real money every month, and the quota below can only
+		// bill what R2 already stored, so the plan is the only door that can refuse an upload. Ask it
+		// before the quota doc is seeded: a `_nay` return still commits what the mutation already
+		// wrote, and a refused call must leave nothing behind. The key owner is the caller, but the
+		// plan belongs to whoever pays for this workspace.
+		const organization = await ctx.db.get("organizations", args.organizationId);
+		if (!organization) {
+			const errorMessage = "principal organizationId points to a missing organizations doc";
+			const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		const paidPlan = await billing_db_check_paid_plan(ctx, {
+			userId: billing_pick_billed_user_id({ userId: args.userId, organization }),
+		});
+		if (!paidPlan.hasPaidPlan) {
+			return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
+		}
+
 		// Validate the whole batch before any write. A `_nay` return does not roll back earlier
 		// writes in the same mutation, so every fallible check runs first and the write pass below
 		// only throws for impossible states (throwing does roll back).
@@ -4895,7 +4915,9 @@ export async function public_api_http_upload_urls(ctx: ActionCtx, request: Reque
 		const failedStatus =
 			created._nay.message === "Unauthenticated"
 				? 401
-				: created._nay.message === "Permission denied" || created._nay.message === "Upload quota exceeded"
+				: created._nay.message === "Permission denied" ||
+					  created._nay.message === "Upload quota exceeded" ||
+					  created._nay.message === "This workspace's plan does not include file uploads"
 					? 403
 					: created._nay.name === "read_only" ||
 						  created._nay.message === "A file already exists at this path" ||

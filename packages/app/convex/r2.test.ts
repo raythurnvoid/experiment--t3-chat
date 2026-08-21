@@ -34,7 +34,6 @@ import {
 } from "../shared/files-metadata.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
-import { billing_PRODUCTS } from "../shared/billing.ts";
 
 vi.mock("ai", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("ai")>();
@@ -293,64 +292,9 @@ function stub_r2_and_modal_fetch(
 }
 
 async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
-	const usageSnapshot = await ctx.db
-		.query("billing_usage_snapshots")
-		.withIndex("by_user", (q) => q.eq("userId", userId))
-		.unique();
-	if (usageSnapshot) return;
-
-	const polarProductId = "r2_test_free_product";
-	const existingProduct = await ctx.runQuery(components.polar.lib.getProduct, { id: polarProductId });
-	if (!existingProduct) {
-		await ctx.runMutation(components.polar.lib.createProduct, {
-			product: {
-				id: polarProductId,
-				organizationId: "r2_test_org",
-				name: billing_PRODUCTS.Free.name,
-				description: null,
-				isRecurring: true,
-				isArchived: false,
-				createdAt: "2026-01-01T00:00:00.000Z",
-				modifiedAt: null,
-				recurringInterval: "month",
-				metadata: {},
-				prices: [
-					{
-						id: `${polarProductId}_price`,
-						createdAt: "2026-01-01T00:00:00.000Z",
-						modifiedAt: null,
-						amountType: "free",
-						isArchived: false,
-						productId: polarProductId,
-						priceCurrency: "eur",
-						recurringInterval: "month",
-					},
-				],
-				medias: [],
-				benefits: [],
-			},
-		});
-	}
-
-	await ctx.db.insert("billing_usage_snapshots", {
-		userId,
-		polarCustomerId: `r2_test_customer_${userId}`,
-		subscription: {
-			id: `r2_test_subscription_${userId}`,
-			productId: polarProductId,
-			currency: "eur",
-			currentPeriodStart: "2026-01-01T00:00:00.000Z",
-			currentPeriodEnd: "2026-02-01T00:00:00.000Z",
-		},
-		meter: {
-			id: "meter_press_usage",
-			consumedUnits: 0,
-			creditedUnits: 100_000,
-			balance: 100_000,
-			amountDueCents: 0,
-		},
-		lastSyncedAt: Date.now(),
-	});
+	// The shared membership fixture puts every seeded user on a paying plan. Move this one to
+	// `Free`, which is what every caller here is asking for.
+	await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Free" });
 }
 
 async function install_upload_plugin(
@@ -1390,11 +1334,9 @@ describe("r2 asset content", () => {
 
 	test("R2 events create and finalize an image description Markdown sibling", async () => {
 		const t = test_convex();
-		const db = await t.run(async (ctx) => {
-			const db = await test_mocks_fill_db_with.membership(ctx);
-			await seed_billing_snapshot_for_user(ctx, db.userId);
-			return db;
-		});
+		// These tests upload the source file, so the user stays on the fixture's paying plan. The
+		// generated sibling write only needs credits, which that plan has.
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		await install_upload_plugin(t, {
 			userId: db.userId,
 			membershipId: db.membershipId,
@@ -1534,11 +1476,9 @@ describe("r2 asset content", () => {
 
 	test("R2 events create and finalize video summary and transcript Markdown siblings", async () => {
 		const t = test_convex();
-		const db = await t.run(async (ctx) => {
-			const db = await test_mocks_fill_db_with.membership(ctx);
-			await seed_billing_snapshot_for_user(ctx, db.userId);
-			return db;
-		});
+		// These tests upload the source file, so the user stays on the fixture's paying plan. The
+		// generated sibling write only needs credits, which that plan has.
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		await install_upload_plugin(t, {
 			userId: db.userId,
 			membershipId: db.membershipId,

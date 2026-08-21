@@ -1,5 +1,5 @@
 import { useConvex } from "convex/react";
-import { memo, useState, type ComponentProps, type ReactNode } from "react";
+import { memo, useState, type ComponentProps } from "react";
 import { toast } from "sonner";
 
 import { MyButton } from "@/components/my-button.tsx";
@@ -8,11 +8,16 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 export type BillingChangePlanButton_Props = {
 	productId: string;
 	variant?: ComponentProps<typeof MyButton>["variant"];
-	children: ReactNode;
+	label: string;
+	/**
+	 * The plan this button moves to. Two cards can carry the same visible label, for example
+	 * "Downgrade at renewal" on a `Pro` account, so the accessible name has to say which plan.
+	 */
+	planDisplayName: string;
 };
 
 export const BillingChangePlanButton = memo(function BillingChangePlanButton(props: BillingChangePlanButton_Props) {
-	const { productId, variant = "accent", children } = props;
+	const { productId, variant = "accent", label, planDisplayName } = props;
 
 	const convex = useConvex();
 	const [isLoading, setIsLoading] = useState(false);
@@ -49,8 +54,17 @@ export const BillingChangePlanButton = memo(function BillingChangePlanButton(pro
 	};
 
 	return (
-		<MyButton type="button" variant={variant} disabled={isLoading} aria-busy={isLoading} onClick={handleClick}>
-			{children}
+		<MyButton
+			type="button"
+			variant={variant}
+			disabled={isLoading}
+			aria-busy={isLoading}
+			// Keep the visible text at the start of the accessible name, so speech input still
+			// activates the button by what the user reads on it.
+			aria-label={`${label}: ${planDisplayName}`}
+			onClick={handleClick}
+		>
+			{label}
 		</MyButton>
 	);
 });

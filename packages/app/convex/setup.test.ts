@@ -18,6 +18,8 @@ import {
 	organizations_db_ensure_default_organization_and_workspace_for_user,
 } from "./organizations.ts";
 import { quotas_db_ensure } from "./quotas.ts";
+import { components } from "./_generated/api.js";
+import { billing_PRODUCTS } from "../shared/billing.ts";
 
 // #region helpers
 
@@ -215,13 +217,96 @@ export async function test_mocks_cancel_pending_home_file_seeds(ctx: MutationCtx
 	}
 }
 
+const test_plan_product_ids: Record<keyof typeof billing_PRODUCTS, string> = {
+	Free: "prod_test_free",
+	"Pay As You Go": "prod_test_pay_as_you_go",
+	Pro: "prod_test_pro",
+};
+
 export const test_mocks_fill_db_with = {
+	/**
+	 * Put one user on a plan: a synced Polar product plus the usage snapshot that points at it.
+	 * This is what the billing gates read.
+	 */
+	plan: async (ctx: MutationCtx, args: { userId: Id<"users">; plan: keyof typeof billing_PRODUCTS }) => {
+		const productId = test_plan_product_ids[args.plan];
+		// Two fixtures in one test may share a plan, and the component rejects a duplicate id.
+		const product = await ctx.runQuery(components.polar.lib.getProduct, { id: productId });
+		if (!product) {
+			await ctx.runMutation(components.polar.lib.createProduct, {
+				product: {
+					id: productId,
+					organizationId: "test_billing_org",
+					name: billing_PRODUCTS[args.plan].name,
+					description: null,
+					isRecurring: true,
+					isArchived: false,
+					createdAt: "2026-01-01T00:00:00.000Z",
+					modifiedAt: null,
+					recurringInterval: "month",
+					metadata: {},
+					prices: [
+						{
+							id: `${productId}_price`,
+							createdAt: "2026-01-01T00:00:00.000Z",
+							modifiedAt: null,
+							amountType: "free",
+							isArchived: false,
+							productId,
+							priceCurrency: "eur",
+							recurringInterval: "month",
+						},
+					],
+					medias: [],
+					benefits: [],
+				},
+			});
+		}
+
+		const subscription = {
+			id: `test_subscription_${args.userId}`,
+			productId,
+			currency: "eur",
+			currentPeriodStart: "2026-01-01T00:00:00.000Z",
+			currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+		};
+		const snapshot = await ctx.db
+			.query("billing_usage_snapshots")
+			.withIndex("by_user", (q) => q.eq("userId", args.userId))
+			.first();
+		// Called again to move a user between plans mid-test, the way a real upgrade or downgrade does.
+		if (snapshot) {
+			await ctx.db.patch("billing_usage_snapshots", snapshot._id, { subscription });
+			return;
+		}
+
+		await ctx.db.insert("billing_usage_snapshots", {
+			userId: args.userId,
+			polarCustomerId: `test_customer_${args.userId}`,
+			subscription,
+			meter: {
+				id: "meter_press_usage",
+				consumedUnits: 0,
+				creditedUnits: 100_000,
+				balance: 100_000,
+				amountDueCents: 0,
+			},
+			lastSyncedAt: Date.now(),
+		});
+	},
+
 	membership: async (
 		ctx: MutationCtx,
 		args?: {
 			userId?: Id<"users">;
 			organizationName?: string;
 			workspaceName?: string;
+			/**
+			 * The plan the seeded user pays for. Uploads are closed to `Free`, so the fixture pays by
+			 * default and a test about files fails on files instead of on billing. Pass `"Free"` to
+			 * test a refusal, or `null` for a user with no billing state at all.
+			 */
+			plan?: keyof typeof billing_PRODUCTS | null;
 		},
 	) => {
 		const now = Date.now();
@@ -232,6 +317,10 @@ export const test_mocks_fill_db_with = {
 			(await ctx.db.insert("users", {
 				clerkUserId: null,
 			}));
+
+		if (args?.plan !== null) {
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: args?.plan ?? "Pay As You Go" });
+		}
 
 		await quotas_db_ensure(ctx, {
 			quotaName: "extra_organizations",

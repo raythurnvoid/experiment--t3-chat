@@ -41,11 +41,19 @@ const BillingAccountManagementCardPlanAction = memo(function BillingAccountManag
 		return null;
 	}
 
+	const planDisplayName = billing_get_product_display_name(product.name);
+
 	if (
 		billing_get_product_display_name(currentProductName) === billing_PRODUCTS["Free"].name &&
 		planChangeKind === "upgrade"
 	) {
-		return <BillingCheckoutButton productId={product.id} subscriptionId={currentSubscriptionId} />;
+		return (
+			<BillingCheckoutButton
+				productId={product.id}
+				subscriptionId={currentSubscriptionId}
+				planDisplayName={planDisplayName}
+			/>
+		);
 	}
 
 	const planChangeButtonData =
@@ -60,9 +68,12 @@ const BillingAccountManagementCardPlanAction = memo(function BillingAccountManag
 				};
 
 	return (
-		<BillingChangePlanButton productId={product.id} variant={planChangeButtonData.variant}>
-			{planChangeButtonData.label}
-		</BillingChangePlanButton>
+		<BillingChangePlanButton
+			productId={product.id}
+			variant={planChangeButtonData.variant}
+			label={planChangeButtonData.label}
+			planDisplayName={planDisplayName}
+		/>
 	);
 });
 // #endregion product card plan action
@@ -327,7 +338,12 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 									<BillingAccountManagementPanelPlanItem key={product.id}>
 										<BillingProductCard
 											product={product}
-											selectPlanSlot={<BillingCheckoutButton productId={product.id} />}
+											selectPlanSlot={
+												<BillingCheckoutButton
+													productId={product.id}
+													planDisplayName={billing_get_product_display_name(product.name)}
+												/>
+											}
 										/>
 									</BillingAccountManagementPanelPlanItem>
 								);

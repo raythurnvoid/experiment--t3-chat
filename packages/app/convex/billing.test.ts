@@ -358,6 +358,8 @@ async function seed_organization_billing_scope(
 			clerkUserId: `clerk-organization-billing-owner-${suffix}`,
 		});
 		const ownerMembership = await test_mocks_fill_db_with.membership(ctx, {
+			// This test owns the billing state it needs, so the fixture must not seed a plan.
+			plan: null,
 			userId: ownerId,
 			organizationName: `billing-org-${suffix}`,
 			workspaceName: "home",
@@ -379,6 +381,8 @@ async function seed_organization_billing_scope(
 			clerkUserId: `clerk-organization-billing-member-${suffix}`,
 		});
 		await test_mocks_fill_db_with.membership(ctx, {
+			// This test owns the billing state it needs, so the fixture must not seed a plan.
+			plan: null,
 			userId: memberId,
 			organizationName: "personal",
 			workspaceName: "home",
@@ -704,6 +708,8 @@ describe("organization billing check", () => {
 		const t = test_convex();
 		const personalScope = await t.run(async (ctx) => {
 			return await test_mocks_fill_db_with.membership(ctx, {
+				// This test owns the billing state it needs, so the fixture must not seed a plan.
+				plan: null,
 				organizationName: "personal",
 				workspaceName: "home",
 			});

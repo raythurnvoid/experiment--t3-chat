@@ -84,7 +84,12 @@ import {
 	access_control_db_has_permission,
 } from "./access_control.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
-import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
+import {
+	billing_db_check_credits,
+	billing_db_check_paid_plan,
+	billing_pick_billed_user_id,
+	billing_ingest_events,
+} from "./billing_db.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_normalize_markdown_name,
@@ -2278,6 +2283,28 @@ export const create_upload_node = mutation({
 			return authorized;
 		}
 
+		// Keeping a file in the bucket costs real money every month, and the byte counters can only
+		// bill what R2 already stored. So the plan is the only door that can refuse an upload. This
+		// asks the plan of whoever pays for this workspace, which in an owner-billed organization is
+		// the owner and not the member uploading. Writing and saving text is not affected.
+		const organization = await ctx.db.get("organizations", membership.organizationId);
+		if (!organization) {
+			const errorMessage = "membership.organizationId points to a missing organizations doc";
+			const errorData = {
+				membershipId: membership._id,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		const paidPlan = await billing_db_check_paid_plan(ctx, {
+			userId: billing_pick_billed_user_id({ userId: userAuth.id, organization }),
+		});
+		if (!paidPlan.hasPaidPlan) {
+			return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
+		}
+
 		if (args.size > files_MAX_UPLOADS_BYTES) {
 			return Result({
 				_nay: {
@@ -2592,6 +2619,27 @@ export const create_upload_nodes = mutation({
 		});
 		if (authorized._nay) {
 			return authorized;
+		}
+
+		// Same plan door as the single upload above, for the same reason: the byte counters can only
+		// bill bytes R2 already stored, so the plan is what refuses. It answers for the whole import,
+		// before any node is created.
+		const organization = await ctx.db.get("organizations", membership.organizationId);
+		if (!organization) {
+			const errorMessage = "membership.organizationId points to a missing organizations doc";
+			const errorData = {
+				membershipId: membership._id,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		const paidPlan = await billing_db_check_paid_plan(ctx, {
+			userId: billing_pick_billed_user_id({ userId: userAuth.id, organization }),
+		});
+		if (!paidPlan.hasPaidPlan) {
+			return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
 		}
 
 		let parentPath = "/";

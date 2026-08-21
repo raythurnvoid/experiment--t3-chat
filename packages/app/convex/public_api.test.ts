@@ -2727,6 +2727,9 @@ describe("files upload-urls", () => {
 			await ctx.db.patch("files_nodes", hiddenFileId, { restrictedScopeNodeId: hiddenFileId });
 
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-upload-urls-restricted-writer" });
+			// The key owner pays for this workspace, and uploads are closed to `Free`. This test wants
+			// the permission answer, so put the owner on a paying plan.
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
 			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
@@ -2947,6 +2950,47 @@ describe("files upload-urls", () => {
 		});
 		expect(after.node).toBeNull();
 		expect(after.quota!.usedCount).toBe(after.quota!.maxCount - 10);
+	});
+
+	test("refuses a batch when the payer is on Free, before the quota doc is seeded", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-plan" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-plan" });
+		await t.run(async (ctx) => test_mocks_fill_db_with.plan(ctx, { userId: db.userId, plan: "Free" }));
+
+		const refused = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [{ path: "/imports/paid.bin", contentType: "application/octet-stream", size: 64 }],
+			}),
+		});
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: "This workspace's plan does not include file uploads" });
+
+		// A mutation that returns `_nay` still commits whatever it wrote first, so the plan door has to
+		// come before the quota doc is created. No node and no quota doc means it did.
+		const after = await t.run(async (ctx) => {
+			const node = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("path", "/imports/paid.bin")
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			const quota = await ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("quotaName", "public_api_upload_bytes"),
+				)
+				.first();
+			return { node, quota };
+		});
+		expect(after.node).toBeNull();
+		expect(after.quota).toBeNull();
 	});
 
 	test("refuses a batch over the item cap", async () => {

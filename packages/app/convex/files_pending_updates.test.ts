@@ -2,7 +2,7 @@ import { R2 } from "@convex-dev/r2";
 import { RateLimiter } from "@convex-dev/rate-limiter";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
-import { api, components, internal } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
@@ -113,64 +113,9 @@ afterEach(() => {
 });
 
 async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
-	const usageSnapshot = await ctx.db
-		.query("billing_usage_snapshots")
-		.withIndex("by_user", (q) => q.eq("userId", userId))
-		.unique();
-	if (usageSnapshot) return;
-
-	const polarProductId = "pending_update_test_free_product";
-	const existingProduct = await ctx.runQuery(components.polar.lib.getProduct, { id: polarProductId });
-	if (!existingProduct) {
-		await ctx.runMutation(components.polar.lib.createProduct, {
-			product: {
-				id: polarProductId,
-				organizationId: "pending_update_test_org",
-				name: billing_PRODUCTS.Free.name,
-				description: null,
-				isRecurring: true,
-				isArchived: false,
-				createdAt: "2026-01-01T00:00:00.000Z",
-				modifiedAt: null,
-				recurringInterval: "month",
-				metadata: {},
-				prices: [
-					{
-						id: `${polarProductId}_price`,
-						createdAt: "2026-01-01T00:00:00.000Z",
-						modifiedAt: null,
-						amountType: "free",
-						isArchived: false,
-						productId: polarProductId,
-						priceCurrency: "eur",
-						recurringInterval: "month",
-					},
-				],
-				medias: [],
-				benefits: [],
-			},
-		});
-	}
-
-	await ctx.db.insert("billing_usage_snapshots", {
-		userId,
-		polarCustomerId: `pending_update_test_customer_${userId}`,
-		subscription: {
-			id: `pending_update_test_subscription_${userId}`,
-			productId: polarProductId,
-			currency: "eur",
-			currentPeriodStart: "2026-01-01T00:00:00.000Z",
-			currentPeriodEnd: "2026-02-01T00:00:00.000Z",
-		},
-		meter: {
-			id: "meter_press_usage",
-			consumedUnits: 0,
-			creditedUnits: 100_000,
-			balance: 100_000,
-			amountDueCents: 0,
-		},
-		lastSyncedAt: Date.now(),
-	});
+	// The shared membership fixture puts every seeded user on a paying plan. Move this one to
+	// `Free`, which is what every caller here is asking for.
+	await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Free" });
 }
 
 async function seed_file_with_markdown(args: {
