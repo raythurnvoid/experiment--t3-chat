@@ -56,13 +56,41 @@ const token = JSON.parse(raw.slice(raw.indexOf("{")))._yay.token; // `convex run
 
 What cost time on the first run:
 
-- `create-target` is closed to `Free`. Every dev account is on `Free`, so the first call answers `403 This workspace's plan does not include plugin service file storage` and nothing else runs. To test the accepting path, move the payer to a paid plan for the run and put it back afterwards: export `billing_usage_snapshots` with `data --format jsonLines`, copy the file, change only that user's `subscription.productId` to the `Pay As You Go` product id (read the ids with `data products --component polar`), `import --table billing_usage_snapshots --replace --yes --format jsonLines <file>`, run the check, then import the untouched export back and diff the readback against it. `import --replace` keeps `_id` and `_creationTime`, so the restore is byte-identical. The payer is the billed user, so in an owner-billed organization it is the owner's row, not the acting member's. Only `create-target` is gated: `remint`, `finalize`, `delete`, and `archive-destination` keep answering on `Free`.
+- `create-target` is closed to `Free`. Every dev account starts on `Free`, so the first call answers `403 This workspace's plan does not include plugin service file storage` and nothing else runs. The honest fix is to buy a paid plan in the sandbox — see "Move The QA Account To A Paid Plan Through Polar Checkout" below. When you only need the paid state for one check and want it reverted exactly, patch the snapshot instead: export `billing_usage_snapshots` with `data --format jsonLines`, copy the file, change only that user's `subscription.productId` to the `Pay As You Go` product id (read the ids with `data products --component polar`), `import --table billing_usage_snapshots --replace --yes --format jsonLines <file>`, run the check, then import the untouched export back and diff the readback against it. `import --replace` keeps `_id` and `_creationTime`, so the restore is byte-identical. The payer is the billed user, so in an owner-billed organization it is the owner's row, not the acting member's. Only `create-target` is gated: `remint`, `finalize`, `delete`, and `archive-destination` keep answering on `Free`.
 - `convex run` prints a deployment banner before the JSON, so `JSON.parse` needs `raw.slice(raw.indexOf("{"))`.
 - The grant's `destinationPathPrefix` is the fence. `create-target` creates the destination folder itself, so the path does not have to exist.
 - `finalize` answers `200` with `state: "pending"` and `actualBytes: null` while the R2 event has not arrived yet. Call it again a few seconds later to see `committed`. The R2 queue decides when, not the route.
 - For `create-target`, `remint`, and `finalize`, the pair `{ idempotencyKey, targetKey }` identifies one file in one upload run. The target also stays bound to the exact destination seal that created it. Active replay, remint, and finalize recheck the current path, archive state, and restricted ACL; a later read-only lock still allows the accepted upload to finish. An exact create replay still returns that target when either 16-target cap is full: one run, or one live cross-run delete group at the sealed destination. The one temporary exception is an old staging deletion job: both a pending create replay and `remint` answer 409 until it settles, then the retry reuses the same asset and staging key and you send the whole file again. `delete` is different: it finds the bounded live `{ installation, destination, targetKey }` group across upload runs, so its `idempotencyKey` does not limit cleanup to one run. It rechecks each node's current path, restricted ACL, and lock before the first write. Released history is not listed in full on replay.
 - To prove where the quota is charged, declare a size that is deliberately wrong (for example declare 1 byte and PUT 4096) and read the `quotas` doc between `create-target` and the PUT. `create-target` must leave `usedCount` unchanged; the R2 settlement then adds exactly the stored size. Read it with `convex data quotas --limit 200 --format jsonLines` and pick the row with `quotaName: "plugin_service_storage_bytes"` for the workspace. The final total alone cannot tell the two models apart, because charging the guess plus the difference lands on the same number.
 - Choose one cleanup door. Use `delete` for one target key across upload runs, or use `archive-destination` for the whole sealed folder like Council does. `delete` archives committed files but cancels and removes unfinished placeholders. `archive-destination` keeps the folder as one restorable set. Neither door gives quota bytes back. `plugin_service_storage_bytes` only counts up.
+
+## Move The QA Account To A Paid Plan Through Polar Checkout
+
+Dev runs on the Polar **sandbox** (`convex env get POLAR_SERVER` says `sandbox`, and the checkout host is `sandbox.polar.sh`), so no real money moves. Check that before touching billing. Every dev account starts on `Free`, and `Free` cannot open a plugin service upload, so this is the recipe when a check needs a paying workspace.
+
+The account modal is behind `Account: <name>` → `Manage account` → the `Billing` tab. `Select plan` calls `billing.generate_checkout_link` and then `window.open`, and that tab is invisible to the run (see `known-hazards.md`). Do the same call yourself and open the link in a page the run owns:
+
+```js
+state.checkoutUrl = await state.page.evaluate(async () => {
+	const m = await import("/src/lib/app-convex-client.ts");
+	// `Free -> paid` must carry the current subscription id, or Polar adds a SECOND active
+	// subscription and the app treats that as an impossible billing state.
+	const sub = await m.app_convex.query(m.app_convex_api.billing.get_current_user_subscription, {});
+	const r = await m.app_convex.action(m.app_convex_api.billing.generate_checkout_link, {
+		productId: "<Pay As You Go product id>",
+		origin: window.location.origin,
+		successUrl: window.location.href,
+		subscriptionId: sub.id,
+	});
+	return r._yay.url;
+});
+state.checkoutPage = await context.newPage();
+await state.checkoutPage.goto(state.checkoutUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+```
+
+Read the product ids with `convex data products --component polar --format jsonLines`. On the checkout page: email and cardholder name are prefilled, pick a `Country` from the combobox, then type the sandbox card blind into the Stripe iframe (that recipe is in `known-hazards.md`), then click `Subscribe now`. Success redirects back to `successUrl` with a `customer_session_token` query parameter — that redirect is the confirmation, because the Stripe frame shows you nothing.
+
+The `customer.state_changed` webhook updates `billing_usage_snapshots` within a few seconds. Confirm with `convex data billing_usage_snapshots --format jsonLines`: `subscription.productId` moves to the new plan on the **same** `subscription.id`, and the plan's monthly credit lands on the meter balance. The billing panel shows the new plan after a reload, and the other plan cards switch from `Select plan` to `Upgrade` / `Downgrade at renewal`.
 
 ## Create Session
 
