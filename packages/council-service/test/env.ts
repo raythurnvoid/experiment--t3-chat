@@ -222,7 +222,12 @@ function default_handler(call: RecordedCall): Response | null {
 			return Response.json({ message: "Not found" }, { status: 404 });
 		}
 		const targetKey = String(call.bodyJson?.targetKey ?? "unknown");
-		return Response.json({ state: "committed", path: `/meetings/unknown/${targetKey}`, nodeId: `node-${targetKey}`, actualBytes: 1 });
+		return Response.json({
+			state: "committed",
+			path: `/meetings/unknown/${targetKey}`,
+			nodeId: `node-${targetKey}`,
+			actualBytes: 1,
+		});
 	}
 	if (url.includes("/api/v1/files/service-uploads/delete")) {
 		return Response.json({ deleted: true });
@@ -248,6 +253,9 @@ function default_handler(call: RecordedCall): Response | null {
 				success: true,
 				data: { id: `prov-${addParticipantCounter}`, token: "tokenheader.tokenpayload.tokensig" },
 			});
+		}
+		if (url.includes("/participants/") && call.method === "DELETE") {
+			return Response.json({ success: true, data: { action: "delete" } });
 		}
 		if (url.includes("/recordings/track") && call.method === "POST") {
 			return Response.json({ success: true, data: { recording: { id: "rec-1" } } });

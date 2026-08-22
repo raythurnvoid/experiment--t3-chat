@@ -32,7 +32,6 @@ import {
 	files_nodes_db_can_act_on_swept_nodes,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
-	files_nodes_db_require_swept_nodes_writable,
 } from "./files_nodes.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import {
@@ -208,7 +207,9 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	return Result({ _yay: { installation } });
+	return Result({
+		_yay: { installation, organization, workspace, defaultWorkspaceId: organization.defaultWorkspaceId },
+	});
 }
 
 // #endregion shared
@@ -336,6 +337,71 @@ async function db_target_destination_is_closed(ctx: MutationCtx, target: Doc<"pl
 	return destination !== null && (target.destinationEpoch ?? 1) <= destination.closedEpoch;
 }
 
+/**
+ * Permit cleanup through only the direct lock this exact service target created.
+ *
+ * The target, current lock pointer, destination generation, accepted capability, and live actor ACL
+ * are all part of this authority. A member unlock and relock clears the pointer in files_nodes.ts.
+ */
+async function db_can_clean_up_service_created_lock(
+	ctx: MutationCtx,
+	args: {
+		principal: ServiceUploadPrincipal;
+		installation: Doc<"plugins_workspace_installations">;
+		destinationNodeId: Id<"files_nodes">;
+		node: Doc<"files_nodes">;
+	},
+) {
+	if (
+		args.node.readOnlyScopeNodeId !== args.node._id ||
+		args.node.readOnlyPluginServiceTargetId === undefined ||
+		!args.installation.acceptedCapabilities.includes("workspace.files.create-read-only")
+	) {
+		return false;
+	}
+
+	const target = await ctx.db.get("plugin_service_storage_targets", args.node.readOnlyPluginServiceTargetId);
+	if (
+		!target ||
+		target.readOnly !== true ||
+		target.organizationId !== args.principal.organizationId ||
+		target.workspaceId !== args.principal.workspaceId ||
+		target.installationId !== args.installation._id ||
+		target.destinationPath !== args.principal.pathPrefix ||
+		target.destinationNodeId !== args.destinationNodeId ||
+		target.nodeId !== args.node._id ||
+		target.movedOutAt !== undefined ||
+		target.deleteRequestedAt !== undefined ||
+		(target.state !== "pending" && target.state !== "committed") ||
+		(await db_target_destination_is_closed(ctx, target))
+	) {
+		return false;
+	}
+	let parentId = args.node.parentId;
+	while (parentId !== files_ROOT_ID && parentId !== args.destinationNodeId) {
+		const parent = await ctx.db.get("files_nodes", parentId);
+		if (
+			!parent ||
+			parent.organizationId !== args.principal.organizationId ||
+			parent.workspaceId !== args.principal.workspaceId
+		) {
+			return false;
+		}
+		parentId = parent.parentId;
+	}
+	if (parentId !== args.destinationNodeId) {
+		return false;
+	}
+
+	return await access_control_db_can_act_on_file_node(ctx, {
+		organizationId: args.principal.organizationId,
+		workspaceId: args.principal.workspaceId,
+		userId: args.principal.actorUserId,
+		fileNode: args.node,
+		permission: "content.permissions.manage",
+	});
+}
+
 /** Recheck the live file before a grant reads or extends an existing target. */
 async function db_authorize_live_target_node(
 	ctx: MutationCtx,
@@ -433,10 +499,7 @@ async function db_get_live_delete_group_targets(
 	}
 	// A full page can hide more old rows. Save the detachments found on this page, then make the
 	// caller retry instead of allowing an unbounded group through on partial information.
-	if (
-		pending.length > MAX_LIVE_TARGETS_PER_DELETE_GROUP ||
-		committed.length > MAX_LIVE_TARGETS_PER_DELETE_GROUP
-	) {
+	if (pending.length > MAX_LIVE_TARGETS_PER_DELETE_GROUP || committed.length > MAX_LIVE_TARGETS_PER_DELETE_GROUP) {
 		return null;
 	}
 	return attachedTargets.length > MAX_LIVE_TARGETS_PER_DELETE_GROUP ? null : attachedTargets;
@@ -611,6 +674,8 @@ export const create_upload_target = internalMutation({
 		path: v.string(),
 		contentType: v.string(),
 		size: v.number(),
+		readOnly: v.boolean(),
+		nonCollaborative: v.boolean(),
 	},
 	returns: v_result({
 		_yay: v.union(target_pending_response_validator, target_committed_response_validator),
@@ -649,6 +714,10 @@ export const create_upload_target = internalMutation({
 		if (!Number.isInteger(args.size) || args.size < 1 || args.size > files_MAX_UPLOADS_BYTES) {
 			return Result({ _nay: { message: "File too large" } });
 		}
+		const editableTextContentType = files_get_editable_text_content_type(name);
+		if (args.nonCollaborative && editableTextContentType === null) {
+			return Result({ _nay: { message: "Only editable text files can be non-collaborative" } });
+		}
 
 		// The seal is the consent: files may land under this prefix and nowhere else. The prefix
 		// itself is a folder, so a path equal to it is refused too.
@@ -662,7 +731,13 @@ export const create_upload_target = internalMutation({
 		}
 
 		const now = Date.now();
-		const requestFingerprint = JSON.stringify({ path: args.path, contentType: args.contentType, size: args.size });
+		const requestFingerprint = JSON.stringify({
+			path: args.path,
+			contentType: args.contentType,
+			size: args.size,
+			readOnly: args.readOnly,
+			nonCollaborative: args.nonCollaborative,
+		});
 		const existingTarget = await db_get_target(ctx, {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
@@ -696,9 +771,7 @@ export const create_upload_target = internalMutation({
 				return liveNode;
 			}
 			const liveTarget =
-				liveNode._yay.path === existingTarget.path
-					? existingTarget
-					: { ...existingTarget, path: liveNode._yay.path };
+				liveNode._yay.path === existingTarget.path ? existingTarget : { ...existingTarget, path: liveNode._yay.path };
 			if (existingTarget.state === "committed") {
 				return Result({
 					_yay: {
@@ -735,30 +808,6 @@ export const create_upload_target = internalMutation({
 			return await db_remint_pending_target(ctx, { target: liveTarget, asset, now });
 		}
 
-		const runTargets = await ctx.db
-			.query("plugin_service_storage_targets")
-			.withIndex("by_organization_workspace_installation_idempotencyKey_targetKey", (q) =>
-				q
-					.eq("organizationId", args.principal.organizationId)
-					.eq("workspaceId", args.principal.workspaceId)
-					.eq("installationId", installation._id)
-					.eq("idempotencyKey", idempotencyKey._yay),
-			)
-			.take(MAX_TARGETS_PER_UPLOAD_RUN);
-		if (runTargets.length >= MAX_TARGETS_PER_UPLOAD_RUN) {
-			return Result({ _nay: { message: "An upload run holds at most 16 targets" } });
-		}
-		const liveDeleteGroup = await db_get_live_delete_group_targets(ctx, {
-			organizationId: args.principal.organizationId,
-			workspaceId: args.principal.workspaceId,
-			installationId: installation._id,
-			destinationPath: args.principal.pathPrefix,
-			targetKey: targetKey._yay,
-		});
-		if (liveDeleteGroup === null || liveDeleteGroup.length >= MAX_LIVE_TARGETS_PER_DELETE_GROUP) {
-			return Result({ _nay: { message: "A destination holds at most 16 live targets under one target key" } });
-		}
-
 		// A service never overwrites. A meeting's files land on fresh paths; a collision means either a
 		// replay under a new target key (a caller bug) or a member's file, and both must survive.
 		const existingNode = await ctx.db
@@ -791,6 +840,7 @@ export const create_upload_target = internalMutation({
 		// Ancestor pass, same as `/api/v1/files/upload-urls`: a restricted, file-owned, or read-only
 		// ancestor refuses cleanly before anything is written.
 		const segments = path_extract_segments_from(args.path);
+		let effectiveDestinationAclNode: Doc<"files_nodes"> | null = null;
 		for (let index = 1; index < segments.length; index++) {
 			const ancestorPath = `/${segments.slice(0, index).join("/")}`;
 			const ancestor = await ctx.db
@@ -806,6 +856,7 @@ export const create_upload_target = internalMutation({
 			if (!ancestor) {
 				continue;
 			}
+			effectiveDestinationAclNode = ancestor;
 			if (
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: args.principal.organizationId,
@@ -826,21 +877,65 @@ export const create_upload_target = internalMutation({
 			}
 		}
 
+		if (args.readOnly && !installation.acceptedCapabilities.includes("workspace.files.create-read-only")) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		if (args.readOnly) {
+			// A sealed grant may finish accepted uploads with content.write. A fresh read-only file is
+			// stronger because its lock can outlive the service run, so recheck manage at the ACL owner.
+			const canManageDestination = await access_control_db_has_permission(ctx, {
+				organizationId: authorized._yay.organization._id,
+				workspaceId: authorized._yay.workspace._id,
+				defaultWorkspaceId: authorized._yay.defaultWorkspaceId,
+				organizationOwnerUserId: authorized._yay.organization.ownerUserId,
+				resource: effectiveDestinationAclNode
+					? {
+							kind: "file",
+							id: String(effectiveDestinationAclNode._id),
+							restrictedScopeNodeId: effectiveDestinationAclNode.restrictedScopeNodeId ?? null,
+						}
+					: { kind: "workspace", id: String(authorized._yay.workspace._id) },
+				permission: "content.permissions.manage",
+				userId: args.principal.actorUserId,
+			});
+			if (!canManageDestination) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+		}
+
+		const runTargets = await ctx.db
+			.query("plugin_service_storage_targets")
+			.withIndex("by_organization_workspace_installation_idempotencyKey_targetKey", (q) =>
+				q
+					.eq("organizationId", args.principal.organizationId)
+					.eq("workspaceId", args.principal.workspaceId)
+					.eq("installationId", installation._id)
+					.eq("idempotencyKey", idempotencyKey._yay),
+			)
+			.take(MAX_TARGETS_PER_UPLOAD_RUN);
+		if (runTargets.length >= MAX_TARGETS_PER_UPLOAD_RUN) {
+			return Result({ _nay: { message: "An upload run holds at most 16 targets" } });
+		}
+		const liveDeleteGroup = await db_get_live_delete_group_targets(ctx, {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			installationId: installation._id,
+			destinationPath: args.principal.pathPrefix,
+			targetKey: targetKey._yay,
+		});
+		if (liveDeleteGroup === null || liveDeleteGroup.length >= MAX_LIVE_TARGETS_PER_DELETE_GROUP) {
+			return Result({ _nay: { message: "A destination holds at most 16 live targets under one target key" } });
+		}
+
 		// Storing files for a service costs real money, so only a workspace that pays for usage may
 		// start one. This is the door that can actually stop an upload: the quota below can only bill
 		// what R2 already stored, because a signed PUT does not bind how many bytes arrive. The plan
 		// belongs to whoever pays for this workspace, which in an owner-billed organization is the
 		// owner and not the member whose grant is presenting.
-		const organization = await ctx.db.get("organizations", args.principal.organizationId);
-		if (!organization) {
-			const errorMessage = "principal.organizationId points to a missing organizations doc";
-			const errorData = { organizationId: args.principal.organizationId, path: args.path };
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
 		const billedUserId = billing_pick_billed_user_id({
 			userId: args.principal.actorUserId,
-			organization,
+			organization: authorized._yay.organization,
 		});
 		const paidPlan = await billing_db_check_paid_plan(ctx, { userId: billedUserId });
 		if (!paidPlan.hasPaidPlan) {
@@ -880,7 +975,6 @@ export const create_upload_target = internalMutation({
 		// stored blob with `processingWorkId: null` up front. Plugin upload events stay off for
 		// every service upload either way; `plugins_runtime_db_enqueue_upload_completed_runs`
 		// refuses assets owned by a service storage target.
-		const editableTextContentType = files_get_editable_text_content_type(name);
 		const assetId = await ctx.db.insert("files_r2_assets", {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
@@ -953,13 +1047,15 @@ export const create_upload_target = internalMutation({
 			now,
 		});
 
-		await ctx.db.insert("plugin_service_storage_targets", {
+		const targetId = await ctx.db.insert("plugin_service_storage_targets", {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
 			installationId: installation._id,
 			idempotencyKey: idempotencyKey._yay,
 			targetKey: targetKey._yay,
 			requestFingerprint,
+			readOnly: args.readOnly,
+			nonCollaborative: args.nonCollaborative,
 			destinationPath: args.principal.pathPrefix,
 			destinationNodeId: destination._id,
 			destinationEpoch,
@@ -973,6 +1069,13 @@ export const create_upload_target = internalMutation({
 			createdBy: args.principal.actorUserId,
 			updatedAt: now,
 		});
+		if (args.readOnly) {
+			// Bind the cleanup exception to this target. Member lock changes always clear this pointer.
+			await ctx.db.patch("files_nodes", nodeIdResult._yay, {
+				readOnlyScopeNodeId: nodeIdResult._yay,
+				readOnlyPluginServiceTargetId: targetId,
+			});
+		}
 
 		return Result({
 			_yay: {
@@ -1326,9 +1429,7 @@ export const delete_upload_target = internalMutation({
 			.order("desc")
 			.first();
 		const releasedTarget =
-			releasedCandidate && !(await db_target_destination_is_closed(ctx, releasedCandidate))
-				? releasedCandidate
-				: null;
+			releasedCandidate && !(await db_target_destination_is_closed(ctx, releasedCandidate)) ? releasedCandidate : null;
 		if (matches.length === 0 && !releasedTarget) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -1351,7 +1452,15 @@ export const delete_upload_target = internalMutation({
 				return Result({ _nay: { message: "Permission denied" } });
 			}
 			const writable = files_node_require_writable(match.node);
-			if (writable._nay) {
+			if (
+				writable._nay &&
+				!(await db_can_clean_up_service_created_lock(ctx, {
+					principal: args.principal,
+					installation,
+					destinationNodeId: match.target.destinationNodeId,
+					node: match.node,
+				}))
+			) {
 				return writable;
 			}
 		}
@@ -1573,23 +1682,17 @@ export const archive_destination = internalMutation({
 				restoredDestination?.kind === "folder"
 					? await ctx.db
 							.query("plugin_service_storage_targets")
-							.withIndex(
-								"by_org_workspace_installation_destinationPath_destinationNode",
-								(q) =>
-									q
-										.eq("organizationId", args.principal.organizationId)
-										.eq("workspaceId", args.principal.workspaceId)
-										.eq("installationId", authorized._yay.installation._id)
-										.eq("destinationPath", args.principal.pathPrefix)
-										.eq("destinationNodeId", restoredDestination._id),
+							.withIndex("by_org_workspace_installation_destinationPath_destinationNode", (q) =>
+								q
+									.eq("organizationId", args.principal.organizationId)
+									.eq("workspaceId", args.principal.workspaceId)
+									.eq("installationId", authorized._yay.installation._id)
+									.eq("destinationPath", args.principal.pathPrefix)
+									.eq("destinationNodeId", restoredDestination._id),
 							)
 							.first()
 					: null;
-			if (
-				!restoredDestination ||
-				!restoredTarget ||
-				(await db_target_destination_is_closed(ctx, restoredTarget))
-			) {
+			if (!restoredDestination || !restoredTarget || (await db_target_destination_is_closed(ctx, restoredTarget))) {
 				await db_close_destination(ctx, {
 					organizationId: args.principal.organizationId,
 					workspaceId: args.principal.workspaceId,
@@ -1644,31 +1747,28 @@ export const archive_destination = internalMutation({
 				workspaceId: args.principal.workspaceId,
 				userId: args.principal.actorUserId,
 				rootScopeNodeId: destination.restrictedScopeNodeId,
-				nodes: activeDescendants,
+				nodes: descendants,
 				permission: "content.write",
 			}))
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		// A lock is a member saying "leave this alone", and archiving would move it out of the tree.
-		for (const node of [destination, ...activeDescendants]) {
+		// A lock is a member saying "leave this alone". The only exception is the direct lock created
+		// by this exact live service target, while the actor still manages its ACL.
+		for (const node of [destination, ...descendants]) {
 			const writable = files_node_require_writable(node);
-			if (writable._nay) {
+			if (
+				writable._nay &&
+				!(await db_can_clean_up_service_created_lock(ctx, {
+					principal: args.principal,
+					installation: authorized._yay.installation,
+					destinationNodeId: destination._id,
+					node,
+				}))
+			) {
 				return writable;
 			}
-		}
-
-		// Archived children stay archived. But a read-only one must not end up hidden under a newly
-		// archived parent, so it refuses here the same way it refuses a member.
-		const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
-			organizationId: args.principal.organizationId,
-			workspaceId: args.principal.workspaceId,
-			userId: args.principal.actorUserId,
-			nodes: descendants.filter((descendant) => descendant.archiveOperationId !== undefined),
-		});
-		if (archivedProtected._nay) {
-			return archivedProtected;
 		}
 
 		await db_close_destination(ctx, {

@@ -122,6 +122,8 @@ const create_target_body_validator = z
 		path: z.string().min(1),
 		contentType: z.string().min(1).max(200),
 		size: z.number().int().min(1),
+		readOnly: z.boolean(),
+		nonCollaborative: z.boolean(),
 	})
 	.strict();
 
@@ -151,6 +153,8 @@ export async function public_api_service_uploads_http_create_target(
 			path: body._yay.path,
 			contentType: body._yay.contentType,
 			size: body._yay.size,
+			readOnly: body._yay.readOnly,
+			nonCollaborative: body._yay.nonCollaborative,
 		},
 	);
 	if (created._nay) {

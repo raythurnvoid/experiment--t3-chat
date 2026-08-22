@@ -14,6 +14,7 @@ const plugins_capability_validator = v.union(
 	v.literal("outbound.fetch"),
 	v.literal("workspace.files.read"),
 	v.literal("workspace.files.write"),
+	v.literal("workspace.files.create-read-only"),
 	v.literal("plugin.data.read"),
 	v.literal("plugin.data.write"),
 	v.literal("plugin.data.user-write"),
@@ -737,6 +738,10 @@ const app_convex_schema = defineSchema({
 		 * No value means the node is writable. Permissions are separate from this lock.
 		 */
 		readOnlyScopeNodeId: v.optional(v.id("files_nodes")),
+		/**
+		 * The exact service target that created this node's direct lock. Never returned to clients.
+		 */
+		readOnlyPluginServiceTargetId: v.optional(v.id("plugin_service_storage_targets")),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** Updated by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
@@ -1872,6 +1877,11 @@ const app_convex_schema = defineSchema({
 		targetKey: v.string(),
 		/** A different request under the same run and target key is refused, not stored twice. */
 		requestFingerprint: v.string(),
+		/**
+		 * Historical targets omit these flags and behave as false. New targets always store both.
+		 */
+		readOnly: v.optional(v.boolean()),
+		nonCollaborative: v.optional(v.boolean()),
 		/** The authoritative sealed replay fence and its stable destination node id at create time. */
 		destinationPath: v.string(),
 		destinationNodeId: v.id("files_nodes"),

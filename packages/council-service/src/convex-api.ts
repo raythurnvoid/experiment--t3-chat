@@ -317,7 +317,8 @@ function parse_target_state(body: Record<string, unknown>, path: string) {
 	if (uploadUrl._nay) return uploadUrl;
 	const expires = require_number(body.uploadUrlExpiresAt, "uploadUrlExpiresAt", path);
 	if (expires._nay) return expires;
-	const headers = typeof body.headers === "object" && body.headers !== null ? (body.headers as Record<string, string>) : {};
+	const headers =
+		typeof body.headers === "object" && body.headers !== null ? (body.headers as Record<string, string>) : {};
 	return Result({
 		_yay: {
 			state: "pending",
@@ -337,7 +338,15 @@ function parse_target_state(body: Record<string, unknown>, path: string) {
 export async function council_convex_uploads_create_target(
 	env: Env,
 	psgToken: string,
-	args: { idempotencyKey: string; targetKey: string; path: string; contentType: string; size: number },
+	args: {
+		idempotencyKey: string;
+		targetKey: string;
+		path: string;
+		contentType: string;
+		size: number;
+		readOnly: boolean;
+		nonCollaborative: boolean;
+	},
 ) {
 	const path = "/api/v1/files/service-uploads/create-target";
 	const answer = await convex_post(env, { path, bearer: psgToken, body: { ...args } });

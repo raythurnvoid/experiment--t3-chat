@@ -51,7 +51,8 @@ describe("council_convex_verify_live", () => {
 	test("sends the exact claims and treats a 409 as a conflict, never a success", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch({
-			"/service-grants/verify-live": () => Response.json({ message: "This grant is in another phase" }, { status: 409 }),
+			"/service-grants/verify-live": () =>
+				Response.json({ message: "This grant is in another phase" }, { status: 409 }),
 		});
 		restoreFetch = mock.restore;
 
@@ -124,6 +125,8 @@ describe("council_convex_uploads_create_target", () => {
 			path: "/meetings/meeting-1/transcript.md",
 			contentType: "text/markdown",
 			size: 10,
+			readOnly: true,
+			nonCollaborative: true,
 		};
 		expect((await council_convex_uploads_create_target(env, "psg_processing", body))._yay?.state).toBe("pending");
 
@@ -164,6 +167,8 @@ describe("council_convex_uploads_create_target", () => {
 			path: "/meetings/meeting-1/transcript.md",
 			contentType: "text/markdown",
 			size: 10,
+			readOnly: true,
+			nonCollaborative: true,
 		};
 		const planRefused = await council_convex_uploads_create_target(env, "psg_processing", body);
 		expect(planRefused._nay?.name).toBe("plan_required");
@@ -191,6 +196,8 @@ describe("council_convex_uploads_create_target", () => {
 			path: "/meetings/meeting-1/transcript.md",
 			contentType: "text/markdown",
 			size: 10,
+			readOnly: true,
+			nonCollaborative: true,
 		};
 		const pending = await council_convex_uploads_create_target(env, "psg_processing", body);
 		expect(pending._yay?.state).toBe("pending");
@@ -201,7 +208,12 @@ describe("council_convex_uploads_create_target", () => {
 		mock.restore();
 		const committedMock = install_fetch({
 			"/service-uploads/create-target": () =>
-				Response.json({ state: "committed", path: "/meetings/meeting-1/transcript.md", nodeId: "node-1", actualBytes: 10 }),
+				Response.json({
+					state: "committed",
+					path: "/meetings/meeting-1/transcript.md",
+					nodeId: "node-1",
+					actualBytes: 10,
+				}),
 		});
 		restoreFetch = committedMock.restore;
 		const committed = await council_convex_uploads_create_target(env, "psg_processing", body);
@@ -214,7 +226,12 @@ describe("council_convex_uploads_finalize", () => {
 		const { env } = make_test_env();
 		const mock = install_fetch({
 			"/service-uploads/finalize": () =>
-				Response.json({ state: "pending", path: "/meetings/meeting-1/transcript.md", nodeId: "node-1", actualBytes: null }),
+				Response.json({
+					state: "pending",
+					path: "/meetings/meeting-1/transcript.md",
+					nodeId: "node-1",
+					actualBytes: null,
+				}),
 		});
 		restoreFetch = mock.restore;
 

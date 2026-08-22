@@ -16,7 +16,12 @@ import {
 } from "./db.ts";
 import { council_random_token, council_sha256_hex } from "./crypto.ts";
 import { council_get_bearer, council_json, council_read_json_body, council_read_string_field } from "./http.ts";
-import { council_page_auth, council_verify_grant, council_verify_meeting_grant, type council_PageActor } from "./grants.ts";
+import {
+	council_page_auth,
+	council_verify_grant,
+	council_verify_meeting_grant,
+	type council_PageActor,
+} from "./grants.ts";
 import { council_provider_create_meeting } from "./provider.ts";
 import { council_convex_data_release_reservation, council_convex_data_reserve } from "./convex-api.ts";
 import { council_decrypt } from "./crypto.ts";
@@ -39,7 +44,7 @@ function projection_idempotency_key(meetingId: string) {
 }
 
 /** The sanitized meeting the page may see. Never the code hash, grant ids, or provider URLs. */
-function meeting_view(env: Env, meeting: council_MeetingRow) {
+function meeting_view(env: Env, meeting: council_MeetingRow, artifacts: council_ArtifactRow[] = []) {
 	return {
 		id: meeting.id,
 		title: meeting.title,
@@ -52,6 +57,7 @@ function meeting_view(env: Env, meeting: council_MeetingRow) {
 		participantCount: meeting.participant_count,
 		maxParticipants: council_max_participants(env),
 		destinationPath: meeting.destination_path,
+		artifacts: artifacts_view(artifacts),
 	};
 }
 
@@ -247,7 +253,27 @@ async function handle_list(context: PageContext) {
 	)
 		.bind(actor.installationId)
 		.all<council_MeetingRow>();
-	return respond(200, { meetings: meetings.results.map((meeting) => meeting_view(env, meeting)) });
+	// One bounded companion query avoids one details request per card on every page poll.
+	const artifacts = await env.COUNCIL_DB.prepare(
+		`SELECT a.* FROM meeting_artifacts a
+		WHERE a.meeting_id IN (
+			SELECT id FROM meetings
+			WHERE installation_id = ? AND status != 'deleted_tombstone'
+			ORDER BY created_at DESC LIMIT 100
+		) AND a.status = 'finalized'
+		ORDER BY a.meeting_id, a.kind, a.file_name`,
+	)
+		.bind(actor.installationId)
+		.all<council_ArtifactRow>();
+	const artifactsByMeeting = new Map<string, council_ArtifactRow[]>();
+	for (const artifact of artifacts.results) {
+		const group = artifactsByMeeting.get(artifact.meeting_id) ?? [];
+		group.push(artifact);
+		artifactsByMeeting.set(artifact.meeting_id, group);
+	}
+	return respond(200, {
+		meetings: meetings.results.map((meeting) => meeting_view(env, meeting, artifactsByMeeting.get(meeting.id))),
+	});
 }
 
 async function handle_get(context: PageContext) {
@@ -259,7 +285,10 @@ async function handle_get(context: PageContext) {
 	const artifacts = await env.COUNCIL_DB.prepare("SELECT * FROM meeting_artifacts WHERE meeting_id = ?")
 		.bind(meeting._yay.id)
 		.all<council_ArtifactRow>();
-	return respond(200, { meeting: meeting_view(env, meeting._yay), artifacts: artifacts_view(artifacts.results) });
+	return respond(200, {
+		meeting: meeting_view(env, meeting._yay, artifacts.results),
+		artifacts: artifacts_view(artifacts.results),
+	});
 }
 
 async function handle_open(context: PageContext) {

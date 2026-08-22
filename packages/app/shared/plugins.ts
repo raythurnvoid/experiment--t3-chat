@@ -28,6 +28,7 @@ const CAPABILITIES = [
 	"outbound.fetch",
 	"workspace.files.read",
 	"workspace.files.write",
+	"workspace.files.create-read-only",
 	"plugin.data.read",
 	"plugin.data.write",
 	// Consent line: the plugin's pages may store and change this plugin's data as the acting
@@ -1054,6 +1055,16 @@ export function plugins_validate_manifest(input: unknown) {
 	) {
 		return Result({
 			_nay: { message: "The plugin.data.user-write capability requires the plugin.data.read capability" },
+		});
+	}
+	if (
+		capabilities.has("workspace.files.create-read-only" satisfies plugins_Capability) &&
+		!capabilities.has("workspace.files.write" satisfies plugins_Capability)
+	) {
+		return Result({
+			_nay: {
+				message: "The workspace.files.create-read-only capability requires the workspace.files.write capability",
+			},
 		});
 	}
 	// plugin.service.connect only lets an outside service borrow the capabilities the workspace

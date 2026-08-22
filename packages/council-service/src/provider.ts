@@ -39,7 +39,11 @@ type ProviderResponse = {
  * because "the answer was lost" and "the provider said no" are different states in the meeting
  * machine and must not be collapsed.
  */
-async function provider_fetch(env: Env, path: string, init?: { method?: string; body?: string }): Promise<ProviderResponse> {
+async function provider_fetch(
+	env: Env,
+	path: string,
+	init?: { method?: string; body?: string },
+): Promise<ProviderResponse> {
 	const url = path.startsWith("http") ? path : `${app_base(env)}${path}`;
 	// Check the origin before the request, not after: sending the Authorization header to a wrong
 	// host is the damage, whatever the response says.
@@ -209,6 +213,22 @@ export async function council_provider_add_participant(
 		return provider_nay("Add participant", response);
 	}
 	return Result({ _yay: { providerParticipantId: data.id, token: data.token } });
+}
+
+/** Delete a provider participant whose token must never become usable after a close race. */
+export async function council_provider_delete_participant(
+	env: Env,
+	args: { providerMeetingId: string; providerParticipantId: string },
+) {
+	const response = await provider_fetch(
+		env,
+		`/meetings/${args.providerMeetingId}/participants/${args.providerParticipantId}`,
+		{ method: "DELETE" },
+	);
+	if (!response.ok) {
+		return provider_nay("Delete participant", response);
+	}
+	return Result({ _yay: true });
 }
 
 /**
@@ -405,7 +425,10 @@ export async function council_provider_fetch_transcript(env: Env, sessionId: str
 	}
 	// `[]` is valid JSON and 2 bytes, so a bare parse check passes on a transcript that is still
 	// being generated. Require at least one line with a non-empty sentence.
-	if (!Array.isArray(parsed) || !parsed.some((line) => typeof line?.sentence === "string" && line.sentence.length > 0)) {
+	if (
+		!Array.isArray(parsed) ||
+		!parsed.some((line) => typeof line?.sentence === "string" && line.sentence.length > 0)
+	) {
 		return Result({ _yay: { ready: false as const } });
 	}
 

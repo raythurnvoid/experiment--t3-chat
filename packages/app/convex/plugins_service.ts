@@ -53,7 +53,7 @@ const COUNCIL_SERVICE_EXCHANGE_SECRET = process.env.COUNCIL_SERVICE_EXCHANGE_SEC
 /**
  * The one plugin this secret may exchange page tokens for.
  *
- * Without it the secret would work for any installation whose plugin declares the four capabilities,
+ * Without it the secret would work for any installation whose plugin declares the five capabilities,
  * and that is a way for one plugin to act as another. Every plugin page is served from the same asset
  * origin, so a page can read another page's `plu_` token — the plugin-system skill says plainly that
  * the shared origin is not a plugin-to-plugin boundary. A service holding this secret could present
@@ -71,7 +71,7 @@ const COUNCIL_PLUGIN_NAME = process.env.COUNCIL_PLUGIN_NAME;
  * a server outside the app.
  *
  * `plugin.service.connect` is the one the install dialog warns about, and the mint checks it again.
- * The other three are what the finished Council needs to do its job, so asking for all of them up
+ * The other four are what the finished Council needs to do its job, so asking for all of them up
  * front means a half-consented install fails at the exchange instead of halfway through a meeting.
  */
 const REQUIRED_CAPABILITIES = [
@@ -79,6 +79,7 @@ const REQUIRED_CAPABILITIES = [
 	"plugin.data.read",
 	"plugin.data.write",
 	"workspace.files.write",
+	"workspace.files.create-read-only",
 ] as const satisfies readonly plugins_Capability[];
 
 function get_service_secret(request: Request) {

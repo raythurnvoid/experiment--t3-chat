@@ -2,12 +2,13 @@
 
 The Cloudflare Worker behind the Council meeting plugin. It creates provider meetings, mints guest
 tokens, serves the public meeting room on its own origin, and turns a finished meeting into a
-recording and a speaker-attributed transcript in the workspace.
+recording, a speaker-attributed transcript, and a structured meeting summary in the workspace.
 
-**Status: deployed to the development Worker and D1.** The meeting lifecycle, the room security
-model, the webhook intake, the Queue consumer, the processing/deletion Workflow, and the cleanup
-cron are implemented and tested. Remote D1 has migrations `0001` through `0004` applied. Do not
-re-apply `0004`. Do not wipe D1.
+The meeting lifecycle, room security model, webhook intake, Queue consumer,
+processing/deletion Workflow, and cleanup cron are implemented and tested. The current source has
+migrations `0001` through `0007`. Migrations `0006` and `0007` are part of the Council `0.2.0`
+release gate and must follow the in-flight meeting audit described below. Do not wipe D1 or apply
+release migrations without that audit.
 
 ## Why the transcript is built from track files
 
@@ -131,6 +132,29 @@ Council page also reads the Worker directly; writing this Convex document does n
 another host screen by itself. It gives the host and future plugin UI a safe, installation-owned copy
 without provider ids, admission secrets, tokens, or URLs.
 
+## Council 0.2.0 release gate
+
+Do not deploy this source over live meeting work without an explicit audit. First stop new meeting
+opens through the release maintenance bridge. Inspect every `created`, `open`, `closed`,
+`processing`, `failed`, and deleting meeting plus every pending or committed upload target. In
+particular, an older run may already own 14 audio targets; adding `summary.md` would make its redrive
+ask for a seventeenth target. The release owner must choose migration or erasure for those exact
+runs and for any stored old create-target body. Migration `0006` now refuses to run while any old
+artifact row remains, so this choice cannot be skipped by mistake.
+
+Use this coupled order after separate release approval:
+
+1. Turn on the meeting maintenance bridge. Audit and drain every old artifact row and matching host target.
+2. Apply D1 migrations `0006` and `0007`.
+3. Deploy the strict core upload contract and the new read-only capability.
+4. Deploy this Worker.
+5. Mirror and verify SDK `0.9.2`.
+6. Build Council twice, push its exact commit, update the parent gitlink, and publish that exact SHA.
+7. Accept the new capability on the installation and run the create, join, close, and artifact smoke test.
+8. Reopen meeting creation.
+
+Source work alone does not authorize any of these remote actions.
+
 ## Commands
 
 Run every command through Vite Plus so it uses the repo's pinned Node.
@@ -155,15 +179,15 @@ vp env exec pnpx wrangler d1 execute bonobo-council --remote --config packages/c
 
 ## Cloud resources that already exist
 
-| Resource | Name | Note |
-| --- | --- | --- |
-| Worker | `bonobo-council-service` | Deployed at `https://bonobo-council-service.ray-thurne-void.workers.dev` |
-| D1 database | `bonobo-council` | `b32e1b59-11ad-4086-9c92-72480e820e16`, region WEUR, migrations `0001` through `0005` applied to remote. Do not re-apply `0004` or `0005`. |
-| Queue | `bonobo-council-events` | 8-day message retention; consumer on this Worker, `max_batch_size` 1, `max_retries` 5 |
-| Dead-letter queue | `bonobo-council-events-dlq` | 8-day message retention; consumed by this Worker to mark outbox rows `dead` |
-| Workflow | `bonobo-council-workflow` | Binding `COUNCIL_WORKFLOW`, class `CouncilWorkflow`; created on first deploy |
-| Workers AI | binding `AI` | `@cf/openai/whisper-large-v3-turbo` per-track transcription |
-| Cron | `*/15 * * * *` | Expiries, deadline closes, seal retries, outbox and projection reconciliation, delete retries, tombstone erasure |
+| Resource          | Name                        | Note                                                                                                                                       |
+| ----------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Worker            | `bonobo-council-service`    | Deployed at `https://bonobo-council-service.ray-thurne-void.workers.dev`                                                                   |
+| D1 database       | `bonobo-council`            | `b32e1b59-11ad-4086-9c92-72480e820e16`, region WEUR, migrations `0001` through `0005` applied to remote. Do not re-apply `0004` or `0005`. |
+| Queue             | `bonobo-council-events`     | 8-day message retention; consumer on this Worker, `max_batch_size` 1, `max_retries` 5                                                      |
+| Dead-letter queue | `bonobo-council-events-dlq` | 8-day message retention; consumed by this Worker to mark outbox rows `dead`                                                                |
+| Workflow          | `bonobo-council-workflow`   | Binding `COUNCIL_WORKFLOW`, class `CouncilWorkflow`; created on first deploy                                                               |
+| Workers AI        | binding `AI`                | Whisper Turbo per-track transcription and Llama 3.1 8B fast structured summaries                                                           |
+| Cron              | `*/15 * * * *`              | Expiries, deadline closes, seal retries, outbox and projection reconciliation, delete retries, tombstone erasure                           |
 
 ## Secrets
 
@@ -274,9 +298,10 @@ The lifecycle this implies (plan-3 E8):
    `council_request_processing_redrive` bump `processing_generation` and insert a fresh outbox row;
    moving `failed -> processing` on the same generation dispatches a row that never runs) keeps the
    same upload key on purpose: a file that never finished uploading is re-used, and files that
-   already committed are skipped by their D1 status. The redrive needs the
-   sealed processing grant to still be alive (six days), which stays inside the provider's
-   seven-day recording retention.
+   already committed are skipped by their D1 status. The redrive needs the sealed processing grant
+   to still be alive (six days), which stays inside the provider's seven-day recording retention.
+   The validated AI summary is first rendered and stored in D1. A redrive uploads those exact
+   stored bytes and does not ask the model for a second answer.
 3. **Delete** (page-initiated) seals a fresh grant, archives the meeting folder, then runs the
    D1/projection/tombstone arm. The archive takes no path — the seal names the folder — and it
    removes the folder and everything inside it from the file tree in one archive operation a member
@@ -289,15 +314,21 @@ The lifecycle this implies (plan-3 E8):
    will not clear themselves. A network error still retries. The delete works again once they clear
    the lock.
 
-The host treats these uploads like member uploads: an editable-text name (`transcript.md`,
-`provider-transcript.json`) converts into a normal editable document, so members open and edit the
-transcript in the app's editors like any app-created file. Audio tracks stay stored blobs, and no
-service upload ever starts plugin upload events.
+Every Council artifact is read-only. The text artifacts (`summary.md`, `transcript.md`, and
+`provider-transcript.json`) are also non-collaborative, so they do not pay the Yjs storage and sync
+cost of a shared editor document. Audio tracks stay non-collaborative stored blobs. No Council
+service upload starts plugin upload events.
 
-One real cap to know: an upload run allows at most **16 targets**, and two are spent on the
-transcript and the provider diagnostic, so at most 14 raw audio tracks are stored. Every track is
-still transcribed — the attributed transcript stays complete — but a large meeting's extra raw
-audio is not stored, and the pipeline logs when that happens.
+One real cap to know: an upload run allows at most **16 targets**. The transcript and provider
+diagnostic spend two, and the generated summary spends one, so at most 13 raw audio tracks are
+stored. Every track is still transcribed — the attributed transcript stays complete — but a large
+meeting's extra raw audio is not stored, and the pipeline logs when that happens. If filenames have
+the same provider timestamp, their names provide the stable final ordering.
+
+The summary uses the fast Llama 3.1 8B model through Workers AI JSON Schema mode. Council treats
+transcript lines as untrusted quoted data, validates the full model response, caps the input at 12
+chunks of 48,000 characters, and runs one bounded reduce call when several chunks exist. If the
+source exceeds that cap, `summary.md` says that later content was not summarized.
 
 Every test here mocks Convex and the provider. The flows have also been driven end to end against
 the live dev deployment and the live provider through the plugin page.

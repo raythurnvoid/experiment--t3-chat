@@ -73,10 +73,22 @@ const BOB_PHRASE = "Nineteen copper kettles whistled in dissent";
 
 /** Whisper mock keyed by decoded audio byte length, so each phrase is bound to exactly one
  * track's bytes and a crossed-wire bug in the pipeline would surface as a crossed name/phrase pair. */
-function make_whisper_mock(counter: { runs: number }): Env["AI"] {
+function make_whisper_mock(counter: { runs: number; summaryRuns?: number; summaryInputs?: unknown[] }): Env["AI"] {
 	return {
-		run: async (_model: string, input: unknown) => {
+		run: async (model: string, input: unknown) => {
 			counter.runs += 1;
+			if (model === "@cf/meta/llama-3.1-8b-instruct-fast") {
+				counter.summaryRuns = (counter.summaryRuns ?? 0) + 1;
+				counter.summaryInputs?.push(input);
+				return {
+					response: {
+						overview: "The group reviewed the quarterly forecast.",
+						topics: ["Quarterly forecast"],
+						decisions: [],
+						actionItems: [],
+					},
+				};
+			}
 			const byteLength = atob((input as { audio: string }).audio).length;
 			if (byteLength === 4) {
 				return { text: ALICE_PHRASE, segments: [{ start: 1, end: 3, text: ALICE_PHRASE }] };
@@ -104,7 +116,8 @@ function processing_fetch_overrides(
 		"/transcript?format=JSON": () =>
 			Response.json({ success: true, data: { transcript_download_url: "https://transcript.example/t1" } }),
 		"https://transcript.example/t1": () => Response.json([{ sentence: "hello world", peerData: { id: "TEST" } }]),
-		"/sessions/sess-1": () => Response.json({ success: true, data: { status: "ENDED", settings: { transcribe_on_end: true } } }),
+		"/sessions/sess-1": () =>
+			Response.json({ success: true, data: { status: "ENDED", settings: { transcribe_on_end: true } } }),
 		"/recordings/rec-1": (call: { method: string; bodyJson: Record<string, unknown> | null }) => {
 			if (call.method === "PUT" && call.bodyJson?.action === "stop") {
 				recordingStopped = true;
@@ -172,6 +185,11 @@ function markdown_put_body(calls: { url: string; method: string; bodyText: strin
 	return put?.bodyText ?? "";
 }
 
+function summary_put_body(calls: { url: string; method: string; bodyText: string | null }[]) {
+	const put = calls.find((call) => call.method === "PUT" && call.url.includes("summary_markdown"));
+	return put?.bodyText ?? "";
+}
+
 const PROCESS_PARAMS = { kind: "process_meeting" as const, meetingId: "meeting-1", generation: 1 };
 
 describe("council_run_processing", () => {
@@ -190,12 +208,14 @@ describe("council_run_processing", () => {
 		}>();
 		expect(meeting?.status).toBe("ready");
 
-		// One artifact set: two audio tracks, the diagnostic provider transcript, and the Markdown.
-		const artifacts = await env.COUNCIL_DB.prepare(
-			"SELECT kind, status FROM meeting_artifacts ORDER BY kind",
-		).all<{ kind: string; status: string }>();
+		// One artifact set: two audio tracks, the diagnostic provider transcript, and two Markdown files.
+		const artifacts = await env.COUNCIL_DB.prepare("SELECT kind, status FROM meeting_artifacts ORDER BY kind").all<{
+			kind: string;
+			status: string;
+		}>();
 		expect(artifacts.results.map((row) => `${row.kind}:${row.status}`)).toEqual([
 			"provider_transcript:finalized",
+			"summary_markdown:finalized",
 			"track_audio:finalized",
 			"track_audio:finalized",
 			"transcript_markdown:finalized",
@@ -216,7 +236,9 @@ describe("council_run_processing", () => {
 		const diagnosticPut = mock.calls.find((call) => call.method === "PUT" && call.url.includes("provider_transcript"));
 		expect(diagnosticPut?.bodyText).toContain("hello world");
 
-		expect(counter.runs).toBe(2);
+		expect(counter.runs).toBe(3);
+		expect(counter.summaryRuns).toBe(1);
+		expect(summary_put_body(mock.calls)).toContain("— Meeting summary");
 
 		// The terminal projection is the page's signal the run finished: the newest revision must
 		// carry `ready`.
@@ -304,7 +326,9 @@ describe("council_run_processing", () => {
 		await seed_processing_meeting(env);
 
 		await expect(council_run_processing(env, test_step(), PROCESS_PARAMS)).rejects.toThrow(/never stopped/u);
-		const failed = await env.COUNCIL_DB.prepare("SELECT status, failure_reason FROM meetings WHERE id = 'meeting-1'").first<{
+		const failed = await env.COUNCIL_DB.prepare(
+			"SELECT status, failure_reason FROM meetings WHERE id = 'meeting-1'",
+		).first<{
 			status: string;
 			failure_reason: string;
 		}>();
@@ -411,27 +435,32 @@ describe("council_run_processing", () => {
 		const outcome = await council_run_processing(env, test_step(), PROCESS_PARAMS);
 		expect(outcome).toBe("ready");
 		expect(reads).toBeGreaterThan(1);
-		expect(counter.runs).toBe(2);
+		expect(counter.runs).toBe(3);
 		const trackArtifacts = await env.COUNCIL_DB.prepare(
 			"SELECT COUNT(*) AS n FROM meeting_artifacts WHERE kind = 'track_audio'",
 		).first<{ n: number }>();
 		expect(trackArtifacts?.n).toBe(2);
 	});
 
-	test("a crashed run replays onto the same artifact set: no second upload, no second transcription", async () => {
+	test("a crashed run reuses the stored summary bytes without a second model call", async () => {
 		const counter = { runs: 0 };
 		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
 		let failedOnce = false;
 		const mock = install_fetch(
 			processing_fetch_overrides({
 				"/service-uploads/finalize": (call) => {
-					// Fail the Markdown finalize exactly once: the crash lands after every track upload.
+					// Fail the summary finalize exactly once, after the model answer is stored in D1.
 					const targetKey = String(call.bodyJson?.targetKey);
-					if (targetKey.startsWith("transcript_markdown") && !failedOnce) {
+					if (targetKey.startsWith("summary_markdown") && !failedOnce) {
 						failedOnce = true;
 						return Response.json({ message: "boom" }, { status: 500 });
 					}
-					return Response.json({ state: "committed", path: "/meetings/meeting-1/f", nodeId: `node-${targetKey}`, actualBytes: 1 });
+					return Response.json({
+						state: "committed",
+						path: "/meetings/meeting-1/f",
+						nodeId: `node-${targetKey}`,
+						actualBytes: 1,
+					});
 				},
 			}),
 		);
@@ -439,7 +468,9 @@ describe("council_run_processing", () => {
 		await seed_processing_meeting(env);
 
 		await expect(council_run_processing(env, test_step(), PROCESS_PARAMS)).rejects.toThrow(/finalize refused/u);
-		const failed = await env.COUNCIL_DB.prepare("SELECT status, failure_reason FROM meetings WHERE id = 'meeting-1'").first<{
+		const failed = await env.COUNCIL_DB.prepare(
+			"SELECT status, failure_reason FROM meetings WHERE id = 'meeting-1'",
+		).first<{
 			status: string;
 			failure_reason: string;
 		}>();
@@ -459,21 +490,27 @@ describe("council_run_processing", () => {
 		const outcome = await council_run_processing(env, test_step(), { ...PROCESS_PARAMS, generation: 2 });
 		expect(outcome).toBe("ready");
 
-		// The replay found the finalized track artifacts and skipped their uploads and transcriptions.
+		// The replay found finalized tracks and the D1 summary, so it skipped transcription and AI.
 		const trackPuts = mock.calls.filter((call) => call.method === "PUT" && call.url.includes("track_audio"));
 		expect(trackPuts.length).toBe(2);
-		expect(counter.runs).toBe(2);
+		expect(counter.runs).toBe(3);
+		expect(counter.summaryRuns).toBe(1);
+		const summaryPuts = mock.calls.filter((call) => call.method === "PUT" && call.url.includes("summary_markdown"));
+		expect(summaryPuts).toHaveLength(2);
+		expect(new Set(summaryPuts.map((call) => call.bodyText)).size).toBe(1);
 
-		const artifacts = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meeting_artifacts").first<{ n: number }>();
-		expect(artifacts?.n).toBe(4);
+		const artifacts = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meeting_artifacts").first<{
+			n: number;
+		}>();
+		expect(artifacts?.n).toBe(5);
 
-		// The redrive keeps the meeting's own upload key. The transcript target the failed run left
+		// The redrive keeps the meeting's own upload key. The summary target the failed run left
 		// pending is re-used, so the workspace is not charged a second time for the same file.
 		const targetKeys = mock.calls
 			.filter(
 				(call) =>
 					call.url.includes("/service-uploads/create-target") &&
-					String(call.bodyJson?.targetKey).startsWith("transcript_markdown"),
+					String(call.bodyJson?.targetKey).startsWith("summary_markdown"),
 			)
 			.map((call) => String(call.bodyJson?.idempotencyKey));
 		expect(targetKeys.length).toBeGreaterThan(1);
@@ -534,8 +571,10 @@ describe("council_run_processing", () => {
 		expect(outcome).toBe("ready");
 
 		expect(markdown_put_body(mock.calls)).toContain("_No speech was recorded._");
-		const artifacts = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meeting_artifacts").first<{ n: number }>();
-		expect(artifacts?.n).toBe(1);
+		const artifacts = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meeting_artifacts").first<{
+			n: number;
+		}>();
+		expect(artifacts?.n).toBe(2);
 		// The provider was never polled: its track files may never exist for a too-short recording.
 		expect(mock.calls.some((call) => call.url.includes("/recordings/rec-1"))).toBe(false);
 	});
@@ -558,6 +597,87 @@ describe("council_run_processing", () => {
 		expect(new Set(uploadKeys)).toEqual(new Set(["council-uploads-meeting-1"]));
 		// There is no envelope to hand back: a stored file keeps its charged bytes.
 		expect(mock.calls.some((call) => call.url.includes("/service-uploads/release"))).toBe(false);
+	});
+
+	test("sets the lock and collaboration flags for every stored artifact", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		const mock = install_fetch(processing_fetch_overrides());
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		await council_run_processing(env, test_step(), PROCESS_PARAMS);
+
+		const targets = mock.calls.filter((call) => call.url.includes("/service-uploads/create-target"));
+		expect(targets.length).toBeGreaterThan(0);
+		for (const target of targets) {
+			expect(target.bodyJson?.readOnly).toBe(true);
+			const kind = String(target.bodyJson?.targetKey).split(":", 1)[0];
+			expect(target.bodyJson?.nonCollaborative).toBe(kind !== "track_audio");
+		}
+	});
+
+	test("uses the filename tie-break before keeping thirteen raw tracks", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		const timestamp = 1755200000000;
+		const providerIds = [
+			ALICE_PROVIDER_ID,
+			BOB_PROVIDER_ID,
+			...Array.from({ length: 12 }, (_, index) => `unknown-${index}`),
+		];
+		const fileNames = providerIds.map(
+			(providerId, index) => `council_${providerId}_peer${index}_peer_audio_${timestamp}.webm`,
+		);
+		let recordingStopped = false;
+		const mock = install_fetch(
+			processing_fetch_overrides({
+				"/recordings/rec-1": (call) => {
+					if (call.method === "PUT" && call.bodyJson?.action === "stop") {
+						recordingStopped = true;
+						return Response.json({ success: true, data: { status: "UPLOADING" } });
+					}
+					if (!recordingStopped) {
+						return Response.json({ success: true, data: { status: "RECORDING" } });
+					}
+					return Response.json({
+						success: true,
+						data: {
+							status: "UPLOADED",
+							download_url: {
+								links: [
+									{
+										download_urls: Object.fromEntries(
+											[...fileNames]
+												.reverse()
+												.map((fileName) => [fileName, { download_url: `https://tracks.example/${fileName}` }]),
+										),
+									},
+								],
+							},
+						},
+					});
+				},
+				"https://tracks.example/": () => new Response("abcd", { headers: { "Content-Length": "4" } }),
+			}),
+		);
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		await council_run_processing(env, test_step(), PROCESS_PARAMS);
+
+		const storedTrackTargets = mock.calls
+			.filter(
+				(call) =>
+					call.url.includes("/service-uploads/create-target") &&
+					String(call.bodyJson?.targetKey).startsWith("track_audio:"),
+			)
+			.map((call) => String(call.bodyJson?.targetKey).slice("track_audio:".length));
+		expect(storedTrackTargets).toEqual([...fileNames].sort((left, right) => left.localeCompare(right)).slice(0, 13));
+		const artifacts = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meeting_artifacts").first<{
+			n: number;
+		}>();
+		expect(artifacts?.n).toBe(16);
 	});
 
 	test("a plan refusal fails the run at once instead of spending the step's retries", async () => {
@@ -690,6 +810,9 @@ describe("council_run_deletion", () => {
 		)
 			.bind(ALICE_FILE)
 			.run();
+		await env.COUNCIL_DB.prepare(
+			"INSERT INTO meeting_summaries (meeting_id, markdown, created_at) VALUES ('meeting-1', 'private summary', 0)",
+		).run();
 		for (const [index, kind] of (["track_audio", "transcript_markdown"] as const).entries()) {
 			await env.COUNCIL_DB.prepare(
 				`INSERT INTO meeting_artifacts (id, meeting_id, kind, target_key, file_name, node_id, status, created_at, updated_at)
@@ -753,6 +876,10 @@ describe("council_run_deletion", () => {
 			transcript_json: string | null;
 		}>();
 		expect(track?.transcript_json).toBeNull();
+		const summaries = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meeting_summaries").first<{
+			n: number;
+		}>();
+		expect(summaries?.n).toBe(0);
 
 		const meeting = await env.COUNCIL_DB.prepare(
 			"SELECT status, title, service_grant_id, processing_grant_id, tombstone_expires_at FROM meetings WHERE id = 'meeting-1'",
@@ -796,7 +923,9 @@ describe("council_run_deletion", () => {
 			council_run_deletion(env, test_step(), { kind: "delete_meeting", meetingId: "meeting-1", generation: 2 }),
 		).rejects.toThrow(/Archiving the meeting folder/u);
 
-		const meeting = await env.COUNCIL_DB.prepare("SELECT status, failure_reason FROM meetings WHERE id = 'meeting-1'").first<{
+		const meeting = await env.COUNCIL_DB.prepare(
+			"SELECT status, failure_reason FROM meetings WHERE id = 'meeting-1'",
+		).first<{
 			status: string;
 			failure_reason: string;
 		}>();

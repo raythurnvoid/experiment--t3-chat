@@ -34,20 +34,23 @@ import {
 	council_convex_uploads_finalize,
 	council_convex_uploads_remint,
 } from "./convex-api.ts";
-import { council_read_stream_with_limit, council_transcribe_track, council_TRACK_TRANSCRIBE_MAX_BYTES } from "./ai.ts";
+import {
+	council_read_stream_with_limit,
+	council_render_summary_markdown,
+	council_summarize_meeting,
+	council_transcribe_track,
+	council_TRACK_TRANSCRIBE_MAX_BYTES,
+} from "./ai.ts";
 import {
 	council_attribute_tracks,
 	council_parse_track_file_name,
 	council_provider_transcript_has_real_identity,
 	council_render_transcript_markdown,
+	type council_AttributionResult,
 	type council_Track,
 	type council_TrackSegment,
 } from "./tracks.ts";
-import {
-	council_deliver_projections,
-	council_enqueue_projection,
-	council_project_meeting,
-} from "./projection.ts";
+import { council_deliver_projections, council_enqueue_projection, council_project_meeting } from "./projection.ts";
 
 /** A recording shorter than this holds no usable speech; the meeting finishes with an empty
  * transcript instead of waiting for track files that may never appear. */
@@ -59,9 +62,9 @@ const TRANSCRIPT_POLL_LIMIT = 10;
 const POLL_SLEEP = "30 seconds";
 
 /**
- * The host allows 16 upload targets per run; the transcript and the provider diagnostic take two.
+ * The host allows 16 upload targets per run; transcript, summary, and provider diagnostic take three.
  */
-const UPLOADED_TRACKS_MAX = 14;
+const UPLOADED_TRACKS_MAX = 13;
 
 function target_key(kind: string, fileName: string) {
 	return `${kind}:${fileName}`;
@@ -140,16 +143,16 @@ async function run_processing_steps(env: Env, step: WorkflowStep, meetingId: str
 
 		// Deterministic order: earliest track first, by the filename timestamp, so replays and the
 		// upload budget below pick the same tracks every run.
-		trackFileNames.sort(
-			(left, right) =>
+		trackFileNames.sort((left, right) => {
+			const byTime =
 				(council_parse_track_file_name(left)?.recordedAtMs ?? 0) -
-				(council_parse_track_file_name(right)?.recordedAtMs ?? 0),
-		);
+				(council_parse_track_file_name(right)?.recordedAtMs ?? 0);
+			return byTime !== 0 ? byTime : left.localeCompare(right);
+		});
 
-		// The host allows at most 16 upload targets per run, and two are spent on the transcript and
-		// the provider diagnostic. A 25-participant meeting can produce more tracks than the remaining
-		// budget; every track is still transcribed — the attributed transcript stays complete — but
-		// raw audio past the budget is not archived.
+		// The host allows at most 16 upload targets per run. Transcript, summary, and provider
+		// diagnostic use three. Every track is still transcribed, but raw audio past the remaining
+		// budget is not archived.
 		if (trackFileNames.length > UPLOADED_TRACKS_MAX) {
 			console.warn("More tracks than the upload target budget; extra raw audio is not stored", {
 				meetingId: meeting.id,
@@ -173,6 +176,20 @@ async function run_processing_steps(env: Env, step: WorkflowStep, meetingId: str
 
 	await step.do("render-markdown", async () => {
 		return await render_and_upload_markdown(env, meeting, grantToken);
+	});
+
+	// One attempt already has a strict 13-call ceiling. Do not let Workflow retries multiply that
+	// model budget; an operator can redrive the meeting after checking the failure.
+	await step.do(
+		"store-summary",
+		{ retries: { limit: 1, delay: 0, backoff: "constant" } },
+		async () => {
+			return await store_summary_markdown(env, meeting);
+		},
+	);
+
+	await step.do("upload-summary", async () => {
+		return await upload_summary_markdown(env, meeting, grantToken);
 	});
 
 	await step.do("finalize", async () => {
@@ -349,6 +366,8 @@ async function upload_track(env: Env, meeting: council_MeetingRow, grantToken: s
 		contentType: "audio/webm",
 		size: download._yay.contentLength,
 		body: with_fixed_length(download._yay.stream, download._yay.contentLength),
+		readOnly: true,
+		nonCollaborative: false,
 	});
 	return { nodeId: uploaded.nodeId, skipped: false };
 }
@@ -459,6 +478,8 @@ async function fetch_provider_transcript(
 				contentType: "application/json",
 				size: raw.byteLength,
 				body: raw,
+				readOnly: true,
+				nonCollaborative: true,
 			});
 			return { done: true };
 		});
@@ -472,13 +493,7 @@ async function fetch_provider_transcript(
 	});
 }
 
-/** Build the product artifact: the speaker-attributed Markdown transcript from the track files. */
-async function render_and_upload_markdown(env: Env, meeting: council_MeetingRow, grantToken: string) {
-	const existing = await get_artifact(env, meeting.id, target_key("transcript_markdown", "transcript.md"));
-	if (existing?.status === "finalized") {
-		return { skipped: true };
-	}
-
+async function load_attributed_transcript(env: Env, meeting: council_MeetingRow): Promise<council_AttributionResult> {
 	const db = env.COUNCIL_DB;
 	const trackRows = await db
 		.prepare("SELECT * FROM meeting_tracks WHERE meeting_id = ? AND status = 'transcribed'")
@@ -502,7 +517,7 @@ async function render_and_upload_markdown(env: Env, meeting: council_MeetingRow,
 		};
 	});
 
-	const attribution = council_attribute_tracks({
+	return council_attribute_tracks({
 		tracks,
 		participants: participants
 			.filter((participant) => participant.provider_participant_id !== null)
@@ -512,6 +527,16 @@ async function render_and_upload_markdown(env: Env, meeting: council_MeetingRow,
 				displayName: participant.display_name,
 			})),
 	});
+}
+
+/** Build the product artifact: the speaker-attributed Markdown transcript from the track files. */
+async function render_and_upload_markdown(env: Env, meeting: council_MeetingRow, grantToken: string) {
+	const existing = await get_artifact(env, meeting.id, target_key("transcript_markdown", "transcript.md"));
+	if (existing?.status === "finalized") {
+		return { skipped: true };
+	}
+
+	const attribution = await load_attributed_transcript(env, meeting);
 	if (attribution.rejected.length > 0) {
 		// Dropped, never guessed. Rejections are visible in logs and the track rows stay for repair.
 		console.warn("Tracks were rejected during attribution", {
@@ -531,8 +556,76 @@ async function render_and_upload_markdown(env: Env, meeting: council_MeetingRow,
 		contentType: "text/markdown",
 		size: bytes.byteLength,
 		body: bytes,
+		readOnly: true,
+		nonCollaborative: true,
 	});
 	return { segmentCount: attribution.segments.length, rejectedCount: attribution.rejected.length };
+}
+
+/** Persist model output before creating its target, so every redrive uploads byte-identical text. */
+async function store_summary_markdown(env: Env, meeting: council_MeetingRow) {
+	const db = env.COUNCIL_DB;
+	const existing = await db
+		.prepare("SELECT meeting_id FROM meeting_summaries WHERE meeting_id = ?")
+		.bind(meeting.id)
+		.first<{ meeting_id: string }>();
+	if (existing) {
+		return { summaryStored: true };
+	}
+
+	const attribution = await load_attributed_transcript(env, meeting);
+	const summarized = await council_summarize_meeting(env, attribution.segments);
+	if (summarized._nay) {
+		throw new Error(summarized._nay.message);
+	}
+	const markdown = council_render_summary_markdown({
+		title: meeting.title,
+		createdAt: meeting.opened_at ?? meeting.created_at,
+		summary: summarized._yay.summary,
+		sourceWasSplit: summarized._yay.sourceWasSplit,
+		sourceWasTruncated: summarized._yay.sourceWasTruncated,
+	});
+	await db
+		.prepare("INSERT OR IGNORE INTO meeting_summaries (meeting_id, markdown, created_at) VALUES (?, ?, ?)")
+		.bind(meeting.id, markdown, Date.now())
+		.run();
+	// Read the stored winner after the idempotent insert. A retry must never upload model output
+	// that lost a race with another attempt for the same meeting.
+	const stored = await db
+		.prepare("SELECT meeting_id FROM meeting_summaries WHERE meeting_id = ?")
+		.bind(meeting.id)
+		.first<{ meeting_id: string }>();
+	if (!stored) {
+		throw new Error("Meeting summary was not stored");
+	}
+	return { summaryStored: true };
+}
+
+async function upload_summary_markdown(env: Env, meeting: council_MeetingRow, grantToken: string) {
+	const existing = await get_artifact(env, meeting.id, target_key("summary_markdown", "summary.md"));
+	if (existing?.status === "finalized") {
+		return { skipped: true };
+	}
+	const stored = await env.COUNCIL_DB.prepare("SELECT markdown FROM meeting_summaries WHERE meeting_id = ?")
+		.bind(meeting.id)
+		.first<{ markdown: string }>();
+	if (!stored) {
+		throw new Error("Meeting summary was not stored before upload");
+	}
+	const bytes = new TextEncoder().encode(stored.markdown);
+	await upload_artifact(env, {
+		meeting,
+		grantToken,
+		kind: "summary_markdown",
+		targetKey: target_key("summary_markdown", "summary.md"),
+		fileName: "summary.md",
+		contentType: "text/markdown",
+		size: bytes.byteLength,
+		body: bytes,
+		readOnly: true,
+		nonCollaborative: true,
+	});
+	return { summaryStored: true };
 }
 
 async function load_participants(env: Env, meetingId: string) {
@@ -586,6 +679,8 @@ async function upload_artifact(
 		contentType: string;
 		size: number;
 		body: ReadableStream<Uint8Array> | Uint8Array;
+		readOnly: boolean;
+		nonCollaborative: boolean;
 	},
 ) {
 	const db = env.COUNCIL_DB;
@@ -612,6 +707,8 @@ async function upload_artifact(
 			path: `${args.meeting.destination_path}/${args.fileName.toLowerCase()}`,
 			contentType: args.contentType,
 			size: args.size,
+			readOnly: args.readOnly,
+			nonCollaborative: args.nonCollaborative,
 		});
 		await db
 			.prepare("UPDATE meeting_artifacts SET upload_body = ?, updated_at = ? WHERE id = ? AND upload_body IS NULL")
@@ -628,6 +725,8 @@ async function upload_artifact(
 		path: string;
 		contentType: string;
 		size: number;
+		readOnly: boolean;
+		nonCollaborative: boolean;
 	};
 
 	const target = await council_convex_uploads_create_target(env, args.grantToken, createBody);
@@ -785,7 +884,9 @@ export async function council_run_deletion(env: Env, step: WorkflowStep, params:
 			// The delete supersedes every undelivered older revision: order says nothing older than
 			// the terminal delete may apply after it.
 			await db
-				.prepare("UPDATE projection_outbox SET status = 'superseded', updated_at = ? WHERE meeting_id = ? AND status = 'pending'")
+				.prepare(
+					"UPDATE projection_outbox SET status = 'superseded', updated_at = ? WHERE meeting_id = ? AND status = 'pending'",
+				)
 				.bind(now, meeting.id)
 				.run();
 			const current = await council_get_meeting(db, meeting.id);
@@ -813,6 +914,7 @@ export async function council_run_deletion(env: Env, step: WorkflowStep, params:
 				db.prepare("DELETE FROM room_sessions WHERE meeting_id = ?").bind(meeting.id),
 				db.prepare("DELETE FROM meeting_tickets WHERE meeting_id = ?").bind(meeting.id),
 				db.prepare("UPDATE meeting_tracks SET transcript_json = NULL WHERE meeting_id = ?").bind(meeting.id),
+				db.prepare("DELETE FROM meeting_summaries WHERE meeting_id = ?").bind(meeting.id),
 				db
 					.prepare(
 						"UPDATE meetings SET title = '', destination_path = '', service_grant_id = NULL, processing_grant_id = NULL, updated_at = ? WHERE id = ?",

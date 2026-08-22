@@ -82,6 +82,7 @@ describe("council_room_page_html", () => {
 	});
 
 	test("labels every guest form field through label[for]", () => {
+		expect(html).not.toContain("novalidate");
 		for (const id of ["guest-code", "guest-name", "guest-email"]) {
 			expect(html).toContain(`<label for="${id}">`);
 			expect(html).toContain(`id="${id}"`);
@@ -97,7 +98,7 @@ describe("council_room_page_html", () => {
 	test("shows the recording consent notice before media starts for both roles", () => {
 		// Once on the guest form, once in the pre-join lobby — the lobby is the only door into
 		// the call, so the host sees it too.
-		const matches = html.match(/This meeting is recorded\./g) ?? [];
+		const matches = html.match(/This meeting may be recorded\./g) ?? [];
 		expect(matches.length).toBeGreaterThanOrEqual(2);
 		expect(html).toContain("attached to their part of the transcript");
 		expect(html).toContain("Names are not verified");
@@ -107,20 +108,52 @@ describe("council_room_page_html", () => {
 		for (const id of [
 			"participant-list",
 			"mute-button",
+			"camera-button",
+			"play-audio-button",
 			"leave-button",
 			"start-recording-button",
 			"end-meeting-button",
 			"recording-indicator",
+			"meeting-elapsed",
+			"connection-status",
 			"host-confirm-yes",
 			"host-confirm-cancel",
 		]) {
 			expect(html).toContain(`id="${id}"`);
 		}
+		expect(html).toContain('<svg viewBox="0 0 24 24">');
 	});
 
 	test("hides the host controls until the session says the participant is the host", () => {
-		expect(html).toMatch(/id="host-controls" hidden/);
+		expect(html).toMatch(/id="start-recording-button" hidden/);
+		expect(html).toMatch(/id="end-meeting-button" hidden/);
 		expect(html).toContain('participant.role !== "host"');
+	});
+
+	test("keeps recording UI hidden until recording is active", () => {
+		expect(html).toMatch(/id="recording-indicator" hidden/);
+		expect(html).toContain("[hidden]");
+		expect(html).toContain("display: none !important");
+		expect(html).toContain('current === "STARTING"');
+	});
+
+	test("has a responsive scrollable stage and non-overlapping wrapping controls", () => {
+		expect(html).toContain('data-layout="featured"');
+		expect(html).toContain('data-side-columns="1"');
+		expect(html).toContain("overflow: auto");
+		expect(html).toContain("position: static");
+		expect(html).toContain("flex-shrink: 0");
+		expect(html).toContain("flex-wrap: wrap");
+		expect(html).toContain("max-width: 760px");
+		expect(html).toContain("max-height: 650px");
+	});
+
+	test("gives tile pin actions and toggle controls accessible state", () => {
+		expect(html).toContain('className = "participant-pin"');
+		expect(html).toContain('setAttribute("aria-label", (state.pinnedKey');
+		expect(html).toContain('id="mute-button" aria-pressed="false"');
+		expect(html).toContain('id="camera-button" aria-pressed="false"');
+		expect(html).toContain('role="status" aria-live="polite"');
 	});
 
 	test("starts with only the loading view visible", () => {
@@ -142,6 +175,50 @@ describe("council_room_page_html", () => {
 		expect(html).toContain("enableAudio");
 	});
 
+	test("uses one abortable deadline across every provider join stage", () => {
+		expect(html).toContain("JOIN_TIMEOUT_MS");
+		expect(html).toContain("AbortController");
+		expect(html).toContain("cancelJoinOperation");
+		expect(html).toContain('operation.stage = "initializing"');
+		expect(html).toContain('operation.stage = "joining"');
+	});
+
+	test("wires exact RealtimeKit media and reconnect events", () => {
+		for (const event of [
+			"videoUpdate",
+			"audioUpdate",
+			"participantJoined",
+			"participantLeft",
+			"roomLeft",
+			"roomJoined",
+			"meetingStartTimeUpdate",
+			"socketConnectionUpdate",
+		]) {
+			expect(html).toContain(`"${event}"`);
+		}
+		expect(html).toContain('payload.state === "disconnected"');
+		expect(html).toContain('payload.state === "failed"');
+		expect(html).toContain("if (state.reconnecting)");
+	});
+
+	test("keeps connection and recording labels visible on narrow rooms", () => {
+		expect(html).not.toContain(".connection-status span:last-child");
+		expect(html).not.toContain(".room-recording span:last-child");
+	});
+
+	test("describes the end-meeting dialog consequence", () => {
+		expect(html).toContain('aria-describedby="host-confirm-text"');
+	});
+
+	test("attaches real media tracks and provides autoplay recovery", () => {
+		expect(html).toContain("new MediaStream([track])");
+		expect(html).toContain("element.srcObject");
+		expect(html).toContain("playRemoteAudio");
+		expect(html).toContain("retryBlockedAudio");
+		expect(html).toContain("video.playsInline = true");
+		expect(html).toContain('.participant-tile[data-video="on"] .participant-avatar');
+	});
+
 	test("generates a joinAttemptId and reuses it across retries of the same attempt", () => {
 		expect(html).toContain("joinAttemptId");
 		expect(html).toContain("crypto.randomUUID()");
@@ -150,12 +227,13 @@ describe("council_room_page_html", () => {
 
 	test("polls meeting state and treats every non-open status as over", () => {
 		expect(html).toContain('"/room/api/state"');
-		expect(html).toContain('status !== "open"');
+		expect(html).toContain('status !== "recording_start_unknown"');
 	});
 
 	test("renders untrusted display names through textContent only", () => {
 		expect(html).not.toContain("innerHTML");
-		expect(html).toContain("item.textContent = label");
+		expect(html).toContain("record.name.textContent = name");
+		expect(html).toContain("record.avatar.textContent = displayInitials(name)");
 	});
 
 	test("respects reduced motion for the recording pulse", () => {

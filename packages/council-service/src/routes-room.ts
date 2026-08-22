@@ -17,12 +17,19 @@ import {
 	type council_MeetingRow,
 	type council_ParticipantRow,
 } from "./db.ts";
-import { council_decrypt, council_email_hmac, council_encrypt, council_random_token, council_sha256_hex } from "./crypto.ts";
+import {
+	council_decrypt,
+	council_email_hmac,
+	council_encrypt,
+	council_random_token,
+	council_sha256_hex,
+} from "./crypto.ts";
 import { council_json, council_read_json_body, council_read_string_field } from "./http.ts";
 import { council_verify_host_actor_grant, council_verify_meeting_grant } from "./grants.ts";
 import {
 	council_PRESET_NAMES,
 	council_provider_add_participant,
+	council_provider_delete_participant,
 	council_provider_ensure_preset,
 	council_provider_start_track_recording,
 	council_provider_stop_recording,
@@ -304,7 +311,11 @@ async function handle_guest_session(request: Request, env: Env, now: number) {
 	}
 	const ipVerdict = await council_rate_limit(env.COUNCIL_DB, { name: "guest_join_ip", key: clientIp, now });
 	if (!ipVerdict.allowed) {
-		return council_json(429, { message: "Too many join attempts" }, { "Retry-After": String(ipVerdict.retryAfterSeconds) });
+		return council_json(
+			429,
+			{ message: "Too many join attempts" },
+			{ "Retry-After": String(ipVerdict.retryAfterSeconds) },
+		);
 	}
 
 	const body = await council_read_json_body(request);
@@ -334,7 +345,11 @@ async function handle_guest_session(request: Request, env: Env, now: number) {
 	const codeHash = await council_sha256_hex(code);
 	const codeVerdict = await council_rate_limit(env.COUNCIL_DB, { name: "guest_join_code", key: codeHash, now });
 	if (!codeVerdict.allowed) {
-		return council_json(429, { message: "Too many join attempts" }, { "Retry-After": String(codeVerdict.retryAfterSeconds) });
+		return council_json(
+			429,
+			{ message: "Too many join attempts" },
+			{ "Retry-After": String(codeVerdict.retryAfterSeconds) },
+		);
 	}
 
 	// One neutral answer for a missing meeting and a wrong code, so a guess learns nothing about
@@ -349,9 +364,13 @@ async function handle_guest_session(request: Request, env: Env, now: number) {
 		now,
 	});
 	if (!installationVerdict.allowed) {
-		return council_json(429, { message: "Too many join attempts" }, {
-			"Retry-After": String(installationVerdict.retryAfterSeconds),
-		});
+		return council_json(
+			429,
+			{ message: "Too many join attempts" },
+			{
+				"Retry-After": String(installationVerdict.retryAfterSeconds),
+			},
+		);
 	}
 
 	// The guest presented the right code, so they were invited: name the real reason a join is
@@ -372,7 +391,9 @@ async function handle_guest_session(request: Request, env: Env, now: number) {
 	// Idempotency: the same attempt with the same identity is the same person retrying; the same
 	// attempt with a different identity is a conflict, never a silent overwrite.
 	const emailHmac =
-		email._yay === null ? null : await council_email_hmac(env.COUNCIL_ROOM_COOKIE_SECRET, email._yay.trim().toLowerCase());
+		email._yay === null
+			? null
+			: await council_email_hmac(env.COUNCIL_ROOM_COOKIE_SECRET, email._yay.trim().toLowerCase());
 	const existing = await env.COUNCIL_DB.prepare(
 		"SELECT * FROM meeting_participants WHERE meeting_id = ? AND join_attempt_id = ?",
 	)
@@ -412,6 +433,9 @@ async function handle_guest_session(request: Request, env: Env, now: number) {
 // #endregion session creation
 
 // #region in-room calls
+
+/** Let a retry replace a Worker request that died while its provider call was in flight. */
+const ADMISSION_ATTEMPT_LEASE_MS = 30_000;
 
 async function handle_join(request: Request, env: Env, now: number) {
 	const auth = await room_session_auth(env, request, now);
@@ -470,54 +494,85 @@ async function handle_join(request: Request, env: Env, now: number) {
 		return council_json(200, { authToken: token });
 	}
 
-	// Reserve the slot before the provider call. The guarded UPDATE is the cap: the 26th accepted
-	// participant changes zero rows and is refused.
-	// Claim accepted_at first. That row is the mutex: two overlapping joins for the same
-	// participant both see accepted_at NULL, but only one UPDATE wins. The winner then increments
-	// the count. The loser skips the increment. Incrementing first let both requests add 1 before
-	// either wrote accepted_at.
-	const slotHeldWithoutToken = participant.accepted_at !== null && !participant.provider_token_encrypted;
-	let reservedNow = false;
-	if (!participant.accepted_at) {
-		const claimed = await env.COUNCIL_DB.prepare(
-			"UPDATE meeting_participants SET accepted_at = ? WHERE id = ? AND accepted_at IS NULL",
+	// Own every provider call with a durable generation. An overlapping request cannot release or
+	// persist another request's slot, while a lost-answer retry can claim the held slot later.
+	const admissionAttemptId = crypto.randomUUID();
+	const [claimedNew, reserved] = await env.COUNCIL_DB.batch([
+		env.COUNCIL_DB.prepare(
+			`UPDATE meeting_participants
+			SET accepted_at = ?, admission_attempt_id = ?, admission_attempt_started_at = ?
+			WHERE id = ? AND accepted_at IS NULL AND provider_token_encrypted IS NULL
+			AND EXISTS (
+				SELECT 1 FROM meetings
+				WHERE meetings.id = meeting_participants.meeting_id
+				AND meetings.status = 'open' AND meetings.deadline_at IS NOT NULL AND meetings.deadline_at > ?
+				AND meetings.participant_count < ?
+			)`,
+		).bind(now, admissionAttemptId, now, participant.id, now, council_max_participants(env)),
+		env.COUNCIL_DB.prepare(
+			`UPDATE meetings
+			SET participant_count = participant_count + 1, updated_at = ?
+			WHERE id = ? AND EXISTS (
+				SELECT 1 FROM meeting_participants
+				WHERE id = ? AND admission_attempt_id = ?
+			)`,
+		).bind(now, meeting.id, participant.id, admissionAttemptId),
+	]);
+	if (claimedNew.meta.changes === 1) {
+		if (reserved.meta.changes !== 1) {
+			throw new Error("Admission batch claimed a participant without recounting the meeting");
+		}
+	} else {
+		const claimedHeld = await env.COUNCIL_DB.prepare(
+			`UPDATE meeting_participants
+				SET admission_attempt_id = ?, admission_attempt_started_at = ?
+				WHERE id = ? AND accepted_at IS NOT NULL AND provider_token_encrypted IS NULL
+				AND (
+					admission_attempt_id IS NULL OR admission_attempt_started_at IS NULL OR admission_attempt_started_at <= ?
+				)`,
 		)
-			.bind(now, participant.id)
+			.bind(admissionAttemptId, now, participant.id, now - ADMISSION_ATTEMPT_LEASE_MS)
 			.run();
-		if (claimed.meta.changes === 1) {
-			const reserved = await env.COUNCIL_DB.prepare(
-				"UPDATE meetings SET participant_count = participant_count + 1, updated_at = ? WHERE id = ? AND participant_count < ?",
-			)
-				.bind(now, meeting.id, council_max_participants(env))
-				.run();
-			if (reserved.meta.changes !== 1) {
-				await env.COUNCIL_DB.prepare(
-					"UPDATE meeting_participants SET accepted_at = NULL WHERE id = ? AND provider_token_encrypted IS NULL",
-				)
-					.bind(participant.id)
-					.run();
-				return council_json(409, { message: "The meeting is full" });
+		if (claimedHeld.meta.changes !== 1) {
+			const currentParticipant = await env.COUNCIL_DB.prepare("SELECT * FROM meeting_participants WHERE id = ?")
+				.bind(participant.id)
+				.first<council_ParticipantRow>();
+			if (currentParticipant?.provider_token_encrypted) {
+				const token = await council_decrypt(
+					env.COUNCIL_ROOM_COOKIE_SECRET,
+					currentParticipant.provider_token_encrypted,
+				);
+				return council_json(200, { authToken: token });
 			}
-			reservedNow = true;
+			return council_json(409, { message: "A join is already in progress. Try again." });
 		}
 	}
 
 	const release_slot = async () => {
-		if (reservedNow || slotHeldWithoutToken) {
-			await env.COUNCIL_DB.prepare(
-				"UPDATE meetings SET participant_count = participant_count - 1, updated_at = ? WHERE id = ? AND participant_count > 0",
-			)
-				.bind(now, meeting.id)
-				.run();
-			await env.COUNCIL_DB.prepare(
-				"UPDATE meeting_participants SET accepted_at = NULL WHERE id = ? AND provider_token_encrypted IS NULL",
-			)
-				.bind(participant.id)
-				.run();
-		}
+		await env.COUNCIL_DB.batch([
+			env.COUNCIL_DB.prepare(
+				`UPDATE meetings SET participant_count = participant_count - 1, updated_at = ?
+				WHERE id = ? AND participant_count > 0 AND EXISTS (
+					SELECT 1 FROM meeting_participants
+					WHERE id = ? AND admission_attempt_id = ? AND provider_token_encrypted IS NULL
+				)`,
+			).bind(now, meeting.id, participant.id, admissionAttemptId),
+			env.COUNCIL_DB.prepare(
+				`UPDATE meeting_participants
+				SET accepted_at = NULL, admission_attempt_id = NULL, admission_attempt_started_at = NULL
+				WHERE id = ? AND admission_attempt_id = ? AND provider_token_encrypted IS NULL`,
+			).bind(participant.id, admissionAttemptId),
+		]);
 	};
 
-	const preset = await council_ensure_preset_cached(env, participant.role, now);
+	let preset: Awaited<ReturnType<typeof council_ensure_preset_cached>>;
+	try {
+		preset = await council_ensure_preset_cached(env, participant.role, now);
+	} catch (error) {
+		await release_slot();
+		console.warn("Preset ensure answer was lost; refusing the join", { meetingId: meeting.id, error });
+		return council_json(502, { message: "The provider presets are not ready" });
+	}
 	if (preset._nay) {
 		// Name the real refusal in the log: the 502 body stays generic on purpose, and a silent
 		// branch here cost a full tail cycle to diagnose once already.
@@ -543,6 +598,12 @@ async function handle_join(request: Request, env: Env, now: number) {
 		// The answer was lost: the provider participant may or may not exist. The slot stays
 		// reserved so a duplicate can never exceed the cap; the retry replays the same durable
 		// `custom_participant_id`.
+		await env.COUNCIL_DB.prepare(
+			`UPDATE meeting_participants SET admission_attempt_id = NULL, admission_attempt_started_at = NULL
+			WHERE id = ? AND admission_attempt_id = ? AND provider_token_encrypted IS NULL`,
+		)
+			.bind(participant.id, admissionAttemptId)
+			.run();
 		return council_json(502, { message: "The provider answer was lost; try again" });
 	}
 	if (added._nay) {
@@ -550,16 +611,65 @@ async function handle_join(request: Request, env: Env, now: number) {
 		return council_json(502, { message: "The provider refused the participant" });
 	}
 
-	await env.COUNCIL_DB.prepare(
-		"UPDATE meeting_participants SET provider_participant_id = ?, provider_token_encrypted = ?, accepted_at = ? WHERE id = ?",
+	const postProviderNow = Date.now();
+	const stored = await env.COUNCIL_DB.prepare(
+		`UPDATE meeting_participants
+		SET provider_participant_id = ?, provider_token_encrypted = ?, accepted_at = ?, admission_attempt_id = NULL,
+		admission_attempt_started_at = NULL
+		WHERE id = ? AND admission_attempt_id = ? AND provider_token_encrypted IS NULL
+		AND EXISTS (
+			SELECT 1 FROM meetings
+			WHERE meetings.id = meeting_participants.meeting_id
+			AND meetings.status = 'open' AND meetings.deadline_at IS NOT NULL AND meetings.deadline_at > ?
+		)`,
 	)
 		.bind(
 			added._yay.providerParticipantId,
 			await council_encrypt(env.COUNCIL_ROOM_COOKIE_SECRET, added._yay.token),
-			now,
+			postProviderNow,
 			participant.id,
+			admissionAttemptId,
+			postProviderNow,
 		)
 		.run();
+	if (stored.meta.changes !== 1) {
+		// Never expose a token minted after close. Delete the provider participant best-effort; the
+		// token stays unknown to every client even if the provider cleanup itself is unavailable.
+		try {
+			const deleted = await council_provider_delete_participant(env, {
+				providerMeetingId: meeting.provider_meeting_id,
+				providerParticipantId: added._yay.providerParticipantId,
+			});
+			if (deleted._nay) {
+				console.warn("Provider participant cleanup was refused after a late join", {
+					meetingId: meeting.id,
+					providerParticipantId: added._yay.providerParticipantId,
+					reason: deleted._nay.name,
+				});
+			}
+		} catch {
+			console.warn("Provider participant cleanup answer was lost after a late join", {
+				meetingId: meeting.id,
+				providerParticipantId: added._yay.providerParticipantId,
+			});
+		}
+		await release_slot();
+		const currentMeeting = await council_get_meeting(env.COUNCIL_DB, meeting.id);
+		const currentParticipant = await env.COUNCIL_DB.prepare("SELECT * FROM meeting_participants WHERE id = ?")
+			.bind(participant.id)
+			.first<council_ParticipantRow>();
+		if (
+			currentMeeting?.status === "open" &&
+			currentMeeting.deadline_at !== null &&
+			postProviderNow < currentMeeting.deadline_at &&
+			currentParticipant?.provider_token_encrypted
+		) {
+			return council_json(200, {
+				authToken: await council_decrypt(env.COUNCIL_ROOM_COOKIE_SECRET, currentParticipant.provider_token_encrypted),
+			});
+		}
+		return council_json(409, { message: "This meeting ended before the join finished." });
+	}
 
 	return council_json(200, { authToken: added._yay.token });
 }

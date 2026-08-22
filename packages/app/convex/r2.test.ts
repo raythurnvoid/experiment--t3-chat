@@ -3944,6 +3944,62 @@ describe("process_uploaded_asset_event accepted upload", () => {
 });
 
 describe("finalize_uploaded_text_file accepted upload", () => {
+	async function seed_non_collaborative_service_target(
+		t: ReturnType<typeof test_convex>,
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+		upload: Awaited<ReturnType<typeof create_upload_fixture>>,
+	) {
+		const installationId = await install_upload_plugin(t, {
+			userId: db.userId,
+			membershipId: db.membershipId,
+			name: "image",
+			displayName: "Image",
+			description: "Image markdown generation",
+			contentTypes: ["image/png"],
+		});
+		return await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("quotas", {
+				quotaName: "plugin_service_storage_bytes",
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				usedCount: 0,
+				maxCount: 10 * 1024 * 1024 * 1024,
+				createdAt: now,
+				updatedAt: now,
+			});
+			const targetId = await ctx.db.insert("plugin_service_storage_targets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				installationId,
+				idempotencyKey: "meeting-1",
+				targetKey: "transcript",
+				requestFingerprint: "non-collaborative-test",
+				readOnly: true,
+				nonCollaborative: true,
+				destinationPath: "/",
+				// This conversion test needs only the target-to-asset link. The service upload tests cover
+				// real destination creation and cleanup identity.
+				destinationNodeId: upload.nodeId,
+				destinationEpoch: 1,
+				path: "/service-transcript.md",
+				contentType: "text/markdown;charset=utf-8",
+				declaredBytes: 1024,
+				actualBytes: null,
+				nodeId: upload.nodeId,
+				assetId: upload.assetId,
+				state: "pending",
+				createdBy: db.userId,
+				updatedAt: now,
+			});
+			await ctx.db.patch("files_nodes", upload.nodeId, {
+				readOnlyScopeNodeId: upload.nodeId,
+				readOnlyPluginServiceTargetId: targetId,
+			});
+			return targetId;
+		});
+	}
+
 	async function confirm_upload_put(
 		t: ReturnType<typeof test_convex>,
 		upload: { assetId: Id<"files_r2_assets">; key: string },
@@ -4015,6 +4071,88 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		// Only normal staging cleanup remains.
 		expect(docs.jobs).toHaveLength(1);
 		expect(docs.jobs.find((job) => job.r2Key === locked.key)).toMatchObject({ reason: "upload_staging" });
+	});
+
+	test("publishes a service non-collaborative text file without any Yjs docs or asset", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture(t, db, "service-transcript.md", "text/markdown;charset=utf-8");
+		const targetId = await seed_non_collaborative_service_target(t, db, upload);
+		await confirm_upload_put(t, upload, "# Service transcript\n\nbody", "message_service_non_collaborative");
+
+		await t.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload.assetId,
+			eventId: "event_service_non_collaborative",
+		});
+
+		const published = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", upload.nodeId),
+			sourceAsset: await ctx.db.get("files_r2_assets", upload.assetId),
+			assets: await ctx.db.query("files_r2_assets").collect(),
+			yjsSnapshots: await ctx.db.query("files_yjs_snapshots").collect(),
+			yjsSequences: await ctx.db.query("files_yjs_docs_last_sequences").collect(),
+			yjsUpdates: await ctx.db.query("files_yjs_updates").collect(),
+			fileSnapshots: await ctx.db.query("files_snapshots").collect(),
+			chunks: await ctx.db.query("files_text_chunks").collect(),
+		}));
+		expect(published.node).toMatchObject({
+			nonCollaborative: true,
+			yjsRootKind: "rich_text",
+			readOnlyScopeNodeId: upload.nodeId,
+			readOnlyPluginServiceTargetId: targetId,
+		});
+		expect(published.node?.yjsSnapshotId).toBeUndefined();
+		expect(published.node?.yjsLastSequenceId).toBeUndefined();
+		expect(published.node?.assetId).not.toBe(upload.assetId);
+		expect(published.sourceAsset?.processingWorkId).toBeNull();
+		expect(published.assets.filter((asset) => asset.kind === "yjs_snapshot")).toHaveLength(0);
+		expect(published.yjsSnapshots).toHaveLength(0);
+		expect(published.yjsSequences).toHaveLength(0);
+		expect(published.yjsUpdates).toHaveLength(0);
+		expect(published.fileSnapshots).toHaveLength(1);
+		expect(published.chunks.length).toBeGreaterThan(0);
+	});
+
+	test("keeps the service lock and provenance when non-collaborative conversion falls back", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture(t, db, "service-invalid.md", "text/markdown;charset=utf-8");
+		const targetId = await seed_non_collaborative_service_target(t, db, upload);
+		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
+		r2Objects.set(upload.key, new Uint8Array([0x48, 0xff, 0xfe]));
+		expect(
+			(
+				await post_r2_put_event(t, {
+					bucket,
+					key: upload.key,
+					size: 3,
+					messageId: "message_service_non_collaborative_fallback",
+				})
+			).status,
+		).toBe(204);
+
+		await t.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload.assetId,
+			eventId: "event_service_non_collaborative_fallback",
+		});
+		const settled = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", upload.nodeId),
+			asset: await ctx.db.get("files_r2_assets", upload.assetId),
+			yjsSnapshots: await ctx.db.query("files_yjs_snapshots").collect(),
+		}));
+		expect(settled.node).toMatchObject({
+			assetId: upload.assetId,
+			readOnlyScopeNodeId: upload.nodeId,
+			readOnlyPluginServiceTargetId: targetId,
+		});
+		expect(settled.node?.nonCollaborative).toBeUndefined();
+		expect(settled.node?.yjsSnapshotId).toBeUndefined();
+		expect(settled.asset?.processingWorkId).toBeNull();
+		expect(settled.yjsSnapshots).toHaveLength(0);
 	});
 
 	test("dispatches the fallback plugin when the node locks during the accepted upload", async () => {

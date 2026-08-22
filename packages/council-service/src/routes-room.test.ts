@@ -3,7 +3,15 @@ import { afterEach, describe, expect, test } from "vitest";
 import worker from "./index.ts";
 import { council_close_meeting } from "./lifecycle.ts";
 import { council_sha256_hex } from "./crypto.ts";
-import { FUTURE, install_fetch, make_test_env, seed_grant, seed_meeting, seed_participant, seed_room_session } from "../test/env.ts";
+import {
+	FUTURE,
+	install_fetch,
+	make_test_env,
+	seed_grant,
+	seed_meeting,
+	seed_participant,
+	seed_room_session,
+} from "../test/env.ts";
 
 const ROOM_ORIGIN = "https://council.example";
 
@@ -144,7 +152,11 @@ describe("council_handle_room_api CSRF", () => {
 		await seed_grant(env);
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
 		const participant = await seed_participant(env, { meetingId: "meeting-1" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "guest" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "guest",
+		});
 
 		const missing = await worker.fetch(
 			room_post("/room/api/state", {}, { Cookie: `__Host-council_session=${session.sessionToken}` }),
@@ -178,7 +190,11 @@ describe("council_handle_room_api CSRF", () => {
 		await seed_grant(env);
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
 		const participant = await seed_participant(env, { meetingId: "meeting-1" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "guest" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "guest",
+		});
 
 		const response = await worker.fetch(
 			room_post(
@@ -355,7 +371,11 @@ describe("council_handle_room_api /room/api/join", () => {
 		await seed_grant(env);
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
 		const participant = await seed_participant(env, { meetingId: "meeting-1", displayName: "Casey Guest" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "guest" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "guest",
+		});
 		const headers = {
 			Cookie: `__Host-council_session=${session.sessionToken}`,
 			"X-Council-Csrf": session.csrfToken,
@@ -383,7 +403,9 @@ describe("council_handle_room_api /room/api/join", () => {
 		expect(mock.calls.filter((call) => call.url.includes("/participants")).length).toBe(providerCallsBefore);
 
 		// One slot consumed, once.
-		const meeting = await env.COUNCIL_DB.prepare("SELECT participant_count FROM meetings WHERE id = 'meeting-1'").first<{
+		const meeting = await env.COUNCIL_DB.prepare(
+			"SELECT participant_count FROM meetings WHERE id = 'meeting-1'",
+		).first<{
 			participant_count: number;
 		}>();
 		expect(meeting?.participant_count).toBe(1);
@@ -400,7 +422,11 @@ describe("council_handle_room_api /room/api/join", () => {
 			role: "host",
 			displayName: "",
 		});
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "host" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "host",
+		});
 		const headers = {
 			Cookie: `__Host-council_session=${session.sessionToken}`,
 			"X-Council-Csrf": session.csrfToken,
@@ -428,7 +454,11 @@ describe("council_handle_room_api /room/api/join", () => {
 		await seed_grant(env);
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
 		const participant = await seed_participant(env, { meetingId: "meeting-1" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "guest" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "guest",
+		});
 
 		const response = await worker.fetch(
 			room_post(
@@ -517,7 +547,11 @@ describe("council_handle_room_api /room/api/join", () => {
 		await seed_grant(env);
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE, participantCount: 3 });
 		const participant = await seed_participant(env, { meetingId: "meeting-1" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "guest" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "guest",
+		});
 
 		const response = await worker.fetch(
 			room_post(
@@ -528,56 +562,120 @@ describe("council_handle_room_api /room/api/join", () => {
 			env,
 		);
 		expect(response.status).toBe(502);
-		const meeting = await env.COUNCIL_DB.prepare("SELECT participant_count FROM meetings WHERE id = 'meeting-1'").first<{
+		const meeting = await env.COUNCIL_DB.prepare(
+			"SELECT participant_count FROM meetings WHERE id = 'meeting-1'",
+		).first<{
 			participant_count: number;
 		}>();
 		expect(meeting?.participant_count).toBe(3);
 	});
 
-	test("two overlapping joins for the same participant increment the count once", async () => {
+	test("a thrown preset request releases the admission lease and slot", async () => {
 		const { env } = make_test_env();
-		restoreFetch = install_fetch().restore;
+		restoreFetch = install_fetch({
+			"/presets": () => {
+				throw new Error("preset network lost");
+			},
+		}).restore;
+		await seed_grant(env);
+		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
+		const participant = await seed_participant(env, { meetingId: "meeting-1" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "guest",
+		});
+
+		const response = await worker.fetch(
+			room_post(
+				"/room/api/join",
+				{},
+				{ Cookie: `__Host-council_session=${session.sessionToken}`, "X-Council-Csrf": session.csrfToken },
+			),
+			env,
+		);
+
+		expect(response.status).toBe(502);
+		expect(
+			await env.COUNCIL_DB.prepare(
+				"SELECT accepted_at, admission_attempt_id, admission_attempt_started_at FROM meeting_participants WHERE id = ?",
+			)
+				.bind(participant.id)
+				.first(),
+		).toEqual({ accepted_at: null, admission_attempt_id: null, admission_attempt_started_at: null });
+		expect(
+			await env.COUNCIL_DB.prepare("SELECT participant_count FROM meetings WHERE id = 'meeting-1'").first(),
+		).toEqual({ participant_count: 0 });
+	});
+
+	test("a second overlapping join cannot share or release the first attempt's slot", async () => {
+		const { env } = make_test_env();
+		let resolveAdd!: (response: Response) => void;
+		const addResponse = new Promise<Response>((resolve) => {
+			resolveAdd = resolve;
+		});
+		const mock = install_fetch({
+			"/participants": () => addResponse,
+		});
+		restoreFetch = mock.restore;
 		await seed_grant(env);
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE, participantCount: 0 });
 		const participant = await seed_participant(env, { meetingId: "meeting-1" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "guest" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "guest",
+		});
 		const headers = {
 			Cookie: `__Host-council_session=${session.sessionToken}`,
 			"X-Council-Csrf": session.csrfToken,
 		};
 
-		const [first, second] = await Promise.all([
-			worker.fetch(room_post("/room/api/join", {}, headers), env),
-			worker.fetch(room_post("/room/api/join", {}, headers), env),
-		]);
+		const firstResponse = worker.fetch(room_post("/room/api/join", {}, headers), env);
+		await expect.poll(() => mock.calls.filter((call) => call.url.includes("/participants")).length).toBe(1);
+		const second = await worker.fetch(room_post("/room/api/join", {}, headers), env);
+		expect(second.status).toBe(409);
+		resolveAdd(
+			Response.json({
+				success: true,
+				data: { id: "prov-owned", token: "tokenheader.tokenpayload.tokensig" },
+			}),
+		);
+		const first = await firstResponse;
 		expect(first.status).toBe(200);
-		expect(second.status).toBe(200);
-		const meeting = await env.COUNCIL_DB.prepare("SELECT participant_count FROM meetings WHERE id = 'meeting-1'").first<{
+		const meeting = await env.COUNCIL_DB.prepare(
+			"SELECT participant_count FROM meetings WHERE id = 'meeting-1'",
+		).first<{
 			participant_count: number;
 		}>();
 		expect(meeting?.participant_count).toBe(1);
 	});
 
-	test("a lost Add Participant answer keeps one slot and a retry does not increment again", async () => {
+	test("a lost answer keeps one slot and only one overlapping retry can own it", async () => {
 		const { env } = make_test_env();
 		let attempts = 0;
+		let resolveRetry!: (response: Response) => void;
+		const retryResponse = new Promise<Response>((resolve) => {
+			resolveRetry = resolve;
+		});
 		const mock = install_fetch({
 			"/participants": () => {
 				attempts += 1;
 				if (attempts === 1) {
 					throw new Error("socket dropped");
 				}
-				return Response.json({
-					success: true,
-					data: { id: "prov-retry", token: "tokenheader.tokenpayload.tokensig" },
-				});
+				return retryResponse;
 			},
 		});
 		restoreFetch = mock.restore;
 		await seed_grant(env);
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE, participantCount: 3 });
 		const participant = await seed_participant(env, { meetingId: "meeting-1" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "guest" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "guest",
+		});
 		const headers = {
 			Cookie: `__Host-council_session=${session.sessionToken}`,
 			"X-Council-Csrf": session.csrfToken,
@@ -597,13 +695,83 @@ describe("council_handle_room_api /room/api/join", () => {
 		expect(held?.accepted_at).not.toBeNull();
 		expect(held?.provider_token_encrypted).toBeNull();
 
-		const retried = await worker.fetch(room_post("/room/api/join", {}, headers), env);
+		const retrying = worker.fetch(room_post("/room/api/join", {}, headers), env);
+		await expect.poll(() => attempts).toBe(2);
+		const overlappingRetry = await worker.fetch(room_post("/room/api/join", {}, headers), env);
+		expect(overlappingRetry.status).toBe(409);
+		resolveRetry(
+			Response.json({
+				success: true,
+				data: { id: "prov-retry", token: "tokenheader.tokenpayload.tokensig" },
+			}),
+		);
+		const retried = await retrying;
 		expect(retried.status).toBe(200);
 		const afterRetry = await env.COUNCIL_DB.prepare(
 			"SELECT participant_count FROM meetings WHERE id = 'meeting-1'",
 		).first<{ participant_count: number }>();
 		expect(afterRetry?.participant_count).toBe(4);
 		expect(attempts).toBe(2);
+	});
+
+	test("deletes a participant and releases its slot when the meeting closes during Add Participant", async () => {
+		const { env } = make_test_env();
+		let resolveAdd!: (response: Response) => void;
+		const addResponse = new Promise<Response>((resolve) => {
+			resolveAdd = resolve;
+		});
+		const mock = install_fetch({
+			"/participants": (call) =>
+				call.method === "POST" ? addResponse : Response.json({ success: true, data: { action: "delete" } }),
+		});
+		restoreFetch = mock.restore;
+		await seed_grant(env);
+		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
+		const participant = await seed_participant(env, { meetingId: "meeting-1" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "guest",
+		});
+		const headers = {
+			Cookie: `__Host-council_session=${session.sessionToken}`,
+			"X-Council-Csrf": session.csrfToken,
+		};
+
+		const joining = worker.fetch(room_post("/room/api/join", {}, headers), env);
+		await expect
+			.poll(() => mock.calls.filter((call) => call.method === "POST" && call.url.includes("/participants")).length)
+			.toBe(1);
+		await env.COUNCIL_DB.prepare(
+			"UPDATE meetings SET status = 'closed', deadline_at = NULL WHERE id = 'meeting-1'",
+		).run();
+		resolveAdd(
+			Response.json({
+				success: true,
+				data: { id: "prov-too-late", token: "lateheader.latepayload.latesig" },
+			}),
+		);
+
+		const response = await joining;
+		expect(response.status).toBe(409);
+		expect(
+			mock.calls.some((call) => call.method === "DELETE" && call.url.endsWith("/participants/prov-too-late")),
+		).toBe(true);
+		const stored = await env.COUNCIL_DB.prepare(
+			"SELECT accepted_at, admission_attempt_id, provider_token_encrypted FROM meeting_participants WHERE id = ?",
+		)
+			.bind(participant.id)
+			.first<{
+				accepted_at: number | null;
+				admission_attempt_id: string | null;
+				provider_token_encrypted: string | null;
+			}>();
+		expect(stored).toEqual({ accepted_at: null, admission_attempt_id: null, provider_token_encrypted: null });
+		expect(
+			await env.COUNCIL_DB.prepare("SELECT participant_count FROM meetings WHERE id = 'meeting-1'").first<{
+				participant_count: number;
+			}>(),
+		).toEqual({ participant_count: 0 });
 	});
 
 	test("the 26th accepted participant is refused", async () => {
@@ -636,7 +804,9 @@ describe("council_handle_room_api /room/api/join", () => {
 		expect(response.status).toBe(409);
 
 		// The cap counts slots, never attempts: the refused join must not consume one.
-		const meeting = await env.COUNCIL_DB.prepare("SELECT participant_count FROM meetings WHERE id = 'meeting-1'").first<{
+		const meeting = await env.COUNCIL_DB.prepare(
+			"SELECT participant_count FROM meetings WHERE id = 'meeting-1'",
+		).first<{
 			participant_count: number;
 		}>();
 		expect(meeting?.participant_count).toBe(25);
@@ -646,7 +816,11 @@ describe("council_handle_room_api /room/api/join", () => {
 describe("council_handle_room_api /room/api/host/start-recording", () => {
 	async function seed_host_session(env: ReturnType<typeof make_test_env>["env"]) {
 		const participant = await seed_participant(env, { meetingId: "meeting-1", role: "host", displayName: "Host" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "host" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "host",
+		});
 		return {
 			Cookie: `__Host-council_session=${session.sessionToken}`,
 			"X-Council-Csrf": session.csrfToken,
@@ -659,7 +833,11 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 		await seed_grant(env);
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
 		const participant = await seed_participant(env, { meetingId: "meeting-1", role: "guest" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "guest" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "guest",
+		});
 
 		const response = await worker.fetch(
 			room_post(
@@ -925,7 +1103,11 @@ describe("council_handle_room_api /room/api/host/close", () => {
 		await seed_grant(env);
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
 		const participant = await seed_participant(env, { meetingId: "meeting-1", role: "guest" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "guest" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "guest",
+		});
 
 		const response = await worker.fetch(
 			room_post(
@@ -952,7 +1134,11 @@ describe("council_handle_room_api /room/api/host/close", () => {
 			processingGrantId: "grant-proc",
 		});
 		const participant = await seed_participant(env, { meetingId: "meeting-1", role: "host", displayName: "Host" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "host" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "host",
+		});
 
 		const response = await worker.fetch(
 			room_post(
@@ -996,7 +1182,11 @@ describe("council_handle_room_api /room/api/host/close", () => {
 		await seed_grant(env);
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
 		const participant = await seed_participant(env, { meetingId: "meeting-1", role: "host", displayName: "Host" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "host" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "host",
+		});
 
 		const response = await worker.fetch(
 			room_post(
@@ -1020,7 +1210,11 @@ describe("council_handle_room_api /room/api/host/close", () => {
 		await seed_grant(env, { expiresAt: 1 });
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
 		const participant = await seed_participant(env, { meetingId: "meeting-1", role: "host", displayName: "Host" });
-		const session = await seed_room_session(env, { meetingId: "meeting-1", participantId: participant.id, role: "host" });
+		const session = await seed_room_session(env, {
+			meetingId: "meeting-1",
+			participantId: participant.id,
+			role: "host",
+		});
 
 		const response = await worker.fetch(
 			room_post(
@@ -1066,9 +1260,7 @@ describe("council_handle_room_api /room/api/host/close", () => {
 							first: async <T>() => {
 								const row = await bound.first<T>();
 								attached = true;
-								await db
-									.prepare("UPDATE meetings SET provider_recording_id = 'rec-late' WHERE id = 'meeting-1'")
-									.run();
+								await db.prepare("UPDATE meetings SET provider_recording_id = 'rec-late' WHERE id = 'meeting-1'").run();
 								return row;
 							},
 						};

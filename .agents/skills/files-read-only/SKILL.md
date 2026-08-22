@@ -11,7 +11,8 @@ act. Read-only answers whether the node may change.
 No normal write bypasses a lock. This includes writes from owners, admins, members, API keys, plugin
 runs, and agents. `content.permissions.manage` lets a caller lock or unlock a node. It does not let
 other writes bypass the lock. Named tenant, workspace, and account deletion flows are lifecycle
-bypasses because they remove the whole scope.
+bypasses because they remove the whole scope. The one narrow product exception is cleanup of a
+service-created direct lock, described below; it is provenance-bound and is not general write access.
 
 The closest OS comparison is the Linux immutable flag (`chattr +i`). It blocks content changes,
 rename, and delete. POSIX mode bits and the Windows read-only attribute are different because the
@@ -33,6 +34,9 @@ On `files_nodes`, beside `restrictedScopeNodeId`:
 - `readOnlyScopeNodeId`: `undefined` means writable. The node's own `_id` means it has a direct lock.
   Another id means it inherits the nearest folder lock. Folder cascades include archived descendants
   and stop at nested direct locks.
+- `readOnlyPluginServiceTargetId`: internal provenance for the exact service target that created a
+  direct lock. Public node query answers always remove it. Every member lock/unlock transition and
+  inherited-pointer cascade clears it. An idempotent call that changes no lock leaves it alone.
 
 There is no read-only generation or lock-history table. A past lock does not make later work stale.
 Every write checks the current pointer in its final transaction. If the pointer is clear at that time,
@@ -145,6 +149,12 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
 - Clients cannot request a bypass. Tenant, workspace, and account deletion are named lifecycle
   bypasses in `data_deletion.ts`. Named migration and repair entrypoints may also bypass the lock.
   Normal operator imports in `data_import.ts` do not bypass it.
+- A sealed service upload may create its new placeholder with a direct lock only when the plugin has
+  `workspace.files.create-read-only` and the actor has live `content.permissions.manage` at the
+  destination ACL. Its `delete` and `archive-destination` doors may pass only that exact target's
+  direct lock. They recheck tenant, installation, destination node, open epoch, target state,
+  capability, provenance, and live manage ACL before any cleanup write. Inherited, member-created,
+  member-recreated, moved, released, deleting, stale-epoch, or unrelated locks never pass.
 - If discard or expiry finds a locked eager-created node or created ancestor, remove the pending docs
   but keep the empty committed branch. `eagerCreated` stores the creation-time committed sequence and
   optional `createdAncestorIds`. Cleanup checks every existing node's current lock before its first

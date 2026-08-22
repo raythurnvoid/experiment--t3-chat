@@ -46,7 +46,11 @@ describe("council_handle_page_api /api/meetings/create", () => {
 		expect(response.status).toBe(200);
 		expect(rowExistedAtProviderCall).toBe(true);
 
-		const body = (await response.json()) as { meeting: { id: string; status: string }; joinCode: string; guestUrl: string };
+		const body = (await response.json()) as {
+			meeting: { id: string; status: string };
+			joinCode: string;
+			guestUrl: string;
+		};
 		expect(body.meeting.status).toBe("created");
 		// 256-bit code. The guest link carries only the meeting id in the shape the room client
 		// reads (`?m=`); the code is never part of any URL, so sharing the link cannot leak it.
@@ -183,7 +187,8 @@ describe("council_handle_page_api /api/meetings/open", () => {
 	test("fails closed when verify-live refuses", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch({
-			"/service-grants/verify-live": () => Response.json({ message: "This grant is in another phase" }, { status: 409 }),
+			"/service-grants/verify-live": () =>
+				Response.json({ message: "This grant is in another phase" }, { status: 409 }),
 		});
 		restoreFetch = mock.restore;
 		await seed_grant(env);
@@ -397,18 +402,27 @@ describe("council_handle_page_api /api/meetings/list and /api/meetings/get", () 
 		).run();
 
 		const listResponse = await worker.fetch(page_post("/api/meetings/list", {}), env);
-		const listBody = (await listResponse.json()) as { meetings: { id: string }[] };
+		const listBody = (await listResponse.json()) as {
+			meetings: { id: string; artifacts: { kind: string; name: string; fileNodeId: string }[] }[];
+		};
 		expect(listBody.meetings.map((meeting) => meeting.id)).toEqual(["meeting-live"]);
+		expect(listBody.meetings[0]?.artifacts).toEqual([
+			{ kind: "transcript_markdown", name: "transcript.md", fileNodeId: "node-9" },
+		]);
 
 		// The room/page client reads `{meeting, artifacts}` with `name` + `fileNodeId` entries.
 		const getResponse = await worker.fetch(page_post("/api/meetings/get", { meetingId: "meeting-live" }), env);
 		const getBody = (await getResponse.json()) as {
-			meeting: { id: string; status: string; deadlineAt: number | null };
+			meeting: {
+				id: string;
+				status: string;
+				deadlineAt: number | null;
+				artifacts: { kind: string; name: string; fileNodeId: string }[];
+			};
 			artifacts: { kind: string; name: string; fileNodeId: string }[];
 		};
 		expect(getBody.meeting.id).toBe("meeting-live");
-		expect(getBody.artifacts).toEqual([
-			{ kind: "transcript_markdown", name: "transcript.md", fileNodeId: "node-9" },
-		]);
+		expect(getBody.meeting.artifacts).toEqual(getBody.artifacts);
+		expect(getBody.artifacts).toEqual([{ kind: "transcript_markdown", name: "transcript.md", fileNodeId: "node-9" }]);
 	});
 });

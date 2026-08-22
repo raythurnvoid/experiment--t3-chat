@@ -26,6 +26,9 @@ Membership says where you are. Access control says what you may do there.
   `content.permissions.manage` to use the dedicated lock controls, but that permission does not make
   ordinary writes bypass a lock. Sharing and comment-sidecar permissions stay separate; see
   `../files-read-only/SKILL.md`.
+- A sealed service must have live `content.permissions.manage` at the effective destination ACL
+  before it creates any target. Its narrow read-only cleanup exception rechecks manage on the exact
+  provenance-bound target. It never bypasses a restricted ACL failure or grants general lock access.
 
 ## Where a role binds
 

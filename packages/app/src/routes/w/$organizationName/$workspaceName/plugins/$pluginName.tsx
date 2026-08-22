@@ -1142,6 +1142,9 @@ type RoutePluginsPluginAccess_Props = {
 };
 
 function format_access_label(value: string) {
+	if (value === "workspace.files.create-read-only") {
+		return "Create read-only workspace files";
+	}
 	return value
 		.split(/[._]/)
 		.map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
@@ -2088,7 +2091,7 @@ function RoutePluginsPlugin() {
 									key={capability}
 									className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
 								>
-									{capability}
+									{format_access_label(capability)}
 									{installedVersion && consentDiff.newCapabilities.includes(capability) ? (
 										<MyBadge variant="secondary">new</MyBadge>
 									) : null}

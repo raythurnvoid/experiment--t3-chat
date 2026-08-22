@@ -15130,6 +15130,7 @@ describe("files_nodes public read-only projection", () => {
 			expect(node.readOnlySourcePath).toBeUndefined();
 			// The raw pointer must not leave the backend: it would name the hidden outer folder.
 			expect("readOnlyScopeNodeId" in node).toBe(false);
+			expect("readOnlyPluginServiceTargetId" in node).toBe(false);
 		}
 
 		// The owner can read the lock root, so each returned node may name it.
@@ -15160,6 +15161,7 @@ describe("files_nodes public read-only projection", () => {
 		expect(memberView?.readOnlySourceNodeId).toBeUndefined();
 		expect(memberView?.readOnlySourcePath).toBeUndefined();
 		expect(memberView !== null && "readOnlyScopeNodeId" in memberView).toBe(false);
+		expect(memberView !== null && "readOnlyPluginServiceTargetId" in memberView).toBe(false);
 
 		const ownerView = await f.asOwner.query(api.files_nodes.get_file_node_for_membership, {
 			membershipId: f.db.membershipId,

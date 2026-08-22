@@ -54,22 +54,24 @@ File view ids share the page-id namespace (both address one sandboxed iframe ent
 
 Capabilities are the consent set. `CAPABILITIES` in `packages/app/shared/plugins.ts` is the closed list, and `plugins_capability_validator` in `schema.ts` must match it exactly:
 
-| Capability               | Grants                                                                 |
-| ------------------------ | ---------------------------------------------------------------------- |
-| `plugin.secrets.read`    | Read the secrets configured for this installation                      |
-| `outbound.fetch`         | The plugin's own backend may call its declared outbound origins        |
-| `workspace.files.read`   | Read workspace files                                                   |
-| `workspace.files.write`  | Put `files:write` on a service grant, capped by its destination prefix |
-| `plugin.data.read`       | Read this installation's stored documents                              |
-| `plugin.data.write`      | Create, change, and delete them                                        |
-| `plugin.data.user-write` | The plugin's pages may store and change them as the acting member, through the app |
-| `plugin.service.connect` | The page may pass its access to a server outside the app (see below)   |
-| `ui.outbound.fetch`      | The plugin's page may call its declared page outbound origins          |
+| Capability                         | Grants                                                                             |
+| ---------------------------------- | ---------------------------------------------------------------------------------- |
+| `plugin.secrets.read`              | Read the secrets configured for this installation                                  |
+| `outbound.fetch`                   | The plugin's own backend may call its declared outbound origins                    |
+| `workspace.files.read`             | Read workspace files                                                               |
+| `workspace.files.write`            | Put `files:write` on a service grant, capped by its destination prefix             |
+| `workspace.files.create-read-only` | Let a sealed service lock only the new file it creates                             |
+| `plugin.data.read`                 | Read this installation's stored documents                                          |
+| `plugin.data.write`                | Create, change, and delete them                                                    |
+| `plugin.data.user-write`           | The plugin's pages may store and change them as the acting member, through the app |
+| `plugin.service.connect`           | The page may pass its access to a server outside the app (see below)               |
+| `ui.outbound.fetch`                | The plugin's page may call its declared page outbound origins                      |
 
-Two capabilities imply another one, and `plugins_validate_manifest` rejects the manifest at publish instead of letting it install and fail later:
+Four capabilities imply another one, and `plugins_validate_manifest` rejects the manifest at publish instead of letting it install and fail later:
 
 - `plugin.data.write` requires `plugin.data.read`. A plugin that can only write would store documents it can never read back.
 - `plugin.data.user-write` requires `plugin.data.read` for the same reason.
+- `workspace.files.create-read-only` requires `workspace.files.write`. It adds one create-time mode to the sealed upload door; it is not general lock authority.
 - `plugin.service.connect` requires `plugin.data.read` or `workspace.files.write`. On its own it can obtain no scope, so the grant mint would always refuse it. `outbound.fetch` does not satisfy this: that is the plugin's own backend calling out, not an outside service acting for the plugin.
 
 `ui.outbound.fetch` and `uiOutboundOrigins` require each other in both directions. The capability with no origin would grant nothing, and origins with no capability would widen the page's policy without the install dialog listing a capability for it.
@@ -84,6 +86,8 @@ The list is enforced by the browser, not by app code: `plugin_page_csp` in `plug
 - `install_version` requires `acceptedUiOutboundOrigins` to equal the version's list exactly, with its own message (`Install must accept exactly the page outbound origins the plugin declares`). A consent dialog that showed only backend origins cannot install.
 
 `workspace.files.write` reaches exactly one door: the `/api/v1/files/service-uploads/*` pipeline (see `../public-api/SKILL.md#service-upload-routes`), open only to a sealed processing-phase service grant carrying `files:write` and a destination prefix. The pipeline also covers cleaning up what the service stored, so the delete-meeting workflow needs no other file surface: `archive-destination` archives the grant's own destination folder with everything inside it (what the Council delete calls), and `delete` archives the committed files one target key stored or cancels their unfinished placeholders. Archiving, not hard deletion, is what "delete a file" means in this product — see `../data-deletion/SKILL.md`. The generic `/api/v1/files/*` routes still leave `plugin_service` out of their `allowedKinds`, so such a grant is refused with 403 everywhere else.
+
+`workspace.files.create-read-only` does not add a token scope. `create-target` checks it only when the required `readOnly` request flag is true, then rechecks the actor's live `content.permissions.manage` at the effective destination ACL before writing anything. The host records the exact service target on the new node. Only service cleanup for that same live target may pass that direct lock, while the capability and actor ACL still hold. Member lock changes clear the target pointer.
 
 `plugin.service.connect` is the only capability whose holder is not code the app runs. It lets the page exchange its `plu_` token for an installation-bound `psg_` service grant, so the publisher's own server keeps working while nobody has the page open. The install-consent dialog says exactly that.
 
@@ -196,18 +200,18 @@ Member-initiated writes bypass none of that: the page never writes with its own 
 - Resource model, all SDK-side per page: 8 subscription slots shared by plain watches and windows (a window is one slot), and at most 6 intervals per window (600 docs at the 100 page-size ceiling). The start-token budget was retired together with the data bridge — refusal reasons are now only `invalid` (SDK-side validation, a strict SUBSET of the server rules — lengths, printable-ASCII prefix, integer limit — so a browser's newer Unicode tables can never refuse names the server still serves; input outside the subset still dies server-side as the bare null) and `capacity` (the slot cap, delivered asynchronously so the caller already holds its unsubscribe handle). A bare `docs: null` stays reserved for access loss and query death; every death is delivered once and drops the registration, so a later unsubscribe is a no-op.
 - Writes and member resolution run on the same client: the five `data.*` writes call the `user_*` mutations and always resolve (an unexpected failure resolves the stable `Failed to write plugin data` `_nay`); `members.resolve` calls `resolve_member_display` and resolves `{}` on denial or failure.
 
-| Limit                           | Value    |
-| ------------------------------- | -------- |
-| Value bytes (canonical JSON)    | 16 KiB   |
-| Collection name and key length  | 128      |
-| Key prefix length (append/watch) | 109     |
-| Collections per installation    | 16       |
-| Stored + reserved bytes         | 16 MiB   |
-| Document slots per installation | 10,000   |
-| Documents per batch write       | 50       |
-| List page size                  | 100      |
-| Reservation TTL                 | 8 days   |
-| Retry horizon                   | 24 hours |
+| Limit                            | Value    |
+| -------------------------------- | -------- |
+| Value bytes (canonical JSON)     | 16 KiB   |
+| Collection name and key length   | 128      |
+| Key prefix length (append/watch) | 109      |
+| Collections per installation     | 16       |
+| Stored + reserved bytes          | 16 MiB   |
+| Document slots per installation  | 10,000   |
+| Documents per batch write        | 50       |
+| List page size                   | 100      |
+| Reservation TTL                  | 8 days   |
+| Retry horizon                    | 24 hours |
 
 The key-prefix budget is `plugins_data_MAX_KEY_PREFIX_LENGTH` = 128 − 19: an append completes the prefix with `<inverted 13-digit ms>:<rand4>` (18 characters) plus one spare. The same 109-character limit bounds watch/window `keyPrefix`, so a key longer than 108 characters cannot have prefix-addressable children — plan hierarchical key schemes around that.
 
@@ -258,8 +262,8 @@ Rules that are easy to get wrong:
 - Only `exchange` can create a grant, and only a `plu_` token can drive it. A grant that could exchange itself would keep a service alive forever without a member ever opening the page again, and a leaked exchange secret would then be enough on its own. `renew` refuses a `plu_` for the mirror-image reason.
 - `renew` patches the grant doc it was given; it never inserts. The mutation looks the doc up by the hash of the presented raw token, never by a grant id, because an id is not a secret. It repeats the mint's own liveness checks (enabled installation, same plugin version, `plugin.service.connect` still accepted, live actor membership), so the service learns now instead of holding a token that answers 401 on its next real call. It leaves the stored scopes alone: the resolver narrows them against current capabilities on every call, so rewriting them would only make a capability that is given back later stay lost.
 - `COUNCIL_PLUGIN_NAME` names the one plugin this secret may exchange page tokens for, and `exchange` checks it before the capabilities. Every plugin page is served from the same asset origin, and this skill says plainly that the shared origin is not a plugin-to-plugin boundary, so one page can read another page's `plu_` token. Without the name check the exchange would turn that stolen read-only token into a grant carrying the other plugin's producer identity — and a service grant is the only principal allowed to write versioned documents at all. Like the secret, it is read without throwing; unset refuses every exchange.
-- `exchange` requires all four of `plugin.service.connect`, `plugin.data.read`, `plugin.data.write`, and `workspace.files.write` by name, and refuses with 403 before writing anything. The mint would narrow a missing scope capability away instead of refusing, and by then the grant doc would exist. Consent is all-or-nothing per version (`install_version` requires the accepted set to equal the version's declared set), so in practice this fails only when the installed version stopped declaring one of the four.
-- `exchange` never asks for `files:write`. That scope exists only together with a destination prefix, and the destination is chosen when a meeting opens, not when the service connects. `seal-processing` is what mints it: it takes a live interactive `psg_` bearer plus `{ destinationPathPrefix }` (a normalized absolute path of canonical lowercase folder names, not `/`), repeats the exchange's plugin-name, four-capability, and actor `contentPermissions.write` checks, and mints a NEW grant — same installation and actor — with phase `processing`, scopes `plugin_data:read` + `plugin_data:write` + `files:write`, exactly that prefix, and a six-day expiry. The mint runs with `requireAllRequestedScopes`, so a capability that disappears between the pre-check and the mutation refuses the seal instead of silently writing a narrower grant. A processing grant cannot seal again (403), so the six-day window cannot roll forever, and `rotate_plugin_service_grant` keeps a processing grant's `expiresAt` unchanged — renewal rotates the token only. The interactive grant stays alive beside the sealed one.
+- `exchange` requires all five of `plugin.service.connect`, `plugin.data.read`, `plugin.data.write`, `workspace.files.write`, and `workspace.files.create-read-only` by name, and refuses with 403 before writing anything. The mint would narrow a missing scope capability away instead of refusing, and by then the grant doc would exist. Consent is all-or-nothing per version (`install_version` requires the accepted set to equal the version's declared set), so in practice this fails only when the installed version stopped declaring one of the five.
+- `exchange` never asks for `files:write`. That scope exists only together with a destination prefix, and the destination is chosen when a meeting opens, not when the service connects. `seal-processing` is what mints it: it takes a live interactive `psg_` bearer plus `{ destinationPathPrefix }` (a normalized absolute path of canonical lowercase folder names, not `/`), repeats the exchange's plugin-name, five-capability, and actor `contentPermissions.write` checks, and mints a NEW grant — same installation and actor — with phase `processing`, scopes `plugin_data:read` + `plugin_data:write` + `files:write`, exactly that prefix, and a six-day expiry. The mint runs with `requireAllRequestedScopes`, so a capability that disappears between the pre-check and the mutation refuses the seal instead of silently writing a narrower grant. A processing grant cannot seal again (403), so the six-day window cannot roll forever, and `rotate_plugin_service_grant` keeps a processing grant's `expiresAt` unchanged — renewal rotates the token only. The interactive grant stays alive beside the sealed one.
 - `verify-live` compares the values the service sends with what the grant really says and answers 409 on any difference. Those are claims to check, not authority to hand out: a wrong value can only turn a yes into a no. It also reports the actor's current `contentPermissions`, so a service can stop before a meeting instead of failing on the write at the end of one.
 - Every `verify-live` body field is required: `installationId`, `phase`, `destinationPathPrefix`, and `scopes`. A service that states nothing cannot be told it was wrong. `scopes` matters most: taking a capability back on upgrade narrows a live grant instead of killing it, so a grant that lost `plugin_data:write` would still look live here and fail later, on the write at the end of a meeting.
 - The exchange body is a strict empty object. Tenant, installation, plugin, scopes, and destination all come from the live installation, so there is no body field to ask for more with. The response returns `actorUserId` from the resolved page principal so Council can bind its D1 grant and meeting rows to the trusted actor.
@@ -377,6 +381,8 @@ races between route authorization and the durable write.
 - SDK 0.8.0 (mirror commit `364304f80ea9c97f8424d2fd3609ff09ab74d748`) added the window bridge and CAS surface: `BonoboPublicDoc` (with `byteSize` and `writeMode`), `data.watchWindow(...)` returning `{ unsubscribe, loadOlder }`, window updates carrying `hasMore`/`atCapacity`/`incomplete`, per-operation write result types, and `expectedRevision` on the four keyed writes. The wire protocol is additive — an older host simply never answers the window messages — but the write result TYPES narrowed honestly (put no longer echoes `key`), so plugins keep the client-generated key themselves. Two contracts pinned by tests: `expectedRevision: 0` must reach the wire (the SDK spreads on `undefined`, never on falsiness), and a watch death with no host explanation delivers exactly one argument — the info object is passed only when the host sent a `reason` or `message`.
 - SDK 0.9.0 (mirror commit `6e43f24f27c4c2895b6d5ef158c4c5b28c932ba4`) replaced the `bonobo:data-*` bridge with a page-owned `ConvexClient`: init now carries `convexUrl`, the SDK exchanges the page token for a plugin-session JWT at `POST <apiOrigin>/plugins-ui/session-jwt` (one refresh-and-retry on 401), and the window manager moved from the host into the SDK. The token budget is retired — refusal reasons are only `invalid` and `capacity` — and refusals are delivered async so subscribe never throws. Writes always resolve (`_nay` message pinned to "Failed to write plugin data"), `members.resolve` never rejects (`{}` on failure), and the client closes on `pagehide` / re-creates after a bfcache restore. Chitchat 0.1.4 is the first consumer.
 - SDK 0.9.1 (mirror commit `313a0693b0722ab1021728c034d686e4bd9899e0`) made the JWT exchange retry transient failures. The Convex client treats one null token as final, so a thrown fetch, a 429 from the exchange bucket, or a 5xx used to permanently de-authenticate the page; the exchange now retries those three shapes up to three attempts with 1–2s backoff, while a hard refusal still answers null right away. Also: the README warns that a `no-referrer` page policy makes the browser send `Origin: null` on the exchange (refused), and the d.ts says the exchange never extends the session (the host token refresh does). Chitchat 0.1.5 is the first consumer; the stale data-bridge comments listed here earlier rode along in that release.
+- SDK 0.9.2 adds `workspace.files.create-read-only` and the required `readOnly` and `nonCollaborative` service-upload fields. It is changed locally but must be mirrored and verified before external plugin authors use it.
+- Council 0.2.0 is a coupled release. Keep meeting maintenance on while old artifact rows and host targets are audited and drained; apply D1 `0006` and `0007`; deploy the strict core and final Worker; verify the SDK 0.9.2 mirror; build Council twice; push and verify its exact SHA; update the parent gitlink; publish that SHA; accept the capability and smoke test; only then reopen meetings. Migration `0006` refuses any old artifact row so an incompatible body or 17th target cannot be replayed by accident.
 - Always run pnpm with `--ignore-workspace` inside `plugins/*` and inside `packages/bonobo-plugin-sdk` — installing through the root workspace pollutes the parent lockfile and produces stale git-dep pins.
 - Published plugin versions are immutable — never rewrite one; bump to the first unused patch version.
 - Comments in `src/` reach `dist/`, so even a comment-only source change alters the dist hashes and the manifest. Batch cosmetic source fixes with the next real release instead of shipping a version bump for them.

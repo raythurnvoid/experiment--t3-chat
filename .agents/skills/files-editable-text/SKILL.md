@@ -88,12 +88,19 @@ The two toggles answer a permission refusal with different words, and that is no
 
 ## Where the mode comes from
 
-There are exactly two sources. Nothing else sets the flag.
+There are exactly three sources. Nothing else sets the flag.
 
 - `POST /api/v1/files/write` and `/write-many` accept an optional `nonCollaborative` boolean in the body. It is read only when the write CREATES the file; a write over a file that already exists keeps the mode that file has. See the `public-api` skill.
 - The Collaboration checkbox in the Properties dialog (`packages/app/src/components/files/files-properties-modal.tsx`). Either direction remounts the editor, so the dialog confirms that only last-saved text is used and warns the user to save open editor changes first. The OFF confirmation also names the deleted history, comments, and pending proposal text.
+- A sealed service `create-target` request with required `nonCollaborative: true`. The filename must
+  pass the normal editable-text classifier. The choice stays on the service target while the empty
+  placeholder is a blob, then successful conversion publishes the flag.
 
-Uploads never create a non-collaborative file. There is also no lazy Yjs creation: a collaborative file still gets its document eagerly at creation.
+Member uploads never create a non-collaborative file. A service upload is the narrow exception. After
+classifier, UTF-8, NUL, size, document-build, and frontmatter handling succeeds, it publishes chunks,
+one content/version snapshot and one file snapshot, with no Yjs asset, snapshot, sequence, or update
+docs. A deterministic fallback stays a blob, preserves any service lock provenance, and leaves the
+node flag unset. There is still no lazy Yjs creation: a collaborative file gets its document eagerly.
 
 ## What the editors do
 
@@ -157,9 +164,10 @@ Only two paths create a `plain_text` node:
 - Upload conversion: `finalize_uploaded_text_file` (`packages/app/convex/r2.ts`) classifies from the node NAME and converts every editable text upload (`.md` to rich, the other 19 to `Y.Text`). Deterministic failures (unrecognized name, over-cap, invalid UTF-8, NUL bytes, refused document build) fall back to a stored blob through `settle_upload_conversion_fallback`, which dispatches the upload plugin event — only a successful conversion suppresses it. Service uploads (`/api/v1/files/service-uploads/*`) feed the same conversion: their create-target leaves `processingWorkId` unset for editable-text names, but their fallback blob dispatches no plugin upload event (see the `public-api` skill). Over-cap FRONTMATTER is not a fallback: the markdown itself is valid, so the upload still converts — the finalize mutation mirrors the materializer's preflight, commits the chunks without the metadata index, and publishes with the frontmatter marker pair set, so the insert backstop can never throw inside the infinite-retry conversion workpool.
 - Agent write: `create_file_by_path` (agent route only) derives shape and media type from the classifier and refuses unknown extensions with `files_editable_text_refusal_message`.
 
-A committed service upload is a normal editable file after conversion. The service `delete` route
-archives it and keeps its Yjs updates, snapshots, chunks, metadata, and R2 asset. Only an unfinished
-service placeholder may use `files_nodes_db_hard_delete_node`.
+A committed collaborative service upload is a normal editable file after conversion. A committed
+non-collaborative service upload has the same chunks and version history but no Yjs docs. The service
+`delete` route archives either form and keeps its content, snapshots, metadata, and R2 asset. Only an
+unfinished service placeholder may use `files_nodes_db_hard_delete_node`.
 
 There is deliberately NO in-app create path: the sidebar New-file flow creates Markdown only, and the rename rule (`files_validate_file_rename_class` in `packages/app/shared/files.ts`, enforced by `rename_node`, pending-move proposal, and accept) never lets a name cross the Markdown/plain class. That strictness is why no in-app path is needed — a `.md` file can never be renamed into a `.json` file, so the UI has nothing to route. Renames inside the plain class (`json` → `yaml`) are allowed and patch the classifier `contentType` with the name. An extensionless destination claims no class, which keeps mixed file/folder swap cycles working.
 

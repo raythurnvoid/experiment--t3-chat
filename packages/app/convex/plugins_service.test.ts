@@ -13,12 +13,13 @@ const SEAL_PROCESSING_PATH = "/api/internal/plugins/service-grants/seal-processi
 /** The value `setup-env.test.ts` puts in the environment for the whole convex project. */
 const EXCHANGE_SECRET = "COUNCIL_SERVICE_EXCHANGE_SECRET_TEST";
 
-/** What a finished Council installation consents to. The exchange requires all four by name. */
+/** What a finished Council installation consents to. The exchange requires all five by name. */
 const COUNCIL_CAPABILITIES: plugins_Capability[] = [
 	"plugin.service.connect",
 	"plugin.data.read",
 	"plugin.data.write",
 	"workspace.files.write",
+	"workspace.files.create-read-only",
 ];
 
 /**

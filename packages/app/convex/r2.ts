@@ -777,6 +777,31 @@ type get_file_node_by_asset_id_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+export const get_service_upload_target_by_asset_id = internalQuery({
+	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		assetId: v.id("files_r2_assets"),
+	},
+	returns: v.union(doc(app_convex_schema, "plugin_service_storage_targets"), v.null()),
+	handler: async (ctx, args) => {
+		const target = await ctx.db
+			.query("plugin_service_storage_targets")
+			.withIndex("by_asset", (q) => q.eq("assetId", args.assetId))
+			.first();
+		return target?.organizationId === args.organizationId && target.workspaceId === args.workspaceId ? target : null;
+	},
+});
+
+type get_service_upload_target_by_asset_id_Result =
+	typeof get_service_upload_target_by_asset_id extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
 async function db_finalize_editable_text_file_node_from_r2_assets(
 	ctx: MutationCtx,
 	args: {
@@ -796,8 +821,9 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		 * with the classifier, never from the client-declared upload type.
 		 */
 		contentType: string;
-		yjsSnapshotAssetId: Id<"files_r2_assets">;
-		yjsSnapshotSize: number;
+		nonCollaborative: boolean;
+		yjsSnapshotAssetId: Id<"files_r2_assets"> | null;
+		yjsSnapshotSize: number | null;
 		versionSnapshotAssetId: Id<"files_r2_assets">;
 		versionSnapshotSize: number;
 		text: string;
@@ -839,49 +865,58 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 
 	// There is nothing to index when the frontmatter is over the caps or could not be read.
 	const skipFrontmatterIndex = frontmatterOverCapCounts !== null || frontmatter?._nay != null;
+	if (
+		args.nonCollaborative !==
+		(args.yjsSnapshotAssetId === null && args.yjsSnapshotSize === null)
+	) {
+		throw should_never_happen("Upload conversion Yjs asset does not match its collaboration mode");
+	}
 
-	// Create editable Yjs metadata for an existing node whose R2 objects were
-	// already written by the caller.
-	const [yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
-		ctx.db.insert("files_yjs_snapshots", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			fileNodeId: args.fileNodeId,
-			sequence: 0,
-			assetId: args.yjsSnapshotAssetId,
-			createdBy: args.userId,
-			updatedBy: args.userId,
-			updatedAt: args.now,
-		}),
-		ctx.db.insert("files_yjs_docs_last_sequences", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			fileNodeId: args.fileNodeId,
-			lastSequence: 0,
-			unmaterializedUpdateCount: 0,
-			unmaterializedUpdateBytes: 0,
-			lineageGeneration: 0,
-		}),
-		db_insert_file_text_content(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.fileNodeId,
-			path: args.path,
-			archiveOperationId: args.archiveOperationId,
-			yjsSequence: 0,
-			rootKind: args.rootKind,
-			textContent: args.text,
-			skipFrontmatterIndex,
-		}).then((chunks) => {
-			if (chunks._nay) {
-				throw convex_error({
-					message: "Failed to chunk file content",
-					cause: chunks._nay,
-				});
+	const chunks = await db_insert_file_text_content(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		nodeId: args.fileNodeId,
+		path: args.path,
+		archiveOperationId: args.archiveOperationId,
+		yjsSequence: 0,
+		rootKind: args.rootKind,
+		textContent: args.text,
+		skipFrontmatterIndex,
+	});
+	if (chunks._nay) {
+		throw convex_error({ message: "Failed to chunk file content", cause: chunks._nay });
+	}
+
+	let yjsSnapshotId: Id<"files_yjs_snapshots"> | undefined;
+	let yjsLastSequenceId: Id<"files_yjs_docs_last_sequences"> | undefined;
+	try {
+		if (!args.nonCollaborative) {
+			if (args.yjsSnapshotAssetId === null) {
+				throw should_never_happen("Collaborative upload conversion is missing its Yjs snapshot asset");
 			}
-			return chunks;
-		}),
-	] as const).catch((error) => {
+			[yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
+				ctx.db.insert("files_yjs_snapshots", {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					fileNodeId: args.fileNodeId,
+					sequence: 0,
+					assetId: args.yjsSnapshotAssetId,
+					createdBy: args.userId,
+					updatedBy: args.userId,
+					updatedAt: args.now,
+				}),
+				ctx.db.insert("files_yjs_docs_last_sequences", {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					fileNodeId: args.fileNodeId,
+					lastSequence: 0,
+					unmaterializedUpdateCount: 0,
+					unmaterializedUpdateBytes: 0,
+					lineageGeneration: 0,
+				}),
+			]);
+		}
+	} catch (error) {
 		const errorMessage = "Failed to finalize editable text file node";
 		console.error(errorMessage, {
 			error,
@@ -891,7 +926,7 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 			message: errorMessage,
 			cause: error,
 		});
-	});
+	}
 
 	// Publish the editable file state and clear every asset that represented
 	// this Workpool job. The node then points at the version snapshot instead of the upload
@@ -900,8 +935,9 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		ctx.db.patch("files_nodes", args.fileNodeId, {
 			assetId: args.versionSnapshotAssetId,
 			contentType: args.contentType,
-			yjsSnapshotId,
-			yjsLastSequenceId,
+			...(args.nonCollaborative
+				? { nonCollaborative: true }
+				: { yjsSnapshotId, yjsLastSequenceId }),
 			// Record the shape beside the other Yjs pointers, in the same publish patch, so the
 			// node and its document can never be born disagreeing.
 			yjsRootKind: args.rootKind,
@@ -916,16 +952,20 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 			updatedBy: args.userId,
 			updatedAt: args.now,
 		}),
-		ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
-			r2Key: r2_create_asset_key({
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				assetId: args.yjsSnapshotAssetId,
-			}),
-			size: args.yjsSnapshotSize,
-			unfinalizedExpiresAt: undefined,
-			updatedAt: args.now,
-		}),
+		...(args.yjsSnapshotAssetId !== null && args.yjsSnapshotSize !== null
+			? [
+					ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
+						r2Key: r2_create_asset_key({
+							organizationId: args.organizationId,
+							workspaceId: args.workspaceId,
+							assetId: args.yjsSnapshotAssetId,
+						}),
+						size: args.yjsSnapshotSize,
+						unfinalizedExpiresAt: undefined,
+						updatedAt: args.now,
+					}),
+				]
+			: []),
 		ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
 			r2Key: r2_create_asset_key({
 				organizationId: args.organizationId,
@@ -968,8 +1008,9 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 		userId: v.id("users"),
 		rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 		contentType: v.string(),
-		yjsSnapshotAssetId: v.id("files_r2_assets"),
-		yjsSnapshotSize: v.number(),
+		nonCollaborative: v.boolean(),
+		yjsSnapshotAssetId: v.union(v.id("files_r2_assets"), v.null()),
+		yjsSnapshotSize: v.union(v.number(), v.null()),
 		versionSnapshotAssetId: v.id("files_r2_assets"),
 		versionSnapshotSize: v.number(),
 		text: v.string(),
@@ -1063,7 +1104,7 @@ export const finalize_uploaded_text_file = internalAction({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const [asset, fileNode] = (await Promise.all([
+		const [asset, fileNode, serviceTarget] = (await Promise.all([
 			ctx.runQuery(internal.r2.get_asset_by_id, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -1074,7 +1115,12 @@ export const finalize_uploaded_text_file = internalAction({
 				workspaceId: args.workspaceId,
 				assetId: args.assetId,
 			}),
-		])) as [get_asset_by_id_Result, get_file_node_by_asset_id_Result];
+			ctx.runQuery(internal.r2.get_service_upload_target_by_asset_id, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetId: args.assetId,
+			}),
+		])) as [get_asset_by_id_Result, get_file_node_by_asset_id_Result, get_service_upload_target_by_asset_id_Result];
 		if (!asset) {
 			return null;
 		}
@@ -1186,32 +1232,34 @@ export const finalize_uploaded_text_file = internalAction({
 			return null;
 		}
 
-		// Turn editable text uploads into editable files, so later reads treat them the same as
-		// app-created files. Only the Yjs snapshot and the first version snapshot are created.
-		// The node points at the version snapshot; the original upload asset stays unchanged as
-		// the upload record.
-		const [yjsSnapshotAssetId, versionSnapshotAssetId] = (await Promise.all([
-			ctx.runMutation(internal.r2.insert_asset, {
+		// A service target may request a non-collaborative text file. Build the Yjs update above as
+		// validation, but create no Yjs asset or docs after that validation succeeds.
+		const nonCollaborative = serviceTarget?.nonCollaborative === true;
+		const yjsSnapshotAssetId = nonCollaborative
+			? null
+			: ((await ctx.runMutation(internal.r2.insert_asset, {
 				organizationId: fileNode.organizationId,
 				workspaceId: fileNode.workspaceId,
 				kind: "yjs_snapshot",
 				size: snapshotUpdate._yay.byteLength,
 				createdBy: fileNode.createdBy,
-			}),
-			ctx.runMutation(internal.r2.insert_asset, {
-				organizationId: fileNode.organizationId,
-				workspaceId: fileNode.workspaceId,
-				kind: "content_snapshot",
-				size: files_get_utf8_byte_size(text),
-				createdBy: fileNode.createdBy,
-			}),
-		])) as [Id<"files_r2_assets">, Id<"files_r2_assets">];
-
-		const yjsSnapshotR2Key = r2_create_asset_key({
+			})) as Id<"files_r2_assets">);
+		const versionSnapshotAssetId = (await ctx.runMutation(internal.r2.insert_asset, {
 			organizationId: fileNode.organizationId,
 			workspaceId: fileNode.workspaceId,
-			assetId: yjsSnapshotAssetId,
-		});
+			kind: "content_snapshot",
+			size: files_get_utf8_byte_size(text),
+			createdBy: fileNode.createdBy,
+		})) as Id<"files_r2_assets">;
+
+		const yjsSnapshotR2Key =
+			yjsSnapshotAssetId === null
+				? null
+				: r2_create_asset_key({
+						organizationId: fileNode.organizationId,
+						workspaceId: fileNode.workspaceId,
+						assetId: yjsSnapshotAssetId,
+					});
 		const versionSnapshotR2Key = r2_create_asset_key({
 			organizationId: fileNode.organizationId,
 			workspaceId: fileNode.workspaceId,
@@ -1219,11 +1267,15 @@ export const finalize_uploaded_text_file = internalAction({
 		});
 
 		await Promise.all([
-			r2_put_object(ctx, {
-				key: yjsSnapshotR2Key,
-				body: snapshotUpdate._yay,
-				contentType: "application/octet-stream" satisfies files_ContentType,
-			}),
+			...(yjsSnapshotR2Key === null
+				? []
+				: [
+						r2_put_object(ctx, {
+							key: yjsSnapshotR2Key,
+							body: snapshotUpdate._yay,
+							contentType: "application/octet-stream" satisfies files_ContentType,
+						}),
+					]),
 			r2_put_object(ctx, {
 				key: versionSnapshotR2Key,
 				body: text,
@@ -1243,8 +1295,9 @@ export const finalize_uploaded_text_file = internalAction({
 			userId: r2_require_real_author(fileNode.createdBy),
 			rootKind,
 			contentType: classifierContentType,
+			nonCollaborative,
 			yjsSnapshotAssetId,
-			yjsSnapshotSize: snapshotUpdate._yay.byteLength,
+			yjsSnapshotSize: yjsSnapshotAssetId === null ? null : snapshotUpdate._yay.byteLength,
 			versionSnapshotAssetId,
 			versionSnapshotSize: files_get_utf8_byte_size(text),
 			text,

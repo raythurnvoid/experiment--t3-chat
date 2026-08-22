@@ -593,7 +593,10 @@ export async function files_nodes_db_cascade_read_only_scope(
 				}
 
 				if (child.readOnlyScopeNodeId !== args.scopeNodeId) {
-					await ctx.db.patch("files_nodes", child._id, { readOnlyScopeNodeId: args.scopeNodeId });
+					await ctx.db.patch("files_nodes", child._id, {
+						readOnlyScopeNodeId: args.scopeNodeId,
+						readOnlyPluginServiceTargetId: undefined,
+					});
 				}
 				stack.push(child._id);
 			}),
@@ -1012,7 +1015,10 @@ export const set_node_read_only = mutation({
 
 		// A node under a parent lock can also get its own lock. It then stays locked if the parent
 		// is unlocked. Do not change `updatedBy` or `updatedAt` for this setting.
-		await ctx.db.patch("files_nodes", node._id, { readOnlyScopeNodeId: node._id });
+		await ctx.db.patch("files_nodes", node._id, {
+			readOnlyScopeNodeId: node._id,
+			readOnlyPluginServiceTargetId: undefined,
+		});
 		await files_nodes_db_cascade_read_only_scope(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1073,7 +1079,10 @@ export const set_node_writable = mutation({
 			parentId: node.parentId,
 		});
 
-		await ctx.db.patch("files_nodes", node._id, { readOnlyScopeNodeId: parentScopeNodeId });
+		await ctx.db.patch("files_nodes", node._id, {
+			readOnlyScopeNodeId: parentScopeNodeId,
+			readOnlyPluginServiceTargetId: undefined,
+		});
 		await files_nodes_db_cascade_read_only_scope(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -5135,11 +5144,16 @@ export const unarchive_nodes = mutation({
 
 /**
  * Fields for a node returned by public queries.
- * Do not return the raw `readOnlyScopeNodeId`. It may point to a hidden folder.
+ * Do not return either raw read-only field. The scope may name a hidden folder, and the service
+ * target is internal cleanup authority.
  * Return `readOnlyState`, and return the lock source only when the caller can read it.
  */
 const files_node_public_doc_fields = ((/* iife */) => {
-	const { readOnlyScopeNodeId: _readOnlyScopeNodeId, ...rest } = doc(app_convex_schema, "files_nodes").fields;
+	const {
+		readOnlyScopeNodeId: _readOnlyScopeNodeId,
+		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
+		...rest
+	} = doc(app_convex_schema, "files_nodes").fields;
 
 	return {
 		...rest,
@@ -5158,7 +5172,11 @@ function files_node_project_read_only(
 	fileNode: Doc<"files_nodes">,
 	readableSource: Pick<Doc<"files_nodes">, "_id" | "path"> | null,
 ) {
-	const { readOnlyScopeNodeId, ...rest } = fileNode;
+	const {
+		readOnlyScopeNodeId,
+		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
+		...rest
+	} = fileNode;
 
 	// Keep these values as exact literals so they match the return validator.
 	const readOnlyState: "writable" | "self" | "inherited" =

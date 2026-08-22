@@ -861,6 +861,19 @@ describe("plugins_validate_manifest", () => {
 		expect(readUserWrite._yay.capabilities).toEqual(["plugin.data.read", "plugin.data.user-write"]);
 	});
 
+	test("rejects workspace.files.create-read-only without workspace.files.write", () => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				capabilities: ["workspace.files.create-read-only"],
+			}),
+		).toEqual({
+			_nay: {
+				message: "The workspace.files.create-read-only capability requires the workspace.files.write capability",
+			},
+		});
+	});
+
 	test("rejects plugin.service.connect with nothing for the service to borrow", () => {
 		expect(
 			plugins_validate_manifest({
@@ -999,6 +1012,7 @@ describe("plugins_Capability", () => {
 			"outbound.fetch": true,
 			"workspace.files.read": true,
 			"workspace.files.write": true,
+			"workspace.files.create-read-only": true,
 			"plugin.data.read": true,
 			"plugin.data.write": true,
 			"plugin.data.user-write": true,

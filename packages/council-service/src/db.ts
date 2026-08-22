@@ -85,6 +85,8 @@ export type council_ParticipantRow = {
 	provider_participant_id: string | null;
 	provider_token_encrypted: string | null;
 	accepted_at: number | null;
+	admission_attempt_id: string | null;
+	admission_attempt_started_at: number | null;
 	created_at: number;
 };
 
@@ -168,7 +170,7 @@ export async function council_rate_limit(
 export type council_ArtifactRow = {
 	id: string;
 	meeting_id: string;
-	kind: "track_audio" | "provider_transcript" | "transcript_markdown";
+	kind: "track_audio" | "provider_transcript" | "transcript_markdown" | "summary_markdown";
 	target_key: string;
 	file_name: string;
 	node_id: string | null;

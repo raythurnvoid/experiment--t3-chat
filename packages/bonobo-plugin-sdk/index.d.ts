@@ -18,6 +18,8 @@ export type { ExportedHandler, ExecutionContext, Request, Response } from "@clou
  *   capped by an exact destination path prefix. It reaches neither the backend run nor the page.
  *   The interactive exchange never mints that scope; the Council service gets it through the
  *   seal-processing route, and only the `/api/v1/files/service-uploads/*` routes accept it.
+ * - `workspace.files.create-read-only` — lets the service request a direct read-only lock when it
+ *   creates a file. Declaring it also requires `workspace.files.write`.
  * - `plugin.data.read` — backend runs, UI pages and file views, and eligible Council service grants
  *   may read the plugin's own document store.
  * - `plugin.data.write` — backend runs and eligible Council service grants may write the plugin's own
@@ -36,6 +38,7 @@ export type BonoboCapability =
 	| "outbound.fetch"
 	| "workspace.files.read"
 	| "workspace.files.write"
+	| "workspace.files.create-read-only"
 	| "plugin.data.read"
 	| "plugin.data.write"
 	| "plugin.service.connect"
