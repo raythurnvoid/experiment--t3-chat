@@ -153,6 +153,10 @@ Use this coupled order after separate release approval:
 7. Accept the new capability on the installation and run the create, join, close, and artifact smoke test.
 8. Reopen meeting creation.
 
+The checked-in `COUNCIL_MAINTENANCE` value is `false`. A coupled release deploys the same final
+source with that value overridden to `true`, then deploys the checked-in config again only after the
+capability consent and smoke test are ready.
+
 Source work alone does not authorize any of these remote actions.
 
 ## Commands

@@ -142,6 +142,10 @@ export async function council_handle_page_api(request: Request, env: Env, now: n
 
 async function handle_create(context: PageContext) {
 	const { env, actor, now, respond } = context;
+	// Keep every new meeting out of D1 while a coordinated release changes the host contract.
+	if (env.COUNCIL_MAINTENANCE === "true") {
+		return respond(503, { message: "Council is being upgraded. Try again shortly." }, 300);
+	}
 	const title = council_read_string_field(context.body, "title", { maxBytes: 200 });
 	if (title._nay || title._yay === null) {
 		return respond(400, { message: title._nay?.message ?? "title is required" });

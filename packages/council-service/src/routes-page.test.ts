@@ -27,6 +27,22 @@ afterEach(() => {
 });
 
 describe("council_handle_page_api /api/meetings/create", () => {
+	test("maintenance blocks a create before it writes D1 or calls the provider", async () => {
+		const { env } = make_test_env({ COUNCIL_MAINTENANCE: "true" });
+		const mock = install_fetch();
+		restoreFetch = mock.restore;
+
+		const response = await worker.fetch(page_post("/api/meetings/create", { title: "Standup" }), env);
+		expect(response.status).toBe(503);
+		expect(response.headers.get("Retry-After")).toBe("300");
+		await expect(response.json()).resolves.toEqual({ message: "Council is being upgraded. Try again shortly." });
+		const count = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meetings").first<{ n: number }>();
+		expect(count?.n).toBe(0);
+		expect(mock.calls.map((call) => call.url)).toEqual([
+			"https://convex.example/api/internal/plugins/service-grants/exchange",
+		]);
+	});
+
 	test("writes the D1 intent row before the provider request, then returns the one-time code", async () => {
 		const { env } = make_test_env();
 		let rowExistedAtProviderCall = false;

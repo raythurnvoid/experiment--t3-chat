@@ -26,6 +26,8 @@ export type Env = {
 	COUNCIL_MEETING_MAX_MINUTES: string;
 	COUNCIL_MEETING_MAX_PARTICIPANTS: string;
 	COUNCIL_DESTINATION_PATH_PREFIX: string;
+	/** "true" only during a coordinated release that must block new meeting work. */
+	COUNCIL_MAINTENANCE: string;
 	/** "true" only for local development, where no Cloudflare edge adds `CF-Connecting-IP`. */
 	COUNCIL_ALLOW_MISSING_CLIENT_IP: string;
 	/** PEM SPKI public key for webhook signatures. Empty refuses every webhook, fail closed. */
