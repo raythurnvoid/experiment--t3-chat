@@ -1,6 +1,6 @@
 ---
 name: adversarial-review-loop
-description: How to run a multi-round, multi-reviewer adversarial review loop over a large feature with subagents. Use when the user asks for a deep review loop, an exhaustive audit with fixes, or a "review until clean" pass over a feature area. Covers reviewer briefing, triage, red-first fix proofs, mutant checks, gates, the ledger, and the stop condition. Distilled from the 18-round Council review loop (evidence trail in t3-chat-+personal/+ai/council-production-room-2026-08-22/loop-review-log.md).
+description: How to run a multi-round, multi-reviewer adversarial review loop over a large feature with subagents. Use when the user asks for a deep review loop, an exhaustive audit with fixes, or a "review until clean" pass over a feature area. Covers reviewer briefing, triage, red-first fix proofs, mutant checks, gates, the ledger, and the stop condition. Findings must be user-reachable: a defect only a test harness can produce is test debt, not a product finding. Distilled from the 18-round Council review loop (evidence trail in t3-chat-+personal/+ai/council-production-room-2026-08-22/loop-review-log.md).
 ---
 
 # Adversarial Review Loop
@@ -31,6 +31,10 @@ evidence.
 - Give reviewers **verified facts, not findings**: describe what changed in the tree as facts to verify,
   never as a findings list. Prior-round findings poison independence; known-wrong premises become false
   positives.
+- Point every lens at the user. Brief reviewers that a finding must name harm a real member can reach
+  through a supported flow — a route, a click, a webhook, a cron — and must lead with the user-visible
+  consequence: what a member sees, loses, or can do that they should not. Rank findings by that
+  consequence, not by how interesting the code path is.
 - Carry an **adjudicated-closed list** ("do not re-file without new evidence") so settled questions do not
   burn reviewer time every round. After a fix phase, list the fixes as adjudicated with the re-file bar
   "only if the FIX itself is wrong, with evidence about the fix".
@@ -42,6 +46,12 @@ evidence.
 - The master re-verifies every finding against the code before accepting it: open the cited lines, check
   the producer path is real, and say plainly when a report is wrong. "The schema allows it" is not a
   finding; every claim needs a concrete route, mutation, cron, workflow, or user action.
+- Reachability decides whether it is a finding at all. A defect that only shows under harness
+  conditions — a fixture value no real producer can emit, an interleaving no browser or worker can
+  schedule, a jsdom/happy-dom behavior gap — is test debt at most, never a product finding, and never
+  blocks closing. The loop exists to protect users, not to make the test suite feel complete. Before
+  accepting, the master answers one question in the ledger: "which user, doing what, hits this?" — and
+  rejects the report when the honest answer is "only a unit test".
 - Record every report in the ledger with a verdict: accepted (P0–P3), rejected-with-evidence, or duplicate.
 - Independent convergence (two reviewers finding the same defect) is strong signal; count it once.
 
