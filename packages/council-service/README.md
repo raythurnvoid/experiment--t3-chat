@@ -94,6 +94,19 @@ Other:
 - `POST /webhooks/realtimekit` — RSA-SHA256 verified intake, fail-closed without a configured key.
 - `GET /health`.
 
+Working on the room page:
+
+- `src/room/client.ts` is one large template string that the page embeds, so `tsc` never checks its
+  body and prettier never formats it. The tests in `client.test.ts` are the only gate on that code —
+  a clean typecheck says nothing about it.
+- Every `client.ts` change must bump `ROOM_REVISION` in `src/room/page.ts`, and the check ends by
+  reading the marker back from the served page (a bumped constant proves the edit, the served marker
+  proves the running Worker picked it up):
+
+```bash
+curl -s "http://127.0.0.1:8787/room?m=qa" | grep -o 'council-room-revision" content="[^"]*"'
+```
+
 ## Meeting states
 
 `created → open → closed → processing → ready | failed` (an unrecorded meeting goes
