@@ -6,9 +6,14 @@ recording, a speaker-attributed transcript, and a structured meeting summary in 
 
 The meeting lifecycle, room security model, webhook intake, Queue consumer,
 processing/deletion Workflow, and cleanup cron are implemented and tested. The current source has
-migrations `0001` through `0007`. Migrations `0006` and `0007` are part of the Council `0.2.0`
-release gate and must follow the in-flight meeting audit described below. Do not wipe D1 or apply
-release migrations without that audit.
+migrations `0001` through `0008`. Migrations `0006`, `0007`, and `0008` are part of the Council
+`0.2.0` release gate and must follow the in-flight meeting audit described below. Do not wipe D1 or
+apply release migrations without that audit.
+
+Comments and migrations in this package say "Plan 2". That names the host's plugin document store,
+`packages/app/convex/plugins_data.ts`, which this Worker reaches through the `/api/v1/plugin-data/*`
+routes. It stores at most 16 KiB per document value, and that 16 KiB is the envelope one meeting
+projection reserves.
 
 ## Why the transcript is built from track files
 
@@ -46,11 +51,20 @@ the app's presigned upload URL and returns only a small record, never the bytes.
 Three origins, one Worker:
 
 Page API (`POST`, CORS locked to `COUNCIL_PLUGIN_ORIGIN`, bearer `plu_` page token exchanged
-through Convex):
+through Convex; requires `CF-Connecting-IP`):
+
+The exchange is the only Convex call a caller with no account can reach, so it is bounded per client
+address (`page_exchange_ip`, 60 per 30 minutes) and spent only when the token misses
+`page_token_cache`. Ordinary polling is served from that cache and never counts against the bucket.
+Over it these routes answer 429; without `CF-Connecting-IP` they answer 400 unless
+`COUNCIL_ALLOW_MISSING_CLIENT_IP` is `"true"`.
 
 - `/api/meetings/create` — reserve the projection's document-store envelope, create the provider
   meeting, return the join code once. This books plugin-data bytes only; file storage is not booked
-  anywhere.
+  anywhere. A full plugin-data store refuses the reserve; `convex-api.ts` names that refusal
+  `data_store_full` (distinct from the pipeline's `storage_full`, which is the workspace file-storage
+  quota), and create answers 403 telling the member to delete old meetings — freed space can take up
+  to a day to come back, because a deleted document's slot stays held by a retry tombstone.
 - `/api/meetings/list`, `/api/meetings/get` — D1-backed views with artifacts.
 - `/api/meetings/open` — seal the processing grant to the meeting folder, then set the deadline and
   open admission. Nothing is booked here: the workspace is charged per file, when the pipeline
@@ -62,14 +76,21 @@ through Convex):
   explicitly — the provider does not stop a track recording when the session ends, and its track
   files publish only after the stop. With a recording, hand the meeting to processing (the grant
   already exists from open; the pipeline's discover poll repeats the stop until the recording
-  leaves `RECORDING`, so a refused stop only costs poll attempts). Without a recording,
+  leaves `RECORDING`, so a refused stop only costs poll attempts, while a recording the provider
+  marks `ERRORED` fails the meeting on the first read instead of waiting the poll budget out).
+  Without a recording,
   close settles the meeting straight to `ready`: nothing else would ever transition it, and the
   plugin page polls `closed` as transitional.
 - `/api/meetings/delete` — seal a FRESH processing grant from the requesting member's live grant
   (the open-time one has a fixed six-day life) and start the delete workflow. Refused while the
   meeting is `processing`.
 
-Room API (`POST`, same-origin only, `__Host-` cookie session plus `X-Council-Csrf` header):
+Room API (`POST`, same-origin only, `__Host-` cookie session):
+
+`/room/api/session` and `/room/api/guest-session` hand the session out together with its CSRF token,
+so neither one requires an `X-Council-Csrf` header. The four in-call routes below do require it:
+they are the only callers of `room_session_auth`, which checks the cookie and the header on every
+call.
 
 - `/room/api/session` — trade a one-time host ticket for a session. A host session keeps the
   ticket's exact service-grant id; a guest session has no actor grant.
@@ -86,7 +107,9 @@ Room API (`POST`, same-origin only, `__Host-` cookie session plus `X-Council-Csr
   finds in the row. A refused attach stops the just-started recording itself and answers 409.
 - `/room/api/host/close` — host only; same close path as the page API. It deliberately skips the
   actor recheck so a removed member can still stop and close a provider meeting they already
-  opened.
+  opened. The answer carries `recorded` — the server's read of the recording id after admission
+  closed — and the room prefers it over its own recording stage when telling the host whether
+  files are coming.
 
 Other:
 
@@ -143,13 +166,17 @@ Two outboxes in D1, both written in the same atomic batch as the state change th
 D1 stays authoritative. The projection is never read back for a service decision. The current
 Council page also reads the Worker directly; writing this Convex document does not make it appear in
 another host screen by itself. It gives the host and future plugin UI a safe, installation-owned copy
-without provider ids, admission secrets, tokens, or URLs.
+with no meeting code, ticket, email, token, admission secret, or provider URL. A stored track
+artifact does carry the provider's own file name, because that is the name the file has in the
+workspace, and the provider builds that name from the participant's provider and peer ids.
 
 ## Council 0.2.0 release gate
 
-Do not deploy this source over live meeting work without an explicit audit. First stop new meeting
-opens through the release maintenance bridge. Inspect every `created`, `open`, `closed`,
-`processing`, `failed`, and deleting meeting plus every pending or committed upload target. In
+Do not deploy this source over live meeting work without an explicit audit. First stop new meetings
+through the release maintenance bridge. The bridge closes `/api/meetings/create` and nothing else, so
+a meeting that is already `created` can still be opened while the bridge is on, and each open seals a
+fresh processing grant. Drain those meetings as part of the audit. Inspect every `created`, `open`,
+`closed`, `processing`, `failed`, and deleting meeting plus every pending or committed upload target. In
 particular, an older run may already own 14 audio targets; adding `summary.md` would make its redrive
 ask for a seventeenth target. The release owner must choose migration or erasure for those exact
 runs and for any stored old create-target body. Migration `0006` now refuses to run while any old
@@ -158,10 +185,12 @@ artifact row remains, so this choice cannot be skipped by mistake.
 Use this coupled order after separate release approval:
 
 1. Turn on the meeting maintenance bridge. Audit and drain every old artifact row and matching host target.
-2. Apply D1 migrations `0006` and `0007`.
+2. Apply D1 migrations `0006`, `0007`, and `0008`. `0008` drops the two `meeting_tracks` columns
+   nothing ever wrote, `participant_id` and `start_offset_ms`.
 3. Deploy the strict core upload contract and the new read-only capability.
 4. Deploy this Worker.
-5. Mirror and verify SDK `0.9.2`.
+5. Confirm the SDK commit Council already pins in `plugins/bonobo-plugin-council/package.json`
+   resolves to `0.9.2`. The mirror exists: do not push a second one and do not re-pin Council.
 6. Build Council twice, push its exact commit, update the parent gitlink, and publish that exact SHA.
 7. Accept the new capability on the installation and run the create, join, close, and artifact smoke test.
 8. Reopen meeting creation.
@@ -204,7 +233,7 @@ vp env exec pnpx wrangler d1 execute bonobo-council --remote --config packages/c
 | Dead-letter queue | `bonobo-council-events-dlq` | 8-day message retention; consumed by this Worker to mark outbox rows `dead`                                                                |
 | Workflow          | `bonobo-council-workflow`   | Binding `COUNCIL_WORKFLOW`, class `CouncilWorkflow`; created on first deploy                                                               |
 | Workers AI        | binding `AI`                | Whisper Turbo per-track transcription and Llama 3.1 8B fast structured summaries                                                           |
-| Cron              | `*/15 * * * *`              | Expiries, deadline closes, seal retries, outbox and projection reconciliation, delete retries, tombstone erasure                           |
+| Cron              | `*/15 * * * *`              | Expiries, deadline closes, processing retries, outbox and projection reconciliation, delete retries, tombstone erasure                     |
 
 ## Secrets
 
@@ -267,8 +296,35 @@ fails if any required secret is absent.
   go to `https://api.cloudflare.com/client/v4/accounts/{account}/realtime/kit/{app}/...` with
   `Authorization: Bearer <token>`. The older `api.realtime.cloudflare.com/v2` host with Basic auth is
   the legacy Dyte API and is not what this Worker speaks.
-- `COUNCIL_ROOM_COOKIE_SECRET` — signs the room session cookie and derives the keys that encrypt
-  stored grant and provider tokens at rest (AES-GCM, purpose-scoped derivation).
+- `COUNCIL_ROOM_COOKIE_SECRET` — derives the keys that encrypt stored grant and provider tokens at
+  rest, and the key for the email HMAC (AES-GCM, purpose-scoped derivation). Despite the name it does
+  **not** sign the room session cookie: that cookie is a random token stored as an unkeyed SHA-256 in
+  `room_sessions.token_hash`. So rotating this secret does not end a single live room session, and it
+  does make every stored grant and provider token undecryptable. Do not reach for it as a way to log
+  everybody out.
+
+  After a rotation, whether a route recovers depends on which grant it verifies. The docblock on
+  `council_verify_meeting_grant` in `src/grants.ts` splits the routes the same way.
+
+  A route that verifies the caller's own grant repairs itself. The stored grant can no longer be
+  decrypted, so `council_verify_grant` answers `grant_dead`. `council_page_auth` treats exactly that
+  name as "exchange the member's page token again", and that exchange seals a new grant under the new
+  secret. It only runs once the one-minute liveness window (`PAGE_TOKEN_CACHE_MS`) since the last
+  Convex answer has passed. So the page close, the host room ticket mint, and the seals behind open
+  and delete refuse for at most that minute and then work again.
+
+  A route that verifies the meeting's pinned grant does not repair itself. Join and start recording
+  answer 409 "The meeting's authority is no longer live", and nothing re-pins an already-open
+  meeting. `handle_open` refuses any status other than `created`, and it is the only place that
+  re-pins `service_grant_id` after create. So an open meeting keeps refusing both for the rest of its
+  life.
+
+  The room host close is the one route a rotation never blocks. It verifies no grant at all, on
+  purpose. The host cookie is the proof they were admitted, and refusing there would strand everyone
+  already in the call. The page close is a separate route, and it sits in the first group above.
+
+  Plan a rotation for a window with no open meetings. An open meeting cannot be repaired. Close it
+  and create a new one.
 
 Non-secret vars worth knowing (`wrangler.jsonc` `vars`):
 
@@ -276,8 +332,10 @@ Non-secret vars worth knowing (`wrangler.jsonc` `vars`):
   webhook route answers 503 for every delivery: fail closed, never unverified.
 - `COUNCIL_DESTINATION_PATH_PREFIX` — where artifacts land in the workspace
   (`<prefix>/<meetingId>/...`).
-- `COUNCIL_ALLOW_MISSING_CLIENT_IP` — `"true"` only in local testing; production guest joins
-  require the `CF-Connecting-IP` edge header for the IP rate bucket.
+- `COUNCIL_ALLOW_MISSING_CLIENT_IP` — `"true"` only in local testing. In production both doors that
+  key a rate bucket on the caller's address need the `CF-Connecting-IP` edge header: the guest join
+  (`guest_join_ip`) and every page API call (`page_exchange_ip`). Either one answers 400 without it.
+  Setting this `"true"` keys both buckets on the literal `loopback`, so every caller shares one.
 
 ## Convex file surface
 
@@ -308,9 +366,9 @@ The lifecycle this implies (plan-3 E8):
    only `Pay As You Go` and `Pro` do, and an owner-billed organization answers to the owner's plan.
    Both fail the run at once (no Workflow step retries), the same way a member lock fails a delete:
    the plan does not change mid-run, and the storage counter only counts up, so every retry gets the
-   same refusal back and only delays the reason the member reads. Every other create-target failure
-   still retries. The plan has to be raised, or the storage ceiling lifted, before a redrive can
-   work. Reaching `ready` or `failed` releases nothing — the counter only grows. An operator redrive
+   same refusal back and only delays the moment the page tells the member the meeting failed. Every
+   other create-target failure still retries. The plan has to be raised, or the storage ceiling
+   lifted, before a redrive can work. Reaching `ready` or `failed` releases nothing — the counter only grows. An operator redrive
    of a `failed` meeting (the cron and
    `council_request_processing_redrive` bump `processing_generation` and insert a fresh outbox row;
    moving `failed -> processing` on the same generation dispatches a row that never runs) keeps the
@@ -331,21 +389,69 @@ The lifecycle this implies (plan-3 E8):
    will not clear themselves. A network error still retries. The delete works again once they clear
    the lock.
 
+A redrive cannot repair an artifact that already finalized. `render_and_upload_markdown` skips a
+finalized `transcript.md`, and `store_summary_markdown` skips a `meeting_summaries` row that already
+exists. So a meeting whose transcript finalized as `_No speech was recorded._` keeps that text
+however often it is redriven. That wording now means what it says — a meeting that really was
+silent. A meeting that lost tracks to the per-track cap finalizes with a dropped-track count
+instead, and that text is just as unrepairable by redrive. Repairing one means deleting that meeting's rows in
+`meeting_artifacts` and `meeting_summaries` in D1 first, and only then redriving.
+
 Every Council artifact is read-only. The text artifacts (`summary.md`, `transcript.md`, and
 `provider-transcript.json`) are also non-collaborative, so they do not pay the Yjs storage and sync
-cost of a shared editor document. Audio tracks stay non-collaborative stored blobs. No Council
-service upload starts plugin upload events.
+cost of a shared editor document. Audio tracks are read-only too, but they are uploaded with
+`nonCollaborative: false`: the host only accepts that flag for names its editable-text classifier
+knows, and `.webm` is not one, so asking for it would make every `track_audio` target return 400 and
+fail the run. A stored `.webm` is a binary file the editor never opens, so the flag changes nothing
+for it either way. No Council service upload starts plugin upload events.
 
 One real cap to know: an upload run allows at most **16 targets**. The transcript and provider
 diagnostic spend two, and the generated summary spends one, so at most 13 raw audio tracks are
-stored. Every track is still transcribed — the attributed transcript stays complete — but a large
-meeting's extra raw audio is not stored, and the pipeline logs when that happens. If filenames have
-the same provider timestamp, their names provide the stable final ordering.
+stored. Only a per-participant audio track can take one of those slots: every stored track is
+declared `audio/webm`, and a file that is not a peer audio track is refused by transcription and by
+attribution anyway. Track recording writes audio only today, so nothing is dropped by that rule.
+A large meeting's extra raw audio is not stored, and the pipeline logs when that happens.
+
+A second cap applies per track: transcription reads at most **24 MB** of one file
+(`council_TRACK_TRANSCRIBE_MAX_BYTES`), sized to the 128 MB isolate rather than to the file, because
+the peak cost is about 3.3x the byte count. A track past it is marked `rejected` and **the run
+continues** — so the transcript is not always complete. An hour of Opus is roughly 14 MB at 32 kbps
+and 29 MB at 64 kbps, so a full-length track can land either side of this. Every refusal is logged
+at the point it happens, and both `transcript.md` and `summary.md` carry a count of the tracks that
+could not be transcribed, so neither document claims silence for audio that was recorded. If filenames have
+the same provider timestamp, their names provide the stable final ordering, compared by code unit
+rather than by locale collation, so a redrive always picks the same thirteen files.
 
 The summary uses the fast Llama 3.1 8B model through Workers AI JSON Schema mode. Council treats
-transcript lines as untrusted quoted data, validates the full model response, caps the input at 12
-chunks of 48,000 characters, and runs one bounded reduce call when several chunks exist. If the
-source exceeds that cap, `summary.md` says that later content was not summarized.
+transcript lines as untrusted quoted data — a value may not carry the fence that marks the block it
+sits in, so every `<` in a serialized transcript entry and in the serialized partials it merges is
+replaced with its JSON escape `\u003c`, which leaves no `<` for `<transcript_jsonl>` or
+`<partial_summaries_json>` to be built from — validates the full model response, and caps the input
+at 12 chunks of 48,000 characters. That validation accepts two `response` shapes. Workers AI answers
+this model's JSON Schema request with `response` already parsed into an object.
+`@cloudflare/workers-types` declares a plain string for every text-generation model, so the
+documented shape and the typed shape disagree. The parser takes a JSON string too and parses it
+before validating.
+The tokens are escaped rather than stripped by name because a
+value can nest a token inside a copy of itself: a strip removes the inner copy, and the halves left
+on either side join into a working token. Nesting one token inside a *different* token does not
+defeat a strip, because a second pass re-reads whatever the first pass produced — so a test built on
+that shape proves nothing. `ai.test.ts` carries a payload of the surviving shape for both fences. When several chunks exist it runs one reduce call held to
+that same 48,000-character budget: 12 full-size partials serialize far past
+it, so the partials that do not fit are dropped. If the source exceeded the chunk cap, or partials
+were dropped from the reduce call, `summary.md` says that later content was not summarized.
+
+The summary is the one step that could fail forever. The hourly cron redrives a `failed` meeting
+into a new generation, and no summary row exists yet, so a model that keeps answering badly would be
+asked again every hour until the sealed grant dies six days later, and the meeting would never
+reach `ready` even with a good `transcript.md` in place. So Council reads the failed run's stored
+`failure_reason`. Once a previous generation already failed on the summary itself, the next bad
+answer stores a fixed "The summary could not be generated for this meeting." text instead of failing
+again, and the run finishes. The generation number cannot decide this: a redrive bumps it for every
+kind of failure, so a meeting that failed three times on an upload would spend its very first model
+answer on the fixed text. Every summary failure message starts with the same two words, and
+`ai.ts` says so next to the constant that builds them. The model is still asked first on every
+generation, because an operator may have fixed whatever made it answer badly.
 
 Every test here mocks Convex and the provider. The flows have also been driven end to end against
 the live dev deployment and the live provider through the plugin page.

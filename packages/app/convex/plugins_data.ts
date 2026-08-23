@@ -338,14 +338,16 @@ async function db_authorize(
 }
 
 /**
- * Keep a plugin page out of every write.
+ * Keep a plugin frame out of every write. `plugin_ui` is the principal of both frame kinds, because
+ * a page and a file view each carry a `plu_` token and `public_api.ts` builds the principal from the
+ * installation without reading the session's `fileNodeId`. So this refuses both.
  *
- * A page session can belong to an anonymous identity. A page is also the first thing a scripting bug
- * in a plugin reaches. A write door there would turn one such bug into stored data that plugin
+ * A frame session can belong to an anonymous identity. A frame is also the first thing a scripting
+ * bug in a plugin reaches. A write door there would turn one such bug into stored data that plugin
  * backends later act on with their own secrets.
  *
- * Two other things already refuse a page write. The routes leave `plugin_ui` out of every write
- * allowlist, and a page token never carries the write scope. This guard is the third, and it is the
+ * Two other things already refuse a frame write. The routes leave `plugin_ui` out of every write
+ * allowlist, and a UI token never carries the write scope. This guard is the third, and it is the
  * only one inside the transaction. It still refuses a caller that reaches the mutation directly, and
  * it still refuses one wrong edit to an `allowedKinds` list. `require_service_principal` gives the
  * ordered mutations the same kind of protection.
@@ -1354,22 +1356,27 @@ export type plugins_data_delete_document_Result =
 // #region user writes
 
 /**
- * Member writes from a plugin page.
+ * Member writes from a plugin frame. Both frame kinds reach these doors: a plugin page and a file
+ * view. Only a file-view session sets `fileNodeId`, and nothing in this module reads that field, so
+ * a file view writes here exactly as a page does.
  *
  * These are public mutations: the plugin iframe calls them directly, authenticated with its
  * plugin-session JWT (see plugins_ui.ts). The JWT's subject is a `plugins_ui_sessions` id, and
- * the session doc names the member, installation, and version the page was minted for. Member
+ * the session doc names the member, installation, and version the frame was minted for. Member
  * functions refuse that identity and these doors refuse every other identity, so each side of
- * the boundary answers only its own callers. An invited anonymous member mints page sessions
+ * the boundary answers only its own callers. An invited anonymous member mints frame sessions
  * like any other member, so it may write here too.
  */
 
 /**
- * Prove the page's member may write this plugin's documents, inside the same transaction as the
+ * Prove the frame's member may write this plugin's documents, inside the same transaction as the
  * write. Everything tenant-scoped is derived from the session doc the JWT points at, and every
  * fact is re-read on every call, mirroring `resolve_principal` in public_api.ts: revoking the
  * session, disabling or upgrading the installation, or removing the member closes the door
  * immediately, even while the JWT itself is still signed-valid.
+ *
+ * The name says page because pages shipped first. This function looks the session doc up by id and
+ * never reads its `fileNodeId`, so a file view passes through it too.
  */
 async function db_authorize_page_write(
 	ctx: MutationCtx,
@@ -1395,7 +1402,7 @@ async function db_authorize_page_write(
 	}
 
 	// The session dies with its installation: disabling, uninstalling, or upgrading it (an
-	// upgrade changes pluginVersionId) revokes every outstanding page session.
+	// upgrade changes pluginVersionId) revokes every outstanding frame session.
 	const installation = await ctx.db.get("plugins_workspace_installations", session.installationId);
 	if (
 		!installation ||
@@ -1998,24 +2005,30 @@ export const user_remove_owned_document = mutation({
 // #region user reads
 
 /**
- * Member reads from a plugin page.
+ * Member reads from a plugin frame. Both frame kinds reach these doors, the same way they reach the
+ * write doors above: a plugin page and a file view.
  *
  * These are public queries: the plugin iframe subscribes to them directly with its plugin-session
  * JWT (see plugins_ui.ts). Their answer is also the kill signal: the query throws only when there
- * is no auth identity at all, and answers null for every denial, so a revoked page sees its
+ * is no auth identity at all, and answers null for every denial, so a revoked frame sees its
  * subscription die instead of an error.
  *
  * The server deliberately does not cap live subscriptions per session. Convex gives a query no
- * subscribe hook to count against, so a hostile page that talks to Convex directly can open more
- * subscriptions than the SDK's own per-page caps allow. Accepted risk: it is bounded only by the
- * 30-minute session TTL and revocation, and stays on the ask list for the Convex team.
+ * subscribe hook to count against, so a hostile frame that talks to Convex directly can open more
+ * subscriptions than the SDK's own per-frame caps allow. Those caps live inside one SDK client
+ * closure and each mounted frame builds its own client, so they bound a frame and never a member or
+ * an installation. Accepted risk: it is bounded only by the 30-minute session TTL and revocation,
+ * and stays on the ask list for the Convex team.
  */
 
 /**
- * Prove the page's member may read this plugin's documents. Everything tenant-scoped is derived
+ * Prove the frame's member may read this plugin's documents. Everything tenant-scoped is derived
  * from the session doc the JWT points at, mirroring `resolve_principal` in public_api.ts. Reading
  * the session, installation, and membership docs inside the query is what makes a revocation
  * re-run every live subscription into null.
+ *
+ * Named for pages for the same reason as the write door above, and open to a file view in the same
+ * way: the session doc is loaded by id and its `fileNodeId` is never read.
  */
 async function db_authorize_page_read(ctx: QueryCtx) {
 	const pluginSession = await server_convex_get_plugin_session(ctx);
@@ -2249,7 +2262,7 @@ export const resolve_member_display = query({
  * trusting arrival order. Revision 1 is only accepted on a key that holds neither a value nor a
  * tombstone, and revision n only when the stored revision is exactly n - 1. Resending the same
  * revision with the same payload answers with the stored result, so a lost response costs nothing.
- * Writing the same key through the normal routes is refused, so a plugin page cannot slip a write
+ * Writing the same key through the normal routes is refused, so a plugin frame cannot slip a write
  * between two ordered ones.
  */
 export const write_versioned_document = internalMutation({
@@ -2738,16 +2751,26 @@ export const drain_uninstalled_installation = internalMutation({
 	},
 });
 
+/** How many service grants one installation's preview counts before it answers "this many or more". */
+const SERVICE_GRANT_COUNT_LIMIT = 100;
+
 /**
  * How much stored data one installation still holds. The admin deletion preview reports it.
  *
  * The document numbers come from the accounting doc instead of counting docs. One installation may
- * hold ten thousand documents of sixteen kilobytes each, and reading them all to learn how many there
- * are would exceed what one Convex query may read. The counters are maintained in the same
- * transaction as every write, so they are the same answer for one read.
+ * hold up to ten thousand documents inside a sixteen-megabyte ceiling, and reading them all to learn
+ * how many there are would exceed what one Convex query may read. The counters are maintained in the
+ * same transaction as every write, so they are the same answer for one read.
  *
  * `tombstones` therefore covers released reservation records and delete tombstones together, because
  * one counter pays for both of their slots.
+ *
+ * Service grants have no such counter, so they are the one number here that is found by reading docs.
+ * That read is bounded: an outside service decides how many grants it mints, and this query is the
+ * required first step of registry deletion, so a service that mints too many must not be able to make
+ * the preview unanswerable. Past `SERVICE_GRANT_COUNT_LIMIT` the count stops there and
+ * `serviceGrantsTruncated` is true, which the reader should show as `100+` rather than as an exact
+ * number.
  */
 export async function plugins_data_db_count_installation_docs(
 	ctx: QueryCtx,
@@ -2767,15 +2790,19 @@ export async function plugins_data_db_count_installation_docs(
 					.eq("workspaceId", args.workspaceId)
 					.eq("installationId", args.installationId),
 			)
-			.collect(),
+			// Read one past the bound so the answer can say whether more grants are there. The extra
+			// doc never leaves the server.
+			.take(SERVICE_GRANT_COUNT_LIMIT + 1),
 	]);
 
+	const serviceGrantsTruncated = serviceGrants.length > SERVICE_GRANT_COUNT_LIMIT;
 	return {
 		usageDocs: usage ? 1 : 0,
 		documents: usage?.usedDocuments ?? 0,
 		liveReservations: usage?.reservedDocuments ?? 0,
 		tombstones: usage?.tombstoneDocuments ?? 0,
-		serviceGrants: serviceGrants.length,
+		serviceGrants: serviceGrantsTruncated ? SERVICE_GRANT_COUNT_LIMIT : serviceGrants.length,
+		serviceGrantsTruncated,
 	};
 }
 

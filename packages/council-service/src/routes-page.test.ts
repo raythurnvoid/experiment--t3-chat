@@ -1,19 +1,27 @@
 import { afterEach, describe, expect, test } from "vitest";
 
 import worker from "./index.ts";
+import { council_encrypt } from "./crypto.ts";
+import { council_RATE_LIMITS } from "./db.ts";
 import type { Env } from "./env.ts";
 import { install_fetch, make_test_env, seed_grant, seed_meeting, FUTURE } from "../test/env.ts";
 
 const WORKER_ORIGIN = "https://council.example";
 const PLUGIN_ORIGIN = "https://plugin-origin.example";
 
+/** A well-formed page token: page auth refuses anything else before it reaches Convex. */
+const PAGE_TOKEN = `plu_${"a".repeat(64)}`;
+
 function page_post(path: string, body: unknown, headers?: Record<string, string>) {
 	return new Request(`${WORKER_ORIGIN}${path}`, {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			Authorization: "Bearer plu_page_token",
+			Authorization: `Bearer ${PAGE_TOKEN}`,
 			Origin: PLUGIN_ORIGIN,
+			// Cloudflare's edge sets this on every real request, and page auth needs it to key the
+			// exchange limit. Send it here so these tests run the production shape.
+			"CF-Connecting-IP": "1.2.3.4",
 			...headers,
 		},
 		body: JSON.stringify(body),
@@ -41,6 +49,45 @@ describe("council_handle_page_api /api/meetings/create", () => {
 		expect(mock.calls.map((call) => call.url)).toEqual([
 			"https://convex.example/api/internal/plugins/service-grants/exchange",
 		]);
+	});
+
+	test("a secret rotated inside the cached minute refuses the create instead of throwing", async () => {
+		const { env } = make_test_env();
+		const mock = install_fetch();
+		restoreFetch = mock.restore;
+
+		// Any page call mints the grant and the `page_token_cache` mapping that points at it.
+		const warmed = await worker.fetch(page_post("/api/meetings/list", {}), env);
+		expect(warmed.status).toBe(200);
+
+		// What rotating COUNCIL_ROOM_COOKIE_SECRET leaves behind: still well-formed base64, sealed
+		// under the key from before the rotation, so it no longer decrypts.
+		await env.COUNCIL_DB.prepare("UPDATE service_grants SET token_encrypted = ?")
+			.bind(await council_encrypt("the-secret-before-the-rotation", "psg_interactive_test_token"))
+			.run();
+
+		// The create runs inside the mapping's cached minute, so page auth answers from
+		// `page_token_cache` without asking Convex and never touches the token. That makes the create
+		// itself the first read of a token nothing can decrypt.
+		const attempt = worker.fetch(page_post("/api/meetings/create", { title: "Standup" }), env);
+
+		// Assert it answers at all before asking what it answered. Without the guard the decrypt
+		// rejects with WebCrypto's OperationError and nothing above catches it, so the route never
+		// produces a response — and a test that went straight to `.status` would die on that
+		// rejection instead of on an assertion, which proves nothing about the guard.
+		await expect(attempt).resolves.toBeDefined();
+
+		const response = await attempt;
+		expect(response.status).toBe(503);
+		expect(response.headers.get("Retry-After")).toBe("60");
+		await expect(response.json()).resolves.toEqual({
+			message: "Council is reloading its credentials. Try again shortly.",
+		});
+
+		// Refused before any effect: no meeting row, and the provider was never called.
+		const count = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meetings").first<{ n: number }>();
+		expect(count?.n).toBe(0);
+		expect(mock.calls.filter((call) => call.url.includes("/realtime/kit/"))).toEqual([]);
 	});
 
 	test("writes the D1 intent row before the provider request, then returns the one-time code", async () => {
@@ -102,7 +149,14 @@ describe("council_handle_page_api /api/meetings/create", () => {
 
 		const response = await worker.fetch(page_post("/api/meetings/create", { title: "Standup" }), env);
 		expect(response.status).toBe(502);
-		const body = (await response.json()) as { meetingId: string };
+		const body = (await response.json()) as { meetingId: string; message: string };
+		// The member reads this text in a focused alert. `create_unknown` has no operator repair —
+		// `db.ts` lets that status move only to `expired` or `deleting` — so the alert must not send
+		// the member looking for one, and must say what the card for this status already says.
+		expect(body.message).not.toContain("operator");
+		expect(body.message).toBe(
+			"Council did not get an answer when it created the room, so this meeting cannot be opened. Delete it and create a new meeting.",
+		);
 		const stored = await env.COUNCIL_DB.prepare("SELECT status FROM meetings WHERE id = ?")
 			.bind(body.meetingId)
 			.first<{ status: string }>();
@@ -126,6 +180,60 @@ describe("council_handle_page_api /api/meetings/create", () => {
 		const count = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meetings").first<{ n: number }>();
 		expect(count?.n).toBe(0);
 		expect(mock.calls.some((call) => call.url.includes("/plugin-data/release-reservation"))).toBe(true);
+	});
+
+	test("a reserve permission refusal answers the member's own 403 sentence and rolls the intent back", async () => {
+		const { env } = make_test_env();
+		// What the host's reserve route answers a member an admin moved to `viewer`: create verifies no
+		// grant of its own and spends the member's write permission through this door instead, so this
+		// refusal is where that member first finds out.
+		const mock = install_fetch({
+			"/plugin-data/reserve": () => Response.json({ message: "Permission denied" }, { status: 403 }),
+		});
+		restoreFetch = mock.restore;
+
+		const response = await worker.fetch(page_post("/api/meetings/create", { title: "Standup" }), env);
+		expect(response.status).toBe(403);
+		const body = (await response.json()) as { message: string };
+		// The member reads this text in the plugin alert verbatim. The operator message names the
+		// internal Convex route and its status; the alert must not.
+		expect(body.message).not.toContain("/api/v1/");
+		expect(body.message).toBe(
+			"You do not have permission to create meetings in this workspace. Ask a workspace admin to review your access.",
+		);
+
+		// The intent row is taken back out — a `created` row nothing can finish would sit in the list
+		// offering an Open button — and the provider was never called.
+		const count = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meetings").first<{ n: number }>();
+		expect(count?.n).toBe(0);
+		expect(mock.calls.some((call) => call.url.includes("/realtime/kit/"))).toBe(false);
+	});
+
+	test("a full plugin-data store answers its own sentence, not the permission one", async () => {
+		const { env } = make_test_env();
+		// What the host's reserve route answers when Council's own store hit a ceiling. This must not
+		// read as a permission problem: the ask-an-admin sentence would send an admin to review access
+		// that is fine while the store stays full, and only deleting meetings actually clears it.
+		const mock = install_fetch({
+			"/plugin-data/reserve": () =>
+				Response.json({ message: "This plugin has used its 16 MiB of storage" }, { status: 403 }),
+		});
+		restoreFetch = mock.restore;
+
+		const response = await worker.fetch(page_post("/api/meetings/create", { title: "Standup" }), env);
+		expect(response.status).toBe(403);
+		const body = (await response.json()) as { message: string };
+		// The member reads this text in the plugin alert verbatim; the internal route must not leak.
+		expect(body.message).not.toContain("/api/v1/");
+		expect(body.message).toBe(
+			"Council's storage in this workspace is full, so it cannot save a new meeting. Delete meetings you no longer need and try again; freed space can take up to a day to come back.",
+		);
+
+		// Same rollback as every reserve refusal: the intent row is taken back out and the provider
+		// was never called.
+		const count = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meetings").first<{ n: number }>();
+		expect(count?.n).toBe(0);
+		expect(mock.calls.some((call) => call.url.includes("/realtime/kit/"))).toBe(false);
 	});
 
 	test("the sixth create in an hour is refused with Retry-After", async () => {
@@ -169,6 +277,26 @@ describe("council_handle_page_api /api/meetings/create", () => {
 		expect(mock.calls.length).toBe(0);
 	});
 
+	test("an exchange refusal answers a stable sentence instead of the internal Convex route", async () => {
+		const { env } = make_test_env();
+		// The refusal a member really hits during the coupled release: the exchange requires the new
+		// read-only capability and answers 403 before minting anything.
+		const mock = install_fetch({
+			"/service-grants/exchange": () => Response.json({ message: "Permission denied" }, { status: 403 }),
+		});
+		restoreFetch = mock.restore;
+
+		const response = await worker.fetch(page_post("/api/meetings/create", { title: "Standup" }), env);
+		expect(response.status).toBe(401);
+		const body = (await response.json()) as { message: string };
+		// The exchange's own text names the internal route and its status for an operator. It must
+		// stay in the log, never in the member's alert.
+		expect(body.message).not.toContain("/api/internal/");
+		expect(body.message).toBe(
+			"Council is not authorized for this workspace. Ask a workspace admin to review the plugin's access.",
+		);
+	});
+
 	test("a foreign origin gets no CORS read permission even though authority alone decides", async () => {
 		const { env } = make_test_env();
 		restoreFetch = install_fetch().restore;
@@ -178,6 +306,52 @@ describe("council_handle_page_api /api/meetings/create", () => {
 			env,
 		);
 		expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+	});
+});
+
+describe("council_handle_page_api page authentication", () => {
+	const exchanges = (mock: ReturnType<typeof install_fetch>) =>
+		mock.calls.filter((call) => call.url.includes("/api/internal/plugins/service-grants/exchange")).length;
+
+	test("a bearer that only looks like a page token is refused without asking Convex", async () => {
+		const { env } = make_test_env();
+		const mock = install_fetch();
+		restoreFetch = mock.restore;
+
+		// The prefix alone used to be the whole local check, so a bearer like this crossed the network
+		// and spent one Convex action before Convex refused it.
+		const response = await worker.fetch(
+			page_post("/api/meetings/list", {}, { Authorization: "Bearer plu_not-a-real-token" }),
+			env,
+		);
+		// Assert this before the status. The stub answers every exchange successfully, so a bearer that
+		// reached Convex would come back 200 here — a fixture answer, not what real Convex would say.
+		// The call count is the part that does not depend on the stub.
+		expect(exchanges(mock)).toBe(0);
+		expect(response.status).toBe(401);
+	});
+
+	test("a flood of unknown page tokens from one address stops buying Convex exchanges", async () => {
+		const { env } = make_test_env();
+		const mock = install_fetch();
+		restoreFetch = mock.restore;
+		const limit = council_RATE_LIMITS.page_exchange_ip.limit;
+
+		// Every bearer is well-formed and never seen before, so each one misses `page_token_cache` and
+		// would otherwise buy one outbound Convex action — carrying the deployment's exchange secret,
+		// for a caller who holds no account and no session at all.
+		let last: Response | null = null;
+		for (let attempt = 0; attempt <= limit; attempt += 1) {
+			last = await worker.fetch(
+				page_post("/api/meetings/list", {}, { Authorization: `Bearer plu_${attempt.toString(16).padStart(64, "0")}` }),
+				env,
+			);
+		}
+
+		expect(last?.status).toBe(429);
+		// The bound is the point. The status alone would also pass for a limiter that counted the
+		// exchanges only after spending them.
+		expect(exchanges(mock)).toBe(limit);
 	});
 });
 
@@ -253,6 +427,58 @@ describe("council_handle_page_api /api/meetings/open", () => {
 		// Opening books no storage. The workspace is charged per file, when the pipeline creates it.
 		expect(mock.calls.some((call) => call.url.includes("/service-uploads/"))).toBe(false);
 	});
+
+	test("a lost open race cannot repoint the open meeting's grants to the loser", async () => {
+		const { env } = make_test_env();
+		// Sealing is one round trip to Convex, and the route holds the meeting row as it read it
+		// before that call. A second tab pressing Open wins meanwhile: it opens the meeting and pins
+		// both grant columns to itself before this loser's seal answers.
+		const mock = install_fetch({
+			"/service-grants/seal-processing": async (call) => {
+				await env.COUNCIL_DB.prepare(
+					"UPDATE meetings SET status = 'open', service_grant_id = 'grant-a', processing_grant_id = 'grant-processing-a' WHERE id = 'meeting-1'",
+				).run();
+				return Response.json({
+					token: "psg_processing_test_token",
+					expiresAt: FUTURE,
+					scopes: ["plugin_data:read", "plugin_data:write", "files:write"],
+					principalKey: "principal-1",
+					destinationPathPrefix: call.bodyJson?.destinationPathPrefix,
+					actorUserId: "user-1",
+					organizationId: "org-1",
+					workspaceId: "ws-1",
+					installationId: "inst-1",
+				});
+			},
+		});
+		restoreFetch = mock.restore;
+		await seed_grant(env);
+		// The winner's grants must exist as rows: both meeting grant columns are ON DELETE RESTRICT
+		// references, and the test database runs with foreign keys on.
+		await seed_grant(env, { id: "grant-a" });
+		await seed_grant(env, {
+			id: "grant-processing-a",
+			phase: "processing",
+			destinationPathPrefix: "/meetings/meeting-1",
+		});
+		await seed_meeting(env, { status: "created" });
+
+		const response = await worker.fetch(page_post("/api/meetings/open", { meetingId: "meeting-1" }), env);
+		expect(response.status).toBe(409);
+
+		// The winner's grants stand untouched. Grant writes that ran outside the guarded
+		// `created -> open` UPDATE let this loser overwrite them while its own open answered 409:
+		// joins then verified the loser's pin, the pipeline uploaded as the loser, and demoting the
+		// loser later broke the winner's meeting.
+		const stored = await env.COUNCIL_DB.prepare(
+			"SELECT status, service_grant_id, processing_grant_id FROM meetings WHERE id = 'meeting-1'",
+		).first<{ status: string; service_grant_id: string; processing_grant_id: string }>();
+		expect(stored).toEqual({
+			status: "open",
+			service_grant_id: "grant-a",
+			processing_grant_id: "grant-processing-a",
+		});
+	});
 });
 
 describe("council_handle_page_api /api/meetings/room-ticket", () => {
@@ -279,6 +505,21 @@ describe("council_handle_page_api /api/meetings/room-ticket", () => {
 		expect(stored?.actor_service_grant_id).toBe(exchanged?.service_grant_id);
 	});
 
+	test("a meeting that was never opened cannot mint a host ticket", async () => {
+		const { env } = make_test_env();
+		restoreFetch = install_fetch().restore;
+		await seed_grant(env);
+		await seed_meeting(env, { status: "created" });
+
+		const response = await worker.fetch(page_post("/api/meetings/room-ticket", { meetingId: "meeting-1" }), env);
+		expect(response.status).toBe(409);
+		expect(((await response.json()) as { message: string }).message).toBe("Meeting is not joinable");
+		// A `created` meeting has no deadline, so the room would refuse the join with "This meeting
+		// has ended" for a meeting that never started. Nothing is minted here.
+		const tickets = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meeting_tickets").first<{ n: number }>();
+		expect(tickets?.n).toBe(0);
+	});
+
 	test("refuses a ticket when the caller's grant is dead even if the pin is live", async () => {
 		const { env } = make_test_env();
 		restoreFetch = install_fetch().restore;
@@ -296,6 +537,28 @@ describe("council_handle_page_api /api/meetings/room-ticket", () => {
 
 		const response = await worker.fetch(page_post("/api/meetings/room-ticket", { meetingId: "meeting-1" }), env);
 		expect(response.status).toBe(409);
+	});
+
+	test("the ticket mint claims the write scope, not the page's read-only claim", async () => {
+		const { env } = make_test_env();
+		const mock = install_fetch();
+		restoreFetch = mock.restore;
+		await seed_grant(env);
+		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
+
+		const response = await worker.fetch(page_post("/api/meetings/room-ticket", { meetingId: "meeting-1" }), env);
+		expect(response.status).toBe(200);
+
+		// The control for the pin below: page auth answers this first call from the exchange, never
+		// from verify-live, so the one recorded verify-live is the mint's own.
+		const verifyLive = mock.calls.filter((call) => call.url.includes("/service-grants/verify-live"));
+		expect(verifyLive.length).toBe(1);
+
+		// The ticket admits the member to a recorded call whose files land in their workspace, so the
+		// mint claims the write pair. Page auth claims only `plugin_data:read` — that keeps a member an
+		// admin moved to `viewer` on the page — and this pin is what stops that narrow claim from
+		// spreading here, where it would let that member into a room they may no longer write from.
+		expect(verifyLive[0]?.bodyJson?.scopes).toEqual(["plugin_data:read", "plugin_data:write"]);
 	});
 });
 
@@ -319,6 +582,32 @@ describe("council_handle_page_api /api/meetings/close and /api/meetings/delete",
 		expect(mock.calls.some((call) => call.url.includes("/plugin-data/write-versioned"))).toBe(true);
 	});
 
+	test("a second close answers the settled status and does no provider work at all", async () => {
+		const { env } = make_test_env();
+		const mock = install_fetch();
+		restoreFetch = mock.restore;
+		await seed_grant(env);
+		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
+
+		const provider_calls = () => mock.calls.filter((call) => call.url.includes("/realtime/kit/")).length;
+
+		const first = await worker.fetch(page_post("/api/meetings/close", { meetingId: "meeting-1" }), env);
+		expect(first.status).toBe(200);
+		const afterFirst = provider_calls();
+		expect(afterFirst).toBeGreaterThan(0);
+
+		// The page leaves the close button live while it polls, and the deadline cron closes the same
+		// meeting on its own clock, so the same close really does arrive twice.
+		const second = await worker.fetch(page_post("/api/meetings/close", { meetingId: "meeting-1" }), env);
+		expect(second.status).toBe(200);
+		expect(((await second.json()) as { status: string }).status).toBe("ready");
+
+		// Zero provider work is the point, not the status. A guard that let the second close through
+		// would kick everyone out of the provider room again, and members can still be in a room the
+		// service has already settled.
+		expect(provider_calls()).toBe(afterFirst);
+	});
+
 	test("refuses close when the caller's grant is dead even if the pin is live", async () => {
 		const { env } = make_test_env();
 		restoreFetch = install_fetch().restore;
@@ -340,6 +629,30 @@ describe("council_handle_page_api /api/meetings/close and /api/meetings/delete",
 			status: string;
 		}>();
 		expect(stored?.status).toBe("open");
+	});
+
+	test("close claims the write scope, because the close is what starts the upload", async () => {
+		const { env } = make_test_env();
+		const mock = install_fetch();
+		restoreFetch = mock.restore;
+		await seed_grant(env);
+		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
+
+		const response = await worker.fetch(page_post("/api/meetings/close", { meetingId: "meeting-1" }), env);
+		expect(response.status).toBe(200);
+
+		// The control for the pin below: page auth answers this first call from the exchange, and
+		// nothing downstream of the close verifies again, so the one recorded verify-live is the
+		// route's own.
+		const verifyLive = mock.calls.filter((call) => call.url.includes("/service-grants/verify-live"));
+		expect(verifyLive.length).toBe(1);
+
+		// A closed meeting with a recording is handed straight to the pipeline, which uploads into this
+		// workspace, so the close claims the write pair. This is the fail-closed half of page auth's
+		// read-only claim: a member an admin moved to `viewer` mid-meeting keeps the page but cannot
+		// close their own meeting — the deadline sweep closes it instead. Narrowing this claim to read
+		// would give them back a button that starts an upload they may not make.
+		expect(verifyLive[0]?.bodyJson?.scopes).toEqual(["plugin_data:read", "plugin_data:write"]);
 	});
 
 	test("delete marks the meeting deleting and hands the work to the queue through the outbox", async () => {
@@ -388,6 +701,45 @@ describe("council_handle_page_api /api/meetings/close and /api/meetings/delete",
 		expect(grant?.phase).toBe("processing");
 	});
 
+	test("a delete whose meeting moved while the seal was in flight is refused instead of queueing work", async () => {
+		const { env, queueSent } = make_test_env();
+		// Sealing is one round trip to the host, and the route holds the meeting row as it read it
+		// before that call. A second tab pressing Delete wins the transition meanwhile: it takes the
+		// meeting to `deleting` on generation 1 and owns the delete from then on.
+		const mock = install_fetch({
+			"/service-grants/seal-processing": async (call) => {
+				await env.COUNCIL_DB.prepare(
+					"UPDATE meetings SET status = 'deleting', processing_generation = 1 WHERE id = 'meeting-1'",
+				).run();
+				return Response.json({
+					token: "psg_processing_test_token",
+					expiresAt: FUTURE,
+					scopes: ["plugin_data:read", "plugin_data:write", "files:write"],
+					principalKey: "principal-1",
+					destinationPathPrefix: call.bodyJson?.destinationPathPrefix,
+					actorUserId: "user-1",
+					organizationId: "org-1",
+					workspaceId: "ws-1",
+					installationId: "inst-1",
+				});
+			},
+		});
+		restoreFetch = mock.restore;
+		await seed_grant(env);
+		await seed_meeting(env, { status: "ready" });
+
+		const response = await worker.fetch(page_post("/api/meetings/delete", { meetingId: "meeting-1" }), env);
+		expect(response.status).toBe(409);
+
+		// The winner's state stands untouched. Without the guard this loser answers 200 and dispatches
+		// its own generation, so one meeting would be handed to two delete workflows at once.
+		const stored = await env.COUNCIL_DB.prepare(
+			"SELECT status, processing_generation FROM meetings WHERE id = 'meeting-1'",
+		).first<{ status: string; processing_generation: number }>();
+		expect(stored).toEqual({ status: "deleting", processing_generation: 1 });
+		expect(queueSent.length).toBe(0);
+	});
+
 	test("delete is refused while the meeting is processing", async () => {
 		const { env, queueSent } = make_test_env();
 		restoreFetch = install_fetch().restore;
@@ -412,9 +764,22 @@ describe("council_handle_page_api /api/meetings/list and /api/meetings/get", () 
 		await seed_grant(env);
 		await seed_meeting(env, { id: "meeting-live", code: "d".repeat(64), status: "ready" });
 		await seed_meeting(env, { id: "meeting-gone", code: "e".repeat(64), status: "deleted_tombstone" });
+		// Keep a second installation's meeting in the fixture so the list has something it must not
+		// return. With one installation the `installation_id = ?` filter can be deleted and the answer
+		// does not change. Give that meeting a finalized artifact too: the companion artifacts query
+		// is scoped the same way, and it only hands anything over together with the list filter.
+		await seed_grant(env, { id: "grant-other", installationId: "inst-other" });
+		await seed_meeting(env, {
+			id: "meeting-other-tenant",
+			code: "f".repeat(64),
+			installationId: "inst-other",
+			serviceGrantId: "grant-other",
+			status: "ready",
+		});
 		await env.COUNCIL_DB.prepare(
 			`INSERT INTO meeting_artifacts (id, meeting_id, kind, target_key, file_name, node_id, status, created_at, updated_at)
-			VALUES ('a1', 'meeting-live', 'transcript_markdown', 'transcript_markdown:transcript.md', 'transcript.md', 'node-9', 'finalized', 0, 0)`,
+			VALUES ('a1', 'meeting-live', 'transcript_markdown', 'transcript_markdown:transcript.md', 'transcript.md', 'node-9', 'finalized', 0, 0),
+			('a2', 'meeting-other-tenant', 'transcript_markdown', 'transcript_markdown:other.md', 'other.md', 'node-10', 'finalized', 0, 0)`,
 		).run();
 
 		const listResponse = await worker.fetch(page_post("/api/meetings/list", {}), env);
@@ -440,5 +805,127 @@ describe("council_handle_page_api /api/meetings/list and /api/meetings/get", () 
 		expect(getBody.meeting.id).toBe("meeting-live");
 		expect(getBody.meeting.artifacts).toEqual(getBody.artifacts);
 		expect(getBody.artifacts).toEqual([{ kind: "transcript_markdown", name: "transcript.md", fileNodeId: "node-9" }]);
+	});
+});
+
+describe("council_handle_page_api failure reasons", () => {
+	const FAILED_SENTENCE =
+		"Council could not finish saving this meeting's files. It keeps trying on its own for a few days; if the meeting still shows this, ask a workspace admin to look into it.";
+	const DELETE_FAILED_SENTENCE =
+		"Council could not finish deleting this meeting, so it is still here. Press Delete again to start a new attempt; if a file in the meeting's folder is read-only, clear that first.";
+
+	/**
+	 * Store what a real run really stores. Every string these tests use is copied from a `throw` in
+	 * `pipeline.ts`, composed the way the two terminal catches compose it. A made-up reason would
+	 * prove nothing: the whole defect is that the column holds producer text nobody sanitized.
+	 */
+	async function seed_failed_meeting(env: Env, status: string, reason: string) {
+		await seed_grant(env);
+		await seed_meeting(env, { status });
+		await env.COUNCIL_DB.prepare("UPDATE meetings SET failure_reason = ? WHERE id = 'meeting-1'").bind(reason).run();
+	}
+
+	async function get_failure_reason(env: Env) {
+		const response = await worker.fetch(page_post("/api/meetings/get", { meetingId: "meeting-1" }), env);
+		expect(response.status).toBe(200);
+		return ((await response.json()) as { meeting: { failureReason: string | null } }).meeting.failureReason;
+	}
+
+	test("a failed meeting gets a product sentence, not the step message that promises a retry", async () => {
+		const { env } = make_test_env();
+		restoreFetch = install_fetch().restore;
+		// `upload_artifact` throws this when the finalize poll runs out. The column is only written
+		// once the step's whole retry budget is spent, so by the time a member reads it the promised
+		// retry has already happened and failed — the card says "failed" and the text says "will
+		// retry" in the same breath. It also names the internal upload target key.
+		await seed_failed_meeting(
+			env,
+			"failed",
+			"The storage event for transcript_markdown:transcript.md never settled; the step will retry",
+		);
+
+		const failureReason = await get_failure_reason(env);
+		expect(failureReason).not.toContain("the step will retry");
+		expect(failureReason).not.toContain("transcript_markdown:");
+		expect(failureReason).toBe(FAILED_SENTENCE);
+	});
+
+	test("a plan refusal reaches the member without the internal Convex route or its status", async () => {
+		const { env } = make_test_env();
+		restoreFetch = install_fetch().restore;
+		// What `create_upload_target` stores for the host's plan door: the service prefix, then the
+		// operator message `convex_post` builds for every refusal. Page auth already refuses to hand
+		// that same message shape to a member; this is the identical text on the other route.
+		await seed_failed_meeting(
+			env,
+			"failed",
+			"Upload target refused: Convex /api/v1/files/service-uploads/create-target returned HTTP 403: This workspace's plan does not include plugin service file storage",
+		);
+
+		const failureReason = await get_failure_reason(env);
+		expect(failureReason).not.toContain("/api/v1/");
+		expect(failureReason).not.toContain("HTTP 403");
+		// The stored text carries no failure code, so the page cannot tell this refusal apart from
+		// any other one that ran out of retries. It therefore routes the member to an admin without
+		// diagnosing the cause. The next test is what holds that line.
+		expect(failureReason).toBe(FAILED_SENTENCE);
+	});
+
+	test("a refusal that is neither plan nor storage does not send the member to check the plan", async () => {
+		const { env } = make_test_env();
+		restoreFetch = install_fetch().restore;
+		// A revoked `content.write` grant. The host answers the same create-target route with 403
+		// "Permission denied", which `convex-api.ts` names `unauthorized`, not `plan_required` or
+		// `storage_full`. So `upload_artifact` throws a plain retryable Error and this reaches
+		// `failed` once the retry budget is spent. The plan refusal above is fast-failed instead,
+		// but it lands on the same status, which is why one sentence has to serve both. An admin
+		// sent to the plan finds a healthy plan and stops looking, and the meeting stays broken.
+		await seed_failed_meeting(
+			env,
+			"failed",
+			"Upload target refused: Convex /api/v1/files/service-uploads/create-target returned HTTP 403: Permission denied",
+		);
+
+		const failureReason = await get_failure_reason(env);
+		expect(failureReason).not.toContain("plan");
+		expect(failureReason).not.toContain("storage");
+		expect(failureReason).toBe(FAILED_SENTENCE);
+	});
+
+	test("a failed delete gets its own sentence, because pressing Delete again is what repairs it", async () => {
+		const { env } = make_test_env();
+		restoreFetch = install_fetch().restore;
+		// The documented refusal from the delete workflow's `archive-files` step: a member locked a
+		// file inside the meeting folder, and the host's 409 rides in the same operator message.
+		await seed_failed_meeting(
+			env,
+			"delete_failed",
+			"Archiving the meeting folder failed: Convex /api/v1/files/service-uploads/archive-destination returned HTTP 409: This item is read-only.",
+		);
+
+		const failureReason = await get_failure_reason(env);
+		expect(failureReason).not.toContain("/api/v1/");
+		expect(failureReason).not.toContain("HTTP 409");
+		expect(failureReason).toBe(DELETE_FAILED_SENTENCE);
+		// A delete failure is not a processing failure. One shared sentence would tell a member to
+		// wait for a redrive when the fix is in their own hands.
+		expect(failureReason).not.toBe(FAILED_SENTENCE);
+	});
+
+	test("a meeting that failed and was redriven to ready carries no leftover reason", async () => {
+		const { env } = make_test_env();
+		restoreFetch = install_fetch().restore;
+		// Nothing clears `failure_reason`: `store_summary_markdown` reads the previous run's text
+		// back on the next generation, so the redrive leaves it in place on purpose. A meeting that
+		// went on to succeed therefore still holds an operator string in D1.
+		await seed_failed_meeting(env, "ready", "Artifact PUT returned HTTP 500");
+
+		expect(await get_failure_reason(env)).toBeNull();
+
+		// The list route builds the same view for up to a hundred meetings at a time, and the page
+		// polls it, so a leak here ships far more often than one details request.
+		const listed = await worker.fetch(page_post("/api/meetings/list", {}), env);
+		const listBody = (await listed.json()) as { meetings: { failureReason: string | null }[] };
+		expect(listBody.meetings.map((meeting) => meeting.failureReason)).toEqual([null]);
 	});
 });

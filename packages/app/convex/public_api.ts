@@ -204,8 +204,10 @@ const plugin_run_scopes_validator = v.array(
 		v.literal("plugin_data:write" satisfies public_api_Scope),
 	),
 );
-// Read-only by design: UI sessions never get write, secrets, or outbound scopes. Plugin data is the
-// same: a page may display what its plugin stored, but only a backend or service writes it.
+// Read-only by design: UI sessions never get write, secrets, or outbound scopes. Plugin data
+// writes never use this token: a frame calls the `user_*` mutations in plugins_data.ts, which
+// write as the acting member and check both the `plugin.data.user-write` capability and the
+// member's own workspace content.write permission.
 const plugin_ui_scopes_validator = v.array(
 	v.union(
 		v.literal("files:list" satisfies public_api_Scope),
@@ -574,8 +576,8 @@ export const create_plugin_service_grant = internalMutation({
  * the presented token is what proves the caller still holds it.
  *
  * The stored scopes are left alone. `resolve_principal` narrows them against the installation's
- * current capabilities on every single call, so rewriting them here would only make a capability
- * that is given back later stay lost.
+ * current capabilities on every single call, so this doc never has to be the record of what the
+ * grant may still do.
  *
  * Two renewals at once cannot both win: they patch the same doc, so Convex retries the loser, and by
  * then the old hash is gone and it is told its token no longer works. The service that lost re-runs
@@ -1056,15 +1058,16 @@ export const resolve_principal = internalQuery({
 				installationId: v.id("plugins_workspace_installations"),
 				pluginVersionId: v.id("plugins_versions"),
 				/**
-				 * The member whose plugin page asked for this grant. The service has no user of its own,
+				 * The member whose plugin frame asked for this grant. The service has no user of its own,
 				 * so this is the authorship it writes with and the eyes it reads with, the same way a
 				 * plugin run uses the person whose upload started it.
 				 */
 				actorUserId: v.id("users"),
 				/**
-				 * Carried so a caller can tell the two apart. Neither phase is treated differently yet:
-				 * `processing` is meant to outlive the actor's permissions once it is sealed to one exact
-				 * target, and the sealing fields belong to the Council work that mints such a grant.
+				 * Which phase the grant is in. `seal-processing` refuses a grant that is already
+				 * `processing`, `verify-live` refuses a phase the service did not expect, and only a
+				 * `processing` grant may upload files. Permissions are not one of those differences:
+				 * both phases resolve with the actor's live membership and permissions below.
 				 */
 				phase: v.union(v.literal("interactive"), v.literal("processing")),
 				expiresAt: v.number(),
@@ -1087,8 +1090,10 @@ export const resolve_principal = internalQuery({
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 
-			// A run's authority dies with its installation: disabling, uninstalling, or upgrading the
-			// installation (which changes its pluginVersionId) revokes every live run token.
+			// A run's authority dies with its installation. Uninstalling deletes the installation doc,
+			// and upgrading to another version writes a different pluginVersionId. The check below sees
+			// either change and refuses every live run token. `disabled` is a reserved state: nothing in
+			// the app writes it today, so keep the status refusal for the day a disable control lands.
 			const installation = await ctx.db.get("plugins_workspace_installations", pluginRun.installationId);
 			if (
 				!installation ||
@@ -1154,6 +1159,11 @@ export const resolve_principal = internalQuery({
 		}
 
 		if (public_api_PLUGIN_UI_TOKEN_REGEX.test(args.presented)) {
+			// A page and a file view both get their `plu_` token from the same table, and nothing on this
+			// path can tell the two apart: the lookup below is by token hash alone, and the principal this
+			// branch returns carries no frame kind at all. So read every rule here as a rule for both. The
+			// file-view row keeps one extra field, `fileNodeId`, and the token-refresh route in
+			// `plugins_ui.ts` is the only place in the backend that reads it.
 			const tokenHash = await crypto_sha256_hex(args.presented);
 			const session = await ctx.db
 				.query("plugins_ui_sessions")
@@ -1163,9 +1173,11 @@ export const resolve_principal = internalQuery({
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 
-			// A UI session is only valid while its installation stays as it was: disabling,
-			// uninstalling, or upgrading it (an upgrade changes pluginVersionId) revokes every
-			// outstanding page token.
+			// A UI session is only valid while its installation stays as it was. Uninstalling deletes the
+			// installation doc, and upgrading to another version writes a different pluginVersionId. The
+			// check below sees either change and refuses every outstanding UI token. `disabled` is a
+			// reserved state: nothing in the app writes it today, so keep the status refusal for the day
+			// a disable control lands.
 			const installation = await ctx.db.get("plugins_workspace_installations", session.installationId);
 			if (
 				!installation ||
@@ -1177,7 +1189,7 @@ export const resolve_principal = internalQuery({
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 
-			// The page acts on behalf of the minting user: it can never read what that user cannot.
+			// The frame acts on behalf of the minting user: it can never read what that user cannot.
 			const user = await ctx.db.get("users", session.userId);
 			if (!user || user.deletedAt != null) {
 				return Result({ _nay: { message: "Unauthenticated" } });
@@ -1207,8 +1219,8 @@ export const resolve_principal = internalQuery({
 			)
 				? ["files:list", "files:read", "files:download"]
 				: [];
-			// A page may show what its plugin stored, but never write it. A page session can belong to an
-			// anonymous identity, and a page is the surface an XSS reaches first, so a stored write from
+			// A frame may show what its plugin stored, but never write it. A UI session can belong to an
+			// anonymous identity, and a frame is the surface an XSS reaches first, so a stored write from
 			// here would become injected input that the plugin's backend later acts on with its secrets.
 			if (installation.acceptedCapabilities.includes("plugin.data.read")) {
 				scopes.push("plugin_data:read");
@@ -1244,8 +1256,15 @@ export const resolve_principal = internalQuery({
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 
-			// The grant belongs to the installation, so it dies with it: disabling, uninstalling, or
-			// upgrading the installation (an upgrade changes pluginVersionId) revokes every live grant.
+			// The grant belongs to the installation, so it dies with it. Uninstalling deletes the
+			// installation doc, and upgrading to another version writes a different pluginVersionId. The
+			// check below sees either change and refuses the grant on its next call.
+			//
+			// `disabled` is a reserved state, not a third way to revoke a grant today. `install_version`
+			// writes `status: "enabled"` in both of its branches, and nothing else in the app writes that
+			// field, so nothing can produce a disabled installation. Keep the status refusal for the day
+			// a disable control lands. It is not dead code.
+			//
 			// The connect capability is rechecked for the same reason the scopes are below: taking it
 			// away on upgrade must stop the outside server now, not when the grant expires.
 			const installation = await ctx.db.get("plugins_workspace_installations", grant.installationId);
@@ -1274,10 +1293,9 @@ export const resolve_principal = internalQuery({
 						.eq("workspaceId", grant.workspaceId),
 				)
 				.first();
-			// A grant acts for its actor, so the actor has to still be a member. A `processing` grant is
-			// meant to outlive that one day, so work already accepted is not stranded half-written, but
-			// only once it is sealed to one exact target. The sealing fields belong to the Council work
-			// that mints such a grant, so until then both phases need a live membership.
+			// A grant acts for its actor, so the actor has to still be a member. Both phases need that,
+			// including `processing`. Being sealed to one destination path prefix bounds where a grant
+			// writes, not whether its member may still write, so it earns no exemption here.
 			if (!membership) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
@@ -1288,8 +1306,13 @@ export const resolve_principal = internalQuery({
 			});
 
 			// The grant is issued with the scopes the exchange asked for, but the installation's accepted
-			// capabilities are still the ceiling. Removing a capability on upgrade therefore narrows every
-			// outstanding grant instead of waiting for it to expire.
+			// capabilities are still the ceiling. An upgrade never reaches this point. It replaces
+			// `pluginVersionId`, and the version check above refuses the grant, so an upgrade revokes it
+			// instead of narrowing it. Install acceptance is all-or-nothing today, and the only two writers
+			// of `acceptedCapabilities` set it from the version they are installing, so a version change is
+			// the only way a capability can disappear. Keep the rechecks below as defence in depth: they
+			// are cheap, and they still hold the ceiling if someone later writes `acceptedCapabilities`
+			// without moving the version.
 			const scopes: Infer<typeof plugin_service_scopes_validator> = [];
 			if (grant.scopes.includes("plugin_data:read") && installation.acceptedCapabilities.includes("plugin.data.read")) {
 				scopes.push("plugin_data:read");
@@ -1302,7 +1325,7 @@ export const resolve_principal = internalQuery({
 			}
 			// A file write must land somewhere the grant was told to write. A grant without a destination
 			// prefix loses the scope, so the "no prefix means anywhere" reading of `pathPrefix` below can
-			// never be reached from here. Removing the capability on upgrade narrows this one too.
+			// never be reached from here. The capability recheck is the same defence in depth as above.
 			if (
 				grant.scopes.includes("files:write") &&
 				installation.acceptedCapabilities.includes("workspace.files.write") &&

@@ -5172,11 +5172,7 @@ function files_node_project_read_only(
 	fileNode: Doc<"files_nodes">,
 	readableSource: Pick<Doc<"files_nodes">, "_id" | "path"> | null,
 ) {
-	const {
-		readOnlyScopeNodeId,
-		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
-		...rest
-	} = fileNode;
+	const { readOnlyScopeNodeId, readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId, ...rest } = fileNode;
 
 	// Keep these values as exact literals so they match the return validator.
 	const readOnlyState: "writable" | "self" | "inherited" =

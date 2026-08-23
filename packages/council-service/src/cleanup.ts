@@ -10,16 +10,24 @@ import {
 	council_close_meeting,
 	council_request_meeting_delete,
 	council_request_processing_redrive,
-	council_seal_and_start_processing,
+	council_start_processing,
 } from "./lifecycle.ts";
 import { council_get_meeting, council_get_service_grant, council_transition_meeting } from "./db.ts";
 import { council_dispatch_outbox, type council_EventOutboxRow } from "./outbox.ts";
 import { council_workflow_instance_id } from "./consumer.ts";
 import { council_deliver_projections, council_project_meeting } from "./projection.ts";
-import { council_UNOPENED_MEETING_TTL_MS } from "./routes-page.ts";
+
+/** A created meeting that is never opened expires after a day. */
+export const council_UNOPENED_MEETING_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** Guest email HMACs live two hours past the join, then the retry window is over. */
 const EMAIL_HMAC_TTL_MS = 2 * 60 * 60 * 1000;
+/**
+ * How long one verified webhook body is remembered so a retried delivery is recognised as a
+ * duplicate. Eight days is the window a tombstoned meeting already gets, so a webhook row never
+ * outlives the meeting it could have been about.
+ */
+const WEBHOOK_EVENT_TTL_MS = 8 * 24 * 60 * 60 * 1000;
 /** A handoff older than this without an observed instance is treated as lost and re-driven. */
 const HANDOFF_STALE_MS = 15 * 60 * 1000;
 /** A failed delete retries after this long, so a transient outage does not alert forever. */
@@ -37,17 +45,45 @@ export async function council_run_scheduled(env: Env, now: number) {
 	await db.prepare("DELETE FROM room_sessions WHERE expires_at <= ?").bind(now).run();
 	await db.prepare("DELETE FROM page_token_cache WHERE expires_at <= ?").bind(now).run();
 	await db.prepare("DELETE FROM rate_limit_windows WHERE window_start <= ?").bind(now - 2 * 60 * 60 * 1000).run();
+	// Webhook rows the tombstone sweep below never matches: an event the handler could not map to a
+	// meeting is stored with `meeting_id = NULL`, and so is any delivery that arrives after its
+	// meeting was swept. Nothing else deletes those, so without this they and the
+	// `webhook_events_dedupe` index grow for the deployment's lifetime.
+	//
+	// Forgetting a row this old cannot replay work. The provider stops retrying a delivery long
+	// before eight days. And if one did arrive again: a meeting that was swept no longer exists, so
+	// the handler stores the event and does nothing, and a meeting that still exists is only
+	// actionable while it is `processing`, where the outbox insert is `INSERT OR IGNORE` on
+	// (meeting, kind, generation) and that row is already there.
+	await db.prepare("DELETE FROM webhook_events WHERE received_at <= ?").bind(now - WEBHOOK_EVENT_TTL_MS).run();
 	await db
 		.prepare("UPDATE meeting_participants SET email_hmac = NULL WHERE email_hmac IS NOT NULL AND created_at <= ?")
 		.bind(now - EMAIL_HMAC_TTL_MS)
 		.run();
-	// Expired grants that nothing references anymore. Meetings pin theirs via FK, so a delete here
-	// can only remove rows no meeting depends on.
+	// Expired grants that nothing points at anymore. Every reference to `service_grants` that is
+	// `ON DELETE RESTRICT` has to be listed below. One referenced row makes this DELETE throw, no
+	// grant is removed at all, and the throw ends the pass before deadline enforcement and every
+	// sweep under it. `page_token_cache` is the one reference left out on purpose: it cascades, so
+	// deleting a grant deletes the mapping that named it. Each subquery drops its own NULLs, because
+	// `NOT IN` over a set holding NULL matches nothing and would quietly delete no grant at all.
+	//
+	// Two of them really collide. A host session pins the grant that minted its room ticket, and
+	// `resume_room_session` moves that session's expiry five hours forward on every room page load,
+	// with no ceiling and no look at the pinned grant. So a room tab that is loaded again every few
+	// hours keeps the session alive past the grant's 24 hours.
+	//
+	// A ticket collides too. The first statement above only deletes a ticket whose OWN `expires_at`
+	// has passed, and a ticket lives two minutes from the moment it was minted. Minting one needs a
+	// grant with any time left at all, so a member who opens the host room in the last two minutes
+	// of a 24-hour grant leaves a live ticket pinning a grant that is already dead. Consuming the
+	// ticket does not help: the room marks it `consumed_at` and leaves the row for this sweep.
 	await db
 		.prepare(
 			`DELETE FROM service_grants WHERE expires_at <= ?
 			AND id NOT IN (SELECT service_grant_id FROM meetings WHERE service_grant_id IS NOT NULL)
-			AND id NOT IN (SELECT processing_grant_id FROM meetings WHERE processing_grant_id IS NOT NULL)`,
+			AND id NOT IN (SELECT processing_grant_id FROM meetings WHERE processing_grant_id IS NOT NULL)
+			AND id NOT IN (SELECT actor_service_grant_id FROM room_sessions WHERE actor_service_grant_id IS NOT NULL)
+			AND id NOT IN (SELECT actor_service_grant_id FROM meeting_tickets WHERE actor_service_grant_id IS NOT NULL)`,
 		)
 		.bind(now)
 		.run();
@@ -66,10 +102,10 @@ export async function council_run_scheduled(env: Env, now: number) {
 		}
 	}
 
-	// A meeting that closed with a recording but whose seal failed stays `closed`; retry the seal
-	// while the interactive grant lives. A closed meeting without a recording settles to `ready`
-	// inline at close, so one that is still `closed` here crashed before that settle — replay it,
-	// because nothing else ever transitions it.
+	// A meeting that closed with a recording but never reached `processing` stays `closed`; retry the
+	// handoff. It is a D1 transition plus an outbox write, so nothing here depends on a live grant. A
+	// closed meeting without a recording settles to `ready` inline at close, so one that is still
+	// `closed` here crashed before that settle — replay it, because nothing else ever transitions it.
 	const closedPending = await db
 		.prepare("SELECT id, provider_recording_id FROM meetings WHERE status = 'closed' LIMIT ?")
 		.bind(SWEEP_LIMIT)
@@ -85,10 +121,13 @@ export async function council_run_scheduled(env: Env, now: number) {
 				}
 				continue;
 			}
-			const sealed = await council_seal_and_start_processing(env, row.id, now);
-			if (sealed._nay) {
-				console.warn("Seal retry failed; the meeting stays closed", { meetingId: row.id, reason: sealed._nay.message });
-			} else if (sealed._yay.started) {
+			const handed = await council_start_processing(env, row.id, now);
+			if (handed._nay) {
+				console.warn("Handing the meeting to processing failed; the meeting stays closed for retry", {
+					meetingId: row.id,
+					reason: handed._nay.message,
+				});
+			} else if (handed._yay.started) {
 				// Project the re-driven handoff like the inline close does, so the page shows
 				// `processing` instead of the pre-close state for the whole pipeline run.
 				await council_project_meeting(env, row.id, now);
@@ -188,8 +227,11 @@ export async function council_run_scheduled(env: Env, now: number) {
 		}
 	}
 
-	// Failed deletes retry on a slow clock. The repair fence and attribution stay until the
-	// external deletes finally succeed; bytes stay charged meanwhile.
+	// Failed deletes retry on a slow clock. The meeting keeps its `delete_failed` row until a later
+	// run reaches the tombstone, and whatever that run did not finish stays with it: the workspace
+	// folder when `archive-files` never got through, and the participant PII, tickets, sessions,
+	// track transcripts and summary row when `clear-pii-and-tombstone` never ran. The stored bytes
+	// stay charged meanwhile.
 	const failedDeletes = await db
 		.prepare("SELECT id FROM meetings WHERE status = 'delete_failed' AND updated_at <= ? LIMIT ?")
 		.bind(now - DELETE_RETRY_MS, SWEEP_LIMIT)
@@ -236,28 +278,38 @@ export async function council_run_scheduled(env: Env, now: number) {
 		const sealedGrant = meeting.processing_grant_id
 			? await council_get_service_grant(db, meeting.processing_grant_id)
 			: null;
+		// The delete branch above names the page delete because `handle_delete` seals a fresh grant.
+		// Processing has no such route: no page call re-seals a processing grant, so this meeting can
+		// never produce its files. Say that, and bump the clock so the dead row leaves the window.
 		if (!sealedGrant || sealedGrant.expires_at <= now) {
 			await db.prepare("UPDATE meetings SET updated_at = ? WHERE id = ?").bind(now, meeting.id).run();
-			console.warn("Processing retry skipped: the sealed grant is dead; a page redrive re-arms it", {
-				meetingId: meeting.id,
-			});
+			console.warn(
+				"Processing retry skipped: the sealed grant is dead; this meeting can no longer be processed and only a page delete is left",
+				{ meetingId: meeting.id },
+			);
 			continue;
 		}
 		await council_request_processing_redrive(env, meeting, now);
 	}
 
-	// A processing meeting whose current outbox row is dead is a candidate for a new generation.
-	// The request helper still asks Workflow.get before bumping, so a running instance is left alone.
-	const deadProcessing = await db
+	// A processing meeting whose current outbox row is settled is a candidate for a new generation.
+	// Two rows land here. A `dead` row is the DLQ's mark. A `delivered` row belongs here too when
+	// its run failed terminally but the catch's one `failed` write in `council_run_processing` was
+	// lost — the meeting then sits in `processing` forever, because nothing else ever moves it. The
+	// request helper still asks Workflow.get before bumping, so a running instance is left alone.
+	// Only the delivered shape takes the hourly clock: every healthy pipeline run sits at exactly
+	// processing + delivered, so an unclocked scan would ask Workflow.get about every running
+	// meeting on every pass.
+	const stuckProcessing = await db
 		.prepare(
 			`SELECT m.id FROM meetings m
 			JOIN event_outbox o ON o.meeting_id = m.id AND o.kind = 'process_meeting' AND o.generation = m.processing_generation
-			WHERE m.status = 'processing' AND o.status = 'dead'
+			WHERE m.status = 'processing' AND (o.status = 'dead' OR (o.status = 'delivered' AND m.updated_at <= ?))
 			LIMIT ?`,
 		)
-		.bind(SWEEP_LIMIT)
+		.bind(now - PROCESSING_RETRY_MS, SWEEP_LIMIT)
 		.all<{ id: string }>();
-	for (const row of deadProcessing.results) {
+	for (const row of stuckProcessing.results) {
 		const meeting = await council_get_meeting(db, row.id);
 		if (!meeting) {
 			continue;
@@ -265,18 +317,21 @@ export async function council_run_scheduled(env: Env, now: number) {
 		await council_request_processing_redrive(env, meeting, now);
 	}
 
-	// A deleting meeting whose current outbox row is dead never finished. Bump only when that
-	// generation's instance is gone; an instance that started before the DLQ write must finish.
-	const deadDeleting = await db
+	// A deleting meeting whose current outbox row is settled never finished: `dead` from the DLQ,
+	// or `delivered` when the catch's one `delete_failed` write in the delete workflow was lost
+	// after a terminal run. Bump only when that generation's instance is gone; an instance that
+	// started before the DLQ write must finish. The delivered shape takes the hourly clock for the
+	// same reason as processing above.
+	const stuckDeleting = await db
 		.prepare(
 			`SELECT m.id FROM meetings m
 			JOIN event_outbox o ON o.meeting_id = m.id AND o.kind = 'delete_meeting' AND o.generation = m.processing_generation
-			WHERE m.status = 'deleting' AND o.status = 'dead'
+			WHERE m.status = 'deleting' AND (o.status = 'dead' OR (o.status = 'delivered' AND m.updated_at <= ?))
 			LIMIT ?`,
 		)
-		.bind(SWEEP_LIMIT)
+		.bind(now - DELETE_RETRY_MS, SWEEP_LIMIT)
 		.all<{ id: string }>();
-	for (const row of deadDeleting.results) {
+	for (const row of stuckDeleting.results) {
 		const meeting = await council_get_meeting(db, row.id);
 		if (!meeting) {
 			continue;

@@ -20,8 +20,8 @@ import { council_workflow_instance_id } from "./consumer.ts";
 import { Result } from "./result.ts";
 
 /**
- * Close admission and, when a recording exists, seal authority and hand the meeting to the
- * processing pipeline. Idempotent: a meeting already past `closed` answers success without acting.
+ * Close admission and, when a recording exists, hand the meeting to the processing pipeline.
+ * Idempotent: a meeting already past `closed` answers success without acting.
  *
  * Order matters and is deliberate:
  * 1. The D1 transition closes admission first — whatever the provider does next, no new join
@@ -38,8 +38,11 @@ export async function council_close_meeting(env: Env, meetingId: string, now: nu
 	if (!meeting) {
 		return Result<never>({ _nay: { name: "not_found", message: "Not found" } });
 	}
+	// `recorded` rides every success answer so the room can tell the host the truth about the
+	// recording instead of guessing from its own stage. Once the close commits, the guarded write
+	// in `handle_start_recording` refuses, so the id read after the transition is final.
 	if (["closed", "processing", "ready", "failed"].includes(meeting.status)) {
-		return Result({ _yay: { status: meeting.status } });
+		return Result({ _yay: { status: meeting.status, recorded: meeting.provider_recording_id !== null } });
 	}
 
 	const closedNow = await council_transition_meeting(db, {
@@ -98,7 +101,7 @@ export async function council_close_meeting(env: Env, meetingId: string, now: nu
 	}
 
 	if (providerRecordingId) {
-		const handed = await council_seal_and_start_processing(env, meetingId, now);
+		const handed = await council_start_processing(env, meetingId, now);
 		if (handed._nay) {
 			// The meeting stays `closed`; the scheduled reconciliation retries the handoff.
 			console.warn("Handing the meeting to processing failed; the meeting stays closed for retry", {
@@ -118,9 +121,22 @@ export async function council_close_meeting(env: Env, meetingId: string, now: nu
 		});
 	}
 
-	await council_project_meeting(env, meetingId, now);
+	// The enqueue inside can throw on the UNIQUE (meeting_id, revision) index when a concurrent
+	// state change projected first. The close itself is already committed, so answer the caller
+	// instead of throwing: the winner re-read the row, so a state at least as new is already on its
+	// way, and the meeting's next state change re-projects the full row anyway. Without this, one
+	// collision turns a committed close into a bodyless 500 through `handle_close` and aborts the
+	// deadline sweep for every meeting after this one.
+	try {
+		await council_project_meeting(env, meetingId, now);
+	} catch (error) {
+		console.warn("Projecting the close failed; the next state change re-projects it", {
+			meetingId,
+			error: String(error),
+		});
+	}
 	const after = await council_get_meeting(db, meetingId);
-	return Result({ _yay: { status: after?.status ?? "closed" } });
+	return Result({ _yay: { status: after?.status ?? "closed", recorded: providerRecordingId !== null } });
 }
 
 /**
@@ -137,7 +153,12 @@ export async function council_seal_meeting_grant(env: Env, meeting: council_Meet
 	if (!grantId) {
 		return Result<never>({ _nay: { name: "no_grant", message: "Meeting has no pinned grant" } });
 	}
-	const verified = await council_verify_grant(env, grantId, now);
+	// Sealing hands the pipeline authority to write this meeting's files, so claim the write scope:
+	// a member who lost `content.write` must not be able to start that. The claim stops at the
+	// plugin-data pair even though the sealed grant carries `files:write`, because the host also
+	// refuses a claim wider than the grant being verified, and an interactive grant never holds
+	// `files:write`.
+	const verified = await council_verify_grant(env, grantId, now, ["plugin_data:read", "plugin_data:write"]);
 	if (verified._nay) {
 		return verified;
 	}
@@ -173,7 +194,7 @@ export async function council_seal_meeting_grant(env: Env, meeting: council_Meet
  * atomic batch. Idempotent per generation. The sealed grant was claimed when the meeting opened,
  * so nothing here talks to Convex.
  */
-export async function council_seal_and_start_processing(env: Env, meetingId: string, now: number) {
+export async function council_start_processing(env: Env, meetingId: string, now: number) {
 	const db = env.COUNCIL_DB;
 	const meeting = await council_get_meeting(db, meetingId);
 	if (!meeting || meeting.status !== "closed" || !meeting.provider_recording_id) {
@@ -208,9 +229,11 @@ export async function council_seal_and_start_processing(env: Env, meetingId: str
  *
  * Two cases:
  * - `failed`: the previous instance finished. Always bump.
- * - `processing` with a `dead` outbox row for the current generation: bump only when
- *   that generation's Workflow instance is missing or already terminal. A `dead` row after
- *   `createBatch` succeeded can mean the instance is still running; bumping would start N+1.
+ * - `processing` with a settled (`dead` or `delivered`) outbox row for the current generation:
+ *   bump only when that generation's Workflow instance is missing or already terminal. A `dead`
+ *   row after `createBatch` succeeded can mean the instance is still running, and a `delivered`
+ *   row usually means exactly that; bumping would start N+1. A `delivered` row with a terminal
+ *   instance means the run's `failed` write was lost, and nothing else ever moves that meeting.
  */
 export async function council_request_processing_redrive(env: Env, meeting: council_MeetingRow, now: number) {
 	const db = env.COUNCIL_DB;
@@ -219,7 +242,7 @@ export async function council_request_processing_redrive(env: Env, meeting: coun
 	}
 
 	if (meeting.status === "processing") {
-		const orphaned = await council_dead_generation_has_no_instance(env, {
+		const orphaned = await settled_generation_has_no_instance(env, {
 			meetingId: meeting.id,
 			kind: "process_meeting",
 			generation: meeting.processing_generation,
@@ -247,8 +270,9 @@ export async function council_request_processing_redrive(env: Env, meeting: coun
 
 /**
  * Start the delete workflow for a meeting in any state. Idempotent: a meeting already deleting or
- * tombstoned answers success without a new generation, unless the current delete outbox is `dead`
- * and that generation's Workflow instance is gone.
+ * tombstoned answers success without a new generation, unless the current delete outbox is settled
+ * (`dead`, or `delivered` with the run's `delete_failed` write lost) and that generation's
+ * Workflow instance is gone.
  */
 export async function council_request_meeting_delete(env: Env, meeting: council_MeetingRow, now: number) {
 	const db = env.COUNCIL_DB;
@@ -256,7 +280,7 @@ export async function council_request_meeting_delete(env: Env, meeting: council_
 		return Result({ _yay: { status: meeting.status } });
 	}
 	if (meeting.status === "deleting") {
-		const orphaned = await council_dead_generation_has_no_instance(env, {
+		const orphaned = await settled_generation_has_no_instance(env, {
 			meetingId: meeting.id,
 			kind: "delete_meeting",
 			generation: meeting.processing_generation,
@@ -283,12 +307,15 @@ export async function council_request_meeting_delete(env: Env, meeting: council_
 }
 
 /**
- * A `dead` outbox row is not proof the Workflow is gone. `createBatch` can start the instance,
- * then the ack/`delivered` write can fail into the DLQ. Bump only when that generation's instance
- * is missing or already terminal. A transport error on `get` is not "gone": the instance may
- * still be running.
+ * A settled outbox row (`dead` or `delivered`) is not proof the generation's work resolved. A
+ * `dead` row can follow a `createBatch` that did start the instance, with only the ack lost into
+ * the DLQ. A `delivered` row normally means the run is live or finished well — but the run's
+ * catch records `failed`/`delete_failed` with one D1 write, and if that write is lost the meeting
+ * keeps its pre-terminal status forever while the row stays `delivered`. Bump only when that
+ * generation's instance is missing or already terminal. A transport error on `get` is not "gone":
+ * the instance may still be running.
  */
-async function council_dead_generation_has_no_instance(
+async function settled_generation_has_no_instance(
 	env: Env,
 	args: { meetingId: string; kind: "process_meeting" | "delete_meeting"; generation: number },
 ) {
@@ -297,7 +324,7 @@ async function council_dead_generation_has_no_instance(
 	)
 		.bind(args.meetingId, args.kind, args.generation)
 		.first<{ status: string }>();
-	if (current?.status !== "dead") {
+	if (current?.status !== "dead" && current?.status !== "delivered") {
 		return false;
 	}
 
@@ -311,11 +338,29 @@ async function council_dead_generation_has_no_instance(
 		const snapshot = await instance.status();
 		return snapshot.status === "complete" || snapshot.status === "errored" || snapshot.status === "terminated";
 	} catch (error) {
-		return council_workflow_instance_is_missing(error);
+		return workflow_instance_is_missing(error);
 	}
 }
 
-function council_workflow_instance_is_missing(error: unknown) {
+/**
+ * Decide whether a failed `get` means the instance was never created.
+ *
+ * `WorkflowBinding.get` calls the instance's `status()` inside a bare `catch` and rethrows
+ * `new Error("instance.not_found")`, so the engine's descriptive text never reaches here. Through
+ * `get`, the code is the only marker that ever arrives, and the first pattern is what matches it.
+ *
+ * `/does not exist/i` matches the engine's own wording. The engine builds `(instance.not_found)
+ * Instance does not exist`, and a deployed runtime may surface that form instead of the bare code.
+ *
+ * `/not found/i` matches neither form. The engine writes `not_found` with an underscore, so the
+ * spaced text appears in no Workflows error we can name. Keep it as defensive breadth, not as a
+ * pattern with a known producer.
+ *
+ * Read a match as weak evidence, not as proof. That same bare `catch` also relabels a transport
+ * failure as `instance.not_found`, and a false "gone" reaches `council_request_processing_redrive`
+ * and bumps the generation. So widening these patterns can only make that more likely.
+ */
+function workflow_instance_is_missing(error: unknown) {
 	const message = error instanceof Error ? error.message : String(error);
-	return /not found/i.test(message) || /does not exist/i.test(message);
+	return /instance\.not_found/i.test(message) || /not found/i.test(message) || /does not exist/i.test(message);
 }

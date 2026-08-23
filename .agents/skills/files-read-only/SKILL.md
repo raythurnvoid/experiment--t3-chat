@@ -154,7 +154,18 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
   destination ACL. Its `delete` and `archive-destination` doors may pass only that exact target's
   direct lock. They recheck tenant, installation, destination node, open epoch, target state,
   capability, provenance, and live manage ACL before any cleanup write. Inherited, member-created,
-  member-recreated, moved, released, deleting, stale-epoch, or unrelated locks never pass.
+  member-recreated, moved, released, deleting, stale-epoch, or unrelated locks never pass. A member
+  lock on any folder above the file does not pass either.
+- A door that passes that check must also release the lock before it archives the node. `unarchive_nodes`
+  refuses the whole restore when any node in the restored subtree is read-only, so a file that kept the
+  lock could never come back and the archived set would stop being restorable. A member can also hold a
+  folder lock above the file. The read-only cascade stops at a child holding its own lock, so the file's
+  own pointer does not show that folder lock, and releasing the service lock would leave the file
+  read-only. So both doors refuse the whole call while any folder above the file is locked. `delete`
+  reads the parent folder's pointer, and `archive-destination` sees the same lock while it sweeps its
+  destination subtree. The released pointer still falls back to the parent's current scope, the same way
+  `set_node_writable` does, and after those refusals that scope is always writable. Only a file ever
+  carries this provenance, so a lock above is always a member lock and there is no subtree to cascade to.
 - If discard or expiry finds a locked eager-created node or created ancestor, remove the pending docs
   but keep the empty committed branch. `eagerCreated` stores the creation-time committed sequence and
   optional `createdAncestorIds`. Cleanup checks every existing node's current lock before its first
@@ -210,9 +221,11 @@ different: cleanup keeps its empty placeholder and asset doc, and hands only the
 to the ledger. Remint and an exact pending create replay answer 409 until that deletion job settles,
 then they reuse the same asset and staging key: once the job is gone, nothing is queued to delete
 what the retry writes. A read-only service placeholder has no cleanup job, so both retry
-doors stay open and the accepted upload can still finish. Only a named workspace deletion bypasses
-the lock. The slow retry exists because an hourly copy attempt for an upload the caller abandoned
-costs more than it can ever recover.
+doors stay open and the accepted upload can still finish. Only a named tenant, workspace, or account
+deletion bypasses the lock. All three delete the placeholder through the same
+`db_purge_organization_workspace_content_batch` in `data_deletion.ts`, which never reads the lock.
+The slow retry exists because an hourly copy attempt for an upload the caller abandoned costs more
+than it can ever recover.
 
 Those retry doors still recheck the target's original destination seal, active current path, and
 restricted-file ACL. The lock is the one check they skip because it happened after upload acceptance.
@@ -256,7 +269,7 @@ Derive operation-specific capabilities instead of one broad `canWrite`:
 | `canReceiveChildren` | Folder ACL write and the folder is not effectively locked |
 | `canRelocateOrRename` | Source ACL write, no effective lock, no VISIBLE locked descendant |
 | `canArchiveOrRestore` | Same subtree rule plus existing restore/restricted-scope rules |
-| `canManageReadOnly` | `content.permissions.manage` on the lock target |
+| `canManage` (from `get_node_read_only_management_state`, not from `files_get_read_only_capabilities`) | `content.permissions.manage` on **this** node, not on the lock source. The Properties modal ANDs it with `readOnlyState !== "inherited"` to get its local `canToggle` — see the checkbox table below |
 | `readOnlyState` | `writable`, `self`, or `inherited` |
 | `hasVisibleReadOnlyDescendant` | One ancestor-id set derived from the authorized `list_tree` result; no per-row subtree scan |
 
@@ -313,7 +326,7 @@ The checkbox writes as soon as it is clicked. There is no Save for the lock — 
 
 - `convex/files_nodes.test.ts` — pointer/cascade states, tree operations, current-lock Yjs/snapshot/repair checks, action-backed replacement/toggle final checks, lock → unlock success, upload-node and failed-upload-discard refusals, copy-out controls.
 - `convex/files_pending_updates.test.ts` — proposal/accept/discard behavior, current-lock final checks, lock → unlock completion, and eager-created cleanup.
-- `convex/public_api.test.ts` — 409 `conflict` contract, batch semantics, current-lock final checks, target identity conflicts, lock → unlock success, and zero partial output. `convex/public_api_service_uploads.test.ts` also proves that the service delete checks every live node's current path, restricted ACL, and lock before its first write, archives committed files, and hard-deletes only pending placeholders.
+- `convex/public_api.test.ts` — 409 `conflict` contract, batch semantics, current-lock final checks, target identity conflicts, lock → unlock success, and zero partial output. `convex/public_api_service_uploads.test.ts` also proves that the service delete checks every live node's current path, restricted ACL, and lock before its first write, refuses the whole call when a member locked a folder above the file, archives committed files, and hard-deletes only pending placeholders.
 - `convex/plugins.test.ts` — locked plugin output, zero writes, source-only lock still allows a writable destination.
 - `convex/r2.test.ts` — post-lock accepted upload publication, lock → unlock completion, immutable staging/live behavior, conversion completion, deletion-job generations/tombstones/durability, and crash-orphan recovery.
 - `convex/data_deletion.test.ts` — lifecycle bypass and deletion-job ownership across purge.

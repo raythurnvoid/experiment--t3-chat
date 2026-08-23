@@ -117,6 +117,7 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 - Read `references/plugin-gallery.md` for driving the Gallery plugin page inside its sandboxed iframe.
 - Read `references/plugin-marketplace.md` for installing, updating, and uninstalling plugins from the catalog and detail pages, and for embedding upload fixtures in runners.
 - Read `references/plugin-configuration.md` for saving upload-folder YAML and proving matched and unmatched automatic runs.
+- Read `references/council-room.md` for driving the Council meeting room on the local Worker and the Council dashboard preview.
 - Read `references/file-node-view.md` for selected-file editor surfaces, comments, diff, and right-sidebar workflows.
 - Read `references/collab-yjs-comments-regression.md` before changing the integrated collaboration code (`files-yjs-*.ts`, `file-editor-rich-text-*.ts`) or upgrading `@liveblocks/core`.
 - Read `references/known-hazards.md` before debugging browser interaction failures.

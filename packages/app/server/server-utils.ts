@@ -52,8 +52,10 @@ export const allowed_origins = ((/* iife */) => {
  * Resolve the current auth state from `ctx.auth.getUserIdentity()`.
  *
  * - Return `null` when Convex reports no identity or when `getUserIdentity()` throws in an HTTP action.
- * - Return `null` for plugin-session JWTs: a plugin page is never a user to member functions. Only the
- *   plugin-facing doors resolve that identity, through `server_convex_get_plugin_session`.
+ * - Return `null` for plugin-session JWTs: a plugin frame is never a user to member functions. This covers
+ *   both frame kinds. A plugin page and a file view mint from the same `plugins_ui_sessions` table and carry
+ *   the same issuer, so this classifier cannot tell them apart. Only the plugin-facing doors resolve that
+ *   identity, through `server_convex_get_plugin_session`.
  * - Return `kind: "anonymous"` for authenticated anonymous JWTs. `id` and `subject` are both the Convex
  *   `users` id in that branch.
  * - Return `kind: "signed_in"` for authenticated Clerk users only when the JWT includes a valid `external_id`

@@ -48,7 +48,13 @@ export async function council_get_outbox_row(db: D1Database, outboxId: string) {
  * row `pending`; only a successful send moves it to `handoff_pending`. Sending twice is safe —
  * the consumer's Workflow-id handoff is idempotent.
  */
-export async function council_dispatch_outbox(env: Env, args: { meetingId: string; kind: string; now: number }) {
+export async function council_dispatch_outbox(
+	env: Env,
+	// The `kind` union, never a bare string: the SELECT below matches this value exactly, so a typo
+	// would find no row, return without a log, and leave the committed outbox row for the
+	// fifteen-minute cron to notice.
+	args: { meetingId: string; kind: council_EventOutboxRow["kind"]; now: number },
+) {
 	const row = await env.COUNCIL_DB.prepare(
 		"SELECT * FROM event_outbox WHERE meeting_id = ? AND kind = ? AND status IN ('pending', 'handoff_pending') ORDER BY generation DESC LIMIT 1",
 	)

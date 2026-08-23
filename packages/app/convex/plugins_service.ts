@@ -1,18 +1,20 @@
 /**
  * The `/api/internal/plugins/service-grants/*` routes.
  *
- * A plugin page runs in the browser and holds a short read-only `plu_` token. A plugin that also has
- * a server of its own cannot use that token: it belongs to one iframe and dies with it. These routes
- * are how such a server trades the page's token for a `psg_` grant of its own, keeps that grant
- * alive, and asks whether it is still allowed to act before it does something the user will see.
+ * A plugin frame runs in the browser and holds a short read-only `plu_` token. A page and a file view
+ * both get one from the same table, and nothing in this module can tell the two apart. A plugin that
+ * also has a server of its own cannot use that token: it belongs to one iframe and dies with it.
+ * These routes are how such a server trades the frame's token for a `psg_` grant of its own, keeps
+ * that grant alive, and asks whether it is still allowed to act before it does something the user
+ * will see.
  *
  * Two credentials are needed, the same way the runner host routes work. The shared secret proves the
- * call comes from the service the operator deployed, and it is checked first so a page holding only
+ * call comes from the service the operator deployed, and it is checked first so a frame holding only
  * its own token cannot reach or probe these routes. The bearer then says which installation and which
  * member the call is for.
  *
  * `public_api.ts` owns the grant table, the token format, and the resolver. This module owns only the
- * lifecycle: who may trade a page token for a grant, when a grant may be renewed, and what a service
+ * lifecycle: who may trade a UI token for a grant, when a grant may be renewed, and what a service
  * is told when it asks whether its grant is still live.
  */
 import type { RegisteredQuery } from "convex/server";
@@ -51,16 +53,16 @@ import { public_api_PLUGIN_SERVICE_TOKEN_REGEX, public_api_PLUGIN_UI_TOKEN_REGEX
 const COUNCIL_SERVICE_EXCHANGE_SECRET = process.env.COUNCIL_SERVICE_EXCHANGE_SECRET;
 
 /**
- * The one plugin this secret may exchange page tokens for.
+ * The one plugin this secret may exchange UI tokens for.
  *
  * Without it the secret would work for any installation whose plugin declares the five capabilities,
- * and that is a way for one plugin to act as another. Every plugin page is served from the same asset
- * origin, so a page can read another page's `plu_` token — the plugin-system skill says plainly that
- * the shared origin is not a plugin-to-plugin boundary. A service holding this secret could present
- * that stolen token and get a grant carrying the other plugin's producer identity. A page is
- * read-only for plugin data on purpose, while a service grant is the only principal allowed to write
- * versioned documents at all, so the exchange would turn a read-only token into the other plugin's
- * writer.
+ * and that is a way for one plugin to act as another. Every plugin frame is served from the same
+ * asset origin, pages and file views alike, so one frame can read another frame's `plu_` token — the
+ * plugin-system skill says plainly that the shared origin is not a plugin-to-plugin boundary. A
+ * service holding this secret could present that stolen token and get a grant carrying the other
+ * plugin's producer identity. A UI token is read-only for plugin data on purpose, while a service
+ * grant is the only principal allowed to write versioned documents at all, so the exchange would turn
+ * a read-only token into the other plugin's writer.
  *
  * Read without throwing for the same reason as the secret above. Unset refuses every exchange.
  */
@@ -123,7 +125,7 @@ async function is_council_service(request: Request) {
 }
 
 /**
- * The shared shape of all three routes: service secret first, then the bearer, then the body.
+ * The shared shape of all four routes: service secret first, then the bearer, then the body.
  *
  * Every authentication failure answers with the same `Unauthorized` literal, so a caller cannot tell
  * a wrong secret from a wrong token from a token that expired a minute ago. Any other `_nay` is a
@@ -207,8 +209,8 @@ function grant_failure(message: string) {
 		return { status: 401, body: { message } } as const;
 	}
 	// What rotation returns for every liveness failure. The route resolved the same grant a moment
-	// earlier, so this only happens when the world changed in between — an installation disabled, or
-	// the actor removed, between the query and the mutation.
+	// earlier, so this only happens when the world changed in between — the installation uninstalled
+	// or upgraded, or the actor removed, between the query and the mutation.
 	if (message === "Unauthenticated") {
 		return { status: 401, body: { message } } as const;
 	}
@@ -232,7 +234,7 @@ function grant_failure(message: string) {
 
 /**
  * Nothing is taken from the body on purpose. The tenant, the installation, the plugin, the scopes,
- * and the destination all come from the live installation the page token points at, so a service
+ * and the destination all come from the live installation the UI token points at, so a service
  * that asked for more than its workspace agreed to would be asking a field that does not exist.
  */
 const exchange_body_validator = z.object({}).strict();
@@ -251,9 +253,10 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 		return { status: 400, body: { message: auth._nay.message } } as const;
 	}
 
-	// Only a page token starts a grant. A grant that could exchange itself would keep a service alive
-	// forever without a member ever opening the page again, and a leaked exchange secret would then be
-	// enough on its own. The regex has already refused every other format; this narrows the union.
+	// Only a UI token starts a grant, and a page and a file view both carry one. A grant that could
+	// exchange itself would keep a service alive forever without a member ever opening one of the
+	// plugin's frames again, and a leaked exchange secret would then be enough on its own. The regex
+	// has already refused every other format; this narrows the union.
 	const principal = auth._yay.principal;
 	if (principal.kind !== "plugin_ui") {
 		return { status: 401, body: { message: "Unauthorized" } } as const;
@@ -277,7 +280,7 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 	if (installation._nay) {
 		return grant_failure(installation._nay.message);
 	}
-	// The secret says which plugin it may act for. Checked before the capabilities so a page token from
+	// The secret says which plugin it may act for. Checked before the capabilities so a UI token from
 	// another plugin is refused whatever that plugin declares.
 	if (!COUNCIL_PLUGIN_NAME || installation._yay.pluginName !== COUNCIL_PLUGIN_NAME) {
 		return { status: 403, body: { message: "Permission denied" } } as const;
@@ -306,7 +309,7 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 			actorUserId: principal.userId,
 			requestedScopes: ["plugin_data:read", "plugin_data:write"],
 			destinationPathPrefix: null,
-			// The service holds this one while a member is watching the page. A `processing` grant is
+			// The service holds this one while a member is watching the frame. A `processing` grant is
 			// what outlives them, and it is minted by the sealed Council flow, not by an exchange.
 			phase: "interactive",
 			now,
@@ -344,8 +347,8 @@ export type plugins_service_http_renew_Body = z.infer<typeof renew_body_validato
  * Give the presented grant a new raw token and another day.
  *
  * This can never create a grant. A service that let its grant die has to wait for a member to open
- * the page again, because only a live `plu_` token can start a new one. That is what stops a leaked
- * exchange secret from being enough to reach a workspace's data on its own.
+ * one of the plugin's frames again, because only a live `plu_` token can start a new one. That is
+ * what stops a leaked exchange secret from being enough to reach a workspace's data on its own.
  */
 export async function plugins_service_http_renew(ctx: ActionCtx, request: Request) {
 	const auth = await authorize_council_service_request(ctx, request, {
@@ -411,7 +414,7 @@ export type plugins_service_http_seal_processing_Body = z.infer<typeof seal_proc
 /**
  * Trade a live interactive grant for a processing grant sealed to one destination.
  *
- * A meeting just closed and the service now has files to upload. The member who opened the page may
+ * A meeting just closed and the service now has files to upload. The member who opened the frame may
  * leave before the uploads finish, so the sealed grant gets the six-day recovery window instead of
  * the interactive day, and renewal never extends it. In exchange it is bound to one exact path
  * prefix, and the upload routes refuse everything outside it.
@@ -558,15 +561,40 @@ const verify_live_body_validator = z
 		phase: z.union([z.literal("interactive"), z.literal("processing")]),
 		destinationPathPrefix: z.string().nullable(),
 		/**
-		 * The scopes the service is about to rely on. Removing a capability on upgrade narrows a live
-		 * grant instead of killing it, so without this claim a grant that lost `plugin_data:write`
-		 * would still pass this check and only fail later, on the write at the end of a meeting.
+		 * The scopes the service is about to rely on. The checks below only ask whether every claimed
+		 * scope is still in the grant's live set and still allowed to the member behind it, so this claim
+		 * can refuse a call but never widen one. It catches a service asserting a scope it never held, a
+		 * service still acting on a stale exchange response, and a member who lost the permission the
+		 * scope needs, before it starts the work that scope was for.
 		 */
 		scopes: z.array(z.union([z.literal("plugin_data:read"), z.literal("plugin_data:write"), z.literal("files:write")])),
 	})
 	.strict();
 
 export type plugins_service_http_verify_live_Body = z.infer<typeof verify_live_body_validator>;
+
+/**
+ * Which workspace content permission the member behind the grant needs for each claimed scope.
+ *
+ * `REQUIRED_APP_PERMISSION_BY_SCOPE` in `public_api_http_auth.ts` says the same thing for these
+ * scopes, and `public_api_resolve_live_principal` applies it to a service grant on every `/api/v1/*`
+ * route the grant can reach, before that route does the work. Keep the two in step. A scope this map
+ * calls readable while that one calls it writable is answered 200 here and `Permission denied` at
+ * the very call the service asked about.
+ *
+ * That check skips one kind of caller, and it does so deliberately: a `plugin_run` principal. A run
+ * has no user of its own, so its principal carries no `contentPermissions` for the check to read.
+ * Narrower rules bound it instead. It may download only the upload that started it, and it may write
+ * only next to that file. Its plugin-document calls are judged too, with the content permission of
+ * the person whose upload started it, by `db_authorize` in `plugins_data.ts`, inside the same
+ * transaction as the read or write. A service grant is not skipped, so what this map asks for here
+ * is what the grant really meets later.
+ */
+const REQUIRED_CONTENT_PERMISSION_BY_SCOPE = {
+	"plugin_data:read": "read",
+	"plugin_data:write": "write",
+	"files:write": "write",
+} as const satisfies Record<plugins_service_http_verify_live_Body["scopes"][number], "read" | "write">;
 
 export async function plugins_service_http_verify_live(ctx: ActionCtx, request: Request) {
 	const auth = await authorize_council_service_request(ctx, request, {
@@ -598,14 +626,27 @@ export async function plugins_service_http_verify_live(ctx: ActionCtx, request: 
 		return { status: 409, body: { message: "This grant is in another phase" } } as const;
 	}
 	// Compared exactly. The mint stored a normalized path, so a service that sends `/Meetings/` for a
-	// grant that says `/Meetings` is refused. Every grant carries `null` today, so nothing produces a
-	// non-canonical value yet; the milestone that starts issuing prefixes should send the stored one.
+	// grant that says `/Meetings` is refused. `seal-processing` above validates a real prefix and
+	// stores it, so a processing grant always carries one. The service must send back the value it
+	// was given, never one it rebuilt from a meeting title.
 	if (expected.destinationPathPrefix !== principal.pathPrefix) {
 		return { status: 409, body: { message: "This grant writes to another destination" } } as const;
 	}
 	const liveScopes: readonly string[] = principal.scopes;
 	if (expected.scopes.some((scope) => !liveScopes.includes(scope))) {
 		return { status: 409, body: { message: "This grant no longer has the scopes it needs" } } as const;
+	}
+	// A scope the member behind the grant may no longer use is not a scope the service can rely on.
+	// An admin can move that member to the `viewer` role while a meeting runs. The member stays in the
+	// workspace, so every check above still passes, but `content.write` is gone and the `/api/v1/*`
+	// doors refuse `plugin_data:write` and `files:write` from then on. Without this the host answers
+	// 200 to the question the service asks before it starts recording, and the meeting fails on the
+	// upload after everyone left.
+	if (expected.scopes.some((scope) => !principal.contentPermissions[REQUIRED_CONTENT_PERMISSION_BY_SCOPE[scope]])) {
+		return {
+			status: 409,
+			body: { message: "This grant's member can no longer use the scopes it needs" },
+		} as const;
 	}
 
 	return {

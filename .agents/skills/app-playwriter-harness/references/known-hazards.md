@@ -11,6 +11,12 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - **Dialogs** — many stay mounted while closed; never trust the first `[role=dialog]` match (Interaction Discipline).
 - **Navigation** — `goto`/`reload` need per-call timeouts, and an evaluate during an in-flight navigation dies while its side effects may still land (Playwriter Availability).
 - **Editors** — Monaco and the ProseMirror surfaces have their own sections below.
+- **Anything inside an iframe** — `snapshot()` answers about the wrong surface, sometimes without an
+  error; see the plugin-frame section. This holds for same-origin frames too, so read it before your
+  first frame check, not after a confusing result.
+- **"The server looks down"** — before restarting anything, check how you probed it. Different local
+  servers in this repo bind different hosts, and one of them refuses the IPv4 literal outright; search
+  this file for the port. Restarting a server the user is already using is the expensive mistake here.
 
 ## Playwriter Availability
 
@@ -25,6 +31,9 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - Through `vp env exec ... pnpx.CMD playwriter`, `--% -e` can still misparse JavaScript with object literals or arrow functions. Use `-f` runner files for any nontrivial probe, even when the script is only a few lines.
 - Avoid JavaScript template literals in PowerShell `-e` snippets. PowerShell treats backticks as escapes, so use string concatenation or put the script in a file/here-string before passing it to Playwriter.
 - **Runner code is plain JavaScript, not TypeScript.** The executor compiles the snippet with `node:vm`, so any TypeScript syntax is a parse error: `el as HTMLElement`, `(x as any)`, and parameter or return type annotations all fail with `SyntaxError: Unexpected identifier 'as'`, and the CLI then exits 9 with the libuv `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`. The relay is fine — read the `SyntaxError` above the assertion instead of starting recovery. This bites hardest when copying a snippet out of repo `.ts` source. Drop the casts; inside `page.evaluate` the DOM values are already untyped. `import.meta` is unavailable there too, so read Vite env values from `packages/app/.env.local` instead of the page. Verified 2026-08-14.
+- **`fs` and `os` are not globals in the sandbox, and `await import(...)` is a trap.** Only `require` is there. Verified 2026-08-23: bare `fs.readFileSync(...)` throws `ReferenceError: fs is not defined`, while `require("node:fs")` and `require("node:os")` both work and `os.tmpdir()` answers the real `%TEMP%` under a Windows relay. The repair everyone reaches for next is the dangerous one: the executor compiles with `node:vm`, so `await import("node:fs")` throws `TypeError [ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING]`, and left uncaught it takes the CLI client down with the same libuv `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` (exit 9) as the entries above. **That exit looks exactly like a dead relay, and it is not one.** Do not restart the relay for it — other agents share it and a restart destroys every session in every repo. Wrap the call in `try/catch` if you want to see the error cleanly, or just use `require`. Better still, when the goal is only to get a file onto the page, skip the sandbox filesystem and pass `addScriptTag({ path })` so Playwright reads the file itself.
+- **`vp env exec` passes only the FIRST line of a multi-line `-e` argument.** Everything after the first newline is dropped with no error, and this one cause explains every confusing `-e` failure below it. Verified 2026-08-23, four measurements: a two-line `-e` printed `LINE-ONE` and never `LINE-TWO`; the same shape with a silent first line printed `Code executed successfully (no output)` and exited 0, which reads exactly like a script that ran and had nothing to report; a `//` comment on the first line left the executor's own wrapper commented out, so the run died with `SyntaxError: Unexpected end of input` on the rendered source `(async () => { // a note })()` and the CLI exited with the libuv assertion; and a single-line `-e` with a trailing `//` comment ran fine, so the comment is not the problem — the newline is. Put any multi-line script in a `-f` runner file.
+- **A helper's own `console.log` is dropped when a later call invokes it.** Each `-e`/`-f` call compiles a fresh `node:vm` script, and a function parked on `state` keeps the `console` of the call that installed it. Verified 2026-08-23: a logger installed in call 1 printed normally in call 1, and in call 2 it still ran and still returned its value while its log line never reached the CLI. So `sweep()` in `overlay-blocking-helpers.js` and the trailing `console.log` in `auditAccessibility` print only when the sweep or audit runs in the same call that installed the file. Read the **returned** value in your own call instead of expecting a helper to narrate, and do not read a silent helper as a helper that did nothing.
 - `vp env exec pnpx playwriter session new --browser $browserKey` can print status text plus the session id. Parse the `Session <id> created` line instead of using the whole trimmed output as the id.
 - Never pipe `playwriter session list` to `head`, `Select-Object -First`, or any other early-close consumer. The CLI then waits on a half-closed pipe and the process hangs until it is killed. Read the full `session list` output. Verified 2026-08-16.
 - If multiple browsers are reported, do not use auto-selection. Run `vp env exec pnpx playwriter browser list`, identify the browser that exposes the target app tab, and pass its exact full reported key to `--browser`. Current keys can look like `install:Edge:<id>`; do not add a `profile:` prefix or copy an old key from this file.
@@ -121,12 +130,16 @@ Two facts that stay true for driving frames:
 - On a pre-fix frame, run the handler without any native submission by dispatching the event from `frame.evaluate`: `form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))`.
 - Verified live 2026-08-16 (Council page frame): a submit-listener form fires normally on a real button click, and a no-`preventDefault` form with a real `action` never navigates — the frame logs `[error] Sending form data to '<url>' violates the following Content Security Policy directive: "form-action 'none'". The request has been blocked.` The deterministic assert is a frame-document `securitypolicyviolation` listener (`violatedDirective: "form-action"`, `disposition: "enforce"`) plus an unchanged `frame.url()`; the console string also reaches Playwright's console capture, so `latestLogs` sees it (as a plain string — see the `latestLogs` shape entry above).
 
-## Plugin UI frames: driving the cross-origin OOPIF without wedging the session
+## Plugin UI frames and iframes: driving them without wedging the session
 
-All verified 2026-08-17 while driving the Chitchat page frame through the extension relay:
+Verified 2026-08-17 while driving the Chitchat page frame through the extension relay, except where a
+bullet gives its own date. The `snapshot()` bullet applies to **every** iframe, same-origin ones
+included; the rest are about the cross-origin plugin frame:
 
 - `state.page.locator(".PluginsUiFrame").contentFrame()` returns a **FrameLocator**, and `snapshot({ frame })` with a FrameLocator silently falls back to the shared default `page` — the snapshot renders a DIFFERENT TAB and nothing errors. Get a real Frame handle instead: `state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1)`. Even then, `snapshot({ frame })` on the plugin frame fails with `Frame with the given frameId is not found` because the cross-origin frame is an out-of-process iframe whose AX tree lives in another CDP target. Read the frame with `frame.evaluate` DOM reads and drive it with `frameLocator` clicks; do not snapshot it.
+- **`snapshot()` reads the wrong surface for ANY iframe, not just the cross-origin one — and one form of it does so silently.** Verified 2026-08-22 on playwriter 0.4.0 against a **same-origin** iframe, so this is not about process isolation: `snapshot({ frame })` throws `Frame with the given frameId is not found` for a real `Frame` handle **and** for a FrameLocator, while `snapshot({ locator: page.frameLocator(sel).locator(inner) })` returns a tree byte-identical to `snapshot({ page })` of the shared default `page` — a different tab entirely, with no error. That answer is a complete, plausible accessibility tree of a surface you are not testing, so it reads as a successful check. The locator is not the problem: the same locator with a selector the frame does not contain waits and times out against the frame, correctly. Only `snapshot()` misreads it. Inside any frame, use `getCleanHTML({ locator: frameLocator(sel).locator(inner) })` for structure (it reads the right frame), `frame.evaluate` for exact values, and `frameLocator` for clicks and role queries. Note this run put the silent fallback on `snapshot({ locator })` and got a throw from `snapshot({ frame })`, where the 2026-08-17 bullet above puts the silent fallback on `snapshot({ frame })` with a FrameLocator. Both were observed; which one you hit is not worth predicting. The safe rule covers both: do not call `snapshot()` for anything inside a frame.
 - A normal top-level `page.screenshot()` can also hang while that OOPIF is visible, even though the host page and frame still answer DOM reads. Capture the composed top-level pixels through CDP instead: `const cdp = await getCDPSession({ page: state.page }); const shot = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false }); require("node:fs").writeFileSync(<absolute-path>, Buffer.from(shot.data, "base64"));`. This includes the plugin frame without attaching to its separate target. Verified 2026-08-22 on the Council page.
+- **`Page.captureScreenshot` loses the clip's `x`/`y` when `scale` is not 1.** Through the Playwriter extension bridge, `clip: { x: 1339, y: 73, width: 98, height: 96, scale: 4 }` returned a 392x384 image of the page's **top-left corner** at 1x — the size scaled, the offset did not, and the answer looks like a valid screenshot of the wrong element. The same call with `scale: 1` clipped correctly. So never pass a scale on a clipped capture: take the clip at `scale: 1`, and if you need it bigger, enlarge the PNG afterwards or zoom the element in the page first. Verified 2026-08-22.
 - After `playwriter session reset`, the fresh connection has NO plugin frame: `frames()` lists only the host page and frameLocator fails with `Failed to find frame for selector ".PluginsUiFrame >> internal:control=enter-frame"`. The relay adopts the OOPIF only when it attaches, so reload the tab once after every reset before touching the frame.
 - A long `page.evaluate` (30 s+) through the **extension** relay can die with `Execution context was destroyed, most likely because of a navigation` while the in-page loop KEEPS RUNNING — its writes still land, only the result is lost. Direct-CDP sessions do not suffer this. Put long in-page loops in the direct-CDP scratch session, or split them into short batches; recount server-side instead of trusting the lost return value.
 - A scratch-browser anonymous user's page-context Convex calls start throwing `Unauthenticated` after the tab idles a few minutes. The UI recovers on its own auth loop, but `page.evaluate` callers should reload the tab and wait ~5 s to re-mint before retrying.
@@ -188,6 +201,7 @@ Two caveats: only rendered lines exist in the DOM (fine for short fixtures, wron
 ## Backgrounded Tabs
 
 - On a backgrounded localhost tab, `snapshot()`, `screenshot()`, and `innerText` are unreliable. Read state via `evaluate()` with `textContent`, `getComputedStyle`, and `getBoundingClientRect`.
+- `getComputedStyle` is reliable on a backgrounded tab **except while a CSS transition is running on the property you are reading**. A backgrounded tab does not run animation frames, so a transition you just started freezes on its first frame, and the value you read back is the start value serialized in the transition's own interpolation space. Measured 2026-08-23 on the Council dashboard preview: toggling `aria-busy="true"` on a `.button` should have computed `background-color` to `color(srgb 0.33 0.38 0.91 / 0.55)`, and returned an opaque `oklab(...)` instead. That reads exactly like `color-mix()` failing to resolve, so the first guess is a broken stylesheet or a stale file being served, and both are wrong. Waiting longer does not help either, because the frames never arrive. Set `el.style.transition = "none"` before the change you want to read, or front the tab.
 - A screenshot of a backgrounded tab can return a STALE frame: the capture succeeds and the file looks valid, but it shows the page as it was before your last change (observed 2026-08-02: a theme switch to light returned the previous dark frame; the new file was nearly byte-identical to the prior capture). Near-identical file size to the previous screenshot is the signature. Call `state.page.bringToFront()` before any screenshot you intend to trust, or verify the change with `getComputedStyle` readbacks instead.
 - `locator.click()` on popover triggers can hang on a backgrounded tab. Prefer foregrounding the tab; if that is not possible, DOM `el.click()` is the documented exception to the no-`element.click()` rule (see `agent-panel.md`).
 - Real wheel input (`mouse.wheel`) is silently dropped on a backgrounded tab: `scrollLeft`/`scrollTop` stays 0 with no error. To prove a wheel handler works, dispatch a synthetic `WheelEvent` with `evaluate()` (`el.dispatchEvent(new WheelEvent("wheel", { deltaY: 220, bubbles: true }))`) and read the scroll position after. A zero from a real wheel on a backgrounded tab is a delivery artifact, not proof the handler is broken.
@@ -211,6 +225,39 @@ Keep the failure mode in mind, because any Ariakit wrapper can reintroduce it:
 - Chat tabs in `[aria-label="Open chats"]` legitimately carry **no** `aria-controls` (they own no panel); only the selected one does. Absent is not dangling — do not report it.
 - Popup triggers (`MyModalTrigger`, `Past chats`, `Chat mode: …`, `Chat model: …`, the rich-text link setter) keep `aria-controls` pointing at an `unmountOnHide` popover. axe reports these as `aria-valid-attr-value` **incomplete** ("Unable to determine … while using aria-haspopup"), which is the expected result for that pattern, not a defect.
 
+## Finding `axe.min.js`, and why the obvious way to load it fails
+
+There is **no `axe-core` in this repo's own `node_modules`**, so a runner that reaches for a repo path
+finds nothing. Two copies exist on this machine:
+
+- The pinned **4.12.1** used for the room reviews, under
+  `t3-chat-+personal/+ai/council-production-room-2026-08-22/axe-install/node_modules/axe-core/axe.min.js`
+  (572,599 bytes). This is the one to reuse when a result has to line up with an earlier run.
+- An unrelated **4.10.3** inside `references-submodules/assistant-ui/node_modules/`. It belongs to that
+  submodule, not to us — do not audit this app with it and assume the rule set matches.
+
+`snippets.md` owns the install recipe and puts a fresh copy in the OS temp folder. That recipe **is**
+version-pinned — it runs `pnpm add axe-core@4.12.1`. The way runs still drift apart is skipping the
+install, not missing the pin: on 2026-08-22 a reviewer wrapped the whole install block in a
+`Test-Path` guard, so an earlier session's cached **4.13.0** was reused and the audit ran a different
+rule set under the pinned recipe's name. A pinned version you skip installing is not a pin. So read
+`window.axe.version` back in the page before you compare findings across runs, and put that line in
+the evidence next to the results.
+
+Load it with `page.addScriptTag({ path })` and an **absolute** path. Playwright reads that file itself
+rather than through the runner's sandboxed `fs`, so the sandbox's path restriction never applies — use
+an absolute literal because a relative one resolves against the relay's working directory, not yours
+(see the `path.resolve` entry below). Reading the bytes yourself first is the way that fails:
+`require("node:fs").readFileSync(...)` on a path outside the session cwd or the OS temp folder is
+refused, and under a Windows relay it takes the CLI down with it rather than returning a clean error
+(see the sandbox `fs` entries under Playwriter Availability). If you genuinely need the bytes in the
+runner, copy the file to the OS temp folder from the shell first.
+
+Two reviewers hit this from opposite directions in the same round on 2026-08-22. CSP is not the
+obstacle it looks like. `addScriptTag({ path })` injects the file's contents as an inline script, and
+the Council room builds `script-src 'self' 'unsafe-inline' <SDK origins>` (`room-page.ts`), so the
+injection is allowed there; the dev server sets nothing that blocks it either.
+
 ## axe `color-contrast` INCOMPLETE hides real failures in this app
 
 `incomplete` is not "probably fine". Always resolve the whole incomplete list with the canvas recipe in `snippets.md` before calling a route clean, and check the **token**, not just the one element axe happened to resolve.
@@ -231,6 +278,15 @@ The 2026-08-10 plain-text QA runs extended the same baseline to the Monaco surfa
 
 - `Open file snapshots` can be reported as a blocked hit target on the editor toolbar. That is toolbar **overflow**, not an overlay: check `scrollWidth > clientWidth` on `.FileNodeViewToolbar` before filing it — with a narrow panel the trailing buttons clip under the Comments tab strip (a recorded design question, not a broken control).
 - The `Rich` / `Markdown` / `Diff` small-target rows in the pre-slice baseline read `Code` / `Diff` on plain-text nodes — same 1×1 visually-hidden radios, same accepted pattern, only the labels differ.
+
+## Reading real painted pixels: a `data:` fetch is CSP-blocked, and a rounded box leaks its backdrop
+
+`getComputedStyle` reports the declared colour, not the pixel that was painted, so it cannot score a `backdrop-filter`, an opacity-composited group, or an outline drawn over moving video. The only way to score those is to capture the composed frame with CDP `Page.captureScreenshot` and sample it. Two things bite while doing that:
+
+- **`fetch("data:image/png;base64,…")` is refused on a page with a strict `connect-src`.** The usual decode step — fetch the data URL, take the blob, draw it — dies with `TypeError: Failed to fetch`, which reads as a broken page rather than a policy refusal. `data:` is not covered by `'self'` and has to be listed on its own, and the Council room's policy (`packages/council-service/src/room-page.ts`) is `default-src 'none'` with `connect-src 'self' <provider origins>`. Decode without the network instead: `atob` -> `Uint8Array` -> `new Blob([bytes])` -> `createImageBitmap(blob)` -> draw to a canvas -> `getImageData`. That path asks no directive for permission. An `<img src="data:…">` also loads on the room, because its `img-src` does list `data:`, but the blob route works on any page and skips the image load wait.
+- **Sampling a rounded box by its bounding rect reads the backdrop through the corners.** The rect covers the corner squares that the border radius cut away, so those samples are whatever sits behind the element. In a pixel histogram they show up as false extremes — a near-black sample on a light chip — and they move the worst-case number the whole measurement is about. Inset every sample past the border radius before reading it.
+
+Measured 2026-08-22 on the Council room. Related: keep `scale: 1` on a clipped capture, see the `Page.captureScreenshot` clip entry above.
 
 ## axe `aria-required-children` ignores `aria-owns` — restructure the DOM instead
 
@@ -331,6 +387,82 @@ Observed 2026-07-26: every route rendered `Something went wrong`, with `Too many
 - Do not "fix" the render loop by adding `useMemo` to the component. That contradicts the repo guideline and hides a dead compiler that is also silently costing every other component its memoization.
 - The same loop can also be a source-level bug while the compiler is fully live: the compiler memoizes arguments flowing into hook calls in some shapes but not others. Observed 2026-08-03 after a cleanup removed the `useMemo` wrappers around the `useQueries` arguments in `files-sidebar.tsx` and `file-node-view.tsx` — the served output had cache slots on neighboring values but none on the queries objects, and every `/files` load crashed with the same `Too many re-renders`. Tell the two cases apart with the probe above: `_c(` slots present but the suspect hook argument unmemoized means a source bug (restore the `useMemo` with a comment, like `app-notifications.tsx` does), zero slots means a dead compiler (restart the dev server).
 
+## A backtick inside the room's CSS wedges the whole local Worker, for every agent using it
+
+`ROOM_CSS` in `packages/council-service/src/room/page.ts` is a JS template literal, so a backtick anywhere inside it — **including inside a CSS comment** — closes the string early and turns the rest of the stylesheet into JavaScript. Observed 2026-08-22: writing `` `aspect-ratio: 1` `` in a CSS comment stopped `127.0.0.1:8787` answering **any** request. The port stays `LISTENING` and connections sit in `CLOSE_WAIT`, so the symptom reads as a dead or hung Worker, not as a syntax error, and the instinct is to restart a server that is fine.
+
+- Name it instantly with the typecheck instead of guessing: `vp env exec pnpm --dir packages/council-service typecheck` prints `page.ts(979,6): error TS1005`.
+- This is shared blast radius. One agent's unbalanced backtick takes the Worker away from every other agent driving the room, and it also aborts unrelated test suites that import the module — six at once in the observed case. If the Worker goes silent while you did not touch `page.ts`, check whether someone else is mid-edit before restarting anything.
+- Write CSS comments in that literal without backticks. Quote a property name as `aspect-ratio: 1` in plain words, not in code ticks.
+
+## A dev server on the usual port can serve a completely different checkout
+
+**Run this check before your first assertion, not after your first surprise.** Two reviewers on
+2026-08-22 read this entry only once the page had already contradicted the source. One lost a full pass
+of browser evidence; the other reported a defect measured against a two-commit-old tree. The check
+below costs one call. Make it the first thing a browser run does, and name the server you used when you
+report evidence.
+
+The pull toward the wrong port is structural, not carelessness: repo `CLAUDE.md` documents
+`http://localhost:5173/` as *the* dev address, so an agent told nothing else goes there by default. If
+your task brief names a different port, the brief wins.
+
+Observed 2026-08-22: `localhost:5173` was a healthy Vite dev server — react-refresh live, `/@vite/client` served, every route rendering — and it was rooted at **another copy of the repo**, at `t3-chat-+personal/+ai/council-production-room-2026-08-22/final-maintenance/packages/app/`. An agent verifying a frontend edit there saw its change missing from the DOM and had no reason to suspect the server rather than the edit.
+
+- This is the frontend twin of the `convex dev` rule in `AGENTS.md`. That rule says a browser result about `convex/` code means nothing unless `convex dev` is pushing your tree. The same is true of `src/`: a dev server you did not start is not necessarily serving the checkout you are editing.
+- Check it in one call. The path in `_jsxFileName` is the real Vite root:
+
+```bash
+curl -s 'http://localhost:5173/src/main.tsx' | grep -o '_jsxFileName = "[^"]*"'
+```
+
+- A second checkout is a normal thing to find on this machine — a release or maintenance copy under `+ai/` is a working pattern, not a mistake. Do not delete it, do not restart the server, and do not assume it is stale. Just prove which root you are looking at before trusting a browser result, and say which server you used when you report evidence.
+- Combine this with the React Compiler probe above. `grep -c '_c('` tells you whether the compiler is live; `_jsxFileName` tells you whose files it compiled. A run can pass the first check and fail the second.
+
+## The Playwriter CLI's default `--timeout` is 10 s, and it kills a runner mid-wait
+
+Any runner that waits on a real product deadline needs `--timeout` sized above that deadline — the Council room's join timeout alone is 30 s, so a runner watching it needs `--timeout 180000` or more. The default kill looks like a hung script rather than a timeout, so the usual reaction is to rewrite a runner that was correct. Note this is the opposite of the guidance in `collab-yjs-comments-regression.md`, which caps the timeout at 5 s on purpose: there, a step that cannot finish in 5 s really is a broken script. Size the timeout to what the step legitimately waits for.
+
+The failure prints `Code execution timed out` and nothing else, which reads as a hung page rather than as the CLI killing your script. Even a plain room script that navigates, fills the guest form, submits, and waits for the answer runs past 10 s, so `--timeout 90000` is the floor there, not an unusual precaution.
+
+PowerShell has no heredoc, so a multi-line `-e` script is not viable on this machine. Write the runner to a file and pass `-f "<absolute path>"`.
+
+Both `-e` failures reported on 2026-08-22 — a `//` comment "anywhere" breaking the run, and an
+invocation that swallowed every `console.log` and reported `Code executed successfully (no output)` —
+turned out to be one cause, measured on 2026-08-23: **`vp env exec` keeps only the first line of the
+`-e` argument.** See the first-line bullet under Playwriter Availability for the four measurements. A
+trailing `//` comment on a genuinely single-line `-e` is fine; a `//` on the first line of a
+multi-line one is not. If a probe reports no output, suspect the invocation before you believe the
+result.
+
+## Vite Plus eats a `--flag` meant for the wrapped command
+
+`vp env exec pnpx playwriter --help` prints **Vite Plus's** help, not Playwriter's: `vp` parses the flag as its own before it hands the rest over, and there is no error to notice. The same swallows any leading `--flag` you meant for the wrapped tool. Put `--` after `exec` so `vp` stops parsing:
+
+```bash
+vp env exec -- pnpx playwriter --help
+```
+
+A flag that comes after a subcommand (`vp env exec pnpx playwriter -s $session -e '…'`) is not affected, because `vp` stops at the first non-flag word. Only a flag in the leading position is taken. Verified 2026-08-22.
+
+## The local Worker cannot answer the guest form until the request carries a client IP
+
+`handle_guest_session` (`packages/council-service/src/routes-room.ts`) reads `CF-Connecting-IP` **before** it reads the body, and answers `400 Missing client address` when the header is absent. Cloudflare's edge sets that header in production; `wrangler dev` does not. So on the local Worker the guest form looks broken — submit answers 400 with a message about an address the form never asked for.
+
+The workaround that keeps the production code path is a route handler that adds the header:
+
+```js
+await page.route("**/room/api/**", (route) =>
+	route.continue({ headers: { ...route.request().headers(), "cf-connecting-ip": "198.51.100.61" } }),
+);
+```
+
+Prefer this over the escape hatch, because it also lets you choose the rate-limit key. The guest bucket is **50 attempts per 10 minutes per IP** (`council_RATE_LIMITS.guest_join_ip` in `packages/council-service/src/db.ts:144`). That number has been raised before, so read the constant rather than trusting this line. A second run from the same address starts partly spent, so varying the last octet keeps runs apart. It does not buy a clean slate, though: `guest_join_code` (in `council_RATE_LIMITS`, also 50 per 10 minutes) is keyed on the hash of the code you present, so every run against the same meeting spends the same bucket whatever address it comes from. `COUNCIL_ALLOW_MISSING_CLIENT_IP=true` also exists and makes the Worker use the literal key `loopback`, but then every run shares one bucket and the header path is never exercised.
+
+## A Vite preview can bind IPv6 only, so the `127.0.0.1` literal looks like a dead server
+
+The Council plugin preview (`vite --port 5199 --strictPort`) answers `http://localhost:5199/` and `http://[::1]:5199/` with `200` but **refuses** `http://127.0.0.1:5199/` — curl exits `7` with no status. Vite binds the `localhost` host name, and on this machine that resolves to `::1` only, so the IPv4 literal reaches nothing. An agent that hardcodes `127.0.0.1` concludes the server is down and restarts a server the user is already using. Always probe the `localhost` name, and try `[::1]` before deciding a preview is dead. Verified 2026-08-22. Note that this is per server: the Council Worker's `wrangler dev` binds `127.0.0.1:8787` instead.
+
 ## Grep output can misrender comment lines
 
 Grep/`rg` tool output can render a source line's leading `//` as `\ `. It looks like a stray backslash at line start — a syntax error the dev server would never accept. It is a rendering artifact, not file content: open the file at that line before diagnosing (observed 2026-08-03 on comment lines in `files_pending_updates.ts` and `file-editor-diff.tsx`; both files were clean on disk).
@@ -341,6 +473,10 @@ Grep/`rg` tool output can render a source line's leading `//` as `\ `. It looks 
 - A Convex HTTP action that **throws** answers 500 without CORS headers, so a page-context `fetch` reports `TypeError: Failed to fetch` and you cannot see the status or the message. That is not a network problem and not a broken key. Read the real error with `vp env exec pnpm --dir packages/app exec convex logs --history 12` — it prints `Uncaught Error: …` with the source line. This is also the fastest break-on-purpose signal for a route: a working refusal answers a JSON status, an unhandled defect answers `Failed to fetch`.
 - An API key is `pk_<32 hex>.<64 hex>` — **it contains a dot**. A capture regex like `/pk_[A-Za-z0-9_\-]+/` silently grabs only the key id, and every call then answers `401 Unauthenticated`, which reads like a scope or permission bug. Match `/pk_[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+/` and sanity-check the length (100). Keep the secret in `state`, pass it into `page.evaluate` as an argument, and print only its length — never the value, and mask `pk_[\w.\-]+` before printing any page text.
 - The reveal dialog after `Create API key` stays mounted with its `MyModalBackdrop`, which intercepts pointer events on the key list underneath, so the next click fails with `<div class="MyModalBackdrop"> … intercepts pointer events`. That backdrop is also the signal the secret is **still on screen**: if a capture regex missed it, re-read it from the open dialog instead of rotating the key.
+
+## A `route` handler that just returns does not hold the request open
+
+Playwright treats a `page.route` handler that ends without calling `route.fulfill`, `route.abort`, `route.continue`, or `route.fallback` as "not handled": the request falls through to the next handler, or to the real server. So a handler written to model "no answer ever arrives" quietly becomes "the real server answered", and the check passes for the wrong reason while proving nothing about the stalled state. To really hold a request open, never resolve the handler: `await page.route(url, async () => { await new Promise(() => {}); })`. Verified 2026-08-22 while modelling a stalled `POST /room/api/host/close`.
 
 ## R2 Upload Observability
 
@@ -427,12 +563,60 @@ global `page` when `state.page` does not exist yet, so installing the harness be
 tab pins whatever unrelated app the shared browser already had open. Every helper then answers about
 that tab without failing — `auditAccessibility` returns a clean report for another product and
 `latestLogs` returns `[]`, which reads as "no console errors on my route". Hit 2026-08-20, where an
-audit of the files route came back describing `personal-market-radar` widgets.
+audit of the files route came back describing `personal-market-radar` widgets. Hit again
+2026-08-23: a session that never called `bindOpenTab` ran `auditAccessibility(...)` with its page
+held only in its own `state`, and the report silently described a peer agent's dashboard-preview
+tab on `localhost:5199` — a surface from this same repo, so nothing about the numbers looked wrong.
 
 Call `await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/files" })` first; it sets
-`state.page` too, so the hand assignment is not needed. When a helper times out on a selector you
+`state.page` too, so the hand assignment is not needed. The audit also tells you which tab it
+answered about: its report carries a `url` field for exactly this, so reading that field before
+believing the report is the check — the peer-tab and `about:blank` entries below rely on the same
+field. When a helper times out on a selector you
 can see in a screenshot, re-probe it against a selector that certainly exists (`.FilesSidebar`)
 before editing the selector — a helper that fails on both is not a selector problem.
+
+## `bindOpenTab` can bind you to another agent's tab
+
+Several agents often drive the same origin at the same time in this repo. `urlIncludes` matches the
+first tab whose URL contains the string, and it does not know which tab is yours. Binding on the
+route alone therefore lands on whichever agent got there first. Hit 2026-08-23: a bind on
+`"8787/room"` matched a peer fixer's room tab, and the audit that followed described that agent's
+half-finished experiment.
+
+This one does not announce itself. The bind succeeds, the helper answers, and the numbers look real
+— they are simply about someone else's work. It is worse than binding to an unrelated app, because
+an unrelated product looks obviously wrong while a peer's tab shows the same route you expected.
+
+So bind on something that identifies **your** tab, not the route: a query parameter you chose
+yourself (`urlIncludes: "m=probe"`), or the page object you opened. Read the `url` field that
+`auditAccessibility` returns before you believe its report, and treat any finding taken from a tab
+you did not open as an observation to confirm on a clean page — never as a defect. If it does turn
+out to be real, route it to the agent that owns that surface instead of filing it yourself.
+
+## `getLatestLogs({ page })` returns console errors from other tabs, not only yours
+
+Passing `page` does not scope the buffer to that page. The browser is shared, so the lines you read
+back can belong to any tab open in it — and this repo leaves a lot of them open. Hit 2026-08-22: a
+freshly created Council room page had **all-200 responses**, proved with a `page.on("response")`
+listener on that page, while the log buffer for the same call showed `401`, `502`, `503` and
+`ERR_FAILED` lines. They came from roughly 45 leftover sessions still holding room tabs against
+`127.0.0.1:8787`. Such a tab is not idle: one left inside a call polls meeting state every 10 s
+(`startPolling` in `room/client.ts`, stopped only by `teardownCall`), so it keeps generating traffic
+and failures by itself long after the run that opened it ended.
+
+This reads exactly like a broken route mock, and it sent a reviewer hunting for a fixture bug that did
+not exist. Before you believe any status you saw in the log buffer, confirm it on your own page:
+
+```js
+state.seen = [];
+state.page.on("response", (r) => state.seen.push([r.status(), r.url()]));
+```
+
+The failure direction is the dangerous one — it invents problems rather than hiding them, so the cost
+is a whole run spent debugging someone else's tab. The reverse case, a helper pinned to the wrong tab
+answering `[]`, is the section above. Closing your own stale tabs at the end of a run is what keeps
+this from growing.
 
 ## `path.resolve` in a runner resolves against the relay's repo, not yours
 
@@ -461,10 +645,14 @@ all-off variant does not reproduce the original bug, the probe is not measuring 
 
 ## A half-scrolled item inside a scroll container is reported as a blocked hit target
 
-`auditAccessibility` hit-tests an element at its own centre. When a scroll container has scrolled an
-item half out of view, that centre lands below the container, and whatever is painted there — usually
-the next pinned control — is reported as the blocker. Hit 2026-08-20 in a 550px-tall window: the last
-main-nav plugin link came back "blocked by Theme", which reads like a click-through bug.
+`auditAccessibility` hit-tests an element at five points — its centre and its four inset corners.
+When a scroll container has scrolled an item half out of view, those points land below the container,
+and whatever is painted there — usually the next pinned control — is reported as the blocker. Hit
+2026-08-20 in a 550px-tall window: the last main-nav plugin link came back "blocked by Theme", which
+reads like a click-through bug.
+
+The out-of-window skip does not save you here. These points are still inside the window; it is the
+scroll container, not the viewport, that clipped the item, so a real element answers at each one.
 
 Before reporting one, walk the element's ancestors and compare its rect with the nearest
 `overflow-y: auto` ancestor's rect. When the item extends past the scroll area's bottom, it is clipped,
@@ -528,3 +716,382 @@ checkbox disabled=false active=body   ← re-enabled, focus never returns
 The fix is the pattern the repo already uses for a blocked Save: keep the element focusable, report
 the transient state with `aria-busy`, and let the click handler ignore the repeat press. Reserve the
 real `disabled` property for static reasons that are already true before the control can be focused.
+
+**Headless Chromium gets this timing wrong too, in the opposite direction, so it produces false
+findings.** jsdom misses the blur entirely (above), but headless does something worse: it reports
+the blur late. Measured 2026-08-22, disabling a focused button in headless left `document.activeElement`
+on that button until the *second* `requestAnimationFrame`, while the user's real Edge blurred it
+**synchronously** (`["focus","leave-button"],["sync","BODY"]`). A reviewer used the headless result to
+conclude that an `activeElement === document.body` guard was unreachable and the comment beside it
+was factually wrong — a P2 report that was about to be filed against correct code. The headless
+result was an artifact of an unfocused window.
+
+So: never write down a finding about focus loss, `activeElement === body` guards, or
+`:focus-visible` from a headless measurement. Confirm it in the attached browser first. Headless is
+fine for finding the flow; it is not evidence about focus.
+
+**This warning was not enough, and it is worth knowing why.** On 2026-08-23, one day after the entry
+above was written, a reviewer measured this in headless anyway, filed the same P2 against the same
+kind of guard, and the fix shipped — with the false claim copied into a comment in
+`room/client.ts` and into a test comment. Re-measured in attached Edge on the live Worker
+(`council-room-r22`, `document.hasFocus()` true), the trail is
+`sync: BODY, focusoutFired=true` — synchronous, exactly as this entry says.
+
+The reason it survived review is the part to remember: **the unit test agreed with headless.**
+happy-dom does not blur on disable either, so after the control disables, the test still reports the
+button, the body-only guard finds nothing, and adding a `disabled` check makes the test pass. Red
+before the fix, green after — the whole ritual ran perfectly. Two checks confirmed each other and
+both were wrong in the same direction, because both model the same missing browser behaviour.
+
+A green test proves the code matches the model the test encodes. It never proves the model matches
+the browser. When the subject is focus, the model is happy-dom or headless, and neither is a
+browser. Breaking the fix on purpose does not rescue you here — it only shows the test notices the
+change, not that the scenario exists. **Measure focus in the attached browser first, then write the
+test to match what you measured**, and say in the comment which browser produced the number.
+
+## A page that patches `window.fetch` answers your own network probe
+
+The Council plugin preview replaces `window.fetch` with a mock router. A
+`page.evaluate(() => fetch("/some/path"))` probe meant to ask "is the dev server up?" is then answered
+by the page's own stub, not by the network. Found 2026-08-22: a probe came back `404` from the plugin's
+mock while the server was serving normally.
+
+Any page under test may do this. Do not ask the page whether a server is reachable. Ask from outside
+the page — `page.request.get(url)` uses Playwright's own network stack and ignores the page's patched
+`fetch` — or check the server from the shell.
+
+## `featurePolicy.allowsFeature` must be read from inside the frame you are asking about
+
+Reading `document.featurePolicy.allowsFeature("clipboard-write", childOrigin)` from the **parent** page
+returns the parent's own policy for that origin, not the `allow` delegation the parent gave that
+`<iframe>`. It answered `false` both with and without `allow="clipboard-write"` on the frame, which
+looks like proof the grant does not work.
+
+Read it from inside the child instead. There the answer is exact, and
+`document.featurePolicy.getAllowlistForFeature("clipboard-write")` shows the delegated origin:
+
+| frame | `allowsFeature` inside the child | allowlist |
+| --- | --- | --- |
+| with `allow="clipboard-write"` | `true` | `["http://localhost:5199"]` |
+| without `allow` | `false` | `[]` |
+
+You do not need the real host app to test this. `http://localhost:<port>` and `http://[::1]:<port>` are
+the same server on two different origins, so any local page can embed another cross-origin with the
+host's exact `sandbox` list. Verified 2026-08-22 against the plugin frame's
+`sandbox="allow-scripts allow-same-origin allow-forms"`.
+
+## `navigator.clipboard.writeText` from `page.evaluate` always fails, but a real click works
+
+`page.evaluate(() => navigator.clipboard.writeText("x"))` rejects with `NotAllowedError` whether or not
+the frame holds `clipboard-write`, because an evaluate call carries no transient user activation. A
+Playwright `locator.click()` on a button whose handler calls `writeText` does grant activation, and
+then the permissions policy is what decides.
+
+So a bare evaluate cannot distinguish "the policy denies this" from "there was no gesture", and the
+blanket advice to avoid `navigator.clipboard.writeText` in a QA session is wrong for the click case.
+Drive the app's own button and read the status the app renders. Verified 2026-08-22 on the Council
+plugin's Copy control.
+
+## `auditAccessibility` on `about:blank` looks exactly like a clean audit
+
+`install-harness.js` builds the object its installer returns (the one carrying `auditAccessibility`)
+with the `page: … || state.page || page` fallback chain evaluated **once, at install time**. A page
+you create afterwards with `context.newPage()` is never picked up, so the helpers keep pointing at
+whatever page existed when you installed them.
+
+The failure is silent and reads as a pass:
+
+```
+{ url: "about:blank", controlCount: 0, unlabeled: [], blockedHitTargets: [], smallTargets: [] }
+```
+
+Empty finding lists with a zero control count is not a clean surface, it is the wrong page. Always read
+`url` and `controlCount` before believing an audit, and sanity-check the count against the number of
+controls you can see. Install the harness after the page you mean to drive exists, or re-install once it
+does. The real fix at the source is to make that field a getter, or read `state.page` at call time.
+Found 2026-08-22; it cost one silently-wrong audit.
+
+## `locator("#id[hidden]").waitFor()` can never resolve
+
+`waitFor` defaults to `state: "visible"`, so waiting on a selector that matches only while the element
+is hidden burns the whole timeout and then throws, logging lines like
+`N x locator resolved to hidden <div hidden …>` on the way.
+
+Wait on the property instead:
+
+```js
+await page.waitForFunction(() => document.getElementById("host-confirm").hidden === true);
+```
+
+Or pass `waitFor({ state: "hidden" })` on a selector that matches the element in both states.
+
+## A screenshot's pixels are not CSS pixels, so geometry read off the image is scaled
+
+A saved screenshot can come back at a different scale than the viewport you set. If you then measure
+something in an image editor, or compute a ratio from the image's width, every number is off by that
+scale and the error is invisible: the picture looks right, and the arithmetic is self-consistent.
+
+Ask the page what its own width is and compare:
+
+```js
+const cssWidth = await page.evaluate(() => window.innerWidth);
+// Divide the image's pixel width by this to learn the real scale before trusting any measurement.
+```
+
+Prefer measuring in the page with `getBoundingClientRect()` and `elementFromPoint`, and keep the
+screenshot as the thing a person looks at rather than the thing you measure. A blocked-control list
+read from the live DOM cannot drift out of scale; a pixel counted on an image can.
+
+## A backgrounded tab can screenshot stale or blank, so bring it to front first
+
+A tab that is not the frontmost one may not composite new frames. `Page.captureScreenshot` against it
+can return the last painted frame or an empty one, so a shot taken right after a viewport change or a
+state change shows the state *before* it — which reads as "the fix did nothing".
+
+Call `bringToFront()` on the page before capturing, and re-check that the content you expect is in the
+DOM at capture time rather than trusting the image alone. This matters most in a sweep across several
+viewports, where every shot after the first is taken on a page nothing has touched in the foreground.
+
+**Fronting the tab is not always enough on the extension transport.** Measured 2026-08-22:
+`Page.captureScreenshot` / `page.screenshot` through the extension bridge timed out on a fronted tab
+(`Extension request timeout after 30000ms: forwardCDPCommand`), and on the attempts that did return,
+the sampled pixels were internally inconsistent with the element box measured in the same page.
+
+So do not try to prove a colour claim with a screenshot on that transport. Read `getComputedStyle`
+values out of the page and do the compositing arithmetic yourself — that is reproducible and a
+reviewer can check it. Keep screenshots for the things a person looks at. Two arithmetic traps when
+you do: the sRGB divisor is **1.055, not 2.055**, and a contrast ratio must be computed against the
+**composited** background, not against the translucent layer's own colour. A reviewer this round
+reported a wrong ratio by compositing text over an already-composited background; redoing it
+correctly reproduced the source comment exactly.
+
+Group `opacity` is a third trap, and this one turns a failure into a pass. When a rule fades a whole
+control — `.button[aria-busy="true"] { opacity: 0.55 }` — the browser paints that element into one
+layer and then composites the finished layer over the backdrop. The label never lands on top of the
+faded fill. Fill and glyph each composite over the **same** backdrop at the **same** alpha, so both
+slide toward the backdrop together and the contrast between them collapses. Compositing the glyph over
+the already-faded fill is the intuitive model and it is wrong: on the Council room's join button it
+answered 4.10:1 where the painted pixels give 3.19:1, so a WCAG 1.4.3 failure scored as a pass.
+Measured 2026-08-23.
+
+Calibrate the probe in both directions before you trust any number it prints. Send it a known-good
+sample (the resting control, no opacity) and a known-bad one (the same two colours at the group alpha).
+If the known-bad sample does not come back below the threshold, the arithmetic is wrong and the page is
+fine — which is the opposite of what the report would have said.
+
+## Proving an overlay blocks a control needs a hit test, not a screenshot
+
+An overlay that visually covers a button is a picture; whether a person can still press the button is
+a hit test. `document.elementFromPoint` answers the second question, because it is the same test the
+browser runs for a real press.
+
+**Sample five points per control, never the centre alone**, and read `blockedPoints`. A control can
+have its centre clear and its edge covered, and then a press aimed at the covered edge lands on the
+overlay. Proven on a fixture at 512x384 on 2026-08-23: a button whose top 20px sat under an overlay
+answered with its own id at the centre, so a centre-only probe called it reachable, while a real
+`mouse.click` on that top strip was received by the overlay. Note what this case is not: Playwright's
+own `locator.click()` aims at the centre, so it **resolved** on that button — only a fully covered
+control gets the `… subtree intercepts pointer events` refusal. A partly covered control passes every
+click you make through Playwright and still has a dead strip for a person.
+
+Also **skip a sample that falls outside the window; never count it as clear.** `elementFromPoint`
+answers `null` there, and reading that `null` as "nothing is covering it" reports a control that is
+scrolled or clipped out of view as reachable. The zoom viewports below are exactly the sizes where a
+stage scrolls its lower rows away, so this used to hide the case at the helper's own defaults.
+
+A sample that has scrolled out of a **clipping container** fails the other way, and reports blocked.
+`elementFromPoint` answers with whatever paints at that screen position, so a control scrolled above its
+own `overflow-y: auto` container answers with an ancestor — and the audit then names that ancestor as
+the blocker. A reviewer this round reported two `button.participant-pin` blocked at all five points by
+`#room-header`, which is `position: static` with `z-index: auto` and cannot cover anything. Compare the
+control's `rect.top` with the scroll container's `top` before believing a blocker: above it means
+clipped, not covered. Scroll the control into view and re-check. Measured 2026-08-23 on
+`council-room-r22`.
+
+`scripts/overlay-blocking-helpers.js` installs `state.qa.overlay` with `blocked()`, `sweep()` and a
+`ZOOM_VIEWPORTS` list, and it applies both rules above — same sampler as `auditAccessibility` in
+`install-harness.js`, which was corrected the same way. It returns `blocked` (any point covered),
+`outOfView` (no point could be sampled — a scroll finding, not a pass), and per control `sampled`
+plus `blockedPoints`, so a fully covered control reads differently from a partly covered one and a
+zero-blocked result can be trusted. Two more things it handles that a hand-written probe usually gets
+wrong: it reports a missing selector as an error instead of as "nothing blocked" — those have the
+same shape otherwise — and it treats a hit on any DESCENDANT of the overlay as blocked, because
+`elementFromPoint` answers with the deepest node, so an overlay with inner markup never matches its
+own id.
+
+The narrow viewports in that list are not phones. They are ordinary desktop displays at 200% and 250%
+browser zoom, which WCAG 1.4.4 requires to keep working, and they land in media blocks authors wrote
+for phones and never tested at zoom. 512x384 is a 1024x768 display at 200%.
+
+## Your page can be closed by another agent sharing the same Edge browser
+
+Several agents drive the same Edge install at once in this repo, and a page one of them closes is
+gone for everyone. The symptom names your own state key, so it reads as your bug: `The current page
+in state.dashPage was closed`. It happened twice in one session on 2026-08-22.
+
+Do not assume your own script closed it, and do not start hunting for the call that did. Recover
+with `context.newPage()` and re-run whatever boot runner set your state up, then carry on.
+
+This is the same shared blast radius as the Worker entry above: check whether another agent is
+working before you treat a disappearance as evidence about the app.
+
+## `auditAccessibility` cannot see a focus-trap leak, so a clean audit on a dialog proves nothing about it
+
+Measured 2026-08-22 on the Council room: `auditAccessibility` came back clean on `#view-call` with
+eight controls and clean again on the open `#host-confirm` dialog — no unlabeled controls, no blocked
+hit targets, no small targets, no negative tabindex. The dialog was leaking keyboard focus onto a
+button behind it the whole time, and pressing Enter there took a destructive action the dialog was
+asking about.
+
+The audit reports labelling, target size and hit-blocking. A focus trap is none of those — it is
+focus ORDER, and nothing in the audit walks it. `aria-modal="true"` is likewise a promise in markup,
+not a behaviour the audit verifies.
+
+So when a dialog is in scope, walk it explicitly: click a non-button inside the dialog (the backdrop,
+the heading, its own text) so focus lands on `<body>`, then press Tab and Shift+Tab and assert the
+active element is still inside the dialog. A trap written as `activeElement === firstButton ||
+activeElement === lastButton` passes every audit and fails this walk.
+
+Also note a clean pointer result says nothing here: `elementFromPoint` correctly reported the overlay
+at every control centre, so the mouse was properly sealed. The overlay sealing the pointer is exactly
+what makes a keyboard leak survive review — the dialog looks sealed.
+
+## An injected stylesheet outlives the runner that injected it
+
+`page.addStyleTag` stays on the page for every later probe in the same session. So a runner that
+verifies a CSS fix by injecting it leaves that fix live, and the next runner measures the **fixed**
+layout while believing it is reading shipped CSS.
+
+Observed 2026-08-22: a reviewer proved a header-overlap defect at 683x384, injected a candidate fix to
+check it, and then re-measured the same viewport in a fresh `-f` runner. It came back clean. The defect
+was real and already proven; the second measurement was reading the injected rule.
+
+- A new `-f` runner does not start from a clean page. Only a navigation or a reload clears injected
+  nodes.
+- Before re-measuring shipped CSS after any injection, remove the injected nodes and **assert they are
+  gone** — count `document.querySelectorAll("style")` and compare against what the page ships, or
+  reload and re-establish state.
+- This is worse than an ordinary flake, because it fails in the direction of "no problem here". A
+  defect you have already measured turning clean is the signature; treat it as evidence of your own
+  injection, not of a fix landing somewhere else.
+
+## `document.body.focus()` does not reset Chromium's sequential focus starting point
+
+A focus-order walk that begins with `document.body.focus()` skips its first stop, so the reported tab
+order is wrong from the very first entry — and it looks like a real finding about the page.
+
+`<body>` is not focusable by default, so the call is a no-op and the sequential focus navigation
+starting point stays wherever it was. Click a non-focusable element at the top of the document instead
+(`#meeting-title` in the room, `.council-header h1` on the dashboard), then start pressing Tab.
+
+Verified 2026-08-22 while walking both Council surfaces in real Edge.
+
+
+## A wrong `vp.exe` path makes every mutation read as KILLED, so the package looks perfectly tested
+
+`vp.exe` is at `C:/Users/rt0/.vite-plus/bin/vp.exe`. It is **not** under `WindowsApps`. A mutation
+runner that spawns the wrong path gets `ENOENT`, `execFileSync` throws on every single mutation, and the
+harness scores each throw as "the suite failed, so the mutation was killed".
+
+Observed 2026-08-22: a reviewer's first campaign reported **116 killed, 0 survived** across
+`packages/council-service/src`. That is not a suspicious number — it reads as a very well-tested
+package, which is exactly why nobody questions it. The corrected run gave 88 killed, **57 survived**.
+
+- Run two controls before believing any campaign result, and state both outcomes in the report:
+  a **negative control** (a comment-only mutation that must SURVIVE) and a **positive control** (a real
+  change that must KILL a test you can name).
+- If the negative control reports "killed", your runner is broken, not the package.
+- Like the injected-stylesheet hazard above, this fails in the direction of good news. A campaign that
+  finds nothing is the one to distrust first.
+
+## In Chrome, `CSSStyleRule.cssRules` is a truthy empty list, so a selector sweep reports zero selectors
+
+Chrome supports nested CSS, so **every** `CSSStyleRule` carries a `cssRules` property. On a plain rule
+it is an empty `CSSRuleList` — and an empty `CSSRuleList` is truthy.
+
+So the natural recursion skips every plain style rule:
+
+```js
+// wrong: takes the branch for every rule, so no selectorText is ever read
+if (rule.cssRules) { walk(rule.cssRules); continue; }
+```
+
+The sweep then reports `totalSelectors: 0` while `document.styleSheets` is plainly readable, which looks
+like a permissions or cross-origin problem rather than a logic bug.
+
+Read `rule.selectorText` first, and recurse only on `rule.cssRules.length > 0`.
+
+Verified 2026-08-22 while matching all 113 room CSS selectors against a live DOM.
+
+## `--reporter=basic` no longer exists in vitest 4, and the failure reads like a broken config
+
+Vitest 4 removed the `basic` reporter. Passing it does not print "unknown reporter". Vitest treats any
+name it does not know as a module to import, fails to resolve it, and dies before a single test runs:
+
+```
+⎯⎯⎯ Startup Error ⎯⎯⎯
+Error: Failed to load custom Reporter from basic
+    at loadCustomReporterModule (.../vitest/dist/chunks/cli-api.*.js)
+  [cause]: Error: Failed to load url basic (resolved id: basic). Does the file exist?
+```
+
+The stack is all `vite`/`vitest` internals, so it reads as a broken vitest config or a bad install, and
+you can lose a run chasing that instead of the flag. Reproduced 2026-08-23 on vitest 4.1.10 with
+`vp env exec pnpm --dir packages/council-service run test --reporter=basic` (exit 1, zero tests run).
+
+The reason anyone reaches for it is per-file test counts, and **the default reporter does not print
+them** — it lists only the files that failed, then one summary line. To get counts per file, write a
+JSON report and read it:
+
+```sh
+vp env exec pnpm --dir packages/council-service run test --reporter=json --outputFile="$SP/base.json"
+```
+
+Then sum `assertionResults.length` per entry in `testResults`. A ready script is
+`per-file.mjs` under `t3-chat-+personal/+ai/fixer-bk-2026-08-23/`. It printed 22 files / 537 tests for
+`packages/council-service`, matching the default reporter's own summary line — check that they agree,
+because a JSON report written by a crashed run still parses.
+
+## A script `focus()` never matches `:focus-visible`, so every ring probe reads `none`
+
+`:focus-visible` follows the last input modality. When a probe focuses an element from
+`page.evaluate` and no real key has been pressed in that tab, Chromium does not mark it focus-visible,
+and a rule written as `:focus-visible { outline: ... }` never applies. The probe then reports
+`outline-style: none` and a default `outline-color`, which looks exactly like "this element is missing
+from the focus rule".
+
+This fails in the direction of a finding, so it invents accessibility bugs rather than hiding them.
+Measured 2026-08-23 in the attached Edge on the Council room, on a `<p>` in the room header that was
+given `tabindex="-1"` at runtime so it could take focus at all:
+
+| how focus was given | `matches(":focus-visible")` | computed outline |
+| --- | --- | --- |
+| `el.focus()` from `page.evaluate`, no prior key press | `false` | `none 3px rgb(244, 245, 247)` |
+| real `Tab` presses first, then the same `el.focus()` | `true` | `solid 3px rgb(142, 171, 255)` |
+
+Same element, same page, opposite conclusions. So: **reach the control with real
+`page.keyboard.press("Tab")` before reading any ring**, and calibrate on a control you know is styled —
+if a real button under real keyboard focus reads `none`, the probe is measuring the browser, not the
+page. Note this is the reverse of the headless trap above: there the browser was wrong, here the probe
+was.
+
+## The relay refuses `file:///` navigation, so a local-fixture page needs `page.route` instead
+
+`page.goto("file:///C:/...")` (and `setContent` pointed at local resources) fails through the relay:
+the browser process never gets a usable `file://` origin, and the error reads like a bad path even when
+the file exists. Observed 2026-08-23 while trying to serve a scratch HTML fixture to the attached Edge.
+
+Do not fight it and do not start a throwaway web server for one fixture. Intercept a normal `http://`
+URL and answer it with the fixture body from the runner:
+
+```js
+await state.page.route("http://qa-fixture.localhost/**", (route) =>
+	route.fulfill({ contentType: "text/html", body: state.fixtureHtml }),
+);
+await state.page.goto("http://qa-fixture.localhost/");
+```
+
+Read the fixture file on the CLI side (`-f` runner embedding the string, or assign it to `state` in a
+separate call) — the sandbox `fs` cannot reliably read repo paths, and the relay may not even run on
+the Windows side (see the relay-topology entry above). A `page.route` fixture also keeps the page on a
+real secure-ish origin, so cookies and `fetch` behave like a normal tab, which `file://` never does.

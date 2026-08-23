@@ -782,7 +782,7 @@ function compare_review_file_paths(left: ReviewFile, right: ReviewFile) {
 
 /**
  * Selects text files that a reviewer can inspect. Known extensions and MIME types must agree,
- * and required page or backend entries fail closed when they cannot be reviewed.
+ * and required page, file view, or backend entries fail closed when they cannot be reviewed.
  */
 function prepare_review_files(
 	files: Array<{ path: string; contentType: string; body: ArrayBuffer | string }>,
@@ -1562,7 +1562,7 @@ export const plugins_ai_review = {
 			// The publish action retries a failed review later; one security-gate run gets one provider attempt.
 			maxRetries: 0,
 			// The verdict is short, but the capability map grows with what the manifest declares: up to 16
-			// capabilities plus 16 backend and 16 page origins, each with a path and a line of evidence.
+			// capabilities plus 16 backend and 16 UI origins, each with a path and a line of evidence.
 			// The model's reasoning is charged against this ceiling too, so the budget covers both.
 			maxOutputTokens: REVIEW_VERDICT_MAX_OUTPUT_TOKENS,
 			output: Output.object({ schema: REVIEW_VERDICT_SCHEMA }),
@@ -1591,7 +1591,7 @@ function review_facts(args: {
 	return (
 		`Declared capabilities: ${JSON.stringify(args.capabilities)}\n` +
 		`Declared outbound origins: ${JSON.stringify(args.outboundOrigins)}\n` +
-		`Declared page outbound origins: ${JSON.stringify(args.uiOutboundOrigins)}\n` +
+		`Declared UI outbound origins: ${JSON.stringify(args.uiOutboundOrigins)}\n` +
 		`Capability-map subjects (use these exact strings): ${JSON.stringify(args.requiredSubjects)}\n`
 	);
 }
@@ -1703,8 +1703,9 @@ function review_verdict_prompt(args: {
 		"Secrets that hold a host-configured URL or base URL count as declared outbound origins: " +
 		"the host enforces a runtime egress allowlist, so requests built from such secrets " +
 		"are not exfiltration by themselves.\n" +
-		"The workspace.files.read capability allows frontend pages to call the host file-read bridge, " +
-		"including /api/v1/files/list and /api/v1/files/download-urls. These calls stay inside the host contract.\n" +
+		"The workspace.files.read capability allows a plugin's frontend pages and file views to call the " +
+		"host file-read bridge, including /api/v1/files/list and /api/v1/files/download-urls. " +
+		"These calls stay inside the host contract.\n" +
 		"The host does not reveal configured publisher secret names to this reviewer. Publishers can " +
 		"configure secrets after publishing, and reading a name that is not configured yields nothing at runtime. " +
 		"A secret read whose name is not shown is not a violation by itself.\n" +
@@ -3929,15 +3930,16 @@ export const install_version = mutation({
 			return Result({ _nay: { message: "Install must accept exactly the outbound origins the plugin declares" } });
 		}
 		// Checked apart from the backend origins above, and with its own message, because the two are
-		// consented separately: one is the plugin's server calling out, the other is its page in the
-		// member's browser. A dialog that showed only one of them must not be able to install.
+		// consented separately: one is the plugin's server calling out, the other is its UI frame in the
+		// member's browser. That frame is a page or a file view; both get the same origin list. A dialog
+		// that showed only one of the two consents must not be able to install.
 		const acceptedUiOutboundOrigins = new Set(args.acceptedUiOutboundOrigins);
 		if (
 			pluginVersion.uiOutboundOrigins.length !== acceptedUiOutboundOrigins.size ||
 			pluginVersion.uiOutboundOrigins.some((origin) => !acceptedUiOutboundOrigins.has(origin))
 		) {
 			return Result({
-				_nay: { message: "Install must accept exactly the page outbound origins the plugin declares" },
+				_nay: { message: "Install must accept exactly the UI outbound origins the plugin declares" },
 			});
 		}
 
@@ -4319,6 +4321,13 @@ export const list_published_plugins = query({
 			version: doc(app_convex_schema, "plugins_versions").fields.version,
 			publisherDisplayName: v.union(v.string(), v.null()),
 			reviewStatus: doc(app_convex_schema, "plugins_versions").fields.reviewStatus,
+			/**
+			 * True when this version can ever get a run over an uploaded file, which is what the
+			 * platform baseline (download the triggering asset, write Markdown siblings) is attached to.
+			 * It needs both halves: without a backend entrypoint neither run door opens, and without
+			 * declared events the install writes no event handler rows, which both doors look up first.
+			 */
+			canProcessFiles: v.boolean(),
 			capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 			outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 			uiOutboundOrigins: doc(app_convex_schema, "plugins_versions").fields.uiOutboundOrigins,
@@ -4366,6 +4375,7 @@ export const list_published_plugins = query({
 					version: version.version,
 					publisherDisplayName: anagraphic?.displayName ?? null,
 					reviewStatus: version.reviewStatus,
+					canProcessFiles: version.backendEntrypointFile !== null && version.events.length > 0,
 					capabilities: version.capabilities,
 					outboundOrigins: version.outboundOrigins,
 					uiOutboundOrigins: version.uiOutboundOrigins,
@@ -5304,6 +5314,10 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		pluginDataLiveReservations: v.number(),
 		pluginDataTombstones: v.number(),
 		pluginServiceGrants: v.number(),
+		// True when at least one installation held more grants than the count helper reads. An
+		// outside service decides how many grants it mints, so the count is bounded on purpose and
+		// the operator must see `100+` instead of a number that looks exact.
+		pluginServiceGrantsTruncated: v.boolean(),
 		eventRuns: v.number(),
 		eventRunCalls: v.number(),
 		runActivities: v.number(),
@@ -5343,6 +5357,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		let pluginDataLiveReservations = 0;
 		let pluginDataTombstones = 0;
 		let pluginServiceGrants = 0;
+		let pluginServiceGrantsTruncated = false;
 		let eventRuns = 0;
 		let eventRunCalls = 0;
 		let runActivities = 0;
@@ -5416,6 +5431,9 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 				pluginDataLiveReservations += pluginData.liveReservations;
 				pluginDataTombstones += pluginData.tombstones;
 				pluginServiceGrants += pluginData.serviceGrants;
+				// One capped installation makes the whole sum a lower bound, and several installations
+				// hide that twice over. Carry the flag up so the sum is never read as exact.
+				pluginServiceGrantsTruncated ||= pluginData.serviceGrantsTruncated;
 			}
 		}
 
@@ -5460,6 +5478,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 			pluginDataLiveReservations,
 			pluginDataTombstones,
 			pluginServiceGrants,
+			pluginServiceGrantsTruncated,
 			eventRuns,
 			eventRunCalls,
 			runActivities,

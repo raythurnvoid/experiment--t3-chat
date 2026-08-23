@@ -2,6 +2,11 @@
  * Bonobo plugin frontend SDK — hand-written browser ESM, no build step.
  *
  * Runs inside the host app's sandboxed plugin iframe for plugin pages and plugin file views alike.
+ * The comments below say "page" for both kinds, the way the host app's own notes do. Any text a
+ * MEMBER can end up reading must not: it has to say "plugin frame", because a member sitting in a
+ * file view is not on a page and never read these notes. That covers every `new Error(...)` the SDK
+ * rejects with, and the `message` it puts in a watch death — plugin code renders those verbatim.
+ *
  * The host handshake is a strict postMessage contract: the page announces `bonobo:ready`, the host
  * answers `bonobo:init` with a short-lived scoped session token (`plu_...`), the page context, and
  * the Convex deployment URL. From then on the page acts on its own:
@@ -95,7 +100,7 @@ function is_ui_context(value) {
 function read_bridge_bootstrap() {
 	const fragment = window.location.hash.slice(1);
 	if (!fragment) {
-		throw new Error("Missing host bridge fragment — the page must be embedded by the Bonobo host app");
+		throw new Error("Missing host bridge fragment — this plugin frame must be embedded by the Bonobo host app");
 	}
 
 	const params = new URLSearchParams(fragment);
@@ -617,9 +622,12 @@ function create_documents_window(deps) {
 
 /**
  * Builds the client's `data` and `members` APIs over an injectable reactive-read primitive.
- * `bonobo_ui_connect` wires it to the page's own Convex client; the SDK test suite injects a
- * fake `start_watch` instead, so the watch and window semantics run without a server. Plugin
- * code should use the client from `bonobo_ui_connect`, never call this directly.
+ * `bonobo_ui_connect` wires it to the page's own Convex client. Plugin code should use the client
+ * from `bonobo_ui_connect`, never call this directly — which is why this is NOT exported. The
+ * package publishes `frontend.js` next to a hand-written `frontend.d.ts`, and nothing compares
+ * the two (`typecheck` runs `tsc --skipLibCheck` over `frontend.js` alone), so an `export` here
+ * would ship a runtime symbol the type surface does not declare. The SDK test suite reaches this
+ * through `bonobo_ui_connect` and drives the seam from the fake Convex client instead.
  *
  * The `start_watch` dep starts one reactive read of the plugin's document store. `onResult`
  * receives `{ value }` (the query answer — `null` is the store's denial) or `{ queryError }`,
@@ -633,7 +641,7 @@ function create_documents_window(deps) {
  * }} deps
  * @returns {{ data: import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["data"], members: import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["members"] }}
  */
-export function bonobo_ui_create_data_api(deps) {
+function bonobo_ui_create_data_api(deps) {
 	// Live page-visible subscriptions: a plain watch and a document window each hold one entry.
 	/** @type {Set<object>} */
 	const registrations = new Set();
@@ -670,7 +678,7 @@ export function bonobo_ui_create_data_api(deps) {
 	/** @param {(docs: null, info?: { reason: string, message: string }) => void} onUpdate */
 	const refuse_capacity = (onUpdate) => {
 		console.warn("[bonobo-plugin-sdk] Data watch refused, subscription cap reached");
-		deliver_death_async(onUpdate, { reason: "capacity", message: "Subscription limit reached for this page" });
+		deliver_death_async(onUpdate, { reason: "capacity", message: "Subscription limit reached for this plugin frame" });
 	};
 
 	/** @type {import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["data"]} */
@@ -1010,7 +1018,7 @@ export async function bonobo_ui_connect() {
 		refresh_in_flight = new Promise((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				pending_refreshes.delete(requestId);
-				reject(new Error("Plugin page token refresh timed out"));
+				reject(new Error("Plugin frame token refresh timed out"));
 			}, REFRESH_DEADLINE_MS);
 			pending_refreshes.set(requestId, { resolve, reject, timeout });
 			try {
@@ -1038,7 +1046,7 @@ export async function bonobo_ui_connect() {
 	 *
 	 * @param {string} path - Public API path starting with `/`, e.g. `"/api/v1/files/list"`.
 	 * @param {{ method?: string, headers?: Record<string, string>, body?: unknown }} [init]
-	 * @returns {Promise<any>}
+	 * @returns {Promise<unknown>}
 	 */
 	async function fetchJson(path, init) {
 		const has_body = init?.body !== undefined;

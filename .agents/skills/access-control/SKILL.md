@@ -26,9 +26,35 @@ Membership says where you are. Access control says what you may do there.
   `content.permissions.manage` to use the dedicated lock controls, but that permission does not make
   ordinary writes bypass a lock. Sharing and comment-sidecar permissions stay separate; see
   `../files-read-only/SKILL.md`.
-- A sealed service must have live `content.permissions.manage` at the effective destination ACL
-  before it creates any target. Its narrow read-only cleanup exception rechecks manage on the exact
-  provenance-bound target. It never bypasses a restricted ACL failure or grants general lock access.
+- A sealed service must have `workspace.files.create-read-only` and live `content.permissions.manage`
+  at the effective destination ACL before it creates a **read-only** target. Both checks sit inside
+  that branch, so an ordinary writable target asks for neither. Its narrow read-only cleanup
+  exception rechecks manage on the exact provenance-bound target, and releases only that one lock
+  when it archives the file. It never bypasses a restricted ACL failure or grants general lock
+  access.
+- That exception is the only bypass that removes a lock, so it is worth naming what it asks. It is
+  not the only read-only bypass. The other named ones never unlock a live file: an accepted upload
+  finishes into a file that stays locked, and tenant, workspace, and account deletion delete the
+  whole scope. `../files-read-only/SKILL.md` owns that list. A service-locked node carries
+  `readOnlyPluginServiceTargetId`, a pointer to the target that created the lock.
+  `db_can_clean_up_service_created_lock`
+  (`packages/app/convex/public_api_service_uploads.ts`) allows the bypass only when all of this holds:
+  - **Self lock with known provenance** — `readOnlyScopeNodeId` is the node itself, so the lock is
+    direct and not inherited from a folder, and `readOnlyPluginServiceTargetId` is set.
+  - **Consent** — the installation still accepts `workspace.files.create-read-only`.
+  - **Tenancy and installation** — the pointed-at target is `readOnly`, and its organization,
+    workspace, and installation match the calling principal.
+  - **Destination binding** — the target's `destinationPath` equals the grant's sealed prefix, its
+    `destinationNodeId` is the destination being acted on, and its `nodeId` is this exact node.
+  - **Target still live** — not moved out, no delete requested, state `pending` or `committed`, and
+    its destination epoch is not yet closed.
+  - **Inside the seal** — walking the node's parents reaches the destination node without leaving
+    the organization and workspace.
+  - **Live permission** — the acting member still has `content.permissions.manage` on that node.
+- Every non-service write of `readOnlyScopeNodeId` clears `readOnlyPluginServiceTargetId`: the
+  cascade helper, `set_node_read_only`, and `set_node_writable` in
+  `packages/app/convex/files_nodes.ts`. That is what makes a member's lock change take the bypass
+  away. Once a member locks or unlocks the node, no service target owns that lock any more.
 
 ## Where a role binds
 
@@ -199,7 +225,8 @@ Rules that are easy to miss, all of which were real holes:
   asset doc, because the create below it would otherwise refuse after both writes landed. When the
   failing step is an internal invariant rather than a question the caller can answer — Markdown that
   will not chunk, a Yjs doc that will not serialize — `throw should_never_happen(...)` instead, so the
-  transaction rolls back. `restore_snapshot` and `apply_file_pending_save` both do this; returning
+  transaction rolls back. `restore_snapshot` (`files_nodes_content.ts`) and
+  `save_file_pending_update_in_db` (`files_pending_updates.ts`) both do this; returning
   there left a file with no committed text, or content published and billed with the pending doc still
   showing unsaved changes.
 
@@ -208,9 +235,15 @@ statistics**, the check lives inside the five readers that resolve a node and th
 `read_file_content_from_chunks`, `get_file_text_content_db_state_by_path`,
 `db_resolve_committed_chunk_source`, `match_text_file_lines`, and
 `match_plain_text_file_lines`. The stats reader returns no text, but exact line, word and byte counts
-still reveal a file. Every bash command, AI tool and public API read route goes through one of these
-readers, so a check in each caller would be a check waiting to be forgotten. Count the readers before
-you trust this list: a sixth one added later is a sixth door.
+still reveal a file. Every bash command, AI tool and public API read route that answers with text or
+stats reaches one of these readers, sometimes through a second function: `/api/v1/files/read` calls
+`get_file_last_available_text_content_by_path`, which asks `get_file_text_content_db_state_by_path`. A
+check in each of those callers would be a check waiting to be forgotten. Asset bytes are the one
+exception, and they touch none of the five. `/api/v1/files/download-urls` signs an R2 URL through
+`get_data_for_public_download_url` (`convex/r2.ts`), and that query asks
+`access_control_db_filter_readable_file_nodes` about each node itself. Copy that shape for a new route
+that answers with bytes. Keep `visibilityUserId` a required argument, so a later caller cannot forget
+to pass it. Count the readers before you trust this list: a sixth one added later is a sixth door.
 
 **Activities answer to the files they name.** `db_filter_visible_activities` in `convex/activities.ts`
 is the one rule, used by `list_recent`, `archive_activity` and `archive_all_activities`. One
@@ -579,7 +612,9 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   refuses `app_presence_GLOBAL_ROOM_ID` outright, and **that closes one door of two**. The other door
   is open and the app itself uses it — `MainAppSidebarPresenceControl` heartbeats the global room,
   takes the room token `heartbeat` mints for any id, and passes it to `list`, which authorizes
-  nothing beyond `require_identity`. Anonymous accounts satisfy that, and one unauthenticated POST
+  nothing beyond "some account resolved" — `server_convex_get_user_fallback_to_anonymous`, then
+  `throw convex_error({ message: "Unauthenticated" })` when it answers null (`presence.ts`).
+  Anonymous accounts satisfy that, and one unauthenticated POST
   mints an anonymous account. Reproduced live against `grand-finch-267`: `listRoom` on the global room
   answered `Unauthorized` while `heartbeat` + `list` returned 104 users with `displayName` and
   `avatarUrl` to the *same* anonymous caller. So the `listRoom` special case buys close to zero

@@ -9,12 +9,13 @@ import { council_destination_prefix, council_max_minutes, council_max_participan
 import { council_cors_headers } from "./cors.ts";
 import {
 	council_get_meeting,
+	council_get_service_grant,
 	council_rate_limit,
 	council_transition_meeting,
 	type council_ArtifactRow,
 	type council_MeetingRow,
 } from "./db.ts";
-import { council_random_token, council_sha256_hex } from "./crypto.ts";
+import { council_decrypt, council_random_token, council_sha256_hex } from "./crypto.ts";
 import { council_get_bearer, council_json, council_read_json_body, council_read_string_field } from "./http.ts";
 import {
 	council_page_auth,
@@ -24,8 +25,6 @@ import {
 } from "./grants.ts";
 import { council_provider_create_meeting } from "./provider.ts";
 import { council_convex_data_release_reservation, council_convex_data_reserve } from "./convex-api.ts";
-import { council_decrypt } from "./crypto.ts";
-import { council_get_service_grant } from "./db.ts";
 import { council_close_meeting, council_request_meeting_delete, council_seal_meeting_grant } from "./lifecycle.ts";
 import { council_project_meeting, council_PROJECTION_COLLECTION } from "./projection.ts";
 import { Result } from "./result.ts";
@@ -36,20 +35,20 @@ const TICKET_TTL_MS = 2 * 60 * 1000;
 /** The Plan 2 value-size envelope reserved for one meeting document. */
 const PROJECTION_MAX_BYTES = 16 * 1024;
 
-/** A created meeting that is never opened expires after a day. */
-export const council_UNOPENED_MEETING_TTL_MS = 24 * 60 * 60 * 1000;
-
 function projection_idempotency_key(meetingId: string) {
 	return `council-meeting-${meetingId}`;
 }
 
-/** The sanitized meeting the page may see. Never the code hash, grant ids, or provider URLs. */
+/**
+ * The sanitized meeting the page may see. Never the code hash, the grant ids, the provider ids, or
+ * the stored `failure_reason`. `failure_sentence` says what the page gets in place of that column.
+ */
 function meeting_view(env: Env, meeting: council_MeetingRow, artifacts: council_ArtifactRow[] = []) {
 	return {
 		id: meeting.id,
 		title: meeting.title,
 		status: meeting.status,
-		failureReason: meeting.failure_reason,
+		failureReason: failure_sentence(meeting),
 		createdAt: meeting.created_at,
 		openedAt: meeting.opened_at,
 		closedAt: meeting.closed_at,
@@ -59,6 +58,45 @@ function meeting_view(env: Env, meeting: council_MeetingRow, artifacts: council_
 		destinationPath: meeting.destination_path,
 		artifacts: artifacts_view(artifacts),
 	};
+}
+
+/**
+ * What a failed meeting says on the card.
+ *
+ * `meetings.failure_reason` holds the message the pipeline threw. That text is written for an
+ * operator: it names internal Convex routes, HTTP statuses, upload target keys and provider status
+ * words. A step message like "the step will retry" is also already false when a member reads it,
+ * because only a spent retry budget writes the column at all. So the column stays in D1, where an
+ * operator reads it by meeting id, and the page gets a stable product sentence. This is the rule
+ * `council_handle_page_api` below already applies to the Convex exchange refusal.
+ *
+ * One sentence per status is the whole mapping, because the stored text carries no failure code:
+ * the pipeline composes a message and drops the `_nay.name` that told a plan refusal apart from a
+ * lost provider answer. Each sentence therefore has to be true for every cause of its status, which
+ * is why the `failed` one sends a member who keeps seeing it to an admin instead of naming a cause.
+ *
+ * Only `failed` and `delete_failed` ever store a reason, and nothing clears the column afterwards,
+ * so a meeting that failed once and was redriven to `ready` still carries the old text. Every other
+ * status answers null.
+ */
+function failure_sentence(meeting: council_MeetingRow) {
+	// Say "finish": a run can fail after some artifacts already finalized, and the card shows a badge
+	// for each of those. Council redrives a failed meeting hourly while its sealed grant lives, so
+	// waiting is the right first move. Then name no cause. `failed` is where every spent retry budget
+	// lands: a plan refusal, a locked file, a revoked grant and a failed transcription all arrive as
+	// this one status, and no page route repairs any of them. Naming a cause here would send the
+	// admin to check the wrong thing and leave the real one unlooked-at.
+	if (meeting.status === "failed") {
+		return "Council could not finish saving this meeting's files. It keeps trying on its own for a few days; if the meeting still shows this, ask a workspace admin to look into it.";
+	}
+	// Promise only that the meeting itself is still here. The delete archives the folder before its
+	// last two steps, so a failure after that point leaves the meeting listed with its files already
+	// gone from the tree. The two refusals that stop a delete for good are a read-only file in the
+	// folder and a dead grant, and pressing Delete again seals fresh authority for the second one.
+	if (meeting.status === "delete_failed") {
+		return "Council could not finish deleting this meeting, so it is still here. Press Delete again to start a new attempt; if a file in the meeting's folder is read-only, clear that first.";
+	}
+	return null;
 }
 
 /** The finished files the page may link, as the room/page client reads them: name plus node id. */
@@ -108,9 +146,38 @@ export async function council_handle_page_api(request: Request, env: Env, now: n
 	if (!bearer) {
 		return respond(401, { message: "Unauthorized" });
 	}
-	const auth = await council_page_auth(env, bearer, now);
+	// Page auth limits the Convex exchange per client address, and that needs the trusted edge
+	// header. Without it, refuse rather than fall back to a value the caller can set for itself,
+	// which would put every caller in one bucket.
+	let clientIp = request.headers.get("CF-Connecting-IP");
+	if (!clientIp) {
+		if (env.COUNCIL_ALLOW_MISSING_CLIENT_IP === "true") {
+			clientIp = "loopback";
+		} else {
+			return respond(400, { message: "Missing client address" });
+		}
+	}
+
+	const auth = await council_page_auth(env, bearer, clientIp, now);
 	if (auth._nay) {
-		return respond(auth._nay.name === "unauthorized" ? 401 : 502, { message: auth._nay.message });
+		// The exchange builds this message for an operator: it names the internal Convex route and the
+		// status it answered. A member must not read that, so the reason goes to the log and the page
+		// gets a stable product sentence.
+		console.warn("Page authentication failed; the member sees a stable message instead of this reason", {
+			name: auth._nay.name,
+			reason: auth._nay.message,
+		});
+		// The exchange limit is keyed on the client address, so everyone in one office shares it. Tell
+		// the member their network is busy, not that they are not allowed in.
+		if (auth._nay.name === "rate_limited") {
+			return respond(429, { message: "Council is verifying too many pages from this network. Try again shortly." });
+		}
+		return respond(auth._nay.name === "unauthorized" ? 401 : 502, {
+			message:
+				auth._nay.name === "unauthorized"
+					? "Council is not authorized for this workspace. Ask a workspace admin to review the plugin's access."
+					: "Council could not verify this page with the workspace right now. Try again shortly.",
+		});
 	}
 
 	const body = await council_read_json_body(request);
@@ -192,7 +259,22 @@ async function handle_create(context: PageContext) {
 	if (!grant) {
 		return respond(500, { message: "Failed to create the meeting" });
 	}
-	const psgToken = await council_decrypt(env.COUNCIL_ROOM_COOKIE_SECRET, grant.token_encrypted);
+	// `council_page_auth` serves the first minute after a check from `page_token_cache` without
+	// asking Convex, so on that fast path nothing has touched this grant's token yet and this is the
+	// first read. If the operator rotated `COUNCIL_ROOM_COOKIE_SECRET` inside that minute, the token
+	// was sealed under the old key and cannot be read. Answer 503 instead of throwing: once the
+	// cached minute is over, page auth exchanges again and seals a grant under the new key, so the
+	// next try succeeds by itself.
+	let psgToken: string;
+	try {
+		psgToken = await council_decrypt(env.COUNCIL_ROOM_COOKIE_SECRET, grant.token_encrypted);
+	} catch {
+		// Take the intent row back out, the same way the reservation refusal below does. The member
+		// is told to try again, and a `created` row nothing can finish would otherwise sit in their
+		// list offering an Open button.
+		await env.COUNCIL_DB.prepare("DELETE FROM meetings WHERE id = ? AND status = 'created'").bind(meetingId).run();
+		return respond(503, { message: "Council is reloading its credentials. Try again shortly." }, 60);
+	}
 	const reserved = await council_convex_data_reserve(env, psgToken, {
 		collection: council_PROJECTION_COLLECTION,
 		key: meetingId,
@@ -204,9 +286,33 @@ async function handle_create(context: PageContext) {
 	});
 	if (reserved._nay) {
 		await env.COUNCIL_DB.prepare("DELETE FROM meetings WHERE id = ? AND status = 'created'").bind(meetingId).run();
-		return respond(reserved._nay.name === "unauthorized" ? 403 : 502, {
-			message: "Failed to reserve storage for the meeting",
-		});
+		// Create is the one privileged page action that verifies no grant of its own. It spends the
+		// member's write permission through this host door instead, so this refusal is where a member
+		// an admin moved to `viewer` mid-session first finds out. Page auth claims only the read scope
+		// now, so they still hold a working page and reach this line.
+		//
+		// Name the permission. The upload refusals `convex-api.ts` names (`storage_full`,
+		// `plan_required`) never land here: it mints them only from the file-upload routes' exact 403
+		// texts, and this is the plugin-data reserve route, which sends neither. The store's own
+		// ceilings answer 403 too, but `convex-api.ts` names those `data_store_full`, so the branch
+		// below keeps a store Council has filled out of this permission sentence.
+		if (reserved._nay.name === "unauthorized") {
+			return respond(403, {
+				message:
+					"You do not have permission to create meetings in this workspace. Ask a workspace admin to review your access.",
+			});
+		}
+		// A full store is Council's own data, not the member's access, and deleting meetings is the
+		// member's real repair: the store gives a deleted document's bytes back at once. The slot a
+		// deleted meeting held stays occupied by a retry tombstone for a day, so promise the space
+		// back within a day rather than immediately.
+		if (reserved._nay.name === "data_store_full") {
+			return respond(403, {
+				message:
+					"Council's storage in this workspace is full, so it cannot save a new meeting. Delete meetings you no longer need and try again; freed space can take up to a day to come back.",
+			});
+		}
+		return respond(502, { message: "Failed to reserve storage for the meeting" });
 	}
 
 	// The provider offers no idempotency key on create, so a lost answer lands in `create_unknown`
@@ -214,14 +320,27 @@ async function handle_create(context: PageContext) {
 	let created;
 	try {
 		created = await council_provider_create_meeting(env, title._yay);
-	} catch {
+	} catch (error) {
 		await council_transition_meeting(env.COUNCIL_DB, {
 			meetingId,
 			from: ["created"],
 			to: "create_unknown",
 			now,
 		});
-		return respond(502, { message: "The provider answer was lost; the meeting needs operator repair", meetingId });
+		// Whatever threw here is internal: a dropped connection, or the origin guard in `provider.ts`
+		// refusing a misconfigured base URL. A member can act on neither, and no operator can repair
+		// a `create_unknown` meeting anyway — `db.ts` lets that status move only to `expired` or
+		// `deleting`. So the reason goes to the log, and the member reads the same sentence the card
+		// in `app.tsx` shows for this status. One event must not tell the member two different things.
+		console.warn("The provider answer to create was lost; the member sees a stable message instead", {
+			meetingId,
+			error: String(error),
+		});
+		return respond(502, {
+			message:
+				"Council did not get an answer when it created the room, so this meeting cannot be opened. Delete it and create a new meeting.",
+			meetingId,
+		});
 	}
 	if (created._nay) {
 		await council_convex_data_release_reservation(env, psgToken, {
@@ -316,15 +435,11 @@ async function handle_open(context: PageContext) {
 
 	// Plan-3 E8: processing authority is claimed HERE, before any admission exists, so the pipeline
 	// never depends on the member's page session.
-	let processingGrantId = meeting._yay.processing_grant_id;
-	if (!processingGrantId) {
+	const deadline = now + council_max_minutes(env) * 60 * 1000;
+	let openSet: Record<string, string | number | null>;
+	if (!meeting._yay.processing_grant_id) {
 		// Seal from the caller's live interactive grant, not the create-time pin. The pin lives 24
 		// hours; open can happen near the end of that window, and join still verifies the pin.
-		await env.COUNCIL_DB.prepare("UPDATE meetings SET service_grant_id = ?, updated_at = ? WHERE id = ?")
-			.bind(actor.serviceGrantId, now, meeting._yay.id)
-			.run();
-		meeting._yay.service_grant_id = actor.serviceGrantId;
-
 		// Sealing verifies the interactive grant live first, so this is also the fail-closed check.
 		const sealed = await council_seal_meeting_grant(env, meeting._yay, now, actor.serviceGrantId);
 		if (sealed._nay) {
@@ -332,26 +447,36 @@ async function handle_open(context: PageContext) {
 				message: "The meeting's authority is no longer live",
 			});
 		}
-		processingGrantId = sealed._yay.processingGrantId;
-		await env.COUNCIL_DB.prepare("UPDATE meetings SET processing_grant_id = ?, updated_at = ? WHERE id = ?")
-			.bind(processingGrantId, now, meeting._yay.id)
-			.run();
+		// Write the pin and the sealed grant only inside the guarded `created -> open` UPDATE below.
+		// The seal is a round trip to Convex, so a second open can win the transition meanwhile. A
+		// plain `WHERE id = ?` write here would let this loser repoint the open meeting's grants to
+		// itself while its own open answers 409: joins would verify the loser's pin and the pipeline
+		// would upload as the loser. The loser's sealed grant row stays behind unreferenced, the same
+		// as after a crash between sealing and opening; the expired-grant sweep in `cleanup.ts`
+		// deletes it once it expires.
+		openSet = {
+			opened_at: now,
+			deadline_at: deadline,
+			service_grant_id: actor.serviceGrantId,
+			processing_grant_id: sealed._yay.processingGrantId,
+		};
 	} else {
-		// A retry after a crash between sealing and opening admission: reuse the stored grant, but
-		// still recheck liveness first.
+		// A meeting can store a sealed grant while still `created`: a delete attempt seals and stores
+		// its grant before the `deleting` transition, so a delete that crashed between those two
+		// writes leaves this state behind. Reuse the stored grant, but still recheck liveness first.
 		const live = await council_verify_meeting_grant(env, meeting._yay, now);
 		if (live._nay) {
 			return respond(409, { message: "The meeting's authority is no longer live" });
 		}
+		openSet = { opened_at: now, deadline_at: deadline };
 	}
 
-	const deadline = now + council_max_minutes(env) * 60 * 1000;
 	const moved = await council_transition_meeting(env.COUNCIL_DB, {
 		meetingId: meeting._yay.id,
 		from: ["created"],
 		to: "open",
 		now,
-		set: { opened_at: now, deadline_at: deadline },
+		set: openSet,
 	});
 	if (!moved) {
 		return respond(409, { message: "Meeting is not in a state that can be opened" });
@@ -367,11 +492,19 @@ async function handle_room_ticket(context: PageContext) {
 	if (meeting._nay) {
 		return respond(meeting._nay.name === "bad_request" ? 400 : 404, { message: meeting._nay.message });
 	}
-	if (meeting._yay.status !== "created" && meeting._yay.status !== "open") {
+	// Only `handle_open` moves a meeting to `open`, and the same transition is what sets
+	// `deadline_at`. So a `created` meeting has no deadline, and the room's `handle_join` refuses
+	// every join without one — it would tell the member that a meeting which never started "has
+	// ended". Mint a host ticket only for a meeting that is really open. The dashboard already offers
+	// the host room link only then, so nothing reaches this route earlier.
+	if (meeting._yay.status !== "open") {
 		return respond(409, { message: "Meeting is not joinable" });
 	}
 
-	const live = await council_verify_grant(env, actor.serviceGrantId, now);
+	// The ticket is this member's way into the call, and the call is recorded and written to their
+	// workspace. Claim the write scope so a member who lost `content.write` is refused here, before
+	// they are in a room everyone else joined.
+	const live = await council_verify_grant(env, actor.serviceGrantId, now, ["plugin_data:read", "plugin_data:write"]);
 	if (live._nay) {
 		return respond(409, { message: "The meeting's authority is no longer live" });
 	}
@@ -403,7 +536,15 @@ async function handle_close(context: PageContext) {
 		return respond(meeting._nay.name === "bad_request" ? 400 : 404, { message: meeting._nay.message });
 	}
 
-	const live = await council_verify_grant(env, actor.serviceGrantId, now);
+	// Closing writes: a closed meeting that has a recording is handed straight to the pipeline, and
+	// the pipeline uploads the transcript into this workspace. So claim the write scope.
+	//
+	// Keep it that way on purpose. This is the fail-closed half of the read-only claim page auth
+	// makes. A member an admin moved to `viewer` mid-meeting keeps the page but can no longer close
+	// their own meeting, and the scheduled sweep closes it at its deadline instead. Do not narrow
+	// this to read to give the button back: the close is what starts the upload, and a member who
+	// may not write must not start one.
+	const live = await council_verify_grant(env, actor.serviceGrantId, now, ["plugin_data:read", "plugin_data:write"]);
 	if (live._nay) {
 		return respond(409, { message: "The meeting's authority is no longer live" });
 	}

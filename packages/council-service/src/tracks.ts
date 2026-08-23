@@ -33,8 +33,11 @@ export type council_TrackSegment = {
  *
  * `startOffsetMs` moves this track onto the meeting clock. Each track starts when its participant
  * joined, not when the recording started, so two tracks with the same segment times are not
- * simultaneous. The caller computes the offset from the session participant record's join time minus
- * the recording start time, because that is provider knowledge and does not belong in this module.
+ * simultaneous. The caller reads every track's start from the timestamp in its file name, takes the
+ * earliest of those as the meeting clock zero, and passes this track's timestamp minus that zero.
+ * So the zero is the first track that was recorded, not the moment the meeting or the recording
+ * began. A participant who joined before that track still gets offset 0, never a negative one. File
+ * names need no extra provider call, so the same files always replay to the same offsets.
  */
 export type council_Track = {
 	fileName: string;
@@ -227,7 +230,8 @@ export function council_escape_markdown_inline(text: string) {
 	return text.replace(/[\r\n]+/gu, " ").replace(MARKDOWN_ESCAPABLE_REGEX, (character) => `\\${character}`);
 }
 
-/** `1h02m03s` style stamps, so a reader can find the moment in the recording. */
+/** `0:08` stamps, and `1:02:03` once the meeting passes an hour, so a reader can find the moment
+ * in the recording. */
 function format_timestamp(totalMs: number) {
 	const totalSeconds = Math.max(0, Math.floor(totalMs / 1000));
 	const hours = Math.floor(totalSeconds / 3600);
@@ -247,11 +251,42 @@ function format_timestamp(totalMs: number) {
 export function council_render_transcript_markdown(args: {
 	title: string;
 	segments: council_AttributedSegment[];
+	/**
+	 * Recorded tracks whose speech is not in `segments`. The pipeline refused some before Whisper
+	 * ran, and attribution refused the rest. The count has to be rendered, not just logged: the
+	 * member reads this file in the same folder as the raw track audio, and a finalized
+	 * `transcript.md` is never rewritten by a redrive.
+	 */
+	droppedTrackCount: number;
+	/**
+	 * True when the pipeline judged the recording too short to process. Such a run skips track
+	 * discovery entirely, so it read no track file and no provider transcript, and it must not claim
+	 * the meeting was silent.
+	 */
+	recordingWasTooShort: boolean;
 }) {
 	const lines = [`# ${council_escape_markdown_inline(args.title)}`, ""];
 
+	if (args.droppedTrackCount > 0) {
+		lines.push(
+			args.droppedTrackCount === 1
+				? "_1 recorded track could not be transcribed, so any speech in it is missing below._"
+				: `_${args.droppedTrackCount} recorded tracks could not be transcribed, so any speech in them is missing below._`,
+			"",
+		);
+	}
+
 	if (args.segments.length === 0) {
-		lines.push("_No speech was recorded._");
+		// A too-short recording is skipped before any track is read, so this run never looked for
+		// speech at all. Say what the pipeline actually did instead of calling the meeting silent.
+		if (args.recordingWasTooShort) {
+			lines.push("_The recording was too short to process, so no transcript was produced._");
+			return `${lines.join("\n")}\n`;
+		}
+		// Only say the meeting was silent when every recorded track really was read. With a dropped
+		// track the honest statement is about the tracks that were read, and the line above names the
+		// rest.
+		lines.push(args.droppedTrackCount > 0 ? "_No other speech was recorded._" : "_No speech was recorded._");
 		return `${lines.join("\n")}\n`;
 	}
 

@@ -6,7 +6,7 @@ Route: an already-open Playwriter-enabled `/w/:organizationName/:workspaceName/f
 
 ## Scope
 
-Covers the flows that regress when the image plugin worker, publisher secrets, consent/origin sets, or the plugin runner change: install consent (exact capability/origin sets plus the fixed baseline disclosure), upload event fan-out, secret resolution, the source download URL (`/api/v1/files/download-urls`), outbound fetch to `api.openai.com`, and Markdown sibling writes (`/api/v1/files/write`). Content quality is asserted, not just file existence.
+Covers the flows that regress when the image plugin worker, publisher secrets, consent/origin sets, or the plugin runner change: install consent (exact capability/origin sets plus the manifest-gated upload baseline disclosure), upload event fan-out, secret resolution, the source download URL (`/api/v1/files/download-urls`), outbound fetch to `api.openai.com`, and Markdown sibling writes (`/api/v1/files/write`). Content quality is asserted, not just file existence.
 
 ## Preflight
 
@@ -25,9 +25,9 @@ Exercise uninstall → reinstall through the plugin detail page (`/w/:organizati
 1. On the detail page, record whether an installation-level `OPENAI_API_KEY` override exists in the installed section's Secrets list (`.RoutePluginsInstalledSecrets`). Uninstalling deletes installation secrets, so any override must be restored after reinstall.
 2. Uninstall via the installed section's `Uninstall image` button (aria-label on the `.RoutePluginsInstalled` title row). The installed section unmounts reactively; no navigation happens.
 3. Click `Install` in the hero actions to open the consent modal (`.RoutePluginsPluginConsentModal`) and verify:
-   - The fixed baseline disclosure (`.RoutePluginsPluginConsentModal-baseline`) reads `Every plugin can read the triggering upload and create Markdown files beside it.` — static copy shown for every plugin, independent of the manifest.
+   - The upload baseline disclosure reads `This plugin can read the triggering upload and create Markdown files beside it.` It is gated on the manifest, not static copy: the host shows it only for a plugin that can get a run (a backend entrypoint plus at least one declared event), which `image` has. A page-only plugin such as `council` shows no such line. Several paragraphs in this dialog share the `.RoutePluginsPluginConsentModal-baseline` class, so match on the text rather than on that selector alone.
    - `This plugin can use these capabilities` lists exactly `plugin.secrets.read` and `outbound.fetch`.
-   - `And send requests to these origins` lists exactly `https://api.openai.com`.
+   - `Backend requests can go to these origins` lists exactly `https://api.openai.com`.
    - Keyboard focus moves into the dialog (`Cancel` is the first tabbable control); both `Escape` and `Cancel` close the modal without installing.
 4. Re-open the modal and click `Accept and install` — install submits the accepted capability and origin arrays exactly as listed (exact-set consent). The hero button flips to `Reinstall` once `list_installations` updates.
 5. Restore the installation-level `OPENAI_API_KEY` through the installed section's Secrets form from a secure known value (never echo it into logs), and confirm the publisher-repository fallback secret still exists in the publisher panel.

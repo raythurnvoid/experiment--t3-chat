@@ -56,7 +56,10 @@
 	summary {
 		list-style: none;
 		cursor: pointer;
-		outline: none;
+		/* Do not reset the outline here. The app-wide focus ring is the transparent outline from
+		   `*` above, and the `*:focus-visible` rule below restores only its color. An element-level
+		   outline reset sets outline-style, which that restore never puts back, so a <summary>
+		   could never show a focus ring again. */
 		user-select: none;
 
 		&::marker,

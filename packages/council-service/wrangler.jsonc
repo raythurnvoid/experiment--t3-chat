@@ -14,9 +14,6 @@
 		// the browser-facing API answers a CORS preflight for.
 		"COUNCIL_PLUGIN_ORIGIN": "https://grand-finch-267.convex.site",
 		"CONVEX_HTTP_URL": "https://grand-finch-267.convex.site",
-		// Track recording writes one audio file per participant and puts this prefix in front of the
-		// participant id. Keep it free of underscores so a reader of a file name can see the fields.
-		"COUNCIL_TRACK_FILE_PREFIX": "council",
 		// MVP ceilings. A meeting closes at the deadline whatever else happens, and the 26th accepted
 		// participant is refused.
 		"COUNCIL_MEETING_MAX_MINUTES": "60",
@@ -26,7 +23,10 @@
 		"COUNCIL_DESTINATION_PATH_PREFIX": "/meetings",
 		// Release automation overrides this to "true" until the coupled host and plugin smoke passes.
 		"COUNCIL_MAINTENANCE": "false",
-		// Only local development may skip the trusted `CF-Connecting-IP` header on the guest route.
+		// Only local development may skip the trusted `CF-Connecting-IP` header. It covers both doors
+		// that key a rate bucket on the caller's address: the guest join (`guest_join_ip`) and every
+		// page API call (`page_exchange_ip`). Turning it on keys both buckets on the literal
+		// `loopback`, so every caller shares one bucket.
 		"COUNCIL_ALLOW_MISSING_CLIENT_IP": "false",
 		// PEM SPKI public key the provider signs webhook bodies with. Empty refuses every webhook,
 		// fail closed, so the intake cannot silently run unverified.

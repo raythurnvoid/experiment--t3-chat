@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
 
-import { council_consume_batch, council_handle_queue_message, council_DLQ_NAME } from "./consumer.ts";
+import {
+	council_consume_batch,
+	council_handle_dlq_message,
+	council_handle_queue_message,
+	council_DLQ_NAME,
+} from "./consumer.ts";
+import { council_dispatch_outbox, council_outbox_insert_statement } from "./outbox.ts";
 import type { QueueMessage } from "./cf.ts";
 import { make_test_env, seed_grant, seed_meeting } from "../test/env.ts";
 
@@ -128,5 +134,56 @@ describe("council_consume_batch", () => {
 		const succeeding = make_message(outboxId, 1);
 		await council_consume_batch({ queue: "bonobo-council-events", messages: [succeeding] }, env, 999);
 		expect(succeeding.acked).toBe(true);
+	});
+});
+
+describe("council_outbox_insert_statement", () => {
+	test("one (meeting, kind, generation) stays one work item however many events ask for it", async () => {
+		const { env } = make_test_env();
+		await seed_grant(env);
+		await seed_meeting(env, { status: "processing", processingGeneration: 1 });
+		const args = { meetingId: "meeting-1", kind: "process_meeting" as const, generation: 1, now: 100 };
+
+		await council_outbox_insert_statement(env.COUNCIL_DB, args).run();
+		const first = await env.COUNCIL_DB.prepare("SELECT id FROM event_outbox").first<{ id: string }>();
+		// The dispatcher has already sent this row's pointer and the consumer may already be starting
+		// its Workflow. That is the state the second insert below must not touch.
+		await env.COUNCIL_DB.prepare("UPDATE event_outbox SET status = 'handoff_pending', attempts = 1 WHERE id = ?")
+			.bind(first?.id)
+			.run();
+
+		// The provider redelivers the same webhook, so the same statement runs a second time.
+		await council_outbox_insert_statement(env.COUNCIL_DB, { ...args, now: 200 }).run();
+
+		// A second insert that replaced the row instead of ignoring it would hand back a fresh id with
+		// `pending` and zero attempts, and the next dispatch would re-send a generation whose Workflow
+		// is already running.
+		const rows = await env.COUNCIL_DB.prepare("SELECT id, status, attempts FROM event_outbox").all<{
+			id: string;
+			status: string;
+			attempts: number;
+		}>();
+		expect(rows.results).toEqual([{ id: first?.id, status: "handoff_pending", attempts: 1 }]);
+	});
+});
+
+describe("a delivered outbox row is terminal", () => {
+	test("neither a re-dispatch nor a DLQ message reopens it", async () => {
+		const { env, queueSent } = make_test_env();
+		await seed_grant(env);
+		await seed_meeting(env, { status: "processing", processingGeneration: 1 });
+		const outboxId = await seed_outbox(env, { status: "delivered" });
+
+		// Both calls reach a delivered row on a normal day. The scheduled pass re-dispatches rows it
+		// believes are still waiting, and a message whose retries ran out lands in the DLQ after the
+		// consumer's own handoff already succeeded.
+		await council_dispatch_outbox(env, { meetingId: "meeting-1", kind: "process_meeting", now: 999 });
+		await council_handle_dlq_message(make_message(outboxId, 5), env, 999);
+
+		const row = await env.COUNCIL_DB.prepare("SELECT status FROM event_outbox WHERE id = ?")
+			.bind(outboxId)
+			.first<{ status: string }>();
+		expect(row?.status).toBe("delivered");
+		expect(queueSent).toEqual([]);
 	});
 });

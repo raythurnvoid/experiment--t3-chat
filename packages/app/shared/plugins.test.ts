@@ -333,6 +333,8 @@ describe("plugins_validate_manifest", () => {
 			outboundOrigins?: string[];
 			uiOutboundOrigins?: string[];
 			capabilities?: string[];
+			/** Declare one file view and no `pages` key at all, the way bonobo-plugin-video-player ships. */
+			fileViewsOnly?: boolean;
 			duplicateFilePath?: boolean;
 			nonDistFilePath?: boolean;
 		} = {},
@@ -346,7 +348,11 @@ describe("plugins_validate_manifest", () => {
 			compatibility: { bonoboPluginRuntime: "1" },
 			...(args.configuration === undefined ? {} : { configuration: args.configuration }),
 			events: args.events ?? [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
-			pages: [],
+			...(args.fileViewsOnly
+				? {
+						fileViews: [{ id: "viewer", title: "Viewer", entry: "dist/ui/index.html", contentTypes: ["video/mp4"] }],
+					}
+				: { pages: [] }),
 			capabilities: args.capabilities ?? ["plugin.secrets.read", "outbound.fetch"],
 			outboundOrigins: args.outboundOrigins ?? [],
 			...(args.uiOutboundOrigins === undefined ? {} : { uiOutboundOrigins: args.uiOutboundOrigins }),
@@ -592,7 +598,7 @@ describe("plugins_validate_manifest", () => {
 		).toEqual({ _nay: { message: 'Plugin manifest has duplicate outbound origin "https://api.openai.com"' } });
 	});
 
-	test("defaults page outbound origins to none when the manifest omits them", () => {
+	test("defaults UI outbound origins to none when the manifest omits them", () => {
 		const validated = plugins_validate_manifest(manifest_json());
 		if (validated._nay) {
 			throw new Error(validated._nay.message);
@@ -600,7 +606,7 @@ describe("plugins_validate_manifest", () => {
 		expect(validated._yay.uiOutboundOrigins).toEqual([]);
 	});
 
-	test("accepts declared page outbound origins that are already normalized", () => {
+	test("accepts declared UI outbound origins that are already normalized", () => {
 		const validated = plugins_validate_manifest(
 			manifest_json({
 				capabilities: ["plugin.secrets.read", "ui.outbound.fetch"],
@@ -611,11 +617,11 @@ describe("plugins_validate_manifest", () => {
 			throw new Error(validated._nay.message);
 		}
 		expect(validated._yay.uiOutboundOrigins).toEqual(["https://council.example.com"]);
-		// Page egress does not imply backend egress. The two lists stay separate.
+		// UI egress does not imply backend egress. The two lists stay separate.
 		expect(validated._yay.outboundOrigins).toEqual([]);
 	});
 
-	test("rejects invalid, non-normalized, and duplicate page outbound origins", () => {
+	test("rejects invalid, non-normalized, and duplicate UI outbound origins", () => {
 		expect(
 			plugins_validate_manifest(
 				manifest_json({
@@ -631,7 +637,7 @@ describe("plugins_validate_manifest", () => {
 					uiOutboundOrigins: ["https://Council.Example.com/"],
 				}),
 			),
-		).toEqual({ _nay: { message: "Page outbound origins must already be normalized" } });
+		).toEqual({ _nay: { message: "UI outbound origins must already be normalized" } });
 		expect(
 			plugins_validate_manifest(
 				manifest_json({
@@ -640,22 +646,41 @@ describe("plugins_validate_manifest", () => {
 				}),
 			),
 		).toEqual({
-			_nay: { message: 'Plugin manifest has duplicate page outbound origin "https://council.example.com"' },
+			_nay: { message: 'Plugin manifest has duplicate UI outbound origin "https://council.example.com"' },
 		});
 	});
 
-	test("keeps the ui.outbound.fetch capability and page outbound origins together", () => {
+	test("keeps the ui.outbound.fetch capability and UI outbound origins together", () => {
 		expect(
 			plugins_validate_manifest(manifest_json({ capabilities: ["plugin.secrets.read", "ui.outbound.fetch"] })),
-		).toEqual({ _nay: { message: "The ui.outbound.fetch capability requires at least one page outbound origin" } });
+		).toEqual({ _nay: { message: "The ui.outbound.fetch capability requires at least one UI outbound origin" } });
 		expect(
 			plugins_validate_manifest(
 				manifest_json({ capabilities: ["plugin.secrets.read"], uiOutboundOrigins: ["https://council.example.com"] }),
 			),
-		).toEqual({ _nay: { message: "Page outbound origins require the ui.outbound.fetch capability" } });
+		).toEqual({ _nay: { message: "UI outbound origins require the ui.outbound.fetch capability" } });
 	});
 
-	test("bounds page outbound origins at the same cap as backend origins", () => {
+	test("refuses a file-view-only manifest without naming a manifest section it does not have", () => {
+		// `uiOutboundOrigins` becomes the `connect-src` of every asset response, and `get_ui_asset`
+		// serves pages and file views from the same branch, so the list reaches a file view exactly as it
+		// reaches a page. `pages` and `fileViews` are both optional, so a manifest can carry these origins
+		// with no `pages` key at all. A refusal that said "page outbound origins" would send that
+		// publisher looking for a section their manifest does not contain.
+		const refusal = plugins_validate_manifest(
+			manifest_json({
+				fileViewsOnly: true,
+				capabilities: ["plugin.secrets.read"],
+				uiOutboundOrigins: ["https://council.example.com"],
+			}),
+		);
+		expect(refusal._nay?.message.toLowerCase()).not.toContain("page");
+		expect(refusal).toEqual({
+			_nay: { message: "UI outbound origins require the ui.outbound.fetch capability" },
+		});
+	});
+
+	test("bounds UI outbound origins at the same cap as backend origins", () => {
 		expect(
 			plugins_validate_manifest(
 				manifest_json({
@@ -671,7 +696,7 @@ describe("plugins_validate_manifest", () => {
 					uiOutboundOrigins: Array.from({ length: 17 }, (_, index) => `https://page-${index}.example.com`),
 				}),
 			),
-		).toEqual({ _nay: { message: "Plugin manifests can declare at most 16 page outbound origins" } });
+		).toEqual({ _nay: { message: "Plugin manifests can declare at most 16 UI outbound origins" } });
 	});
 
 	test("bounds event and outbound-origin fan-out", () => {
@@ -1003,28 +1028,79 @@ describe("plugins_validate_manifest", () => {
 });
 
 describe("plugins_Capability", () => {
-	test("the Convex schema capability validator matches the shared capability list exactly", () => {
-		// `satisfies Record<plugins_Capability, true>` forces this literal to name every member of
-		// the shared union and nothing else, so a capability added to one list but not the other
-		// fails this test or its compile.
-		const capabilities = Object.keys({
-			"plugin.secrets.read": true,
-			"outbound.fetch": true,
-			"workspace.files.read": true,
-			"workspace.files.write": true,
-			"workspace.files.create-read-only": true,
-			"plugin.data.read": true,
-			"plugin.data.write": true,
-			"plugin.data.user-write": true,
-			"plugin.service.connect": true,
-			"ui.outbound.fetch": true,
-		} satisfies Record<plugins_Capability, true>);
+	// `satisfies Record<plugins_Capability, true>` forces this literal to name every member of the
+	// shared union and nothing else, so a capability added to one list but not the other fails these
+	// tests or their compile.
+	const capabilities = Object.keys({
+		"plugin.secrets.read": true,
+		"outbound.fetch": true,
+		"workspace.files.read": true,
+		"workspace.files.write": true,
+		"workspace.files.create-read-only": true,
+		"plugin.data.read": true,
+		"plugin.data.write": true,
+		"plugin.data.user-write": true,
+		"plugin.service.connect": true,
+		"ui.outbound.fetch": true,
+	} satisfies Record<plugins_Capability, true>);
 
+	test("the Convex schema capability validator matches the shared capability list exactly", () => {
 		const schemaCapabilities =
 			app_convex_schema.tables.plugins_versions.validator.fields.capabilities.element.members.map(
 				(member) => member.value,
 			);
 		expect([...schemaCapabilities].sort()).toEqual([...capabilities].sort());
+	});
+
+	test("the plugin SDK's BonoboCapability union matches the shared capability list exactly", () => {
+		// No app module imports the SDK, so nothing else notices when the two lists drift. 0.9.1
+		// shipped without `plugin.data.user-write` after the host already had it, and only a human
+		// review round caught that. Read the published types as text and compare both directions.
+		const sdkTypes = readFileSync(`${process.cwd()}/../bonobo-plugin-sdk/index.d.ts`, "utf8");
+		const union = /export type BonoboCapability =([^;]*);/u.exec(sdkTypes);
+		// Tell a reformatted declaration apart from a real mismatch: without this the next assertion
+		// would report an empty SDK list and hide the reason.
+		expect(union).not.toBeNull();
+
+		const sdkCapabilities = [...(union?.[1] ?? "").matchAll(/"([^"]+)"/gu)].map((match) => match[1]);
+		expect([...sdkCapabilities].sort()).toEqual([...capabilities].sort());
+	});
+
+	test("the plugin SDK doc block states every capability that another capability requires", () => {
+		// A manifest that declares only the dependent half is rejected at publish, so an author who
+		// writes a manifest against the types must learn the rule here and not from a rejection.
+		// `plugin.data.write` was the one conditional capability whose bullet stayed silent, and
+		// nothing catches that: the doc block is prose in a `.d.ts` no app module imports.
+		const requiredByCapability = {
+			"plugin.data.write": ["plugin.data.read"],
+			"plugin.data.user-write": ["plugin.data.read"],
+			"workspace.files.create-read-only": ["workspace.files.write"],
+			"plugin.service.connect": ["plugin.data.read", "workspace.files.write"],
+		} satisfies Partial<Record<plugins_Capability, plugins_Capability[]>>;
+
+		const sdkTypes = readFileSync(`${process.cwd()}/../bonobo-plugin-sdk/index.d.ts`, "utf8");
+		const docBlock = /\/\*\*([^]*?)\*\/\s*export type BonoboCapability =/u.exec(sdkTypes);
+		// Tell a moved or reformatted doc block apart from a real omission: without this the bullet
+		// lookups below would all come back empty and blame the wrong thing.
+		expect(docBlock).not.toBeNull();
+
+		// Each bullet runs from its own ` * - ` marker to the next one, so slice on that marker.
+		const bullets = (docBlock?.[1] ?? "").split(/\n\s*\* - /u).slice(1);
+		// Answer per capability rather than asserting inside the loop, so a failure names the bullet
+		// that stayed silent instead of printing "expected false to be true".
+		const statesItsRule = Object.fromEntries(
+			Object.entries(requiredByCapability).map(([capability, required]) => {
+				const bullet = bullets.find((entry) => entry.startsWith(`\`${capability}\``)) ?? "";
+				return [capability, required.some((name) => bullet.includes(`\`${name}\``))];
+			}),
+		);
+
+		expect(statesItsRule).toEqual({
+			"plugin.data.write": true,
+			"plugin.data.user-write": true,
+			"workspace.files.create-read-only": true,
+			"plugin.service.connect": true,
+		});
 	});
 });
 

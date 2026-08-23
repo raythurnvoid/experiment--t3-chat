@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
+	council_convex_data_reserve,
 	council_convex_data_write_versioned,
 	council_convex_exchange,
 	council_convex_seal_processing,
@@ -91,6 +92,48 @@ describe("council_convex_seal_processing", () => {
 	});
 });
 
+describe("council_convex_data_reserve", () => {
+	test("the store's own ceilings are their own refusal, and a permission refusal is not", async () => {
+		const { env } = make_test_env();
+		const body = {
+			collection: "meetings",
+			key: "meeting-1",
+			maximumBytes: 16 * 1024,
+			idempotencyKey: "council-meeting-meeting-1",
+			expiresAt: 1000,
+		};
+
+		// The three ceiling texts `plugins_data.ts` sends, with the numbers the host computes today.
+		// `handle_create` in `routes-page.ts` branches on `data_store_full` to tell a store Council has
+		// filled apart from a member who lost write permission, so all three must arrive under that
+		// name, with the host's own words kept for the operator log.
+		const ceilingTexts = [
+			"This plugin has used its 16 MiB of storage",
+			"This plugin has used its 10000 document slots",
+			"This plugin can use at most 16 collections",
+		];
+		for (const text of ceilingTexts) {
+			const mock = install_fetch({
+				"/plugin-data/reserve": () => Response.json({ message: text }, { status: 403 }),
+			});
+			restoreFetch = mock.restore;
+			const refused = await council_convex_data_reserve(env, "psg_token", body);
+			mock.restore();
+			expect(refused._nay?.name).toBe("data_store_full");
+			expect(refused._nay?.message).toContain(text);
+		}
+
+		// A member who lost write permission must keep reading as `unauthorized`: `handle_create`
+		// answers that one with the ask-an-admin sentence, which must never cover a full store.
+		const deniedMock = install_fetch({
+			"/plugin-data/reserve": () => Response.json({ message: "Permission denied" }, { status: 403 }),
+		});
+		restoreFetch = deniedMock.restore;
+		const denied = await council_convex_data_reserve(env, "psg_token", body);
+		expect(denied._nay?.name).toBe("unauthorized");
+	});
+});
+
 describe("council_convex_data_write_versioned", () => {
 	test("is a public-API call: bearer only, no service secret", async () => {
 		const { env } = make_test_env();
@@ -135,8 +178,9 @@ describe("council_convex_uploads_create_target", () => {
 		expect(call.headers.get("X-Bonobo-Service-Authorization")).toBeNull();
 		expect(call.bodyJson).toEqual(body);
 
-		// A full workspace must stay its own refusal name: the caller turns it into "no capacity, no
-		// recording" instead of collapsing it into a generic permission error.
+		// A full workspace must stay its own refusal name. `upload_artifact` in `pipeline.ts` branches
+		// on it to throw a NonRetryableError, because the storage counter only counts up and never
+		// clears while the run is going. Collapsed into a generic permission error it would retry.
 		mock.restore();
 		const fullMock = install_fetch({
 			"/service-uploads/create-target": () =>
@@ -172,7 +216,10 @@ describe("council_convex_uploads_create_target", () => {
 		};
 		const planRefused = await council_convex_uploads_create_target(env, "psg_processing", body);
 		expect(planRefused._nay?.name).toBe("plan_required");
-		// The member reads this reason on the page, so the host's own words have to survive the hop.
+		// No member ever reads this text. It lands in `meetings.failure_reason`, which an operator
+		// reads by meeting id, while the page shows a fixed sentence picked from the status alone.
+		// The pipeline drops `_nay.name` before it stores the message, so the host's own words are
+		// all that tells a plan refusal apart from a full workspace there. They must survive the hop.
 		expect(planRefused._nay?.message).toContain("This workspace's plan does not include plugin service file storage");
 
 		planMock.restore();

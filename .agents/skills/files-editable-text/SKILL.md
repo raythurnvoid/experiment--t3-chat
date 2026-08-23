@@ -25,13 +25,17 @@ Everything derives from the file NAME's extension and only the extension. The cl
 
 # The Stored `yjsRootKind`
 
-`files_nodes.yjsRootKind` (`packages/app/convex/schema.ts`) stores the shape when the node is created. Absent means `rich_text` (nodes written before the field existed). Folders, stored blobs, and read-only mounts leave it unset and have no Yjs document.
+`files_nodes.yjsRootKind` (`packages/app/convex/schema.ts`) stores the shape when the node is created. Absent means the node is NOT editable text: folders, stored blobs, and read-only mounts leave it unset and have no Yjs document. There is no default. Never read a missing field as `rich_text` — `node.yjsRootKind ?? "rich_text"` would classify every folder, stored blob, and read-only mount as a Markdown file and send it into the Markdown chunker and the frontmatter indexer. `files_node_has_editable_text_content` refuses a node without the field, which is why this field, not the Yjs pointers, is what marks a node as an editable text file.
 
-Reads never re-derive the shape from the name. `files_get_node_yjs_root_kind(node)` (`packages/app/shared/files.ts`) resolves the stored field, and every read, write, chunker dispatch, and guard uses that value. The name decides the shape once, at creation.
+Reads never re-derive the shape from the name. Every read, write, chunker dispatch, and guard passes `node.yjsRootKind` through directly, narrowed by the `files_node_has_editable_text_content` type guard. There is no accessor helper wrapping the field, so do not look for one.
+
+The name classifier `files_get_editable_text_yjs_root_kind(fileName)` answers a different question, and it answers it about a NAME the caller is proposing, never about a stored node. It runs where a name is being chosen: the create paths, upload conversion in `r2.ts`, the sidebar's own create and upload prepare, and the rename class rule (`files_validate_file_rename_class`), which asks what the new name would mean and compares that against the stored field. The name decides the shape once, at creation; after that the stored field is the answer.
 
 # Read-Side Shape Guards
 
-`files_yjs_doc_check_text_addressable` in `packages/app/shared/files-yjs.ts` is the read-side backstop both dispatchers run as their first statement (`files_yjs_doc_get_text` / `_update_from_text` / `_create_from_text` in `packages/app/shared/files-tiptap.ts`, which take a required `rootKind`).
+`files_yjs_doc_check_text_addressable` in `packages/app/shared/files-yjs.ts` is the read-side backstop both dispatchers run as their first statement (`files_yjs_doc_get_text` / `_update_from_text` in `packages/app/shared/files-tiptap.ts`, which take a required `rootKind`).
+
+The third dispatcher, `files_yjs_doc_create_from_text`, runs NO guard, on purpose. It builds the document itself, so at that moment there is no existing shape to check. That leaves the `rootKind` argument as the only protection on the create direction: a wrong value builds a wrongly shaped document, and nothing downstream can catch it. So check the `rootKind` a caller hands that function, and do not delete a caller-side shape check there as redundant with the guard — the guard does not run.
 
 - `plain_text` — the parity check: `toString().length` must equal `length`. `toString()` concatenates only string content, while `length` also counts embeds and child types, so the line diff can address the text by offset exactly when the two agree. Parity does not catch a `Y.Map` named `plain_text` (parity holds, reads `""`); the byte doors close that case, so do not delete a door check because "the getter already checks".
 - `rich_text` — a name test: refuse when the `plain_text` root is present and the `default` root is absent. The test MUST read `share.has()` before any accessor call, in both directions: an accessor registers the root it reads, so `getXmlFragment` first makes the test allow a vandalised document, and `getText` first makes it refuse an ordinary empty Markdown document.
@@ -171,7 +175,7 @@ unfinished service placeholder may use `files_nodes_db_hard_delete_node`.
 
 There is deliberately NO in-app create path: the sidebar New-file flow creates Markdown only, and the rename rule (`files_validate_file_rename_class` in `packages/app/shared/files.ts`, enforced by `rename_node`, pending-move proposal, and accept) never lets a name cross the Markdown/plain class. That strictness is why no in-app path is needed — a `.md` file can never be renamed into a `.json` file, so the UI has nothing to route. Renames inside the plain class (`json` → `yaml`) are allowed and patch the classifier `contentType` with the name. An extensionless destination claims no class, which keeps mixed file/folder swap cycles working.
 
-`convex/data_import.ts:32-34` stays a Markdown-only dead end by decision: import-minted assets get `processingWorkId: null`, so imports never run the editable-text conversion.
+`data_import.create_upload_targets` (`packages/app/convex/data_import.ts`) is not a third path, by decision: it mints its assets with `processingWorkId: null`, so the R2 event finalizer records the object and never starts the editable-text conversion. An operator import stays a stored blob whatever its name.
 
 # Generic Text Function Names
 

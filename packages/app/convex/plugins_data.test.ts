@@ -5,6 +5,7 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { organizations_db_create_workspace } from "./organizations.ts";
+import { plugins_data_db_count_installation_docs } from "./plugins_data.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -395,10 +396,9 @@ describe("resolve_principal", () => {
 			await ctx.db.patch("organizations_workspaces_users", membership._id, { active: false });
 		});
 
-		// A `processing` grant is meant to outlive the actor's permissions one day, so accepted work is
-		// not stranded half-written. That only becomes safe once the grant is sealed to one exact
-		// target, and the sealing fields belong to the Council work that mints such a grant. Until then
-		// both phases die with the membership.
+		// Both phases die with the membership, `processing` included. Being sealed to one destination
+		// path prefix bounds where a processing grant writes, not whether its member may still write,
+		// so the seal is no reason to resolve it here.
 		expect(
 			(await t.query(internal.public_api.resolve_principal, { presented: interactive._yay.token }))._nay?.message,
 		).toBe("Unauthenticated");
@@ -3566,9 +3566,9 @@ describe("db_authorize", () => {
 		});
 		expect(refusedDelete._nay?.message).toBe("Unauthenticated");
 
-		// A service grant is judged with its actor's live membership like every other principal. The
-		// processing phase is meant to outlive that one day, but only once it is sealed to one exact
-		// target, and the sealing fields belong to the Council work that mints such a grant.
+		// A service grant is judged with its actor's live membership like every other principal. This
+		// door takes no phase at all, so a sealed `processing` grant reaches this same check: the seal
+		// bounds where a grant writes, not whether its member may still write.
 		const service = await t.query(internal.plugins_data.read_document, {
 			principal: store_principal(fixture, { kind: "plugin_service" }),
 			collection: "meetings",
@@ -5636,5 +5636,60 @@ describe("cleanup_expired_plugin_data", () => {
 		).toEqual({ done: true, releasedCount: 0, deletedCount: 0 });
 		expect(await read_usage(t, fixture)).toMatchObject({ reservedBytes: 1000, reservedDocuments: 1 });
 		expect(await read_all_store_tables(t, fixture)).toMatchObject({ reservations: 1, serviceGrants: 1 });
+	});
+});
+
+describe("plugins_data_db_count_installation_docs", () => {
+	async function count(t: ReturnType<typeof test_convex>, fixture: Awaited<ReturnType<typeof seed_installation>>) {
+		return await t.run(
+			async (ctx) =>
+				await plugins_data_db_count_installation_docs(ctx, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					installationId: fixture.installationId,
+				}),
+		);
+	}
+
+	test("reads at most one bounded page of grants and says the real number is higher", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+
+		// More grants than the preview counts. How many an installation holds is decided by an outside
+		// service, and this query is the required first step of registry deletion, so reading every
+		// grant would make deletion impossible on exactly the installation that most needs it.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let index = 0; index < 150; index += 1) {
+				await ctx.db.insert("plugin_service_grants", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					installationId: fixture.installationId,
+					pluginVersionId: fixture.pluginVersionId,
+					pluginName: "council",
+					actorUserId: fixture.userId,
+					tokenHash: `hash-${index}`,
+					scopes: ["plugin_data:read"],
+					principalKey: `plugin_service:${fixture.installationId}`,
+					phase: "interactive",
+					destinationPathPrefix: null,
+					expiresAt: now + 60_000,
+					updatedAt: now,
+				});
+			}
+		});
+
+		// The count stops at the bound and the flag says there are more, so the preview reads as
+		// "100+" instead of claiming the installation holds exactly one hundred grants.
+		expect(await count(t, fixture)).toMatchObject({ serviceGrants: 100, serviceGrantsTruncated: true });
+	});
+
+	test("an installation under the bound is counted exactly", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		await mint_service_grant(t, fixture);
+		await mint_service_grant(t, fixture);
+
+		expect(await count(t, fixture)).toMatchObject({ serviceGrants: 2, serviceGrantsTruncated: false });
 	});
 });

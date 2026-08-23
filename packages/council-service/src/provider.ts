@@ -19,6 +19,7 @@
 
 import { Result } from "./result.ts";
 import type { Env } from "./env.ts";
+import { council_read_stream_with_limit } from "./http.ts";
 
 /** The only origin the provider bearer may ever be sent to. */
 const PROVIDER_ORIGIN = "https://api.cloudflare.com";
@@ -78,6 +79,25 @@ function body_data(response: ProviderResponse): Record<string, unknown> | null {
 	return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : null;
 }
 
+/**
+ * Say whether a response field is a provider id, token, or URL this service may keep.
+ *
+ * `typeof value === "string"` also accepts `""`, and an empty string is none of those things. Three
+ * concrete things go wrong if one is kept. An empty id lands in the next request path as
+ * `/participants/` instead of naming one participant. An empty id stored in D1 reads back as
+ * absent, because `discover_tracks` and `fetch_provider_transcript` in `pipeline.ts` both test
+ * their column for truthiness — the meeting would then publish no tracks and no diagnostic while
+ * the column says the id is set. An empty token is handed to a member as a working join credential,
+ * and the row records that admission as finished, so no retry ever mints a real one.
+ *
+ * So treat an empty string exactly like a missing field. Each caller below already has its own
+ * answer for a missing one — a provider refusal, a null session id, a preset it creates instead, or
+ * a track file it skips — and that same answer is the right one for an empty field too.
+ */
+function nonempty_string(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0;
+}
+
 function provider_nay(operation: string, response: ProviderResponse) {
 	// Status and provider error code only. Provider bodies can carry tokens and presigned URLs, so
 	// they never reach a message.
@@ -120,7 +140,7 @@ export async function council_provider_ensure_preset(env: Env, role: "host" | "g
 	const listed = (name: string) => presets.find((preset) => preset.name === name);
 
 	const existing = listed(targetName);
-	if (existing && typeof existing.id === "string") {
+	if (existing && nonempty_string(existing.id)) {
 		// Verify through the DETAIL read. Require strict `=== true`.
 		const detail = await provider_fetch(env, `/presets/${existing.id}`);
 		const detailData = body_data(detail);
@@ -137,7 +157,7 @@ export async function council_provider_ensure_preset(env: Env, role: "host" | "g
 	}
 
 	const source = listed(PRESET_SOURCES[role]);
-	if (!source || typeof source.id !== "string") {
+	if (!source || !nonempty_string(source.id)) {
 		return Result<never>({
 			_nay: { name: "preset_missing", message: `Stock preset ${PRESET_SOURCES[role]} was not found` },
 		});
@@ -159,7 +179,7 @@ export async function council_provider_ensure_preset(env: Env, role: "host" | "g
 		}),
 	});
 	const createdData = body_data(created);
-	if (!created.ok || typeof createdData?.id !== "string") {
+	if (!created.ok || !createdData || !nonempty_string(createdData.id)) {
 		return provider_nay("Create preset", created);
 	}
 	return Result({ _yay: { presetName: targetName, presetId: createdData.id } });
@@ -185,7 +205,7 @@ export async function council_provider_create_meeting(env: Env, title: string) {
 	});
 	const data = body_data(response);
 	const meeting = (data?.meeting ?? data) as Record<string, unknown> | null;
-	if (!response.ok || typeof meeting?.id !== "string") {
+	if (!response.ok || !meeting || !nonempty_string(meeting.id)) {
 		return provider_nay("Create meeting", response);
 	}
 	return Result({ _yay: { providerMeetingId: meeting.id } });
@@ -209,7 +229,7 @@ export async function council_provider_add_participant(
 		}),
 	});
 	const data = body_data(response);
-	if (!response.ok || typeof data?.id !== "string" || typeof data.token !== "string") {
+	if (!response.ok || !data || !nonempty_string(data.id) || !nonempty_string(data.token)) {
 		return provider_nay("Add participant", response);
 	}
 	return Result({ _yay: { providerParticipantId: data.id, token: data.token } });
@@ -247,7 +267,7 @@ export async function council_provider_start_track_recording(
 	});
 	const data = body_data(response);
 	const recording = (data?.recording ?? data) as Record<string, unknown> | null;
-	if (!response.ok || typeof recording?.id !== "string") {
+	if (!response.ok || !recording || !nonempty_string(recording.id)) {
 		return provider_nay("Start track recording", response);
 	}
 	return Result({ _yay: { providerRecordingId: recording.id } });
@@ -288,7 +308,7 @@ export async function council_provider_kick_all(env: Env, providerMeetingId: str
 export async function council_provider_get_active_session(env: Env, providerMeetingId: string) {
 	const response = await provider_fetch(env, `/meetings/${providerMeetingId}/active-session`);
 	const data = body_data(response);
-	if (!response.ok || typeof data?.id !== "string") {
+	if (!response.ok || !data || !nonempty_string(data.id)) {
 		return Result({ _yay: { sessionId: null as string | null } });
 	}
 	return Result({ _yay: { sessionId: data.id as string | null } });
@@ -310,7 +330,7 @@ export async function council_provider_find_session(env: Env, providerMeetingId:
 	}
 
 	const matched = sessions.filter((session) => session.associated_id === providerMeetingId);
-	if (matched.length !== 1 || typeof matched[0].id !== "string") {
+	if (matched.length !== 1 || !nonempty_string(matched[0].id)) {
 		// Zero and several are both refusals: picking one of several would read another run's data.
 		return Result({
 			_yay: { sessionId: null as string | null, matchCount: matched.length },
@@ -354,6 +374,15 @@ export type council_ProviderTrackFile = {
  */
 export async function council_provider_get_recording(env: Env, recordingId: string) {
 	const response = await provider_fetch(env, `/recordings/${recordingId}`);
+	// The provider drops a recording after its seven-day expiry, so 404 is its own answer: the
+	// recording is gone, not refused. `council_run_deletion` skips its recording stop on exactly
+	// this name. Every other refusal keeps `provider_refused`, so a transient error can never read
+	// like the recording being gone.
+	if (response.status === 404) {
+		return Result<never>({
+			_nay: { name: "not_found", message: "Read recording returned HTTP 404" },
+		});
+	}
 	const envelope = body_data(response);
 	const recording = (envelope?.recording ?? envelope) as Record<string, unknown> | null;
 	if (!response.ok || !recording) {
@@ -365,7 +394,7 @@ export async function council_provider_get_recording(env: Env, recordingId: stri
 	const downloadUrls = (linkGroups[0]?.download_urls ?? {}) as Record<string, { download_url?: unknown }>;
 	const trackFiles: council_ProviderTrackFile[] = [];
 	for (const [fileName, entry] of Object.entries(downloadUrls)) {
-		if (typeof entry?.download_url === "string") {
+		if (entry && nonempty_string(entry.download_url)) {
 			trackFiles.push({ fileName, downloadUrl: entry.download_url });
 		}
 	}
@@ -399,6 +428,13 @@ export async function council_provider_download_track(downloadUrl: string) {
 }
 
 /**
+ * The provider transcript is a diagnostic file, and the people in the meeting decide how big it
+ * gets. Read it with a cap so one very long meeting cannot buffer an unbounded string into the
+ * Worker. A few megabytes is far more than a JSON transcript of a one-hour meeting needs.
+ */
+const TRANSCRIPT_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
  * Fetch the provider's own transcript once. HTTP 200 is never readiness: the caller polls until
  * this returns nonzero bytes that parse into at least one non-empty sentence. The artifact is a
  * diagnostic only — its speaker identity is placeholder garbage today (rule 6 of the provider
@@ -413,8 +449,22 @@ export async function council_provider_fetch_transcript(env: Env, sessionId: str
 	}
 
 	const download = await fetch(url);
-	const text = await download.text();
-	if (!download.ok || text.length === 0) {
+	if (!download.ok || !download.body) {
+		return Result({ _yay: { ready: false as const } });
+	}
+	const bytes = await council_read_stream_with_limit(download.body, TRANSCRIPT_MAX_BYTES);
+	// Answer not-ready, the same as a transcript the provider has not finished writing. The caller
+	// polls, gives up, and finishes the meeting without the diagnostic file. Losing a diagnostic
+	// must never fail a run that already has its transcript and summary.
+	if (bytes._nay) {
+		console.warn("The provider transcript is larger than the diagnostic cap; continuing without it", {
+			sessionId,
+			maxBytes: TRANSCRIPT_MAX_BYTES,
+		});
+		return Result({ _yay: { ready: false as const } });
+	}
+	const text = new TextDecoder().decode(bytes._yay);
+	if (text.length === 0) {
 		return Result({ _yay: { ready: false as const } });
 	}
 	let parsed: unknown;

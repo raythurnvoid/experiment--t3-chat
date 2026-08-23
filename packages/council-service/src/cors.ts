@@ -43,10 +43,12 @@ export function council_cors_headers(origin: string | null, allowedOrigin: strin
 }
 
 /**
- * Answer a preflight, or `null` when the request is not one.
+ * Answer a preflight, or `null` when the request is not an `OPTIONS` at all, which is the caller's
+ * signal to route it as a normal request.
  *
- * A preflight is only a preflight when all three of its headers are present. An `OPTIONS` without
- * them is a plain request and is not answered with permission to call anything.
+ * A preflight is only a preflight when all three of its headers are present. An `OPTIONS` missing
+ * any of them is not a preflight and does not fall through either: it is refused with 400, so it is
+ * never answered with permission to call anything.
  */
 export function council_handle_preflight(request: Request, allowedOrigin: string) {
 	if (request.method !== "OPTIONS") {

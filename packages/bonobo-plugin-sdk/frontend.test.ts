@@ -1,6 +1,8 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { bonobo_ui_connect, bonobo_ui_create_data_api } from "./frontend.js";
+import { bonobo_ui_connect } from "./frontend.js";
 
 const HOST_ORIGIN = "https://host.test";
 const BRIDGE_NONCE = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -20,6 +22,12 @@ type FakeConvexClientInstance = {
 	fetchToken: (() => Promise<string | null>) | null;
 	closed: boolean;
 	onUpdates: FakeOnUpdateEntry[];
+	onUpdate: (
+		query: unknown,
+		args: Record<string, unknown>,
+		callback: (value: unknown) => void,
+		onError: (error: Error) => void,
+	) => () => void;
 	mutation: ReturnType<typeof vi.fn>;
 	query: ReturnType<typeof vi.fn>;
 };
@@ -200,6 +208,16 @@ describe("bonobo_ui_connect", () => {
 		window.history.replaceState(null, "", "/");
 		await expect(bonobo_ui_connect()).rejects.toThrow("Missing host bridge fragment");
 
+		// A plugin that ships only file views renders this rejection verbatim to the member (the
+		// video player's `main.tsx` does exactly that). A member in a file view is not on a page,
+		// so the wording must name the frame instead. Pin the rule, not the sentence: re-wording
+		// is fine, calling the frame a page is not.
+		let bridgeMessage = "";
+		await bonobo_ui_connect().catch((error: unknown) => {
+			bridgeMessage = error instanceof Error ? error.message : String(error);
+		});
+		expect(bridgeMessage).not.toMatch(/page/i);
+
 		set_bridge_fragment("ftp://host.test");
 		await expect(bonobo_ui_connect()).rejects.toThrow("Invalid host bridge parent origin");
 
@@ -265,6 +283,19 @@ describe("bonobo_ui_connect", () => {
 
 		expect(client.context).toEqual(make_file_view_context());
 		await expect(client.getToken()).resolves.toBe("plu_1");
+
+		// The refresh timeout reaches the member from a file view too: the video player passes it
+		// to `setErrorMessage` and renders it. Same rule as the bridge refusal above — the message
+		// must not tell a member in a file view that they are on a page.
+		vi.useFakeTimers();
+		let refreshMessage = "";
+		const refreshSettled = client.refreshToken().catch((error: unknown) => {
+			refreshMessage = error instanceof Error ? error.message : String(error);
+		});
+		await vi.advanceTimersByTimeAsync(10_000);
+		await refreshSettled;
+		expect(refreshMessage).toContain("token refresh timed out");
+		expect(refreshMessage).not.toMatch(/page/i);
 	});
 
 	test("requires userId in the init context for both kinds", async () => {
@@ -446,7 +477,7 @@ describe("bonobo_ui_connect", () => {
 		const client = await clientPromise;
 
 		const firstRefresh = client.refreshToken();
-		const rejected = expect(firstRefresh).rejects.toThrow("Plugin page token refresh timed out");
+		const rejected = expect(firstRefresh).rejects.toThrow("Plugin frame token refresh timed out");
 		await vi.advanceTimersByTimeAsync(10_000);
 		await rejected;
 
@@ -454,6 +485,53 @@ describe("bonobo_ui_connect", () => {
 		expect(refresh_requests(postSpy)).toHaveLength(2);
 		answer_refresh(postSpy, "plu_3");
 		await expect(secondRefresh).resolves.toBe("plu_3");
+	});
+
+	test("declares the fetchJson result as unknown so a page must check the answer before reading it", async () => {
+		// `fetchJson` is the one call that hands the page data from outside the app, and outside data
+		// starts as `unknown`. With `any` a page could read `.items` off a listing page that came back
+		// empty while `isDone` was still false, which is exactly what the doc block warns about.
+		//
+		// This reads the declaration text because nothing in this package type-checks that file:
+		// `pnpm run typecheck` passes `--skipLibCheck`, which skips every `.d.ts`, and vitest
+		// transpiles the tests without checking types. A type-level assertion here would never run.
+		//
+		// Build the path from `import.meta.dirname`, not from `new URL(..., import.meta.url)`. The
+		// happy-dom environment resolves a relative URL against the fake document location, so that
+		// form asks for `https://plugin.test/frontend.d.ts` and `readFile` refuses the scheme.
+		const declaration = await readFile(join(import.meta.dirname, "frontend.d.ts"), "utf8");
+		// Cut the declaration out first, from `fetchJson(` to the `Promise<…>;` that ends it, so a
+		// failure prints the signature instead of the whole file.
+		const fetchJsonDeclaration = declaration.match(/\bfetchJson\([^]*?\bPromise<[^>]*>;/)?.[0] ?? "";
+		expect(fetchJsonDeclaration).toMatch(/\): Promise<unknown>;$/);
+
+		// Read the implementation's own JSDoc too. It is the file a maintainer opens to edit
+		// `fetchJson`, and `any` is assignable to `unknown`, so the two can disagree forever without
+		// a compile error. Someone reading only `frontend.js` would "fix" the declaration back.
+		const implementation = await readFile(join(import.meta.dirname, "frontend.js"), "utf8");
+		// Anchor on the block close so this reads fetchJson's own tag. Without the anchor the scan
+		// returns the first `@returns` in the file that has `fetchJson` somewhere after it.
+		const fetchJsonReturnsTag =
+			implementation.match(/@returns \{Promise<[^>]*>\}(?=\s*\*\/\s*async function fetchJson\()/)?.[0] ?? "";
+		expect(fetchJsonReturnsTag).toBe("@returns {Promise<unknown>}");
+
+		// The README states the same rule and then shows the one example a plugin author copies.
+		// That example used to read `page.items`, `page.cursor`, `page.isDone` and `error.status`
+		// with no check at all, so it broke the rule printed above it and did not compile in a
+		// TypeScript plugin — which every first-party plugin is. Read the file the same way,
+		// because no gate in this package looks at the README.
+		const readme = await readFile(join(import.meta.dirname, "README.md"), "utf8");
+		// Cut out just the frontend example's fenced block, so a failure prints the snippet.
+		const frontendExample = readme.match(/### Frontend page example\s*```js\n([^]*?)```/)?.[1] ?? "";
+		expect(frontendExample).toContain("client.fetchJson");
+
+		// Both guards must survive, in the shape the shipped plugins already use: the video
+		// player's `get_error_status` before reading a rejection's `status`, and Council's
+		// `as_record` before reading fields off the answer.
+		expect(frontendExample).toContain('"status" in error');
+		expect(frontendExample).toContain('typeof page === "object" && page !== null');
+		// And nothing may read a field straight off the `unknown` that `fetchJson` answered.
+		expect(frontendExample).not.toMatch(/\bpage\.\w/);
 	});
 });
 
@@ -731,7 +809,7 @@ describe("data.watch", () => {
 		// the refusal as access gone.
 		expect(onRefused).toHaveBeenNthCalledWith(1, null, {
 			reason: "capacity",
-			message: "Subscription limit reached for this page",
+			message: "Subscription limit reached for this plugin frame",
 		});
 		expect(warnSpy).toHaveBeenCalled();
 
@@ -745,39 +823,67 @@ describe("data.watch", () => {
 describe("data.watchWindow", () => {
 	type FakeWatch = {
 		queryArgs: { collection: string; keyPrefix?: string; limit: number };
-		bounds: { keyStartExclusive?: string; keyEndInclusive?: string } | null;
+		bounds: { keyStartExclusive?: string; keyEndInclusive?: string };
 		onResult: (outcome: { value: unknown } | { queryError: unknown }) => void;
 		disposed: boolean;
 	};
 
-	function make_data_api() {
+	/**
+	 * The window manager is not exported, so these tests drive it the way a plugin does: through
+	 * the client `bonobo_ui_connect` resolves, on the fake Convex client the module mock installs.
+	 *
+	 * The SDK wires the manager to that client through `create_convex_data_deps`, which merges the
+	 * manager's query args and its interval fenceposts into the ONE args object Convex receives.
+	 * So the wrapper below splits them apart again and presents the `FakeWatch` shape the
+	 * assertions read. That makes the bound assertions stronger than they were against a
+	 * hand-written `start_watch`: they now check the range the SDK really asked the server for.
+	 */
+	async function make_data_api() {
+		const client = await connect_client();
+		const instance = convex_instance();
 		const startedWatches: FakeWatch[] = [];
 		// Results the next started watches are born with, oldest first. A seeded watch mimics
 		// the Convex client holding a cached result for identical args: it arrives on a
 		// setTimeout(0) after the start call, never synchronously — the client's own contract.
 		const seededResults: unknown[] = [];
-		const { data: api } = bonobo_ui_create_data_api({
-			start_watch: (queryArgs, bounds, onResult) => {
-				const watch: FakeWatch = { queryArgs, bounds, onResult, disposed: false };
-				startedWatches.push(watch);
-				if (seededResults.length > 0) {
-					const value = seededResults.shift();
-					setTimeout(() => {
-						if (!watch.disposed) {
-							watch.onResult({ value });
-						}
-					}, 0);
-				}
-				return {
-					dispose: () => {
-						watch.disposed = true;
-					},
-				};
-			},
-			run_user_write: vi.fn(),
-			resolve_member_display: vi.fn(),
-		});
-		return { api, startedWatches, seededResults };
+		const record_watch = instance.onUpdate.bind(instance);
+
+		instance.onUpdate = (query, args, callback, onError) => {
+			const { keyStartExclusive, keyEndInclusive, ...queryArgs } = args;
+			const unsubscribe = record_watch(query, args, callback, onError);
+			const watch: FakeWatch = {
+				queryArgs: queryArgs as FakeWatch["queryArgs"],
+				bounds: {
+					...(keyStartExclusive === undefined ? {} : { keyStartExclusive: keyStartExclusive as string }),
+					...(keyEndInclusive === undefined ? {} : { keyEndInclusive: keyEndInclusive as string }),
+				},
+				// The SDK's own adapter turns the client's two callbacks back into one outcome, so
+				// hand the outcome to whichever callback the real client would have called.
+				onResult: (outcome) => {
+					if ("queryError" in outcome) {
+						onError(outcome.queryError as Error);
+					} else {
+						callback(outcome.value);
+					}
+				},
+				disposed: false,
+			};
+			startedWatches.push(watch);
+			if (seededResults.length > 0) {
+				const value = seededResults.shift();
+				setTimeout(() => {
+					if (!watch.disposed) {
+						callback(value);
+					}
+				}, 0);
+			}
+			return () => {
+				watch.disposed = true;
+				unsubscribe();
+			};
+		};
+
+		return { api: client.data, startedWatches, seededResults };
 	}
 
 	async function deliver(watch: FakeWatch, docs: { key: string }[], truncated: boolean) {
@@ -789,8 +895,27 @@ describe("data.watchWindow", () => {
 		return onUpdate.mock.calls;
 	}
 
+	/**
+	 * Grows one window to `intervals` bounded intervals, each holding a full page. Per cycle the
+	 * newest unbounded interval delivers a truncated page and re-seats onto the range its docs
+	 * cover, then loadOlder appends the next unbounded tail. Full pages never merge back, because
+	 * a merge needs an adjacent pair holding less than one page between them.
+	 */
+	async function grow_window(harness: Awaited<ReturnType<typeof make_data_api>>, prefix: string, intervals = 6) {
+		const onUpdate = vi.fn();
+		const handle = harness.api.watchWindow({ collection: "messages", keyPrefix: prefix, pageSize: 3 }, onUpdate);
+		for (let interval = 1; interval <= intervals; interval += 1) {
+			const docs = [1, 2, 3].map((slot) => ({ key: `${prefix}${interval}:${slot}` }));
+			await deliver(harness.startedWatches.at(-1)!, docs, true);
+			if (interval < intervals) {
+				handle.loadOlder();
+			}
+		}
+		return { handle, onUpdate };
+	}
+
 	test("starts one unbounded read with the caller's args and coalesces identical deliveries", async () => {
-		const { api, startedWatches } = make_data_api();
+		const { api, startedWatches } = await make_data_api();
 		const onUpdate = vi.fn();
 		const handle = api.watchWindow({ collection: "messages", keyPrefix: "m:", pageSize: 3 }, onUpdate);
 
@@ -813,7 +938,7 @@ describe("data.watchWindow", () => {
 	});
 
 	test("a truncated first delivery re-seats behind one update that already says hasMore", async () => {
-		const { api, startedWatches } = make_data_api();
+		const { api, startedWatches } = await make_data_api();
 		const onUpdate = vi.fn();
 		api.watchWindow({ collection: "messages", keyPrefix: "m:", pageSize: 3 }, onUpdate);
 
@@ -830,7 +955,7 @@ describe("data.watchWindow", () => {
 	});
 
 	test("loadOlder appends an unbounded tail from the stored bound", async () => {
-		const { api, startedWatches } = make_data_api();
+		const { api, startedWatches } = await make_data_api();
 		const onUpdate = vi.fn();
 		const handle = api.watchWindow({ collection: "messages", keyPrefix: "m:", pageSize: 3 }, onUpdate);
 		await deliver(startedWatches[0]!, [{ key: "m:1" }, { key: "m:2" }, { key: "m:3" }], true);
@@ -861,7 +986,7 @@ describe("data.watchWindow", () => {
 		// (call loadOlder whenever an update still says hasMore) now runs inside the flush call
 		// stack instead of behind a postMessage hop. The re-entrant call must behave like any
 		// other loadOlder.
-		const { api, startedWatches } = make_data_api();
+		const { api, startedWatches } = await make_data_api();
 		let handle: { loadOlder: () => void; unsubscribe: () => void } | null = null;
 		const onUpdate = vi.fn((update: { hasMore: boolean } | null) => {
 			if (update?.hasMore) {
@@ -888,7 +1013,7 @@ describe("data.watchWindow", () => {
 	});
 
 	test("an arrival overflow splits the interval and the swap commits in one update", async () => {
-		const { api, startedWatches } = make_data_api();
+		const { api, startedWatches } = await make_data_api();
 		const onUpdate = vi.fn();
 		api.watchWindow({ collection: "messages", keyPrefix: "m:", pageSize: 3 }, onUpdate);
 		await deliver(startedWatches[0]!, [{ key: "m:1" }, { key: "m:2" }, { key: "m:3" }], true);
@@ -924,8 +1049,130 @@ describe("data.watchWindow", () => {
 		expect(window_updates(onUpdate)).toHaveLength(3);
 	});
 
+	test("a split replaces only the interval it split, not the neighbour below it", async () => {
+		const { api, startedWatches } = await make_data_api();
+		const onUpdate = vi.fn();
+		const handle = api.watchWindow({ collection: "messages", keyPrefix: "m:", pageSize: 3 }, onUpdate);
+		await deliver(startedWatches[0]!, [{ key: "m:1" }, { key: "m:2" }, { key: "m:3" }], true);
+
+		// Load one older page first. The window then holds two intervals, so the split below
+		// happens at an index that has a neighbour after it.
+		handle.loadOlder();
+		await deliver(startedWatches[2]!, [{ key: "m:4" }, { key: "m:5" }], false);
+		expect(startedWatches).toHaveLength(3);
+
+		// Arrivals overflow the FIRST of the two intervals: left is watch 3, right is watch 4.
+		await deliver(startedWatches[1]!, [{ key: "m:0a" }, { key: "m:0b" }, { key: "m:1" }], true);
+		expect(startedWatches).toHaveLength(5);
+		expect(startedWatches[3]!.bounds).toEqual({ keyEndInclusive: "m:1" });
+		expect(startedWatches[4]!.bounds).toEqual({ keyStartExclusive: "m:1", keyEndInclusive: "m:3" });
+
+		await deliver(startedWatches[4]!, [{ key: "m:2" }, { key: "m:3" }], false);
+		await deliver(startedWatches[3]!, [{ key: "m:0a" }, { key: "m:0b" }, { key: "m:1" }], false);
+
+		// The commit swaps out the split interval alone. Taking the neighbour with it would stop
+		// a live subscription and drop its docs out of the flattened list.
+		expect(startedWatches[1]!.disposed).toBe(true);
+		expect(startedWatches[2]!.disposed).toBe(false);
+		expect(window_updates(onUpdate).at(-1)).toEqual([
+			{
+				docs: [
+					{ key: "m:0a" },
+					{ key: "m:0b" },
+					{ key: "m:1" },
+					{ key: "m:2" },
+					{ key: "m:3" },
+					{ key: "m:4" },
+					{ key: "m:5" },
+				],
+				hasMore: false,
+				atCapacity: false,
+				incomplete: false,
+			},
+		]);
+	});
+
+	test("a truncated interval whose only fencepost is its own bound reports incomplete", async () => {
+		const { api, startedWatches } = await make_data_api();
+		const onUpdate = vi.fn();
+		const handle = api.watchWindow({ collection: "messages", keyPrefix: "m:", pageSize: 3 }, onUpdate);
+		await deliver(startedWatches[0]!, [{ key: "m:1" }, { key: "m:2" }, { key: "m:3" }], true);
+
+		// A second bounded interval: the tail delivers truncated and re-seats onto (m:3 .. m:6].
+		handle.loadOlder();
+		await deliver(startedWatches[2]!, [{ key: "m:4" }, { key: "m:5" }, { key: "m:6" }], true);
+		expect(startedWatches).toHaveLength(4);
+		expect(startedWatches[3]!.bounds).toEqual({ keyStartExclusive: "m:3", keyEndInclusive: "m:6" });
+
+		// Deletes leave that interval holding one doc, which is also its upper bound.
+		await deliver(startedWatches[3]!, [{ key: "m:6" }], false);
+		expect(window_updates(onUpdate).at(-1)).toEqual([
+			{
+				docs: [{ key: "m:1" }, { key: "m:2" }, { key: "m:3" }, { key: "m:6" }],
+				hasMore: true,
+				atCapacity: false,
+				incomplete: false,
+			},
+		]);
+
+		// Three arrivals inside that range push m:6 out of the read. The split may only use the
+		// previously delivered first key as its fencepost, and that key is m:6, the interval's
+		// own bound. Splitting there would recreate the parent's exact args, so it is refused.
+		// m:6 is now missing from the middle of the list, and the payload has to say so.
+		await deliver(startedWatches[3]!, [{ key: "m:4a" }, { key: "m:4b" }, { key: "m:4c" }], true);
+		expect(startedWatches).toHaveLength(4);
+		expect(window_updates(onUpdate).at(-1)).toEqual([
+			{
+				docs: [{ key: "m:1" }, { key: "m:2" }, { key: "m:3" }, { key: "m:4a" }, { key: "m:4b" }, { key: "m:4c" }],
+				hasMore: true,
+				atCapacity: false,
+				incomplete: true,
+			},
+		]);
+	});
+
+	test("an interval a pending split is already replacing is repaired, not incomplete", async () => {
+		const harness = await make_data_api();
+		const { startedWatches } = harness;
+		const { onUpdate } = await grow_window(harness, "m:", 5);
+		const olderPages = [2, 3, 4, 5].flatMap((interval) => [1, 2, 3].map((slot) => ({ key: `m:${interval}:${slot}` })));
+
+		// Arrivals overflow the first interval. The split has room for a sixth interval. While it
+		// runs, committed plus pending is 7, which is past the ceiling. That must not read as a
+		// hole: the range is being re-read, not stuck.
+		await deliver(startedWatches[1]!, [{ key: "m:0a" }, { key: "m:0b" }, { key: "m:1:1" }], true);
+		expect(startedWatches).toHaveLength(12);
+		expect(window_updates(onUpdate).at(-1)).toEqual([
+			{
+				docs: [{ key: "m:0a" }, { key: "m:0b" }, { key: "m:1:1" }, ...olderPages],
+				hasMore: true,
+				atCapacity: false,
+				incomplete: false,
+			},
+		]);
+
+		// The swap commits and the two halves cover the whole parent range again.
+		await deliver(startedWatches[11]!, [{ key: "m:1:2" }, { key: "m:1:3" }], false);
+		await deliver(startedWatches[10]!, [{ key: "m:0a" }, { key: "m:0b" }, { key: "m:1:1" }], false);
+		expect(window_updates(onUpdate).at(-1)).toEqual([
+			{
+				docs: [
+					{ key: "m:0a" },
+					{ key: "m:0b" },
+					{ key: "m:1:1" },
+					{ key: "m:1:2" },
+					{ key: "m:1:3" },
+					...olderPages,
+				],
+				hasMore: true,
+				atCapacity: true,
+				incomplete: false,
+			},
+		]);
+	});
+
 	test("a denial mid-split kills the whole window with exactly one null", async () => {
-		const { api, startedWatches } = make_data_api();
+		const { api, startedWatches } = await make_data_api();
 		const onUpdate = vi.fn();
 		const handle = api.watchWindow({ collection: "messages", keyPrefix: "m:", pageSize: 3 }, onUpdate);
 		await deliver(startedWatches[0]!, [{ key: "m:1" }, { key: "m:2" }, { key: "m:3" }], true);
@@ -950,7 +1197,7 @@ describe("data.watchWindow", () => {
 	});
 
 	test("a cached truncated first delivery still re-seats and reports hasMore", async () => {
-		const { api, startedWatches, seededResults } = make_data_api();
+		const { api, startedWatches, seededResults } = await make_data_api();
 		const onUpdate = vi.fn();
 
 		// A sibling subscription with identical args leaves a cached result in the client, so
@@ -969,7 +1216,7 @@ describe("data.watchWindow", () => {
 	});
 
 	test("a cached denial at window start kills it without leaking the subscription", async () => {
-		const { api, startedWatches, seededResults } = make_data_api();
+		const { api, startedWatches, seededResults } = await make_data_api();
 		const onUpdate = vi.fn();
 
 		// The page retries a just-denied read as a window before the server confirms the
@@ -989,7 +1236,7 @@ describe("data.watchWindow", () => {
 	});
 
 	test("the interval ceiling reports atCapacity and refuses the next loadOlder", async () => {
-		const { api, startedWatches } = make_data_api();
+		const { api, startedWatches } = await make_data_api();
 		const onUpdate = vi.fn();
 		const handle = api.watchWindow({ collection: "messages", keyPrefix: "m:", pageSize: 3 }, onUpdate);
 
@@ -1023,8 +1270,34 @@ describe("data.watchWindow", () => {
 		expect(window_updates(onUpdate)).toHaveLength(updatesAtCeiling);
 	});
 
+	test("a split refused by the interval ceiling reports incomplete", async () => {
+		const harness = await make_data_api();
+		const { startedWatches } = harness;
+		const { onUpdate } = await grow_window(harness, "m:", 6);
+		expect(startedWatches).toHaveLength(12);
+
+		// Arrivals overflow the window's newest range while all six interval slots are spent. The
+		// split that would absorb them needs a seventh, so the range stays truncated and the docs
+		// it can no longer reach are missing from the middle of the list.
+		await deliver(startedWatches[1]!, [{ key: "m:0a" }, { key: "m:0b" }, { key: "m:1:1" }], true);
+		expect(startedWatches).toHaveLength(12);
+		expect(window_updates(onUpdate).at(-1)).toEqual([
+			{
+				docs: [
+					{ key: "m:0a" },
+					{ key: "m:0b" },
+					{ key: "m:1:1" },
+					...[2, 3, 4, 5, 6].flatMap((interval) => [1, 2, 3].map((slot) => ({ key: `m:${interval}:${slot}` }))),
+				],
+				hasMore: true,
+				atCapacity: true,
+				incomplete: true,
+			},
+		]);
+	});
+
 	test("adjacent intervals that shrink below one page merge back into one subscription", async () => {
-		const { api, startedWatches } = make_data_api();
+		const { api, startedWatches } = await make_data_api();
 		const onUpdate = vi.fn();
 		const handle = api.watchWindow({ collection: "messages", keyPrefix: "m:", pageSize: 3 }, onUpdate);
 		await deliver(startedWatches[0]!, [{ key: "m:1" }, { key: "m:2" }, { key: "m:3" }], true);
@@ -1060,7 +1333,7 @@ describe("data.watchWindow", () => {
 
 	test("a window occupies one page-visible slot, and the ninth watch dies as capacity", async () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const { api, startedWatches } = make_data_api();
+		const { api, startedWatches } = await make_data_api();
 
 		api.watchWindow({ collection: "messages", keyPrefix: "m:", pageSize: 3 }, vi.fn());
 		for (let index = 1; index <= 7; index += 1) {
@@ -1074,13 +1347,156 @@ describe("data.watchWindow", () => {
 		expect(startedWatches).toHaveLength(8);
 		expect(onRefused).toHaveBeenNthCalledWith(1, null, {
 			reason: "capacity",
-			message: "Subscription limit reached for this page",
+			message: "Subscription limit reached for this plugin frame",
 		});
 		expect(warnSpy).toHaveBeenCalled();
 	});
 
+	test("the ninth subscription dies as capacity when it is a window", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { api, startedWatches } = await make_data_api();
+
+		for (let index = 1; index <= 8; index += 1) {
+			api.watch({ collection: "notes", limit: 10 }, vi.fn());
+		}
+		expect(startedWatches).toHaveLength(8);
+
+		// The eight page-visible slots refuse a window exactly like they refuse a plain watch.
+		// The refusal names itself, so a page holding real slots closes one instead of reading
+		// the death as access gone.
+		const onRefused = vi.fn();
+		const handle = api.watchWindow({ collection: "messages", keyPrefix: "m:", pageSize: 3 }, onRefused);
+		await flush_deliveries();
+		expect(startedWatches).toHaveLength(8);
+		expect(onRefused).toHaveBeenNthCalledWith(1, null, {
+			reason: "capacity",
+			message: "Subscription limit reached for this plugin frame",
+		});
+		expect(warnSpy).toHaveBeenCalled();
+
+		// Nothing was registered, so the handle has nothing to grow or dispose.
+		handle.loadOlder();
+		handle.unsubscribe();
+		expect(startedWatches).toHaveLength(8);
+	});
+
+	// The page's server-subscription ceiling is the second, lower cap: 24 across the page, one
+	// per plain watch and one per window interval. Four windows at their 6-interval limit spend
+	// all 24 while holding only four of the eight page-visible slots.
+	test("four fully-grown windows spend the page's 24 server subscriptions and refuse the next watch", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const harness = await make_data_api();
+		const { api, startedWatches } = harness;
+		const live_watches = () => startedWatches.filter((watch) => !watch.disposed);
+
+		const { handle: firstWindow } = await grow_window(harness, "a:");
+		await grow_window(harness, "b:");
+		await grow_window(harness, "c:");
+		await grow_window(harness, "d:");
+		expect(live_watches()).toHaveLength(24);
+
+		const onRefused = vi.fn();
+		api.watch({ collection: "notes", limit: 10 }, onRefused);
+		await flush_deliveries();
+		expect(onRefused).toHaveBeenNthCalledWith(1, null, {
+			reason: "capacity",
+			message: "Subscription limit reached for this plugin frame",
+		});
+		expect(warnSpy).toHaveBeenCalled();
+		// The ceiling is checked before the read starts, so the refusal subscribed to nothing.
+		expect(live_watches()).toHaveLength(24);
+
+		// Closing one window returns its six subscriptions and the same watch starts. That is
+		// what proves the refusal above came from the 24-subscription ceiling: the page-visible
+		// count only went from four windows to three, nowhere near the eight-slot cap.
+		firstWindow.unsubscribe();
+		expect(live_watches()).toHaveLength(18);
+		api.watch({ collection: "notes", limit: 10 }, vi.fn());
+		expect(live_watches()).toHaveLength(19);
+	});
+
+	test("the same spent budget kills a new window at birth with reason capacity", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const harness = await make_data_api();
+		const { api, startedWatches } = harness;
+		const live_watches = () => startedWatches.filter((watch) => !watch.disposed);
+
+		const { handle: firstWindow } = await grow_window(harness, "a:");
+		await grow_window(harness, "b:");
+		await grow_window(harness, "c:");
+		await grow_window(harness, "d:");
+		expect(live_watches()).toHaveLength(24);
+
+		// Four windows hold four of the eight page-visible slots, so only the 24-subscription
+		// ceiling can refuse this one. Without the check here the window would be created and its
+		// head read would fail on the spent budget. The page would then hear an unexplained null
+		// and a console error, with nothing telling it to close a window first.
+		const onRefused = vi.fn();
+		const handle = api.watchWindow({ collection: "messages", keyPrefix: "e:", pageSize: 3 }, onRefused);
+		await flush_deliveries();
+		expect(live_watches()).toHaveLength(24);
+		expect(onRefused).toHaveBeenNthCalledWith(1, null, {
+			reason: "capacity",
+			message: "Subscription limit reached for this plugin frame",
+		});
+		expect(warnSpy).toHaveBeenCalled();
+		expect(errorSpy).not.toHaveBeenCalled();
+
+		handle.loadOlder();
+		handle.unsubscribe();
+		expect(live_watches()).toHaveLength(24);
+
+		// Closing one window returns its six subscriptions and the refused window opens, which
+		// is what proves the refusal came from the 24-subscription ceiling: the page-visible
+		// count only went from four windows to three, nowhere near the eight-slot cap.
+		firstWindow.unsubscribe();
+		expect(live_watches()).toHaveLength(18);
+		api.watchWindow({ collection: "messages", keyPrefix: "e:", pageSize: 3 }, vi.fn());
+		expect(live_watches()).toHaveLength(19);
+	});
+
+	test("a split refused by the page's spent server budget reports incomplete", async () => {
+		const harness = await make_data_api();
+		const { api, startedWatches } = harness;
+
+		// Three full windows plus a two-interval one spend 20 subscriptions. Four plain watches
+		// spend the last four. That fills the eight page-visible slots, and the small window
+		// still has four of its own six interval slots free.
+		await grow_window(harness, "a:");
+		await grow_window(harness, "b:");
+		await grow_window(harness, "c:");
+		const { onUpdate } = await grow_window(harness, "d:", 2);
+		for (let index = 1; index <= 4; index += 1) {
+			api.watch({ collection: "notes", limit: 10 }, vi.fn());
+		}
+		const liveWindowWatches = startedWatches.filter((watch) => !watch.disposed && watch.queryArgs.keyPrefix === "d:");
+		expect(liveWindowWatches).toHaveLength(2);
+
+		// Arrivals overflow the small window's first interval. Its own interval budget allows the
+		// split, but the page has no server subscription left to start it, so the range stays
+		// truncated and the docs it dropped are missing from the middle of the list.
+		await deliver(liveWindowWatches[0]!, [{ key: "d:0a" }, { key: "d:0b" }, { key: "d:1:1" }], true);
+		expect(startedWatches.filter((watch) => !watch.disposed)).toHaveLength(24);
+		expect(window_updates(onUpdate).at(-1)).toEqual([
+			{
+				docs: [
+					{ key: "d:0a" },
+					{ key: "d:0b" },
+					{ key: "d:1:1" },
+					{ key: "d:2:1" },
+					{ key: "d:2:2" },
+					{ key: "d:2:3" },
+				],
+				hasMore: true,
+				atCapacity: true,
+				incomplete: true,
+			},
+		]);
+	});
+
 	test("invalid window inputs die at birth and the handle is inert", async () => {
-		const { api, startedWatches } = make_data_api();
+		const { api, startedWatches } = await make_data_api();
 
 		const onUpdate = vi.fn();
 		const handle = api.watchWindow({ collection: "a".repeat(129), pageSize: 10 }, onUpdate);

@@ -401,8 +401,17 @@ Verified 2026-08-17 on chitchat@0.1.0:
 - The composer is a `textarea` with `aria-label="Message #<channel>"`; `pressSequentially` the text
   and press `Enter` to send (`Enter sends · Shift+Enter for a new line`). The sent message renders
   with author display name and a locale timestamp.
-- The install consent dialog lists capabilities as raw ids (`plugin.data.read`, …); the friendly
-  labels (`Plugin Data Read`, …) appear only in the detail page's Capabilities section.
+- **Capabilities are shown as friendly labels in both places, not as raw ids.** The install consent
+  dialog and the detail page's Capabilities section both render `format_capability_label(capability)`
+  (`$pluginName.tsx`), and both keep the raw manifest id reachable as the `title` tooltip on the same
+  row. So `plugin.data.read` reads as `Plugin Data Read` on screen. Three ids do not follow that
+  title-case rule at all — they have written-out labels: `workspace.files.create-read-only` →
+  `Create read-only workspace files`, `plugin.data.user-write` →
+  `Write its plugin data as the acting member, from its pages and file views`, and `ui.outbound.fetch`
+  → `Call allowed outside origins from its pages and file views`. Never locate a capability row by its
+  raw id text; match the label, or read the `title` attribute.
+  (Corrected 2026-08-23 by reading `$pluginName.tsx`. Source-read only — not re-driven in a browser,
+  because no server in this tree serves the app.)
 
 Threads (verified 2026-08-17 on chitchat@0.1.2):
 

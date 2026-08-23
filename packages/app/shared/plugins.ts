@@ -18,7 +18,7 @@ export const plugins_RUNTIME_VERSION = "1";
  * Keep one value through a multi-step rollout, or invalidate every verdict produced by the interim
  * steps before any of them can authorize a publish.
  */
-export const plugins_REVIEW_POLICY_VERSION = "6";
+export const plugins_REVIEW_POLICY_VERSION = "7";
 
 const MANIFEST_SCHEMA_VERSION = 1;
 const EVENT_TYPES = ["files.upload.completed"] as const;
@@ -28,19 +28,26 @@ const CAPABILITIES = [
 	"outbound.fetch",
 	"workspace.files.read",
 	"workspace.files.write",
+	// Consent line: the files this installation creates through the sealed upload door may be locked
+	// read-only, and it may release that one lock again to archive its own file. That release is the
+	// only way this installation can remove a lock, and it matches a lock this exact service target
+	// created, so this grants no write over content a member owns and no lock access anywhere else.
+	// It narrows `workspace.files.write` instead of replacing it, because a read-only file is still
+	// a file this installation writes.
 	"workspace.files.create-read-only",
 	"plugin.data.read",
 	"plugin.data.write",
-	// Consent line: the plugin's pages may store and change this plugin's data as the acting
-	// member, through the app. Kept apart from `plugin.data.write`, which is the plugin's own
-	// backend or service writing as the installation: the two are different consents, and a
+	// Consent line: the plugin's UI pages and file views may store and change this plugin's data as
+	// the acting member, through the app. Kept apart from `plugin.data.write`, which is the plugin's
+	// own backend or service writing as the installation: the two are different consents, and a
 	// user-write door under the backend capability would widen consent nobody gave.
 	"plugin.data.user-write",
 	"plugin.service.connect",
-	// The plugin's page, running in the browser, may call the origins in `uiOutboundOrigins`. Kept
-	// apart from `outbound.fetch`, which is the plugin's backend calling out from the runner. The two
-	// are different risks and get different consent text: a page holds a member's session token, and
-	// whatever it may reach can be reached by anything that manages to run inside that page.
+	// The plugin's UI pages and file views, running in the browser, may call the origins in
+	// `uiOutboundOrigins`. Kept apart from `outbound.fetch`, which is the plugin's backend calling out
+	// from the runner. The two are different risks and get different consent text: a frame holds a
+	// member's session token, and whatever it may reach can be reached by anything that manages to run
+	// inside that frame.
 	"ui.outbound.fetch",
 ] as const;
 export type plugins_Capability = (typeof CAPABILITIES)[number];
@@ -345,7 +352,7 @@ export function plugins_consent_diff(args: {
 }) {
 	const currentCapabilities = new Set(args.current?.capabilities ?? []);
 	const currentOrigins = new Set(args.current?.outboundOrigins ?? []);
-	// Backend and page egress are consented separately. The same origin can appear in both lists and
+	// Backend and UI egress are consented separately. The same origin can appear in both lists and
 	// still be new to one of them, so the two sets never share entries.
 	const currentUiOrigins = new Set(args.current?.uiOutboundOrigins ?? []);
 	return {
@@ -835,11 +842,12 @@ const manifest_schema = z
 		outboundOrigins: z
 			.array(z.string())
 			.max(MAX_OUTBOUND_ORIGINS, `Plugin manifests can declare at most ${MAX_OUTBOUND_ORIGINS} outbound origins`),
-		// Where the plugin's page may send requests. This becomes the `connect-src` of the asset
-		// response, so the browser stops any other destination even if the page's code asks for it.
+		// Where the plugin's UI pages and file views may send requests. This becomes the `connect-src`
+		// of the asset response, so the browser stops any other destination even if the frame's code
+		// asks for it.
 		uiOutboundOrigins: z
 			.array(z.string())
-			.max(MAX_OUTBOUND_ORIGINS, `Plugin manifests can declare at most ${MAX_OUTBOUND_ORIGINS} page outbound origins`)
+			.max(MAX_OUTBOUND_ORIGINS, `Plugin manifests can declare at most ${MAX_OUTBOUND_ORIGINS} UI outbound origins`)
 			.default([]),
 		files: z.array(manifest_file_schema).max(MAX_FILES),
 	})
@@ -918,10 +926,10 @@ export function plugins_validate_manifest(input: unknown) {
 			return Result({ _nay: { message: validated._nay.message } });
 		}
 		if (validated._yay !== origin) {
-			return Result({ _nay: { message: "Page outbound origins must already be normalized" } });
+			return Result({ _nay: { message: "UI outbound origins must already be normalized" } });
 		}
 		if (uiOutboundOrigins.has(origin)) {
-			return Result({ _nay: { message: `Plugin manifest has duplicate page outbound origin "${origin}"` } });
+			return Result({ _nay: { message: `Plugin manifest has duplicate UI outbound origin "${origin}"` } });
 		}
 		uiOutboundOrigins.add(origin);
 	}
@@ -1057,6 +1065,9 @@ export function plugins_validate_manifest(input: unknown) {
 			_nay: { message: "The plugin.data.user-write capability requires the plugin.data.read capability" },
 		});
 	}
+	// This capability only picks the lock mode of the sealed upload door, so on its own it opens no
+	// door at all. Without the write capability the workspace would consent to a lock the installation
+	// can never reach.
 	if (
 		capabilities.has("workspace.files.create-read-only" satisfies plugins_Capability) &&
 		!capabilities.has("workspace.files.write" satisfies plugins_Capability)
@@ -1083,19 +1094,20 @@ export function plugins_validate_manifest(input: unknown) {
 			},
 		});
 	}
-	// The two must agree in both directions, unlike `plugin.secrets.read` above. The page's
-	// `connect-src` is built from this list, so a capability with an empty list consents to nothing and
-	// a list without the capability would open the page's egress with no consent text ever shown.
+	// The two must agree in both directions, unlike `plugin.secrets.read` above. The `connect-src` of
+	// every UI frame, page and file view alike, is built from this list. So a capability with an empty
+	// list consents to nothing, and a list without the capability would open the frame's egress with no
+	// consent text ever shown.
 	if (
 		capabilities.has("ui.outbound.fetch" satisfies plugins_Capability) &&
 		parsed.data.uiOutboundOrigins.length === 0
 	) {
 		return Result({
-			_nay: { message: "The ui.outbound.fetch capability requires at least one page outbound origin" },
+			_nay: { message: "The ui.outbound.fetch capability requires at least one UI outbound origin" },
 		});
 	}
 	if (parsed.data.uiOutboundOrigins.length > 0 && !capabilities.has("ui.outbound.fetch" satisfies plugins_Capability)) {
-		return Result({ _nay: { message: "Page outbound origins require the ui.outbound.fetch capability" } });
+		return Result({ _nay: { message: "UI outbound origins require the ui.outbound.fetch capability" } });
 	}
 	return Result({ _yay: parsed.data });
 }

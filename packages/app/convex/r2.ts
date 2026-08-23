@@ -19,6 +19,7 @@ import {
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
+import { crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import {
 	r2_create_asset_key,
 	r2_copy_object_to_immutable_key,
@@ -821,9 +822,11 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		 * with the classifier, never from the client-declared upload type.
 		 */
 		contentType: string;
-		nonCollaborative: boolean;
-		yjsSnapshotAssetId: Id<"files_r2_assets"> | null;
-		yjsSnapshotSize: number | null;
+		/**
+		 * The Yjs snapshot asset this file is published with. `null` means a non-collaborative
+		 * publish, which has no Yjs document and therefore no snapshot to point at.
+		 */
+		yjsSnapshot: { assetId: Id<"files_r2_assets">; size: number } | null;
 		versionSnapshotAssetId: Id<"files_r2_assets">;
 		versionSnapshotSize: number;
 		text: string;
@@ -865,12 +868,6 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 
 	// There is nothing to index when the frontmatter is over the caps or could not be read.
 	const skipFrontmatterIndex = frontmatterOverCapCounts !== null || frontmatter?._nay != null;
-	if (
-		args.nonCollaborative !==
-		(args.yjsSnapshotAssetId === null && args.yjsSnapshotSize === null)
-	) {
-		throw should_never_happen("Upload conversion Yjs asset does not match its collaboration mode");
-	}
 
 	const chunks = await db_insert_file_text_content(ctx, {
 		organizationId: args.organizationId,
@@ -890,17 +887,14 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 	let yjsSnapshotId: Id<"files_yjs_snapshots"> | undefined;
 	let yjsLastSequenceId: Id<"files_yjs_docs_last_sequences"> | undefined;
 	try {
-		if (!args.nonCollaborative) {
-			if (args.yjsSnapshotAssetId === null) {
-				throw should_never_happen("Collaborative upload conversion is missing its Yjs snapshot asset");
-			}
+		if (args.yjsSnapshot !== null) {
 			[yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
 				ctx.db.insert("files_yjs_snapshots", {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					fileNodeId: args.fileNodeId,
 					sequence: 0,
-					assetId: args.yjsSnapshotAssetId,
+					assetId: args.yjsSnapshot.assetId,
 					createdBy: args.userId,
 					updatedBy: args.userId,
 					updatedAt: args.now,
@@ -935,9 +929,7 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		ctx.db.patch("files_nodes", args.fileNodeId, {
 			assetId: args.versionSnapshotAssetId,
 			contentType: args.contentType,
-			...(args.nonCollaborative
-				? { nonCollaborative: true }
-				: { yjsSnapshotId, yjsLastSequenceId }),
+			...(args.yjsSnapshot === null ? { nonCollaborative: true } : { yjsSnapshotId, yjsLastSequenceId }),
 			// Record the shape beside the other Yjs pointers, in the same publish patch, so the
 			// node and its document can never be born disagreeing.
 			yjsRootKind: args.rootKind,
@@ -952,20 +944,20 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 			updatedBy: args.userId,
 			updatedAt: args.now,
 		}),
-		...(args.yjsSnapshotAssetId !== null && args.yjsSnapshotSize !== null
-			? [
-					ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
+		...(args.yjsSnapshot === null
+			? []
+			: [
+					ctx.db.patch("files_r2_assets", args.yjsSnapshot.assetId, {
 						r2Key: r2_create_asset_key({
 							organizationId: args.organizationId,
 							workspaceId: args.workspaceId,
-							assetId: args.yjsSnapshotAssetId,
+							assetId: args.yjsSnapshot.assetId,
 						}),
-						size: args.yjsSnapshotSize,
+						size: args.yjsSnapshot.size,
 						unfinalizedExpiresAt: undefined,
 						updatedAt: args.now,
 					}),
-				]
-			: []),
+				]),
 		ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
 			r2Key: r2_create_asset_key({
 				organizationId: args.organizationId,
@@ -995,22 +987,17 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 	return Result({ _yay: null });
 }
 
-// The registered name keeps its historical `markdown` spelling on purpose (renaming a registered
-// function changes its generated reference; §14 records the decision). It finalizes every
-// editable text class since the upload conversion generalized.
+// Renamed from `finalize_markdown_file_node_from_r2_assets` when the upload conversion
+// generalized to every editable text class.
 export const finalize_text_file_node_from_r2_assets = internalMutation({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		fileNodeId: v.id("files_nodes"),
-		path: doc(app_convex_schema, "files_nodes").fields.path,
-		archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
 		userId: v.id("users"),
 		rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 		contentType: v.string(),
-		nonCollaborative: v.boolean(),
-		yjsSnapshotAssetId: v.union(v.id("files_r2_assets"), v.null()),
-		yjsSnapshotSize: v.union(v.number(), v.null()),
+		yjsSnapshot: v.union(v.object({ assetId: v.id("files_r2_assets"), size: v.number() }), v.null()),
 		versionSnapshotAssetId: v.id("files_r2_assets"),
 		versionSnapshotSize: v.number(),
 		text: v.string(),
@@ -1021,12 +1008,28 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 		const now = Date.now();
 		const finalizeScope = r2_require_real_scope(args.organizationId, args.workspaceId);
 
+		// A member can archive or move the node while the calling action runs its R2 work, so the
+		// node state that action read at enqueue time can be stale. Read the node here instead: this
+		// mutation is atomic, so the chunks below are born with the same path and archive state the
+		// node has when they commit.
+		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
+		// A hard delete in the same window removes the node. Throw so the workpool retries the
+		// action, whose next run finds no node for the asset and settles the upload.
+		if (!fileNode) {
+			throw convex_error({
+				message: "File node disappeared before upload conversion finalized",
+				data: { fileNodeId: args.fileNodeId },
+			});
+		}
+
 		// Creating the node and upload URL accepted this upload. Finish it even if the node becomes
 		// read-only while conversion runs.
 		await db_finalize_editable_text_file_node_from_r2_assets(ctx, {
 			...args,
 			organizationId: finalizeScope.organizationId,
 			workspaceId: finalizeScope.workspaceId,
+			path: fileNode.path,
+			archiveOperationId: fileNode.archiveOperationId,
 			now,
 		});
 		return null;
@@ -1092,9 +1095,9 @@ export const settle_upload_conversion_fallback = internalMutation({
 	},
 });
 
-// The registered name keeps its historical `markdown` spelling on purpose (§14): since the
-// upload conversion generalized, it converts every editable text upload — `.md` to a rich text
-// document, the plain-text allow-list to `Y.Text` documents.
+// Renamed from `finalize_uploaded_markdown_file` when the upload conversion generalized. It
+// converts every editable text upload: `.md` becomes a rich text document, and the plain-text
+// allow-list becomes `Y.Text` documents.
 export const finalize_uploaded_text_file = internalAction({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
@@ -1238,12 +1241,12 @@ export const finalize_uploaded_text_file = internalAction({
 		const yjsSnapshotAssetId = nonCollaborative
 			? null
 			: ((await ctx.runMutation(internal.r2.insert_asset, {
-				organizationId: fileNode.organizationId,
-				workspaceId: fileNode.workspaceId,
-				kind: "yjs_snapshot",
-				size: snapshotUpdate._yay.byteLength,
-				createdBy: fileNode.createdBy,
-			})) as Id<"files_r2_assets">);
+					organizationId: fileNode.organizationId,
+					workspaceId: fileNode.workspaceId,
+					kind: "yjs_snapshot",
+					size: snapshotUpdate._yay.byteLength,
+					createdBy: fileNode.createdBy,
+				})) as Id<"files_r2_assets">);
 		const versionSnapshotAssetId = (await ctx.runMutation(internal.r2.insert_asset, {
 			organizationId: fileNode.organizationId,
 			workspaceId: fileNode.workspaceId,
@@ -1290,14 +1293,11 @@ export const finalize_uploaded_text_file = internalAction({
 			organizationId: fileNode.organizationId,
 			workspaceId: fileNode.workspaceId,
 			fileNodeId: fileNode._id,
-			path: fileNode.path,
-			archiveOperationId: fileNode.archiveOperationId,
 			userId: r2_require_real_author(fileNode.createdBy),
 			rootKind,
 			contentType: classifierContentType,
-			nonCollaborative,
-			yjsSnapshotAssetId,
-			yjsSnapshotSize: yjsSnapshotAssetId === null ? null : snapshotUpdate._yay.byteLength,
+			yjsSnapshot:
+				yjsSnapshotAssetId === null ? null : { assetId: yjsSnapshotAssetId, size: snapshotUpdate._yay.byteLength },
 			versionSnapshotAssetId,
 			versionSnapshotSize: files_get_utf8_byte_size(text),
 			text,
@@ -1897,7 +1897,23 @@ export type r2_http_event_Body = z.infer<typeof event_body_validator>;
 export async function r2_http_event(ctx: ActionCtx, request: Request) {
 	try {
 		// Accept only the trusted Cloudflare event forwarder for R2 notifications.
-		if (request.headers.get("Authorization") !== `Bearer ${CLOUDFLARE_EVENTS_SECRET}`) {
+		//
+		// Compare digests instead of the secrets themselves, the way the plugin service and the
+		// runner host routes already do, so the compare cannot leak the secret's length. This is
+		// consistency with the rule stated in crypto-utils, not a fix for a known attack: nobody
+		// demonstrated a remote timing leak in the plain string compare this replaces.
+		const authorizationHeader = request.headers.get("Authorization");
+		const bearerPrefix = "Bearer ";
+		const presentedSecret = authorizationHeader?.startsWith(bearerPrefix)
+			? authorizationHeader.slice(bearerPrefix.length).trim()
+			: null;
+		if (
+			!presentedSecret ||
+			!crypto_timing_safe_equal(
+				await crypto_sha256_hex(presentedSecret),
+				await crypto_sha256_hex(CLOUDFLARE_EVENTS_SECRET),
+			)
+		) {
 			return {
 				status: 401,
 				body: {

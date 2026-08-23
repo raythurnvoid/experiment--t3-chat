@@ -17,21 +17,22 @@ Plugin page and file view (the sandboxed iframe):
 
 - `workspace.files.read` — read access to workspace files: the frame's UI token carries the `files:list`, `files:read`, and `files:download` scopes. It never applies to backend runs.
 - `plugin.data.read` — read the plugin's own document store; the UI token carries `plugin_data:read`.
-- `ui.outbound.fetch` — the page may call the manifest's `uiOutboundOrigins`. It is enforced as `connect-src` in the page's CSP, so it is the browser that refuses anything else. This capability and `uiOutboundOrigins` require each other: neither may be declared alone. Keep it separate from `outbound.fetch` — that one is the backend, this one is a page holding a member's session token.
+- `plugin.data.user-write` — the plugin's UI pages and file views may create, change, and delete documents in that store as the acting member. The frame's UI token never carries a write scope: the write runs through the app's own member-attributed mutations on the frame's own Convex client (see [Plugin data on the frame's own Convex client](#plugin-data-on-the-frames-own-convex-client)). Declaring it also requires `plugin.data.read`.
+- `ui.outbound.fetch` — the plugin's UI pages and file views may call the manifest's `uiOutboundOrigins`. It is enforced as `connect-src` in the frame's CSP, so it is the browser that refuses anything else. This capability and `uiOutboundOrigins` require each other: neither may be declared alone. Keep it separate from `outbound.fetch` — that one is the backend, this one is a frame holding a member's session token.
 
 Service grant (Council only today):
 
 The current host exchange is bound to Council. Other plugins cannot obtain a service grant yet.
 
-- `plugin.service.connect` — lets a Council page UI token participate in the exchange, but grants no API scope itself. The Council service must also authenticate with its configured service secret. Declaring it requires `plugin.data.read` or `workspace.files.write`, because a grant carrying no scope buys the service nothing.
+- `plugin.service.connect` — lets a Council UI token from a page or a file view participate in the exchange, but grants no API scope itself. The exchange reads only the session's installation and member, so both frame kinds work the same. The Council service must also authenticate with its configured service secret. Declaring it requires `plugin.data.read` or `workspace.files.write`, because a grant carrying no scope buys the service nothing.
 - `plugin.data.read` — an eligible Council grant may read the plugin's own document store.
-- `plugin.data.write` — an eligible Council grant may write the plugin's document store. A page token never receives this scope, whatever the installation accepted: a page session can belong to an anonymous identity and is the surface an XSS reaches first, so a write from there would become injected input the backend later acts on with its secrets.
+- `plugin.data.write` — an eligible Council grant may write the plugin's document store. A frame's UI token never receives this scope, whatever the installation accepted: a UI session can belong to an anonymous identity and is the surface an XSS reaches first, so a write from there would become injected input the backend later acts on with its secrets.
 - `workspace.files.write` — authorizes `files:write` on a sealed processing-phase service grant, capped by an exact destination path prefix. The interactive exchange still never mints this scope; the service gets it by sealing (below). Only the `/api/v1/files/service-uploads/*` routes accept it — the generic `/api/v1/files/*` routes still refuse service grants.
 - `workspace.files.create-read-only` — lets a sealed service upload ask for a direct read-only lock on the file it creates. It cannot lock existing member files. Declaring it also requires `workspace.files.write`.
 
 ### Grant lifecycle and service upload routes (Council service only)
 
-An interactive grant comes from `POST /api/internal/plugins/service-grants/exchange` (page token + service secret) and carries `plugin_data:read` and `plugin_data:write` for one working day, renewable. When a meeting closes, the service seals it:
+An interactive grant comes from `POST /api/internal/plugins/service-grants/exchange` (UI token + service secret) and carries `plugin_data:read` and `plugin_data:write` for one working day, renewable. When a meeting closes, the service seals it:
 
 - `POST /api/internal/plugins/service-grants/seal-processing` — service secret + live interactive `psg_` bearer, body `{ destinationPathPrefix }` (a normalized absolute path of canonical lowercase folder names, not `/`). Mints a NEW processing-phase grant for the same installation and member with scopes `["plugin_data:read", "plugin_data:write", "files:write"]`, bound to exactly that prefix, expiring six days from the seal. Renewal rotates a processing token but never moves that deadline. A processing grant cannot seal again, so the window cannot roll forever. Requires all five Council capabilities and refuses if any is missing rather than minting a narrower grant.
 
@@ -85,21 +86,25 @@ A plugin may declare a YAML editor and attach generic filters to its events. The
 ]
 ```
 
-`source.path` + `pathIsUnderAny` expects up to 32 unique canonical absolute folder paths at `configurationPath`. `/` matches every folder, a folder matches its descendants, and an empty list disables that automatic event. Manual runs do not apply automatic event filters. The parsed YAML object is available to every backend run as `event.configuration`; it is `null` when the plugin has no configuration declaration.
+`source.path` + `pathIsUnderAny` expects up to 32 unique canonical absolute folder paths at `configurationPath`. `/` matches every folder, a folder matches its descendants, and an empty list disables that automatic event. Manual runs do not apply automatic event filters. A manual or backfill re-run delivers the same `source` with `event: "files.run.requested"` instead of `"files.upload.completed"`. The parsed YAML object is available to every backend run as `event.configuration`; it is `null` when the plugin has no configuration declaration.
 
 ## Public host APIs
 
-Both are plain `fetch` calls against `env.BONOBO.host.apiOrigin` with `Authorization: Bearer <env.BONOBO.host.token>` — the same `/api/v1/*` machine API used by developer API keys:
+These are plain `fetch` calls against `env.BONOBO.host.apiOrigin` with `Authorization: Bearer <env.BONOBO.host.token>` — the same `/api/v1/*` machine API used by developer API keys:
 
 | Route                              | Body                                                                                                                                                                                                 | Response                                                                                                                                          |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /api/v1/files/download-urls` | `BonoboFilesDownloadUrlsRequest` — `{ fileNodeIds, expiresInSeconds? }` (1–900; defaults to 900; the granted TTL is clamped below the remaining run-token lifetime with a one-second signing margin) | `BonoboFilesDownloadUrlsResponse` — `{ items, errors, truncated }`; each item contains `{ fileNodeId, url, expiresAt }` (`expiresAt` in epoch ms) |
 | `POST /api/v1/files/write`         | `BonoboFilesWriteRequest` — `{ path, content, overwrite?: "replace" \| "fail" }` (`overwrite` defaults to `"replace"`)                                                                               | `BonoboFilesWriteResponse` — `{ path, nodeId, contentType }`                                                                                      |
+| `POST /api/v1/files/touch`         | `BonoboFilesTouchRequest` — `{ paths }` (at most 8 paths per call; the call is idempotent)                                                                                                           | `BonoboFilesTouchResponse` — `{ files }`; each entry is `{ path, nodeId, created }`, and `created` is `false` when the file already existed        |
+| `POST /api/v1/activities/start`    | `BonoboActivitiesStartRequest` — `{ title, timeoutMs }` (`title` up to 120 characters after trimming, or `""` to let the host compose one; `timeoutMs` at most `300000`, and a larger value answers `400`) | `BonoboActivitiesStartResponse` — `{ activityId }`; a second call in the same run answers `409`                                                    |
 
 Plugin authority is scoped to the triggering upload:
 
 - `files/download-urls` accepts only `[event.source.fileNodeId]` for backend runs and signs the run's original asset.
 - `files/write` is Markdown-only and writes siblings of the upload: `path` must be an absolute `.md` path whose parent folder equals `event.source.path`'s parent folder.
+- `files/touch` creates those same siblings empty, so users see where the outputs will land before the run fills them. Every path follows the `files/write` rule above, and a later `files/write` fills the node it already made.
+- `activities/start` is optional: a run that never calls it stays out of the workspace activity feed. After a run opts in, the host tracks the rest — the files the run touches or writes become the activity's targets, and the run's own outcome closes it.
 
 Error statuses: `400` invalid input, `401` bad or expired run token, `403` missing scope or a write path outside the upload's parent folder (the sibling constraint), `404` hidden or mismatched resource (including a `fileNodeId` that is not the run's source), `409` `overwrite: "fail"` conflict, `429` run call quota or rate limit, `500` curated storage failure. A run succeeds only if it writes at least one Markdown output.
 
@@ -192,31 +197,31 @@ A manifest may also declare file views — frames the host app offers as tabs ne
 
 ### Sandbox and token model
 
-The host loads `entry` at its immutable asset URL in an iframe with `sandbox="allow-scripts allow-same-origin allow-forms"`. Handle forms in JS (`onSubmit` + `preventDefault`); the page's CSP carries `form-action 'none'`, so a native HTTP form submission is always blocked by the browser. The page keeps the Convex asset origin, which is also the public API origin, so its normal JSON requests with a bearer header are same-origin and need no CORS preflight. The host app has a different origin, so the frame still cannot read the host DOM or host cookies. The asset URL keeps an empty query. Its fragment carries only the host's canonical HTTP(S) origin and a fresh per-frame nonce; fragments are not sent in the asset request, cache key, or referrer. Page and host use one strict postMessage contract: the page first sends the nonce-bound ready message, then receives page context, a short-lived scoped session token (`plu_...`), and the Convex deployment URL (`convexUrl`) in `bonobo:init`. Tokens and context never appear in a URL. Secret values never reach plugin frontends — `plugin.secrets.read` is backend-only.
+The host loads `entry` at its immutable asset URL in an iframe with `sandbox="allow-scripts allow-same-origin allow-forms"`. Handle forms in JS (`onSubmit` + `preventDefault`); the frame's CSP carries `form-action 'none'`, so a native HTTP form submission is always blocked by the browser. The frame keeps the Convex asset origin, which is also the public API origin, so its normal JSON requests with a bearer header are same-origin and need no CORS preflight. The host app has a different origin, so the frame still cannot read the host DOM or host cookies. The asset URL keeps an empty query. Its fragment carries only the host's canonical HTTP(S) origin and a fresh per-frame nonce; fragments are not sent in the asset request, cache key, or referrer. Frame and host use one strict postMessage contract: the frame first sends the nonce-bound ready message, then receives its context, a short-lived scoped session token (`plu_...`), and the Convex deployment URL (`convexUrl`) in `bonobo:init`. Tokens and context never appear in a URL. Secret values never reach plugin frontends — `plugin.secrets.read` is backend-only.
 
-A plugin frontend is trusted with the token and every datum its accepted permissions expose. The sandbox isolates the host DOM, cookies, and origin, but it is not a confidentiality boundary against the page code itself: page navigation can send data away before the host observes the next load and revokes the session. Plugin frames share the Convex asset origin, so plugin code must not use origin storage for secrets or as a boundary from another plugin. The host mounts only one plugin frame at a time; hidden file-view frames are unmounted.
+A plugin frontend is trusted with the token and every datum its accepted permissions expose. The sandbox isolates the host DOM, cookies, and origin, but it is not a confidentiality boundary against the frame's own code: a navigation inside the frame can send data away before the host observes the next load and revokes the session. Plugin frames share the Convex asset origin, so plugin code must not use origin storage for secrets or as a boundary from another plugin. The host mounts only one plugin frame at a time; hidden file-view frames are unmounted.
 
-| Direction   | Message                        | Fields                                                                                                                                      |
-| ----------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| page → host | `bonobo:ready`                 | `bridgeNonce`                                                                                                                               |
-| page → host | `bonobo:token-refresh-request` | `bridgeNonce`, `requestId`                                                                                                                  |
-| host → page | `bonobo:init`                  | `bridgeNonce`, `apiOrigin`, `convexUrl`, `token`, `tokenExpiresAt` (epoch ms), `context` (union on `kind`: `"page"` carries `{ pluginName, userId, pageId, pageTitle, organizationId, workspaceId }`; `"file_view"` carries `{ pluginName, userId, fileViewId, fileViewTitle, organizationId, workspaceId, file: { fileNodeId, name, path, contentType } }`) |
-| host → page | `bonobo:token`                 | `bridgeNonce`, `requestId`, `token`, `tokenExpiresAt`                                                                                       |
-| host → page | `bonobo:token-error`           | `bridgeNonce`, `requestId`, `message`                                                                                                       |
+| Direction    | Message                        | Fields                                                                                                                                      |
+| ------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| frame → host | `bonobo:ready`                 | `bridgeNonce`                                                                                                                               |
+| frame → host | `bonobo:token-refresh-request` | `bridgeNonce`, `requestId`                                                                                                                  |
+| host → frame | `bonobo:init`                  | `bridgeNonce`, `apiOrigin`, `convexUrl`, `token`, `tokenExpiresAt` (epoch ms), `context` (union on `kind`: `"page"` carries `{ pluginName, userId, pageId, pageTitle, organizationId, workspaceId }`; `"file_view"` carries `{ pluginName, userId, fileViewId, fileViewTitle, organizationId, workspaceId, file: { fileNodeId, name, path, contentType } }`) |
+| host → frame | `bonobo:token`                 | `bridgeNonce`, `requestId`, `token`, `tokenExpiresAt`                                                                                       |
+| host → frame | `bonobo:token-error`           | `bridgeNonce`, `requestId`, `message`                                                                                                       |
 
-`bonobo_ui_connect` (from `bonobo-plugin-sdk/frontend`) implements the page side. Before connecting, it requires exactly one canonical HTTP(S) `parentOrigin` and one UUIDv4 `bridgeNonce` in the URL fragment. It sends ready with that nonce to the exact parent origin and retries until init or document unload. The host starts minting the session while the iframe assets load, but it does not send the token until this ready message proves the current frame loaded the bridge. Every host message must come from `window.parent`, that exact origin, and the matching nonce. The host posts only to the concrete Convex asset origin. The host owns the startup deadline.
+`bonobo_ui_connect` (from `bonobo-plugin-sdk/frontend`) implements the frame side. Before connecting, it requires exactly one canonical HTTP(S) `parentOrigin` and one UUIDv4 `bridgeNonce` in the URL fragment. It sends ready with that nonce to the exact parent origin and retries until init or document unload. The host starts minting the session while the iframe assets load, but it does not send the token until this ready message proves the current frame loaded the bridge. Every host message must come from `window.parent`, that exact origin, and the matching nonce. The host posts only to the concrete Convex asset origin. The host owns the startup deadline.
 
-On init, the SDK also opens the page's own Convex client against `convexUrl`. The SDK closes that client on `pagehide`. A page the browser restores from its back/forward cache does not reconnect: subscriptions stay frozen until a real reload.
+On init, the SDK also opens the frame's own Convex client against `convexUrl`. The SDK closes that client on `pagehide`. A frame the browser restores from its back/forward cache does not reconnect: subscriptions stay frozen until a real reload.
 
-Do not give your page document a `no-referrer` referrer policy (for example `<meta name="referrer" content="no-referrer">`). Under that policy the browser sends `Origin: null` on the SDK's same-origin exchange POST, the server refuses it, and the page can never authenticate its Convex client.
+Do not give your frame document a `no-referrer` referrer policy (for example `<meta name="referrer" content="no-referrer">`). Under that policy the browser sends `Origin: null` on the SDK's same-origin exchange POST, the server refuses it, and the frame can never authenticate its Convex client.
 
-### Plugin data on the page's own Convex client
+### Plugin data on the frame's own Convex client
 
-The client's `data` and `members` APIs run as reactive queries and mutations on the page's own Convex client — not over the bridge, and not on the UI token. To authenticate it, the SDK exchanges the session token at `POST <apiOrigin>/plugins-ui/session-jwt` (same-origin, so no CORS) for a short-lived plugin-session JWT that identifies the viewing member with plugin-scoped permissions. When Convex needs a fresh JWT, the SDK exchanges again; a `401` gets one host token refresh and one re-exchange before the client goes unauthenticated. The Convex functions load the session on every call, so revoking it (uninstall, disable, upgrade, or a second load of the same frame) turns every live subscription into a `null` death — a signed-valid JWT does not outlive its session. The UI token still never carries the plugin-data write scope; page writes go through member-attributed `user*` mutations instead.
+The client's `data` and `members` APIs run as reactive queries and mutations on the frame's own Convex client — not over the bridge, and not on the UI token. To authenticate it, the SDK exchanges the session token at `POST <apiOrigin>/plugins-ui/session-jwt` (same-origin, so no CORS) for a short-lived plugin-session JWT that identifies the viewing member with plugin-scoped permissions. When Convex needs a fresh JWT, the SDK exchanges again; a `401` gets one host token refresh and one re-exchange before the client goes unauthenticated. The Convex functions load the session on every call, so revoking it (uninstall, disable, upgrade, or a second load of the same frame) turns every live subscription into a `null` death — a signed-valid JWT does not outlive its session. The UI token still never carries the plugin-data write scope; frame writes go through member-attributed `user*` mutations instead.
 
-- `client.data.watch({ collection, keyPrefix?, limit }, onUpdate)` opens one reactive subscription and returns an unsubscribe function. Each update delivers the subscription's whole current window (`BonoboPublicDoc[]`) — replace it, do not accumulate. `limit` must be an integer from 1 to 100 — an out-of-range limit kills the subscription at birth with `reason: "invalid"`, nothing is clamped — and the SDK allows at most 8 active subscriptions per page (plain watches and windows share those slots). `docs: null` means the subscription is dead: the SDK delivers the `null` once (with a `BonoboUiWatchDeathInfo` when it refused locally — `reason: "invalid"` for inputs it refused, `"capacity"` for the subscription cap) and drops the registration, so a later unsubscribe is a no-op. A bare `null` without a reason means access is gone or the query failed.
-- `client.data.watchWindow({ collection, keyPrefix?, pageSize }, onUpdate)` opens one reactive document window and returns `{ unsubscribe, loadOlder }`. Unlike `watch`, a window retains loaded history: new arrivals grow it instead of pushing older docs out, and `loadOlder()` extends it one `pageSize` (1..100) further into older keys while the update's `hasMore` is true. Each non-null update is a `BonoboUiDataWindowUpdate`: the whole flattened window in `docs` plus `hasMore`, `atCapacity` (the window cannot grow right now), and `incomplete` (docs are missing mid-window because an overflowing range could not be re-read). A window holds up to 6 internal reads (600 docs at `pageSize` 100) and dies with the same `null` contract as `watch`; at the internal ceiling a real `loadOlder` reports `atCapacity` instead of growing.
-- `client.data.append/put/remove/putOwned/removeOwned` run one mutation each and resolve with its `Result` as-is — the per-op shapes in `BonoboUiDataWriteResult`: `append` and `putOwned` resolve `{ _yay: { key, revision, byteSize } }`, `put` resolves `{ _yay: { revision, byteSize } }`, `remove`/`removeOwned` resolve `{ _yay: { deleted } }`, and every refusal is `{ _nay: { name?, message } }`. A write never rejects: an unexpected failure resolves the stable `{ _nay: { message: "Failed to write plugin data" } }`. `put`, `remove`, `putOwned`, and `removeOwned` accept `expectedRevision` for compare-and-set: the write happens only when the stored document still has that revision (`0` means "the key must not exist yet"); a mismatch resolves `_nay` with `name: "conflict"` — re-read and decide again. Deleting and recreating a key restarts `revision` at 1, so a revision is only meaningful against a document you just read. `putOwned`/`removeOwned` write a member-owned document: it is stored under `<key>:<userId>` (the `userId` from the init context), so the caller's `key` may be at most `128 - userId.length - 1` characters.
+- `client.data.watch({ collection, keyPrefix?, limit }, onUpdate)` opens one reactive subscription and returns an unsubscribe function. Each update delivers the subscription's whole current window (`BonoboPublicDoc[]`) — replace it, do not accumulate. `limit` must be an integer from 1 to 100 — an out-of-range limit kills the subscription at birth with `reason: "invalid"`, nothing is clamped — and the SDK allows at most 8 active subscriptions per frame (plain watches and windows share those slots). A second, lower ceiling can fire first: the frame holds at most 24 server subscriptions, one per plain watch and one per window interval, so four fully-grown windows spend the whole budget and the next watch dies `capacity` with only 4 of the 8 slots taken. `docs: null` means the subscription is dead: the SDK delivers the `null` once (with a `BonoboUiWatchDeathInfo` when it refused locally — `reason: "invalid"` for inputs it refused, `"capacity"` for the subscription cap) and drops the registration, so a later unsubscribe is a no-op. A bare `null` without a reason means access is gone or the query failed.
+- `client.data.watchWindow({ collection, keyPrefix?, pageSize }, onUpdate)` opens one reactive document window and returns `{ unsubscribe, loadOlder }`. Unlike `watch`, a window retains loaded history: new arrivals grow it instead of pushing older docs out, and `loadOlder()` extends it one `pageSize` (1..100) further into older keys while the update's `hasMore` is true. Each non-null update is a `BonoboUiDataWindowUpdate`: the whole flattened window in `docs` plus `hasMore`, `atCapacity` (the window cannot grow right now), and `incomplete` (docs are missing mid-window because an overflowing range could not be re-read). A window holds up to 6 internal reads (600 docs at `pageSize` 100) and dies with the same `null` contract as `watch`; at the internal ceiling a real `loadOlder` reports `atCapacity` instead of growing. The frame's budget of 24 server subscriptions is the other ceiling, and every interval of every window spends one — so a window reports `atCapacity` and refuses to grow as soon as the frame budget is gone, which can happen well before its own 6 reads are used, and a new window opened on a spent budget dies at birth with `reason: "capacity"`.
+- `client.data.append/put/remove/putOwned/removeOwned` run one mutation each and resolve with its `Result` as-is — the per-op shapes in `BonoboUiDataWriteResult`: `append` and `putOwned` resolve `{ _yay: { key, revision, byteSize } }`, `put` resolves `{ _yay: { revision, byteSize } }`, `remove`/`removeOwned` resolve `{ _yay: { deleted } }`, and every refusal is `{ _nay: { name?, message } }`. A write never rejects: an unexpected failure resolves the stable `{ _nay: { message: "Failed to write plugin data" } }`. `put`, `remove`, `putOwned`, and `removeOwned` accept `expectedRevision` for compare-and-set: the write happens only when the stored document still has that revision (`0` means "the key must not exist yet"); a mismatch resolves `_nay` with `name: "conflict"` — re-read and decide again. Deleting and recreating a key restarts `revision` at 1, so a revision is only meaningful against a document you just read. `append` creates a member-owned document (`ownership: "owned"`): only the appending member may later change or delete it through interactive writers. `putOwned`/`removeOwned` write a member-owned document: it is stored under `<key>:<userId>` (the `userId` from the init context), so the caller's `key` may be at most `128 - userId.length - 1` characters.
 - `client.members.resolve(userIds)` (at most 50 ids) resolves user ids to display names; a missing or deleted user maps to `null`. It never rejects: a denial or failure resolves an empty map.
 
 ### UI token API surface
@@ -230,6 +235,8 @@ With the `workspace.files.read` capability the UI token may call:
 | `POST /api/v1/files/download-urls` | `files:download` |
 
 UI tokens are rejected on `/api/v1/files/write`.
+
+`client.fetchJson(...)` answers `Promise<unknown>`. The value comes from outside the page, so check the shape before reading fields off it. The pagination rule below is the reason: a listing page may come back short or even empty while `isDone` is still `false`.
 
 `files/download-urls` accepts at most 100 file IDs in a 32 KB request, processes the first 20, and returns `{ items, errors, truncated }`.
 Each of the first 20 requested files consumes one call from the route's principal rate-limit
@@ -273,19 +280,35 @@ for (let pages = 0; images.length < 48 && !isDone && pages < 30; pages += 1) {
 			});
 			break;
 		} catch (error) {
+			// fetchJson rejects with an Error carrying `status` only on a non-ok response. A
+			// network failure rejects with something else, so read `status` only after checking
+			// for it — the video player's `get_error_status` is this same guard as a helper.
+			const status =
+				error instanceof Error && "status" in error && typeof error.status === "number"
+					? error.status
+					: undefined;
 			// Rate limited: back off and retry the same cursor — the page is not lost and the
 			// retries do not consume the page budget. Give up after two waits so a persistent
 			// 429 surfaces instead of looping forever.
-			if (error.status === 429 && attempt < 2) {
+			if (status === 429 && attempt < 2) {
 				await new Promise((resolve) => setTimeout(resolve, [3000, 6000][attempt]));
 				continue;
 			}
 			throw error;
 		}
 	}
-	images.push(...page.items);
-	cursor = page.cursor;
-	isDone = page.isDone;
+	// fetchJson answers `unknown` — this body came from outside the page, so check its shape
+	// before reading fields off it. Council's `as_record` is this same guard as a helper.
+	const listing =
+		typeof page === "object" && page !== null && !Array.isArray(page)
+			? /** @type {{ items?: unknown, cursor?: unknown, isDone?: unknown }} */ (page)
+			: null;
+	if (!listing || !Array.isArray(listing.items)) {
+		throw new Error("/api/v1/files/list answered an unexpected shape");
+	}
+	images.push(...listing.items);
+	cursor = typeof listing.cursor === "string" ? listing.cursor : null;
+	isDone = listing.isDone === true;
 }
 // Show the first 48; keep the overflow plus `cursor` for the next "load more".
 ```

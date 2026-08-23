@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 
+import { internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { public_api_PLUGIN_SERVICE_TOKEN_REGEX } from "../shared/public-api.ts";
@@ -31,11 +32,12 @@ async function seed_installation(
 	args: {
 		acceptedCapabilities?: plugins_Capability[];
 		pluginName?: string;
+		organizationName?: string;
 	} = {},
 ) {
 	return await t.run(async (ctx) => {
 		const now = Date.now();
-		const membership = await test_mocks_fill_db_with.membership(ctx, {});
+		const membership = await test_mocks_fill_db_with.membership(ctx, { organizationName: args.organizationName });
 		const capabilities = args.acceptedCapabilities ?? COUNCIL_CAPABILITIES;
 		const pluginName = args.pluginName ?? "council";
 		const pluginVersionId = await ctx.db.insert("plugins_versions", {
@@ -107,6 +109,56 @@ async function seed_page_token(
 			tokenHash: await crypto_sha256_hex(token),
 			createdAt: now,
 			expiresAt: args.expiresAt ?? now + 30 * 60 * 1000,
+		});
+	});
+	return token;
+}
+
+/**
+ * A page token held by a second workspace member who holds exactly the content permissions asked
+ * for, `content.read` alone by default. The seal writes the meeting's files as the member behind the
+ * grant, so this is the actor its write check exists for.
+ *
+ * It has to be a second member. The organization owner passes every permission check without a grant
+ * doc, so nothing can take a content permission away from the seeded fixture user.
+ */
+async function seed_member_page_token(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_installation>>,
+	args: { permissions?: ("content.read" | "content.write")[] } = {},
+) {
+	const token = `plu_${crypto_random_hex(32)}`;
+	await t.run(async (ctx) => {
+		const now = Date.now();
+		const userId = await ctx.db.insert("users", { clerkUserId: "clerk-council-member" });
+		await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			userId,
+			active: true,
+		});
+		for (const permission of args.permissions ?? ["content.read"]) {
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				resourceKind: "workspace",
+				resourceId: String(fixture.workspaceId),
+				principalKind: "user",
+				userId,
+				permission,
+				createdAt: now,
+				updatedAt: now,
+			});
+		}
+		await ctx.db.insert("plugins_ui_sessions", {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			installationId: fixture.installationId,
+			pluginVersionId: fixture.pluginVersionId,
+			userId,
+			tokenHash: await crypto_sha256_hex(token),
+			createdAt: now,
+			expiresAt: now + 30 * 60 * 1000,
 		});
 	});
 	return token;
@@ -224,6 +276,48 @@ describe("/api/internal/plugins/service-grants/exchange", () => {
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
+	test("refuses the raw exchange secret sent without the Bearer scheme, and mints nothing", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const pageToken = await seed_page_token(t, fixture);
+
+		// `get_service_secret` in plugins_service.ts reads only `Bearer `-prefixed header values, so
+		// the correct secret under any other scheme must stay useless.
+		const response = await t.fetch(EXCHANGE_PATH, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: `Bearer ${pageToken}`,
+				"X-Bonobo-Service-Authorization": EXCHANGE_SECRET,
+			},
+			body: JSON.stringify({}),
+		});
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await read_grants(t)).toHaveLength(0);
+	});
+
+	test("refuses a Basic-scheme bearer even with a valid exchange secret, and mints nothing", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const pageToken = await seed_page_token(t, fixture);
+
+		// `get_bearer_token` in plugins_service.ts accepts only the `Bearer ` scheme, so a Basic
+		// credential never reaches the token lookup.
+		const response = await t.fetch(EXCHANGE_PATH, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: `Basic ${pageToken}`,
+				"X-Bonobo-Service-Authorization": `Bearer ${EXCHANGE_SECRET}`,
+			},
+			body: JSON.stringify({}),
+		});
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await read_grants(t)).toHaveLength(0);
+	});
+
 	test("refuses a grant token presented where a page token belongs", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -241,6 +335,24 @@ describe("/api/internal/plugins/service-grants/exchange", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t, {
 			acceptedCapabilities: ["plugin.service.connect", "plugin.data.read", "plugin.data.write"],
+		});
+		const pageToken = await seed_page_token(t, fixture);
+
+		const response = await exchange(t, pageToken);
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await read_grants(t)).toHaveLength(0);
+	});
+
+	// The sibling above leaves out `workspace.files.write` as well, so it keeps passing even if
+	// `workspace.files.create-read-only` stops being required. Take away that one capability and
+	// nothing else, so this test is the one that notices when it leaves the required list.
+	test("refuses an installation missing only workspace.files.create-read-only, and mints nothing", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t, {
+			acceptedCapabilities: COUNCIL_CAPABILITIES.filter(
+				(capability) => capability !== ("workspace.files.create-read-only" satisfies plugins_Capability),
+			),
 		});
 		const pageToken = await seed_page_token(t, fixture);
 
@@ -411,19 +523,72 @@ describe("/api/internal/plugins/service-grants/verify-live", () => {
 		});
 	});
 
-	test("refuses a body that leaves out what the service believes it holds", async () => {
+	test("refuses a body that leaves out any single one of the four claims", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const grantToken = await exchange_token(t, fixture);
 
-		// A service that states nothing cannot be told it was wrong, so the route would answer "live"
-		// to a caller whose real expectations it never saw.
+		// Drop exactly one field at a time. A body missing several proves much less: any one field
+		// could stop being required and the remaining missing one would still answer 400, so the
+		// lost check would never show up. The field that matters most is `scopes` — a capability the
+		// workspace takes back NARROWS a live grant instead of killing it, so the scopes claim is the
+		// only thing that turns a quietly narrowed grant into a refusal.
+		const complete: Record<string, unknown> = {
+			installationId: String(fixture.installationId),
+			phase: "interactive",
+			destinationPathPrefix: null,
+			scopes: ["plugin_data:read", "plugin_data:write"],
+		};
+		for (const omitted of Object.keys(complete)) {
+			const body = { ...complete };
+			delete body[omitted];
+			const response = await t.fetch(VERIFY_LIVE_PATH, {
+				method: "POST",
+				headers: service_headers(grantToken),
+				body: JSON.stringify(body),
+			});
+			expect([omitted, response.status]).toEqual([omitted, 400]);
+		}
+
+		// And a service that states nothing at all cannot be told it was wrong.
+		const empty = await t.fetch(VERIFY_LIVE_PATH, {
+			method: "POST",
+			headers: service_headers(grantToken),
+			body: JSON.stringify({}),
+		});
+		expect(empty.status).toBe(400);
+	});
+
+	test("refuses when the service names another installation", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const other = await seed_installation(t, { organizationName: "other-organization" });
+		const grantToken = await exchange_token(t, fixture);
+
 		const response = await t.fetch(VERIFY_LIVE_PATH, {
 			method: "POST",
 			headers: service_headers(grantToken),
-			body: JSON.stringify({ installationId: String(fixture.installationId), phase: "interactive" }),
+			body: verify_live_body(fixture, { installationId: String(other.installationId) }),
 		});
-		expect(response.status).toBe(400);
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ message: "This grant is for another installation" });
+	});
+
+	test("refuses when the service believes it holds the sealed processing grant", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const grantToken = await exchange_token(t, fixture);
+
+		// The service asks this before it mints a guest token or starts a recording. A service that
+		// thinks it is past the seal while it still holds the interactive grant must be stopped here,
+		// not at the upload after the meeting ended.
+		const response = await t.fetch(VERIFY_LIVE_PATH, {
+			method: "POST",
+			headers: service_headers(grantToken),
+			body: verify_live_body(fixture, { phase: "processing" }),
+		});
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ message: "This grant is in another phase" });
 	});
 
 	test("refuses when the service expects a destination the grant does not have", async () => {
@@ -468,6 +633,80 @@ describe("/api/internal/plugins/service-grants/verify-live", () => {
 		});
 		expect(readOnly.status).toBe(200);
 		expect(await readOnly.json()).toMatchObject({ scopes: ["plugin_data:read"] });
+	});
+
+	test("refuses when the member behind the grant may read workspace content but not write it", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const readerPageToken = await seed_member_page_token(t, fixture);
+		const exchanged = await exchange(t, readerPageToken);
+		expect(exchanged.status).toBe(200);
+		const grantToken = ((await exchanged.json()) as { token: string }).token;
+
+		// An admin can move this member to the `viewer` role in the middle of a meeting. That leaves
+		// the membership and the installation's capabilities alone, so the grant still carries
+		// `plugin_data:write` and every other check here still passes. The `/api/v1/*` doors answer
+		// `Permission denied` for that scope anyway, so a 200 here would send the service into a
+		// recording whose files can never land.
+		const response = await t.fetch(VERIFY_LIVE_PATH, {
+			method: "POST",
+			headers: service_headers(grantToken),
+			body: verify_live_body(fixture),
+		});
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ message: "This grant's member can no longer use the scopes it needs" });
+
+		// Only the claimed scopes are judged. The same grant claiming the read alone is still live, and
+		// the reported permissions say which half went away.
+		const readOnly = await t.fetch(VERIFY_LIVE_PATH, {
+			method: "POST",
+			headers: service_headers(grantToken),
+			body: verify_live_body(fixture, { scopes: ["plugin_data:read"] }),
+		});
+		expect(readOnly.status).toBe(200);
+		expect(await readOnly.json()).toMatchObject({ contentPermissions: { read: true, write: false } });
+	});
+
+	test("refuses a sealed processing grant claiming files:write once its member lost content.write", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const memberPageToken = await seed_member_page_token(t, fixture, {
+			permissions: ["content.read", "content.write"],
+		});
+		const exchanged = await exchange(t, memberPageToken);
+		expect(exchanged.status).toBe(200);
+		const interactive = ((await exchanged.json()) as { token: string }).token;
+
+		const sealed = await t.fetch(SEAL_PROCESSING_PATH, {
+			method: "POST",
+			headers: service_headers(interactive),
+			body: JSON.stringify({ destinationPathPrefix: "/meetings" }),
+		});
+		expect(sealed.status).toBe(200);
+		const processingToken = ((await sealed.json()) as { token: string }).token;
+
+		// The seal is the only place `files:write` was ever checked against the member, and it runs
+		// before the meeting records. Revoke the write permission afterwards and the sealed grant still
+		// carries the scope for its whole six-day window while every upload it makes is refused.
+		await t.run(async (ctx) => {
+			const grants = await ctx.db.query("access_control_permission_grants").collect();
+			const write = grants.find((grant) => grant.permission === "content.write");
+			await ctx.db.delete("access_control_permission_grants", write!._id);
+		});
+
+		// `plugin_data:read` is claimed alongside and still allowed, so only the `files:write` row of
+		// the permission map can produce this refusal.
+		const response = await t.fetch(VERIFY_LIVE_PATH, {
+			method: "POST",
+			headers: service_headers(processingToken),
+			body: verify_live_body(fixture, {
+				phase: "processing",
+				destinationPathPrefix: "/meetings",
+				scopes: ["plugin_data:read", "files:write"],
+			}),
+		});
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ message: "This grant's member can no longer use the scopes it needs" });
 	});
 
 	test("refuses a grant whose installation was disabled", async () => {
@@ -577,6 +816,50 @@ describe("/api/internal/plugins/service-grants/seal-processing", () => {
 		expect(await read_grants(t)).toHaveLength(1);
 	});
 
+	test("refuses a destination of `/`, which would seal the grant to the whole workspace", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const interactive = await exchange_token(t, fixture);
+
+		// `/` is its own normalized form and has no segments, so neither neighbouring check sees it.
+		// It has to be named on its own, because a grant sealed to `/` passes the upload routes'
+		// containment test for EVERY path in the workspace — which is the opposite of sealed.
+		const response = await seal(t, interactive, "/");
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ message: "destinationPathPrefix must be a normalized absolute path" });
+		expect(await read_grants(t)).toHaveLength(1);
+	});
+
+	test("the seal's mint refuses outright when a scope it promised is no longer available", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+
+		// The route pre-checks the capabilities and refuses first, so this asks the mint directly: it
+		// is the backstop for a capability the workspace takes back BETWEEN that pre-check and this
+		// mutation. Without `requireAllRequestedScopes` the mint would quietly narrow `files:write`
+		// away and hand back a two-scope processing grant, which fails at the upload after the
+		// meeting ended and the member left.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: ["plugin.service.connect", "plugin.data.read", "plugin.data.write"],
+			});
+		});
+
+		const minted = await t.mutation(internal.public_api.create_plugin_service_grant, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			installationId: fixture.installationId,
+			actorUserId: fixture.userId,
+			requestedScopes: ["plugin_data:read", "plugin_data:write", "files:write"],
+			requireAllRequestedScopes: true,
+			destinationPathPrefix: "/meetings",
+			phase: "processing",
+			now: Date.now(),
+		});
+		expect(minted._nay?.message).toBe("Permission denied");
+		expect(await read_grants(t)).toHaveLength(0);
+	});
+
 	test("refuses a destination with a non-canonical folder name; the service normalizes before sealing", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -600,6 +883,23 @@ describe("/api/internal/plugins/service-grants/seal-processing", () => {
 			});
 		});
 
+		const response = await seal(t, interactive);
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await read_grants(t)).toHaveLength(1);
+	});
+
+	test("refuses to seal for a member who may read workspace content but not write it", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const readerPageToken = await seed_member_page_token(t, fixture);
+		const exchanged = await exchange(t, readerPageToken);
+		expect(exchanged.status).toBe(200);
+		const interactive = ((await exchanged.json()) as { token: string }).token;
+
+		// The uploads at the end of the meeting are written as this member, and the upload routes
+		// refuse them there. Refusing at the seal is what stops the meeting before it records, instead
+		// of after everyone left and the files cannot land.
 		const response = await seal(t, interactive);
 		expect(response.status).toBe(403);
 		expect(await response.json()).toEqual({ message: "Permission denied" });

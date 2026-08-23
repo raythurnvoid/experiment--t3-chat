@@ -32,6 +32,7 @@ import {
 	files_nodes_db_can_act_on_swept_nodes,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
+	files_nodes_db_resolve_parent_read_only_scope,
 } from "./files_nodes.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import {
@@ -352,6 +353,9 @@ async function db_can_clean_up_service_created_lock(
 		node: Doc<"files_nodes">;
 	},
 ) {
+	// Exact provenance. The lock must be the node's own, not one it inherited from a locked folder,
+	// and it must still name the target that created it. Consent can also be taken back after the
+	// lock was made, so ask the installation again instead of trusting the pointer alone.
 	if (
 		args.node.readOnlyScopeNodeId !== args.node._id ||
 		args.node.readOnlyPluginServiceTargetId === undefined ||
@@ -361,6 +365,12 @@ async function db_can_clean_up_service_created_lock(
 	}
 
 	const target = await ctx.db.get("plugin_service_storage_targets", args.node.readOnlyPluginServiceTargetId);
+	// One question asked in parts: is this still the same read-only target, in the same place, alive?
+	// Tenancy and installation come first, so a grant cannot reach a lock in another workspace or one
+	// another plugin created. Then the destination binding, so a grant only ever reaches the file its
+	// own sealed prefix and destination produced. Then liveness: a target that moved out, was asked to
+	// be deleted, already ended, or belongs to a closed destination generation no longer speaks for
+	// this lock.
 	if (
 		!target ||
 		target.readOnly !== true ||
@@ -377,6 +387,10 @@ async function db_can_clean_up_service_created_lock(
 	) {
 		return false;
 	}
+
+	// The target says where the file was created, not where it sits now. Walk the parents up to the
+	// destination so a node a member moved out of the seal cannot be unlocked through it. Leaving the
+	// tenant on the way up is the same refusal.
 	let parentId = args.node.parentId;
 	while (parentId !== files_ROOT_ID && parentId !== args.destinationNodeId) {
 		const parent = await ctx.db.get("files_nodes", parentId);
@@ -389,10 +403,14 @@ async function db_can_clean_up_service_created_lock(
 		}
 		parentId = parent.parentId;
 	}
+	// The walk reached the workspace root instead, so the node is not under the destination at all.
 	if (parentId !== args.destinationNodeId) {
 		return false;
 	}
 
+	// Everything above is about the lock. This last one is about the person: the member behind the
+	// grant must still hold the permission the dedicated lock controls need. Losing it ends the bypass
+	// right away, without waiting for the grant to expire.
 	return await access_control_db_can_act_on_file_node(ctx, {
 		organizationId: args.principal.organizationId,
 		workspaceId: args.principal.workspaceId,
@@ -400,6 +418,31 @@ async function db_can_clean_up_service_created_lock(
 		fileNode: args.node,
 		permission: "content.permissions.manage",
 	});
+}
+
+/**
+ * Release the direct locks a service door was allowed to archive through.
+ *
+ * Archiving a file the service locked is only half the job. `unarchive_nodes` refuses the whole
+ * restore when any node in the restored subtree is read-only. A file that kept this lock could
+ * never come back, so the archived set would stop being restorable.
+ *
+ * Fall back to the parent's pointer the same way `set_node_writable` does. Both doors already
+ * refused when a folder above the file still holds a lock, so that pointer is writable here. Only a
+ * file ever carries this provenance, so there is no subtree to cascade to.
+ */
+async function db_release_service_created_locks(ctx: MutationCtx, args: { nodes: Array<Doc<"files_nodes">> }) {
+	await Promise.all(
+		args.nodes.map(async (node) => {
+			const parentScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
+				parentId: node.parentId,
+			});
+			await ctx.db.patch("files_nodes", node._id, {
+				readOnlyScopeNodeId: parentScopeNodeId,
+				readOnlyPluginServiceTargetId: undefined,
+			});
+		}),
+	);
 }
 
 /** Recheck the live file before a grant reads or extends an existing target. */
@@ -1436,6 +1479,7 @@ export const delete_upload_target = internalMutation({
 
 		// Ask every live node before the first write. Workspace permission from the grant is not enough
 		// inside a restricted scope, and a lock still means "leave this alone".
+		const serviceLockedNodeIds = new Set<Id<"files_nodes">>();
 		for (const match of matches) {
 			if (!match.node) {
 				continue;
@@ -1452,8 +1496,10 @@ export const delete_upload_target = internalMutation({
 				return Result({ _nay: { message: "Permission denied" } });
 			}
 			const writable = files_node_require_writable(match.node);
+			if (!writable._nay) {
+				continue;
+			}
 			if (
-				writable._nay &&
 				!(await db_can_clean_up_service_created_lock(ctx, {
 					principal: args.principal,
 					installation,
@@ -1463,18 +1509,32 @@ export const delete_upload_target = internalMutation({
 			) {
 				return writable;
 			}
+			// A member can also lock a folder above this file. The read-only cascade stops at the file's
+			// own service lock, so that folder lock is still there after the release below. The file
+			// would stay read-only and the delete would take it anyway. Only a file ever carries the
+			// service provenance, so a lock above is always a member lock. Refuse the whole call, the
+			// same way `archive_destination` refuses a locked node inside its destination.
+			if (
+				(await files_nodes_db_resolve_parent_read_only_scope(ctx, { parentId: match.node.parentId })) !== undefined
+			) {
+				return writable;
+			}
+			serviceLockedNodeIds.add(match.node._id);
 		}
 
 		const now = Date.now();
-		const committedNodeIds = matches.flatMap((match) =>
+		const committedNodes = matches.flatMap((match) =>
 			match.target.state === "committed" && match.node && match.node.archiveOperationId === undefined
-				? [match.node._id]
+				? [match.node]
 				: [],
 		);
-		if (committedNodeIds.length > 0) {
+		if (committedNodes.length > 0) {
+			await db_release_service_created_locks(ctx, {
+				nodes: committedNodes.filter((node) => serviceLockedNodeIds.has(node._id)),
+			});
 			// Archive every committed match together, like one member delete action.
 			await files_nodes_db_archive_nodes(ctx, {
-				nodeIds: committedNodeIds,
+				nodeIds: committedNodes.map((node) => node._id),
 				updatedBy: args.principal.actorUserId,
 				now,
 			});
@@ -1609,9 +1669,10 @@ async function db_collect_bounded_descendants(
  *
  * The meeting is gone, so its files must leave the workspace tree. They are real committed files
  * though, and in this product deleting a file means archiving it, so the service archives too. One
- * operation id covers the folder and its whole subtree, which is what lets a member restore the
- * set later. The stored bytes stay charged. This quota only grows, so neither archive nor physical
- * deletion gives bytes back.
+ * operation id covers the folder and its whole subtree, and the locks this service created are
+ * released on the way out, which together are what let a member restore the set later. The stored
+ * bytes stay charged. This quota only grows, so neither archive nor physical deletion gives bytes
+ * back.
  *
  * The seal is the fence. The door takes no path, so a grant can only ever archive its own
  * destination, and `workspace.files.write` plus that seal is what makes archiving inside it a write
@@ -1741,6 +1802,13 @@ export const archive_destination = internalMutation({
 		// A member can nest a restricted folder in here, and the seal says nothing about that folder.
 		// Ask what the member archive asks, so the actor cannot archive through the service what they
 		// could not archive from the file tree.
+		//
+		// This deliberately asks about archived descendants too, which is stricter than the member
+		// door: that one asks this about the active descendants and then checks the archived ones for
+		// locks in a second call. The subtree is already bounded and loaded here, so one list answers
+		// the permission question and feeds the lock loop below. Do not narrow either of them to the
+		// active descendants. A read-only archived child would then hide under a newly archived
+		// parent, which is what the member door's second call exists to stop.
 		if (
 			!(await files_nodes_db_can_act_on_swept_nodes(ctx, {
 				organizationId: args.principal.organizationId,
@@ -1756,10 +1824,13 @@ export const archive_destination = internalMutation({
 
 		// A lock is a member saying "leave this alone". The only exception is the direct lock created
 		// by this exact live service target, while the actor still manages its ACL.
+		const serviceLockedNodes: Array<Doc<"files_nodes">> = [];
 		for (const node of [destination, ...descendants]) {
 			const writable = files_node_require_writable(node);
+			if (!writable._nay) {
+				continue;
+			}
 			if (
-				writable._nay &&
 				!(await db_can_clean_up_service_created_lock(ctx, {
 					principal: args.principal,
 					installation: authorized._yay.installation,
@@ -1769,6 +1840,7 @@ export const archive_destination = internalMutation({
 			) {
 				return writable;
 			}
+			serviceLockedNodes.push(node);
 		}
 
 		await db_close_destination(ctx, {
@@ -1803,6 +1875,8 @@ export const archive_destination = internalMutation({
 				});
 			}
 		}
+
+		await db_release_service_created_locks(ctx, { nodes: serviceLockedNodes });
 
 		await files_nodes_db_archive_nodes(ctx, {
 			nodeIds: [destination._id, ...activeDescendants.map((descendant) => descendant._id)],

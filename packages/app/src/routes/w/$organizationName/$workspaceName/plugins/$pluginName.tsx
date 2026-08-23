@@ -301,15 +301,23 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 	const { target, secrets, autoFocusName } = props;
 	const [name, setName] = useState("");
 	const [value, setValue] = useState("");
+	// Run one secret action at a time. The buttons stay enabled while work is in flight and report
+	// the wait with `aria-busy`, because a browser blurs a focused control the moment it becomes
+	// disabled and nothing puts that focus back. The guards in the handlers, not disabled buttons,
+	// stop a second press from starting the same action twice.
 	const [saving, setSaving] = useState(false);
-	const [deleting, setDeleting] = useState(false);
+	// The name of the secret whose delete is in flight, so only that row reports busy.
+	const [deleting, setDeleting] = useState<string | null>(null);
+	const panelRef = useRef<HTMLDivElement | null>(null);
+	const nameInputRef = useRef<HTMLInputElement | null>(null);
+	const saveButtonRef = useRef<HTMLButtonElement | null>(null);
 
 	const scopeLabel = target.scope === "workspace" ? "Workspace" : "Plugin";
 	const canAdd = target.scope === "plugin" || target.canAdd;
 
 	const handleSaveSecret = useFn((event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
-		if (saving || deleting || !name.trim() || !value) {
+		if (saving || deleting !== null || !name.trim() || !value) {
 			return;
 		}
 
@@ -348,6 +356,12 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 				// The inputs stay enabled during the save, so only clear what the user has not retyped since.
 				setName((current) => (current === name ? "" : current));
 				setValue((current) => (current === value ? "" : current));
+				// Clearing the fields disables the Save button again, and a browser blurs a focused
+				// control the moment it becomes disabled. Send the focus to the Name input, where the
+				// next secret starts, but only when the button was still holding it.
+				if (document.activeElement === saveButtonRef.current) {
+					nameInputRef.current?.focus();
+				}
 			})
 			.catch((error) => {
 				console.error("[RoutePluginsPlugin.handleSaveSecret] Failed to save secret:", { error, scope: target.scope });
@@ -388,7 +402,8 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 		}
 
 		event.preventDefault();
-		if (saving || deleting) {
+		if (saving || deleting !== null) {
+			toast.error("Cannot import secrets while a save or delete is in progress");
 			return;
 		}
 
@@ -418,6 +433,12 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 				// The inputs stay enabled during the import, so only clear what the user has not retyped since.
 				setName((current) => (current === name ? "" : current));
 				setValue((current) => (current === value ? "" : current));
+				// Clearing the fields disables the Save button again, and a browser blurs a focused
+				// control the moment it becomes disabled. Send the focus to the Name input, where the
+				// next secret starts, but only when the button was still holding it.
+				if (document.activeElement === saveButtonRef.current) {
+					nameInputRef.current?.focus();
+				}
 			})
 			.catch((error) => {
 				console.error("[RoutePluginsPlugin.handleEnvPaste] Failed to import secrets:", { error, scope: target.scope });
@@ -428,8 +449,12 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 			});
 	});
 
-	const handleDeleteSecret = useFn((secretName: string) => {
-		setDeleting(true);
+	const handleDeleteSecret = useFn((secretName: string, button: HTMLButtonElement) => {
+		if (saving || deleting !== null) {
+			return;
+		}
+
+		setDeleting(secretName);
 		const remove: Promise<
 			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.delete_installation_secret>
 			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.delete_publisher_repository_secret>
@@ -452,6 +477,12 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 				}
 
 				toast.success(`${scopeLabel} secret ${secretName} deleted`);
+				// The deleted row unmounts when the list updates, and the focus a removed element held
+				// falls to the page body. Send it to the panel instead, but only when the pressed button
+				// was still holding it or the focus already fell.
+				if (document.activeElement === button || document.activeElement === document.body) {
+					panelRef.current?.focus();
+				}
 			})
 			.catch((error) => {
 				console.error("[RoutePluginsPlugin.handleDeleteSecret] Failed to delete secret:", {
@@ -461,12 +492,17 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 				toast.error("Failed to delete secret");
 			})
 			.finally(() => {
-				setDeleting(false);
+				setDeleting(null);
 			});
 	});
 
 	return (
-		<div className={"RoutePluginsPluginSecretsModalPanel" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}>
+		<div
+			ref={panelRef}
+			className={"RoutePluginsPluginSecretsModalPanel" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
+			// A focus target for a finished delete, so the focus of the removed row does not fall to the body.
+			tabIndex={-1}
+		>
 			<p
 				className={"RoutePluginsPluginSecretsModalPanel-note" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
 			>
@@ -537,8 +573,8 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 								<MyButton
 									variant="ghost_destructive"
 									tooltip={`Delete ${target.scope} secret ${secret.name}`}
-									disabled={saving || deleting}
-									onClick={() => handleDeleteSecret(secret.name)}
+									aria-busy={deleting === secret.name}
+									onClick={(event) => handleDeleteSecret(secret.name, event.currentTarget)}
 								>
 									<Trash2 aria-hidden />
 								</MyButton>
@@ -561,6 +597,7 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 							<MyInputBackground />
 							<MyInputArea>
 								<MyInputControl
+									ref={nameInputRef}
 									value={name}
 									placeholder="OPENAI_API_KEY"
 									autoFocus={autoFocusName}
@@ -586,7 +623,7 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 							</MyInputArea>
 							<MyInputBox />
 						</MyInput>
-						<MyButton type="submit" disabled={saving || deleting || !name.trim() || !value}>
+						<MyButton ref={saveButtonRef} type="submit" aria-busy={saving} disabled={!name.trim() || !value}>
 							<Save aria-hidden />
 							{saving ? "Saving..." : "Save"}
 						</MyButton>
@@ -800,6 +837,12 @@ const RoutePluginsPluginConfiguration = memo(function RoutePluginsPluginConfigur
 		feedback: null,
 	}));
 	const [saving, setSaving] = useState(false);
+	// A saved draft equals the server text, and that legitimately disables the Save button below. A
+	// browser blurs a focused control the moment it becomes disabled, so the focus a keyboard member
+	// left on Save must be sent somewhere deliberate: the status line that announces the result.
+	const [focusFeedback, setFocusFeedback] = useState(false);
+	const saveButtonRef = useRef<HTMLButtonElement | null>(null);
+	const feedbackRef = useRef<HTMLParagraphElement | null>(null);
 	const configurationRef = useLiveRef(configuration);
 	const editorRef = useRef<monaco_editor.IStandaloneCodeEditor | null>(null);
 	const hasPathFilter = events.some((event) =>
@@ -927,6 +970,11 @@ const RoutePluginsPluginConfiguration = memo(function RoutePluginsPluginConfigur
 					};
 				}
 
+				// Read the focus before the state lands: the success re-render disables the button
+				// (draft now equals server) and mounts the status line the effect below focuses.
+				if (nextConfiguration.feedback?.kind === "success" && document.activeElement === saveButtonRef.current) {
+					setFocusFeedback(true);
+				}
 				setConfiguration(nextConfiguration);
 				if (nextConfiguration.feedback?.kind === "success") {
 					toast.success("Plugin configuration saved");
@@ -954,6 +1002,14 @@ const RoutePluginsPluginConfiguration = memo(function RoutePluginsPluginConfigur
 				setSaving(false);
 			});
 	});
+
+	useEffect(() => {
+		if (!focusFeedback) {
+			return;
+		}
+		setFocusFeedback(false);
+		feedbackRef.current?.focus();
+	}, [focusFeedback]);
 
 	return (
 		<section className={"RoutePluginsPluginConfiguration" satisfies RoutePluginsPluginConfiguration_ClassNames}>
@@ -1006,12 +1062,19 @@ const RoutePluginsPluginConfiguration = memo(function RoutePluginsPluginConfigur
 								("RoutePluginsPluginConfiguration-status-error" satisfies RoutePluginsPluginConfiguration_ClassNames),
 						)}
 						role={configuration.feedback.kind === "success" ? "status" : "alert"}
+						// A focus target for a finished save: the success disables the Save button and a
+						// browser blurs a disabled control, so the focus lands here instead of the body.
+						ref={feedbackRef}
+						tabIndex={-1}
 					>
 						{configuration.feedback.message}
 					</p>
 				) : null}
 				<MyButton
-					disabled={saving || configuration.draftYaml === configuration.serverYaml}
+					ref={saveButtonRef}
+					// Keep the button enabled while the save runs: disabling it would blur a keyboard
+					// member. The handler's own guard stops a second press.
+					disabled={configuration.draftYaml === configuration.serverYaml}
 					aria-busy={saving}
 					onClick={handleSave}
 				>
@@ -1141,14 +1204,49 @@ type RoutePluginsPluginAccess_Props = {
 	events: RoutePlugins_Installation["version"]["events"] | null;
 };
 
+// This spells out both capability names and event types, so it stays one plain rule instead of a list
+// of per-value labels. It also splits on `-` so a hyphenated name reads like every other one.
 function format_access_label(value: string) {
+	return value
+		.split(/[._-]/)
+		.map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+		.join(" ");
+}
+
+// A capability name is consent copy: an admin reads it to decide whether to grant the access. Three
+// names come out of the plain rule above saying the wrong thing, so each one gets a written label
+// here instead of inside `format_access_label`. Keeping the overrides out of the shared rule means
+// it carries no capability spellings and event types keep using it unchanged.
+function format_capability_label(value: string) {
+	// The plain rule writes "Workspace Files Create Read Only", which reads as create-and-read
+	// access. That is the opposite of what this capability does, because it lets a plugin lock the
+	// file it creates so nobody in the workspace can edit it.
 	if (value === "workspace.files.create-read-only") {
 		return "Create read-only workspace files";
 	}
-	return value
-		.split(/[._]/)
-		.map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-		.join(" ");
+
+	// The plain rule writes "Plugin Data User Write", which reads as "the user's plugin data" and so
+	// says whose data it is instead of who writes it. It also lands one word away from
+	// `plugin.data.write`'s "Plugin Data Write", and those two are separate consents: that one is the
+	// plugin's own backend or service writing as the installation, this one is the plugin's browser
+	// frames writing as the member who opened them. Name the writer and the surface so an admin can
+	// tell the two apart. Both frame kinds are named because the door checks the capability on the UI
+	// session alone, and a page and a file view mint their session from the same table.
+	if (value === "plugin.data.user-write") {
+		return "Write its plugin data as the acting member, from its pages and file views";
+	}
+
+	// The plain rule writes "Ui", which is not a word. It also lands one word away from
+	// `outbound.fetch`'s "Outbound Fetch", and those two are separate capabilities on purpose: this
+	// one is the plugin's own browser frames calling out from inside the member's browser, the other
+	// is its backend calling out from the runner. Name both frame kinds here so an admin can tell the
+	// two consents apart. The origins reach a file view exactly as they reach a page, because the
+	// policy carrying them is set on every plugin asset response and the list lives on the version.
+	if (value === "ui.outbound.fetch") {
+		return "Call allowed outside origins from its pages and file views";
+	}
+
+	return format_access_label(value);
 }
 
 const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: RoutePluginsPluginAccess_Props) {
@@ -1211,7 +1309,7 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 								className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
 								title={capability}
 							>
-								{format_access_label(capability)}
+								{format_capability_label(capability)}
 							</li>
 						))}
 					</ul>
@@ -1225,23 +1323,17 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 						No UI pages.
 					</div>
 				) : (
-					<>
-						<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
-							{plugin.pages.map((page) => (
-								<li
-									key={page.id}
-									className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
-								>
-									{page.title}
-									{page.navItem ? ` — sidebar item: ${page.navItem.label}` : ""}
-								</li>
-							))}
-						</ul>
-						<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
-							Plugin pages are trusted with the data their capabilities expose. The sandbox protects the host app, but a
-							page can send exposed data away by navigating.
-						</p>
-					</>
+					<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+						{plugin.pages.map((page) => (
+							<li
+								key={page.id}
+								className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+							>
+								{page.title}
+								{page.navItem ? ` — sidebar item: ${page.navItem.label}` : ""}
+							</li>
+						))}
+					</ul>
 				)}
 			</section>
 
@@ -1273,6 +1365,18 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 				)}
 			</section>
 
+			{/* Reviewed page code is trusted; the iframe is host isolation, not data containment. A file view
+			    grants the same thing. It mints its session from the same table, and that session gets the same
+			    workspace-wide file scopes a page gets. The file it was opened from narrows nothing. So keep this
+			    warning outside both surface gates, in the words the install consent dialog already uses. Inside
+			    the pages gate, a plugin that ships only file views showed no warning at all. */}
+			{plugin.pages.length > 0 || plugin.fileViews.length > 0 ? (
+				<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
+					Plugin pages and file views are trusted with the data their capabilities expose. They can send that data away
+					by navigating, even when no backend origin is listed.
+				</p>
+			) : null}
+
 			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
 				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
 					Backend network access
@@ -1297,11 +1401,11 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 
 			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
 				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
-					Page network access
+					Page and file view network access
 				</h3>
 				{plugin.uiOutboundOrigins.length === 0 ? (
 					<div className={"RoutePluginsPluginAccess-empty" satisfies RoutePluginsPluginAccess_ClassNames}>
-						No page outbound origins.
+						No page or file view outbound origins.
 					</div>
 				) : (
 					<>
@@ -1316,8 +1420,8 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 							))}
 						</ul>
 						<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
-							The plugin page runs in a member's browser and may call these origins directly. This is a separate risk
-							from backend network access: the page holds that member's session token.
+							A plugin page and a file view both run in a member's browser and may call these origins directly. This is
+							a separate risk from backend network access: the frame holds that member's session token.
 						</p>
 					</>
 				)}
@@ -1650,6 +1754,8 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 		version: version.version,
 		publisherDisplayName: "You",
 		reviewStatus: version.reviewStatus,
+		// Mirror list_published_plugins: a run needs both a backend entrypoint and declared events.
+		canProcessFiles: version.backendEntrypointFile !== null && version.events.length > 0,
 		capabilities: version.capabilities,
 		outboundOrigins: version.outboundOrigins,
 		uiOutboundOrigins: version.uiOutboundOrigins,
@@ -1684,8 +1790,37 @@ function RoutePluginsPlugin() {
 	const [publishing, setPublishing] = useState(false);
 	const [removing, setRemoving] = useState(false);
 	const [managingSecrets, setManagingSecrets] = useState(false);
+	// Arm the landing effects below: a finished install or claim removal reactively unmounts the
+	// control that held the focus, and the fallen focus needs a deliberate landing.
+	const [focusHeroAfterInstall, setFocusHeroAfterInstall] = useState(false);
+	const [focusHeroAfterRemoveClaim, setFocusHeroAfterRemoveClaim] = useState(false);
+	// A focus target for a finished uninstall: the Uninstall button unmounts with its row, and the
+	// focus a removed element held falls to the page body. Send it to the plugin title instead.
+	const heroTitleRef = useRef<HTMLHeadingElement | null>(null);
+	// A publisher without workspace.plugins.manage who removes their claim loses the whole detail
+	// view, hero h1 included: the permission-denied block is the only landmark left, so the
+	// remove-claim landing effect falls back to it.
+	const permissionDeniedRef = useRef<HTMLDivElement | null>(null);
 
-	const handleUninstall = useFn((installation: RoutePlugins_Installation["installation"]) => {
+	// Computed before the early returns because the install landing effect below reads
+	// `showInstall`; every input is null-safe while the queries are still loading.
+	const plugin = canManagePlugins
+		? (plugins?.find((item) => item.name === pluginName) ?? null)
+		: publisherPlugin
+			? get_publisher_version(publisherPlugin)
+			: null;
+	const installedItem = installations?.find((item) => item.installation.pluginName === plugin?.name) ?? null;
+	const installedVersion = installedItem?.version;
+	const showInstall =
+		plugin !== null && canManagePlugins === true && (!installedVersion || installedVersion.version !== plugin.version);
+
+	const handleUninstall = useFn((installation: RoutePlugins_Installation["installation"], button: HTMLButtonElement) => {
+		// The button stays enabled while the uninstall runs, so this guard, not a disabled button,
+		// stops a second press.
+		if (uninstalling) {
+			return;
+		}
+
 		setUninstalling(true);
 		app_convex
 			.mutation(app_convex_api.plugins.uninstall_version, { membershipId, installationId: installation._id })
@@ -1697,6 +1832,11 @@ function RoutePluginsPlugin() {
 
 				// No navigation: list_installations updates reactively, swapping the hero action back to Install.
 				toast.success(`Uninstalled ${installation.pluginName}`);
+				// The swap unmounts the pressed button and its focus would fall to the body. Send it
+				// to the plugin title, but only when the button was still holding it or it already fell.
+				if (document.activeElement === button || document.activeElement === document.body) {
+					heroTitleRef.current?.focus();
+				}
 			})
 			.catch((error) => {
 				console.error("[RoutePluginsPlugin.handleUninstall] Failed to uninstall plugin:", {
@@ -1711,7 +1851,9 @@ function RoutePluginsPlugin() {
 	});
 
 	const handlePublish = useFn(() => {
-		if (!publisherPlugin) {
+		// The Publish button stays enabled while the publish runs, so this guard, not a disabled
+		// button, stops a second press.
+		if (!publisherPlugin || publishing || removing) {
 			return;
 		}
 
@@ -1737,7 +1879,9 @@ function RoutePluginsPlugin() {
 	});
 
 	const handleRemoveClaim = useFn(() => {
-		if (!publisherPlugin) {
+		// The menu item disables itself while work runs, but this guard, like on every other
+		// handler on this route, is what stops a second activation from starting the work twice.
+		if (!publisherPlugin || removing || publishing) {
 			return;
 		}
 
@@ -1753,6 +1897,9 @@ function RoutePluginsPlugin() {
 
 				// No navigation: get_publisher_plugin goes null once the claim is gone, hiding the publisher UI.
 				toast.success("Repository claim removed");
+				// That unmount takes the menu trigger holding the focus with it, and the focus falls
+				// to the page body. Arm the landing effect below.
+				setFocusHeroAfterRemoveClaim(true);
 			})
 			.catch((error) => {
 				console.error("[RoutePluginsPlugin.handleRemoveClaim] Failed to remove repository claim:", {
@@ -1767,6 +1914,12 @@ function RoutePluginsPlugin() {
 	});
 
 	const handleAcceptAndInstall = useFn((plugin: RoutePlugins_PublishedPlugin) => {
+		// The Accept button stays enabled while the install runs, so this guard, not a disabled
+		// button, stops a second press.
+		if (installing) {
+			return;
+		}
+
 		setInstalling(true);
 		app_convex
 			.mutation(app_convex_api.plugins.install_version, {
@@ -1779,10 +1932,21 @@ function RoutePluginsPlugin() {
 			.then((result) => {
 				if (result._nay) {
 					toast.error(result._nay.message);
+					// An Escape pressed mid-install already closed the modal, and Ariakit's restore
+					// target — the Install button — was disabled, so the focus fell to the page body.
+					// On a failure nothing below closes the modal, and while it is open the focus is
+					// never on the body, so this check alone tells the two cases apart.
+					if (document.activeElement === document.body) {
+						heroTitleRef.current?.focus();
+					}
 					return;
 				}
 
 				toast.success(`Installed ${plugin.name} ${plugin.version}`);
+				// Closing the modal makes Ariakit put the focus back on the Install button, and the
+				// reactive list_installations update then unmounts that button. Arm the landing
+				// effect below so the fallen focus does not stay on the page body.
+				setFocusHeroAfterInstall(true);
 				setConsenting(false);
 			})
 			.catch((error) => {
@@ -1791,11 +1955,52 @@ function RoutePluginsPlugin() {
 					pluginVersionId: plugin.pluginVersionId,
 				});
 				toast.error("Failed to install plugin");
+				// Same Escape-mid-install landing as the refusal branch above.
+				if (document.activeElement === document.body) {
+					heroTitleRef.current?.focus();
+				}
 			})
 			.finally(() => {
 				setInstalling(false);
 			});
 	});
+
+	// A finished install closes the consent modal, and Ariakit puts the modal's focus back on the
+	// Install button — which the reactive list_installations update then unmounts, dropping the
+	// focus to the page body. Land it on the plugin title instead. The body check also covers an
+	// Escape pressed mid-install when the install then succeeds: there the restore target was
+	// already unfocusable (disabled), so the focus fell the same way. When the install fails
+	// instead, the handler's failure branches above land the same fallen focus, because this
+	// effect stays gated on `!showInstall` and a failure keeps `showInstall` true. The body check
+	// skips a member who has already moved the focus elsewhere.
+	useEffect(() => {
+		if (!focusHeroAfterInstall || showInstall) {
+			return;
+		}
+		setFocusHeroAfterInstall(false);
+		if (document.activeElement === document.body) {
+			heroTitleRef.current?.focus();
+		}
+	}, [focusHeroAfterInstall, showInstall]);
+
+	// A finished claim removal unmounts the whole publisher UI, including the menu trigger that
+	// Ariakit had returned the closed menu's focus to, so the focus falls to the page body. Land
+	// it on the plugin title instead, unless the member has already moved it elsewhere.
+	useEffect(() => {
+		if (!focusHeroAfterRemoveClaim || publisherPlugin) {
+			return;
+		}
+		setFocusHeroAfterRemoveClaim(false);
+		if (document.activeElement === document.body) {
+			// A publisher without workspace.plugins.manage loses the whole detail view with the
+			// claim, so the hero h1 is gone; land on the permission-denied block instead.
+			if (heroTitleRef.current) {
+				heroTitleRef.current.focus();
+			} else {
+				permissionDeniedRef.current?.focus();
+			}
+		}
+	}, [focusHeroAfterRemoveClaim, publisherPlugin]);
 
 	const breadcrumb = <PluginsHeaderBreadcrumb trail={["plugins"]} current={pluginName} />;
 
@@ -1833,7 +2038,14 @@ function RoutePluginsPlugin() {
 			>
 				<div className={"RoutePluginsPlugin-content" satisfies RoutePluginsPlugin_ClassNames}>
 					{breadcrumb}
-					<div className={"RoutePluginsPlugin-missing" satisfies RoutePluginsPlugin_ClassNames} role="alert">
+					<div
+						ref={permissionDeniedRef}
+						// A focus landing for a publisher whose claim removal took the whole detail view
+						// away (see the remove-claim landing effect above).
+						tabIndex={-1}
+						className={"RoutePluginsPlugin-missing" satisfies RoutePluginsPlugin_ClassNames}
+						role="alert"
+					>
 						You don't have permission to manage plugins in this workspace.
 					</div>
 				</div>
@@ -1841,11 +2053,6 @@ function RoutePluginsPlugin() {
 		);
 	}
 
-	const plugin = canManagePlugins
-		? (plugins?.find((item) => item.name === pluginName) ?? null)
-		: publisherPlugin
-			? get_publisher_version(publisherPlugin)
-			: null;
 	if (plugin === null) {
 		return (
 			<main
@@ -1864,8 +2071,6 @@ function RoutePluginsPlugin() {
 		);
 	}
 
-	const installedItem = installations?.find((item) => item.installation.pluginName === plugin.name) ?? null;
-	const installedVersion = installedItem?.version;
 	const consentDiff = plugins_consent_diff({
 		current: installedVersion
 			? {
@@ -1883,7 +2088,6 @@ function RoutePluginsPlugin() {
 	// Installed-and-current shows only Uninstall; reinstalling means uninstalling and installing again.
 	const installAction = installedVersion ? "Update" : "Install";
 	const installProgress = installAction === "Update" ? "Updating..." : "Installing...";
-	const showInstall = canManagePlugins && (!installedVersion || installedVersion.version !== plugin.version);
 	const installationBlocked = plugin.reviewStatus === "rejected" || plugin.reviewStatus === "flagged";
 	// Upserts require plugin.secrets.read on the installed version, but listing and deleting deliberately
 	// do not — leftover secrets must stay reachable after an upgrade drops the capability.
@@ -1917,7 +2121,11 @@ function RoutePluginsPlugin() {
 					<Puzzle aria-hidden className={"RoutePluginsPluginHero-icon" satisfies RoutePluginsPlugin_ClassNames} />
 					<div className={"RoutePluginsPluginHero-info" satisfies RoutePluginsPlugin_ClassNames}>
 						<div className={"RoutePluginsPluginHero-titleRow" satisfies RoutePluginsPlugin_ClassNames}>
-							<h1 className={"RoutePluginsPluginHero-title" satisfies RoutePluginsPlugin_ClassNames}>
+							<h1
+								ref={heroTitleRef}
+								tabIndex={-1}
+								className={"RoutePluginsPluginHero-title" satisfies RoutePluginsPlugin_ClassNames}
+							>
 								{plugin.displayName}
 							</h1>
 							{plugin.reviewStatus !== "passed" || installedItem ? (
@@ -1962,7 +2170,11 @@ function RoutePluginsPlugin() {
 							{publisherPlugin ? (
 								<MyButton
 									variant={showInstall ? "outline" : "default"}
-									disabled={publishing || removing}
+									// `removing` is set from a menu item, never while this button holds the
+									// focus, so its disable cannot blur anyone. The publish itself keeps the
+									// button enabled and reports through `aria-busy`.
+									disabled={removing}
+									aria-busy={publishing}
 									onClick={handlePublish}
 								>
 									<UploadCloud aria-hidden />
@@ -1970,6 +2182,9 @@ function RoutePluginsPlugin() {
 								</MyButton>
 							) : null}
 							{showInstall ? (
+								// `installing` can only be true while the consent modal holds the focus, so
+								// this disable never blurs a focused control; it only stops reopening the
+								// modal mid-install.
 								<MyButton disabled={installing || installationBlocked} onClick={() => setConsenting(true)}>
 									<Download aria-hidden />
 									{installAction}
@@ -1978,8 +2193,8 @@ function RoutePluginsPlugin() {
 							{installedItem ? (
 								<MyButton
 									variant="ghost_destructive"
-									disabled={uninstalling}
-									onClick={() => handleUninstall(installedItem.installation)}
+									aria-busy={uninstalling}
+									onClick={(event) => handleUninstall(installedItem.installation, event.currentTarget)}
 								>
 									<Trash2 aria-hidden />
 									{uninstalling ? "Uninstalling..." : "Uninstall"}
@@ -1988,7 +2203,11 @@ function RoutePluginsPlugin() {
 							{publisherPlugin ? (
 								<MyMenu placement="bottom-end">
 									<MyMenuTrigger>
-										<MyIconButton variant="ghost" tooltip="More actions" disabled={removing}>
+										{/* Never disable this trigger mid-flight: the menu closes on activation and
+										    Ariakit returns the menu's focus here, and a disabled control cannot take
+										    it, so the focus would fall to the page body. The menu item's own disable
+										    and the handler's guard already stop a second run. */}
+										<MyIconButton variant="ghost" tooltip="More actions">
 											<MyIconButtonIcon>
 												<Ellipsis />
 											</MyIconButtonIcon>
@@ -2077,10 +2296,14 @@ function RoutePluginsPlugin() {
 							</MyModalDescription>
 						</MyModalHeader>
 
-						{/* Platform baseline every plugin receives: static copy, not a manifest capability or consent set. */}
-						<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
-							Every plugin can read the triggering upload and create Markdown files beside it.
-						</p>
+						{/* Platform baseline a run receives, so it is only true for a plugin that can get one. A
+						    page-only plugin never starts a run, and its page token carries no write scope at
+						    all, so telling an admin otherwise would overstate what they are granting. */}
+						{plugin.canProcessFiles ? (
+							<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
+								This plugin can read the triggering upload and create Markdown files beside it.
+							</p>
+						) : null}
 
 						<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
 							This plugin can use these capabilities
@@ -2090,8 +2313,11 @@ function RoutePluginsPlugin() {
 								<li
 									key={capability}
 									className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
+									// The label is prettified, so keep the raw manifest id reachable. This dialog is where
+									// an admin grants elevated access, so it must map back to the id the manifest declares.
+									title={capability}
 								>
-									{format_access_label(capability)}
+									{format_capability_label(capability)}
 									{installedVersion && consentDiff.newCapabilities.includes(capability) ? (
 										<MyBadge variant="secondary">new</MyBadge>
 									) : null}
@@ -2099,11 +2325,14 @@ function RoutePluginsPlugin() {
 							))}
 						</ul>
 						{/* Every other capability is used by code the app runs. This one hands a token to a
-						    server outside the app, which then keeps working when nobody has the page open. */}
+						    server outside the app, which then keeps working while no frame of this plugin is open.
+						    A file view starts that exchange exactly as a page does: both mint their token from the
+						    same session table, and the exchange only checks that the token is a UI token, never
+						    which frame minted it. So name both surfaces, like the frame egress section below. */}
 						{plugin.capabilities.includes("plugin.service.connect") ? (
 							<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
-								This plugin's page can pass its access to the publisher's own server. That server can keep using the
-								capabilities above while nobody is using the plugin. Uninstalling stops it.
+								This plugin's pages and file views can pass their access to the publisher's own server. That server can
+								keep using the capabilities above while nobody is using the plugin. Uninstalling stops it.
 							</p>
 						) : null}
 						{plugin.pages.length > 0 ? (
@@ -2123,12 +2352,35 @@ function RoutePluginsPlugin() {
 										</li>
 									))}
 								</ul>
-								{/* Reviewed page code is trusted; the iframe is host isolation, not data containment. */}
-								<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
-									Plugin pages are trusted with the data their capabilities expose. A page can send that data away by
-									navigating, even when no backend origin is listed.
-								</p>
 							</>
+						) : null}
+						{plugin.fileViews.length > 0 ? (
+							<>
+								<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
+									This plugin adds these views when a member opens a file
+								</div>
+								<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
+									{plugin.fileViews.map((fileView) => (
+										<li
+											key={fileView.id}
+											className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
+										>
+											{fileView.title} — {fileView.contentTypes.join(", ")}
+										</li>
+									))}
+								</ul>
+							</>
+						) : null}
+						{/* Reviewed page code is trusted; the iframe is host isolation, not data containment. A file
+						    view grants the same thing. It mints its session from the same table, and that session gets
+						    the same workspace-wide file scopes a page gets. The file it was opened from narrows
+						    nothing. So keep this warning outside both surface gates. Inside the pages gate, a plugin
+						    that ships only file views would show no warning at all. */}
+						{plugin.pages.length > 0 || plugin.fileViews.length > 0 ? (
+							<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
+								Plugin pages and file views are trusted with the data their capabilities expose. They can send that data
+								away by navigating, even when no backend origin is listed.
+							</p>
 						) : null}
 						<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
 							Backend requests can go to these origins
@@ -2153,12 +2405,14 @@ function RoutePluginsPlugin() {
 							</ul>
 						)}
 
-						{/* Page egress is consented separately from backend egress: the page runs with a member's
-						    session token, so whatever it may reach is reachable by anything running inside it. */}
+						{/* Frame egress is consented separately from backend egress: the frame runs with a member's
+						    session token, so whatever it may reach is reachable by anything running inside it. The
+						    list is declared on the plugin version and applied to every asset response, so it widens
+						    a file view's policy exactly as it widens a page's. */}
 						{plugin.uiOutboundOrigins.length > 0 ? (
 							<>
 								<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
-									This plugin's pages can call these origins from your browser
+									This plugin's pages and file views can call these origins from your browser
 								</div>
 								<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
 									{plugin.uiOutboundOrigins.map((origin) => (
@@ -2177,10 +2431,13 @@ function RoutePluginsPlugin() {
 						) : null}
 
 						<div className={"RoutePluginsPluginConsentModal-actions" satisfies RoutePluginsPlugin_ClassNames}>
+							{/* Cancel may keep its disable: when it flips, the focus sits on the pressed
+							    Accept button (kept enabled below), so no focused control is blurred, and it
+							    stops closing the modal while the install commits. */}
 							<MyButton variant="ghost" disabled={installing} onClick={() => setConsenting(false)}>
 								Cancel
 							</MyButton>
-							<MyButton disabled={installing} onClick={() => handleAcceptAndInstall(plugin)}>
+							<MyButton aria-busy={installing} onClick={() => handleAcceptAndInstall(plugin)}>
 								<Download aria-hidden />
 								{installing ? installProgress : `Accept and ${installAction.toLowerCase()}`}
 							</MyButton>
@@ -2203,6 +2460,48 @@ export { Route };
 // #region tests
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, expect, test } = import.meta.vitest;
+
+	describe("format_capability_label", () => {
+		test("names the read-only capability instead of spelling out its id", () => {
+			// An admin reads this string to decide whether to grant the access, and the plain rule
+			// turns the id into "Workspace Files Create Read Only", which reads as create-and-read
+			// access. Nothing pinned this label before, which is how it was lost once already.
+			expect(format_capability_label("workspace.files.create-read-only")).toBe("Create read-only workspace files");
+		});
+
+		test("names the frame outbound capability apart from the backend one", () => {
+			// The plain rule writes "Ui", and it lands one word away from `outbound.fetch`. These are
+			// two different consents, so an admin must be able to tell them apart at a glance. The label
+			// names both frame kinds because the origins it grants reach a file view as well as a page.
+			const frameLabel = format_capability_label("ui.outbound.fetch");
+			expect(frameLabel).toBe("Call allowed outside origins from its pages and file views");
+			expect(frameLabel).not.toContain("Ui");
+			expect(frameLabel).not.toBe(format_capability_label("outbound.fetch"));
+		});
+
+		test("names the member write capability apart from the backend one", () => {
+			// The plain rule writes "Plugin Data User Write", which reads as "the user's plugin data"
+			// instead of naming who writes. It also lands one word away from `plugin.data.write`. These
+			// are two different doors: that one writes as the installation from the plugin's backend or
+			// service, this one writes as the member from a plugin frame. An admin must be able to tell
+			// the two consents apart at a glance.
+			const memberLabel = format_capability_label("plugin.data.user-write");
+			expect(memberLabel).toBe("Write its plugin data as the acting member, from its pages and file views");
+			expect(memberLabel).not.toBe(format_capability_label("plugin.data.write"));
+		});
+
+		test("spells out every other capability with the shared rule", () => {
+			expect(format_capability_label("workspace.files.write")).toBe("Workspace Files Write");
+		});
+
+		test("leaves event types to the shared rule", () => {
+			// `format_access_label` also renders `event.type`, so it must carry no capability spellings.
+			// The hyphenated ids are the ones an override rewrites, so check the shared rule still spells
+			// them plainly.
+			expect(format_access_label("workspace.files.create-read-only")).toBe("Workspace Files Create Read Only");
+			expect(format_access_label("plugin.data.user-write")).toBe("Plugin Data User Write");
+		});
+	});
 
 	describe("RoutePluginsPluginPublisherReleases", () => {
 		test("keeps the latest failed publish visible", async () => {
@@ -2254,6 +2553,55 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(html).toContain(`published ${format_datetime(readyAt)}`);
 			expect(html).not.toContain(`published ${format_datetime(createdAt)}`);
+		});
+	});
+
+	describe("get_publisher_version", () => {
+		test("sets canProcessFiles only with both a backend entrypoint and declared events", () => {
+			// A publisher who cannot manage workspace plugins reads the consent copy from this object
+			// instead of `list_published_plugins`, which derives the same flag from the same two fields.
+			// This test pins this producer only. The route imports the generated API, never
+			// `convex/plugins.ts`, so nothing in the `src` project can see the Convex copy of the rule.
+			// Keeping the two in step is manual: change one and nothing here turns red.
+			const version = {
+				_id: "version-id",
+				name: "media",
+				displayName: "Media",
+				description: "",
+				version: "0.1.0",
+				reviewStatus: "passed",
+				capabilities: [],
+				outboundOrigins: [],
+				uiOutboundOrigins: [],
+				pages: [],
+				fileViews: [],
+				backendEntrypointFile: null,
+				events: [],
+			} as unknown as RoutePlugins_PublisherPlugin["versions"][number];
+			const publisher_plugin = (versionOverrides: Partial<RoutePlugins_PublisherPlugin["versions"][number]>) =>
+				({ versions: [{ ...version, ...versionOverrides }] }) as RoutePlugins_PublisherPlugin;
+			const uploadEvents: RoutePlugins_PublisherPlugin["versions"][number]["events"] = [
+				{ type: "files.upload.completed", contentTypes: ["image/png"], filters: [] },
+			];
+			const backendEntrypointFile = {
+				entry: "dist/backend/worker.js",
+				moduleName: "plugin.js",
+				r2Key: "plugins/media/backend/worker.js",
+				sha256: `sha256:${"b".repeat(64)}`,
+				compatibilityDate: "2026-07-01",
+				compatibilityFlags: [],
+			};
+
+			expect(get_publisher_version(publisher_plugin({ backendEntrypointFile, events: uploadEvents }))).toMatchObject({
+				canProcessFiles: true,
+			});
+			expect(get_publisher_version(publisher_plugin({ events: uploadEvents }))).toMatchObject({
+				canProcessFiles: false,
+			});
+			expect(get_publisher_version(publisher_plugin({ backendEntrypointFile }))).toMatchObject({
+				canProcessFiles: false,
+			});
+			expect(get_publisher_version(publisher_plugin({}))).toMatchObject({ canProcessFiles: false });
 		});
 	});
 

@@ -3,6 +3,7 @@
 
 import { test_d1 } from "./d1.ts";
 import type { Env, council_QueueMessageBody } from "../src/env.ts";
+import type { WorkflowInstanceStatus } from "../src/cf.ts";
 import { council_encrypt, council_sha256_hex } from "../src/crypto.ts";
 
 export const FUTURE = 4102444800000; // 2100-01-01, far past every test clock.
@@ -10,7 +11,10 @@ export const FUTURE = 4102444800000; // 2100-01-01, far past every test clock.
 export function make_test_env(overrides?: Partial<Env>) {
 	const queueSent: council_QueueMessageBody[] = [];
 	const workflow = {
-		instances: new Map<string, { status?: string }>(),
+		// Type the seeded status as the binding's own union. `dead_generation_has_no_instance`
+		// branches on `complete | errored | terminated`, so a typo like "cancelled" would quietly take
+		// the not-terminal branch and a test would pass for the wrong reason.
+		instances: new Map<string, { status?: WorkflowInstanceStatus }>(),
 		failCreate: false,
 		failGet: null as Error | null,
 	};
@@ -51,10 +55,14 @@ export function make_test_env(overrides?: Partial<Env>) {
 					throw workflow.failGet;
 				}
 				if (!workflow.instances.has(id)) {
-					throw new Error("instance not found");
+					// The real Workflows binding rethrows the bare error code from `get`, discarding any
+					// descriptive message. Use that exact string: a friendlier fixture message hides whether
+					// the production guard can recognise a missing instance at all.
+					throw new Error("instance.not_found");
 				}
-				const stored = workflow.instances.get(id);
-				const status = typeof stored?.status === "string" && stored.status !== "" ? stored.status : "running";
+				// A test that only needs the instance to exist seeds it as `{}`; give that one a status
+				// the same way `create` does.
+				const status = workflow.instances.get(id)?.status ?? "running";
 				return { id, status: async () => ({ status }) };
 			},
 		},
@@ -63,7 +71,6 @@ export function make_test_env(overrides?: Partial<Env>) {
 		},
 		COUNCIL_PLUGIN_ORIGIN: "https://plugin-origin.example",
 		CONVEX_HTTP_URL: "https://convex.example",
-		COUNCIL_TRACK_FILE_PREFIX: "council",
 		COUNCIL_MEETING_MAX_MINUTES: "60",
 		COUNCIL_MEETING_MAX_PARTICIPANTS: "25",
 		COUNCIL_DESTINATION_PATH_PREFIX: "/meetings",
@@ -218,6 +225,10 @@ function default_handler(call: RecordedCall): Response | null {
 			uploadUrlExpiresAt: FUTURE,
 		});
 	}
+	// This answers committed on the very first call. The real host answers that only when the R2
+	// event has already landed; the service PUTs and finalizes straight away, so in production the
+	// first answer is normally `pending` and the service polls. A test about that poll has to script
+	// the pending answers itself — `pipeline.test.ts` has two that do.
 	if (url.includes("/api/v1/files/service-uploads/finalize")) {
 		if (!uploadRunKey(call.bodyJson)) {
 			return Response.json({ message: "Not found" }, { status: 404 });

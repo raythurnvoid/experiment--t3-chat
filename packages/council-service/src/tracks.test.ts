@@ -67,10 +67,17 @@ describe("council_parse_track_file_name", () => {
 		expect(parsed?.providerParticipantId).toBe(ALICE.providerParticipantId);
 	});
 
+	// A 4-field name leaves the timestamp field undefined, so "too few fields" is refused by the
+	// timestamp guard and never proves the field-count guard. The prefix-less row is what proves it:
+	// five fixed fields, nothing else wrong, so only the count guard can refuse it. The empty-id rows
+	// blank one field each, so each one leaves a single guard to refuse it.
 	test.each([
 		["no extension", "default_a_b_peer_audio_1786714394062"],
 		["too few fields", "default_peer_audio_1786714394062.webm"],
 		["non-numeric timestamp", "default_a_b_peer_audio_whenever.webm"],
+		["no prefix before the five fixed fields", "aaa011ac_199b5879_peer_audio_1786714394062.webm"],
+		["an empty participant id", "default__199b5879_peer_audio_1786714394062.webm"],
+		["an empty peer id", "default_aaa011ac__peer_audio_1786714394062.webm"],
 	])("refuses a name with %s", (_label, fileName) => {
 		expect(council_parse_track_file_name(fileName)).toBeNull();
 	});
@@ -152,13 +159,22 @@ describe("council_attribute_tracks", () => {
 		expect(rejected).toEqual([{ fileName: stranger.fileName, reason: "unknown_participant" }]);
 	});
 
-	test("drops a screen-share track so its separate timeline never joins the spoken transcript", () => {
-		const screenShare = alice_track(ALICE_TRACK_FILE.replace("_peer_audio_", "_screenshare_video_"));
+	// Two independent conditions refuse a track here: the stream must be a peer stream, and the media
+	// must be audio. A file wrong in both fields is still refused with either condition deleted, so
+	// each condition also gets a row that breaks its own field alone. No such file exists today,
+	// because `council_provider_start_track_recording` sends no `layers` and the provider then writes
+	// per-participant audio only. These rows are the file shapes the guard exists to refuse.
+	test.each([
+		["a peer video track", "_peer_video_"],
+		["a screen-share audio track", "_screenshare_audio_"],
+		["a screen-share video track", "_screenshare_video_"],
+	])("drops %s instead of merging it into the spoken transcript", (_label, streamAndMedia) => {
+		const track = alice_track(ALICE_TRACK_FILE.replace("_peer_audio_", streamAndMedia));
 
-		const { segments, rejected } = council_attribute_tracks({ tracks: [screenShare], participants: [ALICE] });
+		const { segments, rejected } = council_attribute_tracks({ tracks: [track], participants: [ALICE] });
 
 		expect(segments).toEqual([]);
-		expect(rejected).toEqual([{ fileName: screenShare.fileName, reason: "not_an_audio_peer_track" }]);
+		expect(rejected).toEqual([{ fileName: track.fileName, reason: "not_an_audio_peer_track" }]);
 	});
 });
 
@@ -168,8 +184,12 @@ describe("council_provider_transcript_has_real_identity", () => {
 		(placeholder) => {
 			expect(
 				council_provider_transcript_has_real_identity({
+					// Give the placeholder to a real participant as its provider id. The "is this
+					// speaker in the session?" check then passes and only the reserved-set check can
+					// refuse. Against UUID fixtures the placeholder is an unknown id anyway, and this
+					// test would pass with the reserved set deleted.
 					speakerIds: [placeholder],
-					participants: [ALICE, BOB],
+					participants: [{ ...ALICE, providerParticipantId: placeholder }, BOB],
 				}),
 			).toBe(false);
 		},
@@ -233,16 +253,35 @@ describe("council_render_transcript_markdown", () => {
 			participants: [{ ...ALICE, displayName: "<script>Alice</script>" }, BOB],
 		});
 
-		const markdown = council_render_transcript_markdown({ title: "Weekly sync", segments });
+		const markdown = council_render_transcript_markdown({
+			// The title is member-typed too, and it reaches this renderer unfiltered. A title with no
+			// `<` in it would leave the heading's escape untested: the whole-document check below
+			// would pass with that escape deleted.
+			title: "<img src=x>",
+			segments,
+			droppedTrackCount: 0,
+			recordingWasTooShort: false,
+		});
 
+		expect(markdown).toContain("\\<img");
 		expect(markdown).not.toMatch(UNESCAPED_ANGLE_BRACKET_REGEX);
 		expect(markdown).toContain("\\<script\\>Alice");
 		expect(markdown).toContain("Bob Castellane");
 		expect(markdown).toContain("`0:08`");
+		// Every name here is whatever the joiner typed. The document has to say so, or a reader takes
+		// the transcript as a record of who was actually in the room.
+		expect(markdown).toContain("They are not verified identities.");
 	});
 
 	test("says so plainly when nothing was recorded", () => {
-		expect(council_render_transcript_markdown({ title: "Empty", segments: [] })).toContain("No speech was recorded");
+		expect(
+			council_render_transcript_markdown({
+				title: "Empty",
+				segments: [],
+				droppedTrackCount: 0,
+				recordingWasTooShort: false,
+			}),
+		).toContain("No speech was recorded");
 	});
 
 	test("stamps past an hour with hours", () => {
@@ -251,6 +290,13 @@ describe("council_render_transcript_markdown", () => {
 			participants: [ALICE],
 		});
 
-		expect(council_render_transcript_markdown({ title: "Long", segments })).toContain("`1:02:03`");
+		expect(
+			council_render_transcript_markdown({
+				title: "Long",
+				segments,
+				droppedTrackCount: 0,
+				recordingWasTooShort: false,
+			}),
+		).toContain("`1:02:03`");
 	});
 });

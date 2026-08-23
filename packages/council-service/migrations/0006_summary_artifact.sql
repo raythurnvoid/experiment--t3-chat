@@ -1,10 +1,14 @@
 -- Old upload bodies and host fingerprints do not contain the two required file mode flags. Stop
 -- until the maintenance gate has drained every old artifact instead of preserving rows that the
 -- strict host can never replay.
-DROP TABLE IF EXISTS council_upgrade_guard;
-CREATE TABLE council_upgrade_guard (artifact_rows INTEGER CHECK (artifact_rows = 0));
-INSERT INTO council_upgrade_guard (artifact_rows) SELECT COUNT(*) FROM meeting_artifacts;
-DROP TABLE council_upgrade_guard;
+--
+-- A refused run stops on the INSERT below, after the guard table is created. An applier that runs a
+-- migration file statement by statement leaves that table behind, and the operator then drains the
+-- old artifacts and applies this file again. So drop any leftover guard table before creating it.
+DROP TABLE IF EXISTS migration_0006_empty_guard;
+CREATE TABLE migration_0006_empty_guard (artifact_rows INTEGER CHECK (artifact_rows = 0));
+INSERT INTO migration_0006_empty_guard (artifact_rows) SELECT COUNT(*) FROM meeting_artifacts;
+DROP TABLE migration_0006_empty_guard;
 
 -- Add the generated meeting summary. SQLite cannot widen a CHECK in place, so rebuild only this
 -- now-empty table and recreate its index.

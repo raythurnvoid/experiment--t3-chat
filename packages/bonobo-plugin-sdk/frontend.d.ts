@@ -1,7 +1,7 @@
 import type { BonoboPublicDoc } from "bonobo-plugin-sdk";
 
 /**
- * Sent by the page to `window.parent` at the exact `parentOrigin` from the URL fragment once the
+ * Sent by the frame to `window.parent` at the exact `parentOrigin` from the URL fragment once the
  * connect listener is installed. It tells the host this frame is ready to receive
  * {@link BonoboUiInitMessage} and proves it read the frame's bootstrap nonce.
  */
@@ -11,7 +11,7 @@ export interface BonoboUiReadyMessage {
 }
 
 /**
- * Sent by the page to `window.parent` to ask for a fresh session token. The host answers with a
+ * Sent by the frame to `window.parent` to ask for a fresh session token. The host answers with a
  * {@link BonoboUiTokenMessage} or {@link BonoboUiTokenErrorMessage} echoing `requestId`.
  */
 export interface BonoboUiTokenRefreshRequestMessage {
@@ -59,7 +59,7 @@ export type BonoboUiContext = BonoboUiPageContext | BonoboUiFileViewContext;
 
 /**
  * The host's answer to {@link BonoboUiReadyMessage}: it delivers the short-lived scoped session
- * token (`plu_...`), the Convex deployment URL the page's own client connects to, and the
+ * token (`plu_...`), the Convex deployment URL the frame's own client connects to, and the
  * embedding context. The init is trusted only from `window.parent`, the exact `parentOrigin`
  * from the URL fragment, and the matching frame nonce. The token travels over postMessage only
  * and is never placed in a URL. `tokenExpiresAt` is Unix epoch milliseconds.
@@ -102,7 +102,7 @@ export interface BonoboUiTokenErrorMessage {
 
 /**
  * Why a subscription died, when the SDK could say. `reason` is `"invalid"` when the watch inputs
- * failed the client-side checks, and `"capacity"` when the page holds too many live
+ * failed the client-side checks, and `"capacity"` when the frame holds too many live
  * subscriptions (close one first). A death without a reason means access is gone or the query
  * failed on the server.
  */
@@ -114,9 +114,10 @@ export interface BonoboUiWatchDeathInfo {
 /**
  * One non-null `data.watchWindow` update. `docs` replaces the whole flattened window, ordered by
  * key. `hasMore` says older docs exist below the window (`loadOlder` fetches them). `atCapacity`
- * says the window cannot grow right now — its interval budget or the page's subscription budget
- * is spent. `incomplete` says docs are missing in the middle of the window because an overflowing
- * range could not be re-read; treat the list as gapped, not merely short.
+ * says the window cannot grow right now — either its own 6-interval budget or the frame's budget
+ * of 24 server subscriptions is spent. `incomplete` says docs are missing in the middle of the
+ * window because an overflowing range could not be re-read; treat the list as gapped, not merely
+ * short.
  */
 export interface BonoboUiDataWindowUpdate {
 	docs: BonoboPublicDoc[];
@@ -175,6 +176,11 @@ export interface BonoboUiFrontendClient {
 	 * refreshes the token and retries exactly once. Ok responses resolve with the parsed JSON
 	 * body; non-ok responses throw an `Error` carrying `status` and `responseText`.
 	 *
+	 * The result is `unknown` on purpose. It is whatever the API answered, so the page has to
+	 * check the shape before reading it. The pagination note below is the reason: a listing page
+	 * may come back short or even empty, and a type that let you read `.items` straight away
+	 * would hide that.
+	 *
 	 * Pagination: with `contentTypePrefixes`, one `/api/v1/files/list` request uses one bounded
 	 * query. `scanLimit` sets its source-doc budget; the server defaults and caps it at 10,000 docs.
 	 * The query does not set a byte-read cap. A page may come back short or even empty while
@@ -183,9 +189,12 @@ export interface BonoboUiFrontendClient {
 	 * of requests per user action (say 30), keep `cursor` across actions, buffer items fetched
 	 * beyond what is shown, and retry a `429` on the same cursor — the page is not lost.
 	 */
-	fetchJson(path: string, init?: { method?: string; headers?: Record<string, string>; body?: unknown }): Promise<any>;
+	fetchJson(
+		path: string,
+		init?: { method?: string; headers?: Record<string, string>; body?: unknown },
+	): Promise<unknown>;
 	/**
-	 * The plugin's own document store, on the page's own Convex client. Reads are reactive
+	 * The plugin's own document store, on the frame's own Convex client. Reads are reactive
 	 * Convex subscriptions; writes run as the viewing member, attributed to the session's user.
 	 * Every write RESOLVES with a {@link BonoboUiDataWriteResult} — `_nay` resolves too, and a
 	 * failed call (network loss, an unserializable payload) resolves the stable
@@ -202,8 +211,14 @@ export interface BonoboUiFrontendClient {
 		 *
 		 * `limit` must be an integer from 1 to 100 — an out-of-range limit kills the
 		 * subscription at birth with `reason: "invalid"`, nothing is clamped. The SDK allows at
-		 * most 8 active subscriptions per page (plain watches and windows share those slots);
+		 * most 8 active subscriptions per frame (plain watches and windows share those slots);
 		 * one more dies at birth with `reason: "capacity"`.
+		 *
+		 * A second ceiling can refuse this watch before those 8 slots are full. The frame holds at
+		 * most 24 server subscriptions: one per plain watch, one per window interval. A grown
+		 * window spends several, so four fully-grown windows spend all 24 while taking only 4 of
+		 * the 8 slots. A watch opened after that dies with `reason: "capacity"` too. Close a
+		 * window or a watch to get subscriptions back.
 		 */
 		watch(
 			opts: { collection: string; keyPrefix?: string; limit: number },
@@ -217,6 +232,12 @@ export interface BonoboUiFrontendClient {
 		 * ({@link BonoboUiDataWindowUpdate}), and `null` exactly once when the window dies — same
 		 * death contract as `watch`. A window can hold up to 6 internal reads (600 docs at
 		 * `pageSize` 100); past that it reports `atCapacity` instead of growing.
+		 *
+		 * The frame's 24 server subscriptions are the other ceiling. Every internal read of every
+		 * window spends one, so four fully-grown windows spend the whole frame budget. A window
+		 * reports `atCapacity` and refuses `loadOlder()` as soon as that budget is gone, which
+		 * can happen long before its own 6 reads are used. The same ceiling kills a new window at
+		 * birth with `reason: "capacity"`.
 		 */
 		watchWindow(
 			opts: { collection: string; keyPrefix?: string; pageSize: number },
@@ -225,7 +246,8 @@ export interface BonoboUiFrontendClient {
 		/**
 		 * Creates a document under a server-generated key starting with `keyPrefix`. Pass the same
 		 * `clientRequestId` when retrying so a replayed append answers the stored key instead of
-		 * writing twice.
+		 * writing twice. The new document is member-owned (`ownership: "owned"`): only the appending
+		 * member may later change or delete it through interactive writers.
 		 */
 		append(opts: {
 			collection: string;
@@ -275,7 +297,7 @@ export interface BonoboUiFrontendClient {
 			expectedRevision?: number;
 		}): Promise<BonoboUiDataRemoveResult>;
 	};
-	/** Member-name resolution on the page's own Convex client. */
+	/** Member-name resolution on the frame's own Convex client. */
 	members: {
 		/**
 		 * Resolves up to 50 user ids to display names. A missing or deleted user maps to `null`.
@@ -286,7 +308,7 @@ export interface BonoboUiFrontendClient {
 }
 
 /**
- * Connects the page to the embedding host app. It installs one shared `message` listener (for
+ * Connects the frame to the embedding host app. It installs one shared `message` listener (for
  * init and token responses), posts {@link BonoboUiReadyMessage} to `window.parent`, and resolves
  * with the client when the host's {@link BonoboUiInitMessage} arrives.
  * `bonobo:init` messages after the first are ignored.
@@ -297,8 +319,8 @@ export interface BonoboUiFrontendClient {
  * the document unloads. The host owns the startup deadline and replaces a failed frame; the SDK
  * does not run a competing timeout.
  *
- * On init the SDK opens the page's own Convex client against the init's `convexUrl` and closes
- * it on `pagehide` — a page restored from the browser's back/forward cache stays frozen and
+ * On init the SDK opens the frame's own Convex client against the init's `convexUrl` and closes
+ * it on `pagehide` — a frame restored from the browser's back/forward cache stays frozen and
  * needs a reload. The client authenticates with short-lived plugin-session JWTs minted by
  * exchanging the session token at the same-origin `/plugins-ui/session-jwt` route. The exchange
  * itself never extends the session; it stays alive because the SDK refreshes the session token

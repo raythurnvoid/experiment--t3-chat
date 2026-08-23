@@ -1,5 +1,5 @@
 (() => {
-	const VERSION = "0.6.2";
+	const VERSION = "0.6.3";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	/** Somewhere harmless to move the pointer from, so the next move has a non-zero screen delta. */
 	const HOVERCARD_PARK_POINT = { x: 900, y: 500 };
@@ -614,10 +614,43 @@
 					const inViewport =
 						rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
 					if (inViewport) {
-						const center = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-						const top = document.elementFromPoint(center.x, center.y);
-						if (top && top !== element && !element.contains(top) && !top.contains(element)) {
-							blockedHitTargets.push({ ...described, topAtCenter: describeControl(top) });
+						// Sample the corners as well as the centre. Testing only the centre missed every control
+						// whose EDGE was covered while its middle stayed clear, and Playwright still refuses that
+						// click. Run against the room at 600x400 with a live pointer-target defect on screen, the
+						// centre-only test answered `blockedHitTargets: []` — a clean pass at the exact moment the
+						// browser was blocking the click.
+						// `topAtCenter` keeps its old meaning: the element covering the centre, or null when only
+						// an edge is covered. Read `blockedPoints` to tell a fully covered control from a partly
+						// covered one.
+						const inset = Math.min(3, rect.width / 2, rect.height / 2);
+						const samples = [
+							{ point: "center", x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 },
+							{ point: "top-left", x: rect.x + inset, y: rect.y + inset },
+							{ point: "top-right", x: rect.right - inset, y: rect.y + inset },
+							{ point: "bottom-left", x: rect.x + inset, y: rect.bottom - inset },
+							{ point: "bottom-right", x: rect.right - inset, y: rect.bottom - inset },
+						];
+						const blockedPoints = [];
+						let topAtCenter = null;
+						for (const sample of samples) {
+							// A sample outside the window has no element under it, and elementFromPoint answers
+							// null there. That is a control scrolled or clipped out of view, not a covered one,
+							// so skip the point instead of counting it as blocked.
+							if (sample.x < 0 || sample.y < 0 || sample.x >= window.innerWidth || sample.y >= window.innerHeight) {
+								continue;
+							}
+							const top = document.elementFromPoint(sample.x, sample.y);
+							if (!top || top === element || element.contains(top) || top.contains(element)) {
+								continue;
+							}
+							const describedTop = describeControl(top);
+							if (sample.point === "center") {
+								topAtCenter = describedTop;
+							}
+							blockedPoints.push({ point: sample.point, top: describedTop });
+						}
+						if (blockedPoints.length > 0) {
+							blockedHitTargets.push({ ...described, topAtCenter, blockedPoints });
 						}
 					}
 

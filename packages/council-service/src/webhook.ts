@@ -6,13 +6,21 @@
  * provider changes the delivery UUID on retry; store the verified event and the Queue-outbox
  * state in ONE D1 transaction; enqueue only after that commit. The 200 answer means "durably
  * stored", never "processed".
+ *
+ * Nobody is authenticated until that signature check passes, so the body is read under a byte cap
+ * instead of being buffered whole.
  */
 
 import type { Env } from "./env.ts";
 import { council_sha256_hex, council_verify_rsa_signature } from "./crypto.ts";
-import { council_json } from "./http.ts";
-import { council_get_meeting } from "./db.ts";
+import { council_json, council_read_stream_with_limit } from "./http.ts";
 import { council_outbox_insert_statement, council_dispatch_outbox } from "./outbox.ts";
+
+/**
+ * The most body this route will hold. A provider event is a small JSON object, so this is the same
+ * 64 KiB ceiling `council_read_json_body` puts on the service's other JSON commands.
+ */
+const WEBHOOK_MAX_BYTES = 64 * 1024;
 
 /** How the provider names things inside event bodies, kept tolerant: shapes are M0-informed but
  * webhook bodies were never captured live, so every path is optional and misses degrade to an
@@ -50,7 +58,22 @@ export async function council_handle_webhook(request: Request, env: Env, now: nu
 	}
 
 	// The signature covers the EXACT raw bytes. Nothing is parsed before this check passes.
-	const bodyBytes = new Uint8Array(await request.arrayBuffer());
+	//
+	// Read those bytes through a cap rather than with `request.arrayBuffer()`. This is the only route
+	// in the Worker with no caller identity, and everything above it only proves two headers are
+	// present, so any anonymous caller reaches this line. `arrayBuffer()` pulls the whole body into
+	// the isolate first, and Cloudflare accepts bodies far larger than an isolate has memory for, so
+	// the read itself is the door. `council_read_stream_with_limit` drops the reader the moment the
+	// cap is passed, which keeps the raw bytes exact for the check below and refuses the rest.
+	let bodyBytes = new Uint8Array(0);
+	if (request.body) {
+		const read = await council_read_stream_with_limit(request.body, WEBHOOK_MAX_BYTES);
+		if (read._nay) {
+			return council_json(413, { message: "Request body is too large" });
+		}
+		bodyBytes = read._yay;
+	}
+
 	const verified = await council_verify_rsa_signature({
 		publicKeyPem: env.REALTIMEKIT_WEBHOOK_PUBLIC_KEY,
 		signatureBase64: signature,
@@ -123,9 +146,21 @@ export async function council_handle_webhook(request: Request, env: Env, now: nu
 
 	try {
 		await db.batch(statements);
-	} catch {
-		// A concurrent duplicate delivery hit the unique index between our check and this commit.
-		// The other delivery owns the work; this one is the same event.
+	} catch (error) {
+		// A failed commit means one of two very different things, and only one of them may answer 200.
+		// A concurrent delivery of the SAME event can commit between the check above and this batch,
+		// and the unique index then refuses this one — the event is stored, so 200 is right. Every
+		// other failure (a D1 outage, a constraint broken by a genuinely new event) stored nothing,
+		// and a 200 would tell the provider the event is durable and stop its retries, which loses a
+		// recording-finished event in silence. So re-read the dedupe row and rethrow when it is not
+		// there, and the request fails with a 5xx the provider retries.
+		const stored = await db
+			.prepare("SELECT id FROM webhook_events WHERE webhook_id = ? AND body_sha256 = ?")
+			.bind(webhookId, bodySha256)
+			.first<{ id: string }>();
+		if (!stored) {
+			throw error;
+		}
 		return council_json(200, { received: true });
 	}
 

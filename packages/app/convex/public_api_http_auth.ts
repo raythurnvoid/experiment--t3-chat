@@ -139,10 +139,10 @@ export async function public_api_resolve_live_principal(
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 
-	// A `processing` grant is meant to outlive the actor's permissions one day, so that work already
-	// accepted is not stranded half-written. That exemption is not here yet on purpose: it is only safe
-	// once the grant is sealed to one exact target, and the sealing fields belong to the Council work
-	// that mints such a grant. Until then every service grant is checked like any other principal.
+	// Every service grant is judged with its actor's live permissions, in both phases, on purpose.
+	// `seal-processing` binds a `processing` grant to one destination path prefix, and that seal says
+	// where the grant may write. It does not say whether the member behind it may still write at all.
+	// So do not exempt `processing` here: the seal is not a substitute for this check.
 	const requiredAppPermission = REQUIRED_APP_PERMISSION_BY_SCOPE[args.requiredScope];
 	if (requiredAppPermission && principal.kind !== "plugin_run") {
 		const allowed =

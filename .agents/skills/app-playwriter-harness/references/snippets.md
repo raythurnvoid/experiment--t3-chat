@@ -51,7 +51,9 @@ vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codeg
 // 2. Read the token out of the file inside the runner and never print it.
 const raw = fs.readFileSync(grantFile, "utf8");
 const token = JSON.parse(raw.slice(raw.indexOf("{")))._yay.token; // `convex run` prints a banner first
-// create-target -> signed PUT -> finalize, all with { idempotencyKey, targetKey }
+// create-target -> signed PUT -> finalize, all with { idempotencyKey, targetKey }.
+// create-target's body is strict and every field is required:
+// { idempotencyKey, targetKey, path, contentType, size, readOnly, nonCollaborative }
 ```
 
 What cost time on the first run:
@@ -59,6 +61,7 @@ What cost time on the first run:
 - `create-target` is closed to `Free`. Every dev account starts on `Free`, so the first call answers `403 This workspace's plan does not include plugin service file storage` and nothing else runs. The honest fix is to buy a paid plan in the sandbox — see "Move The QA Account To A Paid Plan Through Polar Checkout" below. When you only need the paid state for one check and want it reverted exactly, patch the snapshot instead: export `billing_usage_snapshots` with `data --format jsonLines`, copy the file, change only that user's `subscription.productId` to the `Pay As You Go` product id (read the ids with `data products --component polar`), `import --table billing_usage_snapshots --replace --yes --format jsonLines <file>`, run the check, then import the untouched export back and diff the readback against it. `import --replace` keeps `_id` and `_creationTime`, so the restore is byte-identical. The payer is the billed user, so in an owner-billed organization it is the owner's row, not the acting member's. Only `create-target` is gated: `remint`, `finalize`, `delete`, and `archive-destination` keep answering on `Free`.
 - `convex run` prints a deployment banner before the JSON, so `JSON.parse` needs `raw.slice(raw.indexOf("{"))`.
 - The grant's `destinationPathPrefix` is the fence. `create-target` creates the destination folder itself, so the path does not have to exist.
+- `create-target`'s body is strict, and `readOnly` and `nonCollaborative` are required booleans like every other field — leaving one out answers `400` before anything else runs. `readOnly: true` also needs the installation to have accepted `workspace.files.create-read-only`, or the call answers `403 Permission denied`. `nonCollaborative: true` is only allowed for an editable text file; anything else answers `400 Only editable text files can be non-collaborative`. Both booleans are part of the replay fingerprint, so a retry that flips one is a different file: `409 This target key was already used for a different file`.
 - `finalize` answers `200` with `state: "pending"` and `actualBytes: null` while the R2 event has not arrived yet. Call it again a few seconds later to see `committed`. The R2 queue decides when, not the route.
 - For `create-target`, `remint`, and `finalize`, the pair `{ idempotencyKey, targetKey }` identifies one file in one upload run. The target also stays bound to the exact destination seal that created it. Active replay, remint, and finalize recheck the current path, archive state, and restricted ACL; a later read-only lock still allows the accepted upload to finish. An exact create replay still returns that target when either 16-target cap is full: one run, or one live cross-run delete group at the sealed destination. The one temporary exception is an old staging deletion job: both a pending create replay and `remint` answer 409 until it settles, then the retry reuses the same asset and staging key and you send the whole file again. `delete` is different: it finds the bounded live `{ installation, destination, targetKey }` group across upload runs, so its `idempotencyKey` does not limit cleanup to one run. It rechecks each node's current path, restricted ACL, and lock before the first write. Released history is not listed in full on replay.
 - To prove where the quota is charged, declare a size that is deliberately wrong (for example declare 1 byte and PUT 4096) and read the `quotas` doc between `create-target` and the PUT. `create-target` must leave `usedCount` unchanged; the R2 settlement then adds exactly the stored size. Read it with `convex data quotas --limit 200 --format jsonLines` and pick the row with `quotaName: "plugin_service_storage_bytes"` for the workspace. The final total alone cannot tell the two models apart, because charging the guess plus the difference lands on the same number.
@@ -272,15 +275,27 @@ $axeDir = Join-Path $env:TEMP "axe-install"
 New-Item -ItemType Directory -Force $axeDir | Out-Null
 Set-Location $axeDir
 if (-not (Test-Path "$axeDir/package.json")) { '{"name":"axe-tmp","private":true}' | Set-Content "$axeDir/package.json" }
-vp env exec pnpm add axe-core
+vp env exec pnpm add axe-core@4.12.1
 ```
 
-Then in a runner: read it from the OS temp dir (the sandbox `fs` can read there), inject, and run with the fire-and-forget pattern from `known-hazards.md` so each CLI call stays under 5000ms.
+Pin the version. Unpinned, this line installs whatever is latest, and the audit results recorded above
+were measured against 4.12.1. A run that quietly used a newer axe would report a different rule set and
+look like a regression in the app.
+
+Run `pnpm add` **unconditionally**, every time. The `Test-Path` guard above covers only the throwaway
+`package.json`; do not extend it over the install. Observed 2026-08-22: a reviewer wrapped the whole
+block in `if (-not (Test-Path ...))`, so a cached install from an earlier session was reused and the run
+used **axe 4.13.0** against this recipe's 4.12.1 pin. A pinned version you skip installing is not a pin.
+
+Then read the version back before you trust a single result. The `AXE:` line the injector logs below is
+the only proof of what actually ran — put it in the evidence file next to the findings. If it does not
+say the pinned version, the audit is measuring a different rule set than the one recorded here.
+
+Then in a runner: hand Playwright the **path** and let it read the file itself, then run with the fire-and-forget pattern from `known-hazards.md` so each CLI call stays under 5000ms.
 
 ```js
-// runner 1: inject
-const fs = require("node:fs"), os = require("node:os");
-await state.page.addScriptTag({ content: fs.readFileSync(os.tmpdir() + "/axe-install/node_modules/axe-core/axe.min.js", "utf8") });
+// runner 1: inject — Playwright reads the file on the relay host, so the sandbox `fs` is not involved
+await state.page.addScriptTag({ path: process.env.TEMP + "/axe-install/node_modules/axe-core/axe.min.js" });
 console.log("AXE:", await state.page.evaluate(() => window.axe && window.axe.version));
 
 // runner 2: start (scope to a selector to keep it fast, e.g. ".MainAppHeaderOrganizationSwitcherModal")
@@ -294,6 +309,21 @@ console.log("STARTED");
 
 // runner 3: read state.axeDone / state.axe
 ```
+
+Run each of those three blocks with `-f` and a runner file, not with `-e`. **`vp env exec` hands the
+CLI only the FIRST line of a multi-line `-e` argument and drops the rest**, without any error.
+Verified 2026-08-23: a two-line `-e` printed `LINE-ONE` and never `LINE-TWO`, and the same script with
+a silent first line printed `Code executed successfully (no output)` and exited 0 — which reads
+exactly like a script that ran and had nothing to say.
+
+Do not reach for the sandbox `fs` here, and be careful copying only part of runner 1. The older form
+of this recipe read the bytes itself with `const fs = require("node:fs"), os = require("node:os")`
+before injecting them, and that form does still work. But copy its `addScriptTag` line without the
+`require` line above it and you get `ReferenceError: fs is not defined`, because **`fs` and `os` are
+not globals in the sandbox** — only `require` is. The obvious repair is worse than the bug: `await
+import("node:fs")` throws `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING`, and uncaught it takes the CLI
+client down with the libuv assertion that looks exactly like a dead relay. Do not restart the relay
+over it — see `known-hazards.md`. The `{ path }` form above avoids the whole area.
 
 Always report `incomplete` too — the app's ARIA-on-`<span>` badges and gradient backgrounds land there, not in `violations`. `window.axe` is lost on every reload and `goto`, so re-inject after each navigation.
 
@@ -465,9 +495,9 @@ The CLI prints progress text before the JSON, so slice from the first `{` before
 
 Args survive `vp env exec` best as JSON5 with single-quoted strings inside one double-quoted PowerShell string: `"{pluginName:'media',userId:'<id>'}"`. Backslash-escaped double quotes get mangled on the way through and the CLI fails with `JSON5: invalid character '\"'`.
 
-⚠ `convex run` carries an **admin key, not a user identity**, so `ctx.auth.getUserIdentity()` is null by default and any handler that calls `require_identity` refuses it. Pass `--identity '<json>'` to supply a fake identity when you need one; the admin key still authorizes the call, so this reaches internal functions too.
+⚠ `convex run` carries an **admin key, not a user identity**, so `ctx.auth.getUserIdentity()` is null by default and any handler that resolves a current user refuses it. There is no single `require_identity` helper to grep for — the shape is `server_convex_get_user_fallback_to_anonymous(ctx)` (from `server/server-utils.ts`) followed by a `throw convex_error({ message: "Unauthenticated" })` when it answers null. Grep for that helper name to find the gated handlers. Pass `--identity '<json>'` to supply a fake identity when you need one; the admin key still authorizes the call, so this reaches internal functions too.
 
-Presence is no longer usable as the "is the client registered" probe from here. All seven handlers require an identity, `listRoom` refuses `app_presence_global` outright even *with* one, and `heartbeat` refuses an identity-less caller with its own message before `require_identity` is reached — so it is not a `convex run` workaround either. Check presence registration from **inside the page** instead, where the app's own identity is live: `presence:heartbeat` for the room, then `presence:list` with the returned room token.
+Presence is no longer usable as the "is the client registered" probe from here. All eight exported handlers in `presence.ts` require an identity — seven throw the plain `Unauthenticated`, and `heartbeat` throws its own `"Presence heartbeat requires an authenticated user"` — and `listRoom` refuses `app_presence_global` outright even *with* one, so it is not a `convex run` workaround either. Check presence registration from **inside the page** instead, where the app's own identity is live: `presence:heartbeat` for the room, then `presence:list` with the returned room token.
 
 ## Prove A Public Convex Query Needs No Auth (truly anonymous)
 
@@ -495,6 +525,31 @@ Do **not** read either result as "the roster is protected". It is not. `presence
 ⚠ A source fix is not a deployed fix. These handlers live in Convex, so an edit in the working tree changes nothing until someone pushes it. A verification run once reported this leak as still open when the fix was already written and its tests passing: no `convex dev` was running, and the deployment was serving an *intermediate* version whose `returns` validator already matched the new shape while the handler did not. Check the deployment before concluding, and never read a matching validator as proof the whole file shipped.
 
 `users_anagraphics.email` is a required field on the returned doc: a real address for signed-in (Clerk) users, `""` for anonymous ones — and `""` for anyone the caller is not, which is exactly what the fix does. When reproducing an email leak, redact in the report — log `{ present, length, hasAt }`, never the value. To chain many ids for a blast-radius count, use `Promise.all` over the presence ids with the fire-and-forget pattern (stays under the 5000ms CLI budget).
+
+## Prove A Cross-Origin Iframe Permissions-Policy Grant Without The Host App
+
+You do not need the real host to test what an `<iframe>`'s `allow` attribute grants.
+`http://localhost:<port>` and `http://[::1]:<port>` are the same server on two different origins, so
+any local page can embed another one cross-origin with the host's exact `sandbox` list.
+
+Build the frame both ways and read the answer **from inside the child** — the parent's own
+`allowsFeature(feature, childOrigin)` reports the parent's policy, not the delegation, and answers
+`false` either way. Then drive the app's real button, because `page.evaluate` carries no user
+activation and its `writeText` rejects in both frames.
+
+```js
+// inside the child frame
+const allowed = document.featurePolicy.allowsFeature("clipboard-write");
+const allowlist = document.featurePolicy.getAllowlistForFeature("clipboard-write");
+```
+
+| frame | `allowed` | `allowlist` | real `locator.click()` | `document.execCommand("copy")` |
+| --- | --- | --- | --- | --- |
+| with `allow="clipboard-write"` | `true` | `["http://localhost:5199"]` | resolves | `true` |
+| without `allow` | `false` | `[]` | rejects `NotAllowedError` | `true` |
+
+Read the status the app itself renders after the click. That is the only reading that covers the
+policy and the gesture at the same time.
 
 ## Propose A Durable Memory
 

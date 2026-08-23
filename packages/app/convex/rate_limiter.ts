@@ -108,10 +108,12 @@ const rate_limiter_CONFIG = {
 	files_snapshot_write: STRICT_WRITE,
 	files_tree_write: BULK_FILES_WRITE,
 	files_yjs_push_update: STRICT_WRITE,
-	// A member writing plugin data from a plugin page, one document per call. Chat-like use is
-	// bursty — a few messages or reactions in a row — so the capacity covers a short burst and
-	// the rate sustains one write every two seconds. Keyed by user and installation together, so
-	// one busy plugin page cannot drain the member's write budget in every other plugin.
+	// A member writing plugin data from a plugin frame, one document per call. The name says "page",
+	// but both frame kinds charge here: a plugin page and a file view. Nothing in `plugins_data.ts`
+	// reads the session's `fileNodeId`, so a file view writes exactly as a page does. Chat-like use
+	// is bursty — a few messages or reactions in a row — so the capacity covers a short burst and
+	// the rate sustains one write every two seconds. Keyed by user and installation together, so one
+	// busy frame cannot drain the member's write budget in every other plugin.
 	plugins_data_page_user_write: {
 		kind: "token bucket",
 		rate: 30,
@@ -119,10 +121,15 @@ const rate_limiter_CONFIG = {
 		capacity: 10,
 	},
 	plugins_manage: STRICT_AUTH_OR_BILLING,
-	// Initial mint plus occasional refresh per open plugin page; token TTL is 30 minutes.
+	// Two kinds of charge share this bucket. A plugin page mints here. Every token rotation also
+	// charges here, because `refresh_ui_session` serves both frame kinds: a plugin page and a file
+	// view. Only the file-view mint goes to the separate bucket below. Rotations stay rare. The token
+	// lives 30 minutes, and the SDK rotates it shortly before expiry or after a 401. So browsing
+	// files does not fill this bucket. A file switch mints instead, and that mint is charged below.
 	plugins_ui_session_mint: STRICT_WRITE,
 	// File views mint on every file switch and every details/view toggle, so browsing a few videos
-	// in quick succession must not read as a broken page. Refresh stays on the stricter page bucket.
+	// in quick succession must not read as broken. Only the mint is split out here. A file-view
+	// session rotates its token on the stricter bucket above, exactly as a page does.
 	plugins_ui_file_view_session_mint: {
 		kind: "token bucket",
 		rate: 30,
@@ -130,8 +137,9 @@ const rate_limiter_CONFIG = {
 		capacity: 8,
 	},
 	// The iframe exchanges its `plu_` token for a ~10-minute plugin-session JWT, so steady state is
-	// one exchange per open page per JWT lifetime. Keyed by session id, and only a token that
-	// resolved to a live session reaches the charge — a garbage token is refused before it.
+	// one exchange per open frame per JWT lifetime. Both frame kinds exchange here: a plugin page
+	// and a file view. Keyed by session id, and only a token that resolved to a live session reaches
+	// the charge — a garbage token is refused before it.
 	plugins_ui_session_jwt_exchange: {
 		kind: "token bucket",
 		rate: 12,

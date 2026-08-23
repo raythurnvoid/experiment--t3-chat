@@ -418,6 +418,8 @@ async function post_r2_put_event(
 		messageId: string;
 		etag?: string;
 		preserveObjectMetadata?: boolean;
+		/** Omitted means the real bearer header. `null` sends no `Authorization` header at all. */
+		authorization?: string | null;
 	},
 ) {
 	const parsedAssetId = args.key.split("/").at(-1);
@@ -444,10 +446,12 @@ async function post_r2_put_event(
 	} else {
 		preserveR2EventMetadataKeys.add(eventKey);
 	}
+	const authorization =
+		args.authorization === undefined ? `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}` : args.authorization;
 	return await t.fetch("/api/r2/event", {
 		method: "POST",
 		headers: {
-			Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+			...(authorization === null ? {} : { Authorization: authorization }),
 			"Content-Type": "application/json",
 		},
 		body: JSON.stringify({
@@ -3760,12 +3764,18 @@ describe("process_uploaded_asset_event accepted upload", () => {
 			etag: "etag_message_first_publish",
 		});
 		expect(r2_text(upload.liveKey)).toBe("first-version");
-		expect(r2_text(upload.key)).toBe("late-version");
 		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({
 			reason: "upload_staging",
 			lastR2EventId: "message_late_put",
 		});
 		expect(await get_deletion_job_by_key(t, upload.liveKey)).toBeNull();
+
+		// The ledger owns the staging key from here, so whether its job already deleted those bytes
+		// depends on how many event-loop turns the last request happened to take. Drain the ledger
+		// and assert the end state instead: the late bytes go away and never reach the live key.
+		await flush_scheduled(t);
+		expect(r2Objects.has(upload.key)).toBe(false);
+		expect(r2_text(upload.liveKey)).toBe("first-version");
 	});
 
 	test("finishes an accepted upload after the node becomes read-only", async () => {
@@ -4260,6 +4270,54 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(published.jobs).toEqual([expect.objectContaining({ r2Key: upload.key, reason: "upload_staging" })]);
 	});
 
+	test("stamps chunks with the live archive state when the node is archived during conversion", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+		const upload = await create_upload_fixture(t, db, "mid-archive.md", "text/markdown;charset=utf-8");
+		await confirm_upload_put(t, upload, "# Mid archive\n\narchiveneedle body", "message_mid_archive_md");
+
+		// A member archives the file while the conversion action runs its R2 work. The action read the
+		// node before that, so its enqueue-time snapshot still says the node is not archived.
+		await run_conversion_with_mid_put_change(t, db, upload, async () => {
+			const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+				membershipId: db.membershipId,
+				nodeIds: [upload.nodeId],
+			});
+			if (archived._nay) {
+				throw new Error(archived._nay.message);
+			}
+		});
+
+		const published = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", upload.nodeId),
+			plainTextChunks: await ctx.db.query("files_plain_text_chunks").collect(),
+		}));
+		// The conversion still publishes the editable document. Only the chunks must follow the live
+		// node's archive state, so the archived file's text cannot stay active in search.
+		expect(published.node?.archiveOperationId).toEqual(expect.any(String));
+		expect(published.plainTextChunks.length).toBeGreaterThan(0);
+		for (const chunk of published.plainTextChunks) {
+			expect(chunk.archiveOperationId).toBe(published.node?.archiveOperationId);
+		}
+
+		// The archived file's content must not resurface in workspace search.
+		const search = await asUser.query(internal.files_nodes.text_search_files, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			hasWorkspaceRead: true,
+			query: "archiveneedle",
+			numItems: 10,
+			cursor: null,
+		});
+		expect(search.items).toEqual([]);
+	});
+
 	test("finishes after a lock and unlock during conversion", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -4694,6 +4752,69 @@ describe("process_object_deletion_job", () => {
 		await flush_scheduled(t, 8);
 		expect(await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toHaveLength(0);
 		expect(confirmedDeleteSpy).toHaveBeenCalledTimes(51);
+	});
+});
+
+describe("r2_http_event authentication", () => {
+	test("refuses an otherwise-valid event without the shared secret, and changes nothing", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture(t, db, "unauthenticated.png");
+		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
+		const bytes = new TextEncoder().encode("upload-bytes");
+		r2Objects.set(upload.key, bytes);
+
+		const realSecret = process.env.CLOUDFLARE_EVENTS_SECRET ?? "";
+		const refused = [
+			{ label: "no Authorization header", messageId: "message_refused_no_header", authorization: null },
+			{ label: "wrong secret", messageId: "message_refused_wrong_secret", authorization: "Bearer wrong-secret" },
+			{
+				// Same length as the real secret, so a check comparing only lengths would still refuse it.
+				label: "same-length wrong secret",
+				messageId: "message_refused_same_length",
+				authorization: `Bearer ${"x".repeat(realSecret.length)}`,
+			},
+			{
+				// The real secret, but not under the Bearer scheme. "Foobar!" is exactly as long as
+				// "Bearer ", so a check that slices seven characters off without confirming the scheme
+				// first would read the secret out of this header and let the caller in.
+				label: "real secret under a non-Bearer scheme",
+				messageId: "message_refused_wrong_scheme",
+				authorization: `Foobar!${realSecret}`,
+			},
+		] as const;
+
+		for (const attempt of refused) {
+			const response = await post_r2_put_event(t, {
+				bucket,
+				key: upload.key,
+				size: bytes.byteLength,
+				messageId: attempt.messageId,
+				authorization: attempt.authorization,
+			});
+			expect(response.status, attempt.label).toBe(401);
+			expect(await response.json(), attempt.label).toEqual({ message: "Unauthenticated" });
+			// Checking the status alone would still pass if the route answered 401 after doing the
+			// work. Nothing behind the guard may run: the asset stays unpublished and the caller's
+			// key never reaches the deletion ledger.
+			expect(
+				(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId)))?.r2Key,
+				attempt.label,
+			).toBeUndefined();
+			expect(await get_deletion_job_by_key(t, upload.key), attempt.label).toBeNull();
+		}
+
+		// Prove the header alone caused those refusals. The same body with the real secret publishes
+		// the asset and hands the staging key to the deletion ledger.
+		const accepted = await post_r2_put_event(t, {
+			bucket,
+			key: upload.key,
+			size: bytes.byteLength,
+			messageId: "message_accepted",
+		});
+		expect(accepted.status).toBe(204);
+		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId)))?.r2Key).toBe(upload.liveKey);
+		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({ reason: "upload_staging" });
 	});
 });
 

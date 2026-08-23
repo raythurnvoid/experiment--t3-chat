@@ -20,6 +20,19 @@ describe("council_encrypt", () => {
 		const encrypted = await council_encrypt("secret", "value");
 		await expect(council_decrypt("other-secret", encrypted)).rejects.toThrow();
 	});
+
+	test("picks a new nonce every time, so one key never encrypts twice under the same IV", async () => {
+		// One AES-GCM key is derived per purpose from the deployment secret, and every at-rest secret
+		// shares it: grant tokens and provider participant tokens. Reusing a nonce under one AES-GCM
+		// key breaks both confidentiality and forgery resistance, so a fixed IV is not a small bug.
+		// Round-tripping cannot see this — encrypt/decrypt works fine with a constant nonce — so
+		// compare two encryptions of the same plaintext instead.
+		const first = await council_encrypt("secret", "psg_the_grant_token");
+		const second = await council_encrypt("secret", "psg_the_grant_token");
+		expect(first).not.toBe(second);
+		expect(await council_decrypt("secret", first)).toBe("psg_the_grant_token");
+		expect(await council_decrypt("secret", second)).toBe("psg_the_grant_token");
+	});
 });
 
 describe("council_email_hmac", () => {

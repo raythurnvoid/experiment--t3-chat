@@ -773,6 +773,60 @@ describe("plugin ui sessions", () => {
 		expect((await list_with(refreshed._yay.token)).status).toBe(401);
 	});
 
+	test("a member cannot refresh another member's session and take it over", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const owned = await mint_session_token(fixture);
+		// A second member of the SAME workspace. Every other check on the refresh path compares only
+		// the organization and the workspace, which both members satisfy, so the owner check is the
+		// only thing standing between them.
+		const reader = await seed_reader_member(t, fixture);
+		const asReader = t.withIdentity(user_identity(reader.userId));
+
+		const stolen = await asReader.mutation(api.plugins_ui.refresh_ui_session, {
+			membershipId: reader.membershipId,
+			sessionId: owned.sessionId,
+		});
+		expect(stolen._nay?.message).toBe("Unauthorized");
+
+		// Why this refusal is the whole check: the refresh rotates the token on the SAME session doc
+		// and never rewrites its userId, so a token minted here would still resolve as the owner and
+		// read files with the owner's permissions.
+		const session = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", owned.sessionId));
+		expect(session?.userId).toEqual(fixture.membership.userId);
+		const listed = await t.fetch("/api/v1/files/list", {
+			method: "POST",
+			headers: auth_headers(owned.token),
+			body: JSON.stringify({ recursive: true }),
+		});
+		expect(listed.status).toBe(200);
+	});
+
+	test("a member cannot revoke another member's session", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const owned = await mint_session_token(fixture);
+		const reader = await seed_reader_member(t, fixture);
+		const asReader = t.withIdentity(user_identity(reader.userId));
+
+		const revoked = await asReader.mutation(api.plugins_ui.revoke_ui_session, {
+			membershipId: reader.membershipId,
+			sessionId: owned.sessionId,
+		});
+		expect(revoked._nay?.message).toBe("Unauthorized");
+
+		// Revocation is idempotent for a session that is already gone, so a missing owner check would
+		// read as success here and close a frame the caller does not own.
+		const sessions = await t.run((ctx) => ctx.db.query("plugins_ui_sessions").collect());
+		expect(sessions).toHaveLength(1);
+		const listed = await t.fetch("/api/v1/files/list", {
+			method: "POST",
+			headers: auth_headers(owned.token),
+			body: JSON.stringify({ recursive: true }),
+		});
+		expect(listed.status).toBe(200);
+	});
+
 	test("uses one stable principal key across sessions", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
@@ -1850,12 +1904,29 @@ describe("plugin ui assets", () => {
 		expect(response.headers.get("Content-Type")).toBe("text/html");
 		expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
 		const csp = response.headers.get("Content-Security-Policy");
-		expect(csp).toContain("default-src 'none'");
-		expect(csp).toContain("script-src 'self'");
-		// The Convex cloud origins let the frame's own ConvexClient connect; https never
-		// authorizes wss, so both schemes must be listed.
-		expect(csp).toContain("connect-src 'self' https://cloud.convex.test wss://cloud.convex.test;");
-		expect(csp).toContain("frame-ancestors https://app.test");
+		// Pin the whole policy, not one directive at a time. A `toContain` check on a directive stays
+		// true after that directive is widened, and `frame-ancestors` is the last one and carries no
+		// trailing semicolon, so appending a second origin to it passed the old check. Several
+		// directives had no test at all, while the app argues from them: plugins_ui.ts explains
+		// `img-src`/`media-src` as what stops a frame from leaking data through image and media loads,
+		// and plugins-ui-frame.tsx allows the iframe `allow-forms` because `form-action 'none'` blocks
+		// every real submission. Widening any of them must fail here.
+		expect(csp).toBe(
+			[
+				"default-src 'none'",
+				"script-src 'self'",
+				"style-src 'self' 'unsafe-inline'",
+				"img-src https://test.r2.cloudflarestorage.com https://test-files-bucket.test.r2.cloudflarestorage.com data: blob:",
+				"media-src https://test.r2.cloudflarestorage.com https://test-files-bucket.test.r2.cloudflarestorage.com blob:",
+				// The Convex cloud origins let the frame's own ConvexClient connect; https never
+				// authorizes wss, so both schemes must be listed.
+				"connect-src 'self' https://cloud.convex.test wss://cloud.convex.test",
+				"font-src 'self'",
+				"base-uri 'none'",
+				"form-action 'none'",
+				"frame-ancestors https://app.test",
+			].join("; "),
+		);
 		expect(await response.text()).toBe("<!doctype html><title>Gallery</title>");
 	});
 

@@ -1,5 +1,4 @@
-import { council_handle_preflight } from "./cors.ts";
-import { council_cors_headers } from "./cors.ts";
+import { council_cors_headers, council_handle_preflight } from "./cors.ts";
 import type { ExecutionContext, MessageBatch, ScheduledController } from "./cf.ts";
 import type { Env } from "./env.ts";
 import { council_NO_STORE_HEADERS } from "./http.ts";
@@ -62,6 +61,18 @@ export default {
 	},
 
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-		ctx.waitUntil(council_run_scheduled(env, controller.scheduledTime));
+		// The pass runs many sweeps one after another, so a throw from any of them arrives with
+		// nothing that names the pass it came from. Log the context here, then rethrow. `waitUntil`
+		// must still receive a rejected promise, or the runtime records the invocation as successful.
+		ctx.waitUntil(
+			council_run_scheduled(env, controller.scheduledTime).catch((error: unknown) => {
+				console.error("The scheduled pass failed; the sweeps after the failing statement did not run", {
+					scheduledTime: controller.scheduledTime,
+					cron: controller.cron,
+					error,
+				});
+				throw error;
+			}),
+		);
 	},
 };

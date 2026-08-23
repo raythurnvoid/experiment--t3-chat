@@ -1336,7 +1336,7 @@ const app_convex_schema = defineSchema({
 		 **/
 		outboundOrigins: v.array(v.string()),
 		/**
-		 * Exact https origins the plugin's page may call from the browser; consented at install.
+		 * Exact https origins the plugin's pages and file views may call from the browser; consented at install.
 		 *
 		 * The asset response builds its `connect-src` from this list, and an asset request carries only
 		 * a plugin version and a path. So this has to live on the immutable version: the response cannot
@@ -1838,10 +1838,11 @@ const app_convex_schema = defineSchema({
 		 */
 		principalKey: v.string(),
 		/**
-		 * `processing` is meant to mark work that is already running, so it can finish after the actor
-		 * loses permission. That only becomes safe once the grant is also sealed to one exact target,
-		 * and those sealing fields belong to the Council work that mints such a grant. Until then both
-		 * phases resolve with the same live membership and permission checks.
+		 * `interactive` is what the grant exchange mints. `processing` comes only from the
+		 * `seal-processing` route, which pins `destinationPathPrefix` below and gives the grant its
+		 * recovery window. Only a `processing` grant may upload files. Both phases still resolve with
+		 * the actor's live membership and permission checks: the seal bounds where a grant writes, not
+		 * whether its member may still write.
 		 */
 		phase: v.union(v.literal("interactive"), v.literal("processing")),
 		/** Absolute path prefix this grant may write under. Null means it may not write files. */

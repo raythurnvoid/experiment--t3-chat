@@ -373,11 +373,19 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		// preflight. The host app uses a different origin, so the plugin still cannot reach its DOM.
 		// `allow-forms` only lets the submit EVENT fire so plugin code can handle it in JS; the
 		// asset CSP's `form-action 'none'` still blocks every real HTTP form submission.
+		//
+		// `clipboard-write` is Permissions-Policy gated, and a cross-origin frame does not inherit it.
+		// Without this grant every Copy button in every plugin rejects with `NotAllowedError`. Some
+		// plugin values are shown once and cannot be read again, so a failed copy loses them for good.
+		// This is the shared host frame, so the grant reaches every plugin. It is a reviewed host
+		// capability, recorded in `.agents/skills/plugin-system/SKILL.md`. Do not add another feature
+		// to this list without recording it the same way.
 		<iframe
 			ref={iframeRef}
 			className={"PluginsUiFrame" satisfies PluginsUiFrame_ClassNames}
 			title={title}
 			sandbox="allow-scripts allow-same-origin allow-forms"
+			allow="clipboard-write"
 			referrerPolicy="no-referrer"
 		/>
 	);

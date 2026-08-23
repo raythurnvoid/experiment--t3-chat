@@ -628,6 +628,9 @@ describe("service upload quota", () => {
 			}),
 		);
 		expect(refused.status).toBe(403);
+		// Council's `convex-api.ts` matches this exact text by equality to tell the storage ceiling
+		// apart from other 403s and stop retrying, so a reword here would break its fail-fast.
+		expect(await refused.json()).toEqual({ message: "This workspace has used its plugin service storage" });
 		expect(await read_targets(t)).toHaveLength(2);
 		expect((await read_quota(t, fixture))?.usedCount).toBe(ceiling);
 	});
@@ -1538,6 +1541,101 @@ describe("service upload delete", () => {
 		);
 	});
 
+	test("releases the lock it archived through so a member can restore the committed file", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }))).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
+		expect((await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
+			200,
+		);
+
+		const deleted = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-meeting-1", targetKey: "recording" });
+		expect(deleted.status).toBe(200);
+
+		// A committed match is archived, not hard-deleted, so it must stay restorable. `unarchive_nodes`
+		// refuses the whole restore while any planned node is read-only.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		expect(
+			await asUser.mutation(api.files_nodes.unarchive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(target.nodeId)],
+			}),
+		).toEqual({ _yay: null });
+
+		const restored = await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId));
+		expect(restored?.archiveOperationId).toBeUndefined();
+		expect(restored?.readOnlyScopeNodeId).toBeUndefined();
+		expect(restored?.readOnlyPluginServiceTargetId).toBeUndefined();
+	});
+
+	test("a member folder lock above the file refuses the whole delete and releases nothing", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }))).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
+		expect((await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
+			200,
+		);
+
+		// A member locks the destination folder. The cascade stops at the file, which keeps its own
+		// service lock, so the member lock is visible only in the parent folder's pointer. Releasing
+		// the service lock would leave the file read-only under that member lock, and archiving it
+		// anyway would take a file the member said to leave alone.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		const destinationNodeId = await t.run(async (ctx) => {
+			const nodes = await ctx.db.query("files_nodes").collect();
+			const destination = nodes.find((node) => node.path === "/meetings");
+			if (!destination) {
+				throw new Error("Expected the sealed destination folder");
+			}
+			return destination._id;
+		});
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_read_only, {
+				membershipId: fixture.membershipId,
+				nodeId: destinationNodeId,
+			}),
+		).toEqual({ _yay: null });
+
+		const refused = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-meeting-1", targetKey: "recording" });
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+
+		const kept = await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId));
+		expect(kept?.archiveOperationId).toBeUndefined();
+		expect(kept?.readOnlyScopeNodeId).toBe(target.nodeId);
+		expect(kept?.readOnlyPluginServiceTargetId).toBe(target._id);
+		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
+
+		// Positive control: the member unlocks the folder and the same call goes through, so the
+		// refusal came from that folder lock and not from something else about this target.
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_writable, {
+				membershipId: fixture.membershipId,
+				nodeId: destinationNodeId,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			(await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-meeting-1", targetKey: "recording" })).status,
+		).toBe(200);
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", target.nodeId))?.archiveOperationId)).toBeTypeOf(
+			"string",
+		);
+	});
+
 	test("cancels a target that is still uploading and deletes its empty placeholder", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -2170,6 +2268,80 @@ describe("service upload archive", () => {
 		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId)))?.archiveOperationId).toBeTypeOf(
 			"string",
 		);
+	});
+
+	test("releases the locks it archived through so a member can restore the whole set", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }))).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+
+		const response = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ archivedNodes: 2 });
+
+		// `unarchive_nodes` refuses the whole restore when any node in the restored subtree is
+		// read-only. An archive that kept this lock would make the set it took impossible to restore.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		expect(
+			await asUser.mutation(api.files_nodes.unarchive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(target.destinationNodeId)],
+			}),
+		).toEqual({ _yay: null });
+
+		const restored = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
+		expect(restored.every((node) => node.archiveOperationId === undefined)).toBe(true);
+		const restoredFile = restored.find((node) => node._id === target.nodeId);
+		expect(restoredFile?.readOnlyScopeNodeId).toBeUndefined();
+		expect(restoredFile?.readOnlyPluginServiceTargetId).toBeUndefined();
+	});
+
+	test("an inherited lock refuses the whole archive and releases nothing", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }))).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+
+		// A member locks the folder above the meeting. The cascade stops at the file, which keeps its
+		// own service lock, so only the destination folder ends up inheriting. An inherited lock is
+		// never this door's to clear.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Test User",
+		});
+		const meetingsNodeId = await t.run(async (ctx) => {
+			const nodes = await ctx.db.query("files_nodes").collect();
+			const meetings = nodes.find((node) => node.path === "/meetings");
+			if (!meetings) {
+				throw new Error("Expected the folder above the destination");
+			}
+			return meetings._id;
+		});
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_read_only, {
+				membershipId: fixture.membershipId,
+				nodeId: meetingsNodeId,
+			}),
+		).toEqual({ _yay: null });
+
+		const response = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ message: "This item is read-only." });
+
+		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
+		expect(nodes.every((node) => node.archiveOperationId === undefined)).toBe(true);
+		expect(nodes.find((node) => node._id === target.nodeId)).toMatchObject({
+			readOnlyScopeNodeId: target.nodeId,
+			readOnlyPluginServiceTargetId: target._id,
+		});
 	});
 
 	test("archives the destination folder with its whole subtree and keeps the stored bytes charged", async () => {
