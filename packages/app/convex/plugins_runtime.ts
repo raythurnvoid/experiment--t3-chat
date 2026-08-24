@@ -64,6 +64,7 @@ const RUN_CLEANUP_BATCH_SIZE = 50;
 
 const UPLOAD_COMPLETED_EVENT_TYPE = "files.upload.completed" as const;
 const RUN_REQUESTED_EVENT_TYPE = "files.run.requested" as const;
+const ACCOUNT_DELETED_EVENT_TYPE = "users.account.deleted" as const;
 
 /**
  * Finite attempts on purpose: the executor catches everything and finishes the run failed, so a
@@ -227,7 +228,7 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 		}
 
 		const event = version.events.find(
-			(versionEvent) => versionEvent.type === handler.event && versionEvent.contentTypes.includes(handler.contentType),
+			(versionEvent) => versionEvent.type === handler.event && versionEvent.contentTypes.includes(contentType),
 		);
 		if (!event) {
 			continue;
@@ -395,6 +396,87 @@ export async function plugins_runtime_db_enqueue_manual_run(
 	return Result({ _yay: { runId } });
 }
 
+/**
+ * Tell every plugin that stores this user's id that the account is gone.
+ *
+ * Runs after the user is tombstoned and while the user doc still exists, so a handler can still read
+ * them. It is scheduled rather than run inside the deletion mutation: the deletion path is a
+ * user-facing transaction, and the fan-out size is one run per workspace the user belonged to that
+ * has a subscribed plugin installed. One workspace is one run; a user in 50 such workspaces is 50.
+ *
+ * The plugin's own documents keep the user's id. This event only says the id no longer resolves to a
+ * user, so the plugin can render them as deleted without rewriting its whole store.
+ */
+export const enqueue_account_deleted_runs = internalMutation({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		// Memberships are deactivated by the same mutation that schedules this, so read them by user
+		// rather than by active membership.
+		const memberships = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", args.userId))
+			.collect();
+
+		const now = Date.now();
+		for (const membership of memberships) {
+			// The event carries no file, so its handler rows carry no content type. That is an ordinary
+			// equality on the same dispatch index, not a scan.
+			const handlers = await ctx.db
+				.query("plugins_workspace_event_handlers")
+				.withIndex("by_scope_event_contentType_createdAt_name", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("event", ACCOUNT_DELETED_EVENT_TYPE)
+						.eq("contentType", undefined),
+				)
+				.collect();
+
+			for (const handler of handlers) {
+				const [installation, version] = await Promise.all([
+					ctx.db.get("plugins_workspace_installations", handler.installationId),
+					ctx.db.get("plugins_versions", handler.pluginVersionId),
+				]);
+				if (!installation || !version || installation.status !== "enabled" || !version.backendEntrypointFile) {
+					continue;
+				}
+
+				const runId = await ctx.db.insert("plugins_event_runs", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					actorUserId: args.userId,
+					installationId: installation._id,
+					pluginVersionId: version._id,
+					event: ACCOUNT_DELETED_EVENT_TYPE,
+					eventId: composite_id("plugin", "account_deleted", String(args.userId), String(installation._id)),
+					status: "queued",
+					acceptedCapabilities: installation.acceptedCapabilities,
+					expiresAt: now + RUN_TTL_MS,
+					apiCallCount: 0,
+					outputWriteCount: 0,
+					errorMessage: null,
+					updatedAt: now,
+				});
+
+				const workId = await plugin_event_execution_workpool.enqueueAction(
+					ctx,
+					internal.plugins_runtime.execute_upload_completed_event_run,
+					{ runId },
+				);
+				await ctx.db.patch("plugins_event_runs", runId, {
+					workId,
+					updatedAt: now,
+				});
+			}
+		}
+
+		return null;
+	},
+});
+
 export const start_event_run = internalMutation({
 	args: {
 		runId: v.id("plugins_event_runs"),
@@ -403,8 +485,8 @@ export const start_event_run = internalMutation({
 	returns: v_result({
 		_yay: v.object({
 			pluginRun: doc(app_convex_schema, "plugins_event_runs"),
-			asset: doc(app_convex_schema, "files_r2_assets"),
-			fileNode: doc(app_convex_schema, "files_nodes"),
+			asset: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
+			fileNode: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
 			installation: doc(app_convex_schema, "plugins_workspace_installations"),
 			version: doc(app_convex_schema, "plugins_versions"),
 			outboundOrigins: v.array(v.string()),
@@ -425,12 +507,17 @@ export const start_event_run = internalMutation({
 		}
 
 		const [asset, fileNode, installation, version] = await Promise.all([
-			ctx.db.get("files_r2_assets", pluginRun.assetId),
-			ctx.db.get("files_nodes", pluginRun.fileNodeId),
+			pluginRun.assetId ? ctx.db.get("files_r2_assets", pluginRun.assetId) : null,
+			pluginRun.fileNodeId ? ctx.db.get("files_nodes", pluginRun.fileNodeId) : null,
 			ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
 			ctx.db.get("plugins_versions", pluginRun.pluginVersionId),
 		]);
-		if (!asset || !fileNode || !installation || !version || !version.backendEntrypointFile) {
+		if (!installation || !version || !version.backendEntrypointFile) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		// A file event whose file is gone has nothing to run on. An event that never named a file is
+		// not missing anything.
+		if (pluginRun.event !== ACCOUNT_DELETED_EVENT_TYPE && (!asset || !fileNode)) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
@@ -852,16 +939,19 @@ export const execute_upload_completed_event_run = internalAction({
 						workspaceId: String(startResult._yay.pluginRun.workspaceId),
 						actorUserId: String(startResult._yay.pluginRun.actorUserId),
 						configuration,
-						source: {
-							fileNodeId: String(startResult._yay.fileNode._id),
-							assetId: String(startResult._yay.asset._id),
-							name: startResult._yay.fileNode.name,
-							// Absolute path so plugins can construct exact sibling output paths for
-							// /api/v1/files/write.
-							path: startResult._yay.fileNode.path,
-							contentType: startResult._yay.fileNode.contentType ?? null,
-							size: startResult._yay.asset.size,
-						},
+						source:
+							startResult._yay.fileNode && startResult._yay.asset
+								? {
+										fileNodeId: String(startResult._yay.fileNode._id),
+										assetId: String(startResult._yay.asset._id),
+										name: startResult._yay.fileNode.name,
+										// Absolute path so plugins can construct exact sibling output paths for
+										// /api/v1/files/write.
+										path: startResult._yay.fileNode.path,
+										contentType: startResult._yay.fileNode.contentType ?? null,
+										size: startResult._yay.asset.size,
+									}
+								: null,
 					},
 				} satisfies pluginRunnerApiSchema["/internal/plugin-runner/run"]["POST"]["body"]),
 			});

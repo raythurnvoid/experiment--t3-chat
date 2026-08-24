@@ -4026,7 +4026,10 @@ export const install_version = mutation({
 
 		await Promise.all(
 			pluginVersion.events.flatMap((event) =>
-				event.contentTypes.map((contentType) =>
+				// An event that declares no content type still needs one handler row, or dispatch would
+				// find nothing to run. That row leaves `contentType` unset, which is the value its
+				// dispatch looks for.
+				(event.contentTypes.length > 0 ? event.contentTypes : [undefined]).map((contentType) =>
 					ctx.db.insert("plugins_workspace_event_handlers", {
 						organizationId: installationScope.organizationId,
 						workspaceId: installationScope.workspaceId,
@@ -4938,7 +4941,9 @@ export const list_recent_runs = query({
 		// Same rule as the file lists: the name and path go away with the file, so managing plugins is not
 		// a way to read what is inside a folder you were never given. Asked once for the whole page,
 		// because the filter answers once per restricted scope and these runs usually share one.
-		const runFileNodes = await Promise.all(runs.map((run) => ctx.db.get("files_nodes", run.fileNodeId)));
+		const runFileNodes = await Promise.all(
+			runs.map((run) => (run.fileNodeId ? ctx.db.get("files_nodes", run.fileNodeId) : null)),
+		);
 		const readableNodeIds = new Set(
 			(
 				await access_control_db_filter_readable_file_nodes(ctx, {
@@ -4955,7 +4960,7 @@ export const list_recent_runs = query({
 			runs.map(async (run, runIndex) => {
 				const fileNode = runFileNodes[runIndex];
 				const readableFileNode = fileNode && readableNodeIds.has(fileNode._id) ? fileNode : null;
-				const asset = readableFileNode ? await ctx.db.get("files_r2_assets", run.assetId) : null;
+				const asset = readableFileNode && run.assetId ? await ctx.db.get("files_r2_assets", run.assetId) : null;
 
 				return {
 					_id: run._id,
@@ -5157,6 +5162,77 @@ export const get_installation_health = query({
 
 // #endregion installation health
 
+// #region installation storage
+
+/**
+ * How much of its storage one installed plugin still holds, for a workspace manager.
+ *
+ * The store refuses a write once an installation meets its ceiling, and there is no eviction and no
+ * repair short of uninstalling. Until this query there was no manager-reachable surface for those
+ * counters at all: the only reader was the operator's hard-delete preview.
+ *
+ * The per-member share rows are deliberately not reported here. They are write-only in phase 1, so a
+ * member cannot yet see their own usage against the share their refusal message names.
+ */
+export const get_installation_storage_usage = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		installationId: v.id("plugins_workspace_installations"),
+	},
+	returns: v.union(
+		v.object({
+			usedBytes: v.number(),
+			documents: v.number(),
+			liveReservations: v.number(),
+			tombstones: v.number(),
+			collectionNames: v.array(v.string()),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return null;
+		}
+
+		const authorization = await db_authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (authorization._nay) {
+			return null;
+		}
+
+		// Compare the installation's own tenant, not the tenant the caller passed. The counting
+		// helper resolves the accounting doc by installation id alone, so an installation from
+		// another workspace would answer with that workspace's byte totals.
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		if (
+			!installation ||
+			installation.organizationId !== authorization._yay.membership.organizationId ||
+			installation.workspaceId !== authorization._yay.membership.workspaceId
+		) {
+			return null;
+		}
+
+		const counts = await plugins_data_db_count_installation_docs(ctx, {
+			organizationId: installation.organizationId,
+			workspaceId: installation.workspaceId,
+			installationId: installation._id,
+		});
+
+		return {
+			usedBytes: counts.usedBytes,
+			documents: counts.documents,
+			liveReservations: counts.liveReservations,
+			tombstones: counts.tombstones,
+			collectionNames: counts.collectionNames,
+		};
+	},
+});
+
+// #endregion installation storage
+
 // #region admin
 
 /**
@@ -5313,6 +5389,9 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		pluginDataDocuments: v.number(),
 		pluginDataLiveReservations: v.number(),
 		pluginDataTombstones: v.number(),
+		// One row per member who holds something in an installation. It carries a user id, so an
+		// operator must see it in the readback before an irreversible delete.
+		pluginDataMemberUsage: v.number(),
 		pluginServiceGrants: v.number(),
 		// True when at least one installation held more grants than the count helper reads. An
 		// outside service decides how many grants it mints, so the count is bounded on purpose and
@@ -5356,6 +5435,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		let pluginDataDocuments = 0;
 		let pluginDataLiveReservations = 0;
 		let pluginDataTombstones = 0;
+		let pluginDataMemberUsage = 0;
 		let pluginServiceGrants = 0;
 		let pluginServiceGrantsTruncated = false;
 		let eventRuns = 0;
@@ -5430,6 +5510,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 				pluginDataDocuments += pluginData.documents;
 				pluginDataLiveReservations += pluginData.liveReservations;
 				pluginDataTombstones += pluginData.tombstones;
+				pluginDataMemberUsage += pluginData.memberUsageDocs;
 				pluginServiceGrants += pluginData.serviceGrants;
 				// One capped installation makes the whole sum a lower bound, and several installations
 				// hide that twice over. Carry the flag up so the sum is never read as exact.
@@ -5477,6 +5558,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 			pluginDataDocuments,
 			pluginDataLiveReservations,
 			pluginDataTombstones,
+			pluginDataMemberUsage,
 			pluginServiceGrants,
 			pluginServiceGrantsTruncated,
 			eventRuns,

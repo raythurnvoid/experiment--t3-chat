@@ -115,13 +115,33 @@ Indexes:
 ## `access_control_permission_grants`
 
 Fields: `organizationId`, `workspaceId`, `resourceKind` (`organization` | `workspace` | `file` |
-`thread`), `resourceId` (stringified id), `principalKind` (`role` | `user` | `public`), optional
-`userId`, optional `role`, `permission`, `createdAt`, `updatedAt`.
+`thread` | `plugin_scope`), `resourceId` (stringified id), `principalKind` (`role` | `user` |
+`public`), optional `userId`, optional `role`, `permission`, `createdAt`, `updatedAt`.
 
-**`files_sharing.ts` is the only writer.** System role permissions moved into code, so the old seeded
-organization and workspace grants are gone. Every grant doc alive today is a file share: one doc per
-permission per principal, with the **restricted scope node** as `resourceId`. Nothing writes a
+**Two writers: `files_sharing.ts` and `plugins_data.ts`.** System role permissions moved into code, so
+the old seeded organization and workspace grants are gone. Every other grant doc is a file share: one
+doc per permission per principal, with the **restricted scope node** as `resourceId`. Nothing writes a
 `public` grant, and the share validator has no `public` arm.
+
+`plugins_data.user_manage_scope` writes the `plugin_scope` grants. `resourceId` is
+`"<installationId>:<scopeId>"` — the installation is part of it because two installations may mint the
+same scope id, and a grant must never cross from one to the other. Two levels, one doc per permission:
+`member` gets `content.read` and `content.write`, `manage` adds `content.permissions.manage`.
+
+`plugins_data.watch_my_scopes` reads those grants back the other way, so a member can find the private
+ranges they are in. It walks the caller's own grants on `by_user_organization_workspace_resource_permission`,
+keeps the ones whose `resourceId` starts with this installation's id, and folds the per-permission docs
+back into one level per scope, with `manage` winning. It is the only listing, and it follows the grant
+rather than the workspace: the organization owner may read every scope through the owner short-circuit,
+but an owner who holds no grant is listed nothing.
+
+**Those grants only ever name a user, never a role.** A role principal would hand the private channel
+to everybody holding that role, and it would also make the role undeletable: `delete_role` takes the
+first role grant of **any** kind with no `resourceKind` filter and answers *"This role is still used to
+share a file or folder"*, pointing an admin at a file-share dialog that cannot reach a plugin scope.
+The same unfiltered walk runs from `update_role`, `set_user_role` and organization membership
+management, so plugin scopes accumulating in it would slow all of them down. `plugins_data.test.ts` and
+`access_control.test.ts` both pin this.
 
 Pick the index that matches the principal kind:
 
@@ -273,6 +293,12 @@ Order, short-circuiting on the first pass:
 1. owner
 2. restricted-file branch — for a `file` resource with a live restricted scope, and it **never falls
    through** to workspace access
+2a. plugin-scope branch — for a `plugin_scope` resource. Grant only, and it **never falls through**
+   either: the answer is whether this user holds that exact grant on that exact scope, and a role's own
+   permissions give nothing. Without this branch the check would fall through to step 5, where both
+   `member` and `viewer` hold `content.read` — so it would answer `true` for every member and a
+   "private" channel would be readable by the whole workspace. Adding the resource kind without the
+   branch is worse than adding nothing, because it looks like a check.
 3. exact direct user grant
 4. exact public grant, only when `allowPublic` is passed
 5. role at the target workspace — skipped for an `organization`-scoped permission unless that
@@ -284,6 +310,12 @@ A grant that governs a restricted subtree carries the **restricted scope node** 
 never the accessed node. When a node has no scope the check still looks for a grant on the node itself
 before falling back to the caller's role; no `workspace`-resource grant is ever consulted for a file,
 and sharing only ever writes grants on a restricted node, so that lookup misses for everything else.
+
+**Step 1 comes before every grant lookup, and a plugin scope inherits that.** The organization owner
+reads every private channel and every private direct message in the workspace, with no grant and no
+audit trail, and no revocation can take it away. That is deliberate — it mirrors the file rule rather
+than inventing a second one — but a plugin whose UI says "private" has to say this too, or the feature
+is a disclosure. The Chitchat plugin's own copy is the worked example.
 
 The consequence that matters most: **inside a restricted subtree a role's permissions grant
 nothing.** `has_restricted_file_permission` consults user grants, public

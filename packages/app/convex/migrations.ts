@@ -747,6 +747,89 @@ export const backfill_plugins_installations_accepted_ui_origins = app_migrations
 	},
 });
 
+/**
+ * Attributes the documents that were stored before the per-member share existed. Those rows carry no
+ * `chargedTo`, so their bytes and slots sit in the installation total and in nobody's share. Until
+ * this runs, the per-member ceilings do nothing on any installation that already holds documents: a
+ * member can have composed a full store and still read zero against their own share.
+ *
+ * Who they belong to is decided the same way a live write decides it — the member who composed the
+ * value. So the row's `createdBy` becomes its `chargedTo`, and `machineBytes` becomes 0 because no
+ * plugin backend can be shown to have written any of those bytes.
+ *
+ * Live writes patch the same member rows while this runs, so each document is read, changed, and
+ * written inside its own batch transaction. A document that already carries `chargedTo` is skipped.
+ * That is what makes a second run cost nothing and lets an interrupted run pick up where it stopped.
+ */
+export const backfill_plugins_data_charged_to = app_migrations.define({
+	table: "plugins_data",
+	migrateOne: async (ctx, document) => {
+		if (document.chargedTo !== undefined) {
+			return;
+		}
+
+		await ctx.db.patch("plugins_data", document._id, { chargedTo: document.createdBy, machineBytes: 0 });
+
+		const existing = await ctx.db
+			.query("plugins_data_member_usage")
+			.withIndex("by_installation_user", (q) =>
+				q.eq("installationId", document.installationId).eq("userId", document.createdBy),
+			)
+			.unique();
+		if (!existing) {
+			await ctx.db.insert("plugins_data_member_usage", {
+				organizationId: document.organizationId,
+				workspaceId: document.workspaceId,
+				installationId: document.installationId,
+				userId: document.createdBy,
+				usedBytes: document.byteSize,
+				usedDocuments: 1,
+				machineBytes: 0,
+				collectionNames: [document.collection],
+			});
+			return;
+		}
+
+		await ctx.db.patch("plugins_data_member_usage", existing._id, {
+			usedBytes: existing.usedBytes + document.byteSize,
+			usedDocuments: existing.usedDocuments + 1,
+			collectionNames: existing.collectionNames.includes(document.collection)
+				? existing.collectionNames
+				: [...existing.collectionNames, document.collection],
+		});
+	},
+});
+
+/**
+ * The first half of the per-member rollback. It clears both attribution fields from every surviving
+ * document, so the schema push that drops them finds no row still carrying one.
+ *
+ * Run this only after a push that stopped writing those fields. The strip and a live write would
+ * otherwise take turns, and the schema push after it would fail on whatever the last write put back.
+ */
+export const remove_plugins_data_charged_to_and_machine_bytes = app_migrations.define({
+	table: "plugins_data",
+	migrateOne: async (ctx, document) => {
+		if (document.chargedTo === undefined && document.machineBytes === undefined) {
+			return;
+		}
+
+		await ctx.db.patch("plugins_data", document._id, { chargedTo: undefined, machineBytes: undefined });
+	},
+});
+
+/**
+ * The second half of the same rollback. The per-member counters live in their own table, so there is
+ * no field to strip: the rows themselves go. The migration component walks the table in batches, so
+ * one enormous transaction never has to hold the whole table.
+ */
+export const delete_plugins_data_member_usage = app_migrations.define({
+	table: "plugins_data_member_usage",
+	migrateOne: async (ctx, usage) => {
+		await ctx.db.delete("plugins_data_member_usage", usage._id);
+	},
+});
+
 export const dev_cleanup_rebrand_preserve_clerk_accounts = internalMutation({
 	args: {
 		batchSize: v.optional(v.number()),
@@ -958,4 +1041,13 @@ export const run_backfill_plugins_versions_ui_outbound_origins = app_migrations.
 );
 export const run_backfill_plugins_installations_accepted_ui_origins = app_migrations.runner(
 	internal.migrations.backfill_plugins_installations_accepted_ui_origins,
+);
+export const run_backfill_plugins_data_charged_to = app_migrations.runner(
+	internal.migrations.backfill_plugins_data_charged_to,
+);
+export const run_remove_plugins_data_charged_to_and_machine_bytes = app_migrations.runner(
+	internal.migrations.remove_plugins_data_charged_to_and_machine_bytes,
+);
+export const run_delete_plugins_data_member_usage = app_migrations.runner(
+	internal.migrations.delete_plugins_data_member_usage,
 );

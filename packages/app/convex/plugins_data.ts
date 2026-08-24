@@ -16,6 +16,7 @@ import {
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_has_permission } from "./access_control.ts";
+import type { access_control_Permission } from "../shared/access-control.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -59,9 +60,48 @@ const MAX_INSTALLATION_BYTES = 16 * 1024 * 1024;
  * and index space.
  */
 const MAX_DOCUMENT_SLOTS = 10_000;
+/**
+ * How much of an installation's capacity one member may hold.
+ *
+ * These are fixed numbers rather than a share of the current membership. The ceiling check is a pure
+ * function with no way to count members, and a share that moved when someone joined would
+ * retroactively refuse a member who was inside it a moment earlier.
+ *
+ * Bytes: splitting 16 MiB across a 30-member workspace gives ~546 KiB, and this is three times that,
+ * so an ordinary member never meets it. Slots: an anti-exhaustion bound at 30% of the installation,
+ * because an equal split refuses the busiest member of a modelled workspace after two and a half
+ * days with the store only a fifth full. Collections: half of the installation's 16, which still
+ * leaves a plugin room to add a collection later and still stops one member pinning all of them.
+ */
+const MEMBER_MAX_BYTES = 1600 * 1024;
+const MEMBER_MAX_DOCUMENT_SLOTS = 3_000;
+const MEMBER_MAX_COLLECTIONS = MAX_COLLECTIONS / 2;
+/**
+ * Warn while an installation still has room to act on it. Derived, never transcribed: moving a
+ * ceiling has to move its warning with it.
+ */
+const USAGE_WARN_FRACTION = 0.8;
 const MAX_BATCH_DOCUMENTS = 50;
 /** How many member ids one display-name resolve may ask about. Same size as a write batch. */
 const MAX_MEMBER_RESOLVE_IDS = 50;
+/**
+ * How many members one roster page may return. Each row costs two document reads, so this is the
+ * page size and not the roster size: a bigger workspace is read one page at a time.
+ */
+const MAX_MEMBER_LIST_PAGE_SIZE = 100;
+/** How many people one private scope may name. Same size as a file share list. */
+const MAX_SCOPE_PRINCIPALS = 50;
+/**
+ * How many scopes one member may be named in, per workspace.
+ *
+ * The cap exists because removing a member from the organization collects every grant they hold in
+ * one unbounded read (`organizations.ts`). Bounding the grants bounds that read.
+ *
+ * It is only safe because a scope can be deleted. A member who reaches the cap deletes a private
+ * channel they no longer need and creates the next one. Without a delete door the cap would wedge
+ * them forever: a scope id is minted by the plugin, so an abandoned scope cannot be found again.
+ */
+const MAX_SCOPES_PER_MEMBER = 50;
 /**
  * The longest a reservation may hold capacity.
  *
@@ -125,7 +165,7 @@ function canonical_json(value: unknown): string {
  * visually reorder text. Surrounding whitespace is refused because two keys that look identical must
  * not be two different docs.
  */
-function validate_name(raw: string, label: "Collection names" | "Keys" | "Idempotency keys") {
+function validate_name(raw: string, label: "Collection names" | "Keys" | "Idempotency keys" | "Scope ids") {
 	if (raw.length === 0) {
 		return Result({ _nay: { message: `${label} must not be empty` } });
 	}
@@ -408,12 +448,73 @@ async function db_create_usage(
 }
 
 /**
+ * Patch the accounting doc, and warn once when this write is what crosses 80% of a ceiling.
+ *
+ * The comparison lives here and not in `check_capacity`. That function is pure and runs before the
+ * write is accepted, so from there it would warn for writes that are then refused for another
+ * reason, and again on every optimistic-concurrency retry of the same logical write. This runs in
+ * the transaction that commits the crossing, so one crossing is one line.
+ *
+ * The thresholds are 80% of the two aggregates `check_capacity` refuses on, not of `usedBytes` and
+ * `usedDocuments` alone. Three callers never touch those two fields: a reservation moves
+ * `reservedBytes` and `reservedDocuments`, and a revision tombstone moves `tombstoneDocuments`.
+ * Those are the doors that fill the store fastest, so a threshold over the stored halves alone would
+ * never fire for them and the installation would meet its ceiling unannounced.
+ */
+async function db_patch_usage(
+	ctx: MutationCtx,
+	args: {
+		usage: Doc<"plugins_data_usage">;
+		next: Partial<
+			Pick<
+				Doc<"plugins_data_usage">,
+				"usedBytes" | "usedDocuments" | "reservedBytes" | "reservedDocuments" | "tombstoneDocuments" | "collectionNames"
+			>
+		>;
+		now: number;
+	},
+) {
+	const after = { ...args.usage, ...args.next };
+	const beforeBytes = args.usage.usedBytes + args.usage.reservedBytes;
+	const afterBytes = after.usedBytes + after.reservedBytes;
+	const beforeSlots = args.usage.usedDocuments + args.usage.reservedDocuments + args.usage.tombstoneDocuments;
+	const afterSlots = after.usedDocuments + after.reservedDocuments + after.tombstoneDocuments;
+	const byteThreshold = MAX_INSTALLATION_BYTES * USAGE_WARN_FRACTION;
+	const slotThreshold = MAX_DOCUMENT_SLOTS * USAGE_WARN_FRACTION;
+
+	// A write that crosses both thresholds at once still logs one line, not two.
+	if (
+		(beforeBytes < byteThreshold && afterBytes >= byteThreshold) ||
+		(beforeSlots < slotThreshold && afterSlots >= slotThreshold)
+	) {
+		console.warn("A plugin installation passed 80% of a storage ceiling", {
+			installationId: args.usage.installationId,
+			pluginName: args.usage.pluginName,
+			usedBytes: afterBytes,
+			maxBytes: MAX_INSTALLATION_BYTES,
+			usedSlots: afterSlots,
+			maxSlots: MAX_DOCUMENT_SLOTS,
+		});
+	}
+
+	await ctx.db.patch("plugins_data_usage", args.usage._id, { ...args.next, updatedAt: args.now });
+}
+
+/**
  * Check the ceilings for one pending change before anything is written. An installation with no
  * usage document yet has stored nothing, so every counter reads as zero.
+ *
+ * `member` is present whenever the write will be charged to somebody — a frame door or a user API
+ * key. A plugin backend passes none: refusing a backend because one member is full would let that
+ * member block the whole plugin.
  */
 function check_capacity(
 	usage: Doc<"plugins_data_usage"> | null,
 	change: { addedBytes: number; addedSlots: number; addedCollections: number },
+	member?: {
+		usage: Doc<"plugins_data_member_usage"> | null;
+		change: { addedBytes: number; addedSlots: number; addedCollections: number };
+	},
 ) {
 	const usedBytes = usage ? usage.usedBytes + usage.reservedBytes : 0;
 	const usedSlots = usage ? usage.usedDocuments + usage.reservedDocuments + usage.tombstoneDocuments : 0;
@@ -438,7 +539,280 @@ function check_capacity(
 		});
 	}
 
+	if (!member) {
+		return Result({ _yay: null });
+	}
+
+	// The member's own bytes are what they composed. Bytes a plugin backend wrote into their
+	// documents count against the installation but not against them, or a backend could fill a
+	// member's share and lock them out of a plugin they use.
+	const memberBytes = member.usage ? member.usage.usedBytes - member.usage.machineBytes : 0;
+	const memberSlots = member.usage ? member.usage.usedDocuments : 0;
+	const memberCollections = member.usage ? member.usage.collectionNames.length : 0;
+
+	// Each refusal below names the member's own share, so a page can tell "you are full" from "the
+	// plugin is full" — they carry the same refusal name and the same HTTP status, so the message is
+	// the only thing that distinguishes them.
+	if (memberBytes + member.change.addedBytes > MEMBER_MAX_BYTES) {
+		return Result({
+			_nay: {
+				name: REFUSAL_STORAGE_FULL,
+				message: `You have used your ${(MEMBER_MAX_BYTES / (1024 * 1024)).toFixed(1)} MiB share of this plugin's storage`,
+			},
+		});
+	}
+	if (memberSlots + member.change.addedSlots > MEMBER_MAX_DOCUMENT_SLOTS) {
+		return Result({
+			_nay: {
+				name: REFUSAL_STORAGE_FULL,
+				message: `You have used your ${MEMBER_MAX_DOCUMENT_SLOTS} document slots in this plugin`,
+			},
+		});
+	}
+	if (memberCollections + member.change.addedCollections > MEMBER_MAX_COLLECTIONS) {
+		return Result({
+			_nay: {
+				name: REFUSAL_STORAGE_FULL,
+				message: `You can create at most ${MEMBER_MAX_COLLECTIONS} collections in this plugin`,
+			},
+		});
+	}
+
 	return Result({ _yay: null });
+}
+
+async function db_get_member_usage(
+	ctx: QueryCtx,
+	args: { installationId: Id<"plugins_workspace_installations">; userId: Id<"users"> },
+) {
+	return await ctx.db
+		.query("plugins_data_member_usage")
+		.withIndex("by_installation_user", (q) => q.eq("installationId", args.installationId).eq("userId", args.userId))
+		.first();
+}
+
+/**
+ * Move one member's counters by a delta, creating the row on the first charge and deleting it once
+ * the member holds nothing.
+ *
+ * The row is deleted rather than left at zero on purpose. A clamped zero would keep one row per
+ * member who ever wrote, so the table would grow with churn and a departed member would leave an id
+ * behind for nothing.
+ */
+async function db_patch_member_usage(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		userId: Id<"users">;
+		addedBytes: number;
+		addedSlots: number;
+		addedMachineBytes: number;
+		addedCollections: string[];
+	},
+) {
+	const existing = await db_get_member_usage(ctx, { installationId: args.installation._id, userId: args.userId });
+
+	const collectionNames = existing ? [...existing.collectionNames] : [];
+	for (const name of args.addedCollections) {
+		if (!collectionNames.includes(name)) {
+			collectionNames.push(name);
+		}
+	}
+
+	const usedBytes = (existing?.usedBytes ?? 0) + args.addedBytes;
+	const usedDocuments = (existing?.usedDocuments ?? 0) + args.addedSlots;
+	const machineBytes = (existing?.machineBytes ?? 0) + args.addedMachineBytes;
+
+	if (!existing) {
+		// Only a write that takes a document over starts a member's row, and that is the one change
+		// that adds a slot. Every other change naming a member can arrive after the member left: the
+		// prune deleted their row, their documents stayed in the workspace, and deleting or patching
+		// one of those still names them. Writing a row here would store counters for a user who is
+		// gone, and a delete's counters are negative.
+		if (args.addedSlots <= 0) {
+			return;
+		}
+
+		await ctx.db.insert("plugins_data_member_usage", {
+			organizationId: args.installation.organizationId,
+			workspaceId: args.installation.workspaceId,
+			installationId: args.installation._id,
+			userId: args.userId,
+			usedBytes,
+			usedDocuments,
+			machineBytes,
+			collectionNames,
+		});
+		return;
+	}
+
+	// A stored zero would keep one row per member who ever wrote, so the table would grow with churn.
+	if (usedBytes === 0 && usedDocuments === 0 && machineBytes === 0 && collectionNames.length === 0) {
+		await ctx.db.delete("plugins_data_member_usage", existing._id);
+		return;
+	}
+
+	await ctx.db.patch("plugins_data_member_usage", existing._id, {
+		usedBytes,
+		usedDocuments,
+		machineBytes,
+		collectionNames,
+	});
+}
+
+/**
+ * Remove a collection the installation just dropped from every member row of the installation.
+ *
+ * The installation's list shrinks when a collection stops holding documents and reservations. The
+ * per-member lists have to shrink with it, or a member who created a collection and then emptied it
+ * spends that share slot forever. The range is bounded by the workspace's member count and only runs
+ * on the transaction that emptied a collection.
+ */
+async function db_drop_member_collection(
+	ctx: MutationCtx,
+	args: {
+		installationId: Id<"plugins_workspace_installations">;
+		collection: string;
+		storedNames: string[];
+		nextNames: string[];
+	},
+) {
+	if (args.nextNames.length === args.storedNames.length) {
+		return;
+	}
+
+	const rows = await ctx.db
+		.query("plugins_data_member_usage")
+		.withIndex("by_installation_user", (q) => q.eq("installationId", args.installationId))
+		.collect();
+
+	for (const row of rows) {
+		if (!row.collectionNames.includes(args.collection)) {
+			continue;
+		}
+
+		const collectionNames = row.collectionNames.filter((name) => name !== args.collection);
+		// Re-check the delete condition on this row too. The shrink can bring a member who holds no
+		// documents down to fully empty, and that member has nothing left that would ever make
+		// another write look at their row again.
+		if (row.usedBytes === 0 && row.usedDocuments === 0 && row.machineBytes === 0 && collectionNames.length === 0) {
+			await ctx.db.delete("plugins_data_member_usage", row._id);
+			continue;
+		}
+
+		await ctx.db.patch("plugins_data_member_usage", row._id, { collectionNames });
+	}
+}
+
+/**
+ * What one accepted write costs each member, before it is written.
+ *
+ * A member's write takes the whole document over: it charges the writer the new bytes and the slot,
+ * and credits whoever held them before. A plugin backend's write charges nobody — an insert belongs
+ * to the installation, and a patch leaves the stored member alone, because the document is still
+ * theirs and only its size changed.
+ */
+function member_usage_deltas(args: {
+	/** The member the write is charged to, or null for a plugin backend. */
+	writer: Id<"users"> | null;
+	existing: Doc<"plugins_data"> | null;
+	collection: string;
+	/** True when this write is what puts the collection on the installation's list. */
+	addsCollection: boolean;
+	byteSize: number;
+}) {
+	const storedBytes = args.existing?.byteSize ?? 0;
+	const storedMachineBytes = args.existing?.machineBytes ?? 0;
+	const storedChargedTo = args.existing?.chargedTo ?? null;
+
+	if (args.writer === null) {
+		// A backend patch on a member's document: their totals follow the new size, the slot stays
+		// where it is, and the whole document is machine-written from now on.
+		if (storedChargedTo === null) {
+			return [];
+		}
+
+		return [
+			{
+				userId: storedChargedTo,
+				addedBytes: args.byteSize - storedBytes,
+				addedSlots: 0,
+				addedMachineBytes: args.byteSize - storedMachineBytes,
+				addedCollections: [],
+			},
+		];
+	}
+
+	const deltas = [];
+	// Credit whoever held the document before, unless it is the writer: then the charge only moves
+	// from the old size to the new one.
+	if (storedChargedTo !== null && storedChargedTo !== args.writer) {
+		deltas.push({
+			userId: storedChargedTo,
+			addedBytes: -storedBytes,
+			addedSlots: -1,
+			addedMachineBytes: -storedMachineBytes,
+			addedCollections: [],
+		});
+	}
+
+	const writerHeldIt = storedChargedTo === args.writer;
+	deltas.push({
+		userId: args.writer,
+		addedBytes: args.byteSize - (writerHeldIt ? storedBytes : 0),
+		addedSlots: writerHeldIt ? 0 : 1,
+		// The member composed the value that is now stored, so the document's machine share is gone.
+		addedMachineBytes: writerHeldIt ? -storedMachineBytes : 0,
+		// A member's list holds the collections they introduced to the installation, so a member who
+		// only writes into somebody else's collection never spends a share slot for it.
+		addedCollections: args.addsCollection ? [args.collection] : [],
+	});
+
+	return deltas;
+}
+
+/**
+ * The member half of the ceiling check for one pending write, in the same shape `check_capacity`
+ * takes. It is what the writer's own share would hold after the write, not what the installation
+ * would hold: bytes a backend wrote never count, and taking a document over costs a whole slot.
+ */
+function member_capacity_change(args: {
+	existing: Doc<"plugins_data"> | null;
+	writer: Id<"users">;
+	/** True when this write is what puts the collection on the installation's list. */
+	addsCollection: boolean;
+	byteSize: number;
+}) {
+	const writerHeldIt = (args.existing?.chargedTo ?? null) === args.writer;
+	const heldOwnBytes = writerHeldIt ? (args.existing?.byteSize ?? 0) - (args.existing?.machineBytes ?? 0) : 0;
+
+	return {
+		addedBytes: args.byteSize - heldOwnBytes,
+		addedSlots: writerHeldIt ? 0 : 1,
+		addedCollections: args.addsCollection ? 1 : 0,
+	};
+}
+
+/**
+ * Credit the member who held a document that is being deleted. A document charged to nobody, or to a
+ * member whose row is already gone, credits nothing.
+ */
+async function db_credit_member_for_delete(
+	ctx: MutationCtx,
+	args: { installation: Doc<"plugins_workspace_installations">; document: Doc<"plugins_data"> },
+) {
+	if (!args.document.chargedTo) {
+		return;
+	}
+
+	await db_patch_member_usage(ctx, {
+		installation: args.installation,
+		userId: args.document.chargedTo,
+		addedBytes: -args.document.byteSize,
+		addedSlots: -1,
+		addedMachineBytes: -(args.document.machineBytes ?? 0),
+		addedCollections: [],
+	});
 }
 
 /**
@@ -584,6 +958,17 @@ export const reserve_document = internalMutation({
 		if (key._nay) {
 			return key;
 		}
+
+		const scopedWrite = await db_refuse_scoped_write(ctx, {
+			installation,
+			userId: args.principal.actorUserId,
+			collection: collection._yay,
+			key: key._yay,
+		});
+		if (scopedWrite._nay) {
+			return scopedWrite;
+		}
+
 		const idempotencyKey = validate_name(args.idempotencyKey, "Idempotency keys");
 		if (idempotencyKey._nay) {
 			return idempotencyKey;
@@ -712,11 +1097,16 @@ export const reserve_document = internalMutation({
 		});
 
 		const storedUsage = usage ?? (await db_create_usage(ctx, { installation, now }));
-		await ctx.db.patch("plugins_data_usage", storedUsage._id, {
-			reservedBytes: storedUsage.reservedBytes + args.maximumBytes,
-			reservedDocuments: storedUsage.reservedDocuments + 1,
-			collectionNames: addsCollection ? [...storedUsage.collectionNames, collection._yay] : storedUsage.collectionNames,
-			updatedAt: now,
+		await db_patch_usage(ctx, {
+			usage: storedUsage,
+			next: {
+				reservedBytes: storedUsage.reservedBytes + args.maximumBytes,
+				reservedDocuments: storedUsage.reservedDocuments + 1,
+				collectionNames: addsCollection
+					? [...storedUsage.collectionNames, collection._yay]
+					: storedUsage.collectionNames,
+			},
+			now,
 		});
 
 		return Result({
@@ -786,17 +1176,26 @@ async function db_release_reservation(
 		usage: args.usage,
 		collection: args.reservation.collection,
 	});
+	await db_drop_member_collection(ctx, {
+		installationId: args.usage.installationId,
+		collection: args.reservation.collection,
+		storedNames: args.usage.collectionNames,
+		nextNames: collectionNames,
+	});
 
-	await ctx.db.patch("plugins_data_usage", args.usage._id, {
-		reservedBytes: args.usage.reservedBytes - releasedBytes,
-		// The doc itself survives as a retry record, so its slot moves rather than returning.
-		reservedDocuments: args.usage.reservedDocuments - (args.reservedSlotStillHeld ? 1 : 0),
-		// Only a still-held reserved slot becomes a tombstone here. If the first write already
-		// converted reserved → used, the used slot covers the key. Adding a tombstone on top
-		// would push used+tombstone over the 10_000 cap and refuse the next in-place write.
-		tombstoneDocuments: args.usage.tombstoneDocuments + (args.addUsageTombstone ? 1 : 0),
-		collectionNames,
-		updatedAt: args.now,
+	await db_patch_usage(ctx, {
+		usage: args.usage,
+		next: {
+			reservedBytes: args.usage.reservedBytes - releasedBytes,
+			// The doc itself survives as a retry record, so its slot moves rather than returning.
+			reservedDocuments: args.usage.reservedDocuments - (args.reservedSlotStillHeld ? 1 : 0),
+			// Only a still-held reserved slot becomes a tombstone here. If the first write already
+			// converted reserved → used, the used slot covers the key. Adding a tombstone on top
+			// would push used+tombstone over the 10_000 cap and refuse the next in-place write.
+			tombstoneDocuments: args.usage.tombstoneDocuments + (args.addUsageTombstone ? 1 : 0),
+			collectionNames,
+		},
+		now: args.now,
 	});
 
 	return releasedBytes;
@@ -943,6 +1342,21 @@ export const read_document = internalQuery({
 			collection: collection._yay,
 			key: key._yay,
 		});
+		// A private document answers absent unless the person this call acts for is in its scope. It
+		// reads as "not there" rather than "denied" on purpose: the two answers apart would tell a
+		// caller that a private channel exists and which keys it holds.
+		if (
+			document?.scopeId !== undefined &&
+			!(await db_can_use_scope(ctx, {
+				installation,
+				scopeId: document.scopeId,
+				userId: args.principal.actorUserId,
+				permission: "content.read",
+			}))
+		) {
+			return Result({ _yay: null });
+		}
+
 		return Result({ _yay: document ? to_public_document(document) : null });
 	},
 });
@@ -958,6 +1372,8 @@ export const list_documents = internalQuery({
 		principal: store_principal_validator,
 		collection: v.string(),
 		keyPrefix: v.optional(v.string()),
+		keyStartExclusive: v.optional(v.string()),
+		keyEndInclusive: v.optional(v.string()),
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: v_result({ _yay: paginationResultValidator(document_validator) }),
@@ -976,16 +1392,80 @@ export const list_documents = internalQuery({
 		if (keyPrefix._nay) {
 			return keyPrefix;
 		}
+		// The deep-history continuation: the caller resends the last key of the page it just read as
+		// `keyStartExclusive`. Both bounds are keys the caller copied from documents this door
+		// returned, so they follow the same shape rules as keys. There is no order check between the
+		// two, because `intersect_key_ranges` reads a crossed pair as empty.
+		const keyStartExclusive =
+			args.keyStartExclusive === undefined ? Result({ _yay: null }) : validate_name(args.keyStartExclusive, "Keys");
+		if (keyStartExclusive._nay) {
+			return keyStartExclusive;
+		}
+		const keyEndInclusive =
+			args.keyEndInclusive === undefined ? Result({ _yay: null }) : validate_name(args.keyEndInclusive, "Keys");
+		if (keyEndInclusive._nay) {
+			return keyEndInclusive;
+		}
+
 		const keyRange =
 			keyPrefix._yay === null ? null : { lower: keyPrefix._yay, upper: key_prefix_upper_bound(keyPrefix._yay) };
+		const range = intersect_key_ranges({
+			prefixRange: keyRange,
+			startExclusive: keyStartExclusive._yay,
+			endInclusive: keyEndInclusive._yay,
+		});
+		// Crossed bounds hold nothing, and this door has to say so with a *finished* page. An
+		// unfinished empty page makes the route echo a non-null cursor, and a caller that follows it
+		// asks for the same empty page forever. A fencepost reused against a different `keyPrefix`
+		// crosses the bounds, so this is reachable from ordinary client code.
+		if (range === "empty") {
+			return Result({ _yay: { page: [], isDone: true, continueCursor: "" } });
+		}
 
-		// The prefix rides the index as a range, never a post-index filter, so the pagination cursor
+		// Same split as the reactive window: a prefix inside a private scope reads that scope once the
+		// person this call acts for proves they are in it, and every other read sees the unscoped half.
+		// A caller with no grant hears the finished-empty answer, which is also what an empty range
+		// answers, so the refusal says nothing about whether the scope exists.
+		const readScope =
+			keyPrefix._yay === null
+				? null
+				: await db_resolve_scope(ctx, {
+						installationId: installation._id,
+						collection: collection._yay,
+						key: keyPrefix._yay,
+					});
+		if (
+			readScope &&
+			!(await db_can_use_scope(ctx, {
+				installation,
+				scopeId: readScope.scopeId,
+				userId: args.principal.actorUserId,
+				permission: "content.read",
+			}))
+		) {
+			return Result({ _yay: { page: [], isDone: true, continueCursor: "" } });
+		}
+
+		// The bounds ride the index as a range, never a post-index filter, so the pagination cursor
 		// continues inside the narrowed range and every page stays full.
 		const page = await ctx.db
 			.query("plugins_data")
-			.withIndex("by_installation_collection_key", (q) => {
-				const scope = q.eq("installationId", installation._id).eq("collection", collection._yay);
-				return keyRange ? scope.gte("key", keyRange.lower).lt("key", keyRange.upper) : scope;
+			.withIndex("by_installation_collection_scope_key", (q) => {
+				const base = q
+					.eq("installationId", installation._id)
+					.eq("collection", collection._yay)
+					.eq("scopeId", readScope?.scopeId);
+				const lowerBounded =
+					range.lower === null
+						? base
+						: range.lower.inclusive
+							? base.gte("key", range.lower.value)
+							: base.gt("key", range.lower.value);
+				return range.upper === null
+					? lowerBounded
+					: range.upper.inclusive
+						? lowerBounded.lte("key", range.upper.value)
+						: lowerBounded.lt("key", range.upper.value);
 			})
 			.paginate({
 				...args.paginationOpts,
@@ -1020,9 +1500,24 @@ async function db_write_document(
 		ownership?: "shared" | "owned";
 		/** Only the user-write door's append sets this, for replay dedup. */
 		userWrite?: { requestId: string; requestFingerprint: string };
+		/**
+		 * The member whose share holds this document after the write, or null when a plugin backend
+		 * wrote it. A backend's insert is charged to the installation only; a backend's patch leaves
+		 * the stored member where they are, because the document is still theirs.
+		 */
+		chargedTo: Id<"users"> | null;
 		now: number;
 	},
 ) {
+	// Every writer resolves the scope here instead of being handed one. A caller that could name its
+	// own scope could put a public document inside a private range, and a new write path that forgot
+	// to pass one would do the same by accident.
+	const scope = await db_resolve_scope(ctx, {
+		installationId: args.installation._id,
+		collection: args.collection,
+		key: args.key,
+	});
+
 	if (args.existing) {
 		await ctx.db.patch("plugins_data", args.existing._id, {
 			value: args.value,
@@ -1030,11 +1525,20 @@ async function db_write_document(
 			revision: args.existing.revision + 1,
 			updatedBy: args.actorUserId,
 			updatedAt: args.now,
+			// The binding is authoritative, so the stamp is rewritten on every write. Deleting a scope
+			// clears it again the next time the document is touched.
+			scopeId: scope?.scopeId,
+			// A member's write takes the document over and zeroes its machine share, because the
+			// member composed the value that is now stored. A backend's patch changes only the size.
+			...(args.chargedTo === null
+				? { machineBytes: args.byteSize }
+				: { chargedTo: args.chargedTo, machineBytes: 0 }),
 		});
 		return;
 	}
 
 	await ctx.db.insert("plugins_data", {
+		scopeId: scope?.scopeId,
 		organizationId: args.installation.organizationId,
 		workspaceId: args.installation.workspaceId,
 		installationId: args.installation._id,
@@ -1052,6 +1556,8 @@ async function db_write_document(
 		createdBy: args.actorUserId,
 		updatedBy: args.actorUserId,
 		updatedAt: args.now,
+		chargedTo: args.chargedTo ?? undefined,
+		machineBytes: args.chargedTo === null ? args.byteSize : 0,
 	});
 }
 
@@ -1136,17 +1642,27 @@ async function db_write_documents(
 	const usage = await db_get_usage(ctx, installation._id);
 	const storedCollections = new Set(usage?.collectionNames ?? []);
 
+	// An API key writes as the member who minted it, so this door is charged like a frame door. A
+	// plugin backend charges nobody: its writes belong to the installation.
+	const writer = args.principal.kind === "user_api_key" ? args.principal.actorUserId : null;
+	const memberUsage = writer
+		? await db_get_member_usage(ctx, { installationId: installation._id, userId: writer })
+		: null;
+
 	const seen = new Set<string>();
 	const prepared: {
 		collection: string;
 		key: string;
 		value: Record<string, unknown>;
 		byteSize: number;
+		addsCollection: boolean;
 		existing: Doc<"plugins_data"> | null;
 	}[] = [];
 	let addedBytes = 0;
 	let addedSlots = 0;
 	const addedCollections = new Set<string>();
+	let memberAddedBytes = 0;
+	let memberAddedSlots = 0;
 
 	for (const input of args.documents) {
 		const collection = validate_name(input.collection, "Collection names");
@@ -1169,6 +1685,17 @@ async function db_write_documents(
 			return Result({ _nay: { message: "A write batch names the same document twice" } });
 		}
 		seen.add(identity);
+
+		// Nothing is written until the whole loop has passed, so refusing here refuses the batch.
+		const scopedWrite = await db_refuse_scoped_write(ctx, {
+			installation,
+			userId: args.principal.actorUserId,
+			collection: collection._yay,
+			key: key._yay,
+		});
+		if (scopedWrite._nay) {
+			return scopedWrite;
+		}
 
 		const existing = await db_get_document(ctx, {
 			installationId: installation._id,
@@ -1217,23 +1744,52 @@ async function db_write_documents(
 		if (!existing) {
 			addedSlots += 1;
 		}
+		// A second item naming the same new collection must not be counted twice, so the batch's own
+		// set decides, not the stored list alone.
+		const addsCollection = !storedCollections.has(collection._yay) && !addedCollections.has(collection._yay);
 		if (!storedCollections.has(collection._yay)) {
 			addedCollections.add(collection._yay);
+		}
+		if (writer) {
+			const memberChange = member_capacity_change({
+				existing,
+				writer,
+				addsCollection,
+				byteSize: byteSize._yay,
+			});
+			memberAddedBytes += memberChange.addedBytes;
+			memberAddedSlots += memberChange.addedSlots;
 		}
 		prepared.push({
 			collection: collection._yay,
 			key: key._yay,
 			value: input.value,
 			byteSize: byteSize._yay,
+			addsCollection,
 			existing,
 		});
 	}
 
-	const capacity = check_capacity(usage, {
-		addedBytes,
-		addedSlots,
-		addedCollections: addedCollections.size,
-	});
+	const capacity = check_capacity(
+		usage,
+		{
+			addedBytes,
+			addedSlots,
+			addedCollections: addedCollections.size,
+		},
+		writer
+			? {
+					usage: memberUsage,
+					change: {
+						addedBytes: memberAddedBytes,
+						addedSlots: memberAddedSlots,
+						// Every collection this batch introduces is new to the writer too: a name on any
+						// member's list is a name the installation still holds.
+						addedCollections: addedCollections.size,
+					},
+				}
+			: undefined,
+	);
 	if (capacity._nay) {
 		return capacity;
 	}
@@ -1249,15 +1805,28 @@ async function db_write_documents(
 			key: document.key,
 			value: document.value,
 			byteSize: document.byteSize,
+			chargedTo: writer,
 			now,
 		});
+		for (const delta of member_usage_deltas({
+			writer,
+			existing: document.existing,
+			collection: document.collection,
+			addsCollection: document.addsCollection,
+			byteSize: document.byteSize,
+		})) {
+			await db_patch_member_usage(ctx, { installation, ...delta });
+		}
 	}
 	const storedUsage = usage ?? (await db_create_usage(ctx, { installation, now }));
-	await ctx.db.patch("plugins_data_usage", storedUsage._id, {
-		usedBytes: storedUsage.usedBytes + addedBytes,
-		usedDocuments: storedUsage.usedDocuments + addedSlots,
-		collectionNames: [...storedUsage.collectionNames, ...addedCollections],
-		updatedAt: now,
+	await db_patch_usage(ctx, {
+		usage: storedUsage,
+		next: {
+			usedBytes: storedUsage.usedBytes + addedBytes,
+			usedDocuments: storedUsage.usedDocuments + addedSlots,
+			collectionNames: [...storedUsage.collectionNames, ...addedCollections],
+		},
+		now,
 	});
 
 	return Result({
@@ -1299,6 +1868,16 @@ export const delete_document = internalMutation({
 			return key;
 		}
 
+		const scopedWrite = await db_refuse_scoped_write(ctx, {
+			installation,
+			userId: args.principal.actorUserId,
+			collection: collection._yay,
+			key: key._yay,
+		});
+		if (scopedWrite._nay) {
+			return scopedWrite;
+		}
+
 		const existing = await db_get_document(ctx, {
 			installationId: installation._id,
 			collection: collection._yay,
@@ -1334,11 +1913,22 @@ export const delete_document = internalMutation({
 		}
 
 		await ctx.db.delete("plugins_data", existing._id);
-		await ctx.db.patch("plugins_data_usage", usage._id, {
-			usedBytes: usage.usedBytes - existing.byteSize,
-			usedDocuments: usage.usedDocuments - 1,
-			collectionNames: await db_drop_collection_if_empty(ctx, { usage, collection: collection._yay }),
-			updatedAt: now,
+		await db_credit_member_for_delete(ctx, { installation, document: existing });
+		const collectionNames = await db_drop_collection_if_empty(ctx, { usage, collection: collection._yay });
+		await db_drop_member_collection(ctx, {
+			installationId: installation._id,
+			collection: collection._yay,
+			storedNames: usage.collectionNames,
+			nextNames: collectionNames,
+		});
+		await db_patch_usage(ctx, {
+			usage,
+			next: {
+				usedBytes: usage.usedBytes - existing.byteSize,
+				usedDocuments: usage.usedDocuments - 1,
+				collectionNames,
+			},
+			now,
 		});
 
 		return Result({ _yay: { deleted: true } });
@@ -1482,7 +2072,10 @@ async function db_authorize_page_write(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	return Result({ _yay: { installation, userId: session.userId } });
+	// The organization and the workspace come back because a scope check needs them: a
+	// `plugin_scope` grant is looked up per organization and workspace, and the owner short-circuit
+	// needs `ownerUserId`. Both were already loaded above, so handing them back costs no read.
+	return Result({ _yay: { installation, userId: session.userId, organization, workspace } });
 }
 
 /**
@@ -1554,11 +2147,27 @@ async function db_user_write_document(
 	const now = Date.now();
 	const usage = await db_get_usage(ctx, args.installation._id);
 	const addsCollection = !(usage?.collectionNames ?? []).includes(args.collection);
-	const capacity = check_capacity(usage, {
-		addedBytes: args.byteSize - (args.existing?.byteSize ?? 0),
-		addedSlots: args.existing ? 0 : 1,
-		addedCollections: addsCollection ? 1 : 0,
+	const memberUsage = await db_get_member_usage(ctx, {
+		installationId: args.installation._id,
+		userId: args.userId,
 	});
+	const capacity = check_capacity(
+		usage,
+		{
+			addedBytes: args.byteSize - (args.existing?.byteSize ?? 0),
+			addedSlots: args.existing ? 0 : 1,
+			addedCollections: addsCollection ? 1 : 0,
+		},
+		{
+			usage: memberUsage,
+			change: member_capacity_change({
+				existing: args.existing,
+				writer: args.userId,
+				addsCollection,
+				byteSize: args.byteSize,
+			}),
+		},
+	);
 	if (capacity._nay) {
 		return capacity;
 	}
@@ -1573,15 +2182,31 @@ async function db_user_write_document(
 		byteSize: args.byteSize,
 		ownership: args.ownership,
 		userWrite: args.userWrite,
+		chargedTo: args.userId,
 		now,
 	});
 
+	for (const delta of member_usage_deltas({
+		writer: args.userId,
+		existing: args.existing,
+		collection: args.collection,
+		addsCollection,
+		byteSize: args.byteSize,
+	})) {
+		await db_patch_member_usage(ctx, { installation: args.installation, ...delta });
+	}
+
 	const storedUsage = usage ?? (await db_create_usage(ctx, { installation: args.installation, now }));
-	await ctx.db.patch("plugins_data_usage", storedUsage._id, {
-		usedBytes: storedUsage.usedBytes + args.byteSize - (args.existing?.byteSize ?? 0),
-		usedDocuments: storedUsage.usedDocuments + (args.existing ? 0 : 1),
-		collectionNames: addsCollection ? [...storedUsage.collectionNames, args.collection] : storedUsage.collectionNames,
-		updatedAt: now,
+	await db_patch_usage(ctx, {
+		usage: storedUsage,
+		next: {
+			usedBytes: storedUsage.usedBytes + args.byteSize - (args.existing?.byteSize ?? 0),
+			usedDocuments: storedUsage.usedDocuments + (args.existing ? 0 : 1),
+			collectionNames: addsCollection
+				? [...storedUsage.collectionNames, args.collection]
+				: storedUsage.collectionNames,
+		},
+		now,
 	});
 
 	return Result({ _yay: { revision: (args.existing?.revision ?? 0) + 1, byteSize: args.byteSize } });
@@ -1606,11 +2231,22 @@ async function db_user_delete_document(
 	}
 
 	await ctx.db.delete("plugins_data", args.existing._id);
-	await ctx.db.patch("plugins_data_usage", usage._id, {
-		usedBytes: usage.usedBytes - args.existing.byteSize,
-		usedDocuments: usage.usedDocuments - 1,
-		collectionNames: await db_drop_collection_if_empty(ctx, { usage, collection: args.existing.collection }),
-		updatedAt: now,
+	await db_credit_member_for_delete(ctx, { installation: args.installation, document: args.existing });
+	const collectionNames = await db_drop_collection_if_empty(ctx, { usage, collection: args.existing.collection });
+	await db_drop_member_collection(ctx, {
+		installationId: args.installation._id,
+		collection: args.existing.collection,
+		storedNames: usage.collectionNames,
+		nextNames: collectionNames,
+	});
+	await db_patch_usage(ctx, {
+		usage,
+		next: {
+			usedBytes: usage.usedBytes - args.existing.byteSize,
+			usedDocuments: usage.usedDocuments - 1,
+			collectionNames,
+		},
+		now,
 	});
 }
 
@@ -1711,6 +2347,18 @@ export const user_append_document = mutation({
 			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "Could not assign a unique key, try again" } });
 		}
 
+		// Checked on the key that will really be stored, not on the caller's prefix: a scope may cover
+		// only part of a prefix, and the prefix itself is never written.
+		const scopedWrite = await db_refuse_scoped_write(ctx, {
+			installation,
+			userId,
+			collection: collection._yay,
+			key,
+		});
+		if (scopedWrite._nay) {
+			return scopedWrite;
+		}
+
 		const written = await db_user_write_document(ctx, {
 			installation,
 			userId,
@@ -1756,6 +2404,16 @@ export const user_put_document = mutation({
 		const byteSize = validate_value(args.value);
 		if (byteSize._nay) {
 			return byteSize;
+		}
+
+		const scopedWrite = await db_refuse_scoped_write(ctx, {
+			installation,
+			userId,
+			collection: collection._yay,
+			key: key._yay,
+		});
+		if (scopedWrite._nay) {
+			return scopedWrite;
 		}
 
 		const existing = await db_get_document(ctx, {
@@ -1828,6 +2486,16 @@ export const user_remove_document = mutation({
 			return key;
 		}
 
+		const scopedWrite = await db_refuse_scoped_write(ctx, {
+			installation,
+			userId,
+			collection: collection._yay,
+			key: key._yay,
+		});
+		if (scopedWrite._nay) {
+			return scopedWrite;
+		}
+
 		const existing = await db_get_document(ctx, {
 			installationId: installation._id,
 			collection: collection._yay,
@@ -1897,6 +2565,16 @@ export const user_put_owned_document = mutation({
 			return Result({
 				_nay: { message: `Keys must be at most ${plugins_data_MAX_NAME_LENGTH} characters after the writer id is appended` },
 			});
+		}
+
+		const scopedWrite = await db_refuse_scoped_write(ctx, {
+			installation,
+			userId,
+			collection: collection._yay,
+			key: storedKey,
+		});
+		if (scopedWrite._nay) {
+			return scopedWrite;
 		}
 
 		const existing = await db_get_document(ctx, {
@@ -1973,6 +2651,16 @@ export const user_remove_owned_document = mutation({
 			});
 		}
 
+		const scopedWrite = await db_refuse_scoped_write(ctx, {
+			installation,
+			userId,
+			collection: collection._yay,
+			key: storedKey,
+		});
+		if (scopedWrite._nay) {
+			return scopedWrite;
+		}
+
 		const existing = await db_get_document(ctx, {
 			installationId: installation._id,
 			collection: collection._yay,
@@ -2001,6 +2689,752 @@ export const user_remove_owned_document = mutation({
 });
 
 // #endregion user writes
+
+// #region scopes
+
+/**
+ * Where one scope's permission grants live.
+ *
+ * The installation is part of the id because two installations may mint the same scope id, and a
+ * grant must never cross from one to the other.
+ */
+function scope_resource_id(installationId: Id<"plugins_workspace_installations">, scopeId: string) {
+	return `${installationId}:${scopeId}`;
+}
+
+/**
+ * The private scope a key falls in, or null when the key is in the public part of the collection.
+ *
+ * One indexed read answers it. Walking scope prefixes downwards from the key gives the greatest
+ * prefix that is not above the key, and that row is the only one that can match: any other prefix
+ * sitting between a real match and the key would have to start with that match, and the create door
+ * refuses a prefix that overlaps another. So if the first row is not a prefix of the key, no row is.
+ *
+ * Every writer goes through here rather than being handed a scope, so a new write path cannot
+ * quietly put a public document inside a private range.
+ */
+async function db_resolve_scope(
+	ctx: QueryCtx | MutationCtx,
+	args: { installationId: Id<"plugins_workspace_installations">; collection: string; key: string },
+) {
+	const candidate = await ctx.db
+		.query("plugins_data_scopes")
+		.withIndex("by_installation_collection_prefix", (q) =>
+			q.eq("installationId", args.installationId).eq("collection", args.collection).lte("keyPrefix", args.key),
+		)
+		.order("desc")
+		.first();
+
+	return candidate && args.key.startsWith(candidate.keyPrefix) ? candidate : null;
+}
+
+/**
+ * Another scope whose key range touches this one, or null when the range is free.
+ *
+ * Two reads, because overlap has two shapes. An existing prefix may sit above the new one — read
+ * prefixes downwards from it and test the first, the same walk `db_resolve_scope` explains. Or an
+ * existing prefix may sit inside the new one — read the new prefix's own range forwards.
+ */
+async function db_find_overlapping_scope(
+	ctx: QueryCtx | MutationCtx,
+	args: { installationId: Id<"plugins_workspace_installations">; collection: string; keyPrefix: string },
+) {
+	const above = await db_resolve_scope(ctx, {
+		installationId: args.installationId,
+		collection: args.collection,
+		key: args.keyPrefix,
+	});
+	if (above) {
+		return above;
+	}
+
+	return await ctx.db
+		.query("plugins_data_scopes")
+		.withIndex("by_installation_collection_prefix", (q) =>
+			q
+				.eq("installationId", args.installationId)
+				.eq("collection", args.collection)
+				.gte("keyPrefix", args.keyPrefix)
+				.lt("keyPrefix", key_prefix_upper_bound(args.keyPrefix)),
+		)
+		.first();
+}
+
+/**
+ * Whether one member may read or write inside one scope.
+ *
+ * Every read door asks this before it scans a scope's key range, and every write door asks it before
+ * it touches a key. The organization is loaded here so the doors do not each carry the same three ids
+ * around.
+ */
+async function db_can_use_scope(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		scopeId: string;
+		userId: Id<"users">;
+		permission: access_control_Permission;
+	},
+) {
+	const organization = await ctx.db.get("organizations", args.installation.organizationId);
+	if (!organization?.defaultWorkspaceId) {
+		return false;
+	}
+
+	return await access_control_db_has_permission(ctx, {
+		organizationId: organization._id,
+		workspaceId: args.installation.workspaceId,
+		defaultWorkspaceId: organization.defaultWorkspaceId,
+		organizationOwnerUserId: organization.ownerUserId,
+		resource: { kind: "plugin_scope", id: scope_resource_id(args.installation._id, args.scopeId) },
+		permission: args.permission,
+		userId: args.userId,
+	});
+}
+
+/**
+ * Prove a member may write at one key, given the scope that key falls in.
+ *
+ * A public key needs nothing beyond the workspace write the door already checked. A key inside a
+ * scope needs a grant on that exact scope, and a role gives nothing there.
+ *
+ * Every write door asks this, not only the ones a plugin frame reaches. An API key writes as the
+ * member who minted it and a backend run writes as the member who triggered it, so a member outside
+ * a private channel could otherwise inject documents into it over HTTP — they could not read the
+ * channel back, but the message would be there.
+ *
+ * Ask it before the first write of a batch, never inside the loop. A Convex mutation that returns a
+ * refusal after it has already inserted keeps those inserts.
+ */
+async function db_refuse_scoped_write(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		userId: Id<"users">;
+		collection: string;
+		key: string;
+	},
+) {
+	const scope = await db_resolve_scope(ctx, {
+		installationId: args.installation._id,
+		collection: args.collection,
+		key: args.key,
+	});
+	if (!scope) {
+		return Result({ _yay: null });
+	}
+
+	const allowed = await db_can_use_scope(ctx, {
+		installation: args.installation,
+		scopeId: scope.scopeId,
+		userId: args.userId,
+		permission: "content.write",
+	});
+	if (!allowed) {
+		return Result({ _nay: { message: "Permission denied" } });
+	}
+
+	return Result({ _yay: null });
+}
+
+/**
+ * What each scope level hands out, one grant document per permission, like file sharing.
+ *
+ * `member` reads and writes inside the scope. `manage` adds the right to change who else is in it,
+ * and that third permission is the one the lifecycle mutation checks before it touches another
+ * principal's grants.
+ */
+const SCOPE_LEVEL_PERMISSIONS = {
+	member: ["content.read", "content.write"],
+	manage: ["content.read", "content.write", "content.permissions.manage"],
+} as const satisfies Record<string, readonly access_control_Permission[]>;
+
+type plugins_data_ScopeLevel = keyof typeof SCOPE_LEVEL_PERMISSIONS;
+
+/**
+ * Every user grant on one scope.
+ *
+ * Read one document past the cap so a full page proves there is more, the way file sharing counts
+ * its own principals.
+ */
+function db_scope_grants(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		resourceId: string;
+	},
+) {
+	return ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("resourceKind", "plugin_scope")
+				.eq("resourceId", args.resourceId)
+				.eq("principalKind", "user"),
+		)
+		.take(MAX_SCOPE_PRINCIPALS * SCOPE_LEVEL_PERMISSIONS.manage.length + 1);
+}
+
+/**
+ * Refuse when one member is already named in as many scopes as they may hold.
+ *
+ * Counts scopes and not grant rows: one member holds several rows per scope, and a cap on rows
+ * would change meaning the day a level gains a permission. `exceptResourceId` is the scope being
+ * changed, so raising or lowering somebody already in it never counts as one more.
+ */
+async function db_refuse_member_scope_cap(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		exceptResourceId?: string;
+	},
+) {
+	const grants = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_user_organization_workspace_resource_permission", (q) =>
+			q
+				.eq("userId", args.userId)
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("resourceKind", "plugin_scope"),
+		)
+		.take(MAX_SCOPES_PER_MEMBER * SCOPE_LEVEL_PERMISSIONS.manage.length + 1);
+
+	const scopes = new Set(grants.map((grant) => grant.resourceId));
+	if (args.exceptResourceId !== undefined) {
+		scopes.delete(args.exceptResourceId);
+	}
+	if (scopes.size >= MAX_SCOPES_PER_MEMBER) {
+		return Result({
+			_nay: {
+				message: `This member is already in ${MAX_SCOPES_PER_MEMBER} private scopes, which is the most they can be in. Delete one first.`,
+			},
+		});
+	}
+
+	return Result({ _yay: null });
+}
+
+/**
+ * Replace one principal's grants on one scope.
+ *
+ * Delete first and insert after, so lowering `manage` to `member` really drops
+ * `content.permissions.manage` instead of leaving the old row beside the new ones. A null level
+ * removes the principal.
+ */
+async function db_set_scope_principal(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		resourceId: string;
+		userId: Id<"users">;
+		level: plugins_data_ScopeLevel | null;
+		now: number;
+	},
+) {
+	const existing = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("resourceKind", "plugin_scope")
+				.eq("resourceId", args.resourceId)
+				.eq("principalKind", "user")
+				.eq("userId", args.userId),
+		)
+		.take(SCOPE_LEVEL_PERMISSIONS.manage.length + 1);
+	await Promise.all(existing.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)));
+
+	if (args.level === null) {
+		return;
+	}
+
+	await Promise.all(
+		SCOPE_LEVEL_PERMISSIONS[args.level].map((permission) =>
+			ctx.db.insert("access_control_permission_grants", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				resourceKind: "plugin_scope",
+				resourceId: args.resourceId,
+				principalKind: "user",
+				userId: args.userId,
+				permission,
+				createdAt: args.now,
+				updatedAt: args.now,
+			}),
+		),
+	);
+}
+
+/**
+ * Delete a scope and every grant on it, in one transaction.
+ *
+ * One scope holds one row per collection it covers, and all of them go. A row left behind would keep
+ * its own collection's key range private with no grant able to reach it.
+ *
+ * The grants have to go too. A scope id is minted by the plugin and stored only on the scope
+ * documents, so once they are gone nothing can find the leftover grants to remove them, and they
+ * would count against their holders' cap forever.
+ */
+async function db_delete_scope(ctx: MutationCtx, scopes: Doc<"plugins_data_scopes">[]) {
+	const first = scopes[0];
+	const grants = await db_scope_grants(ctx, {
+		organizationId: first.organizationId,
+		workspaceId: first.workspaceId,
+		resourceId: scope_resource_id(first.installationId, first.scopeId),
+	});
+	await Promise.all(grants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)));
+	await Promise.all(scopes.map((scope) => ctx.db.delete("plugins_data_scopes", scope._id)));
+}
+
+/**
+ * Create a private scope, change who is in it, or delete it.
+ *
+ * One mutation owns the whole lifecycle, the way `files_sharing.set_node_share_grant` both inserts
+ * and deletes its grants. Splitting the growth path from the shrink path is how a share list ends
+ * up append-only: a member can add a colleague and then has no door to remove them.
+ *
+ * Creating a scope names every collection it covers, and the key prefix is the same in all of them.
+ * That is one scope against the member's cap for one private area, however many collections the
+ * plugin spreads it over. Every named collection is checked before anything is written, so a scope
+ * is never created over half of its own range.
+ *
+ * Who may do what: creating a scope needs the same workspace write the other member doors need, and
+ * the creator gets the first `manage` grant. Everything after that needs a `manage` grant on that
+ * exact scope. A role's own permissions give nothing here — that is what makes the scope private —
+ * so an admin who was never named cannot add themselves.
+ *
+ * The organization owner still passes every check. That is deliberate, and it is the plugin's job to
+ * say so in its own copy: a feature that says "private" while the owner reads everything is a
+ * disclosure, not a bug.
+ *
+ * Only user principals are ever written. A role principal would hand the scope to everybody holding
+ * that role, and it would also make the role undeletable: `delete_role` refuses on the first role
+ * grant of any kind and names a file-share dialog that cannot reach a plugin scope.
+ */
+export const user_manage_scope = mutation({
+	args: {
+		action: v.union(
+			v.object({
+				kind: v.literal("create"),
+				scopeId: v.string(),
+				collections: v.array(v.string()),
+				keyPrefix: v.string(),
+			}),
+			v.object({
+				kind: v.literal("set_principal"),
+				scopeId: v.string(),
+				userId: v.id("users"),
+				level: v.union(v.literal("member"), v.literal("manage")),
+			}),
+			v.object({ kind: v.literal("remove_principal"), scopeId: v.string(), userId: v.id("users") }),
+			v.object({ kind: v.literal("delete"), scopeId: v.string() }),
+		),
+	},
+	returns: v_result({ _yay: v.object({ scopeId: v.string() }) }),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_page_write(ctx);
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { installation, userId, organization, workspace } = authorized._yay;
+		const defaultWorkspaceId = organization.defaultWorkspaceId;
+		if (!defaultWorkspaceId) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const scopeId = validate_name(args.action.scopeId, "Scope ids");
+		if (scopeId._nay) {
+			return scopeId;
+		}
+
+		const existing = await ctx.db
+			.query("plugins_data_scopes")
+			.withIndex("by_installation_scope", (q) => q.eq("installationId", installation._id).eq("scopeId", scopeId._yay))
+			.take(MAX_COLLECTIONS + 1);
+
+		const now = Date.now();
+		const resourceId = scope_resource_id(installation._id, scopeId._yay);
+
+		if (args.action.kind === "create") {
+			// Held in a local because the checks below read it inside callbacks, where TypeScript no
+			// longer remembers which branch of the action union this is.
+			const requestedPrefix = args.action.keyPrefix;
+			const requested = [...new Set(args.action.collections)].sort();
+			if (requested.length === 0) {
+				return Result({ _nay: { message: "Name at least one collection for this scope" } });
+			}
+			if (requested.length > MAX_COLLECTIONS) {
+				return Result({ _nay: { message: `One scope can cover at most ${MAX_COLLECTIONS} collections` } });
+			}
+
+			// Creating the same scope twice is what a retried request looks like, so answer yes instead
+			// of an error. The same id over a different key range is a real mistake and is refused.
+			if (existing.length > 0) {
+				const covered = [...new Set(existing.map((scope) => scope.collection))].sort();
+				const sameRange =
+					existing.every((scope) => scope.keyPrefix === requestedPrefix) &&
+					covered.length === requested.length &&
+					covered.every((collection, index) => collection === requested[index]);
+				if (!sameRange) {
+					return Result({
+						_nay: { name: REFUSAL_CONFLICT, message: "This scope id already covers a different key range" },
+					});
+				}
+				return Result({ _yay: { scopeId: scopeId._yay } });
+			}
+
+			const collections: string[] = [];
+			for (const raw of requested) {
+				const collection = validate_name(raw, "Collection names");
+				if (collection._nay) {
+					return collection;
+				}
+				collections.push(collection._yay);
+			}
+			const keyPrefix = validate_key_prefix(requestedPrefix);
+			if (keyPrefix._nay) {
+				return keyPrefix;
+			}
+
+			for (const collection of collections) {
+				// Two scopes may not overlap. That is what lets one indexed read resolve a key's scope:
+				// with no overlaps the greatest prefix at or below a key is the only one that can match
+				// it. Overlap is per collection, because a scope only owns the range in the collections
+				// it names.
+				const overlapping = await db_find_overlapping_scope(ctx, {
+					installationId: installation._id,
+					collection,
+					keyPrefix: keyPrefix._yay,
+				});
+				if (overlapping) {
+					return Result({
+						_nay: { name: REFUSAL_CONFLICT, message: "Another scope already covers part of this key range" },
+					});
+				}
+
+				// The range has to be empty. A document written before the scope existed would carry no
+				// scope id, so it would stay readable by the whole workspace inside a range that now
+				// claims to be private. It also closes the way back in after a delete: the scope's old
+				// documents are still there, so the same range cannot be claimed again and handed to
+				// somebody else.
+				const occupant = await ctx.db
+					.query("plugins_data")
+					.withIndex("by_installation_collection_key", (q) =>
+						q
+							.eq("installationId", installation._id)
+							.eq("collection", collection)
+							.gte("key", keyPrefix._yay)
+							.lt("key", key_prefix_upper_bound(keyPrefix._yay)),
+					)
+					.first();
+				if (occupant) {
+					return Result({
+						_nay: { name: REFUSAL_CONFLICT, message: "This key range already holds documents" },
+					});
+				}
+			}
+
+			const capReached = await db_refuse_member_scope_cap(ctx, {
+				organizationId: organization._id,
+				workspaceId: workspace._id,
+				userId,
+			});
+			if (capReached._nay) {
+				return capReached;
+			}
+
+			await Promise.all(
+				collections.map((collection) =>
+					ctx.db.insert("plugins_data_scopes", {
+						organizationId: organization._id,
+						workspaceId: workspace._id,
+						installationId: installation._id,
+						scopeId: scopeId._yay,
+						collection,
+						keyPrefix: keyPrefix._yay,
+						createdByUserId: userId,
+						createdAt: now,
+						updatedAt: now,
+					}),
+				),
+			);
+			// The creator has to stay in. A role gives nothing inside a scope, so without this the
+			// member would create a private channel and lose it in the same call.
+			await db_set_scope_principal(ctx, {
+				organizationId: organization._id,
+				workspaceId: workspace._id,
+				resourceId,
+				userId,
+				level: "manage",
+				now,
+			});
+			return Result({ _yay: { scopeId: scopeId._yay } });
+		}
+
+		if (existing.length === 0) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		// Everything below changes who is in the scope, so it needs a `manage` grant on this exact
+		// scope. For a `plugin_scope` resource that answer comes from the grant alone, so holding the
+		// workspace-wide permission is not enough.
+		const canManage = await access_control_db_has_permission(ctx, {
+			organizationId: organization._id,
+			workspaceId: workspace._id,
+			defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resource: { kind: "plugin_scope", id: resourceId },
+			permission: "content.permissions.manage",
+			userId,
+		});
+		if (!canManage) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		if (args.action.kind === "delete") {
+			await db_delete_scope(ctx, existing);
+			return Result({ _yay: { scopeId: scopeId._yay } });
+		}
+
+		const target = args.action.userId;
+
+		if (args.action.kind === "remove_principal") {
+			// A scope with nobody left in it can never be reached again, and nothing could delete it.
+			// So the last manager deletes the scope instead of removing their own grants.
+			if (target === userId) {
+				return Result({ _nay: { message: "Delete the scope instead of removing yourself from it" } });
+			}
+			await db_set_scope_principal(ctx, {
+				organizationId: organization._id,
+				workspaceId: workspace._id,
+				resourceId,
+				userId: target,
+				level: null,
+				now,
+			});
+			return Result({ _yay: { scopeId: scopeId._yay } });
+		}
+
+		// Only a live member of this workspace may be named. Otherwise a frame could hand a scope to
+		// any user id it invented, including one from another organization.
+		const targetMembership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", target)
+					.eq("organizationId", installation.organizationId)
+					.eq("workspaceId", installation.workspaceId),
+			)
+			.first();
+		if (!targetMembership) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const grants = await db_scope_grants(ctx, {
+			organizationId: organization._id,
+			workspaceId: workspace._id,
+			resourceId,
+		});
+		const principals = new Set(grants.map((grant) => grant.userId));
+		if (!principals.has(target) && principals.size >= MAX_SCOPE_PRINCIPALS) {
+			return Result({ _nay: { message: `One scope can name at most ${MAX_SCOPE_PRINCIPALS} people` } });
+		}
+
+		const targetCap = await db_refuse_member_scope_cap(ctx, {
+			organizationId: organization._id,
+			workspaceId: workspace._id,
+			userId: target,
+			exceptResourceId: resourceId,
+		});
+		if (targetCap._nay) {
+			return targetCap;
+		}
+
+		await db_set_scope_principal(ctx, {
+			organizationId: organization._id,
+			workspaceId: workspace._id,
+			resourceId,
+			userId: target,
+			level: args.action.level,
+			now,
+		});
+		return Result({ _yay: { scopeId: scopeId._yay } });
+	},
+});
+
+/**
+ * Who is in one private scope.
+ *
+ * The plugin's own share dialog needs this. Without a read door a member can add somebody to a
+ * private channel and can never see or change the list afterwards, which is the append-only shape
+ * `user_manage_scope` was built to avoid.
+ *
+ * A caller who is not in the scope gets null, the same answer as a scope that was never created. A
+ * refusal that said "you may not see this one" would name a private channel to somebody it is
+ * hidden from.
+ *
+ * There is no `truncated` flag because there is nothing to truncate: `user_manage_scope` refuses the
+ * principal past `MAX_SCOPE_PRINCIPALS`, and `db_scope_grants` reads every row those principals can
+ * hold.
+ */
+export const watch_scope_principals = query({
+	args: { scopeId: v.string() },
+	returns: v.union(
+		v.array(v.object({ userId: v.id("users"), level: v.union(v.literal("member"), v.literal("manage")) })),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_page_read(ctx);
+		if (!authorized || !db_page_grants(authorized, "plugin.data.read")) {
+			return null;
+		}
+		const installation = authorized.installation;
+
+		const scopeId = validate_name(args.scopeId, "Scope ids");
+		if (scopeId._nay) {
+			return null;
+		}
+		const scope = await ctx.db
+			.query("plugins_data_scopes")
+			.withIndex("by_installation_scope", (q) => q.eq("installationId", installation._id).eq("scopeId", scopeId._yay))
+			.first();
+		if (!scope) {
+			return null;
+		}
+		if (!(await db_can_use_scope(ctx, { installation, scopeId: scopeId._yay, userId: authorized.userId, permission: "content.read" }))) {
+			return null;
+		}
+
+		const grants = await db_scope_grants(ctx, {
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			resourceId: scope_resource_id(installation._id, scopeId._yay),
+		});
+
+		// One grant row per permission, so fold the rows back into the level that issued them. Manage
+		// is the only permission `member` does not carry, so it decides the level whichever order the
+		// rows arrive in.
+		const levels = new Map<Id<"users">, "member" | "manage">();
+		for (const grant of grants) {
+			if (!grant.userId) {
+				continue;
+			}
+			if (grant.permission === "content.permissions.manage") {
+				levels.set(grant.userId, "manage");
+			} else if (!levels.has(grant.userId)) {
+				levels.set(grant.userId, "member");
+			}
+		}
+
+		return [...levels].map(([userId, level]) => ({ userId, level }));
+	},
+});
+
+/**
+ * The private scopes this member is in.
+ *
+ * A read with no key range answers only the public part of a collection. So a plugin that keeps
+ * private documents beside public ones cannot find them again on its own: the plugin mints the scope
+ * id, and from then on it lives only inside the range it hides. Without this door a member creates a
+ * private channel and it disappears from the list, for everybody including the person who made it.
+ * The frame reads this first, then opens one ranged read per scope beside its public one.
+ *
+ * Listing follows the grant, not the workspace. The organization owner may read every scope, but
+ * only the scopes they were added to are listed here. A private channel nobody invited them to stays
+ * out of their own list, which is what the product copy promises.
+ *
+ * There is no `truncated` flag because there is nothing to truncate: `user_manage_scope` refuses to
+ * put a member in more than `MAX_SCOPES_PER_MEMBER` scopes across the whole workspace, so another
+ * plugin minting its own scopes cannot push this installation's grants past the read below. One scope
+ * holds at most `MAX_COLLECTIONS` rows.
+ */
+export const watch_my_scopes = query({
+	args: {},
+	returns: v.union(
+		v.array(
+			v.object({
+				scopeId: v.string(),
+				keyPrefix: v.string(),
+				collections: v.array(v.string()),
+				level: v.union(v.literal("member"), v.literal("manage")),
+			}),
+		),
+		v.null(),
+	),
+	handler: async (ctx) => {
+		const authorized = await db_authorize_page_read(ctx);
+		if (!authorized || !db_page_grants(authorized, "plugin.data.read")) {
+			return null;
+		}
+		const installation = authorized.installation;
+
+		const grants = await ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_user_organization_workspace_resource_permission", (q) =>
+				q
+					.eq("userId", authorized.userId)
+					.eq("organizationId", installation.organizationId)
+					.eq("workspaceId", installation.workspaceId)
+					.eq("resourceKind", "plugin_scope"),
+			)
+			.take(MAX_SCOPES_PER_MEMBER * SCOPE_LEVEL_PERMISSIONS.manage.length + 1);
+
+		// One grant row per permission, folded back into the level that issued them, the same way
+		// `watch_scope_principals` does it. Another installation in this workspace mints its own scope
+		// ids, so the resource id prefix is what keeps that installation's scopes out of this answer.
+		const resourceIdPrefix = `${installation._id}:`;
+		const levels = new Map<string, plugins_data_ScopeLevel>();
+		for (const grant of grants) {
+			if (!grant.resourceId.startsWith(resourceIdPrefix)) {
+				continue;
+			}
+			const scopeId = grant.resourceId.slice(resourceIdPrefix.length);
+			if (grant.permission === "content.permissions.manage") {
+				levels.set(scopeId, "manage");
+			} else if (!levels.has(scopeId)) {
+				levels.set(scopeId, "member");
+			}
+		}
+
+		const scopes = await Promise.all(
+			[...levels].map(async ([scopeId, level]) => {
+				const rows = await ctx.db
+					.query("plugins_data_scopes")
+					.withIndex("by_installation_scope", (q) =>
+						q.eq("installationId", installation._id).eq("scopeId", scopeId),
+					)
+					.take(MAX_COLLECTIONS);
+				const [first] = rows;
+				if (!first) {
+					// A grant lives exactly as long as its scope rows: `db_delete_scope` removes both in
+					// the same mutation. So this only answers TypeScript.
+					return null;
+				}
+
+				// Every row of one scope carries the same prefix, so the first row answers for all of them.
+				return {
+					scopeId,
+					keyPrefix: first.keyPrefix,
+					collections: rows.map((row) => row.collection).sort(),
+					level,
+				};
+			}),
+		);
+
+		return scopes.filter((scope) => scope !== null).sort((a, b) => a.scopeId.localeCompare(b.scopeId));
+	},
+});
+
+// #endregion scopes
 
 // #region user reads
 
@@ -2099,17 +3533,30 @@ async function db_authorize_page_read(ctx: QueryCtx) {
 	if (!version) {
 		return null;
 	}
-	// Both sides must still say yes on every call, like the write door: the installed version
-	// declares the read capability and the workspace accepted it. Reading gates on the read
-	// capability alone; a plugin without the user-write door can still show its documents.
-	if (
-		!version.capabilities.includes("plugin.data.read" satisfies plugins_Capability) ||
-		!installation.acceptedCapabilities.includes("plugin.data.read" satisfies plugins_Capability)
-	) {
-		return null;
-	}
 
-	return { installation };
+	// The capability the frame needs depends on which door it knocked on, so each door asks
+	// `db_page_grants` for its own. Reading documents gates on the read capability alone: a plugin
+	// without the user-write door can still show its documents.
+	//
+	// `userId` comes back because a private scope is judged per member, not per installation.
+	return { installation, version, userId: session.userId };
+}
+
+/**
+ * Ask whether this frame may use one capability right now.
+ *
+ * Both sides must still say yes on every call, like the write door: the installed version declares
+ * the capability and the workspace accepted it. An upgrade rewrites `acceptedCapabilities`, so a
+ * version that added a capability stays shut until an admin accepts the new list.
+ */
+function db_page_grants(
+	authorized: { installation: Doc<"plugins_workspace_installations">; version: Doc<"plugins_versions"> },
+	capability: plugins_Capability,
+) {
+	return (
+		authorized.version.capabilities.includes(capability) &&
+		authorized.installation.acceptedCapabilities.includes(capability)
+	);
 }
 
 export const watch_documents = query({
@@ -2123,7 +3570,7 @@ export const watch_documents = query({
 	returns: v.union(v.object({ docs: v.array(document_validator), truncated: v.boolean() }), v.null()),
 	handler: async (ctx, args) => {
 		const authorized = await db_authorize_page_read(ctx);
-		if (!authorized) {
+		if (!authorized || !db_page_grants(authorized, "plugin.data.read")) {
 			return null;
 		}
 		const installation = authorized.installation;
@@ -2166,6 +3613,34 @@ export const watch_documents = query({
 			return { docs: [], truncated: false };
 		}
 
+		// Which half of the collection this read is allowed to see. A prefix that falls inside a
+		// private scope reads that scope, once the member proves they are in it. Every other read —
+		// including a read with no prefix at all — sees the unscoped half and nothing else, so a member
+		// cannot reach a private channel by simply leaving the prefix out.
+		//
+		// The scope becomes part of the index range rather than a filter over the rows that come back.
+		// A filter would return fewer rows than `limit` while `truncated` still described the raw read,
+		// and the host would seam its window against a count that was never true.
+		const readScope =
+			keyPrefix._yay === null
+				? null
+				: await db_resolve_scope(ctx, {
+						installationId: installation._id,
+						collection: collection._yay,
+						key: keyPrefix._yay,
+					});
+		if (
+			readScope &&
+			!(await db_can_use_scope(ctx, {
+				installation,
+				scopeId: readScope.scopeId,
+				userId: authorized.userId,
+				permission: "content.read",
+			}))
+		) {
+			return null;
+		}
+
 		// Never read the usage doc here. Every accepted write for the installation updates it, so one
 		// read would re-run every live subscription on every write anywhere in the store, not only on
 		// writes inside the watched window.
@@ -2178,20 +3653,130 @@ export const watch_documents = query({
 		// extra document never leaves the server.
 		const documents = await ctx.db
 			.query("plugins_data")
-			.withIndex("by_installation_collection_key", (q) => {
-				const scope = q.eq("installationId", installation._id).eq("collection", collection._yay);
+			.withIndex("by_installation_collection_scope_key", (q) => {
+				const base = q
+					.eq("installationId", installation._id)
+					.eq("collection", collection._yay)
+					.eq("scopeId", readScope?.scopeId);
 				const lowerBounded =
 					range.lower === null
-						? scope
+						? base
 						: range.lower.inclusive
-							? scope.gte("key", range.lower.value)
-							: scope.gt("key", range.lower.value);
+							? base.gte("key", range.lower.value)
+							: base.gt("key", range.lower.value);
 				return range.upper === null
 					? lowerBounded
 					: range.upper.inclusive
 						? lowerBounded.lte("key", range.upper.value)
 						: lowerBounded.lt("key", range.upper.value);
 			})
+			.take(args.limit + 1);
+
+		const truncated = documents.length > args.limit;
+		return { docs: (truncated ? documents.slice(0, args.limit) : documents).map(to_public_document), truncated };
+	},
+});
+
+/**
+ * Reads one collection in creation order, from a fencepost the caller already holds.
+ *
+ * Ascending is the catch-up read: a member stores the creation time of the last document they have
+ * seen and asks for what arrived after it. Descending is the feed read: the newest documents first,
+ * with `before` as the paging fencepost. The key index cannot answer either. The append door builds
+ * keys from inverted milliseconds, so its ascending key order is newest first, and a plugin using
+ * any other key scheme has no time order in its keys at all.
+ *
+ * Creation order, never `updatedAt` order. Editing a document and soft-deleting it both patch it, so
+ * an `updatedAt` read would deliver a three-month-old message as new because someone fixed a typo in
+ * it, and would deliver a tombstone as the newest thing in the collection.
+ *
+ * Keep `limit` small. This window covers a whole collection, so every accepted write anywhere in that
+ * collection re-runs it for every subscribed client — much broader than the key-ranged windows above.
+ * The scan itself is short, which is what makes the re-run affordable; a large `limit` is not.
+ */
+export const watch_recent = query({
+	args: {
+		collection: v.string(),
+		/**
+		 * Scan direction over creation time. Defaults to ascending. Each fencepost belongs to one
+		 * direction — `since` to ascending, `before` to descending — so a caller cannot page a feed
+		 * with the catch-up argument and silently truncate the wrong end.
+		 */
+		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
+		/**
+		 * Exclusive lower bound on creation time, in epoch milliseconds. The caller copies it from the
+		 * `createdAt` of the last document it has already handled, the same fencepost shape
+		 * `keyStartExclusive` uses above. Omit it to start from the beginning of the collection.
+		 */
+		since: v.optional(v.number()),
+		/**
+		 * Exclusive upper bound on creation time, for paging a descending feed. The caller copies it
+		 * from the `createdAt` of the oldest document it has already rendered. Omit it to start from
+		 * the newest document.
+		 */
+		before: v.optional(v.number()),
+		limit: v.number(),
+		/**
+		 * Read one private scope instead of the public half of the collection. This read has no key
+		 * range to resolve a scope from, so a caller that wants a private channel's new documents names
+		 * it. Omit it and the read sees only unscoped documents.
+		 */
+		scopeId: v.optional(v.string()),
+	},
+	returns: v.union(v.object({ docs: v.array(document_validator), truncated: v.boolean() }), v.null()),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_page_read(ctx);
+		if (!authorized || !db_page_grants(authorized, "plugin.data.read")) {
+			return null;
+		}
+		const installation = authorized.installation;
+
+		// Bad input answers null like a denial, for the same reason as `watch_documents`: the host
+		// kills the subscription either way.
+		const collection = validate_name(args.collection, "Collection names");
+		if (collection._nay) {
+			return null;
+		}
+		if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > plugins_data_MAX_LIST_PAGE_SIZE) {
+			return null;
+		}
+		if (args.since !== undefined && !Number.isFinite(args.since)) {
+			return null;
+		}
+		if (args.before !== undefined && !Number.isFinite(args.before)) {
+			return null;
+		}
+		// Each fencepost belongs to one direction. A caller mixing them asked for an order it does
+		// not understand, and the wrong end of the read would be truncated silently.
+		const order = args.order ?? "asc";
+		if (order === "asc" && args.before !== undefined) {
+			return null;
+		}
+		if (order === "desc" && args.since !== undefined) {
+			return null;
+		}
+		if (
+			args.scopeId !== undefined &&
+			!(await db_can_use_scope(ctx, { installation, scopeId: args.scopeId, userId: authorized.userId, permission: "content.read" }))
+		) {
+			return null;
+		}
+
+		// Read one past the limit so `truncated` can say whether more documents follow, exactly as the
+		// key-ranged watch does. The extra document never leaves the server.
+		const documents = await ctx.db
+			.query("plugins_data")
+			.withIndex("by_installation_collection_scope", (q) => {
+				const base = q
+					.eq("installationId", installation._id)
+					.eq("collection", collection._yay)
+					.eq("scopeId", args.scopeId);
+				if (order === "desc") {
+					return args.before === undefined ? base : base.lt("_creationTime", args.before);
+				}
+				return args.since === undefined ? base : base.gt("_creationTime", args.since);
+			})
+			.order(order)
 			.take(args.limit + 1);
 
 		const truncated = documents.length > args.limit;
@@ -2206,7 +3791,7 @@ export const resolve_member_display = query({
 	returns: v.union(v.object({ members: v.record(v.id("users"), v.union(v.string(), v.null())) }), v.null()),
 	handler: async (ctx, args) => {
 		const authorized = await db_authorize_page_read(ctx);
-		if (!authorized) {
+		if (!authorized || !db_page_grants(authorized, "plugin.data.read")) {
 			return null;
 		}
 		const installation = authorized.installation;
@@ -2248,6 +3833,88 @@ export const resolve_member_display = query({
 			members[userId] = displayName;
 		}
 		return { members };
+	},
+});
+
+/**
+ * The workspace roster, one page at a time, for a member picker or a mention list.
+ *
+ * Pages ride the membership index, so the order follows the user id and carries no meaning. The
+ * caller sorts what it shows. An index on creation time would cost a stored field and a backfill to
+ * order a list nobody reads in that order.
+ *
+ * This is the enumeration door, and it has its own capability. The resolve door above turns ids the
+ * frame already stored into names and enumerates nobody, so it stays on the data-read capability.
+ * This one hands over the list itself.
+ *
+ * An installation that never accepted `workspace.members.read` hears `refusal: "not_consented"` and
+ * not an empty page. A page that received an empty page would tell the member this workspace has
+ * nobody in it, and an admin would never learn there is a consent to accept.
+ *
+ * A row carries the user id and the display name and nothing else. Do not switch this to
+ * `users.get_workspace_member_anagraphic`: that helper answers the whole anagraphic document, which
+ * carries the member's email, and a plugin frame may post whatever it reads to the publisher's own
+ * origin.
+ *
+ * Every live member of the workspace may read the roster, including a member who signed in
+ * anonymously. `mint_page_session` resolves an anonymous identity to a normal user, and this door
+ * draws no line the rest of the workspace does not draw.
+ */
+export const list_members = query({
+	args: {
+		limit: v.number(),
+		cursor: v.optional(v.union(v.string(), v.null())),
+	},
+	returns: v.union(
+		v.object({
+			members: v.array(v.object({ userId: v.id("users"), displayName: v.union(v.string(), v.null()) })),
+			cursor: v.union(v.string(), v.null()),
+		}),
+		v.object({ refusal: v.literal("not_consented") }),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_page_read(ctx);
+		if (!authorized) {
+			return null;
+		}
+		// Keep "the workspace never granted this" apart from "this frame is dead". An admin accepting
+		// the updated permissions fixes the first; only a reload or a reinstall fixes the second, and
+		// the page shows a different thing for each.
+		if (!db_page_grants(authorized, "workspace.members.read")) {
+			return { refusal: "not_consented" as const };
+		}
+		const installation = authorized.installation;
+
+		// Bad input answers null like a denial, the same way the watch doors above do.
+		if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > MAX_MEMBER_LIST_PAGE_SIZE) {
+			return null;
+		}
+
+		const page = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_organization_workspace_user", (q) =>
+				q
+					.eq("active", true)
+					.eq("organizationId", installation.organizationId)
+					.eq("workspaceId", installation.workspaceId),
+			)
+			.paginate({ numItems: args.limit, cursor: args.cursor ?? null });
+
+		const members = await Promise.all(
+			page.page.map(async (membership) => {
+				const user = await ctx.db.get("users", membership.userId);
+				if (!user?.anagraphic) {
+					return { userId: membership.userId, displayName: null };
+				}
+				const anagraphic = await ctx.db.get("users_anagraphics", user.anagraphic);
+				return { userId: membership.userId, displayName: anagraphic?.displayName ?? null };
+			}),
+		);
+
+		// A finished page answers a null cursor, so a caller that follows the cursor stops instead of
+		// asking for the same empty page forever.
+		return { members, cursor: page.isDone ? null : page.continueCursor };
 	},
 });
 
@@ -2299,6 +3966,17 @@ export const write_versioned_document = internalMutation({
 		}
 		if (!Number.isInteger(args.revision) || args.revision < 1) {
 			return Result({ _nay: { message: "A revision is a whole number from 1" } });
+		}
+
+
+		const scopedWrite = await db_refuse_scoped_write(ctx, {
+			installation,
+			userId: args.principal.actorUserId,
+			collection: collection._yay,
+			key: key._yay,
+		});
+		if (scopedWrite._nay) {
+			return scopedWrite;
 		}
 
 		// A delete is terminal. Every write the producer sent before it and that arrives after it is
@@ -2377,6 +4055,15 @@ export const write_versioned_document = internalMutation({
 			return capacity;
 		}
 
+		// A producer's outbox key can land inside a private range like any other key, so it carries the
+		// same stamp. Without it the projection would be the one document in a private channel that
+		// the whole workspace can read.
+		const scope = await db_resolve_scope(ctx, {
+			installationId: installation._id,
+			collection: collection._yay,
+			key: key._yay,
+		});
+
 		if (existing) {
 			await ctx.db.patch("plugins_data", existing._id, {
 				value: args.value,
@@ -2384,9 +4071,11 @@ export const write_versioned_document = internalMutation({
 				revision: args.revision,
 				updatedBy: args.principal.actorUserId,
 				updatedAt: now,
+				scopeId: scope?.scopeId,
 			});
 		} else {
 			await ctx.db.insert("plugins_data", {
+				scopeId: scope?.scopeId,
 				organizationId: installation.organizationId,
 				workspaceId: installation.workspaceId,
 				installationId: installation._id,
@@ -2414,13 +4103,18 @@ export const write_versioned_document = internalMutation({
 		}
 
 		const storedUsage = usage ?? (await db_create_usage(ctx, { installation, now }));
-		await ctx.db.patch("plugins_data_usage", storedUsage._id, {
-			usedBytes: storedUsage.usedBytes + delta,
-			usedDocuments: storedUsage.usedDocuments + (existing ? 0 : 1),
-			reservedBytes: storedUsage.reservedBytes - spentFromReservation + returnedToReservation,
-			reservedDocuments: storedUsage.reservedDocuments - (convertsReservedSlot ? 1 : 0),
-			collectionNames: addsCollection ? [...storedUsage.collectionNames, collection._yay] : storedUsage.collectionNames,
-			updatedAt: now,
+		await db_patch_usage(ctx, {
+			usage: storedUsage,
+			next: {
+				usedBytes: storedUsage.usedBytes + delta,
+				usedDocuments: storedUsage.usedDocuments + (existing ? 0 : 1),
+				reservedBytes: storedUsage.reservedBytes - spentFromReservation + returnedToReservation,
+				reservedDocuments: storedUsage.reservedDocuments - (convertsReservedSlot ? 1 : 0),
+				collectionNames: addsCollection
+					? [...storedUsage.collectionNames, collection._yay]
+					: storedUsage.collectionNames,
+			},
+			now,
 		});
 
 		return Result({ _yay: { revision: args.revision, byteSize: byteSize._yay } });
@@ -2469,6 +4163,17 @@ export const delete_versioned_document = internalMutation({
 		}
 		if (!Number.isInteger(args.revision) || args.revision < 1) {
 			return Result({ _nay: { message: "A revision is a whole number from 1" } });
+		}
+
+
+		const scopedWrite = await db_refuse_scoped_write(ctx, {
+			installation,
+			userId: args.principal.actorUserId,
+			collection: collection._yay,
+			key: key._yay,
+		});
+		if (scopedWrite._nay) {
+			return scopedWrite;
 		}
 
 		const tombstone = await db_get_tombstone(ctx, {
@@ -2552,13 +4257,16 @@ export const delete_versioned_document = internalMutation({
 			deletedAt: now,
 			expiresAt: now + RETRY_HORIZON_MS,
 		});
-		await ctx.db.patch("plugins_data_usage", usage._id, {
-			usedBytes: usage.usedBytes - (existing?.byteSize ?? 0),
-			usedDocuments: usage.usedDocuments - (existing ? 1 : 0),
-			// A released never-stored retry already counted this slot. Adding another would
-			// double-count and refuse the last-slot Council delete after the reservation TTL.
-			tombstoneDocuments: usage.tombstoneDocuments + (releasedSlotAlreadyHeld ? 0 : 1),
-			updatedAt: now,
+		await db_patch_usage(ctx, {
+			usage,
+			next: {
+				usedBytes: usage.usedBytes - (existing?.byteSize ?? 0),
+				usedDocuments: usage.usedDocuments - (existing ? 1 : 0),
+				// A released never-stored retry already counted this slot. Adding another would
+				// double-count and refuse the last-slot Council delete after the reservation TTL.
+				tombstoneDocuments: usage.tombstoneDocuments + (releasedSlotAlreadyHeld ? 0 : 1),
+			},
+			now,
 		});
 		if (releasedReservation) {
 			// The revision tombstone now owns this slot. Keep the release result for idempotent
@@ -2603,10 +4311,17 @@ export const delete_versioned_document = internalMutation({
 			throw should_never_happen(errorMessage, errorData);
 		}
 
-		await ctx.db.patch("plugins_data_usage", afterWrites._id, {
-			collectionNames: await db_drop_collection_if_empty(ctx, { usage: afterWrites, collection: collection._yay }),
-			updatedAt: now,
+		const collectionNames = await db_drop_collection_if_empty(ctx, {
+			usage: afterWrites,
+			collection: collection._yay,
 		});
+		await db_drop_member_collection(ctx, {
+			installationId: installation._id,
+			collection: collection._yay,
+			storedNames: afterWrites.collectionNames,
+			nextNames: collectionNames,
+		});
+		await db_patch_usage(ctx, { usage: afterWrites, next: { collectionNames }, now });
 
 		return Result({ _yay: { deleted: existing != null, revision: args.revision } });
 	},
@@ -2628,7 +4343,7 @@ const DELETION_BATCH_SIZE = 100;
 /**
  * Delete one bounded batch of stored plugin data, for one installation or for a whole workspace.
  *
- * None of these five tables points at another, so the order between them is free. What is not free is
+ * None of these six tables points at another, so the order between them is free. What is not free is
  * stopping early: the caller must keep calling until `done`, because one pass deletes at most
  * `batchSize` docs. The accounting doc goes last so that it is never the survivor: while the drain is
  * unfinished the counters are wrong either way, and a leftover accounting doc with no documents left
@@ -2644,7 +4359,7 @@ export async function plugins_data_db_drain_batch(
 		batchSize: number;
 	},
 ) {
-	// Every one of these five tables carries the same three scope fields in the same index, so each
+	// Every one of these six tables carries the same three scope fields in the same index, so each
 	// pass narrows to the workspace and, when the caller named one, to the single installation.
 	const reservations = await ctx.db
 		.query("plugins_data_reservations")
@@ -2700,6 +4415,20 @@ export async function plugins_data_db_drain_batch(
 	const serviceUploads = await public_api_service_uploads_db_drain_batch(ctx, args);
 	if (!serviceUploads.done) {
 		return { done: false, deletedCount: serviceUploads.deletedCount };
+	}
+
+	// Before the accounting doc, because these rows name members: a drain that left them for last
+	// would keep user ids in the store for as long as the reschedule loop takes.
+	const memberUsage = await ctx.db
+		.query("plugins_data_member_usage")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (memberUsage.length > 0) {
+		await Promise.all(memberUsage.map((doc) => ctx.db.delete("plugins_data_member_usage", doc._id)));
+		return { done: false, deletedCount: memberUsage.length };
 	}
 
 	const usage = await ctx.db
@@ -2765,6 +4494,9 @@ const SERVICE_GRANT_COUNT_LIMIT = 100;
  * `tombstones` therefore covers released reservation records and delete tombstones together, because
  * one counter pays for both of their slots.
  *
+ * The per-member share rows have no counter either, and they are bounded by the workspace's member
+ * count, so they are counted by reading them.
+ *
  * Service grants have no such counter, so they are the one number here that is found by reading docs.
  * That read is bounded: an outside service decides how many grants it mints, and this query is the
  * required first step of registry deletion, so a service that mints too many must not be able to make
@@ -2780,8 +4512,12 @@ export async function plugins_data_db_count_installation_docs(
 		installationId: Id<"plugins_workspace_installations">;
 	},
 ) {
-	const [usage, serviceGrants] = await Promise.all([
+	const [usage, memberUsage, serviceGrants] = await Promise.all([
 		db_get_usage(ctx, args.installationId),
+		ctx.db
+			.query("plugins_data_member_usage")
+			.withIndex("by_installation_user", (q) => q.eq("installationId", args.installationId))
+			.collect(),
 		ctx.db
 			.query("plugin_service_grants")
 			.withIndex("by_organization_workspace_installation", (q) =>
@@ -2799,8 +4535,11 @@ export async function plugins_data_db_count_installation_docs(
 	return {
 		usageDocs: usage ? 1 : 0,
 		documents: usage?.usedDocuments ?? 0,
+		usedBytes: usage?.usedBytes ?? 0,
 		liveReservations: usage?.reservedDocuments ?? 0,
 		tombstones: usage?.tombstoneDocuments ?? 0,
+		collectionNames: usage?.collectionNames ?? [],
+		memberUsageDocs: memberUsage.length,
 		serviceGrants: serviceGrantsTruncated ? SERVICE_GRANT_COUNT_LIMIT : serviceGrants.length,
 		serviceGrantsTruncated,
 	};
@@ -2929,9 +4668,10 @@ async function db_return_tombstone_slot(
 		return;
 	}
 
-	await ctx.db.patch("plugins_data_usage", usage._id, {
-		tombstoneDocuments: Math.max(0, usage.tombstoneDocuments - 1),
-		updatedAt: args.now,
+	await db_patch_usage(ctx, {
+		usage,
+		next: { tombstoneDocuments: Math.max(0, usage.tombstoneDocuments - 1) },
+		now: args.now,
 	});
 }
 

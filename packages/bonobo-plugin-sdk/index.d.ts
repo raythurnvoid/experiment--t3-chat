@@ -38,6 +38,10 @@ export type { ExportedHandler, ExecutionContext, Request, Response } from "@clou
  * - `ui.outbound.fetch` — the plugin's UI pages and file views, running in the member's browser, may
  *   call the manifest's `uiOutboundOrigins`. It is enforced as `connect-src` in the frame's CSP. It
  *   and `uiOutboundOrigins` require each other: neither may be declared alone.
+ * - `workspace.members.read` — the plugin's UI pages and file views may list every member of the
+ *   workspace, as user ids and display names. Email is never returned. Without it a frame can still
+ *   resolve names for ids it already holds, which enumerates nobody. Every member reads the roster
+ *   under one rule, including a member who signed in anonymously.
  */
 export type BonoboCapability =
 	| "plugin.secrets.read"
@@ -49,7 +53,8 @@ export type BonoboCapability =
 	| "plugin.data.write"
 	| "plugin.data.user-write"
 	| "plugin.service.connect"
-	| "ui.outbound.fetch";
+	| "ui.outbound.fetch"
+	| "workspace.members.read";
 
 /**
  * Optional `navItem` of a manifest `pages[]` entry ({@link BonoboManifestPage}). Declaring it is

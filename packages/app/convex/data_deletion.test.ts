@@ -4629,7 +4629,27 @@ describe("finalize_user_deletion_data", () => {
 					update: new Uint8Array([0, 0]).buffer as ArrayBuffer,
 					expiresAt: now + 30 * 60 * 1000,
 				});
-				return { stateId };
+
+				// A plugin storage share. It names the user, so finalization is the last site that can take
+				// it: after this the user doc is gone and nothing links the row to anyone.
+				const installation = await data_deletion_test_seed_plugin_ui_sessions(ctx, {
+					userId: user.userId,
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					sessionCount: 0,
+				});
+				const memberUsageId = await ctx.db.insert("plugins_data_member_usage", {
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					installationId: installation.installationId,
+					userId: user.userId,
+					usedBytes: 40,
+					usedDocuments: 2,
+					machineBytes: 0,
+					collectionNames: ["messages"],
+				});
+
+				return { stateId, memberUsageId };
 			});
 		}
 
@@ -4648,6 +4668,7 @@ describe("finalize_user_deletion_data", () => {
 			batches: await ctx.db.query("files_pending_update_operation_batches").collect(),
 			textInputs: await ctx.db.query("files_pending_update_text_inputs").collect(),
 			trustedStages: await ctx.db.query("files_yjs_trusted_update_stages").collect(),
+			memberUsage: await ctx.db.query("plugins_data_member_usage").collect(),
 		}));
 
 		// Only the survivor's docs remain: user finalization drains every user-scoped doc class.
@@ -4656,6 +4677,8 @@ describe("finalize_user_deletion_data", () => {
 		expect(remaining.batches.map((doc) => doc.userId)).toEqual([String(survivor.userId)]);
 		expect(remaining.textInputs.map((doc) => doc.userId)).toEqual([String(survivor.userId)]);
 		expect(remaining.trustedStages.map((doc) => doc.userId)).toEqual([survivor.userId]);
+		// The victim's plugin storage share goes with them; the survivor's stays.
+		expect(remaining.memberUsage.map((doc) => doc._id)).toEqual([survivorSeed.memberUsageId]);
 	});
 
 	test("keeps a shared organization when its Clerk member is reset before its local owner is removed", async () => {

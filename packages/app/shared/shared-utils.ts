@@ -197,7 +197,8 @@ export type AppCompositeIds = {
 		  ];
 	plugin:
 		| [name: "upload_completed", eventId: string, installationId: string]
-		| [name: "run_requested", requestId: string, installationId: string];
+		| [name: "run_requested", requestId: string, installationId: string]
+		| [name: "account_deleted", deletedUserId: string, installationId: string];
 };
 
 /**

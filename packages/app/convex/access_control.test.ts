@@ -8694,3 +8694,173 @@ describe("read-only lock management", () => {
 		expect(ownerState?.canManage).toBe(true);
 	});
 });
+
+describe("plugin scopes", () => {
+	test("a member with content.read is refused on a scope until a grant names them", async () => {
+		const t = test_convex();
+		const ownerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-plugin-scope-owner" });
+		const memberId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-plugin-scope-member" });
+		const organization = await access_control_test_seed_organization(t, {
+			ownerId,
+			memberId,
+			name: "plugin-scope-org",
+		});
+
+		// The caller is the member, never the owner. `access_control_db_has_permission` answers true
+		// for the organization owner before it looks anything up, so an owner-only run would pass with
+		// no branch in the file at all.
+		const scopeId = "plugin-installation-1:scope-1";
+		const read = async (options?: { allowPublic?: boolean }) =>
+			await t.run(async (ctx) => {
+				const scope = {
+					organizationId: organization.organizationId,
+					workspaceId: organization.defaultWorkspaceId,
+					defaultWorkspaceId: organization.defaultWorkspaceId,
+					organizationOwnerUserId: ownerId,
+					userId: memberId,
+					permission: "content.read",
+				} as const;
+
+				return {
+					workspace: await access_control_db_has_permission(ctx, {
+						...scope,
+						resource: { kind: "workspace", id: String(organization.defaultWorkspaceId) },
+					}),
+					scope: await access_control_db_has_permission(ctx, {
+						...scope,
+						resource: { kind: "plugin_scope", id: scopeId },
+						allowPublic: options?.allowPublic,
+					}),
+				};
+			});
+
+		const before = await read();
+		// The member really does hold workspace-wide `content.read`. Without this the refusal below
+		// would also pass for a member who holds nothing, and would prove nothing about the scope.
+		expect(before.workspace).toBe(true);
+		expect(before.scope).toBe(false);
+
+		// A role grant and a public grant on the same scope must change nothing. The branch looks up
+		// user grants only, because either of these would hand the scope back to everyone it exists to
+		// keep out.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: organization.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				resourceKind: "plugin_scope",
+				resourceId: scopeId,
+				principalKind: "role",
+				role: "member",
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: organization.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				resourceKind: "plugin_scope",
+				resourceId: scopeId,
+				principalKind: "public",
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+		});
+
+		expect((await read({ allowPublic: true })).scope).toBe(false);
+
+		// Only a grant that names the user gets in.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: organization.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				resourceKind: "plugin_scope",
+				resourceId: scopeId,
+				principalKind: "user",
+				userId: memberId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+		});
+
+		expect((await read()).scope).toBe(true);
+	});
+
+	test("a scope's own grants leave a role deletable, and a role principal would not", async () => {
+		const t = test_convex();
+		const ownerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-scope-role-owner" });
+		const memberId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-scope-role-member" });
+		const organization = await access_control_test_seed_organization(t, {
+			ownerId,
+			memberId,
+			name: "scope-role-org",
+		});
+		const asOwner = access_control_test_identity(t, ownerId);
+
+		const auditor = await asOwner.mutation(api.access_control.create_role, {
+			organizationId: organization.organizationId,
+			name: "Auditor",
+			description: "",
+			permissions: ["content.read"],
+		});
+		expect(auditor._nay).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, ownerId);
+
+		const reviewer = await asOwner.mutation(api.access_control.create_role, {
+			organizationId: organization.organizationId,
+			name: "Reviewer",
+			description: "",
+			permissions: ["content.read"],
+		});
+		expect(reviewer._nay).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, ownerId);
+
+		// The grants a private scope really writes: a user principal, one row per permission.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const permission of ["content.read", "content.write", "content.permissions.manage"] as const) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: organization.organizationId,
+					workspaceId: organization.defaultWorkspaceId,
+					resourceKind: "plugin_scope",
+					resourceId: "plugin-installation-1:dm-1",
+					principalKind: "user",
+					userId: memberId,
+					permission,
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+		});
+
+		// This is why `user_manage_scope` writes user principals only. A private channel must not stop
+		// an admin deleting a role that has nothing to do with it.
+		const deleted = await asOwner.mutation(api.access_control.delete_role, { roleId: auditor._yay!.roleId });
+		expect(deleted._nay).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, ownerId);
+
+		// One role-principal grant on a scope, and the role can no longer be deleted by anybody,
+		// including the owner. The message sends the admin to a file-share dialog that cannot reach a
+		// plugin scope, so there is no way out.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: organization.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				resourceKind: "plugin_scope",
+				resourceId: "plugin-installation-1:dm-2",
+				principalKind: "role",
+				role: reviewer._yay!.roleId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+		});
+
+		const blocked = await asOwner.mutation(api.access_control.delete_role, { roleId: reviewer._yay!.roleId });
+		expect(blocked._nay?.message).toBe("This role is still used to share a file or folder");
+	});
+});

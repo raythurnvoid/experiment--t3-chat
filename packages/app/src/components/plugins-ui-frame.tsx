@@ -1,6 +1,6 @@
 import "./plugins-ui-frame.css";
 
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import {
@@ -14,12 +14,136 @@ import type { Id } from "../../convex/_generated/dataModel.ts";
 const CONVEX_HTTP_URL = import.meta.env.VITE_CONVEX_HTTP_URL as string;
 const CONVEX_HTTP_ORIGIN = new URL(CONVEX_HTTP_URL).origin;
 
+/**
+ * Load one plugin's frame from a local dev server instead of its published bundle, so a UI change
+ * can be checked in the browser without publishing it first.
+ *
+ * The frame holds a plugin-session JWT and the bridge hands it across, so any origin this accepts
+ * can act as the signed-in member. Two rules keep that safe. Vite erases this whole branch from a
+ * production build, so the shipped bundle has no code path that loads or trusts another origin —
+ * the check is not turned off in production, it is absent. And the override names ONE exact origin
+ * for ONE version id: not a prefix, not a wildcard, not "any localhost port".
+ *
+ * This changes where the bundle is fetched from, never whether the installation may run one.
+ * `mint_page_session` still refuses a version that is not ready, not reviewed, or has no pages, so
+ * capability consent, version binding, and session revocation behave exactly as in production.
+ *
+ * The local origin serves the page at its ROOT: a dev server has no
+ * `/plugins-ui/<versionId>/<entry>` path, that shape belongs to the published asset route.
+ *
+ * KNOWN LIMIT, verified in the browser: an overridden frame cannot read plugin data. The SDK
+ * exchanges its session token at the ASSET origin's `/plugins-ui/session-jwt`, and that route
+ * refuses every origin but its own on purpose, so from a dev origin the exchange is a cross-origin
+ * POST the browser blocks at the preflight. The frame loads, receives its token, and then shows its
+ * access-ended state. Use this for markup, CSS and layout. To check a page that reads plugin data,
+ * serve the working-tree build AT the published asset URL instead — the recipe is in
+ * `.agents/skills/app-playwriter-harness/references/plugin-marketplace.md`.
+ */
+function plugin_ui_dev_override() {
+	if (!import.meta.env.DEV) {
+		return null;
+	}
+
+	const pluginVersionId = import.meta.env.VITE_PLUGIN_UI_DEV_VERSION_ID as string | undefined;
+	const origin = import.meta.env.VITE_PLUGIN_UI_DEV_ORIGIN as string | undefined;
+	if (!pluginVersionId || !origin) {
+		return null;
+	}
+
+	// Require the value to already BE an origin. A URL carrying a path or a query would make the
+	// two uses below disagree: one would load that path, the other would compare the bare origin.
+	const parsed = URL.parse(origin);
+	if (!parsed || parsed.origin !== origin) {
+		console.error("[PluginsUiFrame.devOverride] VITE_PLUGIN_UI_DEV_ORIGIN must be a bare origin", { origin });
+		return null;
+	}
+
+	return { pluginVersionId, origin };
+}
+
 // Max time a frame attempt gets from mount to posting bonobo:init before it counts as failed.
 const STARTUP_DEADLINE_MS = 15_000;
 
 // An honest SDK repeats bonobo:ready only until init arrives (≈30 sends worst case). A page
 // spamming ready past this allowance is misbehaving, and the frame dies.
 const MAX_READY_MESSAGES = 64;
+
+// #region theme
+/**
+ * The colours the host hands a plugin frame, mapped from a public name to the app token that
+ * currently supplies it.
+ *
+ * A plugin page is a cross-origin document, so it inherits none of the app's custom properties and
+ * cannot read them. The host resolves them and posts the values. The public names are the contract a
+ * plugin writes against, which is why this is a map and not the app's raw scale: the scales can be
+ * renumbered behind these names without breaking a published plugin.
+ */
+const PLUGIN_THEME_TOKENS = {
+	surface: "--color-base-1-01",
+	surfaceRaised: "--color-base-1-03",
+	surfaceOverlay: "--color-base-1-05",
+	surfaceHover: "--color-base-1-06",
+	border: "--color-base-1-08",
+	borderStrong: "--color-base-1-11",
+	text: "--color-fg-12",
+	textMuted: "--color-fg-09",
+	textSubtle: "--color-fg-07",
+	accent: "--color-accent-05",
+	accentHover: "--color-accent-06",
+	selection: "--color-accent-alt-05",
+	success: "--color-green-07",
+	danger: "--color-red-09",
+} as const;
+
+type PluginsUiFrame_ThemeToken = keyof typeof PLUGIN_THEME_TOKENS;
+
+type PluginsUiFrame_Theme = {
+	mode: "light" | "dark";
+	tokens: Record<PluginsUiFrame_ThemeToken, string>;
+};
+
+/**
+ * Is this colour a dark one?
+ *
+ * Every colour the map above points at is written as a complete `oklch()` value in `app.css`, and
+ * OKLCH's first component is perceived lightness from 0 to 1. So one number answers the question. A
+ * value this cannot read answers dark, which is what the app paints today.
+ */
+function is_dark_theme_color(color: string) {
+	const lightness = /^oklch\(\s*([\d.]+)(%?)/u.exec(color);
+	if (!lightness) {
+		return true;
+	}
+
+	const value = Number(lightness[1]);
+	return (lightness[2] === "%" ? value / 100 : value) < 0.5;
+}
+
+/**
+ * Read the theme the app is painted with right now.
+ *
+ * The values come from the root element, so they are whatever the current theme class resolves them
+ * to. **The mode is read from the surface colour and not from that class**, so the two halves of one
+ * message can never disagree. Today the app's numbered palette is dark-oriented and the theme
+ * provider does not swap it: a member who picks "light" still sees the same dark surfaces. A frame
+ * told `mode: "light"` beside those dark values paints its own light panels and its own dark text,
+ * then reads the host's dark surface and its light text back over them, and the page ends up
+ * unreadable. Reading the mode off the colour keeps the frame matching the app around it, and when
+ * the palette does start swapping the mode follows it with no edit here.
+ */
+function read_plugin_theme(): PluginsUiFrame_Theme {
+	const styles = getComputedStyle(document.documentElement);
+	const tokens = {} as Record<PluginsUiFrame_ThemeToken, string>;
+	for (const name of Object.keys(PLUGIN_THEME_TOKENS) as PluginsUiFrame_ThemeToken[]) {
+		tokens[name] = styles.getPropertyValue(PLUGIN_THEME_TOKENS[name]).trim();
+	}
+
+	return {
+		mode: is_dark_theme_color(tokens.surface) ? "dark" : "light",
+		tokens,
+	};
+}
+// #endregion theme
 
 // #region frame
 type PluginsUiFrame_ClassNames = "PluginsUiFrame";
@@ -104,6 +228,10 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
 	const [bridgeNonce] = useState(() => crypto.randomUUID());
+	// The bridge effect owns the frame's origin and its ready state, and it must never re-run for a
+	// theme change: that would tear the frame down and remount the plugin page. It installs a sender
+	// here instead, and the theme effect below calls whatever is installed.
+	const postThemeRef = useRef<((theme: PluginsUiFrame_Theme) => void) | null>(null);
 
 	// Attach the message and load listeners before assigning src so the first page event cannot be missed.
 	useLayoutEffect(() => {
@@ -114,7 +242,15 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			return;
 		}
 
-		const iframeSrc = new URL(`${CONVEX_HTTP_URL}/plugins-ui/${pluginVersionId}/${entry}`);
+		// Both the src and the trusted origin come from the same decision, so they can never
+		// disagree: a frame loaded from the override but judged against the published origin would
+		// render and then drop every bridge message, which reads as a broken plugin.
+		const override = plugin_ui_dev_override();
+		const devOverrideOrigin = override?.pluginVersionId === pluginVersionId ? override.origin : null;
+		const trustedFrameOrigin = devOverrideOrigin ?? CONVEX_HTTP_ORIGIN;
+		const iframeSrc = new URL(
+			devOverrideOrigin === null ? `${CONVEX_HTTP_URL}/plugins-ui/${pluginVersionId}/${entry}` : devOverrideOrigin,
+		);
 		iframeSrc.hash = new URLSearchParams({
 			parentOrigin: window.location.origin,
 			bridgeNonce,
@@ -128,6 +264,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		let refreshInFlight: { requestId: string; promise: Promise<RefreshResponse> } | null = null;
 		let lastRefreshResponse: RefreshResponse | null = null;
 		let readyCount = 0;
+		let lastThemeSent: string | null = null;
 
 		const startupDeadline = setTimeout(() => {
 			if (!cancelled) {
@@ -158,7 +295,19 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			if (cancelled || iframeRef.current !== iframeNode) {
 				return;
 			}
-			iframeWindow.postMessage(message, CONVEX_HTTP_ORIGIN);
+			// The same origin the src was built from. A message sent to any other origin is dropped
+			// by the browser, so an overridden frame would never receive its token.
+			iframeWindow.postMessage(message, trustedFrameOrigin);
+		};
+
+		postThemeRef.current = (theme: PluginsUiFrame_Theme) => {
+			// init carries the first theme, so nothing goes out before the page can receive it.
+			const serialized = JSON.stringify(theme);
+			if (!frameReady || !initMessage || serialized === lastThemeSent) {
+				return;
+			}
+			lastThemeSent = serialized;
+			post_to_iframe({ type: "bonobo:theme", bridgeNonce, theme });
 		};
 
 		const token_error = (requestId: string, message: string): RefreshResponse => ({
@@ -211,9 +360,14 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 				}
 
 				sessionId = result._yay.sessionId;
+				const theme = read_plugin_theme();
+				lastThemeSent = JSON.stringify(theme);
 				initMessage = {
 					type: "bonobo:init",
 					bridgeNonce,
+					// A cross-origin frame inherits no custom properties, so the page gets values it can
+					// paint with immediately instead of a name it would have to resolve.
+					theme,
 					apiOrigin: CONVEX_HTTP_URL,
 					// The SDK's own ConvexClient connects here and authenticates with the JWT it gets
 					// from exchanging the session token at the asset origin.
@@ -315,8 +469,9 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		};
 
 		const handle_message = (event: MessageEvent) => {
-			// Trust only this iframe's WindowProxy, its asset origin, and the nonce placed in its fragment.
-			if (cancelled || event.source !== iframeWindow || event.origin !== CONVEX_HTTP_ORIGIN) {
+			// Trust only this iframe's WindowProxy, the origin its src was built from, and the nonce
+			// placed in its fragment.
+			if (cancelled || event.source !== iframeWindow || event.origin !== trustedFrameOrigin) {
 				return;
 			}
 			const data: unknown = event.data;
@@ -362,11 +517,24 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		return () => {
 			cancelled = true;
 			clearTimeout(startupDeadline);
+			postThemeRef.current = null;
 			window.removeEventListener("message", handle_message);
 			iframeNode.removeEventListener("load", handle_load);
 			revoke_session(sessionId);
 		};
 	}, [bridgeNonce, entry, getInitContext, kindLabel, membershipId, mintSession, onError, onSessionLost, pluginName, pluginVersionId, userId]);
+
+	// Watch the root element rather than the theme context. The provider stamps the class in its own
+	// effect and it is an ancestor of this frame, so a descendant effect keyed on the resolved theme
+	// runs BEFORE the class is swapped and would read the values of the theme being left. The observer
+	// runs after the DOM change, so it always reports what the frame's neighbours are painted with.
+	useEffect(() => {
+		const observer = new MutationObserver(() => {
+			postThemeRef.current?.(read_plugin_theme());
+		});
+		observer.observe(document.documentElement, { attributeFilter: ["class"] });
+		return () => observer.disconnect();
+	}, []);
 
 	return (
 		// The frame and public API share the Convex origin, so normal JSON requests need no CORS

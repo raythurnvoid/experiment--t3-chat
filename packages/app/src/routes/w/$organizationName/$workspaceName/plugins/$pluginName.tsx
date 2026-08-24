@@ -1246,6 +1246,15 @@ function format_capability_label(value: string) {
 		return "Call allowed outside origins from its pages and file views";
 	}
 
+	// The plain rule writes "Workspace Members Read", which says a plugin reads something about
+	// members and leaves the admin to guess what. The whole point of this capability is the step from
+	// resolving names for ids the plugin already holds — which every plugin with data read can do, and
+	// which enumerates nobody — to reading the list itself. Name the list, and say what a row carries,
+	// because "members" alone leaves an admin wondering whether email comes with it.
+	if (value === "workspace.members.read") {
+		return "List every member of this workspace, with their display names but not their emails";
+	}
+
 	return format_access_label(value);
 }
 
@@ -2488,6 +2497,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const memberLabel = format_capability_label("plugin.data.user-write");
 			expect(memberLabel).toBe("Write its plugin data as the acting member, from its pages and file views");
 			expect(memberLabel).not.toBe(format_capability_label("plugin.data.write"));
+		});
+
+		test("says the roster capability lists members and stops short of their emails", () => {
+			// This is the one capability an admin grants for its privacy step, so the label has to name
+			// the step: the plugin reads the list itself, not just names for ids it already stored. The
+			// plain rule writes "Workspace Members Read", which says neither half. The label also states
+			// what a row does not carry, because the app's own member helper does return email and an
+			// admin has no way to know this door does not use it.
+			const rosterLabel = format_capability_label("workspace.members.read");
+			expect(rosterLabel).toBe("List every member of this workspace, with their display names but not their emails");
+			expect(rosterLabel).not.toBe(format_access_label("workspace.members.read"));
 		});
 
 		test("spells out every other capability with the shared rule", () => {

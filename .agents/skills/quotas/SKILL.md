@@ -147,6 +147,12 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 
 The plugin document store keeps its own counters in `plugins_data_usage`, one doc per installation, and does not use the `quotas` table. Keep it that way. A quota is a product allowance the user can see and, in principle, buy more of; the plugin-data ceilings are safety limits on one plugin's storage, scoped to an installation that can disappear at any time. They also move in both directions — a reservation gives bytes back and a delete frees slots — while quota counters here are release-on-delete or monotonic by product rule. See `../plugin-system/SKILL.md` for the store's limits and accounting.
 
+The per-member share in `plugins_data_member_usage` is the same kind of thing: a safety limit, not an allowance. It stops one member of a workspace from filling a shared installation on their own. `MEMBER_MAX_BYTES`, `MEMBER_MAX_DOCUMENT_SLOTS` and `MEMBER_MAX_COLLECTIONS` in `packages/app/convex/plugins_data.ts` are its constants, and a refusal carries the same `storage_full` name as the installation ceiling. Only the message tells the two apart, so a page that shows the refusal should show the server's message rather than one of its own.
+
+**State its blast radius when you document it.** The share counts every document a member is charged for, and a shared document is charged to whoever wrote it last. So a member who reaches the slot share cannot patch **any** shared document in that installation — in Chitchat that means they can no longer rename or archive a channel, not only that they cannot send. Bytes a plugin backend wrote into a member's documents are tracked separately in `machineBytes` and do not count against the member, or a backend could fill a member's share and lock them out of a plugin they use.
+
+Ordinary chat traffic moves no `quotas` counter at all. Nothing in the plugin document store touches the `quotas` table, so a workspace can write plugin documents all day and its quota docs never change.
+
 # Guardrails
 
 - Keep rate limiting separate; rate-limiter names, config, and copy still use rate-limit terminology.

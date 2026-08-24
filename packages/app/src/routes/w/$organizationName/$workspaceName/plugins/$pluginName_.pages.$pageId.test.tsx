@@ -117,10 +117,70 @@ function post_ready(bridgeNonce: string) {
 	post_from_frame({ type: "bonobo:ready", bridgeNonce });
 }
 
+// The app tokens the frame resolves, with the real values from `app.css`. jsdom loads no
+// stylesheet, so the root element carries them inline and `getComputedStyle` reads them back.
+const HOST_THEME_PROPERTIES = {
+	"--color-base-1-01": "oklch(0.14 0.001 85)",
+	"--color-base-1-03": "oklch(0.2 0.004 85)",
+	"--color-base-1-05": "oklch(0.25 0.006 85)",
+	"--color-base-1-06": "oklch(0.27 0.007 85)",
+	"--color-base-1-08": "oklch(0.335 0.009 85)",
+	"--color-base-1-11": "oklch(0.43 0.012 85)",
+	"--color-fg-07": "oklch(0.609 0.012 81)",
+	"--color-fg-09": "oklch(0.745 0.015 81)",
+	"--color-fg-12": "oklch(0.95 0.01 81)",
+	"--color-accent-05": "oklch(0.617 0.15 52)",
+	"--color-accent-06": "oklch(0.681 0.158 56)",
+	"--color-accent-alt-05": "oklch(0.6 0.148 270)",
+	"--color-green-07": "oklch(0.619 0.176 147)",
+	"--color-red-09": "oklch(0.65 0.2 29.2)",
+};
+
+function paint_host_theme(mode: "light" | "dark") {
+	for (const [property, value] of Object.entries(HOST_THEME_PROPERTIES)) {
+		document.documentElement.style.setProperty(property, value);
+	}
+	document.documentElement.classList.remove("light", "dark");
+	document.documentElement.classList.add(mode);
+}
+
+// The public token names a plugin writes against, each carrying the value of the app token it is
+// mapped to. Written out here on purpose: the map is module-private in the frame, and a test that
+// imported it could not tell a renamed token from a repointed one.
+const EXPECTED_THEME_TOKENS = {
+	surface: "oklch(0.14 0.001 85)",
+	surfaceRaised: "oklch(0.2 0.004 85)",
+	surfaceOverlay: "oklch(0.25 0.006 85)",
+	surfaceHover: "oklch(0.27 0.007 85)",
+	border: "oklch(0.335 0.009 85)",
+	borderStrong: "oklch(0.43 0.012 85)",
+	text: "oklch(0.95 0.01 81)",
+	textMuted: "oklch(0.745 0.015 81)",
+	textSubtle: "oklch(0.609 0.012 81)",
+	accent: "oklch(0.617 0.15 52)",
+	accentHover: "oklch(0.681 0.158 56)",
+	selection: "oklch(0.6 0.148 270)",
+	success: "oklch(0.619 0.176 147)",
+	danger: "oklch(0.65 0.2 29.2)",
+};
+
+function latest_theme_message() {
+	return postMessageMock.mock.calls.findLast(([value]) => (value as { type?: string }).type === "bonobo:theme")?.[0] as
+		| { bridgeNonce: string; theme: { mode: string; tokens: Record<string, string> } }
+		| undefined;
+}
+
 function latest_init_message() {
 	const message = postMessageMock.mock.calls.findLast(
 		([value]) => (value as { type?: string }).type === "bonobo:init",
-	)?.[0] as { bridgeNonce: string; token: string; context: Record<string, unknown> } | undefined;
+	)?.[0] as
+		| {
+				bridgeNonce: string;
+				token: string;
+				context: Record<string, unknown>;
+				theme: { mode: string; tokens: Record<string, string> };
+		  }
+		| undefined;
 	if (!message) {
 		throw new Error("init message not posted");
 	}
@@ -153,6 +213,9 @@ describe("RoutePluginsPluginPage", () => {
 
 	afterEach(() => {
 		cleanup();
+		// The theme is read off the root element, so a test that painted one must not leave it there.
+		document.documentElement.removeAttribute("style");
+		document.documentElement.classList.remove("light", "dark");
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		vi.clearAllMocks();
@@ -251,6 +314,82 @@ describe("RoutePluginsPluginPage", () => {
 			apiOrigin: import.meta.env.VITE_CONVEX_HTTP_URL,
 			convexUrl: "https://deployment.convex.test",
 			token: "plu_default",
+		});
+	});
+
+	test("init carries the whole resolved theme, and a host theme switch sends an update", async () => {
+		paint_host_theme("dark");
+
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const { container } = render(<PageComponent />);
+		const { bridgeNonce } = bridge_for(container);
+		await act(async () => post_ready(bridgeNonce));
+
+		// A plugin page is a cross-origin document: it inherits none of the app's custom properties and
+		// cannot read them. So init has to carry every value it needs, resolved — a name would leave the
+		// page with nothing to resolve it against.
+		expect(latest_init_message()?.theme).toEqual({
+			mode: "dark",
+			tokens: EXPECTED_THEME_TOKENS,
+		});
+		expect(latest_theme_message()).toBeUndefined();
+
+		// The user switches the app to light. Nothing remounts the frame, so the running page only
+		// learns about it from this message.
+		await act(async () => {
+			document.documentElement.style.setProperty("--color-base-1-01", "oklch(0.98 0.002 85)");
+			document.documentElement.classList.remove("dark");
+			document.documentElement.classList.add("light");
+			await Promise.resolve();
+		});
+
+		expect(latest_theme_message()).toMatchObject({
+			bridgeNonce,
+			theme: {
+				mode: "light",
+				tokens: { ...EXPECTED_THEME_TOKENS, surface: "oklch(0.98 0.002 85)" },
+			},
+		});
+	});
+
+	test("the mode follows the surface colour, not the theme class", async () => {
+		paint_host_theme("dark");
+
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const { container } = render(<PageComponent />);
+		const { bridgeNonce } = bridge_for(container);
+		await act(async () => post_ready(bridgeNonce));
+
+		expect(latest_init_message()?.theme.mode).toBe("dark");
+
+		// The app's numbered palette is dark-oriented and the theme provider does not swap it, so a
+		// member who picks "light" still sees the same dark surfaces — measured in the running app on
+		// 2026-08-24, where the app's own body stayed `oklch(0.14 …)` under `.light`. Nothing the
+		// frame paints with changed, so it hears nothing. When the mode came from the class instead,
+		// this sent `mode: "light"` beside those dark values: the frame painted its own light panels
+		// and dark text, then read the host's dark surface and light text back over them, and the page
+		// went unreadable.
+		await act(async () => {
+			document.documentElement.classList.remove("dark");
+			document.documentElement.classList.add("light");
+			await Promise.resolve();
+		});
+
+		expect(latest_theme_message()).toBeUndefined();
+
+		// A real switch is one that changes the colours. Then the mode follows them — here under the
+		// `dark` class, so this is a rule about the surface and not a pin on the class name. The
+		// observer watches the class attribute, which is why the class moves at all.
+		await act(async () => {
+			document.documentElement.style.setProperty("--color-base-1-01", "oklch(0.98 0.002 85)");
+			document.documentElement.classList.remove("light");
+			document.documentElement.classList.add("dark");
+			await Promise.resolve();
+		});
+
+		expect(latest_theme_message()).toMatchObject({
+			bridgeNonce,
+			theme: { mode: "light", tokens: { ...EXPECTED_THEME_TOKENS, surface: "oklch(0.98 0.002 85)" } },
 		});
 	});
 
@@ -782,4 +921,60 @@ describe("RoutePluginsPluginPage", () => {
 		await act(async () => post_ready(viewBridge.bridgeNonce));
 		expect(latest_init_message().context).toMatchObject({ kind: "file_view", fileViewId: "viewer", userId: "user_1" });
 	});
+
+	// #region dev-only bundle override
+
+	const OVERRIDE_ORIGIN = "http://localhost:5174";
+
+	/** Points the override at `version_1`, the id every fixture in this file mints. */
+	function stub_override(origin = OVERRIDE_ORIGIN) {
+		vi.stubEnv("VITE_PLUGIN_UI_DEV_VERSION_ID", "version_1");
+		vi.stubEnv("VITE_PLUGIN_UI_DEV_ORIGIN", origin);
+	}
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	test("an override loads the frame from its own origin and trusts that origin only", async () => {
+		stub_override();
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const { container } = render(<PageComponent />);
+		const { iframeUrl, bridgeNonce } = bridge_for(container);
+		expect(iframeUrl.origin).toBe(OVERRIDE_ORIGIN);
+
+		// A different port on the same host is a different origin, and the frame holds a session
+		// token, so it must be refused exactly like any other stranger.
+		await act(async () => post_from_frame({ type: "bonobo:ready", bridgeNonce }, "http://localhost:5175"));
+		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), expect.anything());
+
+		await act(async () => post_from_frame({ type: "bonobo:ready", bridgeNonce }, OVERRIDE_ORIGIN));
+		expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), OVERRIDE_ORIGIN);
+	});
+
+	test("an override for another version leaves this frame on the published bundle", async () => {
+		vi.stubEnv("VITE_PLUGIN_UI_DEV_VERSION_ID", "version_other");
+		vi.stubEnv("VITE_PLUGIN_UI_DEV_ORIGIN", OVERRIDE_ORIGIN);
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const { container } = render(<PageComponent />);
+
+		expect(bridge_for(container).iframeUrl.origin).toBe(CONVEX_HTTP_ORIGIN);
+	});
+
+	test("outside a development build the override does not exist", async () => {
+		// Vite erases the whole branch from a production build. This asserts the behaviour that
+		// erasure produces: with DEV false the override is not consulted at all, so the frame keeps
+		// the published bundle and a message from the override origin is a message from a stranger.
+		vi.stubEnv("DEV", false);
+		stub_override();
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const { container } = render(<PageComponent />);
+		const { iframeUrl, bridgeNonce } = bridge_for(container);
+		expect(iframeUrl.origin).toBe(CONVEX_HTTP_ORIGIN);
+
+		await act(async () => post_from_frame({ type: "bonobo:ready", bridgeNonce }, OVERRIDE_ORIGIN));
+		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), expect.anything());
+	});
+
+	// #endregion dev-only bundle override
 });

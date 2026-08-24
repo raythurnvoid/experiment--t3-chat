@@ -118,10 +118,18 @@ For visual verification reports, the prompt must begin with `Generate an image:`
 5. Wait for generation to start and finish.
    - During generation, ChatGPT shows `data-testid="stop-button"` with accessible name `Stop answering`.
    - First wait briefly for the stop button to appear. Then wait for it to detach and for a generated-image control to appear. A direct `detached` wait can succeed before generation starts.
+   - **Do not treat the stop button alone as the signal.** On a slow generation it can flicker: it detaches and re-attaches while the image is still being made, so a `detached` wait returns early and the next step reads a page with no image on it. Poll for BOTH conditions at once instead — a generated image present AND the stop button gone — and only then read the page.
 
 ```js
 await state.page.getByTestId('stop-button').waitFor({ state: 'visible', timeout: 15000 }).catch(() => {})
-await state.page.getByTestId('stop-button').waitFor({ state: 'detached', timeout: 180000 })
+// Both conditions together. Either one alone can be true while generation is still running.
+await state.page.waitForFunction(
+	() =>
+		document.querySelector('img[alt*="Generated image"]') !== null &&
+		document.querySelector('[data-testid="stop-button"]') === null,
+	undefined,
+	{ timeout: 180000 },
+)
 await state.page.getByRole('button', { name: /Generated image/i }).waitFor({ state: 'visible', timeout: 30000 })
 console.log(await snapshot({ page: state.page, search: /Generated image|Download|Save|Edit image|Share/i, showDiffSinceLastCall: false }))
 ```

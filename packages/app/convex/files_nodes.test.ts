@@ -53,6 +53,7 @@ import {
 	files_yjs_doc_update_from_text,
 } from "../shared/files-tiptap.ts";
 import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../shared/files-yjs.ts";
+import { delay } from "../shared/async-utils.ts";
 import { r2_confirmed_object_delete, r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import type { Id } from "./_generated/dataModel.js";
@@ -1727,7 +1728,7 @@ test("create_text_node does not publish a file node when initial R2 writes fail"
 	await secondPutStarted;
 	// Give an early-rejecting Promise.all path time to start cleanup while its sibling PUT is
 	// still blocked. The fixed path waits for both results, so both asset docs remain owned here.
-	await new Promise((resolve) => setTimeout(resolve, 50));
+	await delay(50);
 	const preparedAssetIds = await t.run(async (ctx) =>
 		(await ctx.db.query("files_r2_assets").collect()).map((asset) => asset._id),
 	);
@@ -6508,7 +6509,7 @@ describe("non-collaborative files", () => {
 	 */
 	async function drain_scheduled_continuations(t: ReturnType<typeof test_convex>) {
 		for (let round = 0; round < 5; round += 1) {
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await delay(0);
 			await t.finishInProgressScheduledFunctions();
 		}
 	}
@@ -12682,7 +12683,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		);
 
 		for (let round = 0; round < 5; round += 1) {
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await delay(0);
 			await t.finishInProgressScheduledFunctions();
 		}
 		const repairDeletionJob = (await read_deletion_jobs(t)).find(

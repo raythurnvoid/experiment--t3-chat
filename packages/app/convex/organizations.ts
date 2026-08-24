@@ -1316,6 +1316,19 @@ export const remove_user_from_organization = mutation({
 					.collect(),
 			),
 		);
+		const pluginDataMemberUsagePromise = Promise.all(
+			memberships.map((membership) =>
+				ctx.db
+					.query("plugins_data_member_usage")
+					.withIndex("by_organization_workspace_user", (q) =>
+						q
+							.eq("organizationId", organization._id)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("userId", args.userIdToRemove),
+					)
+					.collect(),
+			),
+		);
 		const apiCredentialQuotasPromise = Promise.all(
 			memberships.map((membership) =>
 				quotas_db_get(ctx, {
@@ -1348,6 +1361,12 @@ export const remove_user_from_organization = mutation({
 			),
 			pluginServiceGrantsPromise.then((grants) =>
 				Promise.all(grants.flat().map((grant) => ctx.db.delete("plugin_service_grants", grant._id))),
+			),
+			// A per-member plugin storage row names the member, so it must not outlive their membership.
+			// The documents it counted stay: they belong to the workspace, and the counters they fed are
+			// installation-wide. A later credit that names this member finds no row and does nothing.
+			pluginDataMemberUsagePromise.then((rows) =>
+				Promise.all(rows.flat().map((row) => ctx.db.delete("plugins_data_member_usage", row._id))),
 			),
 			// Delete these quota docs so a later invite creates counters with `usedCount: 0`.
 			apiCredentialQuotasPromise.then((quotaDocs) =>

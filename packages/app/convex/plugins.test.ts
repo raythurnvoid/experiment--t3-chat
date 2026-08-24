@@ -111,6 +111,7 @@ async function register_media_plugin(
 		displayName?: string;
 		version?: string;
 		contentTypes?: string[];
+		events?: Doc<"plugins_versions">["events"];
 		configurable?: boolean;
 		artifactHash?: string;
 		sourceRepositoryUrl?: string;
@@ -177,7 +178,7 @@ async function register_media_plugin(
 						description: "Choose which upload folders start this plugin.",
 						defaultYaml: media_configuration_yaml,
 					},
-		events: [
+		events: args.events ?? [
 			{
 				type: "files.upload.completed",
 				contentTypes: args.contentTypes ?? ["image/png", "video/mp4"],
@@ -581,7 +582,7 @@ describe("plugins Phase 0", () => {
 		const listed = await asOwner.query(api.plugins.list_installations, { membershipId: membership.membershipId });
 		expect(listed).toHaveLength(1);
 		expect(listed[0]!.installation.pluginName).toBe("media");
-		expect(listed[0]!.handlers.map((handler: { contentType: string }) => handler.contentType).sort()).toEqual([
+		expect(listed[0]!.handlers.map((handler: { contentType?: string }) => handler.contentType).sort()).toEqual([
 			"image/png",
 			"video/mp4",
 		]);
@@ -4968,6 +4969,141 @@ describe("plugins get_installation_health", () => {
 			await fixture.asOwner.query(api.plugins.get_installation_health, {
 				membershipId: fixture.membership.membershipId,
 				pluginName: "not-installed",
+			}),
+		).toBeNull();
+	});
+});
+
+describe("plugins get_installation_storage_usage", () => {
+	// Every caller below is a seeded custom-role member, never `organizations.ownerUserId`. The
+	// permission check answers "yes" for an owner before it looks at the resource, so an owner-only
+	// run would pass even if this query asked for the wrong permission or the wrong workspace.
+	async function seed_manager(
+		t: ReturnType<typeof test_convex>,
+		args: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			creatorUserId: Id<"users">;
+			clerkUserId: string;
+			permissions: access_control_Permission[];
+		},
+	) {
+		return await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: args.clerkUserId });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			const roleId = await ctx.db.insert("access_control_roles", {
+				organizationId: args.organizationId,
+				name: args.clerkUserId,
+				normalizedName: args.clerkUserId,
+				description: "",
+				permissions: args.permissions,
+				createdBy: args.creatorUserId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId,
+				role: roleId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			return { userId, membershipId };
+		});
+	}
+
+	test("reports the installation's stored bytes to a manager and refuses everyone else", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId);
+		const installed = await t.withIdentity(user_identity(membership.userId)).mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+
+		// The accounting doc a real write would leave behind. This query reads the counters, not the
+		// documents, so seeding the doc is what the query actually consumes.
+		await t.run(async (ctx) => {
+			await ctx.db.insert("plugins_data_usage", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installed._yay.installationId,
+				pluginName: "media",
+				usedBytes: 4242,
+				reservedBytes: 1000,
+				usedDocuments: 3,
+				reservedDocuments: 2,
+				tombstoneDocuments: 1,
+				collectionNames: ["meetings", "notes"],
+				updatedAt: Date.now(),
+			});
+		});
+
+		const manager = await seed_manager(t, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			creatorUserId: membership.userId,
+			clerkUserId: "storage-manager",
+			permissions: ["workspace.plugins.manage"],
+		});
+		expect(
+			await t.withIdentity(user_identity(manager.userId)).query(api.plugins.get_installation_storage_usage, {
+				membershipId: manager.membershipId,
+				installationId: installed._yay.installationId,
+			}),
+		).toEqual({
+			usedBytes: 4242,
+			documents: 3,
+			liveReservations: 2,
+			tombstones: 1,
+			collectionNames: ["meetings", "notes"],
+		});
+
+		// Reading a workspace is not managing its plugins. The share rows carry user ids, and the
+		// counters say how much each installation is holding, so this stays behind the manage gate.
+		const reader = await seed_manager(t, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			creatorUserId: membership.userId,
+			clerkUserId: "storage-reader",
+			permissions: ["content.read"],
+		});
+		expect(
+			await t.withIdentity(user_identity(reader.userId)).query(api.plugins.get_installation_storage_usage, {
+				membershipId: reader.membershipId,
+				installationId: installed._yay.installationId,
+			}),
+		).toBeNull();
+
+		// A manager of a different workspace passes their own permission check. The installation id is
+		// resolved by id alone, so without the tenant comparison this caller would read the first
+		// workspace's byte totals.
+		const foreign = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization", workspaceName: "other-workspace" }),
+		);
+		const foreignManager = await seed_manager(t, {
+			organizationId: foreign.organizationId,
+			workspaceId: foreign.workspaceId,
+			creatorUserId: foreign.userId,
+			clerkUserId: "storage-foreign-manager",
+			permissions: ["workspace.plugins.manage"],
+		});
+		expect(
+			await t.withIdentity(user_identity(foreignManager.userId)).query(api.plugins.get_installation_storage_usage, {
+				membershipId: foreignManager.membershipId,
+				installationId: installed._yay.installationId,
 			}),
 		).toBeNull();
 	});
@@ -10093,7 +10229,7 @@ describe("plugins uninstall_version", () => {
 
 		const listed = await asOwner.query(api.plugins.list_installations, { membershipId: membership.membershipId });
 		expect(listed).toHaveLength(1);
-		expect(listed[0]?.handlers.map((handler: { contentType: string }) => handler.contentType).sort()).toEqual([
+		expect(listed[0]?.handlers.map((handler: { contentType?: string }) => handler.contentType).sort()).toEqual([
 			"image/png",
 			"video/mp4",
 		]);
@@ -10607,6 +10743,98 @@ describe("plugins run_installation_on_files", () => {
 		expect(asset?.processingWorkId).toBeUndefined();
 
 		await drain_scheduled_work(t);
+	});
+});
+
+
+describe("plugins users.account.deleted dispatch", () => {
+	test("fans out one run per workspace the deleted member belonged to, and nowhere else", async () => {
+		const t = test_convex();
+
+		// Three separate tenants, each with its own owner. One owner installing everywhere would meet
+		// the plugins_manage rate limit, and the point here is the fan-out, not the limiter.
+		const tenantA = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const tenantB = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "second-org", workspaceName: "second-ws" }),
+		);
+		const tenantC = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "third-org", workspaceName: "third-ws" }),
+		);
+
+		const chat = await register_media_plugin(t, tenantA.userId, {
+			name: "chat",
+			displayName: "Chat",
+			configurable: false,
+			events: [{ type: "users.account.deleted", contentTypes: [], filters: [] }],
+		});
+		for (const tenant of [tenantA, tenantB, tenantC]) {
+			const installed = await t.withIdentity(user_identity(tenant.userId)).mutation(api.plugins.install_version, {
+				membershipId: tenant.membershipId,
+				pluginVersionId: chat.pluginVersionId,
+				...media_plugin_consent,
+			});
+			if (installed._nay) {
+				throw new Error(installed._nay.message);
+			}
+		}
+
+		// An event with no content type still registers a handler row, and dispatch finds it by the
+		// absence of one. A row carrying a content type here would never be found.
+		const chatHandlers = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_workspace_event_handlers")
+				.withIndex("by_installation")
+				.filter((q) => q.eq(q.field("pluginName"), "chat"))
+				.collect(),
+		);
+		expect(chatHandlers.map((handler) => handler.contentType)).toEqual([undefined, undefined, undefined]);
+
+		// A plugin installed in the same workspace that subscribes to a different event must stay out
+		// of this fan-out.
+		const media = await register_media_plugin(t, tenantA.userId, { contentTypes: ["image/png"] });
+		const installedMedia = await t.withIdentity(user_identity(tenantA.userId)).mutation(api.plugins.install_version, {
+			membershipId: tenantA.membershipId,
+			pluginVersionId: media.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installedMedia._nay) {
+			throw new Error(installedMedia._nay.message);
+		}
+
+		// The departing member. They belong to A and B, and never to C.
+		const departingUserId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-departing-member" });
+			for (const tenant of [tenantA, tenantB]) {
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: tenant.organizationId,
+					workspaceId: tenant.workspaceId,
+					userId,
+					active: true,
+					updatedAt: now,
+				});
+			}
+			return userId;
+		});
+
+		let done = false;
+		for (let attempt = 0; attempt < 10 && !done; attempt += 1) {
+			done = await t.mutation(internal.data_deletion.prepare_user_for_hard_deletion, { userId: departingUserId });
+		}
+		expect(done).toBe(true);
+		await drain_scheduled_work(t);
+
+		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		const accountRuns = runs.filter((run) => run.event === "users.account.deleted");
+		expect(accountRuns.map((run) => run.workspaceId).sort()).toEqual(
+			[tenantA.workspaceId, tenantB.workspaceId].sort(),
+		);
+		// C has the same plugin installed and produced nothing: the fan-out follows the member, not the
+		// installation.
+		expect(accountRuns.map((run) => run.actorUserId)).toEqual([departingUserId, departingUserId]);
+		// The event fires on a user, so the run names no file. Every file door reads these two fields.
+		expect(accountRuns.every((run) => run.assetId === undefined && run.fileNodeId === undefined)).toBe(true);
+		expect(runs.filter((run) => run.event !== "users.account.deleted")).toEqual([]);
 	});
 });
 
@@ -11322,6 +11550,22 @@ describe("plugins admin hard delete", () => {
 				collectionNames: ["meetings"],
 				updatedAt: now,
 			});
+			// Two members' share rows. They carry a user id, so the operator must see them counted in
+			// the readback before an irreversible delete. Two rows for two members, so a preview that
+			// counted installations instead of rows would report 1 here.
+			const secondMemberId = await ctx.db.insert("users", { clerkUserId: null });
+			for (const memberId of [membership.userId, secondMemberId]) {
+				await ctx.db.insert("plugins_data_member_usage", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId: installedMedia._yay.installationId,
+					userId: memberId,
+					usedBytes: 12,
+					usedDocuments: 1,
+					machineBytes: 0,
+					collectionNames: ["meetings"],
+				});
+			}
 			await ctx.db.insert("plugins_data_reservations", {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -11440,6 +11684,7 @@ describe("plugins admin hard delete", () => {
 			pluginDataDocuments: 1,
 			pluginDataLiveReservations: 1,
 			pluginDataTombstones: 1,
+			pluginDataMemberUsage: 2,
 			pluginServiceGrants: 1,
 			pluginServiceGrantsTruncated: false,
 			eventRuns: 1,
@@ -11470,6 +11715,7 @@ describe("plugins admin hard delete", () => {
 			pluginDataDocuments: 0,
 			pluginDataLiveReservations: 0,
 			pluginDataTombstones: 0,
+			pluginDataMemberUsage: 0,
 			pluginServiceGrants: 0,
 			pluginServiceGrantsTruncated: false,
 			eventRuns: 0,

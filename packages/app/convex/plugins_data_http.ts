@@ -414,11 +414,97 @@ export async function plugins_data_http_read(ctx: ActionCtx, request: Request, p
 	return response;
 }
 
+/**
+ * Everything about a list request that decides which documents its index range covers.
+ *
+ * A Convex cursor only means something inside the query that produced it, and this route rebuilds
+ * its range from the request body on every call. So a cursor sent beside a different range would be
+ * reinterpreted there, and the page would silently skip or repeat history. The route therefore hands
+ * back a cursor with this scope packed inside it, and refuses a cursor whose scope no longer matches.
+ *
+ * `route` is in here because a second paginated plugin-data route would run on a different index. A
+ * `list` cursor and a `list-recent` call for the same collection would otherwise produce the same
+ * scope, and the check would pass while the cursor crossed to another index. Any new paginated route
+ * over this store adds its own range-narrowing arguments to this type.
+ */
+type ListCursorScope = {
+	route: string;
+	/**
+	 * The resolved installation, never the body field. The body field is only ever set for an API
+	 * key: every plugin token takes its installation from the token itself, so hashing the body
+	 * value would compare `undefined` with `undefined` for exactly the callers this guard is for.
+	 */
+	installationId: string;
+	collection: string;
+	keyPrefix: string | null;
+	keyStartExclusive: string | null;
+	keyEndInclusive: string | null;
+};
+
+/**
+ * The cursor is packed, not signed. Forging one only hands the forger a page from their own
+ * installation that does not follow their own previous page, which is precisely what they get today
+ * by inventing a cursor. It crosses no tenant boundary: `list_documents` still authorizes the
+ * resolved principal, and that principal comes from the token, not from the cursor.
+ */
+function encode_list_cursor(scope: ListCursorScope, cursor: string) {
+	const bytes = new TextEncoder().encode(JSON.stringify({ scope, cursor }));
+	let binary = "";
+	for (const byte of bytes) {
+		binary += String.fromCharCode(byte);
+	}
+
+	return btoa(binary);
+}
+
+function decode_list_cursor(token: string) {
+	try {
+		const binary = atob(token);
+		const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+		const decoded: unknown = JSON.parse(new TextDecoder().decode(bytes));
+		if (
+			typeof decoded !== "object" ||
+			decoded === null ||
+			!("scope" in decoded) ||
+			!("cursor" in decoded) ||
+			typeof decoded.cursor !== "string" ||
+			typeof decoded.scope !== "object" ||
+			decoded.scope === null
+		) {
+			return null;
+		}
+
+		return decoded as { scope: Partial<ListCursorScope>; cursor: string };
+	} catch {
+		return null;
+	}
+}
+
+/** Names the first scope field the replay changed, so the caller is not left diffing their own body. */
+function find_changed_cursor_field(sent: Partial<ListCursorScope>, current: ListCursorScope) {
+	const fields = [
+		"route",
+		"installationId",
+		"collection",
+		"keyPrefix",
+		"keyStartExclusive",
+		"keyEndInclusive",
+	] as const satisfies readonly (keyof ListCursorScope)[];
+
+	return fields.find((field) => sent[field] !== current[field]) ?? null;
+}
+
 const list_body_validator = z
 	.object({
 		...installation_field,
 		collection: request_string_validator,
 		keyPrefix: request_string_validator.optional(),
+		// A key range and a cursor are both continuations and they compose: the cursor carries the
+		// range it was minted in, so paging stays inside it. Resending the last key of the page as
+		// `keyStartExclusive` with no cursor is the other continuation, and it survives a process
+		// restart, which a cursor does not.
+		keyStartExclusive: request_string_validator.optional(),
+		keyEndInclusive: request_string_validator.optional(),
 		cursor: request_string_validator.nullable().optional(),
 		limit: z.number().int().min(1).max(PLUGIN_DATA_LIST_MAX_PAGE_SIZE).optional(),
 	})
@@ -449,12 +535,50 @@ export async function plugins_data_http_list(ctx: ActionCtx, request: Request, p
 		return principal._nay;
 	}
 
+	// The cursor carries the range it was minted in. Unpack it, check it still describes this request,
+	// and hand the bare Convex cursor to the query. `cursor: null` is a legal first page, so the test
+	// is the type, not truthiness.
+	const scope: ListCursorScope = {
+		route: path,
+		installationId: principal._yay.installationId,
+		collection: body._yay.collection,
+		keyPrefix: body._yay.keyPrefix ?? null,
+		keyStartExclusive: body._yay.keyStartExclusive ?? null,
+		keyEndInclusive: body._yay.keyEndInclusive ?? null,
+	};
+	let storeCursor: string | null = null;
+	if (typeof body._yay.cursor === "string") {
+		const unpacked = decode_list_cursor(body._yay.cursor);
+		if (unpacked === null) {
+			const response = {
+				status: 400,
+				body: { message: "cursor is not a cursor this route issued" },
+			} as const;
+			await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+			return response;
+		}
+
+		const changedField = find_changed_cursor_field(unpacked.scope, scope);
+		if (changedField !== null) {
+			const response = {
+				status: 400,
+				body: { message: `cursor was issued for a different ${changedField}. Start a new page instead of reusing it.` },
+			} as const;
+			await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+			return response;
+		}
+
+		storeCursor = unpacked.cursor;
+	}
+
 	const listed: plugins_data_list_documents_Result = await ctx.runQuery(internal.plugins_data.list_documents, {
 		principal: principal._yay,
 		collection: body._yay.collection,
 		...(body._yay.keyPrefix === undefined ? {} : { keyPrefix: body._yay.keyPrefix }),
+		...(body._yay.keyStartExclusive === undefined ? {} : { keyStartExclusive: body._yay.keyStartExclusive }),
+		...(body._yay.keyEndInclusive === undefined ? {} : { keyEndInclusive: body._yay.keyEndInclusive }),
 		paginationOpts: {
-			cursor: body._yay.cursor ?? null,
+			cursor: storeCursor,
 			numItems: body._yay.limit ?? PLUGIN_DATA_LIST_MAX_PAGE_SIZE,
 		},
 	});
@@ -468,7 +592,10 @@ export async function plugins_data_http_list(ctx: ActionCtx, request: Request, p
 		status: 200,
 		body: {
 			documents: listed._yay.page,
-			cursor: listed._yay.isDone ? null : listed._yay.continueCursor,
+			// A key range gets a cursor like any other page now: the token carries the range, so
+			// sending it back continues inside it. Past the end there is nothing to continue, so an
+			// exhausted page answers `null` and `isDone: true` together.
+			cursor: listed._yay.isDone ? null : encode_list_cursor(scope, listed._yay.continueCursor),
 			isDone: listed._yay.isDone,
 		},
 		headers: { "Cache-Control": "no-store" },

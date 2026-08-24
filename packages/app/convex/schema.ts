@@ -20,6 +20,7 @@ const plugins_capability_validator = v.union(
 	v.literal("plugin.data.user-write"),
 	v.literal("plugin.service.connect"),
 	v.literal("ui.outbound.fetch"),
+	v.literal("workspace.members.read"),
 );
 
 /**
@@ -1301,7 +1302,9 @@ const app_convex_schema = defineSchema({
 		),
 		events: v.array(
 			v.object({
-				type: v.literal("files.upload.completed"),
+				type: v.union(v.literal("files.upload.completed"), v.literal("users.account.deleted")),
+				// Empty for an event that carries no file. The manifest validator decides which events
+				// may leave it empty.
 				contentTypes: v.array(v.string()),
 				filters: v.array(
 					v.object({
@@ -1493,8 +1496,13 @@ const app_convex_schema = defineSchema({
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
-		event: v.literal("files.upload.completed"),
-		contentType: v.string(),
+		event: v.union(v.literal("files.upload.completed"), v.literal("users.account.deleted")),
+		/**
+		 * Absent for an event that carries no file. It stays an equality component of the dispatch
+		 * index: Convex indexes a missing field as `undefined`, so such an event is dispatched with
+		 * `.eq("contentType", undefined)` and still reads one range instead of scanning.
+		 */
+		contentType: v.optional(v.string()),
 		/** The owning installation's `_creationTime`, denormalized for dispatch order in the scope index. */
 		installationCreatedAt: v.number(),
 		updatedAt: v.number(),
@@ -1514,12 +1522,18 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		// The uploaded file the event fired for; plugin-written outputs are ordinary Markdown siblings.
-		assetId: v.id("files_r2_assets"),
-		fileNodeId: v.id("files_nodes"),
+		// Both are absent for an event that fires on something other than a file.
+		assetId: v.optional(v.id("files_r2_assets")),
+		fileNodeId: v.optional(v.id("files_nodes")),
+		/** Whoever the event is about: the uploader, the admin who asked for a run, or the deleted user. */
 		actorUserId: v.id("users"),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
-		event: v.union(v.literal("files.upload.completed"), v.literal("files.run.requested")),
+		event: v.union(
+			v.literal("files.upload.completed"),
+			v.literal("files.run.requested"),
+			v.literal("users.account.deleted"),
+		),
 		eventId: v.string(),
 		status: v.union(v.literal("queued"), v.literal("running"), v.literal("succeeded"), v.literal("failed")),
 		workId: v.optional(vWorkId),
@@ -1687,8 +1701,59 @@ const app_convex_schema = defineSchema({
 		createdBy: v.id("users"),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
+		/**
+		 * The member whose per-member share holds this document's bytes and slot. Absent means the
+		 * document is charged to the installation only, which is what every row written before the
+		 * per-member ceilings existed looks like. A frame door or an API key charges its writer; a
+		 * plugin backend charges nobody. The field moves with the document: a frame patch by another
+		 * member credits the old member and charges the new one.
+		 */
+		chargedTo: v.optional(v.id("users")),
+		/**
+		 * How many of this document's current bytes a plugin backend wrote. A backend write or patch
+		 * sets it to the document's new `byteSize`; a write by a member — through a frame door or an
+		 * API key — sets it to 0, because the member composed the value that is now stored. The
+		 * per-member ceiling then compares `usedBytes - machineBytes`, so a backend cannot fill a
+		 * member's share and lock them out, and a member cannot launder their own bytes by asking the
+		 * backend to touch their keys. Absent means zero.
+		 */
+		machineBytes: v.optional(v.number()),
+		/**
+		 * The private scope this document belongs to, or absent when it is visible to the whole
+		 * workspace.
+		 *
+		 * The writer never supplies it. The write door resolves it from the key, through the longest
+		 * `plugins_data_scopes` prefix that matches, so a caller cannot put a public document inside a
+		 * private range or the other way round.
+		 *
+		 * Optional because the field arrived on a populated table, and Convex validates every existing
+		 * row against the schema at push time. Absent reads back as `undefined`, which an index matches
+		 * with an ordinary equality, so an unscoped read is still an index scan and not a filter.
+		 */
+		scopeId: v.optional(v.string()),
 	})
 		.index("by_installation_collection_key", ["installationId", "collection", "key"])
+		/**
+		 * Reads one scope's key range, and — with `scopeId` equal to `undefined` — the unscoped part of
+		 * a collection. Every read door uses it so a member sees only what they may see, with
+		 * `truncated` and `incomplete` computed from that same scan. Filtering a raw read afterwards
+		 * would return fewer rows than the limit while the seam markers still described the raw read.
+		 */
+		.index("by_installation_collection_scope_key", ["installationId", "collection", "scopeId", "key"])
+		/**
+		 * Reads one collection in creation order. Convex appends `_creationTime` as the final sort
+		 * key, so this index needs no stored timestamp field and no backfill. It must not carry
+		 * `updatedAt`: an edit and a soft delete both patch the document, so an `updatedAt` order
+		 * would push a three-month-old message a member just fixed a typo in to the top of everyone's
+		 * catch-up read, and would make a "Message deleted" tombstone the newest item there.
+		 */
+		.index("by_installation_collection", ["installationId", "collection"])
+		/**
+		 * The same creation-order read, one scope at a time. `scopeId` sits before the implicit
+		 * `_creationTime` sort key, so an equality on it keeps creation order inside the scope — and
+		 * with `undefined` it reads the unscoped half of the collection.
+		 */
+		.index("by_installation_collection_scope", ["installationId", "collection", "scopeId"])
 		.index("by_installation_collection_createdBy_requestId", [
 			"installationId",
 			"collection",
@@ -1725,6 +1790,49 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_installation", ["installationId"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * One accounting doc per member per installation. The installation-wide ceilings above cannot
+	 * stop one member from filling the whole store, so an interactive write is also charged to a
+	 * share of the installation's capacity. A row exists only while that member holds something: the
+	 * credit path deletes it once every counter reaches zero, so a departed member leaves nothing.
+	 *
+	 * This is a second document in every accepted interactive write's transaction, which costs
+	 * contention on top of the installation accounting doc. The alternative — a per-member map on
+	 * that doc — wedges the installation once the map grows past what one document may hold, and
+	 * cannot be ranged for a membership prune. The contention is the price of both.
+	 */
+	plugins_data_member_usage: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		userId: v.id("users"),
+		/** Sum of `plugins_data.byteSize` for the documents charged to this member. */
+		usedBytes: v.number(),
+		/** How many documents are charged to this member. */
+		usedDocuments: v.number(),
+		/**
+		 * Sum of `plugins_data.machineBytes` over the same documents. The member ceiling compares
+		 * `usedBytes - machineBytes`, so bytes a plugin backend wrote never count against the member.
+		 */
+		machineBytes: v.number(),
+		/**
+		 * Every collection this member created that still exists. It is bounded by the installation's
+		 * own collection limit, so the per-member collection share can be enforced without a scan.
+		 * When the installation drops an empty collection, the name is removed from every member row.
+		 */
+		collectionNames: v.array(v.string()),
+	})
+		// The write path. `check_capacity` runs inside every accepted write, so this must resolve
+		// exactly one document rather than range over the installation's members.
+		.index("by_installation_user", ["installationId", "userId"])
+		// Account deletion. `db_finalize_deleted_user` knows only the user id.
+		.index("by_user", ["userId"])
+		// The uninstall drain.
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"])
+		// The membership prune. Removing a member from an organization removes them from every
+		// workspace in it, so the prune runs once per membership and never per installation.
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"]),
 
 	/**
 	 * Capacity held for one exact document before an external side effect happens. A service that is
@@ -1815,6 +1923,46 @@ const app_convex_schema = defineSchema({
 		.index("by_installation_collection_key", ["installationId", "collection", "key"])
 		.index("by_expiresAt", ["expiresAt"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * A private range inside one installation's data store: a private channel, or a direct message.
+	 *
+	 * The scope binds one key prefix across one or more collections, one row per collection. Every
+	 * document written under that prefix carries the scope id, and only a member the scope names may
+	 * read or write there. The binding lives on the server because the write door has to resolve a
+	 * scope from the key alone — a caller that could name its own scope could put a private document
+	 * in a public range, or the reverse.
+	 *
+	 * One scope spans collections because a private area is never one collection. A private channel
+	 * keeps its name, its messages, its thread replies and its reactions in four of them, all under
+	 * the channel's key. One scope per collection would work, but it would cost the member four
+	 * scopes against their cap for one channel, and a scope they held on three of the four would
+	 * leak the fourth.
+	 *
+	 * Who may read it is not stored here. It is stored as ordinary permission grants on
+	 * `access_control_permission_grants`, with `resourceKind: "plugin_scope"` and
+	 * `resourceId: "<installationId>:<scopeId>"`, so removing a member from the workspace revokes
+	 * their private channels for free.
+	 */
+	plugins_data_scopes: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		/** Minted by the plugin, unique inside one installation. */
+		scopeId: v.string(),
+		collection: v.string(),
+		keyPrefix: v.string(),
+		/** The member who created the scope. They receive the first `manage` grant on it. */
+		createdByUserId: v.id("users"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_installation_scope", ["installationId", "scopeId"])
+		// Resolves a write's key to its scope. Read `keyPrefix` downwards from the key and stop at the
+		// first row the key starts with: that row is the longest matching prefix.
+		.index("by_installation_collection_prefix", ["installationId", "collection", "keyPrefix"])
+		// Counts what one member owns, for the per-member cap, and finds what to delete when they go.
+		.index("by_installation_creator", ["installationId", "createdByUserId"]),
 
 	/**
 	 * Bearer grant for a service that acts for one installation (`psg_` tokens, stored hashed). It is
@@ -2151,8 +2299,19 @@ const app_convex_schema = defineSchema({
 		 * What the grant is about. `"thread"` is never written: no code makes a thread grant, and
 		 * `access_control_Resource` cannot build one. Chat threads are checked with `content.read` and
 		 * `content.write` on their workspace instead. The literal stays so old docs still validate.
+		 *
+		 * `"plugin_scope"` is a private range of one plugin's data store — a private channel or a
+		 * direct message. Its grants close a door instead of opening one: inside a scope a role gives
+		 * nothing and only a grant that names the user gets in. See the `plugin_scope` branch in
+		 * `access_control_db_has_permission`.
 		 */
-		resourceKind: v.union(v.literal("organization"), v.literal("workspace"), v.literal("file"), v.literal("thread")),
+		resourceKind: v.union(
+			v.literal("organization"),
+			v.literal("workspace"),
+			v.literal("file"),
+			v.literal("thread"),
+			v.literal("plugin_scope"),
+		),
 		/**
 		 * The id of the thing this grant is about, written as a string.
 		 *

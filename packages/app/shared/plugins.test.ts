@@ -322,8 +322,8 @@ describe("plugins_validate_manifest", () => {
 		args: {
 			configuration?: { description: string; defaultYaml: string } | null;
 			events?: Array<{
-				type: "files.upload.completed";
-				contentTypes: string[];
+				type: "files.upload.completed" | "users.account.deleted";
+				contentTypes?: string[];
 				filters?: Array<{
 					field: "source.path";
 					operator: "pathIsUnderAny";
@@ -435,6 +435,49 @@ describe("plugins_validate_manifest", () => {
 				backend: { ...backend, compatibilityFlags: ["x".repeat(65)] },
 			}),
 		).toEqual({ _nay: { message: "Compatibility flags must be at most 64 characters" } });
+	});
+
+
+	test("holds each event to what it can carry: a file event needs content types, the account event refuses them", () => {
+		// An account deletion has no file, so a content type could never match one. Refusing it at
+		// publish time is the difference between an author fixing a manifest and an author waiting for
+		// an event that will never arrive.
+		expect(
+			plugins_validate_manifest(
+				manifest_json({ events: [{ type: "users.account.deleted", contentTypes: ["image/png"] }] }),
+			),
+		).toEqual({
+			_nay: { message: "users.account.deleted carries no file, so it cannot declare content types" },
+		});
+
+		// The one filter the platform has is a path filter, and this event has no path. It has one
+		// subject, so there is nothing left to narrow.
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					events: [
+						{
+							type: "users.account.deleted",
+							filters: [
+								{ field: "source.path", operator: "pathIsUnderAny", configurationPath: ["routing", "folders"] },
+							],
+						},
+					],
+				}),
+			),
+		).toEqual({
+			_nay: { message: "users.account.deleted has one subject, so it cannot declare filters" },
+		});
+
+		// The upload event keeps its old rule. It used to come from the field's own minimum, and the
+		// minimum had to go so the other event could leave the list empty.
+		expect(plugins_validate_manifest(manifest_json({ events: [{ type: "files.upload.completed" }] }))).toEqual({
+			_nay: { message: "files.upload.completed must declare at least one content type" },
+		});
+
+		expect(plugins_validate_manifest(manifest_json({ events: [{ type: "users.account.deleted" }] }))).toMatchObject({
+			_yay: { events: [{ type: "users.account.deleted", contentTypes: [], filters: [] }] },
+		});
 	});
 
 	test("bounds the whole stored manifest payload", () => {
@@ -1042,6 +1085,7 @@ describe("plugins_Capability", () => {
 		"plugin.data.user-write": true,
 		"plugin.service.connect": true,
 		"ui.outbound.fetch": true,
+		"workspace.members.read": true,
 	} satisfies Record<plugins_Capability, true>);
 
 	test("the Convex schema capability validator matches the shared capability list exactly", () => {

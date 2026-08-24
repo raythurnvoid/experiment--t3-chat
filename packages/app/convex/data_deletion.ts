@@ -1159,6 +1159,14 @@ async function db_prepare_user_for_deletion(
 		await ctx.db.patch("users", args.user._id, {
 			deletedAt: args.now,
 		});
+
+		// Tell subscribed plugins the account is gone. This sits inside the tombstone branch, so the
+		// repeated calls that drive the rest of this deletion do not fan out again. The fan-out is
+		// scheduled rather than done here: its size grows with the workspaces the user belonged to,
+		// and this transaction is on a user-facing path.
+		await ctx.scheduler.runAfter(0, internal.plugins_runtime.enqueue_account_deleted_runs, {
+			userId: args.user._id,
+		});
 	}
 
 	// Remove presence docs so the tombstoned user no longer appears in rooms.
@@ -1453,6 +1461,14 @@ async function db_finalize_deleted_user(
 			.withIndex("by_user", (q) => q.eq("userId", user._id))
 			.collect()
 			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("files_yjs_trusted_update_stages", doc._id)))),
+		// A per-member plugin storage row names the user, so finalization must remove it in every
+		// workspace, not only the ones this path still has a membership for. The documents it counted
+		// belong to the workspace and stay; a later credit naming this user finds no row and does nothing.
+		ctx.db
+			.query("plugins_data_member_usage")
+			.withIndex("by_user", (q) => q.eq("userId", user._id))
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("plugins_data_member_usage", doc._id)))),
 		Promise.all([
 			...pendingPlainTextChunks.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),
 			...pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)),

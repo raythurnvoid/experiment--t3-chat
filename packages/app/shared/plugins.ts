@@ -21,7 +21,18 @@ export const plugins_RUNTIME_VERSION = "1";
 export const plugins_REVIEW_POLICY_VERSION = "7";
 
 const MANIFEST_SCHEMA_VERSION = 1;
-const EVENT_TYPES = ["files.upload.completed"] as const;
+const EVENT_TYPES = ["files.upload.completed", "users.account.deleted"] as const;
+
+/**
+ * The event that fires when a member's account is deleted, so a plugin holding that user's id in its
+ * own documents can render them as deleted.
+ *
+ * It has no file and no content type, and its only subject is one user, so the two things an upload
+ * event declares — content types and path filters — are refused on it instead of ignored. A manifest
+ * that declares them would register a handler nothing can ever match, and the author would find out
+ * only when the event never arrived.
+ */
+const ACCOUNT_DELETED_EVENT_TYPE = "users.account.deleted";
 
 const CAPABILITIES = [
 	"plugin.secrets.read",
@@ -49,6 +60,12 @@ const CAPABILITIES = [
 	// member's session token, and whatever it may reach can be reached by anything that manages to run
 	// inside that frame.
 	"ui.outbound.fetch",
+	// Consent line: the plugin's UI pages and file views may read the whole member list of this
+	// workspace. Without it a frame can only turn ids it already stored into names, 50 at a time,
+	// which enumerates nobody. This is its own capability because enumeration is a different consent
+	// from name resolution, and because every member reads the roster under one rule — including a
+	// member who signed in anonymously.
+	"workspace.members.read",
 ] as const;
 export type plugins_Capability = (typeof CAPABILITIES)[number];
 
@@ -688,14 +705,43 @@ const event_schema = z
 					.min(1)
 					.max(MAX_CONTENT_TYPE_LENGTH, `Event content types must be at most ${MAX_CONTENT_TYPE_LENGTH} characters`),
 			)
-			.min(1)
 			.max(
 				MAX_CONTENT_TYPES_PER_EVENT,
 				`Plugin events can declare at most ${MAX_CONTENT_TYPES_PER_EVENT} content types`,
-			),
+			)
+			.default([]),
 		filters: z.array(event_filter_schema).max(MAX_EVENT_FILTERS).default([]),
 	})
-	.strict();
+	.strict()
+	// The list stays a plain array so every reader keeps one type. Which events may fill it is a rule
+	// about this event vocabulary, not about the field, so it lives here.
+	.superRefine((event, ctx) => {
+		if (event.type === ACCOUNT_DELETED_EVENT_TYPE) {
+			if (event.contentTypes.length > 0) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["contentTypes"],
+					message: `${ACCOUNT_DELETED_EVENT_TYPE} carries no file, so it cannot declare content types`,
+				});
+			}
+			if (event.filters.length > 0) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["filters"],
+					message: `${ACCOUNT_DELETED_EVENT_TYPE} has one subject, so it cannot declare filters`,
+				});
+			}
+			return;
+		}
+
+		if (event.contentTypes.length === 0) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["contentTypes"],
+				message: `${event.type} must declare at least one content type`,
+			});
+		}
+	});
 
 const plugin_configuration_schema = z
 	.object({

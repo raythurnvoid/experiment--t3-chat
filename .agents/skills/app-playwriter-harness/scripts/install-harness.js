@@ -1,5 +1,5 @@
 (() => {
-	const VERSION = "0.6.3";
+	const VERSION = "0.6.4";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	/** Somewhere harmless to move the pointer from, so the next move has a non-zero screen delta. */
 	const HOVERCARD_PARK_POINT = { x: 900, y: 500 };
@@ -500,11 +500,15 @@
 		return result;
 	}
 
-	async function auditAccessibility({ selector = "body", minTargetSize = 24 } = {}) {
-		const targetPage = getHarnessPage();
-		await targetPage.waitForSelector(selector, { state: "attached", timeout: 15000 });
+	// Pass `frame` to screen inside an iframe. A cross-origin frame runs in its own process, so an
+	// audit evaluated on the top page sees nothing inside it and reports a clean route that was never
+	// looked at. A Playwright Frame takes the same `waitForSelector` and `evaluate` calls as a Page,
+	// so it can stand in for the page unchanged.
+	async function auditAccessibility({ selector = "body", minTargetSize = 24, frame = null } = {}) {
+		const target = frame ?? getHarnessPage();
+		await target.waitForSelector(selector, { state: "attached", timeout: 15000 });
 
-		const result = await targetPage.evaluate(
+		const result = await target.evaluate(
 			({ selector, minTargetSize }) => {
 				const root = document.querySelector(selector);
 				if (!root) {

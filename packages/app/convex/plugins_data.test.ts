@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { compareValues } from "convex/values";
 
-import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { access_control_db_ensure_role_assignment, access_control_db_has_permission } from "./access_control.ts";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { organizations_db_create_workspace } from "./organizations.ts";
@@ -760,6 +760,184 @@ describe("public API routes", () => {
 			expect(refused.status).toBe(400);
 			expect(await refused.json()).toEqual({ message });
 		}
+	});
+
+	test("continues a bounded key range from a fencepost, on both the page and the service token", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		await t.run(async (ctx) => {
+			// A page session is only minted for a version that declares a page.
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+				pages: [{ id: "meetings", title: "Meetings", entry: "pages/meetings.js", navItem: null }],
+			});
+		});
+		const minted = await fixture.asUser.mutation(api.plugins_ui.mint_page_session, {
+			membershipId: fixture.membershipId,
+			pluginName: "council",
+		});
+		if (minted._nay) {
+			throw new Error(minted._nay.message);
+		}
+		const service = await mint_service_grant(t, fixture);
+		if (service._nay) {
+			throw new Error(service._nay.message);
+		}
+
+		await t.mutation(internal.plugins_data.write_documents_batch, {
+			principal: store_principal(fixture),
+			documents: [
+				{ collection: "meetings", key: "meeting:1", value: { n: 1 } },
+				{ collection: "meetings", key: "meeting:2", value: { n: 2 } },
+				{ collection: "meetings", key: "meeting:3", value: { n: 3 } },
+				{ collection: "meetings", key: "meeting:4", value: { n: 4 } },
+				{ collection: "meetings", key: "note:1", value: { n: 5 } },
+			],
+		});
+
+		// The page token is §8.1's phase-1 consumer of this door, so page 1 goes through it.
+		const page1 = await t.fetch("/api/v1/plugin-data/list", {
+			method: "POST",
+			headers: service_headers(minted._yay.token),
+			body: JSON.stringify({ collection: "meetings", keyPrefix: "meeting:", limit: 2 }),
+		});
+		expect(page1.status).toBe(200);
+		const page1Body = (await page1.json()) as { documents: { key: string }[] };
+		const page1Keys = page1Body.documents.map((document) => document.key);
+		expect(page1Keys).toEqual(["meeting:1", "meeting:2"]);
+
+		// Page 2 carries no cursor at all: the fencepost is the continuation, and it survives a
+		// process restart that would have thrown a cursor away.
+		const page2 = await t.fetch("/api/v1/plugin-data/list", {
+			method: "POST",
+			headers: service_headers(service._yay.token),
+			body: JSON.stringify({
+				collection: "meetings",
+				keyPrefix: "meeting:",
+				keyStartExclusive: page1Keys.at(-1),
+				limit: 2,
+			}),
+		});
+		expect(page2.status).toBe(200);
+		const page2Body = (await page2.json()) as { documents: { key: string }[] };
+		const page2Keys = page2Body.documents.map((document) => document.key);
+		expect(compareValues(page2Keys[0], page1Keys.at(-1))).toBeGreaterThan(0);
+		expect(page2Keys.filter((key) => page1Keys.includes(key))).toEqual([]);
+
+		// The two doors must agree on order, or a page that reads history over HTTP and live data
+		// over the reactive door would interleave them wrongly.
+		const watched = await fixture.asPage.query(api.plugins_data.watch_documents, {
+			collection: "meetings",
+			keyPrefix: "meeting:",
+			limit: 10,
+		});
+		expect([...page1Keys, ...page2Keys]).toEqual(watched?.docs.map((document) => document.key));
+	});
+
+	test("a cursor continues inside its own range and is refused beside a changed one", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const minted = await mint_service_grant(t, fixture);
+		if (minted._nay) {
+			throw new Error(minted._nay.message);
+		}
+
+		await t.mutation(internal.plugins_data.write_documents_batch, {
+			principal: store_principal(fixture),
+			documents: [
+				{ collection: "meetings", key: "meeting:1", value: { n: 1 } },
+				{ collection: "meetings", key: "meeting:2", value: { n: 2 } },
+				{ collection: "meetings", key: "meeting:3", value: { n: 3 } },
+				{ collection: "meetings", key: "meeting:4", value: { n: 4 } },
+			],
+		});
+		const list = async (body: Record<string, unknown>) =>
+			await t.fetch("/api/v1/plugin-data/list", {
+				method: "POST",
+				headers: service_headers(minted._yay.token),
+				body: JSON.stringify(body),
+			});
+
+		// A cursor and a key range compose: the cursor carries the range it was minted in, so sending
+		// the same body back with it continues inside that range.
+		const rangedBody = { collection: "meetings", keyPrefix: "meeting:", keyStartExclusive: "meeting:1", limit: 2 };
+		const page1 = await list(rangedBody);
+		expect(page1.status).toBe(200);
+		const page1Body = (await page1.json()) as { documents: { key: string }[]; cursor: string | null };
+		expect(page1Body.documents.map((document) => document.key)).toEqual(["meeting:2", "meeting:3"]);
+		expect(page1Body.cursor).not.toBeNull();
+
+		const page2 = await list({ ...rangedBody, cursor: page1Body.cursor });
+		expect(page2.status).toBe(200);
+		expect(await page2.json()).toMatchObject({ documents: [{ key: "meeting:4" }], isDone: true, cursor: null });
+
+		// Replay the same cursor beside a changed range. The route rebuilds its index range from the
+		// body, so this cursor now points into a query it was never minted for, and the page it would
+		// answer would silently skip or repeat history. The message names the field that moved,
+		// because the caller cannot diff a body they no longer hold.
+		for (const [changedField, changedBody] of [
+			["keyStartExclusive", { ...rangedBody, keyStartExclusive: "meeting:2" }],
+			["keyEndInclusive", { ...rangedBody, keyEndInclusive: "meeting:4" }],
+			["keyPrefix", { ...rangedBody, keyPrefix: "meeting" }],
+			["collection", { ...rangedBody, collection: "notes" }],
+		] as const) {
+			const refused = await list({ ...changedBody, cursor: page1Body.cursor });
+			expect([changedField, refused.status]).toEqual([changedField, 400]);
+			expect(await refused.json()).toEqual({
+				message: `cursor was issued for a different ${changedField}. Start a new page instead of reusing it.`,
+			});
+		}
+
+		// A string that is not one of this route's cursors is refused before it can reach the store,
+		// where it would throw while being parsed.
+		const forged = await list({ ...rangedBody, cursor: "not-a-cursor" });
+		expect(forged.status).toBe(400);
+		expect(await forged.json()).toEqual({ message: "cursor is not a cursor this route issued" });
+
+		// A client that always sends the field and passes null on the first page is sending a legal
+		// body. Refusing it would 400 the fencepost path's own first request.
+		const firstPage = await list({ collection: "meetings", keyStartExclusive: "meeting:1", cursor: null, limit: 1 });
+		expect(firstPage.status).toBe(200);
+		expect(await firstPage.json()).toMatchObject({ documents: [{ key: "meeting:2" }] });
+	});
+
+	test("a full ranged page hands back a cursor, and an exhausted one hands back none", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const minted = await mint_service_grant(t, fixture);
+		if (minted._nay) {
+			throw new Error(minted._nay.message);
+		}
+
+		await t.mutation(internal.plugins_data.write_documents_batch, {
+			principal: store_principal(fixture),
+			documents: [
+				{ collection: "meetings", key: "meeting:1", value: { n: 1 } },
+				{ collection: "meetings", key: "meeting:2", value: { n: 2 } },
+				{ collection: "meetings", key: "meeting:3", value: { n: 3 } },
+			],
+		});
+
+		// A full page inside a range says history continues and hands back the cursor that continues
+		// it. The fencepost continuation still works too; both are valid, and a caller picks one.
+		const full = await t.fetch("/api/v1/plugin-data/list", {
+			method: "POST",
+			headers: service_headers(minted._yay.token),
+			body: JSON.stringify({ collection: "meetings", keyPrefix: "meeting:", keyStartExclusive: "meeting:1", limit: 1 }),
+		});
+		expect(full.status).toBe(200);
+		const fullBody = (await full.json()) as { documents: { key: string }[]; cursor: string | null; isDone: boolean };
+		expect(fullBody.documents.map((document) => document.key)).toEqual(["meeting:2"]);
+		expect(fullBody.isDone).toBe(false);
+		expect(typeof fullBody.cursor).toBe("string");
+
+		// Past the end of the range there is nothing left, and that is what ends a "load older" loop.
+		const past = await t.fetch("/api/v1/plugin-data/list", {
+			method: "POST",
+			headers: service_headers(minted._yay.token),
+			body: JSON.stringify({ collection: "meetings", keyPrefix: "meeting:", keyStartExclusive: "meeting:3", limit: 1 }),
+		});
+		expect(past.status).toBe(200);
+		expect(await past.json()).toEqual({ documents: [], cursor: null, isDone: true });
 	});
 
 	test("refuses a value field name Convex cannot store, and accepts the punctuation it can", async () => {
@@ -1989,6 +2167,44 @@ describe("write_documents_batch", () => {
 });
 
 describe("list_documents", () => {
+	test("answers crossed range bounds with a finished empty page, and refuses a malformed one", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		await t.mutation(internal.plugins_data.write_documents_batch, {
+			principal: store_principal(fixture),
+			documents: [
+				{ collection: "meetings", key: "meeting:1", value: { n: 1 } },
+				{ collection: "meetings", key: "note:1", value: { n: 2 } },
+			],
+		});
+
+		// A fencepost copied from one prefix and reused against another sorts outside it, so the
+		// bounds cross. That page is finished, not merely empty: an unfinished one makes the route
+		// echo a cursor and the caller asks for the same nothing forever.
+		const crossed = await t.query(internal.plugins_data.list_documents, {
+			principal: store_principal(fixture),
+			collection: "meetings",
+			keyPrefix: "meeting:",
+			keyStartExclusive: "note:1",
+			paginationOpts: { numItems: 10, cursor: null },
+		});
+		if (crossed._nay) {
+			throw new Error(crossed._nay.message);
+		}
+		expect(crossed._yay.page).toEqual([]);
+		expect(crossed._yay.isDone).toBe(true);
+
+		// A bad bound bubbles the store's own refusal, which the route maps to 400 — the same answer
+		// the prefix rules already give.
+		const refused = await t.query(internal.plugins_data.list_documents, {
+			principal: store_principal(fixture),
+			collection: "meetings",
+			keyEndInclusive: " leading space",
+			paginationOpts: { numItems: 10, cursor: null },
+		});
+		expect(refused._nay?.message).toBe("Keys must not start or end with whitespace");
+	});
+
 	test("never returns more than one page even when the caller asks for more", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -3959,6 +4175,43 @@ describe("user_append_document", () => {
 			}),
 		).rejects.toThrow(/expectedRevision/);
 	});
+
+	test("refuses the next append once the installation sits at its document-slot ceiling", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		// The first append creates the accounting doc the seed below fills.
+		const first = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
+			collection: "messages",
+			value: { text: "hello" },
+			clientRequestId: "slot-wall-1",
+		});
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
+
+		// AT the ceiling, not one below: the check refuses when the write would take the store past
+		// 10,000, so a store holding 9,999 still accepts one more. The number is written out here on
+		// purpose. `MAX_DOCUMENT_SLOTS` is module-private, and exporting a ceiling so a test can read
+		// it would let the test follow the constant instead of pinning the value the plugin ships with.
+		await t.run(async (ctx) => {
+			const usage = await ctx.db
+				.query("plugins_data_usage")
+				.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
+				.first();
+			await ctx.db.patch("plugins_data_usage", usage!._id, { usedDocuments: 10_000 });
+		});
+
+		const refused = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
+			collection: "messages",
+			value: { text: "hello" },
+			clientRequestId: "slot-wall-2",
+		});
+		// The plugin branches on this name to show a store-full state instead of a per-message error,
+		// so the name is part of the contract and not only the message.
+		expect(refused._nay?.name).toBe("storage_full");
+		expect(refused._nay?.message).toBe("This plugin has used its 10000 document slots");
+	});
 });
 
 describe("user_put_document", () => {
@@ -4368,6 +4621,39 @@ describe("user_put_owned_document", () => {
 		expect((await removeOwned({ expectedRevision: 2 }))._nay).toMatchObject({
 			message: "This document changed since it was read",
 		});
+	});
+
+	test("an oversized cursor map is refused on value size, not as a full store, and a lost race keeps the stored map", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const putCursors = async (args: { value: Record<string, unknown>; expectedRevision?: number }) =>
+			await fixture.asPage.mutation(api.plugins_data.user_put_owned_document, {
+				collection: "cursors",
+				key: "read-cursors",
+				value: args.value,
+				...(args.expectedRevision === undefined ? {} : { expectedRevision: args.expectedRevision }),
+			});
+
+		// A member holding one read cursor per channel keeps them in one owned document, so the value
+		// ceiling is what a growing workspace meets first. The refusal has to say that. `storage_full`
+		// already means two different things — the installation is full, and this member's share is
+		// full — and neither is true here: the store has room, this one value is too big. A plugin
+		// reading `_nay.name` alone would tell the member to delete messages, which cannot help.
+		const tooBig = await putCursors({ value: value_of_bytes(16 * 1024 + 1) });
+		expect(tooBig._nay).toEqual({ message: "Plugin document values must be at most 16 KiB" });
+		expect(tooBig._nay?.name).toBeUndefined();
+
+		// A member with two tabs open writes the whole map at once, so a lost race must not drop the
+		// cursors the winner stored.
+		const stored = await putCursors({ value: { general: 7, random: 3 }, expectedRevision: 0 });
+		if (stored._nay) {
+			throw new Error(stored._nay.message);
+		}
+		const stale = await putCursors({ value: { general: 1 }, expectedRevision: 0 });
+		expect(stale._nay).toEqual({ name: "conflict", message: "This document changed since it was read" });
+
+		const documents = await read_documents(t, fixture);
+		expect(documents.find((doc) => doc.collection === "cursors")?.value).toEqual({ general: 7, random: 3 });
 	});
 });
 
@@ -4931,6 +5217,186 @@ describe("watch_documents", () => {
 	});
 });
 
+describe("watch_recent", () => {
+	/** Appends `count` documents five seconds apart and answers their keys, oldest first. */
+	async function append_over_time(
+		fixture: Awaited<ReturnType<typeof seed_user_write_door>>,
+		args: { count: number; baseNow: number; label: string },
+	) {
+		const dateNow = vi.spyOn(Date, "now");
+		const keys: string[] = [];
+		try {
+			for (let index = 0; index < args.count; index += 1) {
+				dateNow.mockReturnValue(args.baseNow + index * 5_000);
+				const appended = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
+					collection: "messages",
+					value: { n: index },
+					clientRequestId: `${args.label}-${index}`,
+				});
+				if (appended._nay) {
+					throw new Error(appended._nay.message);
+				}
+				keys.push(appended._yay.key);
+			}
+		} finally {
+			dateNow.mockRestore();
+		}
+		return keys;
+	}
+
+	test("reads creation order, and editing an old document does not move it", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const baseNow = Date.now();
+		const keys = await append_over_time(fixture, { count: 3, baseNow, label: "recent-order" });
+
+		// Edit the OLDEST document, at a clock later than every append, so `updatedAt` now says it is
+		// the freshest thing in the collection. That is the trap: a member fixing a typo must not push
+		// a three-month-old message to the top of everyone's catch-up read. Without the later clock
+		// the edited document keeps the smallest `updatedAt` and an `updatedAt`-ordered read would
+		// answer creation order by accident, so this test would pass against the defect it exists for.
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(baseNow + 60_000);
+		const edited = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "messages",
+			key: keys[0]!,
+			value: { n: 0, edited: true },
+		});
+		dateNow.mockRestore();
+		if (edited._nay) {
+			throw new Error(edited._nay.message);
+		}
+
+		const recent = await fixture.asPage.query(api.plugins_data.watch_recent, {
+			collection: "messages",
+			limit: 10,
+		});
+		expect(recent?.docs.map((doc) => doc.key)).toEqual(keys);
+		expect(recent?.docs[0]?.value).toEqual({ n: 0, edited: true });
+		expect(recent?.truncated).toBe(false);
+	});
+
+	test("since is an exclusive fencepost and truncated says more is waiting", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const baseNow = Date.now();
+		const keys = await append_over_time(fixture, { count: 3, baseNow, label: "recent-since" });
+
+		const all = await fixture.asPage.query(api.plugins_data.watch_recent, {
+			collection: "messages",
+			limit: 10,
+		});
+		const firstCreatedAt = all!.docs[0]!.createdAt;
+
+		// The caller copies `createdAt` from the last document it handled, so that same document must
+		// not come back. Anything else and every catch-up read redelivers its own fencepost.
+		const after = await fixture.asPage.query(api.plugins_data.watch_recent, {
+			collection: "messages",
+			since: firstCreatedAt,
+			limit: 10,
+		});
+		expect(after?.docs.map((doc) => doc.key)).toEqual([keys[1], keys[2]]);
+
+		const firstPage = await fixture.asPage.query(api.plugins_data.watch_recent, {
+			collection: "messages",
+			limit: 2,
+		});
+		expect(firstPage?.docs.map((doc) => doc.key)).toEqual([keys[0], keys[1]]);
+		expect(firstPage?.truncated).toBe(true);
+	});
+
+	test("answers null for a non-page caller and for bad input", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		expect(
+			await fixture.asUser.query(api.plugins_data.watch_recent, { collection: "messages", limit: 10 }),
+		).toBeNull();
+
+		expect(await fixture.asPage.query(api.plugins_data.watch_recent, { collection: "messages", limit: 10 })).not.toBeNull();
+		expect(
+			await fixture.asPage.query(api.plugins_data.watch_recent, { collection: "bad name", limit: 10 }),
+		).toBeNull();
+		expect(await fixture.asPage.query(api.plugins_data.watch_recent, { collection: "messages", limit: 0 })).toBeNull();
+		expect(await fixture.asPage.query(api.plugins_data.watch_recent, { collection: "messages", limit: 101 })).toBeNull();
+		expect(
+			await fixture.asPage.query(api.plugins_data.watch_recent, { collection: "messages", limit: 10, since: Number.NaN }),
+		).toBeNull();
+	});
+
+	test("descending answers newest first, before pages it, and an edit does not move a document", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const baseNow = Date.now();
+		const keys = await append_over_time(fixture, { count: 3, baseNow, label: "recent-desc" });
+
+		// Same trap as the ascending test: edit the OLDEST document at the latest clock, so an
+		// `updatedAt`-ordered read would answer it as the newest thing in the feed.
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(baseNow + 60_000);
+		const edited = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "messages",
+			key: keys[0]!,
+			value: { n: 0, edited: true },
+		});
+		dateNow.mockRestore();
+		if (edited._nay) {
+			throw new Error(edited._nay.message);
+		}
+
+		// The boot read: newest first, no fencepost yet. A feed cannot boot through `since`, because
+		// ascending truncation cuts the newest end off — the exact end the feed is for.
+		const newest = await fixture.asPage.query(api.plugins_data.watch_recent, {
+			collection: "messages",
+			order: "desc",
+			limit: 2,
+		});
+		expect(newest?.docs.map((doc) => doc.key)).toEqual([keys[2], keys[1]]);
+		expect(newest?.truncated).toBe(true);
+
+		// Paging: `before` copies the oldest rendered `createdAt` and must not redeliver it.
+		const older = await fixture.asPage.query(api.plugins_data.watch_recent, {
+			collection: "messages",
+			order: "desc",
+			before: newest!.docs[1]!.createdAt,
+			limit: 10,
+		});
+		expect(older?.docs.map((doc) => doc.key)).toEqual([keys[0]]);
+		expect(older?.docs[0]?.value).toEqual({ n: 0, edited: true });
+		expect(older?.truncated).toBe(false);
+	});
+
+	test("each fencepost belongs to one direction", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		await append_over_time(fixture, { count: 1, baseNow: Date.now(), label: "recent-mix" });
+
+		// A mixed call asked for an order it does not understand, and the wrong end of the read would
+		// be truncated silently — so it answers null like every other bad input.
+		expect(
+			await fixture.asPage.query(api.plugins_data.watch_recent, {
+				collection: "messages",
+				order: "desc",
+				since: Date.now(),
+				limit: 10,
+			}),
+		).toBeNull();
+		expect(
+			await fixture.asPage.query(api.plugins_data.watch_recent, {
+				collection: "messages",
+				before: Date.now(),
+				limit: 10,
+			}),
+		).toBeNull();
+		expect(
+			await fixture.asPage.query(api.plugins_data.watch_recent, {
+				collection: "messages",
+				order: "desc",
+				before: Number.NaN,
+				limit: 10,
+			}),
+		).toBeNull();
+	});
+});
+
 describe("resolve_member_display", () => {
 	test("resolves live members and answers null entries for everyone else", async () => {
 		const t = test_convex();
@@ -5019,6 +5485,170 @@ describe("resolve_member_display", () => {
 	});
 });
 
+describe("list_members", () => {
+	/** Put the roster capability on both halves the door checks: the version and the installation. */
+	async function grant_roster(
+		t: ReturnType<typeof test_convex>,
+		fixture: Awaited<ReturnType<typeof seed_user_write_door>>,
+		args: { onlyRoster?: boolean } = {},
+	) {
+		const capabilities = (
+			args.onlyRoster
+				? ["workspace.members.read"]
+				: ["plugin.data.read", "plugin.data.write", "plugin.data.user-write", "workspace.members.read"]
+		) satisfies plugins_Capability[];
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, { capabilities });
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: capabilities,
+			});
+		});
+	}
+
+	test("an installation that never accepted the capability is refused, and the refusal is not an empty roster", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		// The seed accepts every data capability and not this one, which is the state every installed
+		// plugin is in until an admin accepts the upgraded list.
+		expect(await fixture.asPage.query(api.plugins_data.list_members, { limit: 50 })).toEqual({
+			refusal: "not_consented",
+		});
+
+		// The same call after the workspace accepts it answers the roster. So the refusal above came
+		// from the consent alone, and a page can tell "nobody granted this yet" from "this workspace
+		// has one member" — an empty roster for both would have hidden the consent from the admin.
+		await grant_roster(t, fixture);
+		expect(await fixture.asPage.query(api.plugins_data.list_members, { limit: 50 })).toEqual({
+			members: [{ userId: fixture.userId, displayName: null }],
+			cursor: null,
+		});
+	});
+
+	test("the roster is its own consent and does not ride on plugin data read", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		// A plugin that stores nothing and only shows a member picker declares this one capability.
+		// If the roster were gated on the data-read door as well, such a plugin would have to ask a
+		// workspace for access to a store it never writes to.
+		await grant_roster(t, fixture, { onlyRoster: true });
+
+		expect(await fixture.asPage.query(api.plugins_data.list_members, { limit: 50 })).toEqual({
+			members: [{ userId: fixture.userId, displayName: null }],
+			cursor: null,
+		});
+		// The data doors are shut for that same session, so the two consents really are separate.
+		expect(
+			await fixture.asPage.query(api.plugins_data.watch_documents, { collection: "messages", limit: 10 }),
+		).toBeNull();
+	});
+
+	test("lists every live member of this workspace with a name and nothing else, one page at a time", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		await grant_roster(t, fixture);
+		const second = await join_member_with_role(t, fixture, { clerkUserId: "roster-second", role: "member" });
+		const third = await join_member_with_role(t, fixture, { clerkUserId: "roster-third", role: "member" });
+		// A live member of another workspace only. Enumeration must stay inside this workspace.
+		const outsider = await seed_user_write_door(t, {
+			organizationName: "roster-outside-org",
+			clerkUserId: "roster-outsider",
+		});
+		// The fixtures skip the sign-in bootstrap that writes anagraphics, so store the names directly.
+		// `third` gets none, which is what an anonymous or half-onboarded member looks like.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const [userId, displayName] of [
+				[fixture.userId, "Door Owner"],
+				[second.userId, "Second Member"],
+				[outsider.userId, "Outside Person"],
+			] as const) {
+				const anagraphicId = await ctx.db.insert("users_anagraphics", {
+					userId,
+					displayName,
+					email: "someone@example.com",
+					updatedAt: now,
+				});
+				await ctx.db.patch("users", userId, { anagraphic: anagraphicId });
+			}
+		});
+
+		const firstPage = await fixture.asPage.query(api.plugins_data.list_members, { limit: 2 });
+		expect(firstPage?.members).toHaveLength(2);
+		expect(firstPage?.cursor).not.toBeNull();
+		const secondPage = await fixture.asPage.query(api.plugins_data.list_members, {
+			limit: 2,
+			cursor: firstPage?.cursor,
+		});
+		// The last page says so with a null cursor, so a caller following it stops instead of asking
+		// for the same empty page forever.
+		expect(secondPage?.cursor).toBeNull();
+
+		// The index orders by user id, which carries no meaning, so compare the union by name.
+		const rows = [...(firstPage?.members ?? []), ...(secondPage?.members ?? [])];
+		expect([...rows].map((row) => row.displayName).sort()).toEqual(["Door Owner", "Second Member", null]);
+		expect(rows.map((row) => row.userId).sort()).toEqual([fixture.userId, second.userId, third.userId].sort());
+		// A row carries two fields. The obvious app-side member helper answers the whole anagraphic
+		// document, email included, and a plugin frame may post whatever it reads to the publisher's
+		// own origin — so pin the field set, not just the values.
+		for (const row of rows) {
+			expect(Object.keys(row).sort()).toEqual(["displayName", "userId"]);
+		}
+	});
+
+	test("a member who signed in anonymously reads the roster like anyone else", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		await grant_roster(t, fixture);
+		const anonymous = await join_member_with_role(t, fixture, { clerkUserId: "roster-anon", role: "member" });
+		// An anonymous identity is a normal user doc with no Clerk id. `mint_page_session` resolves
+		// one for a visitor with no session, so a page session for such a user is an ordinary state.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("users", anonymous.userId, { clerkUserId: null });
+		});
+
+		// One rule for every invited member: an anonymous member reads the same roster a Clerk-backed
+		// one does. This is a deliberate exposure, recorded in the plugin-system skill.
+		const roster = await anonymous.asPage.query(api.plugins_data.list_members, { limit: 50 });
+		expect(roster?.members?.map((row) => row.userId).sort()).toEqual([fixture.userId, anonymous.userId].sort());
+	});
+
+	test("throws with no auth identity and answers null for denials and bad input", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		await grant_roster(t, fixture);
+
+		await expect(t.query(api.plugins_data.list_members, { limit: 10 })).rejects.toThrow(/Unauthenticated/);
+
+		// A version that stopped declaring the capability refuses the same way an unaccepted
+		// installation does. Both halves must say yes on every call, and the page has one thing to
+		// show either way: this plugin cannot read the member list here.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+				capabilities: ["plugin.data.read"] satisfies plugins_Capability[],
+			});
+		});
+		expect(await fixture.asPage.query(api.plugins_data.list_members, { limit: 10 })).toEqual({
+			refusal: "not_consented",
+		});
+		await grant_roster(t, fixture);
+
+		// A dead session is a null, not a refusal: nobody can accept their way out of it.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_ui_sessions", fixture.sessionId, { expiresAt: Date.now() - 1 });
+		});
+		expect(await fixture.asPage.query(api.plugins_data.list_members, { limit: 10 })).toBeNull();
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_ui_sessions", fixture.sessionId, { expiresAt: Date.now() + 30 * 60 * 1000 });
+		});
+
+		expect(await fixture.asPage.query(api.plugins_data.list_members, { limit: 0 })).toBeNull();
+		expect(await fixture.asPage.query(api.plugins_data.list_members, { limit: 101 })).toBeNull();
+		// The same call inside the ceiling answers, so the refusals above came from the input alone.
+		expect(await fixture.asPage.query(api.plugins_data.list_members, { limit: 100 })).not.toBeNull();
+	});
+});
+
 describe("storage-layer ownership", () => {
 	test("refuses changing another member's owned doc through every interactive writer", async () => {
 		const t = test_convex();
@@ -5078,9 +5708,617 @@ describe("storage-layer ownership", () => {
 	});
 });
 
+/** One member's share row. It is absent until that member's first charged write. */
+async function read_member_usage(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_installation>>,
+	userId: Id<"users">,
+) {
+	return await t.run(
+		async (ctx) =>
+			await ctx.db
+				.query("plugins_data_member_usage")
+				.withIndex("by_installation_user", (q) => q.eq("installationId", fixture.installationId).eq("userId", userId))
+				.first(),
+	);
+}
+
 /**
- * Fill every one of the five installation-owned tables: a stored document, a live reservation, a
- * released reservation, a revision tombstone, a service grant, and the accounting doc they share.
+ * Move one member's stored counters straight to the numbers a case needs.
+ *
+ * The shares are big enough that reaching them with real writes would take a hundred documents per
+ * case, so the seed stands in for that traffic. The installation-ceiling test patches
+ * `plugins_data_usage` the same way.
+ */
+async function set_member_usage(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_installation>>,
+	userId: Id<"users">,
+	patch: { usedBytes?: number; usedDocuments?: number; machineBytes?: number },
+) {
+	await t.run(async (ctx) => {
+		const row = await ctx.db
+			.query("plugins_data_member_usage")
+			.withIndex("by_installation_user", (q) => q.eq("installationId", fixture.installationId).eq("userId", userId))
+			.first();
+		await ctx.db.patch("plugins_data_member_usage", row!._id, patch);
+	});
+}
+
+describe("db_patch_usage", () => {
+	test("warns once when a write crosses 80% of a ceiling, on the aggregate and never on a refusal", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const principal = service_principal(fixture);
+
+		// The first write creates the accounting doc the seeds below move.
+		const seeded = await t.mutation(internal.plugins_data.write_document, {
+			principal,
+			collection: "meetings",
+			key: "seed",
+			value: { n: 1 },
+		});
+		expect(seeded._nay).toBeUndefined();
+
+		const set_usage = async (patch: { usedBytes?: number; usedDocuments?: number; reservedDocuments?: number }) => {
+			await t.run(async (ctx) => {
+				const usage = await ctx.db
+					.query("plugins_data_usage")
+					.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
+					.first();
+				await ctx.db.patch("plugins_data_usage", usage!._id, patch);
+			});
+		};
+
+		// One slot below the 8,000 threshold on the aggregate the store refuses on, with
+		// `usedDocuments` far below it on its own. A threshold over the stored halves alone would
+		// never fire for a producer filling the store through reservations, and those are the doors
+		// that fill it fastest.
+		await set_usage({ usedDocuments: 1, reservedDocuments: 7_998, usedBytes: 16 * 1024 * 1024 });
+
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			// This write would cross the slot threshold, and it is refused for bytes. The comparison
+			// runs on the transaction that commits, so a refused write says nothing — and neither does
+			// an optimistic-concurrency retry of one.
+			const refused = await t.mutation(internal.plugins_data.write_document, {
+				principal,
+				collection: "meetings",
+				key: "refused",
+				value: { n: 2 },
+			});
+			expect(refused._nay?.name).toBe("storage_full");
+			expect(warn).toHaveBeenCalledTimes(0);
+
+			await set_usage({ usedBytes: 100 });
+			const crossing = await t.mutation(internal.plugins_data.write_document, {
+				principal,
+				collection: "meetings",
+				key: "crossing",
+				value: { n: 3 },
+			});
+			expect(crossing._nay).toBeUndefined();
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]?.[0]).toBe("A plugin installation passed 80% of a storage ceiling");
+
+			// Above the threshold the installation is already known to be filling up. A line per write
+			// from here on is volume, not signal.
+			const above = await t.mutation(internal.plugins_data.write_document, {
+				principal,
+				collection: "meetings",
+				key: "above",
+				value: { n: 4 },
+			});
+			expect(above._nay).toBeUndefined();
+			expect(warn).toHaveBeenCalledTimes(1);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
+describe("per-member capacity", () => {
+	test("refuses a member at their byte share and at their slot share while another member still writes", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const memberB = await join_member_with_role(t, fixture, { clerkUserId: "share-member-b", role: "member" });
+
+		const append = async (asPage: typeof fixture.asPage, clientRequestId: string) =>
+			await asPage.mutation(api.plugins_data.user_append_document, {
+				collection: "messages",
+				value: { text: "hello" },
+				clientRequestId,
+			});
+
+		// The first append from each member creates the row the seeds below fill.
+		expect((await append(fixture.asPage, "a-1"))._nay).toBeUndefined();
+		expect((await append(memberB.asPage, "b-1"))._nay).toBeUndefined();
+
+		await set_member_usage(t, fixture, fixture.userId, { usedBytes: 1600 * 1024 });
+		const overBytes = await append(fixture.asPage, "a-2");
+		expect(overBytes._nay?.name).toBe("storage_full");
+		expect(overBytes._nay?.message).toBe("You have used your 1.6 MiB share of this plugin's storage");
+		// One member's full share must not stop the workspace, which is the whole reason the share
+		// exists: B is inside their own and keeps writing.
+		expect((await append(memberB.asPage, "b-2"))._nay).toBeUndefined();
+
+		// The slot share is a separate ceiling. Without it a member holding almost no bytes can still
+		// spend every slot in the installation.
+		await set_member_usage(t, fixture, fixture.userId, { usedBytes: 0, usedDocuments: 3_000 });
+		const overSlots = await append(fixture.asPage, "a-3");
+		expect(overSlots._nay?.name).toBe("storage_full");
+		expect(overSlots._nay?.message).toBe("You have used your 3000 document slots in this plugin");
+		expect((await append(memberB.asPage, "b-3"))._nay).toBeUndefined();
+
+		// Both refusals carry the same name and the route maps both to 403, so the message is the only
+		// thing that tells a member "you are full" from "the plugin is full".
+		await set_member_usage(t, fixture, fixture.userId, { usedBytes: 0, usedDocuments: 0 });
+		await t.run(async (ctx) => {
+			const usage = await ctx.db
+				.query("plugins_data_usage")
+				.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
+				.first();
+			await ctx.db.patch("plugins_data_usage", usage!._id, { usedBytes: 16 * 1024 * 1024 });
+		});
+		const installationFull = await append(fixture.asPage, "a-4");
+		expect(installationFull._nay?.name).toBe("storage_full");
+		expect(installationFull._nay?.message).toBe("This plugin has used its 16 MiB of storage");
+		expect(installationFull._nay?.message).not.toBe(overBytes._nay?.message);
+	});
+
+	test("moves the bytes and the slot onto the member who takes a shared document over", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const memberB = await join_member_with_role(t, fixture, { clerkUserId: "transfer-member-b", role: "member" });
+
+		// A holds two documents: one owned message and one shared channel any member may rename.
+		const appended = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
+			collection: "messages",
+			value: value_of_bytes(100),
+			clientRequestId: "transfer-1",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+		const created = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "channels",
+			key: "general",
+			value: value_of_bytes(100),
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({ usedBytes: 200, usedDocuments: 2 });
+
+		// B renames the shared channel. The whole document moves: A is credited the old bytes and the
+		// slot, B is charged the new bytes and the slot. Leaving the slot on A would let a member keep
+		// moving slots onto themselves by patching documents somebody else created.
+		const renamed = await memberB.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "channels",
+			key: "general",
+			value: value_of_bytes(300),
+		});
+		if (renamed._nay) {
+			throw new Error(renamed._nay.message);
+		}
+		expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({ usedBytes: 100, usedDocuments: 1 });
+		expect(await read_member_usage(t, fixture, memberB.userId)).toMatchObject({ usedBytes: 300, usedDocuments: 1 });
+	});
+
+	test("deletes a member's share row once they hold nothing, at every door that attributes", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		const appended = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
+			collection: "messages",
+			value: { text: "hello" },
+			clientRequestId: "row-life-1",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+		expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({ usedDocuments: 1 });
+
+		// A stored zero would keep one row per member who ever wrote, so the table would grow with
+		// churn and a departed member would leave an id behind for nothing.
+		const removed = await fixture.asPage.mutation(api.plugins_data.user_remove_document, {
+			collection: "messages",
+			key: appended._yay.key,
+		});
+		if (removed._nay) {
+			throw new Error(removed._nay.message);
+		}
+		expect(await read_member_usage(t, fixture, fixture.userId)).toBeNull();
+
+		// The API-key doors attribute too, so they must give the same row back.
+		const written = await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture, { kind: "user_api_key" }),
+			collection: "meetings",
+			key: "by-key",
+			value: { n: 1 },
+		});
+		expect(written._nay).toBeUndefined();
+		expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({ usedDocuments: 1 });
+
+		const deleted = await t.mutation(internal.plugins_data.delete_document, {
+			principal: store_principal(fixture, { kind: "user_api_key" }),
+			collection: "meetings",
+			key: "by-key",
+		});
+		expect(deleted._nay).toBeUndefined();
+		expect(await read_member_usage(t, fixture, fixture.userId)).toBeNull();
+	});
+
+	test("credits nothing for a member whose row the prune already deleted", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		const appended = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
+			collection: "messages",
+			value: { text: "hello" },
+			clientRequestId: "departed-1",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+
+		// What removing the member from the organization leaves behind: the share row is gone, and the
+		// documents they composed stay in the workspace still naming them in `chargedTo`.
+		await t.run(async (ctx) => {
+			const row = await ctx.db
+				.query("plugins_data_member_usage")
+				.withIndex("by_installation_user", (q) =>
+					q.eq("installationId", fixture.installationId).eq("userId", fixture.userId),
+				)
+				.first();
+			await ctx.db.delete("plugins_data_member_usage", row!._id);
+		});
+
+		const removed = await fixture.asPage.mutation(api.plugins_data.user_remove_document, {
+			collection: "messages",
+			key: appended._yay.key,
+		});
+		if (removed._nay) {
+			throw new Error(removed._nay.message);
+		}
+
+		// The credit finds no row and does nothing. Creating one would store a negative share against a
+		// user who has left, and the next member to write would read it as free space.
+		expect(await read_member_usage(t, fixture, fixture.userId)).toBeNull();
+	});
+
+	test("refuses an API key over its owner's byte share and keeps another member's key writing", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const memberB = await join_member_with_role(t, fixture, { clerkUserId: "key-member-b", role: "member" });
+		const keyA = await fixture.asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: fixture.membershipId,
+			name: "Member A key",
+			scopes: ["plugin_data:write"],
+		});
+		const keyB = await memberB.asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: memberB.membershipId,
+			name: "Member B key",
+			scopes: ["plugin_data:write"],
+		});
+		if (keyA._nay || keyB._nay) {
+			throw new Error(keyA._nay?.message ?? keyB._nay!.message);
+		}
+
+		const batch = async (credential: string, key: string) =>
+			await t.fetch("/api/v1/plugin-data/write-batch", {
+				method: "POST",
+				headers: service_headers(credential),
+				body: JSON.stringify({
+					installationId: fixture.installationId,
+					documents: [{ collection: "meetings", key, value: { n: 1 } }],
+				}),
+			});
+
+		// The first batch creates A's share row, which the seed below fills.
+		expect((await batch(keyA._yay.credential, "a-1")).status).toBe(200);
+		await set_member_usage(t, fixture, fixture.userId, { usedBytes: 1600 * 1024 });
+
+		// A key writes as the member who minted it, and this door fills the store about seventeen
+		// times faster than the frame door, so the share has to bind here too.
+		const refused = await batch(keyA._yay.credential, "a-2");
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({
+			message: "You have used your 1.6 MiB share of this plugin's storage",
+		});
+		expect((await batch(keyB._yay.credential, "b-1")).status).toBe(200);
+	});
+
+	test("holds a member to eight collections at both doors and gives one back when a collection empties", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const memberB = await join_member_with_role(t, fixture, { clerkUserId: "collections-member-b", role: "member" });
+		const keyA = await fixture.asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: fixture.membershipId,
+			name: "Member A key",
+			scopes: ["plugin_data:write"],
+		});
+		if (keyA._nay) {
+			throw new Error(keyA._nay.message);
+		}
+
+		// The frame write bucket holds ten tokens, and this case spends more than that, so the clock
+		// moves on its own instead of waiting for a real refill.
+		const base = Date.now();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(base);
+		try {
+			const put = async (asPage: typeof fixture.asPage, collection: string) =>
+				await asPage.mutation(api.plugins_data.user_put_document, {
+					collection,
+					key: "only",
+					value: { n: 1 },
+				});
+
+			// A member's list holds the collections they introduced to the installation. Eight is half
+			// of the installation's sixteen, so one member cannot pin them all and a plugin still has
+			// room to add one later.
+			for (let index = 0; index < 8; index += 1) {
+				expect((await put(fixture.asPage, `a${index}`))._nay).toBeUndefined();
+			}
+			const ninth = await put(fixture.asPage, "a8");
+			expect(ninth._nay?.name).toBe("storage_full");
+			expect(ninth._nay?.message).toBe("You can create at most 8 collections in this plugin");
+
+			// The batch door computes its collections independently, so one body naming new collections
+			// would pin the installation there with the member's row recording none.
+			const overBatch = await t.fetch("/api/v1/plugin-data/write-batch", {
+				method: "POST",
+				headers: service_headers(keyA._yay.credential),
+				body: JSON.stringify({
+					installationId: fixture.installationId,
+					documents: [{ collection: "a8", key: "only", value: { n: 1 } }],
+				}),
+			});
+			expect(overBatch.status).toBe(403);
+			expect(await overBatch.json()).toEqual({ message: "You can create at most 8 collections in this plugin" });
+
+			// The share is per member, not per installation: B has introduced none and the installation
+			// still holds eight of its sixteen.
+			expect((await put(memberB.asPage, "b0"))._nay).toBeUndefined();
+			expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({
+				collectionNames: ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"],
+			});
+
+			clock.mockReturnValue(base + 60_000);
+
+			// Emptying a collection drops it from the installation's list, and the member lists have to
+			// shrink with it. Otherwise a member who created a collection and then emptied it spends
+			// that share slot forever.
+			const removed = await fixture.asPage.mutation(api.plugins_data.user_remove_document, {
+				collection: "a0",
+				key: "only",
+			});
+			if (removed._nay) {
+				throw new Error(removed._nay.message);
+			}
+			expect(await read_usage(t, fixture)).toMatchObject({
+				collectionNames: ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "b0"],
+			});
+			expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({
+				collectionNames: ["a1", "a2", "a3", "a4", "a5", "a6", "a7"],
+			});
+			expect((await put(fixture.asPage, "a9"))._nay).toBeUndefined();
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	test("keeps a plugin backend's bytes out of the member's own share, at both doors", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const granted = await mint_service_grant(t, fixture);
+		const keyA = await fixture.asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: fixture.membershipId,
+			name: "Member A key",
+			scopes: ["plugin_data:write"],
+		});
+		if (granted._nay || keyA._nay) {
+			throw new Error(granted._nay?.message ?? keyA._nay!.message);
+		}
+
+		const put = async (key: string, byteSize: number) =>
+			await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+				collection: "channels",
+				key,
+				value: value_of_bytes(byteSize),
+			});
+
+		for (const key of ["c0", "c1", "c2"]) {
+			expect((await put(key, 100))._nay).toBeUndefined();
+		}
+		expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({
+			usedBytes: 300,
+			machineBytes: 0,
+			usedDocuments: 3,
+		});
+
+		// A backend may patch any shared document a member created, and every patch is accepted:
+		// refusing one because some member is at their share would let one member block the whole
+		// plugin. So the bytes it writes must not count against that member instead.
+		for (const key of ["c0", "c1", "c2"]) {
+			const grown = await t.fetch("/api/v1/plugin-data/write", {
+				method: "POST",
+				headers: service_headers(granted._yay.token),
+				body: JSON.stringify({ collection: "channels", key, value: value_of_bytes(16 * 1024) }),
+			});
+			expect([key, grown.status]).toEqual([key, 200]);
+		}
+		expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({
+			usedBytes: 3 * 16 * 1024,
+			machineBytes: 3 * 16 * 1024,
+			usedDocuments: 3,
+		});
+		const stored = await read_documents(t, fixture);
+		expect(stored.find((document) => document.key === "c0")).toMatchObject({
+			chargedTo: fixture.userId,
+			machineBytes: 16 * 1024,
+		});
+
+		// The same shape after the hundred documents it would really take to cross the share. The seed
+		// stands in for that traffic; every byte in it was written by the backend.
+		await set_member_usage(t, fixture, fixture.userId, {
+			usedBytes: 3 * 16 * 1024 + 1600 * 1024,
+			machineBytes: 3 * 16 * 1024 + 1600 * 1024,
+		});
+
+		// A composed none of those bytes, so both doors still take A's own writes. The comparison lives
+		// inside `check_capacity`, which is exactly why one edit has to serve both call sites.
+		expect((await put("mine", 100))._nay).toBeUndefined();
+		const batched = await t.fetch("/api/v1/plugin-data/write-batch", {
+			method: "POST",
+			headers: service_headers(keyA._yay.credential),
+			body: JSON.stringify({
+				installationId: fixture.installationId,
+				documents: [{ collection: "channels", key: "mine-by-key", value: { n: 1 } }],
+			}),
+		});
+		expect(batched.status).toBe(200);
+
+		// The share still binds for the bytes A did compose.
+		await set_member_usage(t, fixture, fixture.userId, { usedBytes: 1600 * 1024, machineBytes: 0 });
+		const refused = await put("mine-2", 100);
+		expect(refused._nay?.name).toBe("storage_full");
+		expect(refused._nay?.message).toBe("You have used your 1.6 MiB share of this plugin's storage");
+	});
+
+	test("keeps a member's own bytes exact when a machine-grown document shrinks, moves, or is deleted", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const memberB = await join_member_with_role(t, fixture, { clerkUserId: "machine-member-b", role: "member" });
+		const granted = await mint_service_grant(t, fixture);
+		if (granted._nay) {
+			throw new Error(granted._nay.message);
+		}
+
+		const grow = async (key: string) =>
+			await t.fetch("/api/v1/plugin-data/write", {
+				method: "POST",
+				headers: service_headers(granted._yay.token),
+				body: JSON.stringify({ collection: "channels", key, value: value_of_bytes(16 * 1024) }),
+			});
+
+		// Shrink. A writes 100 bytes, a backend grows the document, and A rewrites it small again. A
+		// composed the value that is stored now, so A holds exactly those 100 bytes — not a share
+		// inflated by what the backend wrote, and not a negative number.
+		expect(
+			(
+				await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+					collection: "channels",
+					key: "c0",
+					value: value_of_bytes(100),
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await grow("c0")).status).toBe(200);
+		expect(
+			(
+				await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+					collection: "channels",
+					key: "c0",
+					value: value_of_bytes(100),
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({ usedBytes: 100, machineBytes: 0 });
+		expect(
+			(
+				await memberB.asPage.mutation(api.plugins_data.user_put_document, {
+					collection: "channels",
+					key: "b0",
+					value: value_of_bytes(100),
+				})
+			)._nay,
+		).toBeUndefined();
+		// A member no backend ever touched holds the same own-bytes for the same value.
+		expect(await read_member_usage(t, fixture, memberB.userId)).toMatchObject({ usedBytes: 100, machineBytes: 0 });
+
+		// Transfer. The backend grows A's document again and B renames it. B is charged only what B
+		// wrote, and A keeps nothing of it: the machine share is zeroed by B's own write instead of
+		// following the document onto B.
+		expect((await grow("c0")).status).toBe(200);
+		expect(
+			(
+				await memberB.asPage.mutation(api.plugins_data.user_put_document, {
+					collection: "channels",
+					key: "c0",
+					value: value_of_bytes(200),
+				})
+			)._nay,
+		).toBeUndefined();
+		// A's row survives with zeroed counters because A introduced `channels` and the installation
+		// still holds it. The collection name is what A is still charged for, not the bytes.
+		expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({
+			usedBytes: 0,
+			machineBytes: 0,
+			usedDocuments: 0,
+			collectionNames: ["channels"],
+		});
+		expect(await read_member_usage(t, fixture, memberB.userId)).toMatchObject({
+			usedBytes: 300,
+			machineBytes: 0,
+			usedDocuments: 2,
+		});
+
+		// Delete. A inserts and removes documents no backend ever touched, so there is no machine
+		// share to credit back and the counter never goes below zero.
+		const appended = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
+			collection: "messages",
+			value: value_of_bytes(100),
+			clientRequestId: "machine-delete-1",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+		expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({ usedBytes: 100, machineBytes: 0 });
+		const removed = await fixture.asPage.mutation(api.plugins_data.user_remove_document, {
+			collection: "messages",
+			key: appended._yay.key,
+		});
+		if (removed._nay) {
+			throw new Error(removed._nay.message);
+		}
+		expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({
+			usedBytes: 0,
+			machineBytes: 0,
+			usedDocuments: 0,
+			collectionNames: ["channels"],
+		});
+	});
+
+	test("charges no member for a plugin backend's write", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const granted = await mint_service_grant(t, fixture);
+		if (granted._nay) {
+			throw new Error(granted._nay.message);
+		}
+
+		// The grant carries the member whose page token was exchanged for it, and that field is kept
+		// for audit only. Charging by it would bill a whole backend projection to one member and lock
+		// them out of a plugin every other member keeps writing to.
+		const written = await t.fetch("/api/v1/plugin-data/write", {
+			method: "POST",
+			headers: service_headers(granted._yay.token),
+			body: JSON.stringify({ collection: "meetings", key: "projection", value: { n: 1 } }),
+		});
+		expect(written.status).toBe(200);
+
+		const stored = await read_documents(t, fixture);
+		expect(stored[0]).toMatchObject({ key: "projection", machineBytes: 7 });
+		expect(stored[0]?.chargedTo).toBeUndefined();
+		expect(await read_member_usage(t, fixture, fixture.userId)).toBeNull();
+	});
+});
+
+/**
+ * Fill every one of the six installation-owned tables: a stored document, a live reservation, a
+ * released reservation, a revision tombstone, a service grant, one member share row, and the
+ * accounting doc they share.
  */
 async function seed_full_store(
 	t: ReturnType<typeof test_convex>,
@@ -5092,6 +6330,14 @@ async function seed_full_store(
 		collection: "meetings",
 		key: "kept",
 		value: { n: 1 },
+	});
+	// An API key writes as the member who minted it, so this is the one write in the seed that
+	// creates a per-member usage row. Without it the drain's member pass has nothing to delete.
+	await t.mutation(internal.plugins_data.write_document, {
+		principal: store_principal(fixture, { kind: "user_api_key" }),
+		collection: "meetings",
+		key: "charged",
+		value: { n: 2 },
 	});
 	await t.mutation(internal.plugins_data.reserve_document, {
 		principal,
@@ -5131,13 +6377,13 @@ async function seed_full_store(
 	await mint_service_grant(t, fixture);
 }
 
-/** Read the five installation-owned tables at once, so a deletion test can assert every one is empty. */
+/** Read the six installation-owned tables at once, so a deletion test can assert every one is empty. */
 async function read_all_store_tables(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_installation>>,
 ) {
 	return await t.run(async (ctx) => {
-		const [documents, reservations, tombstones, usage, grants] = await Promise.all([
+		const [documents, reservations, tombstones, usage, memberUsage, grants] = await Promise.all([
 			ctx.db
 				.query("plugins_data")
 				.withIndex("by_installation_collection_key", (q) => q.eq("installationId", fixture.installationId))
@@ -5155,6 +6401,10 @@ async function read_all_store_tables(
 				.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
 				.collect(),
 			ctx.db
+				.query("plugins_data_member_usage")
+				.withIndex("by_installation_user", (q) => q.eq("installationId", fixture.installationId))
+				.collect(),
+			ctx.db
 				.query("plugin_service_grants")
 				.withIndex("by_organization_workspace_installation", (q) =>
 					q
@@ -5169,6 +6419,7 @@ async function read_all_store_tables(
 			reservations: reservations.length,
 			revisionTombstones: tombstones.length,
 			usage: usage.length,
+			memberUsage: memberUsage.length,
 			serviceGrants: grants.length,
 		};
 	});
@@ -5203,7 +6454,7 @@ describe("plugins_data_db_drain_batch", () => {
 		vi.useRealTimers();
 	});
 
-	test("uninstalling a plugin leaves all five of its tables empty", async () => {
+	test("uninstalling a plugin leaves all six of its tables empty", async () => {
 		const t = test_convex();
 		// The drain runs on the scheduler and reschedules itself, so the test needs fake timers to
 		// walk that chain to its end.
@@ -5211,10 +6462,11 @@ describe("plugins_data_db_drain_batch", () => {
 		const fixture = await seed_installation_with_key_owner(t, "clerk-uninstall-drain");
 		await seed_full_store(t, fixture);
 		expect(await read_all_store_tables(t, fixture)).toEqual({
-			documents: 1,
+			documents: 2,
 			reservations: 2,
 			revisionTombstones: 1,
 			usage: 1,
+			memberUsage: 1,
 			serviceGrants: 1,
 		});
 
@@ -5234,6 +6486,7 @@ describe("plugins_data_db_drain_batch", () => {
 			reservations: 0,
 			revisionTombstones: 0,
 			usage: 0,
+			memberUsage: 0,
 			serviceGrants: 0,
 		});
 	});
@@ -5260,6 +6513,7 @@ describe("plugins_data_db_drain_batch", () => {
 			reservations: 0,
 			revisionTombstones: 0,
 			usage: 0,
+			memberUsage: 0,
 			serviceGrants: 0,
 		});
 	});
@@ -5309,6 +6563,7 @@ describe("plugins_data_db_drain_batch", () => {
 			reservations: 0,
 			revisionTombstones: 0,
 			usage: 0,
+			memberUsage: 0,
 			serviceGrants: 0,
 		});
 	});
@@ -5338,17 +6593,19 @@ describe("plugins_data_db_drain_batch", () => {
 		await seed_full_store(t, fixture);
 		await seed_full_store(t, other);
 		expect(await read_all_store_tables(t, fixture)).toEqual({
-			documents: 1,
+			documents: 2,
 			reservations: 2,
 			revisionTombstones: 1,
 			usage: 1,
+			memberUsage: 1,
 			serviceGrants: 1,
 		});
 		expect(await read_all_store_tables(t, other)).toEqual({
-			documents: 1,
+			documents: 2,
 			reservations: 2,
 			revisionTombstones: 1,
 			usage: 1,
+			memberUsage: 1,
 			serviceGrants: 1,
 		});
 
@@ -5359,13 +6616,15 @@ describe("plugins_data_db_drain_batch", () => {
 			reservations: 0,
 			revisionTombstones: 0,
 			usage: 0,
+			memberUsage: 0,
 			serviceGrants: 0,
 		});
 		expect(await read_all_store_tables(t, other)).toEqual({
-			documents: 1,
+			documents: 2,
 			reservations: 2,
 			revisionTombstones: 1,
 			usage: 1,
+			memberUsage: 1,
 			serviceGrants: 1,
 		});
 	});
@@ -5490,6 +6749,7 @@ describe("cleanup_expired_plugin_data", () => {
 			reservations: 0,
 			revisionTombstones: 0,
 			usage: 1,
+			memberUsage: 0,
 			serviceGrants: 0,
 		});
 	});
@@ -5691,5 +6951,566 @@ describe("plugins_data_db_count_installation_docs", () => {
 		await mint_service_grant(t, fixture);
 
 		expect(await count(t, fixture)).toMatchObject({ serviceGrants: 2, serviceGrantsTruncated: false });
+	});
+});
+
+describe("user_manage_scope", () => {
+	test("scope membership grows and shrinks, and deleting the scope leaves no grants", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t, { clerkUserId: "scope-door-owner" });
+		// Neither caller is the organization owner. The owner passes every permission check before any
+		// grant is read, so an owner-only run would report a working scope over no grants at all.
+		const alice = await join_member_with_role(t, fixture, { clerkUserId: "scope-alice", role: "member" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "scope-bob", role: "member" });
+
+		const created = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "dm-1", collections: ["messages"], keyPrefix: "dm/dm-1/" },
+		});
+		expect(created._nay).toBeUndefined();
+
+		const resourceId = `${fixture.installationId}:dm-1`;
+		const reads = async () =>
+			await t.run(async (ctx) => {
+				const organization = await ctx.db.get("organizations", fixture.organizationId);
+				const scope = {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					defaultWorkspaceId: organization!.defaultWorkspaceId!,
+					organizationOwnerUserId: organization!.ownerUserId,
+					resource: { kind: "plugin_scope", id: resourceId },
+					permission: "content.read",
+				} as const;
+				return {
+					alice: await access_control_db_has_permission(ctx, { ...scope, userId: alice.userId }),
+					bob: await access_control_db_has_permission(ctx, { ...scope, userId: bob.userId }),
+				};
+			});
+
+		// The creator keeps the scope they just made, and nobody else is in it yet.
+		expect(await reads()).toEqual({ alice: true, bob: false });
+
+		const added = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "dm-1", userId: bob.userId, level: "member" },
+		});
+		expect(added._nay).toBeUndefined();
+		expect(await reads()).toEqual({ alice: true, bob: true });
+
+		// Bob holds `member`, which carries no `content.permissions.manage`, so he cannot change who
+		// else is in the scope.
+		const bobAddsHimselfBack = await bob.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "dm-1", userId: bob.userId, level: "manage" },
+		});
+		expect(bobAddsHimselfBack._nay?.message).toBe("Permission denied");
+
+		const removed = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "remove_principal", scopeId: "dm-1", userId: bob.userId },
+		});
+		expect(removed._nay).toBeUndefined();
+		// The shrink path. Without it scope membership would be append-only: Alice could add Bob and
+		// would have no door to take it back.
+		expect(await reads()).toEqual({ alice: true, bob: false });
+
+		const beforeDelete = await t.run(async (ctx) =>
+			(await ctx.db.query("access_control_permission_grants").collect()).filter(
+				(grant) => grant.resourceId === resourceId,
+			),
+		);
+		expect(beforeDelete.length).toBeGreaterThan(0);
+		// Every grant this mutation writes names a user. A role principal would hand the scope to
+		// everybody holding that role, and it would make the role undeletable — see the role test in
+		// `access_control.test.ts`.
+		expect(new Set(beforeDelete.map((grant) => grant.principalKind))).toEqual(new Set(["user"]));
+
+		const deleted = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "delete", scopeId: "dm-1" },
+		});
+		expect(deleted._nay).toBeUndefined();
+
+		const after = await t.run(async (ctx) => ({
+			grants: (await ctx.db.query("access_control_permission_grants").collect()).filter(
+				(grant) => grant.resourceId === resourceId,
+			),
+			scopes: await ctx.db.query("plugins_data_scopes").collect(),
+		}));
+		// A scope id is minted by the plugin and stored only on the scope document. If the delete left
+		// its grants behind, nothing could ever find them again and they would count against their
+		// holders' cap forever.
+		expect(after.grants).toEqual([]);
+		expect(after.scopes).toEqual([]);
+		expect(await reads()).toEqual({ alice: false, bob: false });
+	});
+
+	test("refuses a principal past the per-scope cap and past the per-member cap", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t, { clerkUserId: "scope-cap-owner" });
+		const alice = await join_member_with_role(t, fixture, { clerkUserId: "cap-alice", role: "member" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "cap-bob", role: "member" });
+
+		const created = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "cap-1", collections: ["messages"], keyPrefix: "dm/cap-1/" },
+		});
+		expect(created._nay).toBeUndefined();
+		const resourceId = `${fixture.installationId}:cap-1`;
+
+		// Fill the member's own budget with scopes that are not this one. The grants are what the cap
+		// counts, so they are written straight in rather than through fifty more mutations.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let index = 0; index < 50; index += 1) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					resourceKind: "plugin_scope",
+					resourceId: `other-installation:scope-${index}`,
+					principalKind: "user",
+					userId: bob.userId,
+					permission: "content.read",
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+		});
+
+		const tooManyForBob = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "cap-1", userId: bob.userId, level: "member" },
+		});
+		expect(tooManyForBob._nay?.message).toContain("50 private scopes");
+
+		// Now fill the scope itself. Fifty other members already hold it, so Bob cannot be the
+		// fifty-first even after his own budget is freed.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const grant of await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_user_organization_workspace_resource_permission", (q) =>
+					q
+						.eq("userId", bob.userId)
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("resourceKind", "plugin_scope"),
+				)
+				.collect()) {
+				await ctx.db.delete("access_control_permission_grants", grant._id);
+			}
+
+			for (let index = 0; index < 50; index += 1) {
+				const filler = await ctx.db.insert("users", { clerkUserId: `cap-filler-${index}` });
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					userId: filler,
+					active: true,
+					updatedAt: now,
+				});
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					resourceKind: "plugin_scope",
+					resourceId,
+					principalKind: "user",
+					userId: filler,
+					permission: "content.read",
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+		});
+
+		const scopeFull = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "cap-1", userId: bob.userId, level: "member" },
+		});
+		expect(scopeFull._nay?.message).toContain("at most 50 people");
+	});
+
+	test("a write inside a scoped key range is refused without a grant, and stamps the scope with one", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t, { clerkUserId: "scope-write-owner" });
+		const alice = await join_member_with_role(t, fixture, { clerkUserId: "write-alice", role: "member" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "write-bob", role: "member" });
+
+		const created = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "dm-2", collections: ["messages"], keyPrefix: "dm/dm-2/" },
+		});
+		expect(created._nay).toBeUndefined();
+
+		// Bob holds workspace `content.write`, which is what got him through the door at all. Inside a
+		// scope that counts for nothing.
+		const refused = await bob.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "messages",
+			key: "dm/dm-2/m1",
+			value: { text: "let me in" },
+		});
+		expect(refused._nay?.message).toBe("Permission denied");
+
+		const written = await alice.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "messages",
+			key: "dm/dm-2/m1",
+			value: { text: "hello" },
+		});
+		expect(written._nay).toBeUndefined();
+
+		// A key outside every scope is still public, and Bob writes there like before.
+		const publicWrite = await bob.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "messages",
+			key: "pub/m1",
+			value: { text: "hello everyone" },
+		});
+		expect(publicWrite._nay).toBeUndefined();
+
+		const stored = await t.run(async (ctx) =>
+			(await ctx.db.query("plugins_data").collect()).map((doc) => ({ key: doc.key, scopeId: doc.scopeId })),
+		);
+		// The writer never says which scope a document is in. The server resolves it from the key, so a
+		// public document cannot be smuggled into a private range or the other way round.
+		expect(stored.sort((left, right) => (left.key < right.key ? -1 : 1))).toEqual([
+			{ key: "dm/dm-2/m1", scopeId: "dm-2" },
+			{ key: "pub/m1", scopeId: undefined },
+		]);
+	});
+
+	test("refuses a scope that overlaps another, or one over a range that already holds documents", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t, { clerkUserId: "scope-guard-owner" });
+		const alice = await join_member_with_role(t, fixture, { clerkUserId: "guard-alice", role: "member" });
+
+		const created = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "dm-3", collections: ["messages"], keyPrefix: "dm/dm-3/" },
+		});
+		expect(created._nay).toBeUndefined();
+
+		// Inside the existing one. Overlapping scopes would break the single indexed read that resolves
+		// a key's scope, because a key could then match two prefixes.
+		const inside = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "dm-4", collections: ["messages"], keyPrefix: "dm/dm-3/x" },
+		});
+		expect(inside._nay?.message).toBe("Another scope already covers part of this key range");
+
+		// Around the existing one.
+		const around = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "dm-5", collections: ["messages"], keyPrefix: "dm/" },
+		});
+		expect(around._nay?.message).toBe("Another scope already covers part of this key range");
+
+		const publicWrite = await alice.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "messages",
+			key: "town/m1",
+			value: { text: "already public" },
+		});
+		expect(publicWrite._nay).toBeUndefined();
+
+		// A scope over documents that are already there would leave them unstamped, so the whole
+		// workspace would keep reading them inside a range that now calls itself private. It is also
+		// what stops a deleted scope's range being claimed again while its old documents are still
+		// there.
+		const overOccupied = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "dm-6", collections: ["messages"], keyPrefix: "town/" },
+		});
+		expect(overOccupied._nay?.message).toBe("This key range already holds documents");
+	});
+
+	test("every read door hides a scope the caller is not in, including a read with no key range", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t, { clerkUserId: "scope-read-owner" });
+		const alice = await join_member_with_role(t, fixture, { clerkUserId: "read-alice", role: "member" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "read-bob", role: "member" });
+
+		const created = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "dm-7", collections: ["messages"], keyPrefix: "dm/dm-7/" },
+		});
+		expect(created._nay).toBeUndefined();
+
+		for (const [key, text] of [
+			["dm/dm-7/m1", "private"],
+			["town/m1", "public"],
+		]) {
+			const written = await alice.asPage.mutation(api.plugins_data.user_put_document, {
+				collection: "messages",
+				key,
+				value: { text },
+			});
+			expect(written._nay).toBeUndefined();
+		}
+
+		const keysOf = (result: { docs: { key: string }[] } | null) => result?.docs.map((doc) => doc.key) ?? null;
+
+		// This is the call the whole feature exists to answer: no key range at all, from a member with
+		// workspace `content.read`. It must not reach the private document.
+		expect(
+			keysOf(await bob.asPage.query(api.plugins_data.watch_documents, { collection: "messages", limit: 100 })),
+		).toEqual(["town/m1"]);
+		expect(
+			keysOf(await bob.asPage.query(api.plugins_data.watch_recent, { collection: "messages", limit: 100 })),
+		).toEqual(["town/m1"]);
+
+		// Naming the scope does not help either, through a key range or through the recent read.
+		expect(
+			await bob.asPage.query(api.plugins_data.watch_documents, {
+				collection: "messages",
+				keyPrefix: "dm/dm-7/",
+				limit: 100,
+			}),
+		).toBeNull();
+		expect(
+			await bob.asPage.query(api.plugins_data.watch_recent, { collection: "messages", scopeId: "dm-7", limit: 100 }),
+		).toBeNull();
+
+		// Alice is in the scope, so both doors answer for her.
+		expect(
+			keysOf(
+				await alice.asPage.query(api.plugins_data.watch_documents, {
+					collection: "messages",
+					keyPrefix: "dm/dm-7/",
+					limit: 100,
+				}),
+			),
+		).toEqual(["dm/dm-7/m1"]);
+		expect(
+			keysOf(
+				await alice.asPage.query(api.plugins_data.watch_recent, {
+					collection: "messages",
+					scopeId: "dm-7",
+					limit: 100,
+				}),
+			),
+		).toEqual(["dm/dm-7/m1"]);
+
+		// The service doors act for a person too, so they answer the same way. A private document reads
+		// as absent rather than denied, so the refusal says nothing about what is there.
+		const asBob = { ...store_principal(fixture, { actorUserId: bob.userId }) };
+		const readPrivate = await t.query(internal.plugins_data.read_document, {
+			principal: asBob,
+			collection: "messages",
+			key: "dm/dm-7/m1",
+		});
+		expect(readPrivate._yay).toBeNull();
+
+		const listed = await t.query(internal.plugins_data.list_documents, {
+			principal: asBob,
+			collection: "messages",
+			paginationOpts: { numItems: 100, cursor: null },
+		});
+		expect(listed._yay?.page.map((doc) => doc.key)).toEqual(["town/m1"]);
+
+		const listedScope = await t.query(internal.plugins_data.list_documents, {
+			principal: asBob,
+			collection: "messages",
+			keyPrefix: "dm/dm-7/",
+			paginationOpts: { numItems: 100, cursor: null },
+		});
+		expect(listedScope._yay).toEqual({ page: [], isDone: true, continueCursor: "" });
+	});
+
+	test("one scope covers its key range in every collection it names, and counts once", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t, { clerkUserId: "scope-multi-owner" });
+		const alice = await join_member_with_role(t, fixture, { clerkUserId: "multi-alice", role: "member" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "multi-bob", role: "member" });
+
+		// A private area is never one collection. A private channel keeps its name, its messages and
+		// its reactions in three of them, all under the channel's key, so a scope covering one would
+		// leave the other two readable by the whole workspace.
+		const collections = ["channels", "messages", "reactions"];
+		const created = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "dm-8", collections, keyPrefix: "dm/dm-8/" },
+		});
+		expect(created._nay).toBeUndefined();
+
+		for (const collection of collections) {
+			for (const [key, text] of [
+				["dm/dm-8/a", "private"],
+				["town/a", "public"],
+			]) {
+				const written = await alice.asPage.mutation(api.plugins_data.user_put_document, {
+					collection,
+					key,
+					value: { text },
+				});
+				expect(written._nay).toBeUndefined();
+			}
+		}
+
+		const keysOf = (result: { docs: { key: string }[] } | null) => result?.docs.map((doc) => doc.key) ?? null;
+		for (const collection of collections) {
+			expect(keysOf(await bob.asPage.query(api.plugins_data.watch_documents, { collection, limit: 100 }))).toEqual([
+				"town/a",
+			]);
+			expect(
+				keysOf(
+					await alice.asPage.query(api.plugins_data.watch_documents, {
+						collection,
+						keyPrefix: "dm/dm-8/",
+						limit: 100,
+					}),
+				),
+			).toEqual(["dm/dm-8/a"]);
+		}
+
+		const state = await t.run(async (ctx) => ({
+			rows: await ctx.db.query("plugins_data_scopes").collect(),
+			resources: [
+				...new Set(
+					(await ctx.db.query("access_control_permission_grants").collect())
+						.filter((grant) => grant.resourceKind === "plugin_scope")
+						.map((grant) => grant.resourceId),
+				),
+			],
+		}));
+		expect(state.rows.map((row) => row.collection).sort()).toEqual([...collections].sort());
+		// One row per collection, but one resource id, so the member's cap sees one private channel
+		// and not three. Otherwise a plugin spreading a channel over four collections would cost its
+		// members four of the fifty scopes they may hold.
+		expect(state.resources).toEqual([`${fixture.installationId}:dm-8`]);
+
+		// Delete takes every row with it. A row left behind would keep its own collection's range
+		// private with no grant able to reach it.
+		const deleted = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "delete", scopeId: "dm-8" },
+		});
+		expect(deleted._nay).toBeUndefined();
+		expect(await t.run(async (ctx) => await ctx.db.query("plugins_data_scopes").collect())).toEqual([]);
+	});
+});
+
+describe("scoped writes outside the frame", () => {
+	test("an API key and a backend run are refused inside a scope their actor is not in", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t, { clerkUserId: "scope-http-owner" });
+		const alice = await join_member_with_role(t, fixture, { clerkUserId: "http-alice", role: "member" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "http-bob", role: "member" });
+
+		const created = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "dm-10", collections: ["messages"], keyPrefix: "dm/dm-10/" },
+		});
+		expect(created._nay).toBeUndefined();
+
+		// Bob holds workspace `content.write` and no grant on the scope. He cannot read the private
+		// channel, and this is the other half: he must not be able to put a message in it either.
+		const asBob = store_principal(fixture, { kind: "user_api_key", actorUserId: bob.userId });
+		const written = await t.mutation(internal.plugins_data.write_document, {
+			principal: asBob,
+			collection: "messages",
+			key: "dm/dm-10/m1",
+			value: { text: "injected" },
+		});
+		expect(written._nay?.message).toBe("Permission denied");
+
+		const batched = await t.mutation(internal.plugins_data.write_documents_batch, {
+			principal: asBob,
+			documents: [
+				{ collection: "messages", key: "town/m1", value: { text: "public" } },
+				{ collection: "messages", key: "dm/dm-10/m2", value: { text: "injected" } },
+			],
+		});
+		// The whole batch is refused, not only the scoped item: a Convex mutation that returns a
+		// refusal after inserting would keep the inserts it already made.
+		expect(batched._nay?.message).toBe("Permission denied");
+		expect(await t.run(async (ctx) => await ctx.db.query("plugins_data").collect())).toEqual([]);
+
+		const deleted = await t.mutation(internal.plugins_data.delete_document, {
+			principal: store_principal(fixture, { kind: "plugin_run", actorUserId: bob.userId }),
+			collection: "messages",
+			key: "dm/dm-10/m1",
+		});
+		expect(deleted._nay?.message).toBe("Permission denied");
+
+		// Alice is in the scope, so the same door writes for her, and the document is stamped.
+		const allowed = await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture, { kind: "user_api_key", actorUserId: alice.userId }),
+			collection: "messages",
+			key: "dm/dm-10/m1",
+			value: { text: "hello" },
+		});
+		expect(allowed._nay).toBeUndefined();
+		expect(await t.run(async (ctx) => (await ctx.db.query("plugins_data").collect()).map((doc) => doc.scopeId))).toEqual(
+			["dm-10"],
+		);
+	});
+});
+
+describe("watch_scope_principals", () => {
+	test("the people in a scope read it, and it does not exist for anybody else", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t, { clerkUserId: "scope-list-owner" });
+		const alice = await join_member_with_role(t, fixture, { clerkUserId: "list-alice", role: "member" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "list-bob", role: "member" });
+		// An admin, to show that a workspace role reaches nothing inside a scope it was never named in.
+		const carol = await join_member_with_role(t, fixture, { clerkUserId: "list-carol", role: "admin" });
+
+		const created = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "dm-9", collections: ["messages"], keyPrefix: "dm/dm-9/" },
+		});
+		expect(created._nay).toBeUndefined();
+		const added = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "dm-9", userId: bob.userId, level: "member" },
+		});
+		expect(added._nay).toBeUndefined();
+
+		const principalsFor = async (member: { asPage: { query: typeof t.query } }) => {
+			const result = await member.asPage.query(api.plugins_data.watch_scope_principals, { scopeId: "dm-9" });
+			return result === null ? null : result.map((entry) => `${entry.userId}:${entry.level}`).sort();
+		};
+
+		// The creator keeps `manage`, and the person they added holds `member`. Without this read the
+		// plugin could build a share list and never show or change it again.
+		expect(await principalsFor(alice)).toEqual([`${alice.userId}:manage`, `${bob.userId}:member`].sort());
+		expect(await principalsFor(bob)).toEqual([`${alice.userId}:manage`, `${bob.userId}:member`].sort());
+
+		// Carol is an admin of this workspace and was never named in the scope. Null is the same answer
+		// a scope that was never created gives, so the refusal tells her nothing about what exists.
+		expect(await principalsFor(carol)).toBeNull();
+
+		const removed = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "remove_principal", scopeId: "dm-9", userId: bob.userId },
+		});
+		expect(removed._nay).toBeUndefined();
+		expect(await principalsFor(bob)).toBeNull();
+	});
+});
+
+describe("watch_my_scopes", () => {
+	test("a member finds the scopes they are in, and nobody finds one they were never added to", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t, { clerkUserId: "my-scopes-owner" });
+		const alice = await join_member_with_role(t, fixture, { clerkUserId: "mine-alice", role: "member" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "mine-bob", role: "member" });
+
+		const created = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: {
+				kind: "create",
+				scopeId: "p/room-1",
+				collections: ["messages", "channels"],
+				keyPrefix: "p/room-1/",
+			},
+		});
+		expect(created._nay).toBeUndefined();
+
+		// Without this read the scope id is lost the moment the dialog closes: a rangeless read answers
+		// only the public part of a collection, so the creator's own private channel disappears.
+		expect(await alice.asPage.query(api.plugins_data.watch_my_scopes, {})).toEqual([
+			{ scopeId: "p/room-1", keyPrefix: "p/room-1/", collections: ["channels", "messages"], level: "manage" },
+		]);
+
+		// One scope, however many collections it covers, is one entry.
+		expect(await bob.asPage.query(api.plugins_data.watch_my_scopes, {})).toEqual([]);
+
+		const added = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "p/room-1", userId: bob.userId, level: "member" },
+		});
+		expect(added._nay).toBeUndefined();
+		expect(await bob.asPage.query(api.plugins_data.watch_my_scopes, {})).toEqual([
+			{ scopeId: "p/room-1", keyPrefix: "p/room-1/", collections: ["channels", "messages"], level: "member" },
+		]);
+
+		// Taking somebody out takes the scope out of their list, which is what makes the channel
+		// disappear from an open page instead of only from the next one they load.
+		const removed = await alice.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "remove_principal", scopeId: "p/room-1", userId: bob.userId },
+		});
+		expect(removed._nay).toBeUndefined();
+		expect(await bob.asPage.query(api.plugins_data.watch_my_scopes, {})).toEqual([]);
+
+		// The organization owner reads every scope, and still lists only what they were added to. The
+		// product copy promises a private channel is not in the owner's own list.
+		expect(await fixture.asPage.query(api.plugins_data.watch_my_scopes, {})).toEqual([]);
 	});
 });

@@ -46,6 +46,58 @@ When a check needs a plugin with an arbitrary manifest (for example specific `se
 3. Run `plugins:upsert_plugin` with the manifest fields (pass `createdBy` = the claim's `ownerUserId` so publisher-tier rules match), then `plugins:finalize_plugin_version` to flip it `ready`.
 4. Cleanup: uninstall from every workspace, then run `plugins:hard_delete_plugin_from_registry "{pluginName:'<name>'}"` repeatedly until it returns `done: true`, and check the claim is gone from `plugins_publisher_repositories`.
 
+## Checking an UNPUBLISHED plugin build in the real frame
+
+Verified 2026-08-24 on Chitchat. Publishing is gated, so a working-tree build has to reach the
+browser some other way. There are two doors and only one of them gives the page working data.
+
+**The app's own dev override does not finish the job.** `VITE_PLUGIN_UI_DEV_VERSION_ID` +
+`VITE_PLUGIN_UI_DEV_ORIGIN` in `packages/app/.env.local` really do point one plugin's frame at a
+local dev server, and the bridge really does hand that frame its session token. But the SDK then
+exchanges the token at the **asset** origin's `/plugins-ui/session-jwt`, which is same-origin only
+for a published bundle. From a dev origin that POST is cross-origin, and the route refuses it on
+purpose (`plugins_ui.ts`: it must never gain CORS headers). The frame loads and shows its
+access-ended state. Use the override for markup, CSS and layout; do not use it for anything that
+reads plugin data.
+
+**Swap the bytes at the published URL instead.** The frame keeps the asset origin, so the exchange,
+the capability consent, the version binding and session revocation all behave exactly as in
+production — only the body of the frame's own navigation response changes.
+
+That last word matters: `page.route` sees the frame's navigation request and **nothing else**. The
+`assets/index.js` and `assets/index.css` requests the frame makes next are subresources of an
+out-of-process iframe and never reach the handler, so serving a working-tree `index.html` leaves
+the published bundle running behind it, silently (`known-hazards.md`). Inline both assets into the
+served HTML instead.
+
+1. Build the plugin, then serve `dist/frontend` with a plain static `node:http` script. Do **not**
+   use the plugin's Vite dev server: it transforms those files (see `known-hazards.md`).
+2. Read the published response headers once with `curl -D -` and copy the `content-security-policy`
+   verbatim into the runner, so the frame runs under the real policy. Add one thing to it: the
+   `sha256-` of the inline script, hashed over the exact bytes placed between the tags. Do not add
+   `'unsafe-inline'`, which would run the frame under rules the real one does not have.
+3. Install `page.route` on `/plugins-ui/<versionId>/` **before** the tab ever opens the plugin page
+   — once the out-of-process frame is attached, `page.route` fails and only `session reset` clears
+   it (`known-hazards.md`). Fetch the bodies into memory first and `route.fulfill` from there;
+   never `route.fetch()`. Record every request the handler saw in `state`, so a swap that was never
+   asked for is visible instead of being read as a load that went fine.
+4. Prove the swap took, rather than assuming it: pick a string that exists in the working-tree
+   bundle and not in the published one, and read it back **from the browser**, not from disk. A CSS
+   selector is the cheapest proof, because the CSSOM answers directly:
+   `[...document.styleSheets].flatMap((s) => [...s.cssRules]).map((r) => r.selectorText)`.
+
+**The same route can shrink a cap so a limit is reachable.** A "you are seeing only the first N"
+notice normally needs N+1 documents. Patching the served bytes — `limit: 100` to `limit: 3` —
+reaches the same code path with five. Assert on the anchor being unique before replacing it, and say
+in the report that the cap was patched. The same trick gives a real break-on-purpose: serve the
+bundle again with the fix's own line reverted and watch the notice disappear while the data is
+unchanged.
+
+A working runner lives at
+`t3-chat-+personal/+ai/chitchat-slack-planning-2026-08-23/runners/swap-plugin-bundle-v3.js`. Its v1
+and v2 siblings are the versions that served the published bundle without saying so — keep them
+only as the record of that failure.
+
 ## Manage secrets dialog
 
 Reachable only for an **installed** plugin that declares `plugin.secrets.read` (`video` does,

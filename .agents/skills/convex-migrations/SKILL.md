@@ -286,6 +286,18 @@ Pop-Location
 - Scope discipline prevents regressions:
   - Migrate only the requested table.
   - Do not opportunistically rename neighboring tables in the same pass.
+- `plugins_data.scopeId` is optional on purpose, and stripping it is not an ordinary strip:
+  - The field marks a document as living inside a plugin's private key range. It ships as
+    `v.optional(v.string())` because `schema.ts` runs full-table validation, which refuses a required
+    new field on a populated table.
+  - An absent `scopeId` is a real value, not a missing one. The read doors query
+    `by_installation_collection_scope_key` with `.eq("scopeId", undefined)` to read the public half of
+    a collection, exactly as `data_import.ts` and `files_metadata.ts` do for their own optional fields.
+    So do not backfill it with a placeholder string to "make it required".
+  - Stripping it would make every private document public in the same push. If a strip is ever really
+    wanted, delete the `plugins_data_scopes` rows and the `plugin_scope` grants in the same migration,
+    and say so to the operator first — the documents stay readable either way, and only the grants say
+    who may read them.
 
 # Guardrails
 

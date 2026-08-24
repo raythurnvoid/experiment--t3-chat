@@ -52,11 +52,16 @@ const MAX_ROLE_ASSIGNMENT_COUNT = 100;
  * When the scope is `null`, the check still looks for a grant on the node itself before it falls back
  * to the caller's role. It never uses a `workspace` grant for a file. Sharing writes its grants on the
  * restricted node, so that lookup only finds something for a node that is itself restricted.
+ *
+ * For `plugin_scope`, the id is `<installationId>:<scopeId>`. The installation is part of it because
+ * two plugins may mint the same scope id, and a grant must never cross from one installation to
+ * another.
  */
 export type access_control_Resource =
 	| { kind: "organization"; id: string }
 	| { kind: "workspace"; id: string }
-	| { kind: "file"; id: string; restrictedScopeNodeId: Id<"files_nodes"> | null };
+	| { kind: "file"; id: string; restrictedScopeNodeId: Id<"files_nodes"> | null }
+	| { kind: "plugin_scope"; id: string };
 
 const display_role_validator = v.union(
 	v.null(),
@@ -961,6 +966,33 @@ export async function access_control_db_has_permission(
 				allowPublic: args.allowPublic,
 			});
 		}
+	}
+
+	// A plugin scope closes a door instead of opening one, so this branch answers on its own and
+	// never falls through to the role check below. Falling through would let every member in:
+	// `member` and `viewer` both hold `content.read`, so a private channel would be readable by the
+	// whole workspace and the kind would look like a check while checking nothing.
+	//
+	// The owner short-circuit above still applies. The organization owner reads every scope, which
+	// is a deliberate product decision — see the access-control skill, and the copy Chitchat shows
+	// its members.
+	if (args.resource.kind === "plugin_scope") {
+		// User principals only. A role grant would put the scope back in reach of everyone holding
+		// that role, and a public grant would open it to anyone with the link. Both are the door this
+		// branch exists to close, so neither is looked up here at all.
+		if (!userId) {
+			return false;
+		}
+
+		const scopeGrant = await db_get_user_permission_grant(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			resourceKind: "plugin_scope",
+			resourceId: args.resource.id,
+			permission: args.permission,
+			userId,
+		});
+		return scopeGrant !== null;
 	}
 
 	const grantKey = {

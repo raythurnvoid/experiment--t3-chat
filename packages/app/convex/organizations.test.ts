@@ -2651,10 +2651,26 @@ describe("remove_user_from_organization", () => {
 				createdBy: ownerId,
 				updatedAt: now,
 			});
-			const [removedInstallationId, keptInstallationId] = await Promise.all([
+			const [removedInstallationId, projectInstallationId, keptInstallationId] = await Promise.all([
 				ctx.db.insert("plugins_workspace_installations", {
 					organizationId: organization._yay!.organizationId,
 					workspaceId: organization._yay!.defaultWorkspaceId,
+					pluginVersionId,
+					pluginName: "removal-test",
+					status: "enabled",
+					configurationYaml: null,
+					acceptedCapabilities: [],
+					capabilitiesAcceptedAt: now,
+					acceptedOutboundOrigins: [],
+					acceptedUiOutboundOrigins: [],
+					outboundOriginsAcceptedAt: now,
+					installedBy: ownerId,
+					updatedBy: ownerId,
+					updatedAt: now,
+				}),
+				ctx.db.insert("plugins_workspace_installations", {
+					organizationId: organization._yay!.organizationId,
+					workspaceId: workspace._yay!.workspaceId,
 					pluginVersionId,
 					pluginName: "removal-test",
 					status: "enabled",
@@ -2763,6 +2779,54 @@ describe("remove_user_from_organization", () => {
 					}),
 				]);
 
+			const [
+				removedHomeMemberUsageId,
+				removedProjectMemberUsageId,
+				keptOtherOrganizationMemberUsageId,
+				keptOtherMemberUsageId,
+			] = await Promise.all([
+				ctx.db.insert("plugins_data_member_usage", {
+					organizationId: organization._yay!.organizationId,
+					workspaceId: organization._yay!.defaultWorkspaceId,
+					installationId: removedInstallationId,
+					userId: memberId,
+					usedBytes: 40,
+					usedDocuments: 2,
+					machineBytes: 0,
+					collectionNames: ["messages"],
+				}),
+				ctx.db.insert("plugins_data_member_usage", {
+					organizationId: organization._yay!.organizationId,
+					workspaceId: workspace._yay!.workspaceId,
+					installationId: projectInstallationId,
+					userId: memberId,
+					usedBytes: 24,
+					usedDocuments: 1,
+					machineBytes: 0,
+					collectionNames: ["messages"],
+				}),
+				ctx.db.insert("plugins_data_member_usage", {
+					organizationId: otherOrganization._yay!.organizationId,
+					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+					installationId: keptInstallationId,
+					userId: memberId,
+					usedBytes: 24,
+					usedDocuments: 1,
+					machineBytes: 0,
+					collectionNames: ["messages"],
+				}),
+				ctx.db.insert("plugins_data_member_usage", {
+					organizationId: organization._yay!.organizationId,
+					workspaceId: organization._yay!.defaultWorkspaceId,
+					installationId: removedInstallationId,
+					userId: otherMemberId,
+					usedBytes: 24,
+					usedDocuments: 1,
+					machineBytes: 0,
+					collectionNames: ["messages"],
+				}),
+			]);
+
 			return {
 				memberHome,
 				memberProject,
@@ -2775,6 +2839,10 @@ describe("remove_user_from_organization", () => {
 				keptSessionId,
 				removedServiceGrantId,
 				keptServiceGrantId,
+				removedHomeMemberUsageId,
+				removedProjectMemberUsageId,
+				keptOtherOrganizationMemberUsageId,
+				keptOtherMemberUsageId,
 			};
 		});
 
@@ -2811,6 +2879,22 @@ describe("remove_user_from_organization", () => {
 		// A service grant lives 24 hours, so leaving it would hand the service its authority back on re-invite.
 		expect(afterRemove[9]).toBeNull();
 		expect(afterRemove[10]?._id).toBe(seededAccess.keptServiceGrantId);
+
+		// A plugin storage share names the member, so it must not outlive their membership. The member
+		// was charged in both of this organization's workspaces, and removal takes every membership, so
+		// a prune that covered only the workspace the caller named would leave the second row behind.
+		const memberUsageAfterRemove = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.get("plugins_data_member_usage", seededAccess.removedHomeMemberUsageId),
+				ctx.db.get("plugins_data_member_usage", seededAccess.removedProjectMemberUsageId),
+				ctx.db.get("plugins_data_member_usage", seededAccess.keptOtherOrganizationMemberUsageId),
+				ctx.db.get("plugins_data_member_usage", seededAccess.keptOtherMemberUsageId),
+			]),
+		);
+		expect(memberUsageAfterRemove[0]).toBeNull();
+		expect(memberUsageAfterRemove[1]).toBeNull();
+		expect(memberUsageAfterRemove[2]?._id).toBe(seededAccess.keptOtherOrganizationMemberUsageId);
+		expect(memberUsageAfterRemove[3]?._id).toBe(seededAccess.keptOtherMemberUsageId);
 		const quotaDocsAfterRemove = await t.run((ctx) =>
 			ctx.db
 				.query("quotas")

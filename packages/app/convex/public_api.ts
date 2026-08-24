@@ -1027,10 +1027,11 @@ export const resolve_principal = internalQuery({
 				 * be a way around a restricted folder. See `public_api_visibility_user_id`.
 				 */
 				actorUserId: v.id("users"),
-				sourceFileNodeId: v.id("files_nodes"),
-				sourceAssetId: v.id("files_r2_assets"),
+				/** The file the event fired for. All three are null for an event that fires on no file. */
+				sourceFileNodeId: v.union(v.id("files_nodes"), v.null()),
+				sourceAssetId: v.union(v.id("files_r2_assets"), v.null()),
 				/** Current path of the source node's parent; plugin writes must land exactly here. */
-				outputParentPath: v.string(),
+				outputParentPath: v.union(v.string(), v.null()),
 				apiTokenExpiresAt: v.number(),
 				scopes: plugin_run_scopes_validator,
 				principalKey: v.string(),
@@ -1108,21 +1109,31 @@ export const resolve_principal = internalQuery({
 			// Archived counts as missing: a run's authority dies with its triggering upload, and a
 			// write authorized past this point would resurrect the archived parent folder as a new
 			// active node (the download path already fails closed on archived sources in r2.ts).
-			const sourceFileNode = await ctx.db.get("files_nodes", pluginRun.fileNodeId);
+			// A run that fired on no file has no source to lose, so it skips this check instead of
+			// failing it.
+			const sourceFileNode = pluginRun.fileNodeId ? await ctx.db.get("files_nodes", pluginRun.fileNodeId) : null;
 			if (
-				!sourceFileNode ||
-				sourceFileNode.archiveOperationId !== undefined ||
-				sourceFileNode.organizationId !== pluginRun.organizationId ||
-				sourceFileNode.workspaceId !== pluginRun.workspaceId
+				pluginRun.fileNodeId &&
+				(!sourceFileNode ||
+					sourceFileNode.archiveOperationId !== undefined ||
+					sourceFileNode.organizationId !== pluginRun.organizationId ||
+					sourceFileNode.workspaceId !== pluginRun.workspaceId)
 			) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
-			const outputParentPath =
-				sourceFileNode.parentId === files_ROOT_ID ? "/" : server_path_parent_of(sourceFileNode.path);
+			const outputParentPath = sourceFileNode
+				? sourceFileNode.parentId === files_ROOT_ID
+					? "/"
+					: server_path_parent_of(sourceFileNode.path)
+				: null;
 
 			// Platform baseline: download the exact triggering asset, write Markdown siblings, and
 			// opt into the workspace activity feed (self-disclosure, so no extra consent).
-			const scopes: Infer<typeof plugin_run_scopes_validator> = ["files:download", "files:write", "activities:write"];
+			// A run that fired on no file gets neither file door: it has nothing to download, and no
+			// place a sibling write could land.
+			const scopes: Infer<typeof plugin_run_scopes_validator> = sourceFileNode
+				? ["files:download", "files:write", "activities:write"]
+				: ["activities:write"];
 			if (pluginRun.acceptedCapabilities.includes("plugin.secrets.read")) {
 				scopes.push("secrets:read");
 			}
@@ -1593,8 +1604,9 @@ async function db_revalidate_file_write_principal(
 		// The sibling-write constraint is checked against the source node's CURRENT parent in this
 		// transaction, so a concurrent source move cannot smuggle plugin output somewhere else.
 		// Archived counts as missing: publishing beside an archived source would recreate the
-		// user-deleted parent folder as a new active node.
-		const sourceFileNode = await ctx.db.get("files_nodes", pluginRun.fileNodeId);
+		// user-deleted parent folder as a new active node. A run that fired on no file has no source
+		// to write beside, so it falls into the refusal below.
+		const sourceFileNode = pluginRun.fileNodeId ? await ctx.db.get("files_nodes", pluginRun.fileNodeId) : null;
 		if (
 			!sourceFileNode ||
 			sourceFileNode.archiveOperationId !== undefined ||
@@ -2748,7 +2760,7 @@ export const start_run_activity = internalMutation({
 		const [installation, version, fileNode, actorMembership] = await Promise.all([
 			ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
 			ctx.db.get("plugins_versions", pluginRun.pluginVersionId),
-			ctx.db.get("files_nodes", pluginRun.fileNodeId),
+			pluginRun.fileNodeId ? ctx.db.get("files_nodes", pluginRun.fileNodeId) : null,
 			ctx.db
 				.query("organizations_workspaces_users")
 				.withIndex("by_active_user_organization_workspace", (q) =>
@@ -4133,8 +4145,12 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 		} as const;
 	}
 	// Plugins may only create Markdown siblings of their triggering file; the same
-	// constraint is revalidated transactionally at prepare and publish time.
-	if (principal.kind === "plugin_run" && server_path_parent_of(requestedPath) !== principal.outputParentPath) {
+	// constraint is revalidated transactionally at prepare and publish time. A run with no triggering
+	// file has no such place, so every path is refused.
+	if (
+		principal.kind === "plugin_run" &&
+		(principal.outputParentPath === null || server_path_parent_of(requestedPath) !== principal.outputParentPath)
+	) {
 		return {
 			status: 403,
 			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
@@ -4529,8 +4545,12 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 			}
 		}
 		// Plugins may only create Markdown siblings of their triggering file; the same
-		// constraint is revalidated transactionally at prepare and publish time.
-		if (principal.kind === "plugin_run" && server_path_parent_of(requestedPath) !== principal.outputParentPath) {
+		// constraint is revalidated transactionally at prepare and publish time. A run with no
+		// triggering file has no such place, so every path is refused.
+		if (
+			principal.kind === "plugin_run" &&
+			(principal.outputParentPath === null || server_path_parent_of(requestedPath) !== principal.outputParentPath)
+		) {
 			return {
 				status: 403,
 				body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
@@ -4834,7 +4854,9 @@ export async function public_api_http_download_urls(
 	// array request and response as every other plugin.
 	if (
 		principal.kind === "plugin_run" &&
-		(body.data.fileNodeIds.length !== 1 || body.data.fileNodeIds[0] !== String(principal.sourceFileNodeId))
+		(principal.sourceFileNodeId === null ||
+			body.data.fileNodeIds.length !== 1 ||
+			body.data.fileNodeIds[0] !== String(principal.sourceFileNodeId))
 	) {
 		return {
 			status: 404,
@@ -4876,7 +4898,10 @@ export async function public_api_http_download_urls(
 
 	if (
 		principal.kind === "plugin_run" &&
-		(!datas[0] || datas[0].asset._id !== principal.sourceAssetId || !datas[0].asset.r2Key)
+		(principal.sourceAssetId === null ||
+			!datas[0] ||
+			datas[0].asset._id !== principal.sourceAssetId ||
+			!datas[0].asset.r2Key)
 	) {
 		return {
 			status: 404,

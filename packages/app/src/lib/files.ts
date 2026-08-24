@@ -15,6 +15,7 @@ import {
 } from "../../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../../shared/files-tiptap.ts";
 import { composite_key } from "../../shared/shared-utils.ts";
+import { delay } from "../../shared/async-utils.ts";
 import type { Doc } from "../../convex/_generated/dataModel";
 import { TypedEventTarget } from "@remix-run/interaction";
 import { should_never_happen, XCustomEvent } from "./utils.ts";
@@ -636,7 +637,7 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 			yjsUpdatesData?.yjsLastSequenceId !== yjsSnapshotTarget.yjsLastSequenceId ||
 			yjsLastSequenceDoc?.yjsLastSequenceId !== yjsSnapshotTarget.yjsLastSequenceId
 		) {
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await delay(250);
 			continue;
 		}
 
