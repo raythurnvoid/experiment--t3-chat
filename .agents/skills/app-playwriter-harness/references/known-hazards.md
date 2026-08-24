@@ -39,6 +39,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - If multiple browsers are reported, do not use auto-selection. Run `vp env exec pnpx playwriter browser list`, identify the browser that exposes the target app tab, and pass its exact full reported key to `--browser`. Current keys can look like `install:Edge:<id>`; do not add a `profile:` prefix or copy an old key from this file.
 - Extension mode can be connected and able to create/control its own blank tab while `bindOpenTab({ urlIncludes: 'localhost:5173' })` still fails because the existing app tab was not Playwriter-enabled. If CDP `http://127.0.0.1:9222/json/list` shows the target tab and extension binding cannot see it, either enable Playwriter on that tab or use direct CDP as the documented fallback; when the dev server is down, the same tab may appear to Playwright as `chrome-error://chromewebdata/` with title `localhost`.
 - The cheapest answer to that failure is usually **not** enabling the extension on the user's tab: open your own with `state.page = await context.newPage()`, set `state.appPlaywriterHarness.page` to it as well, and `goto` the route. A tab Playwriter created is enabled by construction, and the run then owns the tab, which the "the human can drive your bound tab" entry below recommends anyway. Verified 2026-08-13 after `bindOpenTab` found nothing while `context.pages()` listed only an unrelated app. Two follow-ups: `goto` on `/files` does not finish inside the CLI budget (use the fire-and-forget + poll pattern below), and `data-app-ready` can read `false` for a few seconds after the URL is already correct.
+- A **strict-mode ambiguous locator click can crash the CLI the same way instead of reporting the violation.** Verified 2026-08-24: `frameLocator(...).getByRole("button", { name: /^#design-review/ }).click()` matched two buttons (a channel link and a Threads-view summary whose text starts with the channel name), and instead of Playwright's strict-mode error the CLI died with the libuv `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` (exit 9). The session survived. Treat an assertion exit right after a `click()` as a possible ambiguity: re-run a `count()` on the same locator before retrying, and prefer a class-scoped locator with `hasText`.
 - A **throwing harness helper** (for example `bindOpenTab` with no match) kills the CLI client with the same libuv assertion as the out-of-CWD `fs` read below (`Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`, exit 9). The stack above it is the real error — read it first, do not start relay recovery on the assertion alone. The relay usually survives, but not always: on 2026-08-21 one of these crashes was followed by `session list` printing `No active sessions`, so a long-lived session and everything on its `state` were gone (and the app tab it had been driving was closed). Keep the values a run depends on — ids, paths, keys — in the runner file or in your own notes, not only on `state`, and re-check `session list` after any assertion exit before assuming your session is still there.
 - For long or assertion-heavy flows, keep the runner under `../t3-chat-+personal/+ai/<topic>-YYYY-MM-DD/` and run `vp env exec pnpx playwriter -s $session -f $scriptPath --timeout <ms>`. The CLI reads the `-f` file before sandboxed code runs, so the sibling-directory path works. Embed dynamic input in the runner or assign it to `state` in a short separate call. Do not put runners, prompts, or output in the repository or OS temp directory.
 - **The sandbox `fs` runs inside the relay server process, and the relay can live on Windows or in WSL.** The CLI always runs on Windows here, but the executor runs wherever the relay was started: whichever side runs Playwriter first after a reboot spawns the relay and owns port 19988, and WSL2 forwards that port to Windows, so the Windows CLI silently talks to a WSL relay. Confirmed 2026-08-02: the relay was a WSL process from 2026-07-31 to 2026-08-02 (spawned under the Cursor WSL remote agent), which made the sandbox report `process.platform === "linux"` and a POSIX `/tmp`. It is back on Windows since 2026-08-02, and a logon Scheduled Task (`playwriter-relay-windows`) now triggers a Windows relay spawn at every logon so Windows wins the port race after reboots. Upstream bug report: https://github.com/remorses/playwriter/issues/107. Detection: run `vp env exec pnpx playwriter session list` — a CWD column like `/home/rt0/C:\Users\...` means a WSL relay. Root cause in playwriter 0.4.0 (latest, same code on main): the CLI sends its Windows cwd, and the Linux relay joins it naively with `path.resolve` (`dist/executor.js:259`, `dist/scoped-fs.js:19,41`). There is no option or env var to set the allowed dirs. Also `playwriter logfile` always prints the Windows log paths, but a WSL relay writes to WSL `~/.playwriter/relay-server.log` — read that one through `wsl -d Ubuntu`.
@@ -47,7 +48,10 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - With a Windows relay (the state since 2026-08-02), absolute Windows output paths and `os.tmpdir()` writes work normally; everything below applies while the relay is in WSL (check `session list` first, see the relay-topology entry). `page.screenshot({ path })` never reaches the real Windows disk while the relay runs in WSL, not even with an absolute `C:/...` path. The sandbox fs is the relay host's real filesystem, and on POSIX a `C:/Users/...` path is not absolute, so it is joined under the session's mangled base dir inside WSL instead of the Windows disk. The old temp-dir route is dead too (re-verified 2026-08-02 on playwriter 0.4.0): `os.tmpdir()` resolves to WSL `/tmp`, and a session-cwd write fails with the joined-path ENOENT (`/home/rt0/C:\Users\...`), so no sandbox `fs` write reaches the Windows disk at all. **Working route: write the Buffer to sandbox `/tmp`, then copy it out with WSL.** The sandbox `/tmp` IS WSL Ubuntu's `/tmp` (verified 2026-08-02: a file written by the sandbox shows up in `wsl -d Ubuntu -- ls /tmp`), so `wsl -d Ubuntu -- cp /tmp/shot.png "/mnt/c/Users/rt0/...target..."` lands the real file. The reverse direction works too: `wsl -d Ubuntu -- cp /mnt/c/...source... /tmp/ref.png` stages files the sandbox can read (for example upload references). Fallback if WSL copy is ever unavailable: print `buf.toString("base64")` in `CHUNK:`-prefixed slices of ~2500 chars (the executor caps one call's total output at 10000 characters — `dist/executor.js:1314`, no flag to raise it — and strings nested inside logged objects are cut at 1000 by `util.inspect`; a string logged directly is only subject to the 10000 total, so park the string on `state` and print the remainder in later calls), then collect in PowerShell (`Select-String -Pattern "CHUNK:([A-Za-z0-9+/=]+)"`, join, `[Convert]::FromBase64String`). Use the browser-download trick below only if that write is rejected: `await page.bringToFront()` (a backgrounded tab makes `Page.captureScreenshot` time out), `const buffer = await page.screenshot({ scale: "css" })`, then open `context.newPage()`, `setContent` a `data:image/png;base64,...` anchor with a `download` attribute, click it through Playwright so it counts as a user gesture, and close the tab. Move the file out of `~/Downloads` afterwards with a normal shell command. Use a fresh tab every time: Chromium blocks repeated automatic downloads from the same origin after the second one, and `Page.setDownloadBehavior` over CDP does not lift that block.
 - In extension mode, `download.saveAs(<path>)` fails with `ENOENT` on a relay artifact path, but the download itself succeeds and lands in the real `~/Downloads` folder under `download.suggestedFilename()`. Read or hash it there with a normal shell command, then delete the copy. Verified 2026-08-01 with a PDF download from `/files`.
 - `resizeImageForAgent` does **not** put the picture in front of the agent, even though the Playwriter docs say the resized image is included in the response. It returns `{ buffer, mimeType, path }` and nothing renders. To actually look at a screenshot, save it with `page.screenshot({ path: <absolute Windows path>, scale: "css" })` and then open that file with the agent's own file-read tool. Verified 2026-08-12 in Claude Code.
-- `context.newCDPSession(state.page)` fails in extension mode (`Protocol error (Target.attachToBrowserTarget): No tab found`) and takes the CLI client down with the libuv `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` (exit 9). The relay is fine — do not run relay recovery. So there is no `Emulation.setDeviceMetricsOverride` here: you cannot narrow the viewport to reproduce a layout that only appears in a small window. Squeeze the container in the page instead (`el.style.maxWidth = "560px"`, screenshot, then clear the inline style), the same trick the truncation recipe in `snippets.md` uses. Verified 2026-08-13.
+- `context.newCDPSession(state.page)` fails in extension mode (`Protocol error (Target.attachToBrowserTarget): No tab found`) and takes the CLI client down with the libuv `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` (exit 9). The relay is fine — do not run relay recovery. **Amended 2026-08-23: the CDP conclusion on this line was wrong, the rest of it is not.** `newCDPSession` really does fail this way, and "the relay is fine — do not run relay recovery" really does hold; relay recovery kills every Playwriter session in every repo. But `Emulation.setDeviceMetricsOverride` IS reachable, through `context.newCDPSession(state.page)` in the non-extension session shape and through `SKILL.md:59`'s route, so you CAN narrow the viewport. Squeezing the container in the page (`el.style.maxWidth = "560px"`, screenshot, then clear the inline style — the truncation recipe in `snippets.md`) is still the cheaper move when you only need one element narrow, because it changes no page-level media queries. Reach for real emulation when the layout you are chasing depends on a media query. Verified 2026-08-13, amended 2026-08-23.
+- **What actually works for emulating a viewport here, measured 2026-08-23.** Four calls, and only two of them do anything. `page.setViewportSize` **works**. CDP `Emulation.setDeviceMetricsOverride` **works** (see the amended CDP entry above). `Emulation.setPageScaleFactor` is **accepted and has no layout effect** — it returns success, so a run that relies on it reports a pass while every element keeps its old size. `page.emulateMedia` **fails** with `No tab found for method Emulation.setEmulatedMedia`, so a check that depends on a media feature (`prefers-color-scheme`, `prefers-reduced-motion`, print) cannot be driven that way; set the app's own theme or class instead. The dangerous one is the third: silent no-ops are the only kind of failure that produces a green report.
+- **The sandbox `fs` cannot write into the personal `+ai` folder**, even with a Windows relay and an absolute path: ScopedFS allows only the session's own directories, and the folder is outside every one of them. The write fails with "access outside allowed directories", which reads like a permissions problem with the folder and is not. Write to `os.tmpdir()` from inside the sandbox, then move the file with a normal shell command. Runners passed with `-f` are unaffected — the CLI reads those from the real disk before the sandbox starts — so a runner may live in `+ai` while its OUTPUT may not be written there directly.
+- **A plugin frame is narrower than the layout viewport, and the difference is not a constant.** The host chrome around the frame takes width, so a frame inside a 1440px viewport is not 1440px wide. Measured 2026-08-23: **−40px from 720 up to 1440, and −55px at 390** — so a value derived by subtracting a fixed number from the viewport is wrong at one end or the other. Never compute the frame width from the viewport. Read it from inside the frame (`window.innerWidth` in frame context, or the frame element's own `getBoundingClientRect().width`) before asserting anything about a breakpoint, or a reflow check lands on the wrong side of one.
 - Playwriter execute snippets do not automatically provide Playwright Test's `expect`. Use manual polling or import only the small assertion utility you need.
 - The CLI's cwd is not always the repo root even without `--filter`: after any earlier `pnpm --filter <pkg> exec` in the same shell it can be `packages/app`, and `-f .agents/skills/...` then fails with `File not found: packages\app\.agents\...`. Pass the harness script as an absolute path instead of a repo-relative one.
 - Assigning `state.page = await context.newPage()` does **not** move the harness. `getHarnessPage()` prefers `state.appPlaywriterHarness.page`, pinned when the harness was installed, so `observe()` and `auditAccessibility()` keep reporting the **old** tab while every raw `snapshot({ page: state.page })` shows the new one — the two disagree in silence and the run looks merely confusing rather than wrong. Harness 0.6.1 logs `[harness] state.page … is not the bound tab` when they differ and skips closed tabs. Call `bindOpenTab(...)` (it sets both) or assign `state.appPlaywriterHarness.page` yourself. The pin also survives across sessions on the same relay: on 2026-08-18 it still pointed at another app (`http://127.0.0.1:7373/#/grid`) from an earlier run, and `auditAccessibility` did not report the wrong tab — it just timed out. Read `state.appPlaywriterHarness.page.url()` before debugging a harness call that hangs.
@@ -73,7 +77,8 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - The CDP relay can die silently between runs, taking all sessions with it. The next CLI call restarts the relay and waits minutes for the extension to reconnect before failing with `Session <id> not found`; if a runner seems hung, check `vp env exec pnpx playwriter session list` for a relay restart (state keys reset to `-`) instead of waiting, then create/rebind a session (`state.page` from `context.pages()`). A direct-CDP session dies with the relay too, but the scratch browser it was attached to keeps running — recreate with `session new --direct 127.0.0.1:9223` and rebind; no browser restart needed (verified 2026-08-02 mid sign-in flow).
 - Installing the harness by having the runner `readFileSync` it can fail in a way neither the absolute-path nor the repo-relative advice above fixes. Observed 2026-08-01: the sandbox resolved **both** forms against a joined POSIX+Windows root (`/home/rt0/C:\Users\rt0\…\t3-chat/…`) and returned ENOENT either way (cause confirmed 2026-08-02: WSL relay, see the relay-topology entry above), and `--% -e` was unusable because `vp env exec` consumed the stop-parsing token. What always works: build a **self-contained** runner — concatenate `install-harness.js` itself into the `-f` file (`$h = Get-Content -Raw …\install-harness.js`, then `Set-Content $runner ($h + $check)`) — because the CLI reads the `-f` file from the real disk before the sandbox exists. After that, plain `-e '…'` with PowerShell **single** quotes works fine for the rest of the session.
 - **Sandbox `fs` reads of a path outside the session CWD crash the CLI client** with `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` (libuv, exit code 9) instead of a clean EPERM. Verified 2026-08-08 under a Windows relay: `require("node:fs").readFileSync("<personal-AI-folder path>")` from a session whose CWD is the repo root crashed twice; the same data embedded in a `-f` runner worked. The crash looks like a dead relay but is not one: `session list` still shows every session with its state keys, and the very next command works. Do not start relay recovery for it — just re-run with the data embedded in the runner.
-- Sandbox `fs` **writes** outside the session CWD fail with a clean `EPERM: ... access outside allowed directories` (no crash, unlike the read case above). The session CWD is whatever directory the shell was in when `session new` ran, so a session created from a repo subfolder cannot write to the personal `+ai` folder even under a Windows relay. Recovery that works: write the buffer to `require("node:os").tmpdir()` (real Windows temp under a Windows relay), then `Move-Item` it to the artifact folder from PowerShell. Verified 2026-08-15 saving a screenshot.
+- **A `frame.evaluate` into an OOPIF plugin frame that calls `.focus()`/`.click()` on a hover-revealed control can crash the CLI client** with the same `UV_HANDLE_CLOSING` assertion (exit 9), reproducibly — twice in a row on 2026-08-24 against Chitchat's "Reply in thread" button, over a direct-CDP session. The session and `state` survived; only the CLI invocation died, and the click never landed. Do not retry the same call shape: drive the interaction through locators instead — `frameLocator(...).locator("li.message").last().hover()` then `getByRole("button", { name: ... }).click()` worked first try. Plain read-only `frame.evaluate` calls in the same session were unaffected.
+- Sandbox `fs` **writes** outside the session CWD fail with a clean `EPERM: ... access outside allowed directories` (no crash, unlike the read case above). The session CWD is whatever directory the shell was in when `session new` ran, so a session created from a repo subfolder cannot write to the personal `+ai` folder even under a Windows relay. Recovery that works: write the buffer to `require("node:os").tmpdir()` (real Windows temp under a Windows relay), then `Move-Item` it to the artifact folder from PowerShell. Verified 2026-08-15 saving a screenshot. Cheaper than the recovery, when the run is going to write a lot of artifacts: run `session new` from `C:\Users\rt0\Documents\workspace\rt0`, the parent of both `t3-chat` and `t3-chat-+personal`. Both then sit under the session CWD, and `page.screenshot({ path })` writes straight into the personal `+ai` folder with no move step. Harness install still works, because `-f` with an absolute path is read from the real disk before the sandbox starts, and `vp env exec` resolves the pinned Node from that directory too. Verified 2026-08-24 writing five screenshots.
 - A React render loop can overwhelm the Playwriter relay and make the tab appear frozen. Check `getLatestLogs({ search: /Maximum update depth|too much recursion|render/i })` and the relay/CDP logs before retrying. After fixing the app loop, close only the stuck localhost renderer tab, use the background relay-restart recipe in `snippets.md`, recreate/bind a session with `--host localhost`, and reload the `/files` route.
 
 - **`setInputFiles` works under a Windows relay — try it first for uploads.** Verified 2026-08-08: `locator(".FilesSidebar input[type=file]:not([webkitdirectory])").setInputFiles("C:/absolute/windows/path")` uploaded three files through the sidebar's hidden input, no dialog, no menu click — select the target folder row first, since the handler uploads into the selected folder. The 2026-08-02 finding that this is impossible (`Protocol error (DOM.setFileInputFiles): Not allowed`, plus WSL path ENOENTs) was recorded while the relay ran in WSL; do not treat it as a property of extension mode. If `setInputFiles` does fail, check `session list` for a WSL relay before switching recipes, and only then fall back to the DataTransfer route: construct `File` objects in `page.evaluate`, `Object.defineProperty(file, "path", { value: "folder/name.ext" })` (file-selector's `toFileWithPath` keeps a pre-set `path`), put them in a `DataTransfer`, assign `input.files = dt.files`, and dispatch a bubbling `change` event on the real input. Verified 2026-08-02 on the Files sidebar folder import.
@@ -144,6 +149,219 @@ included; the rest are about the cross-origin plugin frame:
 - A long `page.evaluate` (30 s+) through the **extension** relay can die with `Execution context was destroyed, most likely because of a navigation` while the in-page loop KEEPS RUNNING — its writes still land, only the result is lost. Direct-CDP sessions do not suffer this. Put long in-page loops in the direct-CDP scratch session, or split them into short batches; recount server-side instead of trusting the lost return value.
 - A scratch-browser anonymous user's page-context Convex calls start throwing `Unauthenticated` after the tab idles a few minutes. The UI recovers on its own auth loop, but `page.evaluate` callers should reload the tab and wait ~5 s to re-mint before retrying.
 - Uninstalling a plugin while its page route is open never reaches the plugin's own in-frame dead-state UI: the host route reacts first, unmounts the frame, and shows `This plugin page is not available.`. The same is true for org-membership removal (route-level kill). Today no revocation flavor exercises the in-frame `docs: null` dead path end to end; it stays unit-covered. The teardown also fired a host pageerror `useAppAuth must be used within AppAuthProvider` followed by a recovery reload — a host-app bug, not a plugin bug; do not chase it as a plugin regression.
+
+## A plugin frame keeps its last hover after the pointer leaves it, and the OS cursor lands in the screenshot
+
+Both verified 2026-08-24 on a direct-CDP scratch Chrome while shooting Chitchat baselines. They bite
+any element screenshot of `.PluginsUiFrame`.
+
+- **Moving the host pointer off the iframe does not clear hover inside it.** The cross-origin frame
+  only restyles on events it receives, so after `mouse.move(3, 3)` the channel row the pointer had
+  left still matched `:hover` and still showed its hover-revealed actions. A "resting state"
+  screenshot taken that way quietly contains a hover state.
+- **`mouse.move` with `steps` re-hovers everything on the way out, and the last in-frame sample
+  wins.** Leaving diagonally across the channel rail parked the hover on a channel row the pointer
+  only passed over.
+- **The screenshot paints the OS cursor.** An arrow appears in the PNG wherever the pointer sits
+  inside the element box, so a shot taken with the pointer over the message log shows both a cursor
+  and that row's hover highlight.
+
+Park the pointer like this before any frame screenshot: move onto a neutral element inside the frame,
+then leave straight out sideways so the exit path crosses nothing, ending well outside the element
+box so no cursor pixels land in the shot.
+
+```js
+const box = await state.page.locator(".PluginsUiFrame").boundingBox();
+await state.page.mouse.move(box.x + 90, box.y + box.height - 30, { steps: 4 }); // neutral, in-frame
+await state.page.mouse.move(box.x - 110, box.y + box.height - 30); // straight out, cursor off-frame
+await state.frame.evaluate(() => document.activeElement?.blur?.());
+```
+
+Assert it instead of trusting it: the count of `li.message` rows matching `:hover`, and the same over
+`.channel-item`, must both be 0 before you shoot.
+
+The same quirk is also a tool. To photograph a hover state with no cursor in the frame, hover the
+target and then leave straight out sideways: the frame keeps the hover, the cursor is gone, and the
+shot shows the hovered state cleanly.
+
+## `page.route` needs a session with no plugin frame attached, and one form of it kills the relay
+
+Hit 2026-08-24 while swapping a plugin bundle. Two separate failures, one recovery.
+
+- **`route.fetch()` on the plugin frame's own navigation request took the whole relay down.** Not
+  the session — the relay: `playwriter session list` then answered `No active sessions`, so every
+  agent's session in every repo was gone, and the log's first line was `CDP relay server started`
+  again. Do not refetch an out-of-process frame's request through the extension bridge. Fetch the
+  bytes you want to serve yourself (a plain `fetch` inside the runner to a local static server is
+  fine) and `route.fulfill` from memory, so the handler touches no browser network path.
+- **`page.route` itself fails once the plugin OOPIF is attached**, with
+  `Protocol error (Network.setCacheDisabled): No tab found for method Network.setCacheDisabled
+  sessionId: <hex>`. Playwright turns the cache off on every attached session and the extension
+  relay cannot address the separate plugin target. **Navigating away does not fix it** — the
+  connection still tracks the dead session and the next `page.route` fails with the same session
+  id. Only `playwriter session reset <id>` clears it. So the working order is: reset, reinstall the
+  harness, `bindOpenTab`, install the route, and only then navigate to the plugin page. A fresh
+  session that has never opened a plugin page can install the route straight away.
+- **`page.unrouteAll()` and `page.context().newCDPSession(page)` kill the session the same way**,
+  measured 2026-08-24 on playwriter 0.4.0. Both go through the same cache-disabling step, so both
+  print the `Network.setCacheDisabled ... No tab found` error, and every later call in that session
+  then fails with a hono stack ending in
+  `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`. `playwriter session delete <id>`
+  followed by `session new` recovers just as well as `session reset` and is what these notes were
+  written from.
+- So install the route **once**, right after `bindOpenTab`, and never touch `route`, `unrouteAll`,
+  or `newCDPSession` again in that session. To take a swap back off, delete the session — that
+  drops its handler — then make a new one and navigate the tab so the frame reloads the real
+  published bundle.
+
+## `page.route` never sees a plugin frame's subresource requests
+
+Hit 2026-08-24 while serving a working-tree plugin build at the published asset URL. Through the
+extension relay, a `page.route` on the asset prefix is called **exactly once per load** — for the
+frame's own navigation request. The frame is an out-of-process iframe, and the requests it then
+makes for `assets/index.js` and `assets/index.css` never reach the handler at all.
+
+Nothing reports this. The handler serves a working-tree `index.html`, the two script and link tags
+in it load the **published** bundle, and the page comes up looking swapped. Two runs of QA were
+recorded against the published code before a CSSOM read of a rule that only exists in the working
+tree showed the swap had never happened.
+
+So make the route handler record what it was asked for, and read that back after every load:
+
+```js
+state.seen = []
+await state.page.route((url) => url.pathname.startsWith(prefix), async (route) => {
+	state.seen.push(new URL(route.request().url()).pathname.slice(prefix.length))
+	// …
+})
+```
+
+`state.seen` holding one entry means the subresources went around you. And prove the swap itself
+with something only the new build has — a CSSOM rule, a new string, a changed constant — not with
+"the page loaded".
+
+The fix is to inline the assets into the one response the route really controls: read the JS and
+CSS yourself (a plain `fetch` in the runner to a local static server), and emit them as a `<style>`
+and an inline `<script type="module">` inside the served HTML.
+
+That needs a CSP source, because the asset policy is `script-src 'self'` with no `'unsafe-inline'`.
+Do not add `'unsafe-inline'` — the frame would then run under rules the real one does not have.
+Compute the script's own `sha256-` and add just that, copying the rest of the policy verbatim from
+the published response:
+
+```js
+const scriptInner = "\n" + script + "\n"
+const hash = crypto.createHash("sha256").update(scriptInner, "utf8").digest("base64")
+const csp = "default-src 'none'; script-src 'self' 'sha256-" + hash + "'; …"
+```
+
+**Hash the exact bytes that go between the tags.** CSP hashes the element's text content, so
+hashing `script` and then writing `"\n" + script + "\n"` produces a hash the browser refuses. The
+console names the hash it wanted, which is the fastest way to notice.
+
+A working runner is
+`t3-chat-+personal/+ai/chitchat-slack-planning-2026-08-23/runners/swap-plugin-bundle-v3.js`.
+
+## A fulfilled body outlives the session that produced it, and the handler still says it fulfilled
+
+Measured 2026-08-24 on playwriter 0.4.0, swapping the Chitchat bundle at the published asset URL.
+
+A brand new session installed a handler, logged the body it had built, and `state.seen` recorded
+the navigation request. The frame ran a **different** body — one built by a handler two deleted
+sessions earlier. Nothing in the session reports this: the log line, `state.seen`, and
+`state.swapped` all describe the body you meant to serve.
+
+The browser cache is not the cause. Every response carries `cache-control: no-store`, and the
+frame's navigation timing entry reported a real transfer, not a cache hit.
+
+Two things made it visible, and both are worth keeping:
+
+- **Read `encodedBodySize` from the frame** and compare it with the byte length of the body you
+  built. It matched an older variant exactly, which is what turned a vague suspicion into a fact:
+
+  ```js
+  await frame.evaluate(() => performance.getEntriesByType("navigation")[0].encodedBodySize)
+  ```
+
+- **Tag the served HTML.** `swap-plugin-bundle-v3.js` now writes
+  `<meta name="cc-swap" content="<variant>|<hash12>" />` into every body it serves, so the frame can
+  say which body arrived. The tag was absent, which named the stale body without any arithmetic.
+
+`page.reload()` kept handing back the old body over several tries. What finally delivered a newer
+one was a top-level `page.goto` to another app route and back — the plugin frame is then built from
+scratch. It still arrived one body behind, so read the tag again after the navigation instead of
+assuming the second attempt worked.
+
+`page.goto` has its own 10 s navigation timeout and ignores the CLI `--timeout`: with
+`--timeout 180000` on the command line it still failed with `page.goto: Timeout 10000ms exceeded`.
+The app shell takes longer than that here, so pass
+`{ waitUntil: "domcontentloaded", timeout: 60000 }` on every `goto`.
+
+## A Vite dev server does not serve a `dist/` file as written
+
+Do not point a QA check at `http://localhost:<vite>/dist/…` expecting the built bytes. Vite serves
+files under its root through its transform pipeline: measured 2026-08-24 on the Chitchat build, the
+dev server answered 200 for all three files but with **1,380,727 bytes for a 431,488-byte
+`index.js`** and 612 for a 361-byte `index.html` (an HMR client injected into the head). The
+status code and the path both look right, which is what makes it dangerous — the check runs against
+a different program. Serve a build with a plain static server (a ten-line `node:http` script) when
+the bytes have to be the built ones.
+
+## An action button that is `pointer-events: none` until hover reads as an overlay bug
+
+Chitchat's message rows keep their actions at `opacity: 0; pointer-events: none` until
+`.message:hover` or `:focus-within`. A plain `click()` on one times out with
+`<li class="message"> intercepts pointer events`, which reads like an overlay covering the button —
+it is not, and hit-testing it will not explain it. Hover the row first, wait a moment, then click:
+
+```js
+const row = fl.locator("[role=log] li").filter({ hasText: "second message" })
+await row.hover()
+await state.page.waitForTimeout(400)
+await row.getByRole("button", { name: "Add reaction" }).click({ timeout: 15000 })
+```
+
+Before filing a finding like this, check the owning stylesheet for a hover-revealed actions block.
+Keyboard users reach these through `:focus-within`, so the pattern is not an accessibility defect
+by itself.
+
+## A `matchMedia` component in a plugin frame lags a viewport change by more than a second
+
+Two findings were filed and withdrawn on 2026-08-24 for this. After `setViewportSize` and again
+after `Emulation.clearDeviceMetricsOverride`, the Chitchat frame still reported the previous
+breakpoint's UI **1.5 s later**: the back button read `Close thread` where the narrow layout wants
+`Back to messages`, and the drawer's `inert` attribute still described the wide layout. Both were
+correct components; the read was early. The frame is out of process, so the resize has to reach
+another renderer, run its `matchMedia` listener, and finish a React commit before any of it is
+observable.
+
+Wait ~2.5 s after any viewport change before reading breakpoint-driven state in a plugin frame, or
+poll the value you expect rather than sampling once. And before filing a responsive-layout finding,
+re-read it once more after a further wait — a component that "does not react to the breakpoint" is
+usually one that reacted after you looked.
+
+## Injecting axe into a plugin frame: it has to ride in with the bundle
+
+The plugin asset CSP is `script-src 'self'` with **no** `'unsafe-inline'`, so
+`addScriptTag({ path })` — which injects the file's contents inline — is refused inside the frame,
+unlike the Council room and the dev server described above.
+
+`addScriptTag({ url })` pointing at the plugin's own asset prefix does not rescue it either, even
+when a run already swaps the bundle through `page.route`. That URL is a frame **subresource**, and
+the route handler never sees those (see the subresource entry above), so the request goes to the
+real asset server and 404s. This entry recommended exactly that until 2026-08-24; it never worked.
+
+What works is serving axe inside the same navigation response as the swapped bundle: read its bytes
+in the runner, emit it as a classic `<script>` before the module script, and give it its own
+`sha256-` source in the CSP. Read the bytes over HTTP from a small local server rather than off
+disk — `readFileSync` on the OS temp folder killed the whole CLI invocation here (see the sandbox
+`fs` entries under Playwriter Availability). Then:
+
+```js
+const report = await frame.evaluate(async () => await window.axe.run(document, { resultTypes: ["violations"] }))
+```
+
+Read `window.axe.version` back and put it in the evidence — see the pinning entry above.
 
 ## Rich text editor (ProseMirror): read the right editor, and read its schema
 
@@ -248,10 +466,14 @@ Load it with `page.addScriptTag({ path })` and an **absolute** path. Playwright 
 rather than through the runner's sandboxed `fs`, so the sandbox's path restriction never applies — use
 an absolute literal because a relative one resolves against the relay's working directory, not yours
 (see the `path.resolve` entry below). Reading the bytes yourself first is the way that fails:
-`require("node:fs").readFileSync(...)` on a path outside the session cwd or the OS temp folder is
-refused, and under a Windows relay it takes the CLI down with it rather than returning a clean error
-(see the sandbox `fs` entries under Playwriter Availability). If you genuinely need the bytes in the
-runner, copy the file to the OS temp folder from the shell first.
+`require("node:fs").readFileSync(...)` on a path outside the session cwd is refused, and under a
+Windows relay it takes the CLI down with it rather than returning a clean error (see the sandbox
+`fs` entries under Playwriter Availability). **The OS temp folder is not the safe harbour this
+entry used to promise.** Verified 2026-08-24: a `readFileSync` of a 573 KB file the shell had just
+written under `%TEMP%` killed the CLI invocation with the same libuv
+`Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`, from a session whose cwd was the repo
+root. So if you genuinely need the bytes inside the runner, do not read them — serve them over
+HTTP from a small local `node:http` server and `fetch` them, or embed them in the `-f` runner.
 
 Two reviewers hit this from opposite directions in the same round on 2026-08-22. CSP is not the
 obstacle it looks like. `addScriptTag({ path })` injects the file's contents as an inline script, and
@@ -287,6 +509,38 @@ The 2026-08-10 plain-text QA runs extended the same baseline to the Monaco surfa
 - **Sampling a rounded box by its bounding rect reads the backdrop through the corners.** The rect covers the corner squares that the border radius cut away, so those samples are whatever sits behind the element. In a pixel histogram they show up as false extremes — a near-black sample on a light chip — and they move the worst-case number the whole measurement is about. Inset every sample past the border radius before reading it.
 
 Measured 2026-08-22 on the Council room. Related: keep `scale: 1` on a clipped capture, see the `Page.captureScreenshot` clip entry above.
+
+## A canvas hands an `oklch()` colour straight back, so a contrast probe scores every pair at 1.0
+
+The usual way to normalise a CSS colour is to assign it to `ctx.fillStyle` and read the property
+back, because the canvas answers `#rrggbb` for anything it understands. Chrome understands
+`oklch()` and answers the **same `oklch(...)` string**. A probe that then scrapes numbers out of
+that string reads lightness, chroma, and hue as if they were red, green, and blue.
+
+This app is written entirely in `oklch()` — the whole `--color-base-*` / `--color-fg-*` palette and
+everything a plugin frame inherits from it — so this hits every contrast probe here. Measured
+2026-08-24 in the Chitchat frame: pairs that really run from 5.2:1 to 17.2:1 all scored between
+1.00 and 1.08. That reads as a page with no contrast at all, which is alarming enough to send you
+hunting for a styling bug that does not exist.
+
+Convert through real pixels instead. Paint the colour on a 1×1 canvas and read it back:
+
+```js
+const cv = document.createElement("canvas")
+cv.width = 1
+cv.height = 1
+const ctx = cv.getContext("2d")
+const rgb = (color) => {
+	ctx.fillStyle = "#000" // A colour the canvas refuses leaves the previous value in place.
+	ctx.fillStyle = color
+	ctx.fillRect(0, 0, 1, 1)
+	const d = ctx.getImageData(0, 0, 1, 1).data
+	return [d[0], d[1], d[2]]
+}
+```
+
+`getComputedStyle(el).backgroundColor` is `rgba(0, 0, 0, 0)` on most elements, so walk up to the
+first ancestor that paints one before scoring the pair.
 
 ## axe `aria-required-children` ignores `aria-owns` — restructure the DOM instead
 
@@ -332,6 +586,54 @@ The dialog's own component class or data attribute is not enough on its own when
 Scope the audit by the dialog's own component class instead — `.RouteApiKeysCreateModal`, not `[role=dialog]`. Playwright's `getByRole("dialog")` filters by visibility and does find the open one, so a `getByRole` probe agreeing with your expectation does not mean the audit looked at the same node. Always read `controlCount`: a zero there on a dialog that visibly has buttons means the selector missed, not that the dialog is clean.
 
 Then discount `smallTargets` on `.MyCheckboxButton-control`. That pattern is a visually-hidden 1x1 `<input type=checkbox>` inside a `<label>`, so the heuristic flags every row while the real hit target is the label — measured 448x54 for the API-key permission rows. Measure `input.closest("label").getBoundingClientRect()` before treating one of these as a finding. The same shape is why `getByRole("checkbox", { name: ... }).check()` times out; click the visible label text instead.
+
+## `auditAccessibility` sees nothing inside a plugin frame unless you hand it the frame
+
+A cross-origin plugin frame runs in its own process, so an audit evaluated on the top page cannot read
+one node inside it. Before harness 0.6.4 the call had no way to say otherwise, and it answered for the
+host page instead: a clean report about a route nobody screened. Pass the frame:
+
+```js
+const frame = state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1);
+await state.appPlaywriterHarness.auditAccessibility({ frame, selector: "body" });
+```
+
+`frame` accepts any Playwright `Frame`; it takes the same `waitForSelector` and `evaluate` calls as a
+page, so everything else about the audit is unchanged. Read `url` in the result to confirm which
+document was screened. Added 2026-08-24 while screening Chitchat.
+
+## A blocked hit target on a hover-revealed action is the resting state, not a bug
+
+`auditAccessibility` measures where the pointer lands right now. A row action or message action that is
+`opacity: 0` or `display: none` until its row is hovered therefore reports as blocked by the text behind
+it, every time. That is the pattern working, not a finding — but only if the same rule fires on
+`:focus-within` as well as `:hover`, or the control is unreachable by keyboard. Check the CSS for both,
+then walk the real Tab order (focus the row's primary control, press Tab, read `document.activeElement`)
+before writing it off. In Chitchat the actions are `display: none` at rest and Tab reaches People, Rename
+and Archive in order once the row holds focus.
+
+## A relay restart kills every session, and takes your `page.route` bundle swap with it
+
+Sessions do not survive the Playwriter relay restarting; `playwriter session list` then shows fewer
+sessions than you created and commands answer `No active sessions`. Scratch browsers survive, so the app
+looks fine — and that is the trap. A `page.route` handler lives in the session, so a bundle swap dies
+silently with it and **the frame serves the published bundle again on its next navigation**. Every later
+reading then describes released code while you believe you are testing your working tree. After any
+`No active sessions`, re-create the session, re-install the harness, re-install the route, and reload
+before trusting one more result. Hit 2026-08-24.
+
+## A CDP-attached scratch browser is invisible to `browser list`
+
+`playwriter browser list` shows extension-connected browsers and `headless`. A Chrome you started
+yourself with `--remote-debugging-port` is not in it, and there is no `--cdp` flag:
+
+```powershell
+vp env exec pnpx playwriter session new --direct 127.0.0.1:9223
+```
+
+`--direct` also accepts a `ws://`/`wss://` endpoint, or `1` to auto-discover Chrome on 9222. Screen
+recording is unavailable in this mode. Probe `http://127.0.0.1:<port>/json/version` first to confirm the
+browser is still up, since a dead scratch browser and a wrong flag fail the same way.
 
 ## App State
 
@@ -472,6 +774,7 @@ Grep/`rg` tool output can render a source line's leading `//` as `\ `. It looks 
 - Do **not** use `state.page.request` (Playwright's `APIRequestContext`). Through the Playwriter CDP relay it dies immediately with `Protocol error (Storage.getCookies): No tab found for method Storage.getCookies`, and the CLI prints a long hono stack that looks like a relay crash. Send the request from page context instead: `state.page.evaluate(async ({ origin, key, body }) => { const res = await fetch(...); return res.status + " " + await res.text(); }, {...})`. The Convex site origin allows `http://localhost:5173` through the app's CORS router, so this works for every `/api/v1/…` route. Verified 2026-08-15.
 - A Convex HTTP action that **throws** answers 500 without CORS headers, so a page-context `fetch` reports `TypeError: Failed to fetch` and you cannot see the status or the message. That is not a network problem and not a broken key. Read the real error with `vp env exec pnpm --dir packages/app exec convex logs --history 12` — it prints `Uncaught Error: …` with the source line. This is also the fastest break-on-purpose signal for a route: a working refusal answers a JSON status, an unhandled defect answers `Failed to fetch`.
 - An API key is `pk_<32 hex>.<64 hex>` — **it contains a dot**. A capture regex like `/pk_[A-Za-z0-9_\-]+/` silently grabs only the key id, and every call then answers `401 Unauthenticated`, which reads like a scope or permission bug. Match `/pk_[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+/` and sanity-check the length (100). Keep the secret in `state`, pass it into `page.evaluate` as an argument, and print only its length — never the value, and mask `pk_[\w.\-]+` before printing any page text.
+- The **Bash tool on this machine has no outbound network**: `curl` exits 43 and reports HTTP `000` for every host, which reads exactly like a dead server or a blocked route. Send the request from PowerShell instead, and use `-SkipHttpErrorCheck` so a 4xx comes back as a value rather than a throw: `$r = Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -Method POST -Uri "$origin/api/v1/auth/verify" -Headers @{ Authorization = "Bearer $key" }; $r.StatusCode; $r.Content`. Do not reach for `$_.Exception.Response.GetResponseStream()` on failure — PowerShell 7 hands back an `HttpResponseMessage`, which has no such method, and the recovery attempt fails with a second, unrelated error. Hit 2026-08-24.
 - The reveal dialog after `Create API key` stays mounted with its `MyModalBackdrop`, which intercepts pointer events on the key list underneath, so the next click fails with `<div class="MyModalBackdrop"> … intercepts pointer events`. That backdrop is also the signal the secret is **still on screen**: if a capture regex missed it, re-read it from the open dialog instead of rotating the key.
 
 ## A `route` handler that just returns does not hold the request open
@@ -1095,3 +1398,121 @@ Read the fixture file on the CLI side (`-f` runner embedding the string, or assi
 separate call) — the sandbox `fs` cannot reliably read repo paths, and the relay may not even run on
 the Windows side (see the relay-topology entry above). A `page.route` fixture also keeps the page on a
 real secure-ish origin, so cookies and `fetch` behave like a normal tab, which `file://` never does.
+
+## Moving the pointer out of a plugin iframe leaves its `:hover` stuck on
+
+The plugin UI runs in an out-of-process iframe. When `page.mouse.move(...)` takes the pointer to a
+host coordinate outside that iframe's box, the iframe never receives the matching leave event, so the
+last row the pointer touched keeps matching `:hover`. Every screenshot taken afterwards shows that
+row's hover affordance — in Chitchat, a channel row that answers a click by covering its own name with
+Rename and Archive. It looks exactly like a CSS bug in the app. Measured 2026-08-24: with the pointer
+parked at host `y = 40` and the frame starting at `y = 48`, the row reported `opacity: 1`; with the
+pointer parked inside the frame the same row reported `opacity: 0`.
+
+Park the pointer **inside** the frame, on a strip that has no hover affordance of its own — the
+channel header works, an empty area of the message log does not, because message rows reveal their own
+actions and the cursor is painted into the screenshot.
+
+```js
+const box = await state.page.locator(".PluginsUiFrame").boundingBox();
+await state.page.mouse.move(box.x + box.width - 60, box.y + 18); // channel header strip
+await state.page.waitForTimeout(600);
+```
+
+Before believing any hover-looking finding, read the state instead of the picture:
+
+```js
+row.matches(":hover"); // stale-hover tells you here, the screenshot never will
+```
+
+## Windows backslash paths inside `-e` JavaScript are eaten before Node sees them
+
+`-e 'await ...setInputFiles(["C:\Users\rt0\AppData\..."])'` arrives at the executor as
+`C:Userst0AppData...`: the shell collapses `\` to `\`, and JavaScript then reads `\U` as `U` and
+`\r` as a carriage return. The path is no longer absolute, so the relay resolves it against its own
+CWD and the error reads `ENOENT ... 'C:\...\t3-chat\Userst0AppData...'`, which looks like a missing
+file rather than a mangled string. Observed 2026-08-24.
+
+Use forward slashes in every path you pass through `-e`. Node and Playwright accept them on Windows:
+
+```js
+setInputFiles(["C:/Users/rt0/AppData/Local/Temp/cc-verify/A-reference-mockup.png"]);
+```
+
+A `-f` runner written with a quoted heredoc (`<<'EOF'`) keeps `\` intact and is safe either way, but
+forward slashes work there too and remove the question.
+
+## `page.screenshot({ path })` writes anywhere, but the sandbox `fs` that reads it back does not
+
+The two filesystems in a runner are not the same one. Playwright's own output APIs run in the relay
+process with normal file access, so `page.screenshot({ path })` happily writes to the personal `+ai`
+folder. `require("node:fs")` inside the same runner is the **scoped** sandbox, allowed only in the
+relay's CWD, `C:\tmp`, and `%TEMP%`. Reading a screenshot back to log its size therefore throws
+`EPERM: operation not permitted, access outside allowed directories` — after the file was already
+written. The runner aborts on that line, so every later step is skipped and the whole run reads as a
+failed screenshot when the screenshot is sitting on disk. Observed 2026-08-24.
+
+The allowed set follows the **relay's** CWD, which is where the relay was started, not where the CLI
+is invoked. `playwriter session list` prints it. A relay started at a repo root cannot read that
+repo's sibling `-+personal` folder at all.
+
+So: write screenshots straight to their final path, and check the size from the shell instead of
+`statSync`. When a runner genuinely needs to read bytes back, stage the file under `%TEMP%` first.
+
+## Park the pointer INSIDE the plugin frame before a screenshot, never outside it
+
+This is the screenshot-side consequence of the stale-hover entry above. Moving the pointer out of the
+frame to keep it out of the picture leaves the last `:hover` latched, so the shot shows a revealed
+hover cluster on whatever row the pointer last crossed — and the run reports a clean state, because
+the DOM agrees with the paint. Park on dead space inside the frame instead (the empty sidebar below
+the channel list works), then assert it:
+
+```js
+await state.page.mouse.move(box.x + 60, box.y + box.height - 60, { steps: 6 });
+// 0, or the shot has a hover state in it
+[...document.querySelectorAll(".channel-item")].filter((r) => r.matches(":hover")).length;
+```
+
+The pointer is captured in the image, so pick a corner where an arrow costs nothing. Note that a
+mouse-driven `click()` also leaves the pointer where it landed: blurring focus is not enough on its
+own, the pointer has to be moved as well.
+
+## A CSS bug can exist only in the production build, because layer order differs from dev
+
+`pnpm run dev` serves CSS as `<style>` tags that Vite injects in module-graph order. `vite build`
+splits CSS per chunk and links one file per chunk. A cascade layer's position is fixed by the **first**
+declaration the browser sees, and a later `@layer a, b, c;` statement cannot reorder layers that
+already exist. So the two modes can establish two different orders from the same source, and only the
+production one is broken.
+
+That is what happened on 2026-08-24. `src/app.css` declares the order, its chunk was linked **last**,
+and the browser ended up with `common_components, components, properties, external, theme, normalize,
+base, utilities, top_layer`. Tailwind preflight sits in `@layer base` and resets `padding`, `margin`
+and `border` on every element, so it won against both component layers. The whole app lost its
+padding, its buttons and its tabs. The `app-css-layer-order` plugin in `vite.config.ts` now copies the statement app.css
+declares onto the top of every stylesheet, in dev and in the build, so whichever one loads first
+establishes the right order and the rest are no-ops. app.css stays the only place a person edits it.
+
+Two rules follow. First, **QA visual changes against `vite build` + `vite preview`, not only the dev
+server** — a dev-only check cannot see this class of bug at all. Second, when a page looks unstyled or
+flatly spaced, read the order the browser actually built before suspecting the components:
+
+```js
+const order = [];
+const walk = (rules) => {
+	for (const rule of rules) {
+		const kind = rule.constructor?.name ?? "";
+		if (kind === "CSSLayerStatementRule") { for (const n of rule.nameList) if (!order.includes(n)) order.push(n); }
+		else if (kind === "CSSLayerBlockRule") { if (rule.name && !order.includes(rule.name)) order.push(rule.name); walk(rule.cssRules); }
+		else if (kind === "CSSMediaRule" || kind === "CSSSupportsRule") walk(rule.cssRules);
+	}
+};
+for (const sheet of document.styleSheets) { try { walk(sheet.cssRules); } catch { /* cross-origin */ } }
+```
+
+To measure the damage rather than infer it, walk the same sheets for rules inside `components` /
+`common_components` that declare padding, `querySelector` each one, and compare the declared value
+with `getComputedStyle`. Anything computing to `0px 0px 0px 0px` is being overridden. Two selectors
+legitimately compute to zero (`.MyPopoverContent` under the link setter, and the chat composer's
+`--AiChatComposer-editor-content-padding: 0px`), so a nonzero result is not automatically a bug —
+check the source before reporting one.
