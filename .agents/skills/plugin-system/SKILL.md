@@ -45,7 +45,7 @@ Validation lives in `plugins_validate_manifest` (`packages/app/shared/plugins.ts
 | Review bundle bytes                                      | 900,000      | `REVIEW_BUNDLE_MAX_BYTES`                           |
 | Review input tokens per model call                       | 240,000      | `REVIEW_INPUT_MAX_TOKENS`                           |
 | Bytes per review tool result                             | 40,000       | `REVIEW_TOOL_RESULT_MAX_BYTES`                      |
-| Review exploration / total navigation steps              | 4/60         | `REVIEW_MAX_EXPLORATION_STEPS` / `REVIEW_MAX_STEPS` |
+| Review exploration / total navigation steps              | 8/120        | `REVIEW_MAX_EXPLORATION_STEPS` / `REVIEW_MAX_STEPS` |
 | Review wall clock                                        | 5 min        | `REVIEW_MAX_WALL_CLOCK_MS`                          |
 | Review notebook notes / chars per note                   | 120/600      | `REVIEW_MAX_NOTES`, `REVIEW_NOTE_MAX_CHARS`         |
 | `grep` pattern bytes / matches / line chars              | 200/50/400   | `REVIEW_GREP_MAX_*`                                 |

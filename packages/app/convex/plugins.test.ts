@@ -7800,7 +7800,11 @@ describe("plugins publish_version", () => {
 		for (const index of reviewFiles.keys()) {
 			expect(shown.join("\n")).toContain(`file-marker-${index}`);
 		}
-		expect(shown.length).toBeLessThan(10);
+
+		// The bound proves the host batch-packs: far fewer calls than files. It tracks the free
+		// exploration window (REVIEW_MAX_EXPLORATION_STEPS) plus a couple of packed batches, so it
+		// moves when that constant does.
+		expect(shown.length).toBeLessThan(13);
 	});
 
 	test("keeps a corrected finding in the record instead of editing it away", async () => {

@@ -97,14 +97,16 @@ const REVIEW_READ_SOURCE_MAX_BYTES = REVIEW_TOOL_RESULT_MAX_BYTES - 4_096;
 /**
  * How many model calls one review may spend walking the artifact.
  *
- * After four moves where the model can search or choose a file, the host packs unread ranges from
- * several files into each 40,000-byte result. A 900,000-byte artifact therefore needs about 26
- * forced batches plus one final `done` step, so coverage alone can take about 31 calls. The rest of
- * the budget pays for note-taking and repair turns between batches. That work is real: a 431 KB
- * bundle ran out of the old 40-step budget on it, so keep the ceiling well above the coverage cost.
+ * After the free exploration moves where the model can search or choose a file, the host packs
+ * unread ranges from several files into each 40,000-byte result. A 900,000-byte artifact therefore
+ * needs about 26 forced batches plus one final `done` step, so coverage alone can take about 31
+ * calls. The rest of the budget pays for note-taking and repair turns between batches. That work is
+ * real: a 431 KB bundle ran out of a 40-step budget, and a 730 KB minified bundle (Chitchat 0.4.0)
+ * ran out of 60 twice before passing on the third try. Keep the ceiling far above the coverage cost;
+ * the wall clock below still ends a review that genuinely wanders.
  */
-const REVIEW_MAX_STEPS = 60;
-const REVIEW_MAX_EXPLORATION_STEPS = 4;
+const REVIEW_MAX_STEPS = 120;
+const REVIEW_MAX_EXPLORATION_STEPS = 8;
 /**
  * How long the navigation loop may run. Convex allows an action ten minutes, and the loop must leave
  * time for the final verdict call after it stops.
