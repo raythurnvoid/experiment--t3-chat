@@ -147,7 +147,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 
 The plugin document store keeps its own counters in `plugins_data_usage`, one doc per installation, and does not use the `quotas` table. Keep it that way. A quota is a product allowance the user can see and, in principle, buy more of; the plugin-data ceilings are safety limits on one plugin's storage, scoped to an installation that can disappear at any time. They also move in both directions — a reservation gives bytes back and a delete frees slots — while quota counters here are release-on-delete or monotonic by product rule. See `../plugin-system/SKILL.md` for the store's limits and accounting.
 
-The slot ceiling among those limits is plan-driven: `db_resolve_document_slot_cap` in `plugins_data.ts` reads the billed user's synced Polar product on every write (Free 10,000 slots, paid 100,000; unknown state reads as Free). It still never touches the `quotas` table — there is no persisted `maxCount` to update on upgrade or downgrade, and the ceiling is not visible in `quotas.get`.
+The slot ceiling among those limits is plan-driven: `db_resolve_document_slot_cap` in `plugins_data.ts` reads the organization owner's synced Polar product on every write (Free 10,000 slots, paid 100,000; unknown state reads as Free). The owner's plan sets one ceiling for every member. It still never touches the `quotas` table — there is no persisted `maxCount` to update on upgrade or downgrade, and the ceiling is not visible in `quotas.get`.
 
 Stored plugin-data bytes are not billed. The byte and slot ceilings are the only limits; they are safety limits, not allowances the user can buy more of.
 

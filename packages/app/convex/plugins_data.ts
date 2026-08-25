@@ -17,7 +17,6 @@ import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_has_permission } from "./access_control.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
-import { billing_pick_billed_user_id } from "./billing_db.ts";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -429,27 +428,19 @@ function refuse_page_principal(principal: StorePrincipal) {
  * write. There is no stored ceiling anywhere: a downgrade raises no stored value,
  * it only makes the next comparison refuse.
  *
- * The ceiling follows the billed user (`billing_pick_billed_user_id`): the owner in
- * an owner-billed organization, otherwise the acting member. Every door resolves it
- * the same way, so a member cannot get a different ceiling by choosing a door. In a
- * default `"user"`-mode shared organization the writer's own plan therefore sets the
- * ceiling.
+ * The ceiling always follows the organization owner's plan, never the acting
+ * member's. One installation gets one ceiling for every member, and a member's
+ * own plan cannot raise it.
  */
 async function db_resolve_document_slot_cap(
 	ctx: QueryCtx,
 	args: {
-		actorUserId: Id<"users">;
-		organization: Pick<Doc<"organizations">, "default" | "billingMode" | "ownerUserId">;
+		organization: Pick<Doc<"organizations">, "ownerUserId">;
 	},
 ) {
-	const billedUserId = billing_pick_billed_user_id({
-		userId: args.actorUserId,
-		organization: args.organization,
-	});
-
 	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("by_user", (q) => q.eq("userId", billedUserId))
+		.withIndex("by_user", (q) => q.eq("userId", args.organization.ownerUserId))
 		.first();
 	if (!usageSnapshot?.subscription) {
 		return MAX_DOCUMENT_SLOTS;
@@ -1134,10 +1125,7 @@ export const reserve_document = internalMutation({
 
 		const usage = await db_get_usage(ctx, installation._id);
 		const addsCollection = !(usage?.collectionNames ?? []).includes(collection._yay);
-		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
-			actorUserId: args.principal.actorUserId,
-			organization,
-		});
+		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization });
 		const capacity = check_capacity(
 			usage,
 			{
@@ -1334,10 +1322,7 @@ export const release_reservation = internalMutation({
 			now,
 			reservedSlotStillHeld: stored === null,
 			addUsageTombstone: stored === null,
-			maxDocumentSlots: await db_resolve_document_slot_cap(ctx, {
-				actorUserId: args.principal.actorUserId,
-				organization: releaseOrganization,
-			}),
+			maxDocumentSlots: await db_resolve_document_slot_cap(ctx, { organization: releaseOrganization }),
 		});
 
 		return Result({ _yay: { releasedBytes } });
@@ -1852,10 +1837,7 @@ async function db_write_documents(
 		});
 	}
 
-	const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
-		actorUserId: args.principal.actorUserId,
-		organization,
-	});
+	const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization });
 	const capacity = check_capacity(
 		usage,
 		{
@@ -1999,10 +1981,7 @@ export const delete_document = internalMutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
-		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
-			actorUserId: args.principal.actorUserId,
-			organization,
-		});
+		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization });
 
 		await ctx.db.delete("plugins_data", existing._id);
 		await db_credit_member_for_delete(ctx, { installation, document: existing });
@@ -2245,10 +2224,7 @@ async function db_user_write_document(
 		installationId: args.installation._id,
 		userId: args.userId,
 	});
-	const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
-		actorUserId: args.userId,
-		organization: args.organization,
-	});
+	const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization: args.organization });
 	const capacity = check_capacity(
 		usage,
 		{
@@ -2352,10 +2328,7 @@ async function db_user_delete_document(
 			collectionNames,
 		},
 		now,
-		maxDocumentSlots: await db_resolve_document_slot_cap(ctx, {
-			actorUserId: args.actorUserId,
-			organization: args.organization,
-		}),
+		maxDocumentSlots: await db_resolve_document_slot_cap(ctx, { organization: args.organization }),
 	});
 }
 
@@ -4158,10 +4131,7 @@ export const write_versioned_document = internalMutation({
 		// Reserve already held this key's slot. The first write converts reserved -> used instead of
 		// charging a second slot, so a store at the ceiling can still store the key it reserved.
 		const convertsReservedSlot = !existing && ownedReservation !== null;
-		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
-			actorUserId: args.principal.actorUserId,
-			organization,
-		});
+		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization });
 		const capacity = check_capacity(
 			usage,
 			{
@@ -4350,10 +4320,7 @@ export const delete_versioned_document = internalMutation({
 		// tombstone takes the slot the value just gave back. Refusing it would leave the producer with
 		// no way to free anything once the store filled up.
 		const usage = (await db_get_usage(ctx, installation._id)) ?? (await db_create_usage(ctx, { installation, now }));
-		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
-			actorUserId: args.principal.actorUserId,
-			organization,
-		});
+		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization });
 
 		// Deleting a key that was never stored is a different thing. Nothing is given back, so the
 		// tombstone is a brand new slot and has to fit. Without this a producer could delete keys that
@@ -4735,12 +4702,7 @@ async function run_expiry_pass(ctx: MutationCtx) {
 				now,
 				reservedSlotStillHeld: stored === null,
 				addUsageTombstone: stored === null,
-				// No actor exists here. Passing the owner makes the payer resolution land on the
-				// owner either way, which is who pays in both billing modes.
-				maxDocumentSlots: await db_resolve_document_slot_cap(ctx, {
-					actorUserId: organization.ownerUserId,
-					organization,
-				}),
+				maxDocumentSlots: await db_resolve_document_slot_cap(ctx, { organization }),
 			});
 		}
 

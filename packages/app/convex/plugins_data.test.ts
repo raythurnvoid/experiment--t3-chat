@@ -2110,6 +2110,41 @@ describe("write_document", () => {
 		expect(refused._nay?.message).toBe("This plugin has used its 10000 document slots");
 	});
 
+	test("the ceiling follows the organization owner's plan, not the writer's", async () => {
+		const t = test_convex();
+		// The seeded fixture user creates the organization, so they are its owner — on Free.
+		const fixture = await seed_installation(t, { plan: "Free" });
+
+		// A Pro member writes. Their own plan must not raise the installation's ceiling.
+		const member = await join_member_with_role(t, fixture, { clerkUserId: "ceiling-pro-member", role: "member" });
+		await t.run(async (ctx) => test_mocks_fill_db_with.plan(ctx, { userId: member.userId, plan: "Pro" }));
+		const principal = store_principal(fixture, { actorUserId: member.userId });
+
+		const firstWrite = await t.mutation(internal.plugins_data.write_document, {
+			principal,
+			collection: "meetings",
+			key: "a",
+			value: { n: 1 },
+		});
+		expect(firstWrite._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			const usage = await ctx.db
+				.query("plugins_data_usage")
+				.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
+				.first();
+			await ctx.db.patch("plugins_data_usage", usage!._id, { usedDocuments: 10_000 });
+		});
+
+		const refused = await t.mutation(internal.plugins_data.write_document, {
+			principal,
+			collection: "meetings",
+			key: "b",
+			value: { n: 2 },
+		});
+		expect(refused._nay?.name).toBe("storage_full");
+		expect(refused._nay?.message).toBe("This plugin has used its 10000 document slots");
+	});
+
 	test("refuses the byte after the last one, and counts reserved bytes toward the same ceiling", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
