@@ -30,7 +30,7 @@ Everything below lives inside the frame.
 | --- | --- |
 | Channel rail button | `locator("button.channel-link", { hasText: "#alpha" })` — do NOT use an end-anchored `getByRole` name regex, see the unread-suffix note below |
 | Create channel | `getByRole("button", { name: "Create channel" })`, then `[data-dialog-initial="true"]`, then `getByRole("button", { name: "Create", exact: true })` |
-| Composer | `textarea.composer-input` — with a thread open there are TWO of them, so scope: the channel one by its aria-label `Message #<channel>`, the thread one as `section.thread textarea.composer-input` (aria-label `Reply in thread`) |
+| Composer | `textarea.composer-input` — with a thread open there are TWO of them, so scope: the channel one by its aria-label `Message #<channel>`, the thread one as `section.thread textarea.composer-input` (aria-label `Reply in thread`). Since 0.5.0 (Ariakit-combobox mention picker) the composer carries `role="combobox"` with `aria-expanded` — the quickest live proof of a 0.5.0 frame. Typing `@` in a single-member workspace opens NO menu (the picker excludes the sender), `aria-expanded` stays `"false"`, and no `[role=listbox]` enters the DOM — verified 2026-08-25 |
 | Message row | `li.message`, with `.is-leader` or `.is-continuation`, and `data-key` carrying the document key |
 | Day divider | `li.day-divider` |
 | Message body | `.message-text` |
