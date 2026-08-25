@@ -5652,8 +5652,10 @@ describe("watch_changes", () => {
 			updatedSince: fencepost,
 			limit: 10,
 		});
-		expect(changes?.docs.map((doc) => doc.key)).toEqual([keys[0]]);
-		expect(changes?.docs[0]?.value).toEqual({ n: 0, edited: true });
+		// Inclusive fence re-delivers the newest original doc (it still sits on the cursor
+		// millisecond). The edited oldest is the actual invalidation.
+		expect(changes?.docs.map((doc) => doc.key)).toEqual([keys[2], keys[0]]);
+		expect(changes?.docs.find((doc) => doc.key === keys[0])?.value).toEqual({ n: 0, edited: true });
 		expect(changes?.truncated).toBe(false);
 	});
 
@@ -5689,7 +5691,75 @@ describe("watch_changes", () => {
 		expect(changes?.docs[0]?.value).toEqual({ n: 0, deletedAt: baseNow + 60_000 });
 	});
 
-	test("updatedSince is an exclusive fencepost and truncated says more is waiting", async () => {
+	test("a same-millisecond sibling is still delivered when the fence sits on that millisecond", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const now = Date.now();
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
+		const written = await t.mutation(internal.plugins_data.write_documents_batch, {
+			principal: store_principal(fixture),
+			documents: [
+				{ collection: "messages", key: "batch:a", value: { n: 1 } },
+				{ collection: "messages", key: "batch:b", value: { n: 2 } },
+			],
+		});
+		dateNow.mockRestore();
+		if (written._nay) {
+			throw new Error(written._nay.message);
+		}
+
+		// The batch door stamps every item with one Date.now(). Fencing at that exact value used
+		// to drop both docs (gt), so a sibling that shared the cursor millisecond was gone forever.
+		const atFence = await fixture.asPage.query(api.plugins_data.watch_changes, {
+			collection: "messages",
+			updatedSince: now,
+			limit: 10,
+		});
+		expect(atFence?.docs.map((doc) => doc.key).sort()).toEqual(["batch:a", "batch:b"]);
+		expect(atFence?.docs.every((doc) => doc.updatedAt === now)).toBe(true);
+	});
+
+	test("a full same-millisecond page at the fence does not include a later edit", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const now = Date.now();
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
+		for (const offset of [0, 50]) {
+			const written = await t.mutation(internal.plugins_data.write_documents_batch, {
+				principal: store_principal(fixture),
+				documents: Array.from({ length: 50 }, (_, index) => ({
+					collection: "messages",
+					key: `fullpage:${offset + index}`,
+					value: { n: offset + index },
+				})),
+			});
+			if (written._nay) {
+				throw new Error(written._nay.message);
+			}
+		}
+		dateNow.mockReturnValue(now + 1);
+		const later = await t.mutation(internal.plugins_data.write_documents_batch, {
+			principal: store_principal(fixture),
+			documents: [{ collection: "messages", key: "fullpage:later", value: { n: 100 } }],
+		});
+		dateNow.mockRestore();
+		if (later._nay) {
+			throw new Error(later._nay.message);
+		}
+
+		// The query reads one past the limit only to set truncated. Those 100 rows at `now` fill
+		// the page, so the later edit never appears in docs. The page must then pass now+1.
+		const page = await fixture.asPage.query(api.plugins_data.watch_changes, {
+			collection: "messages",
+			updatedSince: now,
+			limit: 100,
+		});
+		expect(page?.truncated).toBe(true);
+		expect(page?.docs).toHaveLength(100);
+		expect(page?.docs.some((doc) => doc.key === "fullpage:later")).toBe(false);
+	});
+
+	test("updatedSince is an inclusive fencepost and truncated says more is waiting", async () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t);
 		const baseNow = Date.now();
@@ -5706,7 +5776,7 @@ describe("watch_changes", () => {
 			updatedSince: firstUpdatedAt,
 			limit: 10,
 		});
-		expect(after?.docs.map((doc) => doc.key)).toEqual([keys[1], keys[2]]);
+		expect(after?.docs.map((doc) => doc.key)).toEqual([keys[0], keys[1], keys[2]]);
 
 		const firstPage = await fixture.asPage.query(api.plugins_data.watch_changes, {
 			collection: "messages",

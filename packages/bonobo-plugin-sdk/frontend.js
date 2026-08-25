@@ -970,8 +970,11 @@ function bonobo_ui_create_data_api(deps) {
 		},
 		watchChanges(opts, onUpdate) {
 			// Update-time order: an edit or a soft-delete of an old document surfaces here. Creation
-			// order cannot answer that, which is why this is not `watchRecent`. The server judges
-			// `updatedSince` and `scopeId`; a bad number dies as a bare null like any other refused read.
+			// order cannot answer that, which is why this is not `watchRecent`. `updatedSince` is an
+			// inclusive fence: copy the newest applied `updatedAt` as-is so a same-millisecond sibling
+			// is not lost. If a truncated delivery is still on that millisecond, pass `newest + 1` so
+			// the live query can leave those 100 rows. The server judges `updatedSince` and `scopeId`;
+			// a bad number dies as a bare null like any other refused read.
 			const invalid = validate_watch_inputs({ collection: opts.collection, limit: opts.limit });
 			if (invalid) {
 				deliver_death_async(onUpdate, { reason: "invalid", message: invalid });

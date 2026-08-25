@@ -3873,10 +3873,16 @@ export const watch_recent = query({
 /**
  * Reads one collection in update order, from a fencepost the caller already holds.
  *
- * This is the invalidation feed: which documents changed after `updatedSince`. An edit and a
+ * This is the invalidation feed: which documents changed at or after `updatedSince`. An edit and a
  * soft-delete both patch the row and bump `updatedAt`, so both surface here. `watch_recent` must
  * not do this job — it is creation order on purpose, so a typo-fix does not jump to the top of a
  * new-messages catch-up read.
+ *
+ * `updatedSince` is inclusive. `updatedAt` is whole-millisecond `Date.now()`, and one mutation
+ * stamps every write in that run with the same value (the batch door, up to 50 docs). An exclusive
+ * `gt` fence would drop a sibling that shares the cursor millisecond, and that sibling would never
+ * appear on a later subscribe. Over-delivery of that millisecond is free: the caller already
+ * merges by key and revision.
  *
  * A physical delete leaves the table and cannot appear. Soft-delete tombstones (`deletedAt` in
  * the value) stay, and they are how a viewer learns a frozen row was deleted.
@@ -3891,7 +3897,7 @@ export const watch_changes = query({
 	args: {
 		collection: v.string(),
 		/**
-		 * Exclusive lower bound on `updatedAt`, in epoch milliseconds. The caller copies it from
+		 * Inclusive lower bound on `updatedAt`, in epoch milliseconds. The caller copies it from
 		 * the newest `updatedAt` it has already applied. Omit it to start from the oldest update
 		 * in the collection (or scope).
 		 */
@@ -3945,7 +3951,7 @@ export const watch_changes = query({
 					.eq("installationId", installation._id)
 					.eq("collection", collection._yay)
 					.eq("scopeId", args.scopeId);
-				return args.updatedSince === undefined ? base : base.gt("updatedAt", args.updatedSince);
+				return args.updatedSince === undefined ? base : base.gte("updatedAt", args.updatedSince);
 			})
 			.order("asc")
 			.take(args.limit + 1);

@@ -1102,6 +1102,8 @@ describe("data.watchChanges", () => {
 		const declaration = await readFile(join(import.meta.dirname, "frontend.d.ts"), "utf8");
 		const changesDeclaration = declaration.match(/^\t\twatchChanges\([^]*?\): \(\) => void;/m)?.[0] ?? "";
 		expect(changesDeclaration).toContain("updatedSince?: number;");
+		expect(declaration).toContain("updatedSince` is an inclusive lower bound");
+		expect(declaration).toContain("`newest + 1` so the live query can leave those 100 rows");
 		expect(changesDeclaration).toContain(
 			"onUpdate: (update: BonoboUiDataWatchUpdate | null, info?: BonoboUiWatchDeathInfo) => void,",
 		);

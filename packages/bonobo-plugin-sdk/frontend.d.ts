@@ -350,15 +350,25 @@ export interface BonoboUiFrontendClient {
 			onUpdate: (update: BonoboUiDataWatchUpdate | null, info?: BonoboUiWatchDeathInfo) => void,
 		): () => void;
 		/**
-		 * Opens one reactive subscription on documents of `collection` that changed after
+		 * Opens one reactive subscription on documents of `collection` that changed at or after
 		 * `updatedSince`, ordered by update time. Pass `scopeId` to read one private scope instead
 		 * of the public half; there is no key range here to resolve a scope from. An edit and a
 		 * soft-delete both bump `updatedAt` and surface here — that is the point, and it is why
 		 * this is not `watchRecent`. A physically deleted document is gone from the table and
-		 * cannot appear. Copy `updatedSince` from the newest `updatedAt` you have already applied;
-		 * omit it to start from the oldest update. The delivery contract is `watch`'s: each update
-		 * replaces the whole list, `null` ends the subscription, `limit` follows the same 1..100
-		 * rule, and the read spends the same frame slot and server subscription.
+		 * cannot appear.
+		 *
+		 * `updatedSince` is an inclusive lower bound. Copy it from the newest `updatedAt` you have
+		 * already applied; omit it to start from the oldest update. `updatedAt` is whole-millisecond
+		 * `Date.now()`, and one write batch stamps every document with the same value, so a change
+		 * whose `updatedAt` equals the cursor must still be delivered. Over-delivery of that
+		 * millisecond is free: merge by key and revision. Advance the cursor only when a later
+		 * `updatedAt` arrives, or the same-millisecond re-delivery will re-subscribe in a loop.
+		 * If a delivery is truncated and every document is still on the cursor millisecond, pass
+		 * `newest + 1` so the live query can leave those 100 rows.
+		 *
+		 * The delivery contract is `watch`'s: each update replaces the whole list, `null` ends the
+		 * subscription, `limit` follows the same 1..100 rule, and the read spends the same frame
+		 * slot and server subscription.
 		 */
 		watchChanges(
 			opts: {
