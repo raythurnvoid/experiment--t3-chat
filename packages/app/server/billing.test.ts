@@ -47,6 +47,31 @@ describe("billing_event", () => {
 		expect(billing_event(event)).toEqual(event);
 	});
 
+	test("builds the canonical plugin_storage usage event payload", () => {
+		const event = {
+			name: "plugin_storage",
+			externalCustomerId: "billed_user_1" as Id<"users">,
+			externalId: composite_id(
+				"billing",
+				"plugin_storage",
+				"billed_user_1" as Id<"users">,
+				"organization_1",
+				"workspace_1",
+				"2026-04-10",
+			),
+			metadata: {
+				amount: 2,
+				billedUserId: "billed_user_1" as Id<"users">,
+				organizationId: "organization_1",
+				workspaceId: "workspace_1",
+				storedBytes: 4294967296,
+				day: "2026-04-10",
+			},
+		} satisfies billing_Event;
+
+		expect(billing_event(event)).toEqual(event);
+	});
+
 	test("builds the canonical monthly_credit usage event payload", () => {
 		const event = {
 			name: "monthly_credit",

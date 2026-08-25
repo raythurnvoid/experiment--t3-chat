@@ -4,6 +4,7 @@ import { compareValues } from "convex/values";
 import { access_control_db_ensure_role_assignment, access_control_db_has_permission } from "./access_control.ts";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
+import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { organizations_db_create_workspace } from "./organizations.ts";
 import { plugins_data_db_count_installation_docs } from "./plugins_data.ts";
 import { quotas_db_ensure } from "./quotas.ts";
@@ -17,6 +18,9 @@ import type { plugins_Capability } from "../shared/plugins.ts";
 /**
  * Insert a ready plugin version and one enabled installation directly. The publish pipeline is not
  * what these tests exercise, and the same direct seed is what `data_deletion.test.ts` uses.
+ *
+ * The payer defaults to `Free`, which is also the store's slot-ceiling default for unknown plans.
+ * Pass a paid plan where a test needs the higher ceiling.
  */
 async function seed_installation(
 	t: ReturnType<typeof test_convex>,
@@ -24,6 +28,7 @@ async function seed_installation(
 		acceptedCapabilities?: plugins_Capability[];
 		userId?: Id<"users">;
 		organizationName?: string;
+		plan?: keyof typeof billing_PRODUCTS | null;
 	} = {},
 ) {
 	return await t.run(async (ctx) => {
@@ -31,6 +36,7 @@ async function seed_installation(
 		const membership = await test_mocks_fill_db_with.membership(ctx, {
 			userId: args.userId,
 			organizationName: args.organizationName,
+			plan: args.plan ?? "Free",
 		});
 		const pluginVersionId = await ctx.db.insert("plugins_versions", {
 			name: "council",
@@ -1987,6 +1993,121 @@ describe("write_document", () => {
 			value: { n: 2 },
 		});
 		expect(replaced._nay).toBeUndefined();
+	});
+
+	test("a paid plan buys ten times the slots, read off the payer's synced product", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t, { plan: "Pro" });
+		const principal = store_principal(fixture);
+
+		await t.mutation(internal.plugins_data.write_document, {
+			principal,
+			collection: "meetings",
+			key: "a",
+			value: { n: 1 },
+		});
+		await t.run(async (ctx) => {
+			const usage = await ctx.db
+				.query("plugins_data_usage")
+				.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
+				.first();
+			await ctx.db.patch("plugins_data_usage", usage!._id, { usedDocuments: 99_999 });
+		});
+
+		// 99,999 slots are spent, so the next new document takes the last one and must be accepted.
+		const lastSlot = await t.mutation(internal.plugins_data.write_document, {
+			principal,
+			collection: "meetings",
+			key: "b",
+			value: { n: 2 },
+		});
+		expect(lastSlot._nay).toBeUndefined();
+
+		const refused = await t.mutation(internal.plugins_data.write_document, {
+			principal,
+			collection: "meetings",
+			key: "c",
+			value: { n: 3 },
+		});
+		expect(refused._nay?.name).toBe("storage_full");
+		expect(refused._nay?.message).toBe("This plugin has used its 100000 document slots");
+	});
+
+	test("downgrade keeps stored data usable but refuses new documents at the smaller ceiling", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t, { plan: "Pro" });
+		const principal = store_principal(fixture);
+
+		// Documents stored while the payer is on Pro. The downgrade below moves usage past the Free
+		// ceiling without deleting anything, which is what a real downgrade must do to data.
+		for (const key of ["a", "b"] as const) {
+			const written = await t.mutation(internal.plugins_data.write_document, {
+				principal,
+				collection: "meetings",
+				key,
+				value: { n: 1 },
+			});
+			expect(written._nay).toBeUndefined();
+		}
+		await t.run(async (ctx) => {
+			const usage = await ctx.db
+				.query("plugins_data_usage")
+				.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
+				.first();
+			await ctx.db.patch("plugins_data_usage", usage!._id, { usedDocuments: 10_000 });
+		});
+
+		// The payer moves from Pro back down to Free.
+		await t.run(async (ctx) =>
+			test_mocks_fill_db_with.plan(ctx, { userId: fixture.userId, plan: "Free" }),
+		);
+
+		// New documents refuse with the same name and shape as before, now naming the Free number.
+		const refused = await t.mutation(internal.plugins_data.write_document, {
+			principal,
+			collection: "meetings",
+			key: "c",
+			value: { n: 3 },
+		});
+		expect(refused._nay?.name).toBe("storage_full");
+		expect(refused._nay?.message).toBe("This plugin has used its 10000 document slots");
+
+		// In-place updates cost no slot, so a store over its ceiling can still change what it holds.
+		const replaced = await t.mutation(internal.plugins_data.write_document, {
+			principal,
+			collection: "meetings",
+			key: "a",
+			value: { n: 2 },
+		});
+		expect(replaced._nay).toBeUndefined();
+	});
+
+	test("a workspace with no billing state at all gets the Free ceiling", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t, { plan: null });
+		const principal = store_principal(fixture);
+
+		await t.mutation(internal.plugins_data.write_document, {
+			principal,
+			collection: "meetings",
+			key: "a",
+			value: { n: 1 },
+		});
+		await t.run(async (ctx) => {
+			const usage = await ctx.db
+				.query("plugins_data_usage")
+				.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
+				.first();
+			await ctx.db.patch("plugins_data_usage", usage!._id, { usedDocuments: 10_000 });
+		});
+
+		const refused = await t.mutation(internal.plugins_data.write_document, {
+			principal,
+			collection: "meetings",
+			key: "b",
+			value: { n: 2 },
+		});
+		expect(refused._nay?.message).toBe("This plugin has used its 10000 document slots");
 	});
 
 	test("refuses the byte after the last one, and counts reserved bytes toward the same ceiling", async () => {

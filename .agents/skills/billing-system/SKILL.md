@@ -66,11 +66,11 @@ The shared catalog lives in [billing.ts](../../../packages/app/shared/billing.ts
 Server-side usage-event typing lives in [billing.ts](../../../packages/app/server/billing.ts). The local emission helper `billing_ingest_events` lives in [billing_db.ts](../../../packages/app/convex/billing_db.ts), while the enqueued Polar `ingest_events` action lives in [billing.ts](../../../packages/app/convex/billing.ts).
 
 - `billing_POLAR_METER_EVENT` stores the single Polar meter event name, `press_usage_event`, used for both usage charges and credits.
-- `billing_Event` is inferred from the `ingest_events` action validator and is the source-of-truth discriminated union for app-owned billing usage events keyed by `name`: `manual_credit`, `file_save`, `monthly_credit`, and `ai_usage`.
+- `billing_Event` is inferred from the `ingest_events` action validator and is the source-of-truth discriminated union for app-owned billing usage events keyed by `name`: `manual_credit`, `file_save`, `plugin_storage`, `monthly_credit`, and `ai_usage`.
 - `billing_Event` is the only supported billing usage event shape. It mirrors Polar's event fields with `{ name, externalCustomerId, externalMemberId?, externalId, metadata }`, except `name` is the app event name; `ingest_events` rewrites that field to the single Polar meter event and stores the app event name in `metadata.name`. `externalCustomerId` is the payer/billed Convex user id, not necessarily the actor.
 - `billing_event` is a typed identity helper for preserving the narrow `billing_Event` variant at call sites. It does not build full event payloads; callers own the metadata they emit.
 - Usage-event `externalId` values are built directly with the shared `composite_id("billing", ...)` helper. Its `AppCompositeIds.billing` tuple union keeps billing IDs strict and always joins parts with `::`; organization usage event ids include the billed user, actor, organization, and workspace.
-- Organization usage events (`file_save`, `ai_usage`) always include `metadata.actorUserId`, `metadata.billedUserId`, `metadata.organizationId`, and `metadata.workspaceId`. `externalMemberId` is optional actor attribution; when present, `ingest_events` passes it through to Polar.
+- Organization usage events (`file_save`, `ai_usage`) always include `metadata.actorUserId`, `metadata.billedUserId`, `metadata.organizationId`, and `metadata.workspaceId`. `externalMemberId` is optional actor attribution; when present, `ingest_events` passes it through to Polar. `plugin_storage` is different: a daily cron emits it, so there is no actor and no `externalMemberId`.
 - `billing_ingest_events` is the mandatory exported local emission helper for billing usage events. It accepts `{ event, billedUser }` pairs using the real payer `users` row, routes signed-in billed rows (`billedUser.clerkUserId != null`) to the `billing_workpool_usage_event` retry path, and routes anonymous billed rows (`billedUser.clerkUserId == null`) to a local mutation that applies the synthetic snapshot directly. The enqueued `ingest_events` action remains the only code path that should call Polar `eventsIngest`.
 
 See [Glossary — server/billing.ts](#glossary--serverbillingts) and [Glossary — event ingestion](#glossary--event-ingestion) for precise signatures and behavior.
@@ -156,6 +156,7 @@ Do not reintroduce a shared `credits_policy_allow_spend` helper for this rule. T
 There is one DB credit gate plus the action-facing query wrapper, and one plan-tier gate for doors that are closed to `Free` entirely:
 
 - `billing_db_check_paid_plan(ctx, { userId })` — loads the same synced Polar product and returns `{ hasPaidPlan }`, which is `product.name !== "Free"`. Use it for a door that no `Free` workspace may open, not for one that only needs credits: `Free` gets credits every month, so a balance check would let it through. Missing billing state and a missing product both return `hasPaidPlan: false`. An anonymous user carries the real Free `productId` in a synthetic snapshot, so the same comparison refuses them. Every door that stores a new file in the bucket calls it: `public_api_service_uploads.create_upload_target` (plugin services), `files_nodes.create_upload_node` and `files_nodes.create_upload_nodes` (the Files sidebar), and `public_api.create_file_upload_targets` (`/api/v1/files/upload-urls`). Writing and saving text is not gated by plan; text answers to the credit gate below.
+- The plugin document store's document-slot ceiling is a plan *value*, not a boolean gate: `db_resolve_document_slot_cap` in `plugins_data.ts` resolves the billed user through `billing_pick_billed_user_id`, reads the synced product the same way these gates do, and maps the name through `PLAN_MAX_DOCUMENT_SLOTS` (Free 10,000 slots, paid 100,000; unknown state reads as Free). See `../plugin-system/SKILL.md` for the store's ceilings and downgrade behavior.
 - `billing_db_check_credits(ctx, { userId, minimumRequiredCents })` — loads the synced Polar product from `snapshot.subscription.productId`, reads `snapshot.meter?.balance ?? 0`, and returns `{ hasCredits }`. Missing billing state, missing products, and insufficient Free-plan balance return `hasCredits: false`; paid plans return `hasCredits: true` even with a negative balance.
 - `internal.billing.check_credits` — `internalQuery` wrapper for action code such as chat routes. Without `organizationId`, it returns `{ hasCredits }`. With `organizationId`, it resolves the organization payer and returns `{ hasCredits, billedUser }` so actions can freeze the billed user before paid work starts. Missing organization or billed-user docs are impossible states from membership-derived inputs and should throw instead of returning `Result` or `null`.
 - DB-capable file mutations resolve `organization` and `billedUser` inline (`billing_pick_billed_user_id`, also in `billing_db.ts`, reads only `default`, `billingMode`, `ownerUserId`; no assignment is read) before calling `billing_db_check_credits`. Keep that local instead of reintroducing an organization credit helper.
@@ -204,6 +205,24 @@ The last id part is called `version` because the two save paths name a version d
 For signed-in users there is no local credit debit after save; Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. For anonymous users the shared ingest helper applies the same one-cent event locally after a successful save. Snapshot restore bills only when `write_markdown_to_yjs_sync` produced a new Yjs sequence. Do not reintroduce a shared `credits_FILE_SAVE_COST_CENTS` constant for the current one-cent file-save rule; keep the literal at the call sites unless the product rule changes.
 
 R2 content materialization is storage bookkeeping for an already accepted save; it must not emit an additional billing event.
+
+### Plugin storage metering
+
+Plugin document-store bytes are billed from the stored-bytes counters, not from each write.
+
+Once a day at `01:30 UTC`, `meter_plugin_storage_usage` in [billing_db.ts](../../../packages/app/convex/billing_db.ts) reads every `plugins_data_usage` doc, groups by workspace, and sums `usedBytes + reservedBytes`. That sum is the day's stored-bytes reading. The pass then:
+
+1. Resolves the payer with `billing_pick_billed_user_id({ userId: organization.ownerUserId, organization })`. There is no actor on a cron, so both `"user"` and `"organization_owner"` extra orgs bill the organization owner. A default personal organization bills that user.
+2. Loads or creates one `billing_usage_accruals` doc keyed by `(billedUserId, organizationId, workspaceId, usageKind: "plugin_storage")`.
+3. Skips when `lastMeteredDay` is already this UTC day, so a retried cron cannot double-charge.
+4. Adds `storedBytes × PLUGIN_STORAGE_CENTS_PER_BYTE_DAY` to `fractionalCents`. The constant is about €0.15 per GiB-month, charged daily — a placeholder like the chat token rates until GA picks a real price.
+5. When the remainder is at least one cent, emits one `plugin_storage` event through `billing_ingest_events` for the whole cents and keeps the leftover fraction. Signed-in payers go to Polar; anonymous payers apply to the synthetic snapshot.
+
+`externalId` is `composite_id("billing", "plugin_storage", billedUserId, organizationId, workspaceId, day)`. Polar dedupes retries of the same day. Deleting plugin documents today does not refund; it only lowers tomorrow's reading. A missed cron day is never billed later: the next run charges only the current day's reading.
+
+The 16 MiB byte ceiling and the plan-driven slot cap stay. They stop a buggy or hostile plugin from filling the database. Metered billing is the fare; the ceilings are the rail. Free and anonymous users meter too: charges consume their credits.
+
+Do not emit `plugin_storage` from any write door. The cron is the only reader.
 
 ### Anonymous users
 
@@ -279,7 +298,7 @@ The indicator displays the current user's balance for personal organizations, `"
 
 - **Module:** [packages/app/server/billing.ts](../../../packages/app/server/billing.ts)
 - **Kind:** inferred type alias from `FunctionArgs<typeof internal.billing.ingest_events>["events"][number]`.
-- **Role:** Canonical app-owned billing event union. Variants are discriminated by `name` (`manual_credit`, `file_save`, `monthly_credit`, `ai_usage`) and otherwise mirror the Polar event envelope fields the app supports: `externalCustomerId`, optional `externalMemberId` for organization usage attribution, `externalId`, and event-specific `metadata`.
+- **Role:** Canonical app-owned billing event union. Variants are discriminated by `name` (`manual_credit`, `file_save`, `plugin_storage`, `monthly_credit`, `ai_usage`) and otherwise mirror the Polar event envelope fields the app supports: `externalCustomerId`, optional `externalMemberId` for organization usage attribution, `externalId`, and event-specific `metadata`.
 
 #### `billing_event`
 
@@ -344,6 +363,14 @@ The indicator displays the current user's balance for personal organizations, `"
 - **Kind:** `internalMutation`
 - **Args:** `{ _test_now?: number, batchSize?: number }`
 - **Role:** Daily UTC-midnight refill for anonymous synthetic snapshots. When a snapshot's `currentPeriodEnd` day matches the current UTC day, it resets the meter back to the Free recurring credit amount and advances the stored 30-day period to the next UTC-midnight boundary. It processes one bounded batch per run and self-reschedules while full batches remain; patched docs leave the due index range, so the take-loop converges, and a full batch that patched nothing stops instead of looping over malformed docs.
+
+#### `meter_plugin_storage_usage`
+
+- **Module:** [billing_db.ts](../../../packages/app/convex/billing_db.ts)
+- **Kind:** `internalMutation`
+- **Args:** `{ _test_now?: number }` — tests pin "now" so UTC days stay deterministic.
+- **Returns:** `{ processedWorkspaces, emittedEvents }`
+- **Role:** Daily 01:30 UTC metering pass for stored plugin-data bytes. Reads observed `plugins_data_usage` docs, accrues sub-cent remainders on `billing_usage_accruals`, and emits whole-cent `plugin_storage` events through `billing_ingest_events`. A same-day re-run is a no-op.
 
 #### `generate_checkout_link`
 
@@ -490,7 +517,7 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 - Historical Polar benefit descriptions such as `Free Included Usage`, `Free Usage`, and `Pro Included Usage` may appear in fixtures or old webhook data. They are not current `billing_PRODUCTS` fields or live catalog identifiers.
 - Treat the Polar meter display name `Press app usage` as the canonical usage meter name in the catalog.
 - Treat the Polar usage event name `press_usage_event` as the canonical event name for usage ingestion.
-- Treat `manual_credit`, `file_save`, `monthly_credit`, and `ai_usage` as the canonical usage event names. When listing billing event names in validators, tuple unions, tests, docs, or specs, put `manual_credit` first because it is the manual/admin variant, then list `file_save`, `monthly_credit`, and `ai_usage`. Usage-event `externalId` values use `::` as the only separator. Organization usage ids include the `billing::` prefix plus billed user, actor, organization, and workspace (`billing::file_save::...`, `billing::ai_usage::...`); manual and monthly credit ids remain customer-targeted. Inline `/files` AI generates a fresh server-owned UUID for the final `ai_usage` id segment before each model execution. Keep the caller `requestId` only as `metadata.messageId`; never use it as the Polar dedupe key.
+- Treat `manual_credit`, `file_save`, `plugin_storage`, `monthly_credit`, and `ai_usage` as the canonical usage event names. When listing billing event names in validators, tuple unions, tests, docs, or specs, put `manual_credit` first because it is the manual/admin variant, then list `file_save`, `plugin_storage`, `monthly_credit`, and `ai_usage`. Usage-event `externalId` values use `::` as the only separator. Organization usage ids include the `billing::` prefix plus billed user, actor, organization, and workspace (`billing::file_save::...`, `billing::ai_usage::...`); `plugin_storage` ids omit the actor and end with the UTC day (`billing::plugin_storage::<billedUserId>::<organizationId>::<workspaceId>::<day>`); manual and monthly credit ids remain customer-targeted. Inline `/files` AI generates a fresh server-owned UUID for the final `ai_usage` id segment before each model execution. Keep the caller `requestId` only as `metadata.messageId`; never use it as the Polar dedupe key.
 - Treat Polar meter amounts as a signed sum ledger: positive `metadata.amount` values are usage that consumes/decreases balance, while negative values are credits or payments that increase balance. `grant_credit` normalizes dashboard input to a negative `manual_credit` event by default. QA/admin drain flows may pass `allowNegative: true` with a negative `amount`, which records a positive manual usage event and reduces the balance.
 - Keep the current file-save usage amount as a literal `1` at each call site, and keep the current chat token-pricing switch local to `packages/app/convex/ai_chat.ts`.
 - Keep `meter_credit` benefits detached from every Polar product. The Convex monthly credits engine is the only code path that grants recurring credits; running both would double-grant.
@@ -500,6 +527,6 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 
 - Remove the unused `cancel_current_subscription.revokeImmediately` public argument unless a separate product flow is defined for it.
 - Add runtime validation for the raw `customer.state_changed` payload fields consumed by `handle_polar_customer_state_update`; `v.any()` plus a TypeScript cast is not an external-boundary check.
-- Decide before GA whether the current hardcoded chat token rates and literal one-cent file-save amount are final product pricing or placeholders.
+- Decide before GA whether the current hardcoded chat token rates, the literal one-cent file-save amount, and the plugin-storage rate (`PLUGIN_STORAGE_CENTS_PER_BYTE_DAY`, about €0.15/GiB-month) are final product pricing or placeholders.
 - Move usage snapshot ownership into the vendored Polar component when that migration happens.
 - Reconcile repo behavior and business policy whenever plan allowances or billing-cycle credit behavior change.

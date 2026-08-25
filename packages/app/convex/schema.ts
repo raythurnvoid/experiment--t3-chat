@@ -2486,6 +2486,30 @@ const app_convex_schema = defineSchema({
 		jobId: vWorkId,
 		updatedAt: v.number(),
 	}).index("by_user", ["userId"]),
+
+	/**
+	 * Sub-cent accrual per paying scope for usage that is metered daily instead of
+	 * charged per operation. One doc holds the carried remainder until a whole cent
+	 * has accrued and one Polar event can be sent.
+	 *
+	 * `lastMeteredDay` is the last day the metering pass covered, as `YYYY-MM-DD`
+	 * UTC, which makes a re-run of the same day a no-op.
+	 */
+	billing_usage_accruals: defineTable({
+		billedUserId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		usageKind: v.literal("plugin_storage"),
+		fractionalCents: v.number(),
+		lastMeteredDay: v.string(),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index(
+			"by_billedUser_organization_workspace_kind",
+			["billedUserId", "organizationId", "workspaceId", "usageKind"],
+		)
+		.index("by_organization_workspace_kind", ["organizationId", "workspaceId", "usageKind"]),
 	// #endregion billing
 
 	// #region users

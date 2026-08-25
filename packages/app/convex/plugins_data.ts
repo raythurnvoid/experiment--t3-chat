@@ -13,10 +13,12 @@ import {
 	type MutationCtx,
 	type QueryCtx,
 } from "./_generated/server.js";
-import { internal } from "./_generated/api.js";
+import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_has_permission } from "./access_control.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
+import { billing_pick_billed_user_id } from "./billing_db.ts";
+import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -60,6 +62,21 @@ const MAX_INSTALLATION_BYTES = 16 * 1024 * 1024;
  * and index space.
  */
 const MAX_DOCUMENT_SLOTS = 10_000;
+/**
+ * The paid-plan slot ceiling, and the per-plan table the capacity check reads.
+ *
+ * Paid plans get ten times the Free ceiling: a plan benefit with one number to
+ * explain, until usage data argues for splitting the two paid plans.
+ *
+ * An unknown plan (no billing state, no product, or a name outside the catalog)
+ * reads as Free, the same way every billing gate treats unknown state.
+ */
+const PAID_MAX_DOCUMENT_SLOTS = 100_000;
+const PLAN_MAX_DOCUMENT_SLOTS = {
+	Free: MAX_DOCUMENT_SLOTS,
+	"Pay As You Go": PAID_MAX_DOCUMENT_SLOTS,
+	Pro: PAID_MAX_DOCUMENT_SLOTS,
+} as const satisfies Record<keyof typeof billing_PRODUCTS, number>;
 /**
  * How much of an installation's capacity one member may hold.
  *
@@ -374,7 +391,10 @@ async function db_authorize(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	return Result({ _yay: { installation } });
+	// The organization comes back because the capacity ceilings are plan-driven, and the payer
+	// resolution needs `billingMode` and `ownerUserId`. It was already loaded above, so handing it
+	// back costs no read.
+	return Result({ _yay: { installation, organization } });
 }
 
 /**
@@ -403,6 +423,44 @@ function refuse_page_principal(principal: StorePrincipal) {
 // #endregion access
 
 // #region usage accounting
+
+/**
+ * The document-slot ceiling this installation's plan buys, read fresh on every
+ * write. There is no stored ceiling anywhere: a downgrade raises no stored value,
+ * it only makes the next comparison refuse.
+ *
+ * The payer is the billed user of the installation's organization, not the acting
+ * member, so a member cannot raise their own ceiling by choosing a door.
+ */
+async function db_resolve_document_slot_cap(
+	ctx: QueryCtx,
+	args: {
+		actorUserId: Id<"users">;
+		organization: Pick<Doc<"organizations">, "default" | "billingMode" | "ownerUserId">;
+	},
+) {
+	const billedUserId = billing_pick_billed_user_id({
+		userId: args.actorUserId,
+		organization: args.organization,
+	});
+
+	const usageSnapshot = await ctx.db
+		.query("billing_usage_snapshots")
+		.withIndex("by_user", (q) => q.eq("userId", billedUserId))
+		.first();
+	if (!usageSnapshot?.subscription) {
+		return MAX_DOCUMENT_SLOTS;
+	}
+
+	const product = await ctx.runQuery(components.polar.lib.getProduct, {
+		id: usageSnapshot.subscription.productId,
+	});
+	if (!product) {
+		return MAX_DOCUMENT_SLOTS;
+	}
+
+	return PLAN_MAX_DOCUMENT_SLOTS[product.name as keyof typeof billing_PRODUCTS] ?? MAX_DOCUMENT_SLOTS;
+}
 
 /**
  * One accounting document per installation. It is created by the installation's first accepted
@@ -460,6 +518,9 @@ async function db_create_usage(
  * `reservedBytes` and `reservedDocuments`, and a revision tombstone moves `tombstoneDocuments`.
  * Those are the doors that fill the store fastest, so a threshold over the stored halves alone would
  * never fire for them and the installation would meet its ceiling unannounced.
+ *
+ * The slot threshold follows the plan-resolved ceiling the caller already resolved for its capacity
+ * check, not the Free constant: a paid installation should warn at 80% of what it can hold.
  */
 async function db_patch_usage(
 	ctx: MutationCtx,
@@ -472,6 +533,7 @@ async function db_patch_usage(
 			>
 		>;
 		now: number;
+		maxDocumentSlots: number;
 	},
 ) {
 	const after = { ...args.usage, ...args.next };
@@ -480,7 +542,7 @@ async function db_patch_usage(
 	const beforeSlots = args.usage.usedDocuments + args.usage.reservedDocuments + args.usage.tombstoneDocuments;
 	const afterSlots = after.usedDocuments + after.reservedDocuments + after.tombstoneDocuments;
 	const byteThreshold = MAX_INSTALLATION_BYTES * USAGE_WARN_FRACTION;
-	const slotThreshold = MAX_DOCUMENT_SLOTS * USAGE_WARN_FRACTION;
+	const slotThreshold = args.maxDocumentSlots * USAGE_WARN_FRACTION;
 
 	// A write that crosses both thresholds at once still logs one line, not two.
 	if (
@@ -493,7 +555,7 @@ async function db_patch_usage(
 			usedBytes: afterBytes,
 			maxBytes: MAX_INSTALLATION_BYTES,
 			usedSlots: afterSlots,
-			maxSlots: MAX_DOCUMENT_SLOTS,
+			maxSlots: args.maxDocumentSlots,
 		});
 	}
 
@@ -511,6 +573,7 @@ async function db_patch_usage(
 function check_capacity(
 	usage: Doc<"plugins_data_usage"> | null,
 	change: { addedBytes: number; addedSlots: number; addedCollections: number },
+	maxDocumentSlots: number,
 	member?: {
 		usage: Doc<"plugins_data_member_usage"> | null;
 		change: { addedBytes: number; addedSlots: number; addedCollections: number };
@@ -528,9 +591,9 @@ function check_capacity(
 			},
 		});
 	}
-	if (usedSlots + change.addedSlots > MAX_DOCUMENT_SLOTS) {
+	if (usedSlots + change.addedSlots > maxDocumentSlots) {
 		return Result({
-			_nay: { name: REFUSAL_STORAGE_FULL, message: `This plugin has used its ${MAX_DOCUMENT_SLOTS} document slots` },
+			_nay: { name: REFUSAL_STORAGE_FULL, message: `This plugin has used its ${maxDocumentSlots} document slots` },
 		});
 	}
 	if (usedCollections + change.addedCollections > MAX_COLLECTIONS) {
@@ -948,7 +1011,7 @@ export const reserve_document = internalMutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const installation = authorized._yay.installation;
+		const { installation, organization } = authorized._yay;
 
 		const collection = validate_name(args.collection, "Collection names");
 		if (collection._nay) {
@@ -1068,11 +1131,19 @@ export const reserve_document = internalMutation({
 
 		const usage = await db_get_usage(ctx, installation._id);
 		const addsCollection = !(usage?.collectionNames ?? []).includes(collection._yay);
-		const capacity = check_capacity(usage, {
-			addedBytes: args.maximumBytes,
-			addedSlots: 1,
-			addedCollections: addsCollection ? 1 : 0,
+		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
+			actorUserId: args.principal.actorUserId,
+			organization,
 		});
+		const capacity = check_capacity(
+			usage,
+			{
+				addedBytes: args.maximumBytes,
+				addedSlots: 1,
+				addedCollections: addsCollection ? 1 : 0,
+			},
+			maxDocumentSlots,
+		);
 		if (capacity._nay) {
 			return capacity;
 		}
@@ -1107,6 +1178,7 @@ export const reserve_document = internalMutation({
 					: storedUsage.collectionNames,
 			},
 			now,
+			maxDocumentSlots,
 		});
 
 		return Result({
@@ -1153,6 +1225,7 @@ async function db_release_reservation(
 		 * tombstone on top would charge two slots for one key.
 		 */
 		addUsageTombstone: boolean;
+		maxDocumentSlots: number;
 	},
 ) {
 	const releasedBytes = args.reservation.remainingBytes;
@@ -1191,11 +1264,12 @@ async function db_release_reservation(
 			reservedDocuments: args.usage.reservedDocuments - (args.reservedSlotStillHeld ? 1 : 0),
 			// Only a still-held reserved slot becomes a tombstone here. If the first write already
 			// converted reserved → used, the used slot covers the key. Adding a tombstone on top
-			// would push used+tombstone over the 10_000 cap and refuse the next in-place write.
+			// would push used+tombstone over the slot cap and refuse the next in-place write.
 			tombstoneDocuments: args.usage.tombstoneDocuments + (args.addUsageTombstone ? 1 : 0),
 			collectionNames,
 		},
 		now: args.now,
+		maxDocumentSlots: args.maxDocumentSlots,
 	});
 
 	return releasedBytes;
@@ -1219,6 +1293,7 @@ export const release_reservation = internalMutation({
 			return authorized;
 		}
 		const installation = authorized._yay.installation;
+		const releaseOrganization = authorized._yay.organization;
 
 		const reservation = await ctx.db
 			.query("plugins_data_reservations")
@@ -1256,6 +1331,10 @@ export const release_reservation = internalMutation({
 			now,
 			reservedSlotStillHeld: stored === null,
 			addUsageTombstone: stored === null,
+			maxDocumentSlots: await db_resolve_document_slot_cap(ctx, {
+				actorUserId: args.principal.actorUserId,
+				organization: releaseOrganization,
+			}),
 		});
 
 		return Result({ _yay: { releasedBytes } });
@@ -1636,7 +1715,7 @@ async function db_write_documents(
 	if (authorized._nay) {
 		return authorized;
 	}
-	const installation = authorized._yay.installation;
+	const { installation, organization } = authorized._yay;
 
 	const now = Date.now();
 	const usage = await db_get_usage(ctx, installation._id);
@@ -1770,6 +1849,10 @@ async function db_write_documents(
 		});
 	}
 
+	const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
+		actorUserId: args.principal.actorUserId,
+		organization,
+	});
 	const capacity = check_capacity(
 		usage,
 		{
@@ -1777,6 +1860,7 @@ async function db_write_documents(
 			addedSlots,
 			addedCollections: addedCollections.size,
 		},
+		maxDocumentSlots,
 		writer
 			? {
 					usage: memberUsage,
@@ -1827,6 +1911,7 @@ async function db_write_documents(
 			collectionNames: [...storedUsage.collectionNames, ...addedCollections],
 		},
 		now,
+		maxDocumentSlots,
 	});
 
 	return Result({
@@ -1857,7 +1942,7 @@ export const delete_document = internalMutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const installation = authorized._yay.installation;
+		const { installation, organization } = authorized._yay;
 
 		const collection = validate_name(args.collection, "Collection names");
 		if (collection._nay) {
@@ -1911,6 +1996,10 @@ export const delete_document = internalMutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
+			actorUserId: args.principal.actorUserId,
+			organization,
+		});
 
 		await ctx.db.delete("plugins_data", existing._id);
 		await db_credit_member_for_delete(ctx, { installation, document: existing });
@@ -1929,6 +2018,7 @@ export const delete_document = internalMutation({
 				collectionNames,
 			},
 			now,
+			maxDocumentSlots,
 		});
 
 		return Result({ _yay: { deleted: true } });
@@ -2134,6 +2224,7 @@ async function db_user_write_document(
 	ctx: MutationCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
+		organization: Pick<Doc<"organizations">, "default" | "billingMode" | "ownerUserId">;
 		userId: Id<"users">;
 		existing: Doc<"plugins_data"> | null;
 		collection: string;
@@ -2151,6 +2242,10 @@ async function db_user_write_document(
 		installationId: args.installation._id,
 		userId: args.userId,
 	});
+	const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
+		actorUserId: args.userId,
+		organization: args.organization,
+	});
 	const capacity = check_capacity(
 		usage,
 		{
@@ -2158,6 +2253,7 @@ async function db_user_write_document(
 			addedSlots: args.existing ? 0 : 1,
 			addedCollections: addsCollection ? 1 : 0,
 		},
+		maxDocumentSlots,
 		{
 			usage: memberUsage,
 			change: member_capacity_change({
@@ -2207,6 +2303,7 @@ async function db_user_write_document(
 				: storedUsage.collectionNames,
 		},
 		now,
+		maxDocumentSlots,
 	});
 
 	return Result({ _yay: { revision: (args.existing?.revision ?? 0) + 1, byteSize: args.byteSize } });
@@ -2217,7 +2314,12 @@ async function db_user_write_document(
  */
 async function db_user_delete_document(
 	ctx: MutationCtx,
-	args: { installation: Doc<"plugins_workspace_installations">; existing: Doc<"plugins_data"> },
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		organization: Pick<Doc<"organizations">, "default" | "billingMode" | "ownerUserId">;
+		actorUserId: Id<"users">;
+		existing: Doc<"plugins_data">;
+	},
 ) {
 	const now = Date.now();
 	// A stored document was created by a write path that always writes the accounting doc in the
@@ -2247,6 +2349,10 @@ async function db_user_delete_document(
 			collectionNames,
 		},
 		now,
+		maxDocumentSlots: await db_resolve_document_slot_cap(ctx, {
+			actorUserId: args.actorUserId,
+			organization: args.organization,
+		}),
 	});
 }
 
@@ -2263,7 +2369,7 @@ export const user_append_document = mutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const { installation, userId } = authorized._yay;
+		const { installation, userId, organization } = authorized._yay;
 
 		const collection = validate_name(args.collection, "Collection names");
 		if (collection._nay) {
@@ -2361,6 +2467,7 @@ export const user_append_document = mutation({
 
 		const written = await db_user_write_document(ctx, {
 			installation,
+			organization,
 			userId,
 			existing: null,
 			collection: collection._yay,
@@ -2391,7 +2498,7 @@ export const user_put_document = mutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const { installation, userId } = authorized._yay;
+		const { installation, userId, organization } = authorized._yay;
 
 		const collection = validate_name(args.collection, "Collection names");
 		if (collection._nay) {
@@ -2452,6 +2559,7 @@ export const user_put_document = mutation({
 		// putOwned, whose keys carry the creator's identity.
 		return await db_user_write_document(ctx, {
 			installation,
+			organization,
 			userId,
 			existing,
 			collection: collection._yay,
@@ -2475,7 +2583,7 @@ export const user_remove_document = mutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const { installation, userId } = authorized._yay;
+		const { installation, userId, organization } = authorized._yay;
 
 		const collection = validate_name(args.collection, "Collection names");
 		if (collection._nay) {
@@ -2525,7 +2633,7 @@ export const user_remove_document = mutation({
 			return revisionMismatch;
 		}
 
-		await db_user_delete_document(ctx, { installation, existing });
+		await db_user_delete_document(ctx, { installation, organization, actorUserId: userId, existing });
 		return Result({ _yay: { deleted: true } });
 	},
 });
@@ -2543,7 +2651,7 @@ export const user_put_owned_document = mutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const { installation, userId } = authorized._yay;
+		const { installation, userId, organization } = authorized._yay;
 
 		const collection = validate_name(args.collection, "Collection names");
 		if (collection._nay) {
@@ -2605,6 +2713,7 @@ export const user_put_owned_document = mutation({
 
 		const written = await db_user_write_document(ctx, {
 			installation,
+			organization,
 			userId,
 			existing,
 			collection: collection._yay,
@@ -2633,7 +2742,7 @@ export const user_remove_owned_document = mutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const { installation, userId } = authorized._yay;
+		const { installation, userId, organization } = authorized._yay;
 
 		const collection = validate_name(args.collection, "Collection names");
 		if (collection._nay) {
@@ -2683,7 +2792,7 @@ export const user_remove_owned_document = mutation({
 			return revisionMismatch;
 		}
 
-		await db_user_delete_document(ctx, { installation, existing });
+		await db_user_delete_document(ctx, { installation, organization, actorUserId: userId, existing });
 		return Result({ _yay: { deleted: true } });
 	},
 });
@@ -3950,7 +4059,7 @@ export const write_versioned_document = internalMutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const installation = authorized._yay.installation;
+		const { installation, organization } = authorized._yay;
 
 		const collection = validate_name(args.collection, "Collection names");
 		if (collection._nay) {
@@ -4046,11 +4155,19 @@ export const write_versioned_document = internalMutation({
 		// Reserve already held this key's slot. The first write converts reserved -> used instead of
 		// charging a second slot, so a store at the ceiling can still store the key it reserved.
 		const convertsReservedSlot = !existing && ownedReservation !== null;
-		const capacity = check_capacity(usage, {
-			addedBytes: delta - spentFromReservation,
-			addedSlots: existing || convertsReservedSlot ? 0 : 1,
-			addedCollections: addsCollection ? 1 : 0,
+		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
+			actorUserId: args.principal.actorUserId,
+			organization,
 		});
+		const capacity = check_capacity(
+			usage,
+			{
+				addedBytes: delta - spentFromReservation,
+				addedSlots: existing || convertsReservedSlot ? 0 : 1,
+				addedCollections: addsCollection ? 1 : 0,
+			},
+			maxDocumentSlots,
+		);
 		if (capacity._nay) {
 			return capacity;
 		}
@@ -4115,6 +4232,7 @@ export const write_versioned_document = internalMutation({
 					: storedUsage.collectionNames,
 			},
 			now,
+			maxDocumentSlots,
 		});
 
 		return Result({ _yay: { revision: args.revision, byteSize: byteSize._yay } });
@@ -4151,7 +4269,7 @@ export const delete_versioned_document = internalMutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const installation = authorized._yay.installation;
+		const { installation, organization } = authorized._yay;
 
 		const collection = validate_name(args.collection, "Collection names");
 		if (collection._nay) {
@@ -4229,6 +4347,10 @@ export const delete_versioned_document = internalMutation({
 		// tombstone takes the slot the value just gave back. Refusing it would leave the producer with
 		// no way to free anything once the store filled up.
 		const usage = (await db_get_usage(ctx, installation._id)) ?? (await db_create_usage(ctx, { installation, now }));
+		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, {
+			actorUserId: args.principal.actorUserId,
+			organization,
+		});
 
 		// Deleting a key that was never stored is a different thing. Nothing is given back, so the
 		// tombstone is a brand new slot and has to fit. Without this a producer could delete keys that
@@ -4236,7 +4358,7 @@ export const delete_versioned_document = internalMutation({
 		// holds that slot, so the tombstone converts it instead of charging a second one. A released
 		// never-stored retry record already holds it the same way.
 		if (!existing && ownedReservation === null && !releasedSlotAlreadyHeld) {
-			const capacity = check_capacity(usage, { addedBytes: 0, addedSlots: 1, addedCollections: 0 });
+			const capacity = check_capacity(usage, { addedBytes: 0, addedSlots: 1, addedCollections: 0 }, maxDocumentSlots);
 			if (capacity._nay) {
 				return capacity;
 			}
@@ -4267,6 +4389,7 @@ export const delete_versioned_document = internalMutation({
 				tombstoneDocuments: usage.tombstoneDocuments + (releasedSlotAlreadyHeld ? 0 : 1),
 			},
 			now,
+			maxDocumentSlots,
 		});
 		if (releasedReservation) {
 			// The revision tombstone now owns this slot. Keep the release result for idempotent
@@ -4298,6 +4421,7 @@ export const delete_versioned_document = internalMutation({
 				// above already occupies the slot.
 				reservedSlotStillHeld: existing === null,
 				addUsageTombstone: false,
+				maxDocumentSlots,
 			});
 		}
 
@@ -4321,7 +4445,7 @@ export const delete_versioned_document = internalMutation({
 			storedNames: afterWrites.collectionNames,
 			nextNames: collectionNames,
 		});
-		await db_patch_usage(ctx, { usage: afterWrites, next: { collectionNames }, now });
+		await db_patch_usage(ctx, { usage: afterWrites, next: { collectionNames }, now, maxDocumentSlots });
 
 		return Result({ _yay: { deleted: existing != null, revision: args.revision } });
 	},
@@ -4589,6 +4713,13 @@ async function run_expiry_pass(ctx: MutationCtx) {
 				console.error(errorMessage, errorData);
 				throw should_never_happen(errorMessage, errorData);
 			}
+			const organization = await ctx.db.get("organizations", usage.organizationId);
+			if (!organization) {
+				const errorMessage = "Plugin data reservation without an organization doc";
+				const errorData = { installationId: reservation.installationId, organizationId: usage.organizationId };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
 
 			const stored = await db_get_document(ctx, {
 				installationId: reservation.installationId,
@@ -4601,6 +4732,12 @@ async function run_expiry_pass(ctx: MutationCtx) {
 				now,
 				reservedSlotStillHeld: stored === null,
 				addUsageTombstone: stored === null,
+				// No actor exists here. Passing the owner makes the payer resolution land on the
+				// owner either way, which is who pays in both billing modes.
+				maxDocumentSlots: await db_resolve_document_slot_cap(ctx, {
+					actorUserId: organization.ownerUserId,
+					organization,
+				}),
 			});
 		}
 
@@ -4672,6 +4809,7 @@ async function db_return_tombstone_slot(
 		usage,
 		next: { tombstoneDocuments: Math.max(0, usage.tombstoneDocuments - 1) },
 		now: args.now,
+		maxDocumentSlots: MAX_DOCUMENT_SLOTS,
 	});
 }
 
