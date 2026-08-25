@@ -774,6 +774,7 @@ function create_documents_window(deps) {
  * @param {{
  *   start_watch: DataStartWatch,
  *   start_recent_watch: (queryArgs: Record<string, unknown>, onResult: (outcome: { value: { docs: import("bonobo-plugin-sdk").BonoboPublicDoc[], truncated: boolean } | null } | { queryError: unknown }) => void) => { dispose: () => void } | null,
+ *   start_changes_watch: (queryArgs: Record<string, unknown>, onResult: (outcome: { value: { docs: import("bonobo-plugin-sdk").BonoboPublicDoc[], truncated: boolean } | null } | { queryError: unknown }) => void) => { dispose: () => void } | null,
  *   run_user_write: (op: "append" | "put" | "remove" | "putOwned" | "removeOwned", fields: Record<string, unknown>) => Promise<unknown>,
  *   resolve_member_display: (userIds: string[]) => Promise<{ members: Record<string, string | null> } | null>,
  *   list_members: (limit: number, cursor: string | null) => Promise<{ members: import("bonobo-plugin-sdk/frontend").BonoboUiMember[], cursor: string | null } | { refusal: string } | null>,
@@ -965,6 +966,31 @@ function bonobo_ui_create_data_api(deps) {
 				onUpdate,
 				deliver: (value) => ({ docs: value.docs, truncated: value.truncated }),
 				failureLabel: "recent watch",
+			});
+		},
+		watchChanges(opts, onUpdate) {
+			// Update-time order: an edit or a soft-delete of an old document surfaces here. Creation
+			// order cannot answer that, which is why this is not `watchRecent`. The server judges
+			// `updatedSince` and `scopeId`; a bad number dies as a bare null like any other refused read.
+			const invalid = validate_watch_inputs({ collection: opts.collection, limit: opts.limit });
+			if (invalid) {
+				deliver_death_async(onUpdate, { reason: "invalid", message: invalid });
+				return () => {};
+			}
+			return start_registered_watch({
+				start: (onOutcome) =>
+					deps.start_changes_watch(
+						{
+							collection: opts.collection,
+							limit: opts.limit,
+							...(opts.updatedSince === undefined ? {} : { updatedSince: opts.updatedSince }),
+							...(opts.scopeId === undefined ? {} : { scopeId: opts.scopeId }),
+						},
+						onOutcome,
+					),
+				onUpdate,
+				deliver: (value) => ({ docs: value.docs, truncated: value.truncated }),
+				failureLabel: "changes watch",
 			});
 		},
 		watchWindow(opts, onUpdate) {
@@ -1251,6 +1277,23 @@ function create_convex_data_deps(convexClient) {
 			try {
 				const unsubscribe = convexClient.onUpdate(
 					anyApi.plugins_data.watch_recent,
+					queryArgs,
+					(value) => onResult({ value }),
+					(queryError) => onResult({ queryError }),
+				);
+				return { dispose: () => void unsubscribe() };
+			} catch {
+				return null;
+			}
+		},
+		/**
+		 * @param {Record<string, unknown>} queryArgs
+		 * @param {(outcome: { value: any } | { queryError: unknown }) => void} onResult
+		 */
+		start_changes_watch: (queryArgs, onResult) => {
+			try {
+				const unsubscribe = convexClient.onUpdate(
+					anyApi.plugins_data.watch_changes,
 					queryArgs,
 					(value) => onResult({ value }),
 					(queryError) => onResult({ queryError }),

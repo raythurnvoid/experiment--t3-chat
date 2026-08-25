@@ -5595,6 +5595,155 @@ describe("watch_recent", () => {
 	});
 });
 
+describe("watch_changes", () => {
+	/** Appends `count` documents five seconds apart and answers their keys, oldest first. */
+	async function append_over_time(
+		fixture: Awaited<ReturnType<typeof seed_user_write_door>>,
+		args: { count: number; baseNow: number; label: string },
+	) {
+		const dateNow = vi.spyOn(Date, "now");
+		const keys: string[] = [];
+		try {
+			for (let index = 0; index < args.count; index += 1) {
+				dateNow.mockReturnValue(args.baseNow + index * 5_000);
+				const appended = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
+					collection: "messages",
+					value: { n: index },
+					clientRequestId: `${args.label}-${index}`,
+				});
+				if (appended._nay) {
+					throw new Error(appended._nay.message);
+				}
+				keys.push(appended._yay.key);
+			}
+		} finally {
+			dateNow.mockRestore();
+		}
+		return keys;
+	}
+
+	test("reads update order, so editing an old document surfaces after the fencepost", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const baseNow = Date.now();
+		const keys = await append_over_time(fixture, { count: 3, baseNow, label: "changes-order" });
+
+		const beforeEdit = await fixture.asPage.query(api.plugins_data.watch_changes, {
+			collection: "messages",
+			limit: 10,
+		});
+		const fencepost = beforeEdit!.docs[beforeEdit!.docs.length - 1]!.updatedAt;
+
+		// Edit the OLDEST document at a later clock. This is the frozen-row case: a typo-fix must
+		// appear in the invalidation feed even though `watch_recent` keeps it in creation order.
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(baseNow + 60_000);
+		const edited = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "messages",
+			key: keys[0]!,
+			value: { n: 0, edited: true },
+		});
+		dateNow.mockRestore();
+		if (edited._nay) {
+			throw new Error(edited._nay.message);
+		}
+
+		const changes = await fixture.asPage.query(api.plugins_data.watch_changes, {
+			collection: "messages",
+			updatedSince: fencepost,
+			limit: 10,
+		});
+		expect(changes?.docs.map((doc) => doc.key)).toEqual([keys[0]]);
+		expect(changes?.docs[0]?.value).toEqual({ n: 0, edited: true });
+		expect(changes?.truncated).toBe(false);
+	});
+
+	test("a soft-delete put surfaces after the fencepost", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const baseNow = Date.now();
+		const keys = await append_over_time(fixture, { count: 1, baseNow, label: "changes-tombstone" });
+
+		const beforeDelete = await fixture.asPage.query(api.plugins_data.watch_changes, {
+			collection: "messages",
+			limit: 10,
+		});
+		const fencepost = beforeDelete!.docs[0]!.updatedAt;
+
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(baseNow + 60_000);
+		const deleted = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "messages",
+			key: keys[0]!,
+			value: { n: 0, deletedAt: baseNow + 60_000 },
+		});
+		dateNow.mockRestore();
+		if (deleted._nay) {
+			throw new Error(deleted._nay.message);
+		}
+
+		const changes = await fixture.asPage.query(api.plugins_data.watch_changes, {
+			collection: "messages",
+			updatedSince: fencepost,
+			limit: 10,
+		});
+		expect(changes?.docs.map((doc) => doc.key)).toEqual([keys[0]]);
+		expect(changes?.docs[0]?.value).toEqual({ n: 0, deletedAt: baseNow + 60_000 });
+	});
+
+	test("updatedSince is an exclusive fencepost and truncated says more is waiting", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const baseNow = Date.now();
+		const keys = await append_over_time(fixture, { count: 3, baseNow, label: "changes-since" });
+
+		const all = await fixture.asPage.query(api.plugins_data.watch_changes, {
+			collection: "messages",
+			limit: 10,
+		});
+		const firstUpdatedAt = all!.docs[0]!.updatedAt;
+
+		const after = await fixture.asPage.query(api.plugins_data.watch_changes, {
+			collection: "messages",
+			updatedSince: firstUpdatedAt,
+			limit: 10,
+		});
+		expect(after?.docs.map((doc) => doc.key)).toEqual([keys[1], keys[2]]);
+
+		const firstPage = await fixture.asPage.query(api.plugins_data.watch_changes, {
+			collection: "messages",
+			limit: 2,
+		});
+		expect(firstPage?.docs.map((doc) => doc.key)).toEqual([keys[0], keys[1]]);
+		expect(firstPage?.truncated).toBe(true);
+	});
+
+	test("answers null for a non-page caller and for bad input", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		expect(
+			await fixture.asUser.query(api.plugins_data.watch_changes, { collection: "messages", limit: 10 }),
+		).toBeNull();
+
+		expect(
+			await fixture.asPage.query(api.plugins_data.watch_changes, { collection: "messages", limit: 10 }),
+		).not.toBeNull();
+		expect(
+			await fixture.asPage.query(api.plugins_data.watch_changes, { collection: "bad\0name", limit: 10 }),
+		).toBeNull();
+		expect(await fixture.asPage.query(api.plugins_data.watch_changes, { collection: "messages", limit: 0 })).toBeNull();
+		expect(
+			await fixture.asPage.query(api.plugins_data.watch_changes, { collection: "messages", limit: 101 }),
+		).toBeNull();
+		expect(
+			await fixture.asPage.query(api.plugins_data.watch_changes, {
+				collection: "messages",
+				limit: 10,
+				updatedSince: Number.NaN,
+			}),
+		).toBeNull();
+	});
+});
+
 describe("resolve_member_display", () => {
 	test("resolves live members and answers null entries for everyone else", async () => {
 		const t = test_convex();
@@ -7451,6 +7600,9 @@ describe("user_manage_scope", () => {
 		expect(
 			await bob.asPage.query(api.plugins_data.watch_recent, { collection: "messages", scopeId: "dm-7", limit: 100 }),
 		).toBeNull();
+		expect(
+			await bob.asPage.query(api.plugins_data.watch_changes, { collection: "messages", scopeId: "dm-7", limit: 100 }),
+		).toBeNull();
 
 		// Alice is in the scope, so both doors answer for her.
 		expect(
@@ -7465,6 +7617,18 @@ describe("user_manage_scope", () => {
 		expect(
 			keysOf(
 				await alice.asPage.query(api.plugins_data.watch_recent, {
+					collection: "messages",
+					scopeId: "dm-7",
+					limit: 100,
+				}),
+			),
+		).toEqual(["dm/dm-7/m1"]);
+		expect(
+			keysOf(await bob.asPage.query(api.plugins_data.watch_changes, { collection: "messages", limit: 100 })),
+		).toEqual(["town/m1"]);
+		expect(
+			keysOf(
+				await alice.asPage.query(api.plugins_data.watch_changes, {
 					collection: "messages",
 					scopeId: "dm-7",
 					limit: 100,

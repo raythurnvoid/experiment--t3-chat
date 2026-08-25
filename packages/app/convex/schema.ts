@@ -1754,6 +1754,18 @@ const app_convex_schema = defineSchema({
 		 * with `undefined` it reads the unscoped half of the collection.
 		 */
 		.index("by_installation_collection_scope", ["installationId", "collection", "scopeId"])
+		/**
+		 * Invalidation feed: documents in one collection (and one scope, or the unscoped half)
+		 * ordered by `updatedAt`. `watch_recent` must not use this — an edit would jump to the top
+		 * of a new-messages catch-up read. `watch_changes` exists for that "what changed since X"
+		 * question. Soft-delete `put`s stay in the table and move here; a physical delete does not.
+		 */
+		.index("by_installation_collection_scope_updatedAt", [
+			"installationId",
+			"collection",
+			"scopeId",
+			"updatedAt",
+		])
 		.index("by_installation_collection_createdBy_requestId", [
 			"installationId",
 			"collection",

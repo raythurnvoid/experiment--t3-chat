@@ -3773,7 +3773,8 @@ export const watch_documents = query({
  *
  * Creation order, never `updatedAt` order. Editing a document and soft-deleting it both patch it, so
  * an `updatedAt` read would deliver a three-month-old message as new because someone fixed a typo in
- * it, and would deliver a tombstone as the newest thing in the collection.
+ * it, and would deliver a tombstone as the newest thing in the collection. The invalidation feed
+ * that *wants* that movement is `watch_changes`, on its own index.
  *
  * Keep `limit` small. This window covers a whole collection, so every accepted write anywhere in that
  * collection re-runs it for every subscribed client — much broader than the key-ranged windows above.
@@ -3862,6 +3863,91 @@ export const watch_recent = query({
 				return args.since === undefined ? base : base.gt("_creationTime", args.since);
 			})
 			.order(order)
+			.take(args.limit + 1);
+
+		const truncated = documents.length > args.limit;
+		return { docs: (truncated ? documents.slice(0, args.limit) : documents).map(to_public_document), truncated };
+	},
+});
+
+/**
+ * Reads one collection in update order, from a fencepost the caller already holds.
+ *
+ * This is the invalidation feed: which documents changed after `updatedSince`. An edit and a
+ * soft-delete both patch the row and bump `updatedAt`, so both surface here. `watch_recent` must
+ * not do this job — it is creation order on purpose, so a typo-fix does not jump to the top of a
+ * new-messages catch-up read.
+ *
+ * A physical delete leaves the table and cannot appear. Soft-delete tombstones (`deletedAt` in
+ * the value) stay, and they are how a viewer learns a frozen row was deleted.
+ *
+ * Never read the usage doc here. Every accepted write for the installation updates it, so one
+ * read would re-run every live subscription on every write anywhere in the store.
+ *
+ * Keep `limit` small. This window covers a whole collection (or one private scope), so every
+ * accepted write in that range re-runs it for every subscribed client.
+ */
+export const watch_changes = query({
+	args: {
+		collection: v.string(),
+		/**
+		 * Exclusive lower bound on `updatedAt`, in epoch milliseconds. The caller copies it from
+		 * the newest `updatedAt` it has already applied. Omit it to start from the oldest update
+		 * in the collection (or scope).
+		 */
+		updatedSince: v.optional(v.number()),
+		limit: v.number(),
+		/**
+		 * Read one private scope instead of the public half of the collection. This read has no
+		 * key range to resolve a scope from, so a caller that wants a private channel's changes
+		 * names it. Omit it and the read sees only unscoped documents.
+		 */
+		scopeId: v.optional(v.string()),
+	},
+	returns: v.union(v.object({ docs: v.array(document_validator), truncated: v.boolean() }), v.null()),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_page_read(ctx);
+		if (!authorized || !db_page_grants(authorized, "plugin.data.read")) {
+			return null;
+		}
+		const installation = authorized.installation;
+
+		// Bad input answers null like a denial, for the same reason as `watch_recent`: the host
+		// kills the subscription either way.
+		const collection = validate_name(args.collection, "Collection names");
+		if (collection._nay) {
+			return null;
+		}
+		if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > plugins_data_MAX_LIST_PAGE_SIZE) {
+			return null;
+		}
+		if (args.updatedSince !== undefined && !Number.isFinite(args.updatedSince)) {
+			return null;
+		}
+		if (
+			args.scopeId !== undefined &&
+			!(await db_can_use_scope(ctx, {
+				installation,
+				scopeId: args.scopeId,
+				userId: authorized.userId,
+				permission: "content.read",
+			}))
+		) {
+			return null;
+		}
+
+		// Read one past the limit so `truncated` can say whether more documents follow. The extra
+		// document never leaves the server.
+		const documents = await ctx.db
+			.query("plugins_data")
+			.withIndex("by_installation_collection_scope_updatedAt", (q) => {
+				const base = q
+					.eq("installationId", installation._id)
+					.eq("collection", collection._yay)
+					.eq("scopeId", args.scopeId);
+				return args.updatedSince === undefined ? base : base.gt("updatedAt", args.updatedSince);
+			})
+			.order("asc")
 			.take(args.limit + 1);
 
 		const truncated = documents.length > args.limit;
