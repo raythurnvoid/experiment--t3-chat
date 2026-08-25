@@ -1438,8 +1438,11 @@ export async function bonobo_ui_connect() {
 
 	/**
 	 * Exchanges the session token for a short-lived plugin-session JWT at the asset origin's
-	 * `/plugins-ui/session-jwt` route. A same-origin JSON POST, so there is no preflight; the
-	 * route answers only same-origin pages, so the JWT never becomes readable cross-origin.
+	 * `/plugins-ui/session-jwt` route. For a published frame this is a same-origin JSON POST with
+	 * no preflight, and the route answers no other origin, so the JWT never becomes readable
+	 * cross-origin. The one exception is the app's development-only frame override: a dev
+	 * deployment may allowlist exactly one extra origin for this route, and the same POST then
+	 * runs preflighted from there.
 	 *
 	 * @param {string} sessionToken
 	 */

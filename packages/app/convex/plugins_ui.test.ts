@@ -1983,6 +1983,14 @@ describe("plugin session jwt exchange", () => {
 		vi.stubEnv("PLUGINS_UI_DEV_EXCHANGE_ORIGIN", "localhost:5174");
 		const invalidConfigured = await exchange_session_jwt(t, session.token, "localhost:5174");
 		expect(invalidConfigured.status).toBe(403);
+
+		// The most likely typo is a scheme-less value, and new URL("localhost:5174").origin does not
+		// throw — it serializes to the string "null". That is also the literal Origin header every
+		// sandboxed iframe or data: page sends, so the parser must refuse the value outright or the
+		// guard would open to every opaque origin on the web.
+		const opaqueOrigin = await exchange_session_jwt(t, session.token, "null");
+		expect(opaqueOrigin.status).toBe(403);
+		expect(opaqueOrigin.headers.get("Access-Control-Allow-Origin")).toBeNull();
 	});
 });
 

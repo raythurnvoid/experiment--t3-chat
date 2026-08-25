@@ -87,7 +87,16 @@ function dev_exchange_origin() {
 	}
 
 	try {
-		return new URL(raw).origin;
+		// Require the value to already BE a serialized origin, the same rule the frontend override
+		// applies. A scheme-less value like "localhost:5174" does not throw in new URL() — its
+		// origin serializes to the string "null", which is also the literal Origin header every
+		// sandboxed iframe or data: page sends. Accepting it would allowlist every opaque origin.
+		const parsed = new URL(raw).origin;
+		if (parsed !== raw) {
+			console.error("PLUGINS_UI_DEV_EXCHANGE_ORIGIN is set but is not a bare origin", { value: raw });
+			return undefined;
+		}
+		return parsed;
 	} catch {
 		console.error("PLUGINS_UI_DEV_EXCHANGE_ORIGIN is set but is not a valid URL", { value: raw });
 		return undefined;
