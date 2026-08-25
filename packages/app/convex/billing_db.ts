@@ -244,7 +244,9 @@ async function meter_one_workspace(
 		.first();
 
 	// The cron runs once daily, but a retried or manually replayed run must not
-	// double-charge the same day.
+	// double-charge the same day. The accrual is keyed by payer, so this only holds
+	// while the payer is unchanged: if ownership or billing mode changes, a same-day
+	// replay finds no accrual for the new payer and meters that payer again.
 	if (accrual && accrual.lastMeteredDay >= args.day) {
 		return 0;
 	}

@@ -429,8 +429,11 @@ function refuse_page_principal(principal: StorePrincipal) {
  * write. There is no stored ceiling anywhere: a downgrade raises no stored value,
  * it only makes the next comparison refuse.
  *
- * The payer is the billed user of the installation's organization, not the acting
- * member, so a member cannot raise their own ceiling by choosing a door.
+ * The ceiling follows the billed user (`billing_pick_billed_user_id`): the owner in
+ * an owner-billed organization, otherwise the acting member. Every door resolves it
+ * the same way, so a member cannot get a different ceiling by choosing a door. In a
+ * default `"user"`-mode shared organization the writer's own plan therefore sets the
+ * ceiling, while the daily storage cron bills the owner (it has no actor to bill).
  */
 async function db_resolve_document_slot_cap(
 	ctx: QueryCtx,
@@ -4809,6 +4812,9 @@ async function db_return_tombstone_slot(
 		usage,
 		next: { tombstoneDocuments: Math.max(0, usage.tombstoneDocuments - 1) },
 		now: args.now,
+		// The Free constant is safe here without resolving the plan: this patch only
+		// lowers a slot count, and the 80% warning fires only on an upward crossing,
+		// so the cap value can never be compared or logged from this path.
 		maxDocumentSlots: MAX_DOCUMENT_SLOTS,
 	});
 }

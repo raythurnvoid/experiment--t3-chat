@@ -238,6 +238,28 @@ describe("meter_plugin_storage_usage", () => {
 		expect(accrual?.lastMeteredDay).toBe("2026-04-10");
 	});
 
+	test("a skipped day is never billed later", async () => {
+		const t = test_convex();
+		await seed_metered_workspace(t, { storedBytes: 4 * GIB, plan: "Free", clerkUserId: "meter-payer" });
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_plugin_storage_skip" as never);
+
+		// Day 1: 4 GiB-days are two cents.
+		await t.mutation(internal.billing_db.meter_plugin_storage_usage, { _test_now: DAY_1_MS });
+		expect(queued_plugin_storage_events(enqueueActionSpy)).toEqual([
+			expect.objectContaining({ metadata: expect.objectContaining({ amount: 2 }) }),
+		]);
+		vi.mocked(enqueueActionSpy).mockClear();
+
+		// The cron never ran on day 2. Day 3 adds exactly one day's reading, not the
+		// two elapsed days — a missed day is dropped, not caught up.
+		await t.mutation(internal.billing_db.meter_plugin_storage_usage, { _test_now: DAY_3_MS });
+		expect(queued_plugin_storage_events(enqueueActionSpy)).toEqual([
+			expect.objectContaining({ metadata: expect.objectContaining({ amount: 2, day: "2026-04-12" }) }),
+		]);
+	});
+
 	test("deleting data lowers the next day's charge instead of refunding", async () => {
 		const t = test_convex();
 		const fixture = await seed_metered_workspace(t, { storedBytes: 8 * GIB, plan: "Free", clerkUserId: "meter-payer" });

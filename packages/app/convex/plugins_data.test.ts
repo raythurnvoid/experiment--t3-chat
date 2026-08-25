@@ -3083,6 +3083,48 @@ describe("write_versioned_document", () => {
 		expect(stored[0]).toMatchObject({ revision: 1, value: { n: 3 } });
 	});
 
+	test("resolves the plan-driven slot ceiling on this door too", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t, { plan: "Pro" });
+		const principal = service_principal(fixture);
+
+		await t.mutation(internal.plugins_data.write_versioned_document, {
+			principal,
+			collection: "meetings",
+			key: "a",
+			revision: 1,
+			value: { n: 1 },
+		});
+		await t.run(async (ctx) => {
+			const usage = await ctx.db
+				.query("plugins_data_usage")
+				.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
+				.first();
+			await ctx.db.patch("plugins_data_usage", usage!._id, { usedDocuments: 99_999 });
+		});
+
+		// A door hardcoding the Free constant would refuse here at 10,000. The paid
+		// ceiling admits the last slot, then refuses naming the paid number.
+		const lastSlot = await t.mutation(internal.plugins_data.write_versioned_document, {
+			principal,
+			collection: "meetings",
+			key: "b",
+			revision: 1,
+			value: { n: 2 },
+		});
+		expect(lastSlot._nay).toBeUndefined();
+
+		const refused = await t.mutation(internal.plugins_data.write_versioned_document, {
+			principal,
+			collection: "meetings",
+			key: "c",
+			revision: 1,
+			value: { n: 3 },
+		});
+		expect(refused._nay?.name).toBe("storage_full");
+		expect(refused._nay?.message).toBe("This plugin has used its 100000 document slots");
+	});
+
 	test("refuses a key the plugin already writes interactively", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
