@@ -497,6 +497,16 @@ Args survive `vp env exec` best as JSON5 with single-quoted strings inside one d
 
 ⚠ `convex run` carries an **admin key, not a user identity**, so `ctx.auth.getUserIdentity()` is null by default and any handler that resolves a current user refuses it. There is no single `require_identity` helper to grep for — the shape is `server_convex_get_user_fallback_to_anonymous(ctx)` (from `server/server-utils.ts`) followed by a `throw convex_error({ message: "Unauthenticated" })` when it answers null. Grep for that helper name to find the gated handlers. Pass `--identity '<json>'` to supply a fake identity when you need one; the admin key still authorizes the call, so this reaches internal functions too.
 
+To act as a real app user, pass `external_id` as that user's Convex `users` `_id`. Dummy `subject` / `email` values are enough — the helper keys signed-in users on `external_id`, not on the email string. `email` still has to be present, or the helper throws `Email required for signed-in users`. Use a Clerk-like issuer (not the anonymous JWT issuer), or `create_organization` and other signed-in-only doors answer `Unauthenticated`. Do not `gh auth switch` to "fix" this, and do not print a real email. From `packages/app`, JSON5 args, Git Bash:
+
+```bash
+vp env exec -- node node_modules/convex/bin/main.js run --typecheck disable --codegen disable \
+  plugins:publish_version "{repositoryId:'<plugins_publisher_repositories id>'}" \
+  --identity "{subject:'cli-publisher',issuer:'https://clerk.example',email:'qa-publisher@example.com',external_id:'<users id>'}"
+```
+
+The same `--identity` shape works for `organizations:create_organization`, `organizations:invite_user_to_organization_workspace`, and `plugins:install_version`. Read the claim's `ownerUserId` from `plugins_publisher_repositories` — the QA Edge profile can be signed out of Clerk, and then the detail page has no Publish button.
+
 Presence is no longer usable as the "is the client registered" probe from here. All eight exported handlers in `presence.ts` require an identity — seven throw the plain `Unauthenticated`, and `heartbeat` throws its own `"Presence heartbeat requires an authenticated user"` — and `listRoom` refuses `app_presence_global` outright even *with* one, so it is not a `convex run` workaround either. Check presence registration from **inside the page** instead, where the app's own identity is live: `presence:heartbeat` for the room, then `presence:list` with the returned room token.
 
 ## Prove A Public Convex Query Needs No Auth (truly anonymous)

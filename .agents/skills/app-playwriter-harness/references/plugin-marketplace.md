@@ -39,6 +39,8 @@ After a successful publish, the publisher card turns into a link to the plugin d
 
 The claim form's submit button is named `Claim` (`exact: true`) — there is no button named "Claim repository".
 
+**Publish when the QA Edge profile is signed out of Clerk (verified 2026-08-25).** Only the claim owner sees `Publish` on the detail page. An anonymous tab minted in that profile cannot publish. Do not sign the user into Clerk there. Run the real `plugins:publish_version` action from the Convex CLI with `--identity` whose `external_id` is the claim's `ownerUserId` (recipe in `snippets.md`). That path still reviews, uploads to R2, and marks the version `ready` / `passed`. After it returns a `pluginVersionId`, wait until `sourceStatus` is `ready` and `reviewStatus` is `passed` before installing. A publisher-rate-limit wait is not needed when the installer is a different user than the publisher.
+
 ## Publishing a QA fixture plugin without GitHub
 
 When a check needs a plugin with an arbitrary manifest (for example specific `secrets[]` declarations), publishing through GitHub is overkill. Claim a fake repository URL through the publisher UI as the signed-in user, then register the version with the operator-invokable internal mutations from the CLI (see the CLI recipe in `snippets.md` for the command wrapper and the JSON5 args syntax):

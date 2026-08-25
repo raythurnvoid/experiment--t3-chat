@@ -165,6 +165,9 @@ history" is about fast unverified sends, not about the composer.
 3. **Send with verification, not with sleeps.** Poll `li.message` count plus the last `.message-text`
    until both match what you sent, then move on. About 250 ms polling and a 500 ms gap between sends
    was enough; nothing was lost across 18 messages.
+   **Click `Send` after it is enabled.** Enter while a send is still in flight drops the next
+   message (observed 2026-08-25 while seeding 28 rows). Wait for the Send button to be enabled,
+   then click it. Do not hold a loop on Enter.
 4. **Alternate authors by alternating sessions**, one CLI call per author run. Each session drives its
    own tab, so the other side's rows arrive live and the leader/continuation grouping comes out real.
 5. **Threads**: click `.message-thread-summary` when the root already has replies (no hover needed);
@@ -196,6 +199,43 @@ door then walks. A 14-message channel leaves only 2 there, so the very first pre
 `isDone: true` and never exercises the full-page branch — the one that answers a **non-null cursor**
 beside a key range. Measured 2026-08-24: 28 messages gave five full pages of 3 with `isDone: false`
 and a non-null cursor, then a final page of 1 with `isDone: true` and `cursor: null`.
+
+**0.5.1 swap runner.** After Chitchat 0.5.1 is published, the asset prefix is
+`/plugins-ui/hn7j9kpdh4h76he1njpf33dny18d4q1v/`. The working-tree swap for that version lives at
+`t3-chat-+personal/+ai/chitchat-change-feed-research-2026-08-25/runners/swap-plugin-bundle-051.js`.
+Set `state.patchVariant` before the first plugin navigation on that page: `smallwindow` shrinks
+the messages window page size to 2 and the HTTP page to 3; `smallwindow-nofeed` does the same and
+also skips `apply_window` on the messages `watchChanges` callback (the break-on-purpose for frozen
+rows). Serve `dist/frontend` on `127.0.0.1:5175` first. If the installed version id moved, fix the
+constant in that runner the same way as v3.
+
+**Edit a frozen row in two Playwriter calls.** Hover the `li.message`, click `Edit`, then in a
+**second** call fill the `Edit message` textbox and click `Save`. One 15s call that does hover +
+Edit + fill + Save can time out after fill even when `editValue` already holds the new text
+(observed 2026-08-25). Prefer `frame.evaluate` for reads; use hover + locator click for row
+actions, not `evaluate` click.
+
+## Frozen rows (0.5.1 change feed)
+
+A row loaded through "Load older messages" is outside the live window. 0.5.1 applies
+`watchChanges({ collection: "messages", updatedSince })` so those rows update without a reload
+(edit, delete, thread reply, reaction add/remove). Say in the report that the cap was patched
+when you used `smallwindow`.
+
+Live proof, two tabs, **same user**, no `bringToFront`:
+
+1. Tab A: `page.route` with `smallwindow` **before** opening the plugin page, then seed ~28
+   messages, grow to capacity, HTTP-load until the target row is on screen.
+2. Tab B: `context.newPage()`, set `state.patchVariant = "smallwindow-nofeed"`, install the same
+   051 swap **before** that page's first plugin navigation, park → `#channel` in **separate**
+   calls, grow, HTTP-load the same frozen row.
+3. On tab A, edit that row. Tab A shows the new text. Tab B must keep the old text — a local
+   edit on B would still look live through the write path, so the editor has to be the other tab.
+   Own edits of HTTP-loaded rows on a feed-on tab still update; the nofeed tab is what proves
+   the feed, not the write.
+
+Private non-member is a different check (see Private channels). Do not use the organization
+owner as the outsider — the owner reads every scope.
 
 **Switching channels needs its own call.** Clicking `#alpha` and then `#deephist` inside one
 `-e` script left the view on `#alpha`, and the row counts that followed described the wrong channel.
@@ -351,10 +391,16 @@ all four collections. Two things follow for QA:
 - **A member who is not in the scope sees nothing at all** — no row, no name, no placeholder.
   "Nothing rendered" is the pass condition, so assert on the absence of the name in `.channel-name`,
   and back it with `scopes.watchMine` answering `[]` and a ranged read of the prefix dying denied. A
-  screenshot alone cannot tell "correctly hidden" from "broken sidebar".
+  screenshot alone cannot tell "correctly hidden" from "broken sidebar". The cheapest live tell is
+  `document.body.innerText` inside the frame: the insider's text includes the channel name, the
+  outsider's does not (verified 2026-08-25 on published 0.5.1 in `qa-browser` / `home`, channel
+  `#secretfeed`).
 - **The organization owner reads every scope**, so an owner-only run proves nothing about a refusal.
   Use a second identity — `second-user-fixtures.md` and `clerk-test-accounts.md` — in an isolated
-  scratch browser, never in the signed-in profile the user works in.
+  scratch browser, never in the signed-in profile the user works in. Two anonymous members in
+  `qa-browser` is enough: invite both, create the private channel as one of them with nobody else
+  ticked, then open Chitchat as the other. If `create_organization` answers `Organization quota
+  reached`, invite into `qa-browser` instead of making a new org.
 
 With the swap runner's `expose-client` variant, `window.__ccClient` is the live SDK client, which is
 the only practical way to drive scope membership from the browser:
@@ -418,7 +464,8 @@ persistence check:
   composer makes — and leave the menu to the unit tests.
 - **The swap runner's `versionId` is a hardcoded constant.** `swap-plugin-bundle-v3.js` routes on the
   asset prefix of one published version, and the installed version moved when 0.3.0 was published
-  (`hn7x5j1hg4e630j7t4mkcr3h118d3632`). Before any swap, read the real prefix from the frame URL and
+  (`hn7x5j1hg4e630j7t4mkcr3h118d3632`). 0.5.1 is `hn7j9kpdh4h76he1njpf33dny18d4q1v` (see the 051
+  runner in "Frozen rows" above). Before any swap, read the real prefix from the frame URL and
   fix the constant, or the route matches nothing and the frame silently runs the published bundle.
 - **Private unread**: A sends in a private channel both are in; B's row gains the dot with no cursor
   map involvement (the sender stamps `lastMessageAt` on the channel doc). B opening the channel writes

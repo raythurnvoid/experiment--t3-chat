@@ -86,7 +86,7 @@ The sidebar shows the same string in a sonner toast, but that toast is short-liv
 
 ## 3. Invite it into a workspace
 
-`create_organization` refuses anonymous callers, and `invite_user_to_organization_workspace` refuses the **default** organization (`Cannot add user to default organization`). So the fixture org must be a new non-default org created by the signed-in user:
+`create_organization` refuses anonymous callers, and `invite_user_to_organization_workspace` refuses the **default** organization (`Cannot add user to default organization`). So the fixture org must be a non-default org. Prefer creating a throwaway org as a signed-in user (or via Convex CLI `--identity` as that user — see `snippets.md`):
 
 ```js
 const created = await cx.mutation(api.organizations.create_organization, { name: "qa-…", description: "QA throwaway" });
@@ -97,7 +97,8 @@ await cx.mutation(api.organizations.invite_user_to_organization_workspace, {
 });
 ```
 
-- `description` is short-capped; a sentence trips `Description is too long`.
+- `description` is short-capped; a sentence trips `Description is too long`. Org names are kebab-case and max 20 characters.
+- Extra organizations are quota-capped (two beyond the default `personal` org). `Organization quota reached` means do **not** keep retrying: invite into the seeded `qa-browser` / `home` workspace as `qa.perm.owner` instead (`clerk-test-accounts.md`). That org is already non-default, so invites work.
 - The invitee lands with the `member` system role: `content.read` and `content.write`, and **no** `content.permissions.manage`. That is exactly the shape most permission refusals need.
 - Each side reads its own membership with `organizations.get_membership_by_organization_workspace_name({ organizationName, workspaceName })`.
 - Confirm the granted level per permission with `access_control.get_current_user_workspace_permission({ membershipId, permission })` — it takes the membership id, not org/workspace ids.
