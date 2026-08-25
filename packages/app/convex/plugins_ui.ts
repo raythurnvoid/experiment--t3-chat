@@ -72,6 +72,49 @@ if (!process.env.VITE_CONVEX_HTTP_URL) {
 // refused, including the literal "null" an opaque-origin page sends.
 const SITE_ORIGIN = new URL(process.env.VITE_CONVEX_HTTP_URL).origin;
 
+/**
+ * Deliberately optional, read at call time like EXA_API_KEY: production deployments never set it,
+ * so an unset variable must behave exactly as before instead of failing the deploy or the request.
+ * When set to one bare origin, the session-jwt exchange ALSO accepts that exact origin — this is
+ * what lets the app's development-only plugin frame override (`VITE_PLUGIN_UI_DEV_*` in
+ * packages/app/.env) complete its exchange from a local dev server. Exact string match on the
+ * serialized origin: no wildcard, no list, no prefix.
+ */
+function dev_exchange_origin() {
+	const raw = process.env.PLUGINS_UI_DEV_EXCHANGE_ORIGIN?.trim();
+	if (!raw) {
+		return undefined;
+	}
+
+	try {
+		return new URL(raw).origin;
+	} catch {
+		console.error("PLUGINS_UI_DEV_EXCHANGE_ORIGIN is set but is not a valid URL", { value: raw });
+		return undefined;
+	}
+}
+
+/**
+ * CORS headers for the dev exchange, or undefined when they must not appear. They are keyed to the
+ * request's exact Origin and only ever echo the ONE configured dev origin, so a response stays
+ * unreadable to scripts on every other origin — the property the plain router's missing CORS
+ * headers guarantees in production.
+ */
+function dev_exchange_cors_headers(request: Request): Record<string, string> | undefined {
+	const origin = request.headers.get("Origin");
+	const devExchangeOrigin = dev_exchange_origin();
+	if (origin === null || devExchangeOrigin === undefined || origin !== devExchangeOrigin) {
+		return undefined;
+	}
+
+	return {
+		Vary: "Origin",
+		"Access-Control-Allow-Origin": devExchangeOrigin,
+		"Access-Control-Allow-Methods": "POST",
+		"Access-Control-Allow-Headers": "Content-Type",
+	};
+}
+
 if (!process.env.CONVEX_CLOUD_URL) {
 	throw new Error("CONVEX_CLOUD_URL is not set in Convex env");
 }
@@ -774,31 +817,38 @@ export type plugins_ui_http_session_jwt_Body = { token?: string };
  * JWT readable to scripts on other origins. The Origin check refuses cross-origin browser calls
  * outright, including the literal "null" an opaque-origin page sends.
  *
+ * Development-only exception: when the deployment sets PLUGINS_UI_DEV_EXCHANGE_ORIGIN to one bare
+ * origin, that exact origin is accepted too and its responses carry CORS headers — but ONLY for
+ * that origin, so no other page can ever read a response body. Production deployments do not set
+ * the variable, which restores today's behavior exactly.
+ *
  * The exchange never extends the session. Only `refresh_ui_session` (member auth in the host
  * window) moves `expiresAt`; the SDK refreshes the `plu_` token through the host shortly before
  * expiry, and each refreshed token exchanges here for a new JWT.
  */
 export async function plugins_ui_http_session_jwt(ctx: ActionCtx, request: Request) {
+	const devExchangeOrigin = dev_exchange_origin();
+	const devCorsHeaders = dev_exchange_cors_headers(request);
 	const origin = request.headers.get("Origin");
-	if (origin !== null && origin !== SITE_ORIGIN) {
-		return { status: 403, body: Result({ _nay: { message: "Unauthorized" } }) } as const;
+	if (origin !== null && origin !== SITE_ORIGIN && origin !== devExchangeOrigin) {
+		return { status: 403, body: Result({ _nay: { message: "Unauthorized" } }), headers: devCorsHeaders } as const;
 	}
 
 	const body = (await request.json().catch(() => null)) as null | plugins_ui_http_session_jwt_Body;
 	if (typeof body?.token !== "string") {
-		return { status: 400, body: Result({ _nay: { message: "Request body must carry a token" } }) } as const;
+		return { status: 400, body: Result({ _nay: { message: "Request body must carry a token" } }), headers: devCorsHeaders } as const;
 	}
 
 	const principalResult = await ctx.runQuery(internal.public_api.resolve_principal, { presented: body.token });
 	if (principalResult._nay || principalResult._yay.kind !== "plugin_ui") {
-		return { status: 401, body: Result({ _nay: { message: "Unauthenticated" } }) } as const;
+		return { status: 401, body: Result({ _nay: { message: "Unauthenticated" } }), headers: devCorsHeaders } as const;
 	}
 	const principal = principalResult._yay;
 
 	// resolve_principal leaves the expiry verdict to its callers (see its doc comment).
 	const now = Date.now();
 	if (principal.sessionExpiresAt <= now) {
-		return { status: 401, body: Result({ _nay: { message: "Unauthenticated" } }) } as const;
+		return { status: 401, body: Result({ _nay: { message: "Unauthenticated" } }), headers: devCorsHeaders } as const;
 	}
 
 	const rateLimit = await rate_limiter_limit_by_key(ctx, {
@@ -809,6 +859,7 @@ export async function plugins_ui_http_session_jwt(ctx: ActionCtx, request: Reque
 		return {
 			status: 429,
 			body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs },
+			headers: devCorsHeaders,
 		} as const;
 	}
 
@@ -827,5 +878,21 @@ export async function plugins_ui_http_session_jwt(ctx: ActionCtx, request: Reque
 	return {
 		status: 200,
 		body: Result({ _yay: { jwt, sessionExpiresAt: principal.sessionExpiresAt } }),
+		headers: devCorsHeaders,
 	} as const;
+}
+
+/**
+ * Answers the CORS preflight a cross-origin exchange POST from the dev frame needs. The SDK sends
+ * `Content-Type: application/json`, which is not a simple header, so the browser asks first even
+ * though the real request is refused without the dev exception too. Outside the dev configuration
+ * this answers like any unregistered route (404), keeping production's refusal surface unchanged.
+ */
+export function plugins_ui_http_session_jwt_preflight(request: Request) {
+	const corsHeaders = dev_exchange_cors_headers(request);
+	if (!corsHeaders) {
+		return new Response(null, { status: 404 });
+	}
+
+	return new Response(null, { status: 204, headers: corsHeaders });
 }

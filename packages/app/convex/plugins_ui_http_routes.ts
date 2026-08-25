@@ -48,6 +48,33 @@ export function plugins_ui_http_routes(router: { route: HttpRouter["route"] }) {
 						};
 					})(),
 				}))(),
+				...((/* iife */ method = "OPTIONS" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (_ctx, request) => {
+								const { plugins_ui_http_session_jwt_preflight } = await import("./plugins_ui.ts");
+								return await plugins_ui_http_session_jwt_preflight(request);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: null;
+							response: {
+								204: { headers: Record<string, string>; body: null };
+								404: { headers: Record<string, string>; body: null };
+							};
+						};
+					})(),
+				}))(),
 			},
 		}))(),
 	};

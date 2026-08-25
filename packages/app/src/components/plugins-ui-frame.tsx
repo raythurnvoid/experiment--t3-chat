@@ -31,13 +31,11 @@ const CONVEX_HTTP_ORIGIN = new URL(CONVEX_HTTP_URL).origin;
  * The local origin serves the page at its ROOT: a dev server has no
  * `/plugins-ui/<versionId>/<entry>` path, that shape belongs to the published asset route.
  *
- * KNOWN LIMIT, verified in the browser: an overridden frame cannot read plugin data. The SDK
- * exchanges its session token at the ASSET origin's `/plugins-ui/session-jwt`, and that route
- * refuses every origin but its own on purpose, so from a dev origin the exchange is a cross-origin
- * POST the browser blocks at the preflight. The frame loads, receives its token, and then shows its
- * access-ended state. Use this for markup, CSS and layout. To check a page that reads plugin data,
- * serve the working-tree build AT the published asset URL instead — the recipe is in
- * `.agents/skills/app-playwriter-harness/references/plugin-marketplace.md`.
+ * Plugin data needs one more switch. The SDK exchanges its session token at
+ * `<apiOrigin>/plugins-ui/session-jwt`, which refuses every origin but its own unless the Convex
+ * deployment sets PLUGINS_UI_DEV_EXCHANGE_ORIGIN to this same bare origin (a development-only
+ * exception; see plugins_ui.ts). With that variable set, the frame completes the exchange and its
+ * own Convex client authenticates, so pages that read plugin data work here too.
  */
 function plugin_ui_dev_override() {
 	if (!import.meta.env.DEV) {

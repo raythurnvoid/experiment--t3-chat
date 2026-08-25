@@ -87,6 +87,7 @@ describe("http routes", () => {
 				"OPTIONS /getMessagesByAuthor",
 				"POST /polar/events",
 				"GET /plugins-ui/*",
+				"OPTIONS /plugins-ui/session-jwt",
 				"POST /plugins-ui/session-jwt",
 			].sort(),
 		);

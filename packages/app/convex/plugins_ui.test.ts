@@ -1889,6 +1889,101 @@ describe("plugin session jwt exchange", () => {
 		const body = (await refused.json()) as { retryAfterMs?: number };
 		expect(body.retryAfterMs).toBeGreaterThan(0);
 	});
+
+	// The dev exchange exception must be invisible while the deployment variable is unset, which is
+	// always true in production. This pins the unset state explicitly instead of relying on every
+	// other test's environment happening to lack the variable.
+	test("refuses a cross-origin caller and sends no CORS headers while the dev exchange variable is unset", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+		vi.stubEnv("PLUGINS_UI_DEV_EXCHANGE_ORIGIN", "");
+
+		const refused = await exchange_session_jwt(t, session.token, "http://localhost:5174");
+		expect(refused.status).toBe(403);
+		expect(refused.headers.get("Access-Control-Allow-Origin")).toBeNull();
+
+		// The preflight route answers like any unregistered route without the variable.
+		const preflight = await t.fetch("/plugins-ui/session-jwt", {
+			method: "OPTIONS",
+			headers: { Origin: "http://localhost:5174", "Access-Control-Request-Method": "POST" },
+		});
+		expect(preflight.status).toBe(404);
+	});
+
+	test("accepts exactly the configured dev exchange origin with CORS and refuses every other origin", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+		vi.stubEnv("PLUGINS_UI_DEV_EXCHANGE_ORIGIN", "http://localhost:5174");
+
+		// The exact configured origin exchanges and may read the response through CORS.
+		const accepted = await exchange_session_jwt(t, session.token, "http://localhost:5174");
+		expect(accepted.status).toBe(200);
+		expect(accepted.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5174");
+		expect(accepted.headers.get("Access-Control-Allow-Methods")).toBe("POST");
+		expect(accepted.headers.get("Access-Control-Allow-Headers")).toBe("Content-Type");
+		// Vary keeps any shared cache from answering one origin with another origin's response.
+		expect(accepted.headers.get("Vary")).toBe("Origin");
+		const body = (await accepted.json()) as { _yay?: { jwt: string } };
+		if (!body._yay) {
+			throw new Error("exchange refused the configured dev origin");
+		}
+
+		// The frame's own asset origin stays valid while the variable is set, so enabling the dev
+		// exception cannot break the published-frame flow.
+		const siteCaller = await exchange_session_jwt(t, session.token);
+		expect(siteCaller.status).toBe(200);
+
+		// A different port or scheme must not ride along, and never sees CORS headers.
+		for (const foreignOrigin of ["http://localhost:5175", "https://localhost:5174"]) {
+			const foreign = await exchange_session_jwt(t, session.token, foreignOrigin);
+			expect(foreign.status).toBe(403);
+			expect(foreign.headers.get("Access-Control-Allow-Origin")).toBeNull();
+		}
+		// "null" stays refused even when it is a substring of the configured value.
+		const nullOrigin = await exchange_session_jwt(t, session.token, "null");
+		expect(nullOrigin.status).toBe(403);
+
+		// A server-to-server call (no Origin header) keeps working and still gains no CORS headers,
+		// so its response remains unreadable cross-origin.
+		const noOrigin = await t.fetch("/plugins-ui/session-jwt", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ token: session.token }),
+		});
+		expect(noOrigin.status).toBe(200);
+		expect(noOrigin.headers.get("Access-Control-Allow-Origin")).toBeNull();
+
+		// Refused answers also carry the CORS headers for the dev origin, or a preflighted request
+		// whose POST then fails would hide its error body behind a browser CORS block.
+		const badBody = await t.fetch("/plugins-ui/session-jwt", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Origin: "http://localhost:5174" },
+			body: JSON.stringify({}),
+		});
+		expect(badBody.status).toBe(400);
+		expect(badBody.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5174");
+
+		// The preflight answers for the configured origin only.
+		const preflight = await t.fetch("/plugins-ui/session-jwt", {
+			method: "OPTIONS",
+			headers: { Origin: "http://localhost:5174", "Access-Control-Request-Method": "POST" },
+		});
+		expect(preflight.status).toBe(204);
+		expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5174");
+		expect(preflight.headers.get("Access-Control-Allow-Methods")).toBe("POST");
+		const foreignPreflight = await t.fetch("/plugins-ui/session-jwt", {
+			method: "OPTIONS",
+			headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "POST" },
+		});
+		expect(foreignPreflight.status).toBe(404);
+
+		// An invalid configured value behaves as unset rather than opening the guard.
+		vi.stubEnv("PLUGINS_UI_DEV_EXCHANGE_ORIGIN", "localhost:5174");
+		const invalidConfigured = await exchange_session_jwt(t, session.token, "localhost:5174");
+		expect(invalidConfigured.status).toBe(403);
+	});
 });
 
 describe("plugin ui assets", () => {

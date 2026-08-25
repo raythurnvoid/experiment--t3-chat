@@ -49,16 +49,24 @@ When a check needs a plugin with an arbitrary manifest (for example specific `se
 ## Checking an UNPUBLISHED plugin build in the real frame
 
 Verified 2026-08-24 on Chitchat. Publishing is gated, so a working-tree build has to reach the
-browser some other way. There are two doors and only one of them gives the page working data.
+browser some other way. There are two doors: the app's dev override (simplest; needs one Convex
+variable to give the page working data) and swapping the served bytes at the published URL (exact
+production CSP and headers).
 
-**The app's own dev override does not finish the job.** `VITE_PLUGIN_UI_DEV_VERSION_ID` +
+**The app's own dev override needs one deployment variable for data.** `VITE_PLUGIN_UI_DEV_VERSION_ID` +
 `VITE_PLUGIN_UI_DEV_ORIGIN` in `packages/app/.env.local` really do point one plugin's frame at a
 local dev server, and the bridge really does hand that frame its session token. But the SDK then
 exchanges the token at the **asset** origin's `/plugins-ui/session-jwt`, which is same-origin only
 for a published bundle. From a dev origin that POST is cross-origin, and the route refuses it on
-purpose (`plugins_ui.ts`: it must never gain CORS headers). The frame loads and shows its
-access-ended state. Use the override for markup, CSS and layout; do not use it for anything that
-reads plugin data.
+purpose (`plugins_ui.ts`: it must never gain CORS headers). Without help the frame loads and shows
+its access-ended state: fine for markup, CSS and layout, not for anything that reads plugin data.
+
+To get data too, set the matching Convex env var once per dev deployment:
+`convex env set PLUGINS_UI_DEV_EXCHANGE_ORIGIN http://localhost:5174` (the same bare origin as
+`VITE_PLUGIN_UI_DEV_ORIGIN`). The exchange then accepts exactly that origin, answers its preflight,
+and the frame's own Convex client authenticates. Unset the variable to return to production
+behavior. The published-URL swap below still matters when you need the real CSP or want to check
+the page under production's exact response headers.
 
 **Swap the bytes at the published URL instead.** The frame keeps the asset origin, so the exchange,
 the capability consent, the version binding and session revocation all behave exactly as in
