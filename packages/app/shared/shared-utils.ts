@@ -178,14 +178,6 @@ export type AppCompositeIds = {
 				version: string | number,
 		  ]
 		| [
-				name: "plugin_storage",
-				billedUserId: string,
-				organizationId: string,
-				workspaceId: string,
-				/** UTC day (`YYYY-MM-DD`) whose reading produced the charge. */
-				day: string,
-		  ]
-		| [
 				name: "monthly_credit",
 				userId: string,
 				subscriptionId: string,

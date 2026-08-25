@@ -1805,24 +1805,6 @@ const billing_event_validator = v.union(
 		}),
 	}),
 	v.object({
-		name: v.literal("plugin_storage"),
-		// No actor exists: the daily metering cron emits this, so there is no
-		// externalMemberId and no actorUserId. The billed user pays for the
-		// workspace's stored plugin-data bytes either way.
-		externalCustomerId: v.id("users"),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			billedUserId: v.id("users"),
-			organizationId: v.string(),
-			workspaceId: v.string(),
-			/** The stored-bytes reading this charge was computed from. */
-			storedBytes: v.number(),
-			/** UTC day (`YYYY-MM-DD`) whose reading produced this charge. */
-			day: v.string(),
-		}),
-	}),
-	v.object({
 		name: v.literal("monthly_credit"),
 		externalCustomerId: v.id("users"),
 		externalId: v.string(),

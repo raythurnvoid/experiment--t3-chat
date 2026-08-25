@@ -149,7 +149,7 @@ The plugin document store keeps its own counters in `plugins_data_usage`, one do
 
 The slot ceiling among those limits is plan-driven: `db_resolve_document_slot_cap` in `plugins_data.ts` reads the billed user's synced Polar product on every write (Free 10,000 slots, paid 100,000; unknown state reads as Free). It still never touches the `quotas` table — there is no persisted `maxCount` to update on upgrade or downgrade, and the ceiling is not visible in `quotas.get`.
 
-Stored plugin-data bytes are billed separately, also without the `quotas` table. A daily cron in `billing_db.meter_plugin_storage_usage` reads `usedBytes + reservedBytes` and charges through the shared Polar usage meter. See `../billing-system/SKILL.md` for the event and the accrual doc. The byte and slot ceilings stay as safety limits; they are not allowances the user can buy more of.
+Stored plugin-data bytes are not billed. The byte and slot ceilings are the only limits; they are safety limits, not allowances the user can buy more of.
 
 The per-member share in `plugins_data_member_usage` is the same kind of thing: a safety limit, not an allowance. It stops one member of a workspace from filling a shared installation on their own. `MEMBER_MAX_BYTES`, `MEMBER_MAX_DOCUMENT_SLOTS` and `MEMBER_MAX_COLLECTIONS` in `packages/app/convex/plugins_data.ts` are its constants, and a refusal carries the same `storage_full` name as the installation ceiling. Only the message tells the two apart, so a page that shows the refusal should show the server's message rather than one of its own.
 

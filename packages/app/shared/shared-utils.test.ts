@@ -48,19 +48,6 @@ describe("composite_id", () => {
 		expect(id).toBe("file_save::billed_user_1::actor_user_1::organization_1::workspace_1::file_1::42");
 	});
 
-	test("joins plugin storage ids with double colons", () => {
-		const id = composite_id(
-			"billing",
-			"plugin_storage",
-			"billed_user_1",
-			"organization_1",
-			"workspace_1",
-			"2026-04-10",
-		);
-
-		expect(id).toBe("plugin_storage::billed_user_1::organization_1::workspace_1::2026-04-10");
-	});
-
 	test("joins monthly credit ids with double colons", () => {
 		const id = composite_id("billing", "monthly_credit", "user_1", "sub_1", "2026-01-01");
 

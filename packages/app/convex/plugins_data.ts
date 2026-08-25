@@ -433,7 +433,7 @@ function refuse_page_principal(principal: StorePrincipal) {
  * an owner-billed organization, otherwise the acting member. Every door resolves it
  * the same way, so a member cannot get a different ceiling by choosing a door. In a
  * default `"user"`-mode shared organization the writer's own plan therefore sets the
- * ceiling, while the daily storage cron bills the owner (it has no actor to bill).
+ * ceiling.
  */
 async function db_resolve_document_slot_cap(
 	ctx: QueryCtx,

@@ -6,10 +6,6 @@ const crons = cronJobs();
 // Once daily at 00:00 UTC.
 crons.cron("reset due anonymous billing credits", "0 0 * * *", internal.billing.reset_due_anonymous_credits, {});
 
-// Once daily at 01:30 UTC — bill each workspace's stored plugin-data bytes for the day.
-// Sub-cent amounts accrue on a per-workspace doc until a whole cent can be charged.
-crons.cron("meter plugin storage usage", "30 1 * * *", internal.billing_db.meter_plugin_storage_usage, {});
-
 // Once daily at 03:00 UTC — refresh read-only GitHub repo mounts (real work only on commit movement).
 crons.cron("sync github mounts", "0 3 * * *", internal.github_mounts.sync_all_mounts, {});
 

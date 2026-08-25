@@ -504,19 +504,6 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: pluginData.deletedCount };
 	}
 
-	// The accrual billed those usage docs. Once they are gone there is nothing left
-	// to meter for this workspace, so the leftover fractional cents must not stay.
-	const accrualDocs = await ctx.db
-		.query("billing_usage_accruals")
-		.withIndex("by_organization_workspace_kind", (q) =>
-			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
-		)
-		.take(batchSize);
-	if (accrualDocs.length > 0) {
-		await Promise.all(accrualDocs.map((doc) => ctx.db.delete("billing_usage_accruals", doc._id)));
-		return { done: false, deletedCount: accrualDocs.length };
-	}
-
 	const pluginInstallation = await ctx.db
 		.query("plugins_workspace_installations")
 		.withIndex("by_organization_workspace_pluginName", (q) =>
@@ -1029,17 +1016,6 @@ async function db_delete_organization_batch(
 		return { done: false, deletedCount: quotaDocs.length };
 	}
 
-	// Metered-usage accruals are organization-scoped billing state with no life of
-	// their own once the organization is gone.
-	const accrualDocs = await ctx.db
-		.query("billing_usage_accruals")
-		.withIndex("by_organization_workspace_kind", (q) => q.eq("organizationId", args.organizationId))
-		.take(args.batchSize);
-	if (accrualDocs.length > 0) {
-		await Promise.all(accrualDocs.map((doc) => ctx.db.delete("billing_usage_accruals", doc._id)));
-		return { done: false, deletedCount: accrualDocs.length };
-	}
-
 	// Delete the organization doc last so retries can continue to target the same
 	// organization id until all scoped docs are gone.
 	const organization = await ctx.db.get("organizations", args.organizationId);
@@ -1493,15 +1469,6 @@ async function db_finalize_deleted_user(
 			.withIndex("by_user", (q) => q.eq("userId", user._id))
 			.collect()
 			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("plugins_data_member_usage", doc._id)))),
-		// Metered-usage accruals name the payer. Only full billing purge removes them; a retained
-		// snapshot keeps its accrual so the next metering day can still charge what built up.
-		args.deleteBillingState
-			? ctx.db
-					.query("billing_usage_accruals")
-					.withIndex("by_billedUser_organization_workspace_kind", (q) => q.eq("billedUserId", user._id))
-					.collect()
-					.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("billing_usage_accruals", doc._id))))
-			: Promise.resolve(),
 		Promise.all([
 			...pendingPlainTextChunks.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),
 			...pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)),
