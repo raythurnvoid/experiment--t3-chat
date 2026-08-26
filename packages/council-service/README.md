@@ -394,6 +394,12 @@ The lifecycle this implies (plan-3 E8):
    will not clear themselves. A network error still retries. The delete works again once they clear
    the lock.
 
+A track recording that stays `UPLOADING` with `recording_duration: 0` and no files after the full
+poll is treated as a hang, not a slow upload. The run finishes `ready` and builds `transcript.md`
+from the provider transcript when that file has sentences. A later redrive cannot add audio to
+that finalized transcript. A recording that is still `UPLOADING` without duration 0 still fails,
+so a redrive can pick the files up if they appear.
+
 A redrive cannot repair an artifact that already finalized. `render_and_upload_markdown` skips a
 finalized `transcript.md`, and `store_summary_markdown` skips a `meeting_summaries` row that already
 exists. So a meeting whose transcript finalized as `_No speech was recorded._` keeps that text

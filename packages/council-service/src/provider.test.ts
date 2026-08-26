@@ -383,6 +383,7 @@ describe("council_provider_get_recording", () => {
 
 		const recording = await council_provider_get_recording(env, "rec-1");
 		expect(recording._yay?.status).toBe("UPLOADED");
+		expect(recording._yay?.recordingDuration).toBeNull();
 		expect(recording._yay?.trackFiles).toEqual([
 			{ fileName: "council_p1_peer1_peer_audio_1.webm", downloadUrl: "https://tracks.example/a" },
 			{ fileName: "council_p2_peer2_peer_audio_2.webm", downloadUrl: "https://tracks.example/b" },

@@ -4,6 +4,7 @@ import {
 	council_attribute_tracks,
 	council_escape_markdown_inline,
 	council_parse_track_file_name,
+	council_provider_transcript_fallback_segments,
 	council_provider_transcript_has_real_identity,
 	council_render_transcript_markdown,
 	type council_Participant,
@@ -261,6 +262,7 @@ describe("council_render_transcript_markdown", () => {
 			segments,
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(markdown).toContain("\\<img");
@@ -280,6 +282,7 @@ describe("council_render_transcript_markdown", () => {
 				segments: [],
 				droppedTrackCount: 0,
 				recordingWasTooShort: false,
+				recordingFilesNeverPublished: false,
 			}),
 		).toContain("No speech was recorded");
 	});
@@ -296,7 +299,86 @@ describe("council_render_transcript_markdown", () => {
 				segments,
 				droppedTrackCount: 0,
 				recordingWasTooShort: false,
+				recordingFilesNeverPublished: false,
 			}),
 		).toContain("`1:02:03`");
+	});
+
+	test("a hung upload without lines does not call the meeting silent", () => {
+		const markdown = council_render_transcript_markdown({
+			title: "Hung",
+			segments: [],
+			droppedTrackCount: 0,
+			recordingWasTooShort: false,
+			recordingFilesNeverPublished: true,
+		});
+		expect(markdown).toContain("The recording files never arrived");
+		expect(markdown).not.toContain("No speech was recorded");
+	});
+
+	test("a hung upload with provider lines warns that names may be unlabeled", () => {
+		const markdown = council_render_transcript_markdown({
+			title: "Hung",
+			segments: [
+				{
+					startMs: 1000,
+					endMs: 2500,
+					text: "hello world",
+					participantId: "TEST",
+					displayName: "Alice Prime",
+				},
+			],
+			droppedTrackCount: 0,
+			recordingWasTooShort: false,
+			recordingFilesNeverPublished: true,
+		});
+		expect(markdown).toContain("This text is the provider's own transcript");
+		expect(markdown).toContain("Alice Prime");
+		expect(markdown).toContain("hello world");
+		expect(markdown).not.toContain("No speech was recorded");
+	});
+});
+
+describe("council_provider_transcript_fallback_segments", () => {
+	test("reads sentences and uses the provider display name when it has one", () => {
+		expect(
+			council_provider_transcript_fallback_segments(
+				JSON.stringify([
+					{
+						startTime: 1000,
+						endTime: 2500,
+						sentence: "hello world",
+						peerData: { id: "TEST", displayName: "Alice Prime" },
+					},
+				]),
+			),
+		).toEqual([
+			{
+				startMs: 1000,
+				endMs: 2500,
+				text: "hello world",
+				participantId: "TEST",
+				displayName: "Alice Prime",
+			},
+		]);
+	});
+
+	test("labels a line with no name as Unknown speaker", () => {
+		expect(
+			council_provider_transcript_fallback_segments(JSON.stringify([{ sentence: "hello world", peerData: { id: "TEST" } }])),
+		).toEqual([
+			{
+				startMs: 0,
+				endMs: 0,
+				text: "hello world",
+				participantId: "TEST",
+				displayName: "Unknown speaker",
+			},
+		]);
+	});
+
+	test("drops invalid JSON and lines with no sentence", () => {
+		expect(council_provider_transcript_fallback_segments("{")).toEqual([]);
+		expect(council_provider_transcript_fallback_segments(JSON.stringify([{ sentence: "" }]))).toEqual([]);
 	});
 });

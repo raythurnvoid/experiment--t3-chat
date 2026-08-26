@@ -402,6 +402,9 @@ export async function council_provider_get_recording(env: Env, recordingId: stri
 	return Result({
 		_yay: {
 			status: typeof recording.status === "string" ? recording.status : null,
+			// Duration 0 after stop, with no files, is the hang we measured live. The pipeline
+			// reads this to tell that hang apart from a slow upload that is still writing bytes.
+			recordingDuration: typeof recording.recording_duration === "number" ? recording.recording_duration : null,
 			trackFiles,
 		},
 	});

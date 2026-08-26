@@ -507,6 +507,44 @@ fake-audio scratch-Chrome loop above.
   the note and leaves the folder). Do not Join from QA Edge for this check. Existing store docs
   do not appear until that first scheduled sync (or the hourly `ensure_hourly` job with
   `pluginName: "council"`).
+- **A Failed card is not enough.** The page always shows the same save-failed sentence. D1
+  `failure_reason` is the operator text, but a Durable Object reset mid-run can write that column
+  first (`Durable Object reset because its code was updated.`) and then the catch cannot overwrite
+  it because the row is already `failed`. The real step error lives on the Workflow instance:
+  `vp env exec -- pnpx wrangler workflows instances describe bonobo-council-workflow council-process_meeting-<meetingId>-g<generation> --config packages/council-service/wrangler.jsonc`.
+  Also read artifacts (`kind, file_name, status`, never `upload_body`) and the outbox generation.
+  Do not run `wrangler tail` on `bonobo-council-service` while a meeting is `processing`: enabling
+  tail or dashboard logs can reset the Workflow Durable Object. Hourly cron redrives after one
+  hour if the sealed grant still lives. Convex will only show `plugins_projections_council:*`
+  until create-target runs. Do not Join from QA Edge for this. QA Edge is not signed into the
+  Cloudflare or Convex dashboards — use Wrangler and `convex logs`, and do not sign in.
+  If the Workflow error is `The provider never published the recording's track files`, ask
+  RealtimeKit live (Cloudflare API MCP `GET .../recordings/{id}`, or list today's recordings).
+  Print only `status`, `recording_duration`, whether `download_url` exists, and `err_message`.
+  Never print recording ids or download URLs. A real upload-in-progress still looks like
+  `UPLOADING`, but a hang looks like `UPLOADING` plus `recording_duration: 0`, no `download_url`,
+  and a null `err_message` long after `stopped_time`. That same shape was still live on a
+  2026-08-16 track recording ten days later. After the full poll, Council now finishes `ready`
+  from the provider transcript when it sees that hang (`duration === 0`). A slow upload with
+  no duration still fails so a later redrive can pick up files. RealtimeKit's only recording
+  actions are `stop` / `pause` / `resume`. There is no retry-upload API. A leftover provider
+  meeting can stay `ACTIVE` after the session ended; marking it `INACTIVE` did not finish a
+  hung upload. A Durable Object reset can write D1 `failed` while the Workflow instance is
+  still polling. If that happens, set the row back to `processing` on the same generation so a
+  later `UPLOADED` can still write `ready`. A Workflow that stays `Running` on one sleep step
+  for far longer than 30 seconds may be paused: `wrangler workflows instances resume
+  bonobo-council-workflow <instanceId> --config packages/council-service/wrangler.jsonc`
+  unstuck generation 2 of the 2026-08-26 TEST meeting. Do not start `wrangler tail` to watch
+  this. The hung-upload recovery is deployed. Generation 3 of that TEST meeting finished
+  `ready` from the provider transcript after every poll stayed `UPLOADING` with
+  `recordingDuration: 0` and no files. A hang-recovered card shows three artifact badges
+  (`Transcript`, `Summary`, `Provider transcript`) and `Saved to`, not a `Recording` badge
+  and not the failed-save sentence. The leftover D1 `failure_reason` stays on a `ready` row
+  and the page hides it. QA Edge `personal/home` is the anonymous install and will not list
+  another account's TEST meeting. Do not sign in to reach it. Confirm on the owner's Council
+  page, or from D1 (`status=ready`) plus the Files folder names (`transcript.md`,
+  `summary.md`, `provider-transcript.json`, `meeting.md`). Do not start a new generation on a
+  meeting that is already `ready`: a redrive skips a finalized `transcript.md`.
 
 ## Chitchat page smoke (channels + messages)
 

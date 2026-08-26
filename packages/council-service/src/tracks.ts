@@ -199,6 +199,57 @@ const PROVIDER_PLACEHOLDER_SPEAKER_IDS = new Set(["TEST", "unique_id", "user_id"
  * day Cloudflare fixes the defect this is what notices. It answers false while any speaker id is a
  * placeholder or is absent from the session's participant list.
  */
+/**
+ * Turn the provider's own transcript JSON into attributed lines.
+ *
+ * Use this only when track files never arrived. Speaker ids in that JSON are placeholder
+ * garbage today, so a missing name becomes "Unknown speaker". A display name the provider
+ * filled in is still whatever it typed, not a verified identity.
+ */
+export function council_provider_transcript_fallback_segments(rawJson: string) {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(rawJson);
+	} catch {
+		return [] as council_AttributedSegment[];
+	}
+	if (!Array.isArray(parsed)) {
+		return [];
+	}
+
+	const segments: council_AttributedSegment[] = [];
+	for (const line of parsed) {
+		if (typeof line !== "object" || line === null) {
+			continue;
+		}
+		const record = line as {
+			sentence?: unknown;
+			startTime?: unknown;
+			endTime?: unknown;
+			peerData?: { id?: unknown; displayName?: unknown };
+		};
+		if (typeof record.sentence !== "string" || record.sentence.length === 0) {
+			continue;
+		}
+		const startMs = typeof record.startTime === "number" && Number.isFinite(record.startTime) ? record.startTime : 0;
+		const endMs = typeof record.endTime === "number" && Number.isFinite(record.endTime) ? record.endTime : startMs;
+		const displayName =
+			typeof record.peerData?.displayName === "string" && record.peerData.displayName.length > 0
+				? record.peerData.displayName
+				: "Unknown speaker";
+		const participantId =
+			typeof record.peerData?.id === "string" && record.peerData.id.length > 0 ? record.peerData.id : "unknown";
+		segments.push({
+			startMs,
+			endMs,
+			text: record.sentence,
+			participantId,
+			displayName,
+		});
+	}
+	return segments;
+}
+
 export function council_provider_transcript_has_real_identity(args: {
 	speakerIds: string[];
 	participants: council_Participant[];
@@ -264,6 +315,12 @@ export function council_render_transcript_markdown(args: {
 	 * the meeting was silent.
 	 */
 	recordingWasTooShort: boolean;
+	/**
+	 * True when the provider left the recording UPLOADING with duration 0 and no track files
+	 * after the whole poll. Speech may still exist in the provider transcript. Do not call
+	 * that meeting silent.
+	 */
+	recordingFilesNeverPublished: boolean;
 }) {
 	const lines = [`# ${council_escape_markdown_inline(args.title)}`, ""];
 
@@ -283,11 +340,26 @@ export function council_render_transcript_markdown(args: {
 			lines.push("_The recording was too short to process, so no transcript was produced._");
 			return `${lines.join("\n")}\n`;
 		}
+		// Track files never arrived. The meeting may still have spoken; we just could not read
+		// the audio. Say that, and do not call the room silent.
+		if (args.recordingFilesNeverPublished) {
+			lines.push("_The recording files never arrived, so no transcript was produced._");
+			return `${lines.join("\n")}\n`;
+		}
 		// Only say the meeting was silent when every recorded track really was read. With a dropped
 		// track the honest statement is about the tracks that were read, and the line above names the
 		// rest.
 		lines.push(args.droppedTrackCount > 0 ? "_No other speech was recorded._" : "_No speech was recorded._");
 		return `${lines.join("\n")}\n`;
+	}
+
+	// These lines came from the provider transcript because the audio files never arrived.
+	// Names in that file are not the same attribution track files give us.
+	if (args.recordingFilesNeverPublished) {
+		lines.push(
+			"_The recording files never arrived. This text is the provider's own transcript. Speaker names may be unlabeled._",
+			"",
+		);
 	}
 
 	lines.push(

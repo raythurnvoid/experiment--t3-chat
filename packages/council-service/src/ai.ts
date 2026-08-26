@@ -368,11 +368,12 @@ async function summarize_source(env: Env, userContent: string) {
 /**
  * Summarize transcript data with bounded map/reduce prompts.
  *
- * No segments does not mean the room was silent. There are two other ways to get here with none. A
- * too-short recording skips track discovery, so the run read no track file at all. A dropped track
- * was recorded and then refused, so its speech was never read. The member reads `summary.md` next to
- * `transcript.md`, and `council_render_transcript_markdown` already refuses to call either case
- * silent, so this function must refuse the same two cases or the two documents contradict each other.
+ * No segments does not mean the room was silent. There are three other ways to get here with none. A
+ * too-short recording skips track discovery, so the run read no track file at all. A hung upload
+ * left no track files, so this run has no audio to read. A dropped track was recorded and then
+ * refused, so its speech was never read. The member reads `summary.md` next to `transcript.md`, and
+ * `council_render_transcript_markdown` already refuses to call those cases silent, so this function
+ * must refuse the same cases or the two documents contradict each other.
  */
 export async function council_summarize_meeting(
 	env: Env,
@@ -388,22 +389,30 @@ export async function council_summarize_meeting(
 		 * discovery entirely, so it read no track file and no provider transcript.
 		 */
 		recordingWasTooShort: boolean;
+		/**
+		 * True when the provider left the recording UPLOADING with duration 0 and no track files.
+		 * See `council_render_transcript_markdown`, which is handed this same flag.
+		 */
+		recordingFilesNeverPublished: boolean;
 	},
 ) {
 	if (args.segments.length === 0) {
-		// Answer the same three cases as `council_render_transcript_markdown`, in its order. A member
+		// Answer the same cases as `council_render_transcript_markdown`, in its order. A member
 		// reads `summary.md` next to `transcript.md`, so the two files must not describe the same
 		// meeting differently.
 		//
 		// A too-short recording is skipped before any track is read, so this run never looked for
-		// speech at all. Otherwise only call the meeting silent when every recorded track really was
-		// read. With a dropped track the honest statement is about the tracks that were read, and the
-		// Processing note below names the rest.
+		// speech at all. Track files that never arrived are the next case: the room may have
+		// spoken, but this run has no lines to summarize. Otherwise only call the meeting silent
+		// when every recorded track really was read. With a dropped track the honest statement is
+		// about the tracks that were read, and the Processing note below names the rest.
 		const overview = args.recordingWasTooShort
 			? "The recording was too short to process, so there was nothing to summarize."
-			: args.droppedTrackCount > 0
-				? "No other speech was recorded, so there was nothing to summarize."
-				: "No speech was recorded.";
+			: args.recordingFilesNeverPublished
+				? "The recording files never arrived, so there was nothing to summarize."
+				: args.droppedTrackCount > 0
+					? "No other speech was recorded, so there was nothing to summarize."
+					: "No speech was recorded.";
 
 		return Result({
 			_yay: {

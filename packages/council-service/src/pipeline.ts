@@ -45,8 +45,10 @@ import {
 import {
 	council_attribute_tracks,
 	council_parse_track_file_name,
+	council_provider_transcript_fallback_segments,
 	council_provider_transcript_has_real_identity,
 	council_render_transcript_markdown,
+	type council_AttributedSegment,
 	type council_Track,
 	type council_TrackSegment,
 } from "./tracks.ts";
@@ -168,11 +170,15 @@ async function run_processing_steps(env: Env, step: WorkflowStep, params: counci
 		meeting.closed_at - meeting.recording_started_at < TOO_SHORT_RECORDING_MS;
 
 	let trackFileNames: string[] = [];
+	let filesNeverPublished = false;
+	let fallbackSegments: council_AttributedSegment[] = [];
 	if (tooShort) {
 		await stop_short_recording(env, step, meeting);
 	} else {
 		await resolve_session(env, step, meeting);
-		trackFileNames = await discover_tracks(env, step, meeting);
+		const discovered = await discover_tracks(env, step, meeting);
+		trackFileNames = discovered.fileNames;
+		filesNeverPublished = discovered.filesNeverPublished;
 
 		// Deterministic order: earliest track first, by the filename timestamp, so replays and the
 		// upload budget below pick the same tracks every run. The tie-break compares code units, not
@@ -224,10 +230,22 @@ async function run_processing_steps(env: Env, step: WorkflowStep, params: counci
 		}
 
 		await fetch_provider_transcript(env, step, meeting, grantToken);
+		// Track files never arrived. The provider transcript is the only speech we can still
+		// read. Fetch it again here so the lines travel in this step result and a replay does
+		// not depend on a local variable from the diagnostic upload above.
+		if (filesNeverPublished) {
+			fallbackSegments = await step.do("provider-fallback-segments", async () => {
+				return await load_provider_fallback_segments(env, meeting);
+			});
+		}
 	}
 
 	await step.do("render-markdown", async () => {
-		return await render_and_upload_markdown(env, meeting, grantToken, tooShort);
+		return await render_and_upload_markdown(env, meeting, grantToken, {
+			recordingWasTooShort: tooShort,
+			recordingFilesNeverPublished: filesNeverPublished,
+			fallbackSegments,
+		});
 	});
 
 	// One attempt already has a strict 13-call ceiling, so keep the retry budget at one. The delay is
@@ -236,7 +254,11 @@ async function run_processing_steps(env: Env, step: WorkflowStep, params: counci
 	// here: it reads the previous run's stored `failure_reason`, and once that reason says the summary
 	// itself already failed, it stores the fixed fallback text instead of failing the run again.
 	await step.do("store-summary", { retries: { limit: 1, delay: "30 seconds", backoff: "constant" } }, async () => {
-		return await store_summary_markdown(env, meeting, tooShort);
+		return await store_summary_markdown(env, meeting, {
+			recordingWasTooShort: tooShort,
+			recordingFilesNeverPublished: filesNeverPublished,
+			fallbackSegments,
+		});
 	});
 
 	await step.do("upload-summary", async () => {
@@ -362,7 +384,7 @@ async function resolve_session(env: Env, step: WorkflowStep, meeting: council_Me
 /** Poll the recording until its track file list exists, then record every discovered track. */
 async function discover_tracks(env: Env, step: WorkflowStep, meeting: council_MeetingRow) {
 	if (!meeting.provider_recording_id) {
-		return [];
+		return { fileNames: [] as string[], filesNeverPublished: false };
 	}
 	const recordingId = meeting.provider_recording_id;
 
@@ -372,11 +394,12 @@ async function discover_tracks(env: Env, step: WorkflowStep, meeting: council_Me
 	// refused read or refused stop only costs one attempt out of the poll budget instead of
 	// erroring the workflow.
 	let lastStatus: string | null = null;
+	let lastDuration: number | null = null;
 	for (let attempt = 0; attempt < RECORDING_POLL_LIMIT; attempt++) {
 		const outcome = await step.do(`discover-tracks-${attempt}`, async () => {
 			const recording = await council_provider_get_recording(env, recordingId);
 			if (recording._nay) {
-				return { done: false, fileNames: [] as string[], status: null };
+				return { done: false, fileNames: [] as string[], status: null, recordingDuration: null as number | null };
 			}
 			if (recording._yay.status === "RECORDING") {
 				const stopped = await council_provider_stop_recording(env, recordingId);
@@ -385,7 +408,12 @@ async function discover_tracks(env: Env, step: WorkflowStep, meeting: council_Me
 						meetingId: meeting.id,
 					});
 				}
-				return { done: false, fileNames: [] as string[], status: "RECORDING" };
+				return {
+					done: false,
+					fileNames: [] as string[],
+					status: "RECORDING",
+					recordingDuration: recording._yay.recordingDuration,
+				};
 			}
 			// The provider may expose a partial file list while it is still uploading. `UPLOADED` is
 			// the only status that means the list is complete, so wait for it and retries always
@@ -400,18 +428,29 @@ async function discover_tracks(env: Env, step: WorkflowStep, meeting: council_Me
 						.bind(crypto.randomUUID(), meeting.id, file.fileName, now, now)
 						.run();
 				}
-				return { done: true, fileNames: recording._yay.trackFiles.map((file) => file.fileName), status: "UPLOADED" };
+				return {
+					done: true,
+					fileNames: recording._yay.trackFiles.map((file) => file.fileName),
+					status: "UPLOADED",
+					recordingDuration: recording._yay.recordingDuration,
+				};
 			}
-			return { done: false, fileNames: [] as string[], status: recording._yay.status };
+			return {
+				done: false,
+				fileNames: [] as string[],
+				status: recording._yay.status,
+				recordingDuration: recording._yay.recordingDuration,
+			};
 		});
 		if (outcome.done) {
-			return outcome.fileNames;
+			return { fileNames: outcome.fileNames, filesNeverPublished: false };
 		}
 		// Keep the last status the provider really answered. It must travel in the step result: a
 		// Workflow replay returns cached step results without running the callback, so a value set
 		// inside the callback would be lost. A refused read reports null and keeps the older status.
 		if (outcome.status !== null) {
 			lastStatus = outcome.status;
+			lastDuration = outcome.recordingDuration;
 		}
 		// `ERRORED` is the provider's own terminal failure, so the track files this poll waits for
 		// will never appear. Waiting out the whole budget would only delay the moment the page tells
@@ -424,11 +463,21 @@ async function discover_tracks(env: Env, step: WorkflowStep, meeting: council_Me
 	}
 	// Name the real blocker: a recording still RECORDING after the whole budget means the provider
 	// refused every stop request, not that it was slow to publish files.
-	throw new Error(
-		lastStatus === "RECORDING"
-			? "The recording never stopped; the provider refused every stop request"
-			: "The provider never published the recording's track files",
-	);
+	if (lastStatus === "RECORDING") {
+		throw new Error("The recording never stopped; the provider refused every stop request");
+	}
+	// A track recording that stays UPLOADING with duration 0 and no files is the hang we
+	// measured live. The stop already happened, and another hourly retry cannot invent files.
+	// Finish without them so the provider transcript can still become the meeting's text. A
+	// real slow upload reports a duration above 0, or later becomes UPLOADED; those still
+	// throw below so a redrive can pick the files up.
+	if (lastStatus === "UPLOADING" && lastDuration === 0) {
+		console.warn("The provider left the recording UPLOADING with duration 0 and no track files; finishing without them", {
+			meetingId: meeting.id,
+		});
+		return { fileNames: [], filesNeverPublished: true };
+	}
+	throw new Error("The provider never published the recording's track files");
 }
 
 /**
@@ -620,6 +669,18 @@ async function fetch_provider_transcript(
 	});
 }
 
+/** Read the provider transcript again and turn its sentences into transcript lines. */
+async function load_provider_fallback_segments(env: Env, meeting: council_MeetingRow) {
+	if (!meeting.provider_session_id) {
+		return [] as council_AttributedSegment[];
+	}
+	const transcript = await council_provider_fetch_transcript(env, meeting.provider_session_id);
+	if (transcript._nay || !transcript._yay.ready) {
+		return [];
+	}
+	return council_provider_transcript_fallback_segments(transcript._yay.rawJson);
+}
+
 async function load_attributed_transcript(env: Env, meeting: council_MeetingRow) {
 	const db = env.COUNCIL_DB;
 	const allRows = await db
@@ -670,7 +731,11 @@ async function render_and_upload_markdown(
 	env: Env,
 	meeting: council_MeetingRow,
 	grantToken: string,
-	recordingWasTooShort: boolean,
+	args: {
+		recordingWasTooShort: boolean;
+		recordingFilesNeverPublished: boolean;
+		fallbackSegments: council_AttributedSegment[];
+	},
 ) {
 	const existing = await get_artifact(env, meeting.id, target_key("transcript_markdown", "transcript.md"));
 	if (existing?.status === "finalized") {
@@ -688,11 +753,21 @@ async function render_and_upload_markdown(
 		});
 	}
 
+	// Track files never arrived. Use the provider transcript lines only when attribution has
+	// nothing, so a later run that does find tracks still owns the document.
+	const segments =
+		attribution.segments.length > 0
+			? attribution.segments
+			: args.recordingFilesNeverPublished
+				? args.fallbackSegments
+				: [];
+
 	const markdown = council_render_transcript_markdown({
 		title: meeting.title,
-		segments: attribution.segments,
+		segments,
 		droppedTrackCount: attribution.droppedTrackCount,
-		recordingWasTooShort,
+		recordingWasTooShort: args.recordingWasTooShort,
+		recordingFilesNeverPublished: args.recordingFilesNeverPublished,
 	});
 	const bytes = new TextEncoder().encode(markdown);
 	await upload_artifact(env, {
@@ -707,11 +782,19 @@ async function render_and_upload_markdown(
 		readOnly: true,
 		nonCollaborative: true,
 	});
-	return { segmentCount: attribution.segments.length, droppedTrackCount: attribution.droppedTrackCount };
+	return { segmentCount: segments.length, droppedTrackCount: attribution.droppedTrackCount };
 }
 
 /** Persist model output before creating its target, so every redrive uploads byte-identical text. */
-async function store_summary_markdown(env: Env, meeting: council_MeetingRow, recordingWasTooShort: boolean) {
+async function store_summary_markdown(
+	env: Env,
+	meeting: council_MeetingRow,
+	args: {
+		recordingWasTooShort: boolean;
+		recordingFilesNeverPublished: boolean;
+		fallbackSegments: council_AttributedSegment[];
+	},
+) {
 	const db = env.COUNCIL_DB;
 	const existing = await db
 		.prepare("SELECT meeting_id FROM meeting_summaries WHERE meeting_id = ?")
@@ -722,14 +805,21 @@ async function store_summary_markdown(env: Env, meeting: council_MeetingRow, rec
 	}
 
 	const attribution = await load_attributed_transcript(env, meeting);
+	const segments =
+		attribution.segments.length > 0
+			? attribution.segments
+			: args.recordingFilesNeverPublished
+				? args.fallbackSegments
+				: [];
 	// Both reasons for having no segments travel with them: the run skipped track discovery, or every
 	// recorded track was dropped. `council_summarize_meeting` needs to tell those apart from a silent
 	// room, and it is handed the same two values `render_and_upload_markdown` gave `transcript.md`, so
 	// the two files answer this meeting the same way.
 	const summarized = await council_summarize_meeting(env, {
-		segments: attribution.segments,
+		segments,
 		droppedTrackCount: attribution.droppedTrackCount,
-		recordingWasTooShort,
+		recordingWasTooShort: args.recordingWasTooShort,
+		recordingFilesNeverPublished: args.recordingFilesNeverPublished,
 	});
 	// The summary is the only step that can fail forever. `cleanup.ts` sweeps every `failed` meeting
 	// older than an hour into `council_request_processing_redrive` (`lifecycle.ts`), which always

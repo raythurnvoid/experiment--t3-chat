@@ -99,6 +99,7 @@ describe("council_summarize_meeting", () => {
 			segments: [segment('\\\n"'.repeat(30_000))],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(result._yay?.sourceWasSplit).toBe(true);
@@ -139,6 +140,7 @@ describe("council_summarize_meeting", () => {
 				segments: Array.from({ length: chunkCount }, (_, index) => segment(`${index}:${"x".repeat(47_000)}`)),
 				droppedTrackCount: 0,
 				recordingWasTooShort: false,
+				recordingFilesNeverPublished: false,
 			});
 
 			expect(prompts.filter((prompt) => prompt.startsWith("Summarize transcript chunk"))).toHaveLength(
@@ -169,6 +171,7 @@ describe("council_summarize_meeting", () => {
 			segments: Array.from({ length: 4 }, (_, index) => segment(`${index}:${"x".repeat(47_000)}`)),
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		const mapPrompts = prompts.filter((prompt) => prompt.startsWith("Summarize transcript chunk"));
@@ -205,6 +208,7 @@ describe("council_summarize_meeting", () => {
 			segments: [segment(injection)],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(result._nay).toBeUndefined();
@@ -235,6 +239,7 @@ describe("council_summarize_meeting", () => {
 			segments: [segment("Hello")],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		// Read both numbers out of the one request the module actually sends, so the schema and the
@@ -270,6 +275,7 @@ describe("council_summarize_meeting", () => {
 			segments: [segment("Hello")],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(result._nay?.name).toBe("ai_failed");
@@ -294,6 +300,7 @@ describe("council_summarize_meeting", () => {
 			segments: [segment("Hello")],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(result._nay?.name).toBe("ai_failed");
@@ -318,6 +325,7 @@ describe("council_summarize_meeting", () => {
 			segments: [segment("Hello")],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(result._yay?.summary).toEqual(modelSummary);
@@ -332,6 +340,7 @@ describe("council_summarize_meeting", () => {
 			segments: [segment("Hello")],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(result._nay?.message).toBe("Meeting summary was not valid JSON");
@@ -350,6 +359,7 @@ describe("council_summarize_meeting", () => {
 			segments: [segment("Hello")],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(result._nay?.message).toBe("Meeting summary generation failed");
@@ -378,6 +388,7 @@ describe("council_summarize_meeting", () => {
 			segments: [segment("a".repeat(30_000)), segment("b".repeat(30_000))],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(prompts).toHaveLength(3);
@@ -421,6 +432,7 @@ describe("council_summarize_meeting", () => {
 			segments: [named, nested, nestedClosing],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(result._nay).toBeUndefined();
@@ -459,6 +471,7 @@ describe("council_summarize_meeting", () => {
 			segments: [segment("a".repeat(30_000)), segment("b".repeat(30_000))],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(result._nay).toBeUndefined();
@@ -488,6 +501,7 @@ describe("council_summarize_meeting", () => {
 			segments: Array.from({ length: 12 }, (_, index) => segment(`${index}:${"x".repeat(47_000)}`)),
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(result._nay).toBeUndefined();
@@ -512,6 +526,7 @@ describe("council_summarize_meeting", () => {
 			segments: [],
 			droppedTrackCount: 0,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(calls).toBe(0);
@@ -540,6 +555,7 @@ describe("council_summarize_meeting", () => {
 			segments: [],
 			droppedTrackCount: 0,
 			recordingWasTooShort: true,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(calls).toBe(0);
@@ -568,10 +584,34 @@ describe("council_summarize_meeting", () => {
 			segments: [],
 			droppedTrackCount: 1,
 			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
 		});
 
 		expect(calls).toBe(0);
 		expect(result._yay?.summary.overview).toBe("No other speech was recorded, so there was nothing to summarize.");
+		expect(result._yay?.summary.overview).not.toContain("No speech was recorded");
+	});
+
+	test("a hung upload with no track files is not summarized as a silent meeting", async () => {
+		let calls = 0;
+		const { env } = make_test_env({
+			AI: {
+				run: async () => {
+					calls += 1;
+					return {};
+				},
+			},
+		});
+
+		const result = await council_summarize_meeting(env, {
+			segments: [],
+			droppedTrackCount: 0,
+			recordingWasTooShort: false,
+			recordingFilesNeverPublished: true,
+		});
+
+		expect(calls).toBe(0);
+		expect(result._yay?.summary.overview).toBe("The recording files never arrived, so there was nothing to summarize.");
 		expect(result._yay?.summary.overview).not.toContain("No speech was recorded");
 	});
 });

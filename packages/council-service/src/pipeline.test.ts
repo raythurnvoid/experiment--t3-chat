@@ -521,6 +521,44 @@ describe("council_run_processing", () => {
 		expect(failed?.failure_reason).toContain("never stopped");
 	});
 
+	test("a hung UPLOADING recording with duration 0 finishes ready from the provider transcript", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		const mock = install_fetch(
+			processing_fetch_overrides({
+				"/recordings/rec-1": (call) => {
+					if (call.method === "PUT" && call.bodyJson?.action === "stop") {
+						return Response.json({ success: true, data: { status: "UPLOADING", recording_duration: 0 } });
+					}
+					return Response.json({ success: true, data: { status: "UPLOADING", recording_duration: 0 } });
+				},
+				"https://transcript.example/t1": () =>
+					Response.json([
+						{
+							startTime: 1000,
+							endTime: 2500,
+							sentence: "hello world",
+							peerData: { id: "TEST", displayName: "Alice Prime" },
+						},
+					]),
+			}),
+		);
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		const outcome = await council_run_processing(env, test_step(), PROCESS_PARAMS);
+		expect(outcome).toBe("ready");
+
+		const markdown = markdown_put_body(mock.calls);
+		expect(markdown).toContain("hello world");
+		expect(markdown).toContain("Alice Prime");
+		expect(markdown).toContain("This text is the provider's own transcript");
+		expect(markdown).not.toContain("_No speech was recorded._");
+		expect(counter.runs).toBe(1);
+		const tracks = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meeting_tracks").first<{ n: number }>();
+		expect(tracks?.n).toBe(0);
+	});
+
 	test("a recording that stopped but never published files reports the missing files, not the stop", async () => {
 		const counter = { runs: 0 };
 		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
