@@ -129,6 +129,16 @@ Create the R2 notification after Convex and the Worker are deployed:
 pnpx wrangler r2 bucket notification create bonobo-senate-press-files --event-type object-create --queue bonobo-senate-press-r2-upload-events --prefix "organizations/"
 ```
 
+The Files page loads Yjs snapshots and media with signed R2 URLs from the browser. Convex
+`ALLOWED_ORIGINS` already includes GitHub Pages. The bucket CORS policy must list the same
+origins, or `fetch()` of those URLs fails on `https://raythurnvoid.github.io`. Apply
+[r2-files-cors.json](r2-files-cors.json) after changing origins. Do not drop localhost.
+
+```powershell
+vp env exec pnpx wrangler r2 bucket cors set bonobo-senate-press-files --file packages/r2-upload-finalizer/r2-files-cors.json --force
+vp env exec pnpx wrangler r2 bucket cors list bonobo-senate-press-files
+```
+
 List notifications:
 
 ```powershell

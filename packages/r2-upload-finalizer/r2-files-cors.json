@@ -1,0 +1,17 @@
+{
+	"rules": [
+		{
+			"allowed": {
+				"origins": [
+					"http://localhost:5173",
+					"http://localhost:4173",
+					"https://raythurnvoid.github.io"
+				],
+				"methods": ["GET", "PUT", "HEAD"],
+				"headers": ["Content-Type"]
+			},
+			"exposeHeaders": ["ETag"],
+			"maxAgeSeconds": 3600
+		}
+	]
+}

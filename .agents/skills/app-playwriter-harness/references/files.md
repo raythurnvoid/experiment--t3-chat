@@ -15,6 +15,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Confirm route/UI with `state.appPlaywriterHarness.observe({ search: /Files|Comments|Agent|Review|Toolbar/i })`.
 - If the app is blank, read logs before retrying: `getLatestLogs({ page: state.page, search: /error|failed|not defined|syntax/i, count: 30 })`.
 - Do not force-click editor/sidebar controls. If a click is blocked, inspect the target or hit-test the point.
+- A GitHub Pages `/files` CORS error is the R2 bucket, not Pages or Convex. The editor `fetch()`es a signed snapshot URL on `*.r2.cloudflarestorage.com`. Convex `ALLOWED_ORIGINS` can already include `https://raythurnvoid.github.io` while the bucket still allows only localhost. Apply `packages/r2-upload-finalizer/r2-files-cors.json` with `wrangler r2 bucket cors set`, then prove the file body loaded and a page-context `fetch` of the Resource Timing R2 URL returns `{ ok: true, type: "cors" }`. Do not redeploy Pages for this.
 
 ## Stable Selectors
 
