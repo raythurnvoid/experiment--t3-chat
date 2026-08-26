@@ -23,6 +23,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The app build needs the vendor gitlinks under packages/app/vendor/.
+      # Do not recurse the whole .gitmodules list. That also clones
+      # references-submodules, which the frontend build does not use.
+      - name: Checkout app vendor submodules
+        run: |
+          git submodule update --init --depth 1 -- \
+            packages/app/vendor/headless-tree \
+            packages/app/vendor/mastra \
+            packages/app/vendor/novel \
+            packages/app/vendor/polar \
+            packages/app/vendor/presence \
+            packages/app/vendor/r2 \
+            packages/app/vendor/rate-limiter \
+            packages/app/vendor/remix \
+            packages/app/vendor/tiptap
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:

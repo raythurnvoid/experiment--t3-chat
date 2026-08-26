@@ -2440,6 +2440,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^4.20260410.1
         version: 4.20260702.1
+      convex:
+        specifier: 1.42.2
+        version: 1.42.2(@clerk/clerk-react@5.61.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
     devDependencies:
       happy-dom:
         specifier: 20.0.11
@@ -27231,7 +27234,7 @@ snapshots:
       nullthrows: 1.1.1
       open: 7.4.2
       serve-static: 1.16.3
-      ws: 6.2.3
+      ws: 6.2.5
     transitivePeerDependencies:
       - bufferutil
       - supports-color
