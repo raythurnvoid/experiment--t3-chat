@@ -483,16 +483,28 @@ fake-audio scratch-Chrome loop above.
   URL → `{ meetingId }` → 401 → `#view-guest`. Compare the served marker with `ROOM_REVISION` in
   `packages/council-service/src/room/page.ts` before trusting the live Worker. Do not Join from the
   QA Edge profile (mic permission). Colleagues should open the guest link in their own browser.
-- **Start recording in the room.** Close without that click settles `ready` with no files. After
-  Close, the card moves `processing → ready` (often a few minutes). Files land under
-  `/meetings/<meetingId>/`: per-speaker `.webm`, `transcript.md`, `summary.md`, and maybe
-  `provider-transcript.json`.
-- **`Saved to /meetings/<id>` is a planned path, not a folder.** The service writes `destinationPath`
-  at create time. The Files tree only gets that folder on the first successful upload. Installed
-  Council 0.2.0 still prints `Saved to` on every card (verified 2026-08-26: three `ready` meetings,
-  `artifactCount: 0`, no `meetings` row in `/files?nodeId=root`). Current plugin source hides the
-  path unless `artifacts.length > 0` and says `Council saved no files for this meeting.` instead.
-  The card label next to it is `Ended` (close time), not a Files destination.
+- **Start recording in the room.** Close without that click settles `ready` with no recording files.
+  The host still writes `/meetings/<meetingId>/meeting.md` from the plugin store (title, status,
+  times). After Close, the card moves `processing → ready` (often a few minutes). Recordings land
+  under `/meetings/<meetingId>/`: per-speaker `.webm`, `transcript.md`, `summary.md`, and maybe
+  `provider-transcript.json`. Those blob uploads need a paid plan; the meeting note does not.
+- **`Saved to /meetings/<id>` on the card is still a planned recording path.** The service writes
+  `destinationPath` at create time. Recordings appear in Files only on the first successful upload.
+  Installed Council 0.2.0 still prints `Saved to` on every card even when `artifactCount` is 0.
+  Current plugin source hides the path unless `artifacts.length > 0` and says `Council saved no
+  files for this meeting.` instead. The Files tree can still show `meeting.md` from host projection
+  for that same meeting. The card label next to it is `Ended` (close time), not a Files destination.
+- **Host projection Files tree (no Join).** Convex copies each public `meetings` store doc into
+  `/meetings/<meetingId>/meeting.md`. After a Convex push that includes
+  `plugins_projections_council`, trigger `internal.plugins_projections.schedule_sync` for the
+  install, then open `/w/personal/home/files?nodeId=root` in an owned tab. Root shows
+  `meetings, contains read-only items` (not `meetings, read-only`). `Add file` / `Add folder` on
+  that row stay enabled; the same actions on `chitchat, read-only` stay disabled. Expand
+  `meetings` → the uuid folders → `meeting.md, read-only`. Open it and read
+  `.FileNodeView-content-panel`: title, `Status:`, `Meeting id:`, and either artifact file names
+  or `Council stored no recording files for this meeting.` Do not Join from QA Edge for this
+  check. Existing store docs do not appear until that first scheduled sync (or the hourly
+  `ensure_hourly` job with `pluginName: "council"`).
 
 ## Chitchat page smoke (channels + messages)
 

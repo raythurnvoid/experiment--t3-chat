@@ -222,15 +222,15 @@ describe("chitchat file projection", () => {
 		expect(node?.nonCollaborative).toBe(true);
 	});
 
-	test("a council plugin write does not schedule projection work", async () => {
+	test("an unregistered plugin write does not schedule projection work", async () => {
 		vi.useFakeTimers();
 		const t = test_convex();
-		const fixture = await seed_plugin_user_write(t, { pluginName: "council" });
+		const fixture = await seed_plugin_user_write(t, { pluginName: "gallery" });
 
 		const appended = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
 			collection: "messages",
-			value: { text: "council only" },
-			clientRequestId: "council-1",
+			value: { text: "gallery only" },
+			clientRequestId: "gallery-1",
 		});
 		if (appended._nay) {
 			throw new Error(appended._nay.message);

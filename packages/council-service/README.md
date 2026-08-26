@@ -165,10 +165,15 @@ Two outboxes in D1, both written in the same atomic batch as the state change th
 
 D1 stays authoritative. The projection is never read back for a service decision. The current
 Council page also reads the Worker directly; writing this Convex document does not make it appear in
-another host screen by itself. It gives the host and future plugin UI a safe, installation-owned copy
-with no meeting code, ticket, email, token, admission secret, or provider URL. A stored track
-artifact does carry the provider's own file name, because that is the name the file has in the
-workspace, and the provider builds that name from the participant's provider and peer ids.
+another host screen by itself. The host copies each public meeting document into
+`/meetings/<meetingId>/meeting.md` so the Files tree and the workspace agent can see the meeting
+even when no recording uploaded. That note is derived: the store stays the source of truth, and the
+file never holds a join code, guest secret, or host ticket. Recordings still land in the same folder
+only after a successful service upload. The Convex document gives the host and future plugin UI a
+safe, installation-owned copy with no meeting code, ticket, email, token, admission secret, or
+provider URL. A stored track artifact does carry the provider's own file name, because that is the
+name the file has in the workspace, and the provider builds that name from the participant's
+provider and peer ids.
 
 ## Council 0.2.0 release gate
 

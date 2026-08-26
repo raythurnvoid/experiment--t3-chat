@@ -298,7 +298,7 @@ The hourly `cleanup expired plugin data` cron runs `cleanup_expired_plugin_data`
 
 Some plugins copy public store documents into real workspace text files so the agent can search them with bash. The store stays the source of truth. Files never write back.
 
-Chitchat is the only registered plugin today. The name list lives in `packages/app/convex/plugins_projections_registry.ts` (`["chitchat"]`). The store write doors import **only** that tiny module. They must not import `plugins_projections.ts` (that would cycle through `plugins.ts`).
+Registered names live in `packages/app/convex/plugins_projections_registry.ts` (`["chitchat", "council"]`). The store write doors import **only** that tiny module. They must not import `plugins_projections.ts` (that would cycle through `plugins.ts`).
 
 ## Write doors stay generic
 
@@ -309,10 +309,11 @@ Hook once per mutation, after the write commits, at:
 - `db_user_write_document` (Chitchat iframe: append / put / putOwned)
 - `db_write_documents` (backend/API batch)
 - `db_user_delete_document` and `delete_document` (physical delete)
+- `write_versioned_document` and `delete_versioned_document` (Council meetings). Skip the same-revision replay return; that write already scheduled.
 
 Do not hook the inner per-doc `db_write_document`. A 50-doc batch would schedule 50 times.
 
-The follow-up is `schedule_sync`: cancel any **pending** 2s job, bump `syncGeneration`, `runAfter(2000)`. Convex cannot pass the scheduled-function id into that job's args, so `syncGeneration` is the CAS token. A stale run must not clear `scheduledJobId`. Cancel of a job that already started is a no-op.
+The follow-up is `schedule_sync`: cancel any **pending** 2s job, bump `syncGeneration`, `runAfter(2000)` of that plugin's `sync` action. Convex cannot pass the scheduled-function id into that job's args, so `syncGeneration` is the CAS token. A stale run must not clear `scheduledJobId`. Cancel of a job that already started is a no-op.
 
 ## Inclusive fence (`updatedAt` + `_id`)
 
@@ -322,7 +323,7 @@ Helpers: `packages/app/convex/plugins_projections_cursor.ts`.
 
 ## Public only
 
-Change and prefix reads use `eq("scopeId", undefined)` only. Public scope is a **missing** `scopeId`, not null. The Chitchat projector also skips keys that start with `p/`. Private-scope documents must never reach a file or a search chunk.
+Change and prefix reads use `eq("scopeId", undefined)` only. Public scope is a **missing** `scopeId`, not null. Projectors also skip keys that start with `p/`. Private-scope documents must never reach a file or a search chunk.
 
 ## Chitchat files
 
@@ -330,15 +331,27 @@ Folder `/chitchat/` at the workspace root: `README.md` plus one `.md` per public
 
 Do not reuse a member's existing `/chitchat` folder. Reuse a folder only when it is already `state.rootFolderNodeId`, or when it is a leftover projection folder (it locks itself: `readOnlyScopeNodeId === folder._id`). Otherwise create `chitchat-<first8 of installationId>`. Occupied unmapped paths that are not leftover non-collaborative files are not overwritten (`slug-<first8 of channelKey>.md`; `--` is an illegal name). A file already mapped to another `channelKey`, including `__readme__`, also takes that collision name. A leftover non-collaborative file at the same path is adopted on reinstall (same node, mapped then replaced). A mapped file with an extra lock (`readOnlyScopeNodeId` is the file itself) is archived, then a new mapped file is written. Uninstall drains projection tables and **leaves the files**.
 
-Hourly cron `"ensure plugin data file projections"` (`10 * * * *`) pages Chitchat installations with `afterId` when a page is full, skips `disabled`, and schedules only when the folder was never created, `dirty` is set, or a dirty-channel doc remains. A cleared `scheduledJobId` is not work. A failed channel write keeps the dirty-channel doc and does **not** reschedule the same generation at 0ms; the next user write or the hourly ensure starts a new debounce.
+## Council files
+
+Folder `/meetings/` at the workspace root, one `/meetings/<meetingId>/meeting.md` per public `meetings` store document. The store stays the source of truth. The note holds title, status, times, participant count, and finalized artifact file names. It never holds a join code, guest secret, or host ticket.
+
+Do **not** lock `/meetings`. Council recordings (`.webm`, `transcript.md`, `summary.md`) and other member files also live there. A folder lock would freeze those uploads. Reuse any live folder at `/meetings`, including a member folder. If a file occupies that path, create `meetings-<first8 of installationId>`. Each `meeting.md` locks itself (`readOnlyScopeNodeId = file._id`). On store delete, archive **only** `meeting.md`. Leave the meeting folder and any recordings.
+
+A close with no recording still writes `meeting.md` once the store document exists. Recordings still need a paid `create-target` upload. Free/anonymous workspaces can show the note because this path is host text projection, not service blob storage.
+
+Occupied unmapped `meeting.md` paths that are not leftover non-collaborative files take `meeting-<first8 of meetingId>.md` in the same meeting folder.
+
+## Hourly ensure
+
+Hourly cron `"ensure plugin data file projections"` (`10 * * * *`) pages every registered plugin name. The `{}` cron call pages Chitchat in that mutation and schedules one job per other name. `afterId` without `pluginName` continues Chitchat. A full page of one name reschedules that name with `afterId`. Skip `disabled`. Schedule only when the folder was never created, `dirty` is set, or a dirty-channel doc remains. A cleared `scheduledJobId` is not work. A failed channel write keeps the dirty-channel doc and does **not** reschedule the same generation at 0ms; the next user write or the hourly ensure starts a new debounce.
 
 Writer stamp: organization owner at ensure-time (`createdBy` / `updatedBy`). Display names are a snapshot at rebuild.
 
 ## Tests
 
 - Cursor fence: `packages/app/convex/plugins_projections_cursor.ts` (in-source).
-- Pure projector: `packages/app/convex/plugins_projections_chitchat.ts` (in-source).
-- Write door → file: `packages/app/convex/plugins_projections_chitchat.test.ts`.
+- Pure projector: `packages/app/convex/plugins_projections_chitchat.ts` and `packages/app/convex/plugins_projections_council.ts` (in-source).
+- Write door → file: `packages/app/convex/plugins_projections_chitchat.test.ts` and `packages/app/convex/plugins_projections_council.test.ts`.
 
 # Service grant exchange
 
@@ -509,7 +522,7 @@ races between route authorization and the durable write.
 - Manifest caps, duplicates, zero-fetch-on-declared-over-limit, streaming bounds, 4-wide concurrency, and the cleanup-attempt lifecycle: `packages/app/convex/plugins.test.ts`.
 - Secrets declaration validation: `packages/app/shared/plugins.test.ts`; declaration persistence and installation health (missing secrets, re-claim guard, installed-version evaluation, capability notice tier, failing-runs window, refusals): the "plugins get_installation_health" describe in `packages/app/convex/plugins.test.ts`.
 - Bounded session deletion on all three paths: `packages/app/convex/data_deletion.test.ts`.
-- Plugin document store (limits, accounting, reservations, the versioned producer fence, the drain including projection tables, and the expiry cron): `packages/app/convex/plugins_data.test.ts`. The workspace purge is covered in `data_deletion.test.ts` and the registry pass plus the deletion-preview counts in `plugins.test.ts`. File projection (inclusive fence, iframe write door, private-scope exclusion, occupant collision, lock, uninstall leaves files, write-failure debounce, leftover self-locked folder): `packages/app/convex/plugins_projections_chitchat.test.ts` plus in-source tests in `plugins_projections_cursor.ts` and `plugins_projections_chitchat.ts`.
+- Plugin document store (limits, accounting, reservations, the versioned producer fence, the drain including projection tables, and the expiry cron): `packages/app/convex/plugins_data.test.ts`. The workspace purge is covered in `data_deletion.test.ts` and the registry pass plus the deletion-preview counts in `plugins.test.ts`. File projection (inclusive fence, iframe write door, private-scope exclusion, occupant collision, lock, uninstall leaves files, write-failure debounce, leftover self-locked folder): `packages/app/convex/plugins_projections_chitchat.test.ts` plus in-source tests in `plugins_projections_cursor.ts` and `plugins_projections_chitchat.ts`. Council versioned write door → `/meetings/<id>/meeting.md`, writable `/meetings` root, and delete archives only the note: `packages/app/convex/plugins_projections_council.test.ts` plus in-source tests in `plugins_projections_council.ts`.
 - The user-write door (revocation matrix, storage-layer ownership on every interactive writer, composed-key isolation, dedup replay/conflict, bucket, key ordering and budgets), the CAS guard (`expectedRevision` on the four keyed doors, create-only `0`, absent-remove answers, the ABA lifetime rule), and the read side (watch revocation flavors, keyPrefix ranges including supplementary Unicode, the `keyStartExclusive`/`keyEndInclusive` interval bounds and `truncated`, `watch_recent`, `watch_changes` including the inclusive same-millisecond fence, resolve nulls): the per-function describes (`user_append_document` through `db_authorize_page_write`, `watch_documents`, `watch_recent`, `watch_changes`, `resolve_member_display`, `storage-layer ownership`) in `packages/app/convex/plugins_data.test.ts`; the public-doc field pin is the read-route test in that file's "public API routes" describe. The host side shrank to the handshake (ready/init/token flow, init `convexUrl` + `userId`, ready-flood and second-load kills): `$pluginName_.pages.$pageId.test.tsx`. Everything that used to live in the host bridge now tests in `packages/bonobo-plugin-sdk/frontend.test.ts`: the window manager (re-seat, split, merge, whole-payload coalescing, the interval ceiling, cached async delivery, re-entrant `loadOlder`, and the `capacity`/`invalid` refusal reasons), the JWT exchange chain (mint → exchange → 401 refresh-and-retry), the plain-watch adapter, write/resolve mapping (writes always resolve, `members.resolve` returns `{}` on failure), loadOlder inertness after death/unsubscribe, `expectedRevision` on the wire including `0`, and the bare-death single-argument pin. The chitchat messages window, change feeds (initial fence from newest loaded `updatedAt`, cursor advance, messages truncation heal, companion-list retry after a failed first list), HTTP companion coverage, covered-root reply badges, reaction removed-markers, and CAS rename: `plugins/bonobo-plugin-chitchat/src/app.test.tsx` and `chat-store.test.ts`.
 - Full-artifact review, the `(reviewSubjectHash, reviewPolicyVersion)` cache, bounded stored reads, and backend/page classification: `packages/app/convex/plugins.test.ts` plus `packages/app/shared/plugins.test.ts`.
 - The capability map: "asks again for missing source-bound subject evidence before it accepts a pass" proves the host asks the navigation model to repair a missing subject, ignores a final-call invented path, and derives the stored map from the accepted note. "refuses a pass when navigation never records a declared subject" proves full coverage alone cannot grant a capability. The shared navigation fixture records every declared subject on its real shown source range, so a fixture meaning "this plugin is fine" cannot accidentally pass with an unexplained capability.

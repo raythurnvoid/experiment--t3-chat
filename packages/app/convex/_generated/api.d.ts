@@ -42,6 +42,7 @@ import type * as plugins_data_http from "../plugins_data_http.js";
 import type * as plugins_data_http_routes from "../plugins_data_http_routes.js";
 import type * as plugins_projections from "../plugins_projections.js";
 import type * as plugins_projections_chitchat from "../plugins_projections_chitchat.js";
+import type * as plugins_projections_council from "../plugins_projections_council.js";
 import type * as plugins_projections_cursor from "../plugins_projections_cursor.js";
 import type * as plugins_projections_registry from "../plugins_projections_registry.js";
 import type * as plugins_runtime from "../plugins_runtime.js";
@@ -108,6 +109,7 @@ declare const fullApi: ApiFromModules<{
   plugins_data_http_routes: typeof plugins_data_http_routes;
   plugins_projections: typeof plugins_projections;
   plugins_projections_chitchat: typeof plugins_projections_chitchat;
+  plugins_projections_council: typeof plugins_projections_council;
   plugins_projections_cursor: typeof plugins_projections_cursor;
   plugins_projections_registry: typeof plugins_projections_registry;
   plugins_runtime: typeof plugins_runtime;

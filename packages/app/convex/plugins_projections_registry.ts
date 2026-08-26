@@ -5,7 +5,7 @@
  * only to decide whether a mutation should schedule a projection sync. Importing the
  * projection runtime from those doors would cycle: `plugins.ts` already imports `plugins_data.ts`.
  */
-export const plugins_PROJECTION_PLUGIN_NAMES = ["chitchat"] as const;
+export const plugins_PROJECTION_PLUGIN_NAMES = ["chitchat", "council"] as const;
 
 export type plugins_ProjectionPluginName = (typeof plugins_PROJECTION_PLUGIN_NAMES)[number];
 

@@ -4329,6 +4329,10 @@ export const write_versioned_document = internalMutation({
 			maxDocumentSlots,
 		});
 
+		// Council meetings arrive on this door, not through iframe appends. An unregistered
+		// plugin still returns before any projection table is read.
+		await db_schedule_projection_sync_if_registered(ctx, installation);
+
 		return Result({ _yay: { revision: args.revision, byteSize: byteSize._yay } });
 	},
 });
@@ -4537,6 +4541,8 @@ export const delete_versioned_document = internalMutation({
 			nextNames: collectionNames,
 		});
 		await db_patch_usage(ctx, { usage: afterWrites, next: { collectionNames }, now, maxDocumentSlots });
+
+		await db_schedule_projection_sync_if_registered(ctx, installation);
 
 		return Result({ _yay: { deleted: existing != null, revision: args.revision } });
 	},

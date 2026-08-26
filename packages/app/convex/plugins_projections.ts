@@ -27,11 +27,74 @@ import {
 	files_nodes_db_finalize_editable_text_node_creation,
 	files_nodes_db_insert_file_content_docs,
 } from "./files_nodes_content.ts";
-import { plugins_projections_is_registered } from "./plugins_projections_registry.ts";
+import {
+	plugins_PROJECTION_PLUGIN_NAMES,
+	plugins_projections_is_registered,
+	type plugins_ProjectionPluginName,
+} from "./plugins_projections_registry.ts";
 import { collision_slug, ROOT_FOLDER_PATH, rollover_path } from "./plugins_projections_chitchat.ts";
 
 const DEBOUNCE_MS = 2000;
 const HOURLY_INSTALLATION_TAKE = 20;
+
+function projection_sync_ref(pluginName: plugins_ProjectionPluginName) {
+	switch (pluginName) {
+		case "chitchat":
+			return internal.plugins_projections_chitchat.sync;
+		case "council":
+			return internal.plugins_projections_council.sync;
+	}
+}
+
+async function page_projection_installations(
+	ctx: MutationCtx,
+	args: {
+		pluginName: plugins_ProjectionPluginName;
+		afterId: Id<"plugins_workspace_installations"> | undefined;
+	},
+) {
+	const indexed = ctx.db
+		.query("plugins_workspace_installations")
+		.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+		.order("asc");
+	const installations =
+		args.afterId === undefined
+			? await indexed.take(HOURLY_INSTALLATION_TAKE)
+			: await indexed.filter((q) => q.gt(q.field("_id"), args.afterId!)).take(HOURLY_INSTALLATION_TAKE);
+
+	for (const installation of installations) {
+		if (installation.status === "disabled") {
+			continue;
+		}
+
+		const state = await db_ensure_projection_state(ctx, installation);
+		const dirtyChannel = await ctx.db
+			.query("plugins_data_projection_dirty_channels")
+			.withIndex("by_installation_channelKey", (q) => q.eq("installationId", installation._id))
+			.first();
+		// Do not treat a cleared `scheduledJobId` as work. After a successful sync that field is
+		// empty on purpose. Schedule again only when the folder was never created, the write door
+		// left `dirty`, or a channel rebuild is still queued.
+		const needsSync = state.rootFolderNodeId === undefined || state.dirty || dirtyChannel !== null;
+		if (!needsSync) {
+			continue;
+		}
+
+		await ctx.scheduler.runAfter(0, internal.plugins_projections.schedule_sync, {
+			installationId: installation._id,
+		});
+	}
+
+	if (installations.length === HOURLY_INSTALLATION_TAKE) {
+		const last = installations[installations.length - 1];
+		if (last) {
+			await ctx.scheduler.runAfter(0, internal.plugins_projections.ensure_hourly, {
+				pluginName: args.pluginName,
+				afterId: last._id,
+			});
+		}
+	}
+}
 
 export const schedule_sync = internalMutation({
 	args: {
@@ -53,7 +116,7 @@ export const schedule_sync = internalMutation({
 		}
 
 		const syncGeneration = state.syncGeneration + 1;
-		const scheduledJobId = await ctx.scheduler.runAfter(DEBOUNCE_MS, internal.plugins_projections_chitchat.sync, {
+		const scheduledJobId = await ctx.scheduler.runAfter(DEBOUNCE_MS, projection_sync_ref(installation.pluginName), {
 			installationId: installation._id,
 			syncGeneration,
 		});
@@ -69,51 +132,35 @@ export const schedule_sync = internalMutation({
 
 export const ensure_hourly = internalMutation({
 	args: {
+		pluginName: v.optional(v.string()),
 		afterId: v.optional(v.id("plugins_workspace_installations")),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const indexed = ctx.db
-			.query("plugins_workspace_installations")
-			.withIndex("by_pluginName", (q) => q.eq("pluginName", "chitchat"))
-			.order("asc");
-		const installations =
-			args.afterId === undefined
-				? await indexed.take(HOURLY_INSTALLATION_TAKE)
-				: await indexed.filter((q) => q.gt(q.field("_id"), args.afterId!)).take(HOURLY_INSTALLATION_TAKE);
+		// The cron calls `{}`. Page Chitchat in this mutation so the existing continuation test
+		// still sees the first twenty states immediately. Kick every other registered plugin as
+		// its own job. `afterId` without a name is the Chitchat continuation.
+		if (args.pluginName === undefined && args.afterId === undefined) {
+			for (const pluginName of plugins_PROJECTION_PLUGIN_NAMES) {
+				if (pluginName === "chitchat") {
+					continue;
+				}
 
-		for (const installation of installations) {
-			if (installation.status === "disabled") {
-				continue;
-			}
-
-			const state = await db_ensure_projection_state(ctx, installation);
-			const dirtyChannel = await ctx.db
-				.query("plugins_data_projection_dirty_channels")
-				.withIndex("by_installation_channelKey", (q) => q.eq("installationId", installation._id))
-				.first();
-			// Do not treat a cleared `scheduledJobId` as work. After a successful sync that field is
-			// empty on purpose. Schedule again only when the folder was never created, the write door
-			// left `dirty`, or a channel rebuild is still queued.
-			const needsSync = state.rootFolderNodeId === undefined || state.dirty || dirtyChannel !== null;
-			if (!needsSync) {
-				continue;
-			}
-
-			await ctx.scheduler.runAfter(0, internal.plugins_projections.schedule_sync, {
-				installationId: installation._id,
-			});
-		}
-
-		if (installations.length === HOURLY_INSTALLATION_TAKE) {
-			const last = installations[installations.length - 1];
-			if (last) {
 				await ctx.scheduler.runAfter(0, internal.plugins_projections.ensure_hourly, {
-					afterId: last._id,
+					pluginName,
 				});
 			}
 		}
 
+		const pluginName = args.pluginName ?? "chitchat";
+		if (!plugins_projections_is_registered(pluginName)) {
+			return null;
+		}
+
+		await page_projection_installations(ctx, {
+			pluginName,
+			afterId: args.afterId,
+		});
 		return null;
 	},
 });
@@ -139,7 +186,12 @@ export const finish_sync = internalMutation({
 		// generation. A failed write keeps the dirty-channel doc. Scheduling that same generation
 		// again at 0ms would spin. The next user write or the hourly ensure starts a new debounce.
 		if (args.continueImmediately) {
-			const scheduledJobId = await ctx.scheduler.runAfter(0, internal.plugins_projections_chitchat.sync, {
+			const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+			if (!installation || !plugins_projections_is_registered(installation.pluginName)) {
+				return null;
+			}
+
+			const scheduledJobId = await ctx.scheduler.runAfter(0, projection_sync_ref(installation.pluginName), {
 				installationId: args.installationId,
 				syncGeneration: args.syncGeneration,
 			});
@@ -263,6 +315,101 @@ export const ensure_projection_root = internalMutation({
 				parentId: folder._id,
 				scopeNodeId: folder._id,
 			});
+		}
+
+		await ctx.db.patch("plugins_data_projection_states", state._id, {
+			rootFolderNodeId: folder._id,
+			updatedAt: now,
+		});
+
+		return Result({ _yay: { folderNodeId: folder._id, folderPath: folder.path } });
+	},
+});
+
+/**
+ * Reuse or create a writable folder for a projector that shares the path with other workspace files.
+ *
+ * Do not lock this folder. Council recordings also land under `/meetings`, and a folder lock would
+ * freeze those uploads and any member files already there.
+ */
+export const ensure_writable_projection_root = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		preferredPath: v.string(),
+	},
+	returns: v_result({ _yay: v.object({ folderNodeId: v.id("files_nodes"), folderPath: v.string() }) }),
+	handler: async (ctx, args) => {
+		const live = await db_require_live_state(ctx, args.installationId);
+		if (live._nay) {
+			return live;
+		}
+
+		const ready = live._yay;
+		if (!ready) {
+			return Result({ _nay: { message: "Installation gone" } });
+		}
+
+		const { installation, writerUserId, state } = ready;
+		const now = Date.now();
+
+		if (state.rootFolderNodeId) {
+			const mappedRoot = await ctx.db.get("files_nodes", state.rootFolderNodeId);
+			if (mappedRoot && mappedRoot.kind === "folder" && mappedRoot.archiveOperationId === undefined) {
+				return Result({ _yay: { folderNodeId: mappedRoot._id, folderPath: mappedRoot.path } });
+			}
+		}
+
+		const suffix = installation._id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8);
+		const suffixPath = `${args.preferredPath}-${suffix}`;
+		const candidates = [args.preferredPath, suffixPath];
+		let folderPath: string | null = null;
+		let folderNodeId: Id<"files_nodes"> | null = null;
+
+		for (const candidate of candidates) {
+			const occupant = await db_get_active_node_by_path(ctx, {
+				organizationId: installation.organizationId,
+				workspaceId: installation.workspaceId,
+				path: candidate,
+			});
+			if (!occupant) {
+				folderPath = candidate;
+				folderNodeId = null;
+				break;
+			}
+
+			// Reuse any live folder at this path, including a member folder. Recordings and notes
+			// share `/meetings`. A file at the same path is not a folder: try the suffixed name.
+			if (occupant.kind === "folder") {
+				folderPath = occupant.path;
+				folderNodeId = occupant._id;
+				break;
+			}
+		}
+
+		if (folderPath === null) {
+			return Result({ _nay: { message: "Projection folder path is occupied" } });
+		}
+
+		if (folderNodeId === null) {
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				userId: writerUserId,
+				organizationId: installation.organizationId,
+				workspaceId: installation.workspaceId,
+				parentId: files_ROOT_ID,
+				path: folderPath,
+				kind: "folder",
+				now,
+			});
+			if (created._nay) {
+				return Result({ _nay: { message: created._nay.message } });
+			}
+
+			folderNodeId = created._yay;
+		}
+
+		const folder = await ctx.db.get("files_nodes", folderNodeId);
+		if (!folder) {
+			return Result({ _nay: { message: "Projection folder missing after create" } });
 		}
 
 		await ctx.db.patch("plugins_data_projection_states", state._id, {
@@ -618,7 +765,12 @@ export const get_write_preflight = internalQuery({
 						nodeId: occupant._id,
 						mapped: false as const,
 						adoptable: occupant.nonCollaborative === true && occupant.assetId !== undefined,
-						extraLocked: occupant.readOnlyScopeNodeId !== state.rootFolderNodeId,
+						extraLocked: projection_file_is_extra_locked({
+							pluginName: state.pluginName,
+							lock: occupant.readOnlyScopeNodeId,
+							nodeId: occupant._id,
+							rootFolderNodeId: state.rootFolderNodeId,
+						}),
 						...(occupant.assetId !== undefined ? { assetId: occupant.assetId } : {}),
 					},
 				},
@@ -637,7 +789,12 @@ export const get_write_preflight = internalQuery({
 					mapped: true as const,
 					channelKey: mapped.channelKey,
 					collaborative: occupant.nonCollaborative !== true,
-					extraLocked: occupant.readOnlyScopeNodeId !== state.rootFolderNodeId,
+					extraLocked: projection_file_is_extra_locked({
+						pluginName: state.pluginName,
+						lock: occupant.readOnlyScopeNodeId,
+						nodeId: occupant._id,
+						rootFolderNodeId: state.rootFolderNodeId,
+					}),
 				},
 			},
 		});
@@ -671,6 +828,8 @@ export const insert_projection_file_node = internalMutation({
 			return Result({ _nay: { message: "Projection folder is not ready" } });
 		}
 
+		const rootFolder = await ctx.db.get("files_nodes", state.rootFolderNodeId);
+		const rootLocked = rootFolder !== null && rootFolder.readOnlyScopeNodeId === rootFolder._id;
 		const now = Date.now();
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: writerUserId,
@@ -682,8 +841,7 @@ export const insert_projection_file_node = internalMutation({
 			contentType: "text/markdown;charset=utf-8",
 			assetId: args.contentSnapshotAssetId,
 			expectsTextContent: true,
-			skipAccessControlAndLock: true,
-			inheritParentReadOnlyScope: true,
+			...(rootLocked ? { skipAccessControlAndLock: true as const, inheritParentReadOnlyScope: true as const } : {}),
 			now,
 		});
 		if (created._nay) {
@@ -711,6 +869,15 @@ export const insert_projection_file_node = internalMutation({
 			versionSnapshotAssetId: args.contentSnapshotAssetId,
 			versionSnapshotSize: args.textSize,
 		});
+
+		// Council notes sit under a writable `/meetings` folder. Lock only this file so a later
+		// recording upload into the same meeting folder is not frozen.
+		if (installation.pluginName === "council") {
+			await ctx.db.patch("files_nodes", created._yay, {
+				readOnlyScopeNodeId: created._yay,
+				readOnlyPluginServiceTargetId: undefined,
+			});
+		}
 
 		if (args.channelKey !== undefined) {
 			const channelKey = args.channelKey;
@@ -838,7 +1005,7 @@ export const finalize_projection_replace = internalMutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		if (fileNode.readOnlyScopeNodeId !== state.rootFolderNodeId) {
+		if (!projection_replace_lock_ok(installation.pluginName, fileNode, state.rootFolderNodeId)) {
 			return Result({ _nay: { message: "This item is read-only." } });
 		}
 
@@ -1029,6 +1196,39 @@ type insert_projection_file_node_Result = {
 };
 
 type finalize_projection_replace_Result = insert_projection_file_node_Result;
+
+/**
+ * Chitchat files inherit the locked `/chitchat` folder. Council files lock themselves under a
+ * writable `/meetings` folder. Any other lock is extra and the write door archives that occupant.
+ */
+function projection_file_is_extra_locked(args: {
+	pluginName: string;
+	lock: Id<"files_nodes"> | undefined;
+	nodeId: Id<"files_nodes">;
+	rootFolderNodeId: Id<"files_nodes">;
+}) {
+	if (args.pluginName === "council") {
+		return args.lock !== undefined && args.lock !== args.nodeId && args.lock !== args.rootFolderNodeId;
+	}
+
+	return args.lock !== args.rootFolderNodeId;
+}
+
+function projection_replace_lock_ok(
+	pluginName: string,
+	fileNode: Doc<"files_nodes">,
+	rootFolderNodeId: Id<"files_nodes"> | undefined,
+) {
+	if (rootFolderNodeId === undefined) {
+		return false;
+	}
+
+	if (fileNode.readOnlyScopeNodeId === rootFolderNodeId) {
+		return true;
+	}
+
+	return pluginName === "council" && fileNode.readOnlyScopeNodeId === fileNode._id;
+}
 
 async function db_ensure_projection_state(ctx: MutationCtx, installation: Doc<"plugins_workspace_installations">) {
 	const existing = await db_get_projection_state(ctx, installation._id);
