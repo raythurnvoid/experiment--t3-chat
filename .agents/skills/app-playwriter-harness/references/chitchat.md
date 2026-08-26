@@ -218,6 +218,20 @@ and the detail page shows `Version 0.5.2` with only `Uninstall`); then install t
 that tab's next plugin navigation. A frozen-row smoke can edit from the published tab (page size
 100, all history in the window) while the smallwindow tab watches the HTTP-loaded row.
 
+**0.5.3 swap runner.** Published 0.5.3 is `hn7j8wbwhevx7wz038f1tcrnjd8d6a5h` (asset prefix
+`/plugins-ui/hn7j8wbwhevx7wz038f1tcrnjd8d6a5h/`, entry `dist/frontend/index.html`). Do not reuse
+the 052 file. The 0.5.3 minified anchors are `so(u.key)` and `var Lo = 55,\n\tho = 100,` — that
+`ho` line ends with a comma, not a semicolon, because companion backoff (`qd = 1e3`, `NM = 3e4`)
+shares the same `var`. The 0.5.3 runner is
+`t3-chat-+personal/+ai/chitchat-cap-retry-2026-08-26/runners/swap-053-smallwindow.js`. It fetches
+the published JS/CSS from the registry (no local static server). Prove the published frame first
+(frame URL contains that id, detail page `Version 0.5.3` with only `Uninstall`, served JS sha256
+`b1ca9b230749bd989b7f67789562e182eacefc2e16d3859ef94b5b419921694a`). This bundle still has SDK
+0.9.5 `m0 = 24`; cap-100 lives in unmirrored SDK 0.9.6. After Save, the row text is
+`<needle> (edited)` — an exact match on the needle alone misses it. `Add reaction` plus a palette
+click can exceed an 8 s CLI timeout; the relay still finishes the click, so poll the chip instead
+of retrying.
+
 **Edit a frozen row in two Playwriter calls.** Hover the `li.message`, click `Edit`, then in a
 **second** call fill the `Edit message` textbox and click `Save`. One 15s call that does hover +
 Edit + fill + Save can time out after fill even when `editValue` already holds the new text
@@ -475,7 +489,7 @@ persistence check:
   asset prefix of one published version, and the installed version moved when 0.3.0 was published
   (`hn7x5j1hg4e630j7t4mkcr3h118d3632`). 0.5.1 is `hn7j9kpdh4h76he1njpf33dny18d4q1v` (see the 051
   runner in "Frozen rows" above). 0.5.2 is `hn7r8whxym0xsbnn0e74dqak2d8d70be` (see the 052 runner
-  there). Before any swap, read the real prefix from the frame URL and
+  there). 0.5.3 is `hn7j8wbwhevx7wz038f1tcrnjd8d6a5h` (see the 053 runner there). Before any swap, read the real prefix from the frame URL and
   fix the constant, or the route matches nothing and the frame silently runs the published bundle.
 - **Private unread**: A sends in a private channel both are in; B's row gains the dot with no cursor
   map involvement (the sender stamps `lastMessageAt` on the channel doc). B opening the channel writes
