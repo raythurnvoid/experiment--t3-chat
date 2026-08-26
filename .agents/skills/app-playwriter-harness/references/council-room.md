@@ -837,6 +837,19 @@ should. It is `snapshot()` that reads the wrong surface. Use `getCleanHTML` for 
   the browser is sending it happily. That empty list makes a visitor with a live session look exactly
   like a visitor with no session, which is how a wrong-meeting check can record a false pass. Call
   `context.cookies()` with no argument and match on the name.
+- **A live Worker that still serves an old `ROOM_REVISION` resumes `{}`.** Tree `client.ts` sends
+  `{ meetingId }` on boot so a leftover `__Host-council_session` cannot put a guest URL into another
+  meeting. The deployed room can lag that by many revisions. Measured 2026-08-26 before deploy: the
+  live Worker served `council-room-r3` while the tree was `council-room-r28`, and `resumeOrGuest`
+  posted `{}`. Opening `/room?m=<liveMeeting>` in a profile that had earlier consumed a host ticket
+  then showed the **old** meeting's lobby (Role Host, old title, old deadline) and Join answered
+  `This meeting has ended. It cannot be joined anymore.` The `?m=` meeting was still `open`. The tell
+  is lobby title ≠ URL id.
+  After deploying this package (Worker version `2df566c7-a207-47db-b965-4deea1c2ff95`, same day),
+  the same leftover cookie plus the same guest URL posted `{ meetingId }`, the resume answered 401,
+  and `#view-guest` appeared. That is the current served behaviour only while the marker still
+  matches `ROOM_REVISION` in `page.ts`. Compare the served `council-room-revision` before blaming
+  the tree. Do not Join from the QA Edge profile.
 - **A browser cannot reach the guest join without `CF-Connecting-IP`.** `COUNCIL_ALLOW_MISSING_CLIENT_IP`
   is `"false"` in `wrangler.jsonc`, and only Cloudflare's edge sets that header, so
   `POST /room/api/guest-session` from a local browser answers `400 Missing client address` before it

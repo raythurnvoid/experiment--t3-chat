@@ -451,6 +451,49 @@ click provably does nothing, not before.
   `routes-page.ts` against the caps in `packages/app/convex/plugins_data.ts` (`MAX_RESERVATION_TTL_MS`,
   `MAX_VALUE_BYTES`, name rules) instead of retrying.
 
+## Colleague recording on the live Worker
+
+Use this when a person wants a real call with guests and files in `/meetings/<id>/`. It is not the
+fake-audio scratch-Chrome loop above.
+
+- **Paid plan first.** Service uploads refuse Free and anonymous users (`This workspace's plan does
+  not include plugin service file storage`). Only `Pay As You Go` and `Pro` store tracks. Prove it
+  from the signed-in account: `app_convex.query(app_convex_api.billing.get_current_user_subscription)`
+  is null for anonymous, and that session is treated as Free. Do not start a recorded call on the QA
+  Edge anonymous tab and expect Files to fill.
+- **Guests do not need app accounts.** Share the one-time join code plus the guest link
+  (`https://<council-worker>/room?m=<meetingId>`). The default `personal` org cannot Invite members
+  (`Users` → Invite is `aria-disabled`). If colleagues must also open the files in the app, create a
+  non-personal organization, invite them there, install Council, and run the meeting in that
+  workspace.
+- **Save the join code before `Done, I saved the invite`, and before Open if you are driving the
+  page from Playwriter.** The service stores only the hash. The open meeting card can rebuild the
+  guest link, never the code. The yellow panel is React state in the plugin frame, so a frame
+  remount (Retry, session lost, or a later Open click) wipes it. Copy join code to the clipboard
+  and a note first. Then the member clicks Open.
+- **Mint the host room link only when the host is ready to open it.** It is single-use and lasts two
+  minutes. Click `Get host room link`, copy it from the card, and open it in a **new tab**. Do not Join
+  from the QA Edge profile (mic permission wedges `getUserMedia`). The human host may Join in their
+  own browser; an agent Join still belongs in scratch Chrome.
+- **A leftover host cookie must not open the wrong meeting.** One `__Host-council_session` cookie
+  covers the whole Worker origin. The room page must name `?m=` on resume so a cookie from another
+  meeting is refused and the guest form appears. If the served `council-room-revision` lags the tree,
+  the page posts `{}` and the leftover host lobby comes back (Host + old title; Join says the old
+  meeting ended). Re-measured 2026-08-26 after deploying this package: leftover cookie + live guest
+  URL → `{ meetingId }` → 401 → `#view-guest`. Compare the served marker with `ROOM_REVISION` in
+  `packages/council-service/src/room/page.ts` before trusting the live Worker. Do not Join from the
+  QA Edge profile (mic permission). Colleagues should open the guest link in their own browser.
+- **Start recording in the room.** Close without that click settles `ready` with no files. After
+  Close, the card moves `processing → ready` (often a few minutes). Files land under
+  `/meetings/<meetingId>/`: per-speaker `.webm`, `transcript.md`, `summary.md`, and maybe
+  `provider-transcript.json`.
+- **`Saved to /meetings/<id>` is a planned path, not a folder.** The service writes `destinationPath`
+  at create time. The Files tree only gets that folder on the first successful upload. Installed
+  Council 0.2.0 still prints `Saved to` on every card (verified 2026-08-26: three `ready` meetings,
+  `artifactCount: 0`, no `meetings` row in `/files?nodeId=root`). Current plugin source hides the
+  path unless `artifacts.length > 0` and says `Council saved no files for this meeting.` instead.
+  The card label next to it is `Ended` (close time), not a Files destination.
+
 ## Chitchat page smoke (channels + messages)
 
 The Chitchat plugin page (`/w/<org>/<workspace>/plugins/chitchat/pages/chat`) drives cleanly with
