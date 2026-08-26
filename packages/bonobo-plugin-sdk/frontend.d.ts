@@ -364,7 +364,10 @@ export interface BonoboUiFrontendClient {
 		 * millisecond is free: merge by key and revision. Advance the cursor only when a later
 		 * `updatedAt` arrives, or the same-millisecond re-delivery will re-subscribe in a loop.
 		 * If a delivery is truncated and every document is still on the cursor millisecond, pass
-		 * `newest + 1` so the live query can leave those 100 rows.
+		 * `newest + 1` so the live query can leave those 100 rows. That step can permanently skip tied rows past the first 100
+		 * when 101 or more documents in one collection and scope share the same `Date.now()` millisecond, reachable only
+		 * through parallel bulk imports on the batch door (three 50-document mutations in one millisecond); replies and
+		 * reactions have no heal for it, and messages heal one page.
 		 *
 		 * The delivery contract is `watch`'s: each update replaces the whole list, `null` ends the
 		 * subscription, `limit` follows the same 1..100 rule, and the read spends the same frame

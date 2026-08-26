@@ -1104,6 +1104,7 @@ describe("data.watchChanges", () => {
 		expect(changesDeclaration).toContain("updatedSince?: number;");
 		expect(declaration).toContain("updatedSince` is an inclusive lower bound");
 		expect(declaration).toContain("`newest + 1` so the live query can leave those 100 rows");
+		expect(declaration).toContain("permanently skip tied rows past the first 100");
 		expect(changesDeclaration).toContain(
 			"onUpdate: (update: BonoboUiDataWatchUpdate | null, info?: BonoboUiWatchDeathInfo) => void,",
 		);
