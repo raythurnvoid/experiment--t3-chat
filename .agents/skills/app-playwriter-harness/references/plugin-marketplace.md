@@ -502,9 +502,11 @@ fake-audio scratch-Chrome loop above.
   that row stay enabled; the same actions on `chitchat, read-only` stay disabled. Expand
   `meetings` → the uuid folders → `meeting.md, read-only`. Open it and read
   `.FileNodeView-content-panel`: title, `Status:`, `Meeting id:`, and either artifact file names
-  or `Council stored no recording files for this meeting.` Do not Join from QA Edge for this
-  check. Existing store docs do not appear until that first scheduled sync (or the hourly
-  `ensure_hourly` job with `pluginName: "council"`).
+  or `Council stored no recording files for this meeting.` Only public store `meetings` docs get
+  a note. A leftover uuid folder with no store doc stays without `meeting.md` (delete archives
+  the note and leaves the folder). Do not Join from QA Edge for this check. Existing store docs
+  do not appear until that first scheduled sync (or the hourly `ensure_hourly` job with
+  `pluginName: "council"`).
 
 ## Chitchat page smoke (channels + messages)
 
