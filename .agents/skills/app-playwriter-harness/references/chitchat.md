@@ -227,10 +227,20 @@ shares the same `var`. The 0.5.3 runner is
 the published JS/CSS from the registry (no local static server). Prove the published frame first
 (frame URL contains that id, detail page `Version 0.5.3` with only `Uninstall`, served JS sha256
 `b1ca9b230749bd989b7f67789562e182eacefc2e16d3859ef94b5b419921694a`). This bundle still has SDK
-0.9.5 `m0 = 24`; cap-100 lives in unmirrored SDK 0.9.6. After Save, the row text is
+0.9.5 `m0 = 24`. Cap 100 shipped in 0.5.4. After Save, the row text is
 `<needle> (edited)` — an exact match on the needle alone misses it. `Add reaction` plus a palette
 click can exceed an 8 s CLI timeout; the relay still finishes the click, so poll the chip instead
 of retrying.
+
+**0.5.4 published bundle.** Published 0.5.4 is `hn7kn3bbjg85wpmpwtzx506ppx8d79y3` (asset prefix
+`/plugins-ui/hn7kn3bbjg85wpmpwtzx506ppx8d79y3/`, entry `dist/frontend/index.html`). Served JS sha256
+`2471c14986c2a9252c70f7bbe100f8f5c25458c0ae2bbaf8ae9f55ed08977198`. The 100-subscription backstop is
+in this bundle: served JS has `m0 = 100` and does not have `m0 = 24`. Do not confuse that with
+`ho = 100` in `var Lo = 55,\n\tho = 100,` — `ho` is the HTTP page size. Companion backoff is still
+`qd = 1e3` / `NM = 3e4`. Window prefix helper is still `so(u.key)`. Prove the cap from **inside**
+the plugin frame (`frame.evaluate` + `fetch("assets/index.js")`). A host-page `fetch` of the Convex
+asset is CORS-blocked. Same `patchVariant` smallwindow values as 053 if you need a frozen-row
+smoke; reuse the 053 runner only after changing its `versionId` constant to this id.
 
 **Edit a frozen row in two Playwriter calls.** Hover the `li.message`, click `Edit`, then in a
 **second** call fill the `Edit message` textbox and click `Save`. One 15s call that does hover +
@@ -489,7 +499,8 @@ persistence check:
   asset prefix of one published version, and the installed version moved when 0.3.0 was published
   (`hn7x5j1hg4e630j7t4mkcr3h118d3632`). 0.5.1 is `hn7j9kpdh4h76he1njpf33dny18d4q1v` (see the 051
   runner in "Frozen rows" above). 0.5.2 is `hn7r8whxym0xsbnn0e74dqak2d8d70be` (see the 052 runner
-  there). 0.5.3 is `hn7j8wbwhevx7wz038f1tcrnjd8d6a5h` (see the 053 runner there). Before any swap, read the real prefix from the frame URL and
+  there). 0.5.3 is `hn7j8wbwhevx7wz038f1tcrnjd8d6a5h` (see the 053 runner there). 0.5.4 is
+  `hn7kn3bbjg85wpmpwtzx506ppx8d79y3` (see the 054 published-bundle note there). Before any swap, read the real prefix from the frame URL and
   fix the constant, or the route matches nothing and the frame silently runs the published bundle.
 - **Private unread**: A sends in a private channel both are in; B's row gains the dot with no cursor
   map involvement (the sender stamps `lastMessageAt` on the channel doc). B opening the channel writes
