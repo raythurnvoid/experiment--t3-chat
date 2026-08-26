@@ -561,11 +561,15 @@ the stylesheet, and compare the name's right edge with the link's content box to
 Public Chitchat writes project into a locked `/chitchat` folder. Drive the plugin in an **owned**
 tab (see the OOPIF `bindOpenTab` bullet in `known-hazards.md`), send on a uniquely named public
 channel, wait a few seconds (2s debounce plus sync), then open
-`/w/:org/:workspace/files?nodeId=root` and click the `chitchat` folder.
+`/w/:org/:workspace/files?nodeId=root` and open the folder with
+`getByRole("treeitem", { name: "chitchat, read-only" })` (see `files.md` for the locked-row name).
 
 - Folder status: `This folder is read-only.` File status: `Read-only because /chitchat is locked.`
-- Channel file: `/chitchat/<slug>.md` with `<!-- chitchat:msg:... -->` blocks. Edits show
-  `(edited)`, deletes show `(message deleted)` and hide the body, reactions show as `reactions:`.
+- Channel file: `/chitchat/<slug>.md` with `<!-- chitchat:msg:... -->` blocks. Open a row with
+  `getByRole("link", { name: "Open <slug>.md" })`. Edits show `(edited)`, deletes show
+  `(message deleted)` and hide the body, reactions show as `reactions:`.
+- Messages inside one file are oldest first. Send unique older then newer markers; the older
+  marker must appear first in the file text. Prove Convex is pushing before trusting that order.
 - Private channels (`#name (private)`, keys `p/...`) must not appear. Expand `Show more` before
   treating a missing name as proof.
 - The workspace agent can `cat` those paths with bash and is refused on write

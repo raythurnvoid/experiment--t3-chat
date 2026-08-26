@@ -43,6 +43,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Sidebar selected rows: `.FilesSidebarTreeItem[data-file-id]:has(.FilesSidebarTreeItemPrimaryAction[aria-selected="true"])`.
 - Sidebar row primary action: `.FilesSidebarTreeItemPrimaryAction`.
 - Sidebar row more action: `.FilesSidebarTreeItemMoreAction`.
+- Locked row accessible name: `getByRole("treeitem", { name: "<name>, read-only" })` when the lock is on that node, or `"<name>, read-only from /path"` when it is inherited. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26).
 - Sidebar context menu: `[data-files-sidebar-tree-context][role="menu"]`.
 - Folder explorer root: `.FileNodeViewFolderExplorer`.
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.

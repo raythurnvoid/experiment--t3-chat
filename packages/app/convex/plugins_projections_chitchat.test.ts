@@ -5,6 +5,7 @@ import type { Id } from "./_generated/dataModel";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
+import { collision_slug } from "./plugins_projections_chitchat.ts";
 // Load action modules before fake timers. convex-test imports them on first
 // run, and that import can hang while timers are faked.
 import "./plugins_projections.ts";
@@ -155,6 +156,18 @@ async function read_projection_file(
 	});
 }
 
+async function read_projection_state(
+	t: ReturnType<typeof test_convex>,
+	installationId: Id<"plugins_workspace_installations">,
+) {
+	return await t.run(async (ctx) => {
+		return await ctx.db
+			.query("plugins_data_projection_states")
+			.withIndex("by_installation", (q) => q.eq("installationId", installationId))
+			.first();
+	});
+}
+
 async function put_public_channel(fixture: Awaited<ReturnType<typeof seed_plugin_user_write>>, key: string, name: string) {
 	const channel = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
 		collection: "channels",
@@ -283,6 +296,23 @@ describe("chitchat file projection", () => {
 				.first();
 		});
 		expect(dirty).not.toBeNull();
+
+		const timestamps = new Set(messageDocs.map((doc) => doc.updatedAt));
+		expect(timestamps.size).toBe(1);
+
+		const stateForWrite = await read_projection_state(t, fixture.installationId);
+		if (stateForWrite === null) {
+			throw new Error("Expected projection state after schedule_sync");
+		}
+
+		await t.action(internal.plugins_projections_chitchat.sync, {
+			installationId: fixture.installationId,
+			syncGeneration: stateForWrite.syncGeneration,
+		});
+
+		const file = await read_projection_file(t, fixture, "/chitchat/general.md");
+		expect(file?.content).toContain("first same-ms");
+		expect(file?.content).toContain("second same-ms");
 	});
 
 	test("edits, deletes, and reactions change the projected block", async () => {
@@ -663,6 +693,120 @@ describe("chitchat file projection", () => {
 		expect(projected?.path.startsWith("/chitchat-")).toBe(true);
 		const file = await read_projection_file(t, fixture, projected!.path);
 		expect(file?.content).toContain("keep the user folder");
+	});
+
+	test("a member-locked leftover chitchat folder is reused instead of suffixing", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_plugin_user_write(t, { pluginName: "chitchat" });
+
+		const created = await fixture.asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.membershipId,
+			parentId: files_ROOT_ID,
+			path: "chitchat",
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const locked = await fixture.asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.membershipId,
+			nodeId: created._yay.nodeId,
+		});
+		if (locked._nay) {
+			throw new Error(locked._nay.message);
+		}
+
+		await put_public_channel(fixture, "chan-general", "general");
+		await append_public_message(fixture, "chan-general", "into the leftover folder", "leftover-lock-1");
+		await flush_projection(t);
+
+		const folder = await t.run(async (ctx) => await ctx.db.get("files_nodes", created._yay.nodeId));
+		expect(folder?.readOnlyScopeNodeId).toBe(created._yay.nodeId);
+
+		const file = await read_projection_file(t, fixture, "/chitchat/general.md");
+		expect(file?.content).toContain("into the leftover folder");
+
+		const state = await read_projection_state(t, fixture.installationId);
+		expect(state?.rootFolderNodeId).toBe(created._yay.nodeId);
+	});
+
+	test("a failed channel write keeps dirty work and does not reschedule the same generation", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_plugin_user_write(t, { pluginName: "chitchat" });
+
+		const folder = await fixture.asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.membershipId,
+			parentId: files_ROOT_ID,
+			path: "chitchat",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+
+		const occupant = await t.action(internal.files_nodes_content.create_file_by_path, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			userId: fixture.userId,
+			path: "/chitchat/general.md",
+			textContent: "user owned file",
+		});
+		if (occupant._nay) {
+			throw new Error(occupant._nay.message);
+		}
+
+		const collisionPath = `/chitchat/${collision_slug("general", "chan-general")}.md`;
+		const collision = await t.action(internal.files_nodes_content.create_file_by_path, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			userId: fixture.userId,
+			path: collisionPath,
+			textContent: "collision owned file",
+		});
+		if (collision._nay) {
+			throw new Error(collision._nay.message);
+		}
+
+		const locked = await fixture.asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: fixture.membershipId,
+			nodeId: folder._yay.nodeId,
+		});
+		if (locked._nay) {
+			throw new Error(locked._nay.message);
+		}
+
+		await put_public_channel(fixture, "chan-general", "general");
+		await append_public_message(fixture, "chan-general", "projected", "write-nay-1");
+		await t.mutation(internal.plugins_projections.schedule_sync, { installationId: fixture.installationId });
+
+		const before = await read_projection_state(t, fixture.installationId);
+		if (before === null || before.syncGeneration === 0) {
+			throw new Error("Expected schedule_sync to create a generation");
+		}
+
+		await t.action(internal.plugins_projections_chitchat.sync, {
+			installationId: fixture.installationId,
+			syncGeneration: before.syncGeneration,
+		});
+
+		const after = await read_projection_state(t, fixture.installationId);
+		expect(after?.scheduledJobId).toBeUndefined();
+		expect(after?.dirty).toBe(true);
+
+		const dirty = await t.run(async (ctx) => {
+			return await ctx.db
+				.query("plugins_data_projection_dirty_channels")
+				.withIndex("by_installation_channelKey", (q) =>
+					q.eq("installationId", fixture.installationId).eq("channelKey", "chan-general"),
+				)
+				.first();
+		});
+		expect(dirty).not.toBeNull();
+
+		const original = await read_projection_file(t, fixture, "/chitchat/general.md");
+		expect(original?.content).toContain("user owned file");
+		expect(original?.content).not.toContain("projected");
 	});
 
 	test("hourly ensure continues past the first twenty chitchat installations", async () => {
