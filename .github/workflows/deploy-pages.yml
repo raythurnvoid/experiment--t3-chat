@@ -55,13 +55,15 @@ jobs:
 
       # GitHub Pages serves this repo at /experiment--t3-chat/, not at the domain root.
       # Keep that base in CI only so local Vite still uses "/".
+      # Use `pnpm exec vite build --base ...`. `pnpm run build -- --base` becomes
+      # `vite build -- --base`, and Vite ignores the flag.
       - name: Build app
         working-directory: packages/app
         env:
           VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
           VITE_CONVEX_URL: ${{ vars.VITE_CONVEX_URL }}
           VITE_CONVEX_HTTP_URL: ${{ vars.VITE_CONVEX_HTTP_URL }}
-        run: pnpm run build -- --base /experiment--t3-chat/
+        run: pnpm exec vite build --base /experiment--t3-chat/
 
       - name: Add SPA fallback and nojekyll marker
         working-directory: packages/app
