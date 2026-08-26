@@ -209,6 +209,15 @@ also skips `apply_window` on the messages `watchChanges` callback (the break-on-
 rows). Serve `dist/frontend` on `127.0.0.1:5175` first. If the installed version id moved, fix the
 constant in that runner the same way as v3.
 
+**0.5.2 swap runner.** Published 0.5.2 is `hn7r8whxym0xsbnn0e74dqak2d8d70be` (asset prefix
+`/plugins-ui/hn7r8whxym0xsbnn0e74dqak2d8d70be/`). Do not reuse the 051 file: the 0.5.2 minified
+anchors are `uo(u.key)` and `var Do = 55,\n\tco = 100;` (051 had `lo` and `fo`). The 0.5.2 runner
+is `t3-chat-+personal/+ai/chitchat-change-feed-research-2026-08-25/runners/swap-plugin-bundle-052.js`.
+Same `patchVariant` values as 051. Prove the published frame first (frame URL contains that id,
+and the detail page shows `Version 0.5.2` with only `Uninstall`); then install the swap **before**
+that tab's next plugin navigation. A frozen-row smoke can edit from the published tab (page size
+100, all history in the window) while the smallwindow tab watches the HTTP-loaded row.
+
 **Edit a frozen row in two Playwriter calls.** Hover the `li.message`, click `Edit`, then in a
 **second** call fill the `Edit message` textbox and click `Save`. One 15s call that does hover +
 Edit + fill + Save can time out after fill even when `editValue` already holds the new text
@@ -465,7 +474,8 @@ persistence check:
 - **The swap runner's `versionId` is a hardcoded constant.** `swap-plugin-bundle-v3.js` routes on the
   asset prefix of one published version, and the installed version moved when 0.3.0 was published
   (`hn7x5j1hg4e630j7t4mkcr3h118d3632`). 0.5.1 is `hn7j9kpdh4h76he1njpf33dny18d4q1v` (see the 051
-  runner in "Frozen rows" above). Before any swap, read the real prefix from the frame URL and
+  runner in "Frozen rows" above). 0.5.2 is `hn7r8whxym0xsbnn0e74dqak2d8d70be` (see the 052 runner
+  there). Before any swap, read the real prefix from the frame URL and
   fix the constant, or the route matches nothing and the frame silently runs the published bundle.
 - **Private unread**: A sends in a private channel both are in; B's row gains the dot with no cursor
   map involvement (the sender stamps `lastMessageAt` on the channel doc). B opening the channel writes
