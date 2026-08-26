@@ -1472,7 +1472,8 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_status_pluginName", ["organizationId", "workspaceId", "status", "pluginName"])
 		.index("by_organization_workspace_pluginName", ["organizationId", "workspaceId", "pluginName"])
 		.index("by_organization_workspace_pluginVersion", ["organizationId", "workspaceId", "pluginVersionId"])
-		.index("by_pluginVersion", ["pluginVersionId"]),
+		.index("by_pluginVersion", ["pluginVersionId"])
+		.index("by_pluginName", ["pluginName"]),
 
 	plugins_workspace_installation_secrets: defineTable({
 		organizationId: v.id("organizations"),
@@ -1975,6 +1976,74 @@ const app_convex_schema = defineSchema({
 		.index("by_installation_collection_prefix", ["installationId", "collection", "keyPrefix"])
 		// Counts what one member owns, for the per-member cap, and finds what to delete when they go.
 		.index("by_installation_creator", ["installationId", "createdByUserId"]),
+
+	/**
+	 * One doc per plugin installation that projects store documents into workspace files.
+	 * The store stays the source of truth. This doc holds the change-feed cursor and the
+	 * debounce job so a write can schedule work without knowing which plugin it is.
+	 */
+	plugins_data_projection_states: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginName: v.string(),
+		/** Organization owner at ensure-time. File `createdBy` / `updatedBy` use this stamp. */
+		writerUserId: v.id("users"),
+		rootFolderNodeId: v.optional(v.id("files_nodes")),
+		/**
+		 * Per-collection inclusive fence. A missing key means "never scanned". Convex cannot pass
+		 * a scheduled-function id into that job's args, so `syncGeneration` is the CAS token:
+		 * a newer debounce bumps it and an older run must not clear `scheduledJobId`.
+		 */
+		cursors: v.record(
+			v.string(),
+			v.object({
+				updatedAt: v.number(),
+				lastId: v.id("plugins_data"),
+			}),
+		),
+		syncGeneration: v.number(),
+		scheduledJobId: v.optional(v.id("_scheduled_functions")),
+		dirty: v.boolean(),
+		updatedAt: v.number(),
+	})
+		.index("by_installation", ["installationId"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"])
+		.index("by_pluginName", ["pluginName"]),
+
+	/**
+	 * One doc per projected file (the live channel file and each rollover file).
+	 * Uninstall drains this table and leaves the files in place.
+	 */
+	plugins_data_projection_files: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		channelKey: v.string(),
+		fileNodeId: v.id("files_nodes"),
+		/** 0 is the newest main file. 1 is `slug.001.md` (oldest), then 2, 3, … */
+		rolloverIndex: v.number(),
+		path: v.string(),
+		updatedAt: v.number(),
+	})
+		.index("by_installation_channelKey_rolloverIndex", ["installationId", "channelKey", "rolloverIndex"])
+		.index("by_installation_fileNodeId", ["installationId", "fileNodeId"])
+		.index("by_fileNodeId", ["fileNodeId"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * Channel keys that still need a file rebuild. Durable so a crash after the cursor
+	 * advances still rebuilds those channels. Not an array on the state doc.
+	 */
+	plugins_data_projection_dirty_channels: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		channelKey: v.string(),
+		updatedAt: v.number(),
+	})
+		.index("by_installation_channelKey", ["installationId", "channelKey"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
 	 * Bearer grant for a service that acts for one installation (`psg_` tokens, stored hashed). It is

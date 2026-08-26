@@ -166,6 +166,13 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
   destination subtree. The released pointer still falls back to the parent's current scope, the same way
   `set_node_writable` does, and after those refusals that scope is always writable. Only a file ever
   carries this provenance, so a lock above is always a member lock and there is no subtree to cascade to.
+- Plugin **file projection** uses named internal doors in `packages/app/convex/plugins_projections.ts`
+  (create folder, create non-collaborative markdown, replace, archive). They are not user or agent
+  doors. `files_node_require_writable` stays strict and has no bypass flag. The recursive create
+  helper may take `skipAccessControlAndLock` and `inheritParentReadOnlyScope` **only** from those
+  projection doors. Clients cannot send those flags. Replace and archive pass the lock only when
+  `readOnlyScopeNodeId` is the mapped projection folder. Bash `replace_file_content` and
+  `create_file_by_path` under that folder still return `_nay.name === "read_only"`.
 - If discard or expiry finds a locked eager-created node or created ancestor, remove the pending docs
   but keep the empty committed branch. `eagerCreated` stores the creation-time committed sequence and
   optional `createdAncestorIds`. Cleanup checks every existing node's current lock before its first
@@ -327,7 +334,7 @@ The checkbox writes as soon as it is clicked. There is no Save for the lock — 
 - `convex/files_nodes.test.ts` — pointer/cascade states, tree operations, current-lock Yjs/snapshot/repair checks, action-backed replacement/toggle final checks, lock → unlock success, upload-node and failed-upload-discard refusals, copy-out controls.
 - `convex/files_pending_updates.test.ts` — proposal/accept/discard behavior, current-lock final checks, lock → unlock completion, and eager-created cleanup.
 - `convex/public_api.test.ts` — 409 `conflict` contract, batch semantics, current-lock final checks, target identity conflicts, lock → unlock success, and zero partial output. `convex/public_api_service_uploads.test.ts` also proves that the service delete checks every live node's current path, restricted ACL, and lock before its first write, refuses the whole call when a member locked a folder above the file, archives committed files, and hard-deletes only pending placeholders.
-- `convex/plugins.test.ts` — locked plugin output, zero writes, source-only lock still allows a writable destination.
+- `convex/plugins_projections_chitchat.test.ts` — projection folder lock; bash replace and create under the folder are `read_only`; named projection replace still updates the locked file.
 - `convex/r2.test.ts` — post-lock accepted upload publication, lock → unlock completion, immutable staging/live behavior, conversion completion, deletion-job generations/tombstones/durability, and crash-orphan recovery.
 - `convex/data_deletion.test.ts` — lifecycle bypass and deletion-job ownership across purge.
 - `convex/data_import.test.ts` — normal import respects locks; bypasses are named and internal.

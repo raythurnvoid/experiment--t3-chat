@@ -1345,6 +1345,17 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 * folders are skipped), in creation order (shallowest first).
 		 */
 		mut_createdAncestorIds?: Array<Id<"files_nodes">>;
+		/**
+		 * Projection doors only. Skip membership ACL and the parent lock check. The caller must
+		 * already have proved this path is the projection folder or a child of it. Do not pass
+		 * this from user or agent doors.
+		 */
+		skipAccessControlAndLock?: true;
+		/**
+		 * New nodes copy the parent's lock pointer. Use this after the projection folder itself
+		 * is locked so files created under it stay locked.
+		 */
+		inheritParentReadOnlyScope?: true;
 	},
 ) {
 	let currentParent: Doc<"files_nodes">["parentId"] = args.parentId;
@@ -1393,6 +1404,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			// report that it is there. SYSTEM writes come from trusted server flows, so there is no user
 			// to ask about.
 			if (
+				!args.skipAccessControlAndLock &&
 				args.userId !== users_SYSTEM_AUTHOR &&
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: args.organizationId,
@@ -1409,7 +1421,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 				// Reuse active intermediate folders, but reject files that already own the path.
 				if (existing.kind === "folder") {
 					// Do not create below a read-only folder. Trusted SYSTEM writes skip this check.
-					if (args.userId !== users_SYSTEM_AUTHOR) {
+					// Projection doors skip it too after proving the lock source is their folder.
+					if (!args.skipAccessControlAndLock && args.userId !== users_SYSTEM_AUTHOR) {
 						const segmentWritable = files_node_require_writable(existing);
 						if (segmentWritable._nay) {
 							return segmentWritable;
@@ -1456,7 +1469,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 
 		// Before the first insert, check the parent from the caller.
 		// Later parents were already checked or were just created as writable folders.
-		if (args.userId !== users_SYSTEM_AUTHOR && !currentParentLockChecked) {
+		if (!args.skipAccessControlAndLock && args.userId !== users_SYSTEM_AUTHOR && !currentParentLockChecked) {
 			const parentReadOnlyScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
 				parentId: currentParent,
 			});
@@ -1479,6 +1492,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			assetId: isLeaf ? args.assetId : undefined,
 			archiveOperationId: isLeaf ? args.archiveOperationId : undefined,
 			expectsTextContent: isLeaf ? args.expectsTextContent : undefined,
+			...(args.inheritParentReadOnlyScope ? { inheritParentReadOnlyScope: true } : {}),
 			now: args.now,
 		});
 

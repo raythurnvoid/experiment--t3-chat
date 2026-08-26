@@ -29,12 +29,12 @@ Everything below lives inside the frame.
 | What | Selector |
 | --- | --- |
 | Channel rail button | `locator("button.channel-link", { hasText: "#alpha" })` — do NOT use an end-anchored `getByRole` name regex, see the unread-suffix note below |
-| Create channel | `getByRole("button", { name: "Create channel" })`, then `[data-dialog-initial="true"]`, then `getByRole("button", { name: "Create", exact: true })` |
+| Create channel | `getByRole("button", { name: "Create channel" })`, then `getByLabel("Channel name")`, then `getByRole("button", { name: "Create", exact: true })`. Waiting on `[data-dialog-initial="true"]` can hang even when the dialog is already on screen (verified 2026-08-26). For a private channel, `getByLabel("Private channel").check()` before Create |
 | Composer | `textarea.composer-input` — with a thread open there are TWO of them, so scope: the channel one by its aria-label `Message #<channel>`, the thread one as `section.thread textarea.composer-input` (aria-label `Reply in thread`). Since 0.5.0 (Ariakit-combobox mention picker) the composer carries `role="combobox"` with `aria-expanded` — the quickest live proof of a 0.5.0 frame. Typing `@` in a single-member workspace opens NO menu (the picker excludes the sender), `aria-expanded` stays `"false"`, and no `[role=listbox]` enters the DOM — verified 2026-08-25 |
 | Message row | `li.message`, with `.is-leader` or `.is-continuation`, and `data-key` carrying the document key |
 | Day divider | `li.day-divider` |
 | Message body | `.message-text` |
-| Message row actions | `.message-actions` holding buttons named `Reply in thread`, `Add reaction`, and for your own messages `Edit` / `Delete` — hover-revealed |
+| Message row actions | `.message-actions` holding buttons named `Reply in thread`, `Add reaction`, and for your own messages `Edit` / `Delete` — hover-revealed. Delete opens a confirm; click `getByRole("button", { name: "Delete message", exact: true })`. A click on `name: "Delete"` matches both the row action and the confirm and is a strict-mode violation |
 | Reaction palette | `span.reaction-palette` (`role=group`, aria-label `Choose a reaction`), inline INSIDE the row — items are `button.reaction-palette-item` named `Thumbs up`, `Heart`, `Laugh`, `Wow`, `Sad` |
 | Reaction chip | `button.reaction-chip` (aria-label `<name>, N reaction`), `.is-mine` when you reacted, count in `.reaction-chip-count` |
 | Channel row | `.channel-item`, name in `.channel-name` |
@@ -555,3 +555,23 @@ await fl.locator(".sidebar-expand").click(); // adds .is-expanded
 At a 1440px viewport the frame is 1184px and `.sidebar-expand` is in the DOM but not visible, so the
 click just times out after 60 s. Read `.channel-link`'s computed `paddingRight` rather than trusting
 the stylesheet, and compare the name's right edge with the link's content box to see real clipping.
+
+## File projection (`/chitchat` in Files)
+
+Public Chitchat writes project into a locked `/chitchat` folder. Drive the plugin in an **owned**
+tab (see the OOPIF `bindOpenTab` bullet in `known-hazards.md`), send on a uniquely named public
+channel, wait a few seconds (2s debounce plus sync), then open
+`/w/:org/:workspace/files?nodeId=root` and click the `chitchat` folder.
+
+- Folder status: `This folder is read-only.` File status: `Read-only because /chitchat is locked.`
+- Channel file: `/chitchat/<slug>.md` with `<!-- chitchat:msg:... -->` blocks. Edits show
+  `(edited)`, deletes show `(message deleted)` and hide the body, reactions show as `reactions:`.
+- Private channels (`#name (private)`, keys `p/...`) must not appear. Expand `Show more` before
+  treating a missing name as proof.
+- The workspace agent can `cat` those paths with bash and is refused on write
+  (`cannot write '...': This item is read-only.`).
+- **Prove Convex is pushing before trusting the Files UI.** `convex function-spec` must list
+  `plugins_projections`. `convex codegen` is not a push. A unique line in `readme_markdown()`,
+  then `convex dev --once`, then a public send, must show that line in `/chitchat/README.md`.
+  Restore the README text and push again so the committed copy has no QA token.
+

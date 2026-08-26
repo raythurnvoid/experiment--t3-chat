@@ -64,7 +64,7 @@ Two predicates in `packages/app/shared/files.ts` ask the two different questions
 
 ## The third write door
 
-`replace_file_content` (`packages/app/convex/files_nodes_content.ts`) is the only content-write door for a non-collaborative file. It is an action plus a final mutation, because a Convex mutation cannot reach R2 and this door writes a new version snapshot object.
+`replace_file_content` (`packages/app/convex/files_nodes_content.ts`) is the only **user and agent** content-write door for a non-collaborative file. It is an action plus a final mutation, because a Convex mutation cannot reach R2 and this door writes a new version snapshot object. Named plugin file-projection replace is a separate internal door. It copies store text into a locked derived file and does not go through this helper.
 
 - The action checks auth and credits, runs the text cap and the frontmatter preflight, and PUTs the new content object. Over-cap frontmatter is refused with `Too many frontmatter fields`, the same words as the pending-update preflight: both are doors where a person hands over a whole text and can shorten it after reading the message. Materialization cannot refuse anybody, so it settles with the marker pair instead — see the `file-metadata` skill.
 - `finalize_file_content_replacement` re-runs auth → membership → ACL `content.write` → read-only lock → staleness, then replaces the chunks, points the node at the new asset, stores the version snapshot, and emits the `file_save` billing event.
@@ -92,16 +92,20 @@ The two toggles answer a permission refusal with different words, and that is no
 
 ## Where the mode comes from
 
-There are exactly three sources. Nothing else sets the flag.
+There are exactly four sources. Nothing else sets the flag.
 
 - `POST /api/v1/files/write` and `/write-many` accept an optional `nonCollaborative` boolean in the body. It is read only when the write CREATES the file; a write over a file that already exists keeps the mode that file has. See the `public-api` skill.
 - The Collaboration checkbox in the Properties dialog (`packages/app/src/components/files/files-properties-modal.tsx`). Either direction remounts the editor, so the dialog confirms that only last-saved text is used and warns the user to save open editor changes first. The OFF confirmation also names the deleted history, comments, and pending proposal text.
 - A sealed service `create-target` request with required `nonCollaborative: true`. The filename must
   pass the normal editable-text classifier. The choice stays on the service target while the empty
   placeholder is a blob, then successful conversion publishes the flag.
+- Named plugin file-projection create in `packages/app/convex/plugins_projections.ts`. It inserts a
+  non-collaborative Markdown file with a content/version R2 object (same as other non-collab creates).
+  Only the projection doors call it. `create_file_by_path` is unchanged and still creates a collaborative file.
 
-Member uploads never create a non-collaborative file. A service upload is the narrow exception. After
-classifier, UTF-8, NUL, size, document-build, and frontmatter handling succeeds, it publishes chunks,
+Member uploads never create a non-collaborative file. A service upload and file projection are the
+narrow exceptions. After
+classifier, UTF-8, NUL, size, document-build, and frontmatter handling succeeds, a service upload publishes chunks,
 one content/version snapshot and one file snapshot, with no Yjs asset, snapshot, sequence, or update
 docs. A deterministic fallback stays a blob, preserves any service lock provenance, and leaves the
 node flag unset. There is still no lazy Yjs creation: a collaborative file gets its document eagerly.

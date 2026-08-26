@@ -32,6 +32,7 @@ import {
 	type plugins_Capability,
 } from "../shared/plugins.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { plugins_projections_is_registered } from "./plugins_projections_registry.ts";
 
 // #region limits
 
@@ -1684,6 +1685,26 @@ export type plugins_data_write_documents_batch_Result =
  * returned `_nay` for the fourth would keep those three while telling the caller nothing was written.
  * Every refusal below therefore happens before `db_write_document` is called even once.
  */
+/**
+ * Schedule a file-projection sync after a successful store write.
+ *
+ * Unregistered plugins return here. They must not read projection tables or create a scheduled
+ * function. The 2s debounce lives in `schedule_sync`, so this write transaction only enqueues a
+ * follow-up mutation.
+ */
+async function db_schedule_projection_sync_if_registered(
+	ctx: MutationCtx,
+	installation: Pick<Doc<"plugins_workspace_installations">, "_id" | "pluginName">,
+) {
+	if (!plugins_projections_is_registered(installation.pluginName)) {
+		return;
+	}
+
+	await ctx.scheduler.runAfter(0, internal.plugins_projections.schedule_sync, {
+		installationId: installation._id,
+	});
+}
+
 async function db_write_documents(
 	ctx: MutationCtx,
 	args: {
@@ -1899,6 +1920,8 @@ async function db_write_documents(
 		maxDocumentSlots,
 	});
 
+	await db_schedule_projection_sync_if_registered(ctx, installation);
+
 	return Result({
 		_yay: {
 			documents: prepared.map((document) => ({
@@ -2002,6 +2025,8 @@ export const delete_document = internalMutation({
 			now,
 			maxDocumentSlots,
 		});
+
+		await db_schedule_projection_sync_if_registered(ctx, installation);
 
 		return Result({ _yay: { deleted: true } });
 	},
@@ -2285,6 +2310,8 @@ async function db_user_write_document(
 		maxDocumentSlots,
 	});
 
+	await db_schedule_projection_sync_if_registered(ctx, args.installation);
+
 	return Result({ _yay: { revision: (args.existing?.revision ?? 0) + 1, byteSize: args.byteSize } });
 }
 
@@ -2330,6 +2357,8 @@ async function db_user_delete_document(
 		now,
 		maxDocumentSlots: await db_resolve_document_slot_cap(ctx, { organization: args.organization }),
 	});
+
+	await db_schedule_projection_sync_if_registered(ctx, args.installation);
 }
 
 export const user_append_document = mutation({
@@ -4545,6 +4574,43 @@ export async function plugins_data_db_drain_batch(
 		batchSize: number;
 	},
 ) {
+	// Projection tables first (children, then state). Uninstall must not write files_nodes.
+	const dirtyChannels = await ctx.db
+		.query("plugins_data_projection_dirty_channels")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (dirtyChannels.length > 0) {
+		await Promise.all(dirtyChannels.map((doc) => ctx.db.delete("plugins_data_projection_dirty_channels", doc._id)));
+		return { done: false, deletedCount: dirtyChannels.length };
+	}
+
+	const projectionFiles = await ctx.db
+		.query("plugins_data_projection_files")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (projectionFiles.length > 0) {
+		await Promise.all(projectionFiles.map((doc) => ctx.db.delete("plugins_data_projection_files", doc._id)));
+		return { done: false, deletedCount: projectionFiles.length };
+	}
+
+	const projectionStates = await ctx.db
+		.query("plugins_data_projection_states")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (projectionStates.length > 0) {
+		await Promise.all(projectionStates.map((doc) => ctx.db.delete("plugins_data_projection_states", doc._id)));
+		return { done: false, deletedCount: projectionStates.length };
+	}
+
 	// Every one of these six tables carries the same three scope fields in the same index, so each
 	// pass narrows to the workspace and, when the caller named one, to the single installation.
 	const reservations = await ctx.db

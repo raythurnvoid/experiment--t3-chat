@@ -88,4 +88,6 @@ crons.cron(
 	{},
 );
 
+crons.cron("ensure plugin data file projections", "10 * * * *", internal.plugins_projections.ensure_hourly, {});
+
 export default crons;

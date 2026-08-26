@@ -206,6 +206,8 @@ For signed-in users there is no local credit debit after save; Polar usage event
 
 R2 content materialization is storage bookkeeping for an already accepted save; it must not emit an additional billing event.
 
+Named plugin file-projection replace (`packages/app/convex/plugins_projections.ts`) is the same kind of bookkeeping: it copies store documents into already-locked derived files. It must not emit `file_save`. Do not add a `skipBilling` flag to `replace_file_content`. That public door still bills.
+
 ### Anonymous users
 
 Anonymous users participate in credit gating through a **synthetic `billing_usage_snapshots` row** seeded at user creation. The snapshot mirrors Free-plan limits without touching Polar.
