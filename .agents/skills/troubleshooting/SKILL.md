@@ -253,3 +253,27 @@ C:\Users\rt0\.cursor\projects\c-Users-rt0-Documents-workspace-rt0-t3-chat\termin
 ```
 
 Read the most recent terminal files with `Get-Content -Tail`. Use this to confirm whether servers are running, whether a previous CLI is stuck retrying, and which deployment a human configured. Search for the task marker and quote only the needed lines. Redact secrets, tokens, signed URLs, private content, and unrelated user commands.
+
+# GitHub Pages Frontend
+
+The hosted SPA is [https://raythurnvoid.github.io/experiment--t3-chat/](https://raythurnvoid.github.io/experiment--t3-chat/). GitHub Pages is `build_type: workflow`. The workflow file is `.github/workflows/deploy-pages.yml`. It runs on `workflow_dispatch` and on push to the `deploy` branch.
+
+The `deploy` branch is only a pointer at the commit you want to ship. It is not a long-lived history. After `main` has the workflow file:
+
+```powershell
+git push origin main:deploy
+```
+
+A push to `deploy` does not always start a run. If `gh run list` still shows the old job, dispatch it as the Return Void account (pin `GH_TOKEN`, do not `gh auth switch`):
+
+```powershell
+$env:GH_TOKEN = (gh auth token --user raythurnvoid)
+gh workflow run "Deploy App To GitHub Pages" --repo raythurnvoid/experiment--t3-chat --ref deploy
+Remove-Item Env:GH_TOKEN
+```
+
+The workflow clones only `packages/app/vendor/*` gitlinks. Do not use `submodules: recursive`. That also clones `references-submodules` and is not needed for the frontend build.
+
+GitHub Pages serves the app under `/experiment--t3-chat/`, not at the domain root. The build must pass that base to Vite. Use `pnpm exec vite build --base /experiment--t3-chat/`. `pnpm run build -- --base ...` becomes `vite build -- --base ...`, and Vite ignores the flag. The built `index.html` must load `/experiment--t3-chat/assets/...`. Paths that start with `/assets/` 404 on `github.io`.
+
+Prove the live site with a new `Last-Modified`, a new hashed script name, and a 404 for the previous hash. Opening the URL is not enough if the HTML still points at the old files. The Clerk and Convex values come from GitHub Actions variables `VITE_CLERK_PUBLISHABLE_KEY`, `VITE_CONVEX_URL`, and `VITE_CONVEX_HTTP_URL`. Do not print those values in reports.
