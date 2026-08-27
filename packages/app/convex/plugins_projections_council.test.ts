@@ -244,7 +244,7 @@ describe("council file projection", () => {
 		const t = test_convex();
 		const fixture = await seed_council_install(t);
 		const warning =
-			"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.";
+			"Council could not store the video recording. The file was larger than the workspace can accept. The audio file was still saved.";
 
 		const written = await t.mutation(internal.plugins_data.write_versioned_document, {
 			principal: service_principal(fixture),

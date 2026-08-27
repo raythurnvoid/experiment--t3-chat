@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import worker from "./index.ts";
 import { council_encrypt } from "./crypto.ts";
@@ -35,22 +35,24 @@ afterEach(() => {
 });
 
 describe("council_handle_page_api /api/meetings/create", () => {
-	test("a meeting length past the host upload cap refuses create before it writes D1", async () => {
+	test("a meeting length past the pessimistic host-upload projection still creates", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const { env } = make_test_env({ COUNCIL_MEETING_MAX_MINUTES: "60" });
 		const mock = install_fetch();
 		restoreFetch = mock.restore;
 
-		const response = await worker.fetch(page_post("/api/meetings/create", { title: "Standup" }), env);
-		expect(response.status).toBe(503);
-		await expect(response.json()).resolves.toEqual({
-			message:
-				"Council cannot start a meeting this long. The configured length would produce a recording larger than the workspace can store.",
-		});
-		const count = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meetings").first<{ n: number }>();
-		expect(count?.n).toBe(0);
-		expect(mock.calls.map((call) => call.url)).toEqual([
-			"https://convex.example/api/internal/plugins/service-grants/exchange",
-		]);
+		try {
+			const response = await worker.fetch(page_post("/api/meetings/create", { title: "Standup" }), env);
+			expect(response.status).toBe(200);
+			const count = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meetings").first<{ n: number }>();
+			expect(count?.n).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith(
+				"COUNCIL_MEETING_MAX_MINUTES is too high for the host upload cap",
+				expect.objectContaining({ maxMinutes: 60 }),
+			);
+		} finally {
+			errorSpy.mockRestore();
+		}
 	});
 
 	test("maintenance blocks a create before it writes D1 or calls the provider", async () => {
@@ -388,7 +390,7 @@ describe("council_handle_page_api /api/meetings/open", () => {
 			"SELECT status, opened_at, deadline_at FROM meetings WHERE id = 'meeting-1'",
 		).first<{ status: string; opened_at: number; deadline_at: number }>();
 		expect(stored?.status).toBe("open");
-		expect(stored && stored.deadline_at - stored.opened_at).toBe(47 * 60 * 1000);
+		expect(stored && stored.deadline_at - stored.opened_at).toBe(60 * 60 * 1000);
 		expect(mock.calls.some((call) => call.url.includes("/service-grants/verify-live"))).toBe(true);
 	});
 

@@ -200,19 +200,19 @@ badge (`plugins/bonobo-plugin-council/src/app.tsx`).
 A 60-minute composite video measured about 144–187 MiB in the 2026-08-27 provider probe
 (low-motion, about two-minute samples). The host upload cap is now 2 GiB
 (`files_MAX_UPLOADS_BYTES`). That probe fits. Cloudflare's published 720p live-stream
-worst case is 2.7 GB per hour, which is past 2 GiB at 48 minutes. The Worker refuses
-`/api/meetings/create` when `COUNCIL_MEETING_MAX_MINUTES` times that worst-case rate
-exceeds the host cap. The largest whole-minute setting that still fits is 47. The
-checked-in Worker var is 47.
+worst case is 2.7 GB per hour, which is past 2 GiB at 48 minutes. Create still accepts
+the 60-minute product default. If the configured length would overflow even at that
+pessimistic rate, the Worker logs an error and continues. The checked-in Worker var is 60.
 
 If a recording file is still over the cap at upload time, create-target answers 400
 `File too large`. The pipeline marks that artifact `failed` with
 `recording too large to store: N MiB over the limit`, does not retry that target, and
-lets audio, transcript, and summary finish so the meeting can reach `ready`. The
-card and `meeting.md` then carry a fixed sentence: the video was too large to store,
-and audio, transcript, and summary were still saved. The badge list still shows only
-finalized files, so a saved audio file still makes one Recording badge. Operators
-read `meeting_artifacts.failure_reason` for the exact overflow.
+lets the rest of the run finish so the meeting can reach `ready`. The card and
+`meeting.md` then carry a fixed sentence: the video was too large to store, and the
+audio file was still saved. Do not promise a speech transcript or summary —
+composite audio crosses the 24 MB Whisper cap at about 17 minutes. The badge list
+still shows only finalized files, so a saved audio file still makes one Recording
+badge. Operators read `meeting_artifacts.failure_reason` for the exact overflow.
 
 Apply `0009_artifact_failure_reason.sql` before the Worker that writes that column.
 Deploying the Worker first makes an over-cap recording throw on the missing column
@@ -244,7 +244,7 @@ These items already landed. Do not redo them:
   `meeting_summaries`. `0007` added the join-attempt columns. `0008` dropped unused
   `meeting_tracks.participant_id` and `meeting_tracks.start_offset_ms`. `0009` added
   `meeting_artifacts.failure_reason`.
-- Ten meetings are `ready`. One meeting is a `deleted_tombstone`. No meeting is `created`,
+- Ten meetings are `ready`. Two meetings are `deleted_tombstone`. No meeting is `created`,
   `open`, `closed`, `processing`, or `deleting`.
 - Those ready meetings still have finalized artifact rows. **Do not delete them.** `0006`
   already ran. A later drain would only hide files the dashboard already shows.
@@ -253,8 +253,8 @@ These items already landed. Do not redo them:
   resolves to `0.9.2`. Do not publish a second copy.
 - The installs that run live meetings already accepted `workspace.files.create-read-only`
   and are on `0.2.2`.
-- The host upload cap is 2 GiB on the Convex deployment. The live Worker var
-  `COUNCIL_MEETING_MAX_MINUTES` is `47`. `GET /room` serves `council-room-r32`.
+- The host upload cap is 2 GiB on the Convex deployment. The checked-in Worker var
+  `COUNCIL_MEETING_MAX_MINUTES` is `60`. `GET /room` serves `council-room-r32`.
   Leave `COUNCIL_MAINTENANCE` as `"false"`.
 
 A later room-client fix is live as `council-room-r32`. Chrome's Stop sharing bar now clears the

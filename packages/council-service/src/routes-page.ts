@@ -224,19 +224,17 @@ async function handle_create(context: PageContext) {
 	if (env.COUNCIL_MAINTENANCE === "true") {
 		return respond(503, { message: "Council is being upgraded. Try again shortly." }, 300);
 	}
-	// Raising COUNCIL_MEETING_MAX_MINUTES past what the host can store must fail now, not after
-	// a long recording sits in hourly retry until the grant dies. The worst-case rate is
-	// Cloudflare's published 720p ceiling, not the low-motion probe.
+	// The worst-case rate is live-stream bandwidth, not a stored file size. A 60-minute
+	// meeting is the product default and fits the 2 GiB host cap at the real recording
+	// size. If an operator sets a length that would overflow even at that pessimistic
+	// rate, log it loudly. Do not refuse create. An over-cap recording now fails in the
+	// open after the run, with a card warning, instead of a silent retry.
 	const maxMinutes = council_max_minutes(env);
 	if (council_meeting_length_exceeds_host_upload_cap(maxMinutes)) {
 		console.error("COUNCIL_MEETING_MAX_MINUTES is too high for the host upload cap", {
 			maxMinutes,
 			worstCaseBytes: council_worst_case_recording_bytes(maxMinutes),
 			hostUploadMaxBytes: council_HOST_UPLOAD_MAX_BYTES,
-		});
-		return respond(503, {
-			message:
-				"Council cannot start a meeting this long. The configured length would produce a recording larger than the workspace can store.",
 		});
 	}
 	const title = council_read_string_field(context.body, "title", { maxBytes: 200 });

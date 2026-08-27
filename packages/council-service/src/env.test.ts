@@ -28,7 +28,8 @@ describe("council_meeting_length_exceeds_host_upload_cap", () => {
 		expect(unsafeMinutes).toBe(48);
 		expect(council_worst_case_recording_bytes(unsafeMinutes)).toBeGreaterThan(council_HOST_UPLOAD_MAX_BYTES);
 		expect(council_meeting_length_exceeds_host_upload_cap(unsafeMinutes)).toBe(true);
-		// The checked-in default is still 60. That value is already over the bound.
+		// 60 minutes is the product default. The pessimistic helper still flags it.
+		// Create accepts that length and only logs a warning.
 		expect(council_meeting_length_exceeds_host_upload_cap(60)).toBe(true);
 	});
 });

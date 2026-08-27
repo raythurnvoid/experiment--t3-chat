@@ -15,10 +15,10 @@
 		"COUNCIL_PLUGIN_ORIGIN": "https://grand-finch-267.convex.site",
 		"CONVEX_HTTP_URL": "https://grand-finch-267.convex.site",
 		// MVP ceilings. A meeting closes at the deadline whatever else happens, and the 26th accepted
-		// participant is refused. 47 minutes is the largest whole-minute setting whose Cloudflare
-		// 720p worst-case recording still fits the 2 GiB host upload cap. Do not raise it without
-		// raising the host cap first.
-		"COUNCIL_MEETING_MAX_MINUTES": "47",
+		// participant is refused. 60 minutes is the product default. The 720p worst-case live-stream
+		// rate would overflow 2 GiB at 48 minutes; that math is a loud create-time warning only.
+		// An over-cap recording fails in the open after the run.
+		"COUNCIL_MEETING_MAX_MINUTES": "60",
 		"COUNCIL_MEETING_MAX_PARTICIPANTS": "25",
 		// Workspace folder Council writes meeting artifacts under; each meeting gets a subfolder. The
 		// seal-processing prefix contract requires canonical lowercase segments.

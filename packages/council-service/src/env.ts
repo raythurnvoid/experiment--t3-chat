@@ -52,7 +52,8 @@ export function council_max_minutes(env: Env) {
  * the published 2.7 GB/hour worst case: 2.7e9 / 60 bytes per minute.
  *
  * That table is live-stream bandwidth, not a measured recording file. Use it only
- * to refuse a configured meeting length that cannot fit the host upload cap.
+ * as a loud operator warning. Create still accepts the 60-minute product default.
+ * If a real file is over the host cap, the pipeline marks it failed in the open.
  */
 export const council_RECORDING_WORST_CASE_BYTES_PER_MINUTE = Math.floor((2.7 * 1000 * 1000 * 1000) / 60);
 
@@ -86,17 +87,19 @@ export function council_recording_over_cap_reason(sizeBytes: number) {
 /**
  * What a member may read when a recording file was refused as over the host cap.
  * The artifact row keeps the precise MiB overflow for an operator. This sentence
- * is the page and meeting.md copy: it names the lost video and the files that
- * still landed, and it does not name routes or HTTP statuses.
+ * is the page and meeting.md copy: it names the lost video and the audio that
+ * still landed. Do not promise a speech transcript or summary. Composite audio
+ * crosses the 24 MB Whisper cap at about 17 minutes, so a file large enough to
+ * blow the 2 GiB video cap is already past that.
  */
 export const council_RECORDING_OVER_CAP_MEMBER_SENTENCE =
-	"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.";
+	"Council could not store the video recording. The file was larger than the workspace can accept. The audio file was still saved.";
 
 export function council_recording_over_cap_member_sentence(
 	meetingStatus: string,
 	artifacts: { status: string; failure_reason: string | null }[],
 ) {
-	// The sentence says the other files were saved. That is only true after the run
+	// The sentence says the audio file was saved. That is only true after the run
 	// reaches ready. A processing meeting can already have a failed video row.
 	if (meetingStatus !== "ready") {
 		return null;

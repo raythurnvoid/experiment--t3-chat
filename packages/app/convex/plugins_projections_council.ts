@@ -245,7 +245,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				deadlineAt: null,
 				participantCount: null,
 				recordingWarning:
-					"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+					"Council could not store the video recording. The file was larger than the workspace can accept. The audio file was still saved.",
 				artifacts: [
 					{ kind: "track_audio", fileName: "recording-audio.m4a" },
 					{ kind: "transcript_markdown", fileName: "transcript.md" },
@@ -253,7 +253,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			expect(markdown).toContain(
-				"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+				"Council could not store the video recording. The file was larger than the workspace can accept. The audio file was still saved.",
 			);
 			expect(markdown).toContain("- recording-audio.m4a");
 			expect(markdown).toContain("- transcript.md");
