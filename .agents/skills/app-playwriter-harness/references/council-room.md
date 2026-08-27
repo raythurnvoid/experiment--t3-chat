@@ -277,14 +277,23 @@ const sdk = {
 ```
 
 - `sdk.self` needs `roomJoined`, `audioEnabled`, `videoEnabled`, `audioTrack`, `videoTrack`, `name`,
-  `id`, `customParticipantId`, plus `enableAudio` / `disableAudio` / `enableVideo` / `disableVideo`.
-  All four toggles may return a promise; return a never-settling promise to simulate an open browser
-  permission prompt.
-- **`videoTrack` must be a real `MediaStreamTrack`, not a stub.** A plain `{ kind: "video" }` object
-  throws `Failed to construct 'MediaStream'` inside `updateParticipantTile`, and the room then reads as
-  a client crash rather than a bad fixture — you will debug the app instead of your fake. Use
-  `canvas.captureStream(5).getVideoTracks()[0]` (see "Making tile chrome contrast measurable" below).
-  Observed 2026-08-22.
+  `id`, `customParticipantId`, plus `enableAudio` / `disableAudio` / `enableVideo` / `disableVideo`,
+  `screenShareEnabled`, `screenShareTracks` (`{ audio, video }`), and `enableScreenShare` /
+  `disableScreenShare`. All six toggles may return a promise; return a never-settling promise to
+  simulate an open browser permission prompt. The room judges a share by the **track**, not the
+  promise: `screenShareEnabled === true` and a `screenShareTracks.video` track. A resolved
+  `enableScreenShare()` with no video track is a failed share.
+- **`videoTrack` and `screenShareTracks.video` / `.audio` must be real `MediaStreamTrack`s, not
+  stubs.** A plain `{ kind: "video" }` object throws `Failed to construct 'MediaStream'` inside
+  `updateParticipantTile` or `updateSharePresentation`, and the room then reads as a client crash
+  rather than a bad fixture — you will debug the app instead of your fake. Use
+  `canvas.captureStream(5).getVideoTracks()[0]` for share video and an `AudioContext` oscillator
+  into `createMediaStreamDestination()` for tab audio (see "Making tile chrome contrast measurable"
+  below). Observed 2026-08-22 for camera tracks; the share stage uses the same `MediaStream`
+  constructor.
+- The room also checks `navigator.mediaDevices.getDisplayMedia` before it calls `enableScreenShare`.
+  A fake that never installs that function cannot start a share; the status line says this browser
+  cannot share a screen. Desktop Edge has the API. Unit tests cover the missing-API branch.
 - `sdk.participants.joined.toArray()` returns the remote participants. Each remote is the same shape
   as `self` minus the toggles.
 - `sdk.participants.audioSubscribed` is a `Set` of the peer ids whose audio the room really receives.
@@ -330,11 +339,11 @@ in `room/client.ts`.
 | `sdk.self` | `roomLeft` | `{ state }`; `disconnected` reconnects, `failed` is terminal (own pill and wording), anything else ends the call |
 | `sdk.self` | `audioUpdate` | ignored — re-reads `sdk.self.audioEnabled` |
 | `sdk.self` | `videoUpdate` | ignored — re-reads `sdk.self.videoEnabled` |
-| `sdk.self` | `mediaPermissionUpdate` | `{ kind: "audio" \| "video", message }`; `ACCEPTED` is the only silent one — see below |
+| `sdk.self` | `mediaPermissionUpdate` | `{ kind: "audio" \| "video" \| "screenshare", message }`; `ACCEPTED` is the only silent one — see below |
 | `sdk.participants.joined` | `participantJoined` | the participant object; it wins over the snapshot for that key |
 | `sdk.participants.joined` | `participantLeft` | ignored — re-reads `toArray()` |
 | `sdk.participants.joined` | `participantsCleared` | ignored — drops every remote tile and re-reads `toArray()` |
-| each participant (self and remotes) | `audioUpdate`, `videoUpdate` | ignored — re-reads that participant's fields |
+| each participant (self and remotes) | `audioUpdate`, `videoUpdate`, `screenShareUpdate` | ignored — re-reads that participant's fields. `screenShareUpdate` also records arrival order for newest-share-wins |
 | `sdk.recording` | `recordingUpdate` | a bare string, otherwise it re-reads `sdk.recording.recordingState` |
 | `sdk.meta` | `meetingStartTimeUpdate` | ignored — re-reads `sdk.meta.meetingStartedTimestamp` |
 | `sdk.meta` | `socketConnectionUpdate` | `{ state: "connected" \| "disconnected" \| "reconnecting" \| "failed" }` |
@@ -344,7 +353,12 @@ and the connection chip never moves.
 
 `mediaPermissionUpdate` shows a notice for **every** message except `ACCEPTED` — do not assume only
 the two denial values do. `handleMediaPermissionUpdate` in `client.ts` returns early on `ACCEPTED`
-alone, then splits the rest **three** ways. Every notice opens with the same
+alone, then splits screenshare **before** the camera/mic branches. Screenshare notices all open with
+`Screen share unavailable.` A cancelled picker is `CANCELED`, not `DENIED`. Do not treat that as
+"no screen was found." `NO_DEVICES_AVAILABLE` on screenshare uses the permission sentence, not the
+camera "no camera was found" wording.
+
+Camera and microphone notices still open with the same
 `Camera unavailable.` / `Microphone unavailable.` prefix and only the sentence after it differs:
 
 | Message | Sentence after the prefix (camera wording) |
@@ -381,8 +395,24 @@ qa.remotes[0].audioEnabled = false;
 qa.remotes[0].emit("audioUpdate", { audioEnabled: false, audioTrack: qa.remotes[0].audioTrack });
 ```
 
+```js
+// Join-mid-share: put the tracks on the remote *before* join. Do not emit screenShareUpdate.
+qa.remotes[0].screenShareEnabled = true;
+qa.remotes[0].screenShareTracks = { video: shareVideoTrack, audio: shareAudioTrack };
+
+// Live start after join: mutate, then emit. Newest emit wins when two remotes share.
+qa.remotes[0].screenShareEnabled = true;
+qa.remotes[0].screenShareTracks = { video: shareVideoTrack, audio: shareAudioTrack };
+qa.remotes[0].emit("screenShareUpdate");
+```
+
 Park the fake on `window.__councilQa` so later execute calls can reach `self`, `joined`, `remotes`,
 `recording`, `meta`, and the `emitter` factory without rebuilding them.
+
+When this room page is `context.newPage()`, pass that page as `frame` to
+`auditAccessibility`, or also set `state.appPlaywriterHarness.page`. The helper otherwise
+audits another tab and times out on `.control-bar`. The same trap is in `known-hazards.md`
+under `getHarnessPage`.
 
 Real media without a device: paint a `<canvas>` and use `canvas.captureStream(5).getVideoTracks()[0]`
 for video, and an `AudioContext` oscillator into `createMediaStreamDestination()` for audio. That is
@@ -448,11 +478,17 @@ Enter) while the Join button stops firing submit entirely.
 **Call header** — `#meeting-title`, `#meeting-elapsed`, `#connection-status` (`data-state` is
 `connected` / `reconnecting` / `problem`), `#recording-indicator`.
 
-**Call body** — `#call-heading`, `#call-status`, `#play-audio-button`, `#participant-list`, `#audio-bin`,
-`#recording-live`, `#host-error`.
+**Call body** — `#call-heading`, `#call-status`, `#play-audio-button`, `#share-stage` (hidden until a
+share is showing; holds `#share-video`, `#share-note`, `#share-label`), `#participant-list`,
+`#audio-bin`, `#recording-live`, `#host-error`. `#share-note` reads `Showing the most recent share`
+and is hidden unless this client can see more than one share. Tab audio is a second `#audio-bin`
+`<audio data-share-audio>` per remote sharer, never for self. Tear it down when the share stops,
+not only when the tile leaves.
 
-**Controls** — `#mute-button`, `#camera-button`, `#participant-count-status`, `#start-recording-button`,
+**Controls** — `#mute-button`, `#camera-button`, `#share-button`, `#participant-count-status`, `#start-recording-button`,
 `#end-meeting-button`, `#leave-button`. Each holds a `.control-label` span with the visible words.
+Share is named `Share` in both states. A second share is refused with a line that starts
+`Screen share unavailable.` The client refuses; do not claim the provider also refused.
 
 **Host confirm dialog** — `#host-confirm` (`role="dialog"`, `aria-modal`), `#host-confirm-heading`,
 `#host-confirm-text`, `#host-confirm-cancel`, `#host-confirm-yes`.
@@ -476,7 +512,7 @@ Notes that bite:
 - Busy controls stay enabled and carry `aria-busy="true"`. The room does this on purpose: a disabled
   control blurs and focus never comes back. So assert `aria-busy`, not `disabled`, for a pending
   press on `#guest-submit`, `#join-button`, `#mute-button`, `#camera-button`,
-  `#start-recording-button`, or `#rejoin-button`. A re-press while `aria-busy="true"` is ignored, so
+  `#share-button`, `#start-recording-button`, or `#rejoin-button`. A re-press while `aria-busy="true"` is ignored, so
   a held Enter cannot fire the request twice.
 - **`#host-confirm-yes` is the one exception — it really does disable.** It can afford to, because
   `confirmEndMeeting` moves focus to `#host-confirm-cancel` *before* disabling it, so focus never
@@ -1298,10 +1334,11 @@ is gone from the Playwright build Playwriter 0.4.0 ships — it throws
 - `.participant-pin` — the name leads with the state and still contains the visible text. Measured on
   `council-room-r18`: `"Pin Casey"` with `aria-pressed="false"`, `"Pinned — unpin Casey"` with
   `aria-pressed="true"`. That is the shape WAI-ARIA APG and WCAG 2.5.3 both want.
-- `#mute-button` / `#camera-button` — **the name does not move.** Both write only `aria-pressed` and
-  take their accessible name from the `.control-label` text in the markup. Measured on the same build,
-  in both states: `aria-label` is `null` on both buttons and the AX name stays `"Microphone"` and
-  `"Camera"` while `aria-pressed` flips.
+- `#mute-button` / `#camera-button` / `#share-button` — **the name does not move.** All three write
+  only `aria-pressed` and take their accessible name from the `.control-label` text in the markup.
+  Measured on the same build, in both states: `aria-label` is `null` and the AX name stays
+  `"Microphone"`, `"Camera"`, and `"Share"` while `aria-pressed` flips. Share is pressed only when
+  this browser has a share **video track**, not when `enableScreenShare()` resolved.
 
 That is a decision somebody made, not an omission. The reason is written in the comment at the top of
 `renderLocalControls` in `client.ts`, and the test

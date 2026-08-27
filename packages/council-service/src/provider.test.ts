@@ -84,18 +84,28 @@ describe("council_provider_ensure_preset", () => {
 	test("creates a clone carrying transcription_enabled when only stock presets exist", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch({
-			"/presets/preset-stock-host": () =>
+			"GET /presets/preset-stock-host": () =>
 				Response.json({ success: true, data: { config: { c: 1 }, permissions: { can_record: true }, ui: { u: 1 } } }),
-			"/presets": (call) => {
-				if (call.method === "POST") {
-					return Response.json({ success: true, data: { id: "preset-new", permissions: { transcription_enabled: true } } });
-				}
-				// The live list's `data` IS the array, not an object holding one.
-				return Response.json({
+			"GET /presets/preset-new": () =>
+				Response.json({
+					success: true,
+					data: {
+						config: { c: 1, max_screenshare_count: 1 },
+						permissions: {
+							transcription_enabled: true,
+							can_record: true,
+							media: { screenshare: { can_produce: "ALLOWED" } },
+						},
+						ui: { u: 1 },
+					},
+				}),
+			"POST /presets": () =>
+				Response.json({ success: true, data: { id: "preset-new", permissions: { transcription_enabled: true } } }),
+			"/presets": () =>
+				Response.json({
 					success: true,
 					data: [{ id: "preset-stock-host", name: "group_call_host" }],
-				});
-			},
+				}),
 		});
 		restoreFetch = mock.restore;
 
@@ -143,20 +153,29 @@ describe("council_provider_ensure_preset", () => {
 	test("a listed council preset with an empty id is recreated from stock, not read", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch({
-			"/presets/preset-stock-host": () =>
+			"GET /presets/preset-stock-host": () =>
 				Response.json({ success: true, data: { config: {}, permissions: {}, ui: {} } }),
-			"/presets": (call) => {
-				if (call.method === "POST") {
-					return Response.json({ success: true, data: { id: "preset-new" } });
-				}
-				return Response.json({
+			"GET /presets/preset-new": () =>
+				Response.json({
+					success: true,
+					data: {
+						config: { max_screenshare_count: 1 },
+						permissions: {
+							transcription_enabled: true,
+							media: { screenshare: { can_produce: "ALLOWED" } },
+						},
+						ui: {},
+					},
+				}),
+			"POST /presets": () => Response.json({ success: true, data: { id: "preset-new" } }),
+			"/presets": () =>
+				Response.json({
 					success: true,
 					data: [
 						{ id: "", name: "council_host_transcription" },
 						{ id: "preset-stock-host", name: "group_call_host" },
 					],
-				});
-			},
+				}),
 		});
 		restoreFetch = mock.restore;
 
@@ -196,6 +215,202 @@ describe("council_provider_ensure_preset", () => {
 
 		const ensured = await council_provider_ensure_preset(env, "host");
 		expect(ensured._nay?.name).toBe("provider_refused");
+	});
+
+	test("patches an existing transcription preset that still allows more than one share", async () => {
+		const { env } = make_test_env();
+		let detail = {
+			name: "council_host_transcription",
+			config: { view_type: "GROUP_CALL", max_screenshare_count: 3 },
+			permissions: {
+				transcription_enabled: true,
+				can_record: true,
+				media: { screenshare: { can_produce: "ALLOWED" }, video: { can_produce: "ALLOWED" } },
+			},
+			ui: { theme: "dark" },
+		};
+		const mock = install_fetch({
+			"PATCH /presets/preset-host": () => {
+				detail = {
+					...detail,
+					config: { ...detail.config, max_screenshare_count: 1 },
+				};
+				return Response.json({ success: true, data: { id: "preset-host" } });
+			},
+			"GET /presets/preset-host": () => Response.json({ success: true, data: detail }),
+			"/presets": () =>
+				Response.json({
+					success: true,
+					data: [{ id: "preset-host", name: "council_host_transcription" }],
+				}),
+		});
+		restoreFetch = mock.restore;
+
+		const first = await council_provider_ensure_preset(env, "host");
+		expect(first._nay).toBeUndefined();
+		expect(first._yay).toEqual({ presetName: "council_host_transcription", presetId: "preset-host" });
+
+		const patched = mock.calls.find((call) => call.method === "PATCH" && call.url.includes("/presets/preset-host"));
+		expect(patched).toBeDefined();
+		const body = patched?.bodyJson as {
+			name?: unknown;
+			config?: Record<string, unknown>;
+			permissions?: Record<string, unknown>;
+			ui?: Record<string, unknown>;
+		};
+		// Merge the full object. A screenshare-only replace would drop transcription and can_record.
+		expect(body.name).toBe("council_host_transcription");
+		expect(body.config?.view_type).toBe("GROUP_CALL");
+		expect(body.config?.max_screenshare_count).toBe(1);
+		expect(body.permissions?.transcription_enabled).toBe(true);
+		expect(body.permissions?.can_record).toBe(true);
+		expect(body.ui?.theme).toBe("dark");
+		const media = body.permissions?.media as { screenshare?: { can_produce?: unknown }; video?: { can_produce?: unknown } };
+		expect(media.screenshare?.can_produce).toBe("ALLOWED");
+		expect(media.video?.can_produce).toBe("ALLOWED");
+
+		// PATCH then DETAIL-read the same id. Skipping that GET would trust a write the provider
+		// did not keep.
+		const hostCalls = mock.calls
+			.filter((call) => call.url.endsWith("/presets/preset-host"))
+			.map((call) => call.method);
+		expect(hostCalls.slice(0, 3)).toEqual(["GET", "PATCH", "GET"]);
+
+		// A later join finds the pinned preset and must not PATCH again.
+		const second = await council_provider_ensure_preset(env, "host");
+		expect(second._nay).toBeUndefined();
+		const patchCount = mock.calls.filter((call) => call.method === "PATCH").length;
+		expect(patchCount).toBe(1);
+	});
+
+	test("refuses an existing preset whose PATCH DETAIL read-back is not screenshare ALLOWED", async () => {
+		const { env } = make_test_env();
+		let patched = false;
+		const detail = {
+			name: "council_host_transcription",
+			config: { view_type: "GROUP_CALL", max_screenshare_count: 3 },
+			permissions: {
+				transcription_enabled: true,
+				can_record: true,
+				media: { screenshare: { can_produce: "ALLOWED" }, video: { can_produce: "ALLOWED" } },
+			},
+			ui: { theme: "dark" },
+		};
+		const mock = install_fetch({
+			"PATCH /presets/preset-host": () => {
+				patched = true;
+				return Response.json({ success: true, data: { id: "preset-host" } });
+			},
+			"GET /presets/preset-host": () => {
+				if (patched) {
+					return Response.json({
+						success: true,
+						data: {
+							...detail,
+							config: { ...detail.config, max_screenshare_count: 1 },
+							permissions: {
+								...detail.permissions,
+								media: { screenshare: { can_produce: "CAN_REQUEST" }, video: { can_produce: "ALLOWED" } },
+							},
+						},
+					});
+				}
+				return Response.json({ success: true, data: detail });
+			},
+			"/presets": () =>
+				Response.json({
+					success: true,
+					data: [{ id: "preset-host", name: "council_host_transcription" }],
+				}),
+		});
+		restoreFetch = mock.restore;
+
+		const ensured = await council_provider_ensure_preset(env, "host");
+		expect(ensured._nay?.name).toBe("preset_invalid");
+		expect(mock.calls.some((call) => call.method === "PATCH")).toBe(true);
+		expect(mock.calls.filter((call) => call.method === "GET" && call.url.endsWith("/presets/preset-host")).length).toBeGreaterThan(
+			1,
+		);
+	});
+
+	test("create-from-stock pins screenshare ALLOWED and max one share, then DETAIL-reads both", async () => {
+		const { env } = make_test_env();
+		const createdDetail = {
+			id: "preset-new",
+			name: "council_host_transcription",
+			config: { max_screenshare_count: 1 },
+			permissions: {
+				transcription_enabled: true,
+				can_record: true,
+				media: { screenshare: { can_produce: "ALLOWED" } },
+			},
+			ui: { u: 1 },
+		};
+		const mock = install_fetch({
+			"GET /presets/preset-stock-host": () =>
+				Response.json({
+					success: true,
+					data: {
+						config: { view_type: "GROUP_CALL", max_screenshare_count: 3 },
+						permissions: {
+							can_record: true,
+							media: { screenshare: { can_produce: "NOT_ALLOWED" }, video: { can_produce: "ALLOWED" } },
+						},
+						ui: { u: 1 },
+					},
+				}),
+			"GET /presets/preset-new": () => Response.json({ success: true, data: createdDetail }),
+			"POST /presets": () => Response.json({ success: true, data: { id: "preset-new" } }),
+			"/presets": () =>
+				Response.json({
+					success: true,
+					data: [{ id: "preset-stock-host", name: "group_call_host" }],
+				}),
+		});
+		restoreFetch = mock.restore;
+
+		const ensured = await council_provider_ensure_preset(env, "host");
+		expect(ensured._nay).toBeUndefined();
+		expect(ensured._yay).toEqual({ presetName: "council_host_transcription", presetId: "preset-new" });
+
+		const created = mock.calls.find((call) => call.method === "POST" && call.url.endsWith("/presets"));
+		const permissions = created?.bodyJson?.permissions as Record<string, unknown>;
+		const media = permissions.media as { screenshare?: { can_produce?: unknown }; video?: { can_produce?: unknown } };
+		expect(permissions.transcription_enabled).toBe(true);
+		expect(permissions.can_record).toBe(true);
+		expect(media.screenshare?.can_produce).toBe("ALLOWED");
+		expect(media.video?.can_produce).toBe("ALLOWED");
+		expect((created?.bodyJson?.config as Record<string, unknown>).max_screenshare_count).toBe(1);
+		expect(mock.calls.some((call) => call.method === "GET" && call.url.endsWith("/presets/preset-new"))).toBe(true);
+	});
+
+	test("refuses a created preset whose DETAIL read-back is not screenshare ALLOWED", async () => {
+		const { env } = make_test_env();
+		const mock = install_fetch({
+			"GET /presets/preset-stock-host": () =>
+				Response.json({ success: true, data: { config: {}, permissions: {}, ui: {} } }),
+			"GET /presets/preset-new": () =>
+				Response.json({
+					success: true,
+					data: {
+						permissions: {
+							transcription_enabled: true,
+							media: { screenshare: { can_produce: "CAN_REQUEST" } },
+						},
+						config: { max_screenshare_count: 1 },
+					},
+				}),
+			"POST /presets": () => Response.json({ success: true, data: { id: "preset-new" } }),
+			"/presets": () =>
+				Response.json({
+					success: true,
+					data: [{ id: "preset-stock-host", name: "group_call_host" }],
+				}),
+		});
+		restoreFetch = mock.restore;
+
+		const ensured = await council_provider_ensure_preset(env, "host");
+		expect(ensured._nay?.name).toBe("preset_invalid");
 	});
 });
 

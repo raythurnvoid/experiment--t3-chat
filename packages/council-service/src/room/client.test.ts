@@ -31,6 +31,11 @@ class FakeEmitter {
 	}
 }
 
+type FakeShareTracks = {
+	audio: MediaStreamTrack | null;
+	video: MediaStreamTrack | null;
+};
+
 type FakeParticipant = FakeEmitter & {
 	id: string;
 	customParticipantId: string;
@@ -39,6 +44,8 @@ type FakeParticipant = FakeEmitter & {
 	audioEnabled: boolean;
 	videoTrack: MediaStreamTrack | null;
 	audioTrack: MediaStreamTrack | null;
+	screenShareEnabled: boolean;
+	screenShareTracks: FakeShareTracks;
 };
 
 type FakeSelf = FakeParticipant & {
@@ -47,6 +54,8 @@ type FakeSelf = FakeParticipant & {
 	disableAudio: ReturnType<typeof vi.fn>;
 	enableVideo: ReturnType<typeof vi.fn>;
 	disableVideo: ReturnType<typeof vi.fn>;
+	enableScreenShare: ReturnType<typeof vi.fn>;
+	disableScreenShare: ReturnType<typeof vi.fn>;
 };
 
 class FakeParticipantMap extends FakeEmitter {
@@ -95,11 +104,23 @@ function make_track(kind: "audio" | "video", id: string) {
 	return { kind, id } as MediaStreamTrack;
 }
 
+function make_share_tracks(id: string, withAudio = false): FakeShareTracks {
+	return {
+		video: make_track("video", `${id}-share-video`),
+		audio: withAudio ? make_track("audio", `${id}-share-audio`) : null,
+	};
+}
+
 function make_participant(
 	id: string,
 	customParticipantId: string,
 	name: string,
-	overrides: Partial<Pick<FakeParticipant, "videoEnabled" | "audioEnabled" | "videoTrack" | "audioTrack">> = {},
+	overrides: Partial<
+		Pick<
+			FakeParticipant,
+			"videoEnabled" | "audioEnabled" | "videoTrack" | "audioTrack" | "screenShareEnabled" | "screenShareTracks"
+		>
+	> = {},
 ) {
 	return Object.assign(new FakeEmitter(), {
 		id,
@@ -109,6 +130,8 @@ function make_participant(
 		audioEnabled: false,
 		videoTrack: null,
 		audioTrack: null,
+		screenShareEnabled: false,
+		screenShareTracks: { audio: null, video: null },
 		...overrides,
 	}) as FakeParticipant;
 }
@@ -131,6 +154,18 @@ function make_fake_sdk(): FakeSdk {
 	self.disableVideo = vi.fn(async () => {
 		self.videoEnabled = false;
 		self.emit("videoUpdate", { videoEnabled: false, videoTrack: self.videoTrack });
+	});
+	self.enableScreenShare = vi.fn(async () => {
+		self.screenShareEnabled = true;
+		if (!self.screenShareTracks.video) {
+			self.screenShareTracks = make_share_tracks("local");
+		}
+		self.emit("screenShareUpdate");
+	});
+	self.disableScreenShare = vi.fn(async () => {
+		self.screenShareEnabled = false;
+		self.screenShareTracks = { audio: null, video: null };
+		self.emit("screenShareUpdate");
 	});
 
 	return {
@@ -196,6 +231,32 @@ async function boot_to_call(sdk: FakeSdk, options: Parameters<typeof boot_to_lob
 		expect(document.getElementById("view-call")!.hidden).toBe(false);
 	});
 	return harness;
+}
+
+function stub_display_media(supported = true) {
+	vi.stubGlobal(
+		"navigator",
+		Object.assign({}, navigator, {
+			mediaDevices: supported
+				? {
+						...navigator.mediaDevices,
+						getDisplayMedia: vi.fn(async () => undefined),
+					}
+				: undefined,
+		}),
+	);
+}
+
+function start_share(participant: FakeParticipant, withAudio = false) {
+	participant.screenShareEnabled = true;
+	participant.screenShareTracks = make_share_tracks(participant.id, withAudio);
+	participant.emit("screenShareUpdate");
+}
+
+function stop_share(participant: FakeParticipant) {
+	participant.screenShareEnabled = false;
+	participant.screenShareTracks = { audio: null, video: null };
+	participant.emit("screenShareUpdate");
 }
 
 beforeEach(() => {
@@ -3905,5 +3966,287 @@ describe("council_room_client_js ticket replacement", () => {
 
 		releaseSession(new Response(JSON.stringify(HOST_SESSION), { status: 200 }));
 		await vi.waitFor(() => expect(document.getElementById("view-lobby")!.hidden).toBe(false));
+	});
+});
+
+describe("council_room_client_js screen share", () => {
+	test("toggles share from the track, not the promise, and keeps the visible name", async () => {
+		stub_display_media();
+		const sdk = make_fake_sdk();
+		await boot_to_call(sdk);
+		const button = document.getElementById("share-button") as HTMLButtonElement;
+		const stage = document.getElementById("share-stage")!;
+
+		expect(button.getAttribute("aria-pressed")).toBe("false");
+		expect(button.getAttribute("aria-label")).toBe(null);
+		expect(button.querySelector(".control-label")!.textContent).toBe("Share");
+		expect(stage.hidden).toBe(true);
+
+		button.click();
+		expect(button.getAttribute("aria-busy")).toBe("true");
+		expect(button.disabled).toBe(false);
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-busy")).toBe(null));
+
+		expect(sdk.self.enableScreenShare).toHaveBeenCalledOnce();
+		expect(button.getAttribute("aria-pressed")).toBe("true");
+		expect(button.getAttribute("aria-label")).toBe(null);
+		expect(button.querySelector(".control-label")!.textContent).toBe("Share");
+		expect(stage.hidden).toBe(false);
+		expect(document.getElementById("share-label")!.textContent).toBe("Screen — Ada Host (you)");
+		expect(
+			((document.getElementById("share-video") as HTMLVideoElement).srcObject as MediaStream).getVideoTracks(),
+		).toEqual([sdk.self.screenShareTracks.video]);
+		expect(document.querySelector("[data-share-audio]")).toBeNull();
+
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-pressed")).toBe("false"));
+		expect(sdk.self.disableScreenShare).toHaveBeenCalledOnce();
+		expect(stage.hidden).toBe(true);
+	});
+
+	test("treats an enabled share with no video track as a failed share", async () => {
+		stub_display_media();
+		const sdk = make_fake_sdk();
+		// The promise resolved and the flag flipped. There is still no picture. That is a failed share.
+		sdk.self.enableScreenShare = vi.fn(async () => {
+			sdk.self.screenShareEnabled = true;
+			sdk.self.screenShareTracks = { audio: null, video: null };
+		});
+		await boot_to_call(sdk);
+		const button = document.getElementById("share-button") as HTMLButtonElement;
+
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-busy")).toBe(null));
+
+		expect(button.getAttribute("aria-pressed")).toBe("false");
+		expect(document.getElementById("share-stage")!.hidden).toBe(true);
+		expect(document.getElementById("share-stage")!.dataset.active).toBe("false");
+		expect(document.getElementById("call-status")!.textContent).toBe(
+			"Screen share unavailable. Check the browser screen-share permission.",
+		);
+	});
+
+	test("keeps the share reason on screen when the SDK resolves without a track", async () => {
+		stub_display_media();
+		const sdk = make_fake_sdk();
+		sdk.self.enableScreenShare = vi.fn(async () => {});
+		await boot_to_call(sdk);
+		const button = document.getElementById("share-button") as HTMLButtonElement;
+		const status = document.getElementById("call-status")!;
+
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-busy")).toBe(null));
+
+		expect(status.hidden).toBe(false);
+		expect(status.textContent).toBe("Screen share unavailable. Check the browser screen-share permission.");
+		expect(button.getAttribute("aria-pressed")).toBe("false");
+		expect(document.getElementById("share-stage")!.hidden).toBe(true);
+	});
+
+	test("refuses a second share and clears that prefix after the first share ends", async () => {
+		stub_display_media();
+		const sdk = make_fake_sdk();
+		const remote = make_participant("peer-2", "guest-2", "Casey", {
+			screenShareEnabled: true,
+			screenShareTracks: make_share_tracks("peer-2"),
+		});
+		sdk.participants.joined.participants = [remote];
+		await boot_to_call(sdk);
+		const button = document.getElementById("share-button") as HTMLButtonElement;
+		const status = document.getElementById("call-status")!;
+
+		expect(document.getElementById("share-stage")!.hidden).toBe(false);
+		expect(document.getElementById("share-label")!.textContent).toBe("Screen — Casey");
+
+		button.click();
+		expect(sdk.self.enableScreenShare).not.toHaveBeenCalled();
+		expect(status.textContent).toBe("Screen share unavailable. Someone else is already sharing.");
+
+		stop_share(remote);
+		expect(document.getElementById("share-stage")!.hidden).toBe(true);
+
+		button.click();
+		await vi.waitFor(() => expect(sdk.self.enableScreenShare).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(button.getAttribute("aria-pressed")).toBe("true"));
+		expect(status.hidden).toBe(true);
+		expect(status.textContent).toBe("");
+	});
+
+	test("says why a share did not start, including a closed picker", async () => {
+		const sdk = make_fake_sdk();
+		await boot_to_call(sdk);
+		const status = document.getElementById("call-status")!;
+
+		sdk.self.emit("mediaPermissionUpdate", { kind: "screenshare", message: "ACCEPTED" });
+		expect(status.hidden).toBe(true);
+
+		sdk.self.emit("mediaPermissionUpdate", { kind: "screenshare", message: "CANCELED" });
+		expect(status.textContent).toBe("Screen share unavailable. The share picker was closed.");
+		expect(status.textContent).not.toContain("No camera was found");
+		expect(status.textContent).not.toContain("No screen was found");
+
+		sdk.self.emit("mediaPermissionUpdate", { kind: "screenshare", message: "COULD_NOT_START" });
+		expect(status.textContent).toBe("Screen share unavailable. Close any other app using it, then try Share again.");
+
+		sdk.self.emit("mediaPermissionUpdate", { kind: "screenshare", message: "NO_DEVICES_AVAILABLE" });
+		expect(status.textContent).toBe("Screen share unavailable. Check the browser screen-share permission.");
+
+		sdk.self.emit("mediaPermissionUpdate", { kind: "screenshare", message: "DENIED" });
+		expect(status.textContent).toBe("Screen share unavailable. Check the browser screen-share permission.");
+	});
+
+	test("shows a share that was already running when this browser joined", async () => {
+		const sdk = make_fake_sdk();
+		const remote = make_participant("peer-2", "guest-2", "Casey", {
+			screenShareEnabled: true,
+			screenShareTracks: make_share_tracks("peer-2"),
+		});
+		sdk.participants.joined.participants = [remote];
+		await boot_to_call(sdk);
+
+		expect(document.getElementById("share-stage")!.hidden).toBe(false);
+		expect(document.getElementById("share-stage")!.dataset.active).toBe("true");
+		expect(document.getElementById("share-note")!.hidden).toBe(true);
+		expect(document.getElementById("share-label")!.textContent).toBe("Screen — Casey");
+		expect(remote.on).toHaveBeenCalledWith("screenShareUpdate", expect.any(Function));
+	});
+
+	test("hides a share that left through participantsCleared", async () => {
+		const sdk = make_fake_sdk();
+		const remote = make_participant("peer-2", "guest-2", "Casey");
+		sdk.participants.joined.participants = [remote];
+		await boot_to_call(sdk);
+
+		// Show the share through the live event, not the join snapshot. removeTile does not hide
+		// the stage. Only the reconcile snapshot read clears a gone peer's picture.
+		start_share(remote);
+		expect(document.getElementById("share-stage")!.hidden).toBe(false);
+
+		sdk.participants.joined.participants = [];
+		sdk.participants.joined.emit("participantsCleared");
+
+		expect(document.getElementById("share-stage")!.hidden).toBe(true);
+		expect(document.getElementById("share-stage")!.dataset.active).toBe("false");
+		expect((document.getElementById("share-video") as HTMLVideoElement).srcObject).toBeNull();
+	});
+
+	test("picks the first snapshot share when two are already running, and shows the note", async () => {
+		const sdk = make_fake_sdk();
+		const first = make_participant("peer-2", "guest-2", "Casey", {
+			screenShareEnabled: true,
+			screenShareTracks: make_share_tracks("peer-2"),
+		});
+		const second = make_participant("peer-3", "guest-3", "Morgan", {
+			screenShareEnabled: true,
+			screenShareTracks: make_share_tracks("peer-3"),
+		});
+		sdk.participants.joined.participants = [first, second];
+		await boot_to_call(sdk);
+
+		expect(document.getElementById("share-label")!.textContent).toBe("Screen — Casey");
+		expect(document.getElementById("share-note")!.hidden).toBe(false);
+		expect(document.getElementById("share-note")!.textContent).toBe("Showing the most recent share");
+	});
+
+	test("shows the newest share this client saw, then falls back when that share stops", async () => {
+		const sdk = make_fake_sdk();
+		const first = make_participant("peer-2", "guest-2", "Casey");
+		const second = make_participant("peer-3", "guest-3", "Morgan");
+		sdk.participants.joined.participants = [first, second];
+		await boot_to_call(sdk);
+
+		start_share(first);
+		expect(document.getElementById("share-label")!.textContent).toBe("Screen — Casey");
+		expect(document.getElementById("share-note")!.hidden).toBe(true);
+
+		start_share(second);
+		expect(document.getElementById("share-label")!.textContent).toBe("Screen — Morgan");
+		expect(document.getElementById("share-note")!.hidden).toBe(false);
+
+		stop_share(second);
+		expect(document.getElementById("share-label")!.textContent).toBe("Screen — Casey");
+		expect(document.getElementById("share-note")!.hidden).toBe(true);
+	});
+
+	test("plays remote tab audio and tears it down when the share stops, never for self", async () => {
+		const sdk = make_fake_sdk();
+		const remote = make_participant("peer-2", "guest-2", "Casey", {
+			audioEnabled: true,
+			audioTrack: make_track("audio", "remote-mic"),
+		});
+		sdk.participants.joined.participants = [remote];
+		await boot_to_call(sdk);
+		expect(document.querySelector("[data-share-audio]")).toBeNull();
+
+		start_share(remote, true);
+		const shareAudio = document.querySelector("[data-share-audio]") as HTMLAudioElement;
+		expect(shareAudio).not.toBeNull();
+		expect((shareAudio.srcObject as MediaStream).getAudioTracks()).toEqual([remote.screenShareTracks.audio]);
+		expect(document.querySelectorAll("#audio-bin audio")).toHaveLength(2);
+
+		stop_share(remote);
+		expect(document.querySelector("[data-share-audio]")).toBeNull();
+		expect(document.querySelectorAll("#audio-bin audio")).toHaveLength(1);
+		expect(
+			((document.querySelector("#audio-bin audio") as HTMLAudioElement).srcObject as MediaStream).getAudioTracks(),
+		).toEqual([remote.audioTrack]);
+
+		stub_display_media();
+		// Give this browser a tab-audio track too. The room must still refuse to play it back.
+		sdk.self.screenShareTracks = make_share_tracks("local", true);
+		(document.getElementById("share-button") as HTMLButtonElement).click();
+		await vi.waitFor(() => expect(sdk.self.screenShareEnabled).toBe(true));
+		expect(document.querySelector("[data-share-audio]")).toBeNull();
+	});
+
+	test("offers the same recovery button for blocked tab audio, then hides it when the share stops", async () => {
+		const play = vi.spyOn(HTMLMediaElement.prototype, "play");
+		play.mockRejectedValue(new DOMException("autoplay blocked", "NotAllowedError"));
+		const sdk = make_fake_sdk();
+		const remote = make_participant("peer-2", "guest-2", "Casey");
+		sdk.participants.joined.participants = [remote];
+		await boot_to_call(sdk);
+
+		start_share(remote, true);
+		const button = document.getElementById("play-audio-button") as HTMLButtonElement;
+		await vi.waitFor(() => expect(button.hidden).toBe(false));
+
+		stop_share(remote);
+		expect(document.querySelector("[data-share-audio]")).toBeNull();
+		expect(button.hidden).toBe(true);
+	});
+
+	test("keeps the picker-closed line when enableScreenShare later rejects", async () => {
+		stub_display_media();
+		const sdk = make_fake_sdk();
+		sdk.self.enableScreenShare = vi.fn(async () => {
+			sdk.self.emit("mediaPermissionUpdate", { kind: "screenshare", message: "CANCELED" });
+			throw new Error("canceled");
+		});
+		await boot_to_call(sdk);
+		const button = document.getElementById("share-button") as HTMLButtonElement;
+
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-busy")).toBe(null));
+
+		expect(document.getElementById("call-status")!.textContent).toBe(
+			"Screen share unavailable. The share picker was closed.",
+		);
+	});
+
+	test("says this browser cannot share when getDisplayMedia is missing", async () => {
+		stub_display_media(false);
+		const sdk = make_fake_sdk();
+		await boot_to_call(sdk);
+		const button = document.getElementById("share-button") as HTMLButtonElement;
+
+		button.click();
+
+		expect(sdk.self.enableScreenShare).not.toHaveBeenCalled();
+		expect(document.getElementById("call-status")!.textContent).toBe(
+			"Screen share unavailable. This browser cannot share a screen.",
+		);
+		expect(button.getAttribute("aria-pressed")).toBe("false");
 	});
 });

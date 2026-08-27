@@ -446,6 +446,18 @@ describe("council_run_processing", () => {
 			"track_audio:finalized",
 			"transcript_markdown:finalized",
 		]);
+		// Host budget is 16 targets. Composite uses two recording files plus the three documents.
+		const artifactNames = await env.COUNCIL_DB.prepare(
+			"SELECT file_name FROM meeting_artifacts ORDER BY file_name",
+		).all<{ file_name: string }>();
+		expect(artifactNames.results.map((row) => row.file_name)).toEqual([
+			"provider-transcript.json",
+			"recording-audio.m4a",
+			"recording.mp4",
+			"summary.md",
+			"transcript.md",
+		]);
+		expect(artifactNames.results).toHaveLength(5);
 
 		const markdown = markdown_put_body(mock.calls);
 		expect(markdown).toContain(`**Meeting:** ${ALICE_PHRASE}`);

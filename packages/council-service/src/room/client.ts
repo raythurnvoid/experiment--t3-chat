@@ -91,6 +91,8 @@ export const council_room_client_js = `
 		tiles: {},
 		blockedAudio: [],
 		pendingAudio: [],
+		shareAudio: {},
+		shareArrivalKeys: [],
 		pinnedKey: null,
 		reconnecting: false,
 		recordingStage: "idle",
@@ -962,6 +964,10 @@ export const council_room_client_js = `
 		}
 		record.element.remove();
 		delete state.tiles[key];
+		detachShareAudio(key);
+		state.shareArrivalKeys = state.shareArrivalKeys.filter(function (arrival) {
+			return arrival !== key;
+		});
 	}
 
 	function createTile(key, participant, isSelf) {
@@ -1037,9 +1043,15 @@ export const council_room_client_js = `
 		if (participant && typeof participant.on === "function") {
 			participant.on("videoUpdate", videoHandler);
 			participant.on("audioUpdate", audioHandler);
+			var shareHandler = function () {
+				noteShareArrival(key, participant);
+				updateSharePresentation();
+			};
+			participant.on("screenShareUpdate", shareHandler);
 			record.cleanups.push(function () {
 				safeOff(participant, "videoUpdate", videoHandler);
 				safeOff(participant, "audioUpdate", audioHandler);
+				safeOff(participant, "screenShareUpdate", shareHandler);
 			});
 		}
 		state.tiles[key] = record;
@@ -1188,15 +1200,25 @@ export const council_room_client_js = `
 				replacement.focus();
 			}
 		}
+		// A guest who joins mid-share never gets screenShareUpdate for the share that is already
+		// on. participantsCleared also drops every remote tile. Re-read the snapshot so a gone peer
+		// cannot keep the presentation area, and so a share that started before we arrived still
+		// appears.
+		updateSharePresentation();
 	}
 
 	function clearParticipantTiles() {
 		Object.keys(state.tiles).forEach(removeTile);
 		state.pinnedKey = null;
+		state.shareArrivalKeys = [];
+		Object.keys(state.shareAudio).forEach(function (key) {
+			detachShareAudio(key);
+		});
 		state.blockedAudio = [];
 		state.pendingAudio = [];
 		byId("play-audio-button").hidden = true;
 		byId("participant-list").textContent = "";
+		hideShareStage();
 		setText("participant-count", "0");
 	}
 
@@ -1281,6 +1303,9 @@ export const council_room_client_js = `
 		var cameraButton = byId("camera-button");
 		var cameraOn = sdk.self.videoEnabled === true;
 		cameraButton.setAttribute("aria-pressed", cameraOn ? "true" : "false");
+
+		var shareButton = byId("share-button");
+		shareButton.setAttribute("aria-pressed", participantHasShare(sdk.self) ? "true" : "false");
 	}
 
 	function toggleLocalMedia(kind) {
@@ -1356,6 +1381,219 @@ export const council_room_client_js = `
 						? "Microphone unavailable. Check the browser microphone permission."
 						: "Camera unavailable. Check the browser camera permission."
 				);
+			}
+		);
+	}
+
+	function shareTracks(participant) {
+		return participant && participant.screenShareTracks ? participant.screenShareTracks : null;
+	}
+
+	function participantHasShare(participant) {
+		var tracks = shareTracks(participant);
+		return Boolean(participant && participant.screenShareEnabled === true && tracks && tracks.video);
+	}
+
+	function displayMediaSupported() {
+		return Boolean(
+			navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === "function"
+		);
+	}
+
+	function anotherParticipantIsSharing(sdk) {
+		var selfKey = participantKey(sdk.self, true);
+		var joined = sdk.participants && sdk.participants.joined;
+		if (!joined || typeof joined.toArray !== "function") {
+			return false;
+		}
+		return joined.toArray().some(function (participant) {
+			var key = participantKey(participant, false);
+			return key && key !== selfKey && participantHasShare(participant);
+		});
+	}
+
+	function noteShareArrival(key, participant) {
+		state.shareArrivalKeys = state.shareArrivalKeys.filter(function (arrival) {
+			return arrival !== key;
+		});
+		if (participantHasShare(participant)) {
+			state.shareArrivalKeys.push(key);
+		}
+	}
+
+	function snapshotShareKeys(sdk) {
+		var keys = [];
+		var seen = {};
+		var joined = sdk.participants && sdk.participants.joined;
+		if (joined && typeof joined.toArray === "function") {
+			joined.toArray().forEach(function (participant) {
+				var key = participantKey(participant, false);
+				if (!key || seen[key] || !participantHasShare(participant)) {
+					return;
+				}
+				seen[key] = true;
+				keys.push(key);
+			});
+		}
+		var selfKey = participantKey(sdk.self, true);
+		if (selfKey && !seen[selfKey] && participantHasShare(sdk.self)) {
+			keys.push(selfKey);
+		}
+		return keys;
+	}
+
+	function pickShareKey(sdk) {
+		var snapshot = snapshotShareKeys(sdk);
+		var index = state.shareArrivalKeys.length - 1;
+		while (index >= 0) {
+			if (snapshot.indexOf(state.shareArrivalKeys[index]) !== -1) {
+				return { key: state.shareArrivalKeys[index], multiple: snapshot.length > 1 };
+			}
+			index -= 1;
+		}
+		return { key: snapshot[0] || null, multiple: snapshot.length > 1 };
+	}
+
+	function hideShareStage() {
+		var stage = byId("share-stage");
+		stage.hidden = true;
+		stage.dataset.active = "false";
+		byId("share-video").srcObject = null;
+		byId("share-note").hidden = true;
+		setText("share-label", "");
+	}
+
+	function detachShareAudio(key) {
+		var audio = state.shareAudio[key];
+		if (!audio) {
+			return;
+		}
+		removeBlockedAudio(audio);
+		removePendingAudio(audio);
+		audio.srcObject = null;
+		audio.remove();
+		delete state.shareAudio[key];
+	}
+
+	function syncShareAudio(key, participant, isSelf) {
+		if (isSelf) {
+			detachShareAudio(key);
+			return;
+		}
+		var tracks = shareTracks(participant);
+		var track = participantHasShare(participant) && tracks ? tracks.audio : null;
+		if (!track) {
+			detachShareAudio(key);
+			return;
+		}
+		var audio = state.shareAudio[key];
+		if (!audio) {
+			audio = document.createElement("audio");
+			audio.autoplay = true;
+			audio.dataset.shareAudio = key;
+			byId("audio-bin").appendChild(audio);
+			state.shareAudio[key] = audio;
+		}
+		var swapped = attachTrack(audio, "audio", track);
+		if (swapped) {
+			removePendingAudio(audio);
+			removeBlockedAudio(audio);
+		}
+		if (audio.srcObject) {
+			playRemoteAudio(audio);
+		} else {
+			removeBlockedAudio(audio);
+		}
+	}
+
+	function updateSharePresentation() {
+		var sdk = state.sdk;
+		if (!sdk) {
+			hideShareStage();
+			return;
+		}
+		Object.keys(state.tiles).forEach(function (key) {
+			var record = state.tiles[key];
+			syncShareAudio(key, record.participant, record.isSelf);
+		});
+		Object.keys(state.shareAudio).forEach(function (key) {
+			if (!state.tiles[key]) {
+				detachShareAudio(key);
+			}
+		});
+		var picked = pickShareKey(sdk);
+		if (!picked.key || !state.tiles[picked.key] || !participantHasShare(state.tiles[picked.key].participant)) {
+			hideShareStage();
+			return;
+		}
+		var record = state.tiles[picked.key];
+		var video = byId("share-video");
+		attachTrack(video, "video", shareTracks(record.participant).video);
+		if (typeof video.play === "function") {
+			try {
+				Promise.resolve(video.play()).catch(function () {});
+			} catch (_error) {}
+		}
+		var stage = byId("share-stage");
+		stage.hidden = false;
+		stage.dataset.active = "true";
+		setText("share-label", "Screen — " + participantName(record.participant) + (record.isSelf ? " (you)" : ""));
+		byId("share-note").hidden = !picked.multiple;
+	}
+
+	function toggleScreenShare() {
+		var sdk = state.sdk;
+		if (!sdk) {
+			return;
+		}
+		var button = byId("share-button");
+		if (button.getAttribute("aria-busy") === "true") {
+			return;
+		}
+		var sharing = participantHasShare(sdk.self);
+		if (!sharing && !displayMediaSupported()) {
+			setCallStatus("Screen share unavailable. This browser cannot share a screen.");
+			return;
+		}
+		if (!sharing && anotherParticipantIsSharing(sdk)) {
+			setCallStatus("Screen share unavailable. Someone else is already sharing.");
+			return;
+		}
+		button.setAttribute("aria-busy", "true");
+		var action = sharing ? sdk.self.disableScreenShare() : sdk.self.enableScreenShare();
+		Promise.resolve(action).then(
+			function () {
+				if (state.sdk !== sdk) {
+					return;
+				}
+				button.removeAttribute("aria-busy");
+				renderLocalControls();
+				noteShareArrival(participantKey(sdk.self, true), sdk.self);
+				updateSharePresentation();
+				if (!sharing && !participantHasShare(sdk.self)) {
+					if (byId("call-status").hidden) {
+						setCallStatus("Screen share unavailable. Check the browser screen-share permission.");
+					}
+					return;
+				}
+				clearCallStatus("Screen share unavailable");
+			},
+			function () {
+				if (state.sdk !== sdk) {
+					return;
+				}
+				button.removeAttribute("aria-busy");
+				renderLocalControls();
+				if (state.reconnecting) {
+					return;
+				}
+				// The picker maps NotAllowedError to CANCELED and emits that first. The promise then
+				// rejects. Writing the generic permission line here would take the true reason away.
+				var status = byId("call-status");
+				if (!status.hidden && (status.textContent || "").indexOf("Screen share unavailable") === 0) {
+					return;
+				}
+				setCallStatus("Screen share unavailable. Check the browser screen-share permission.");
 			}
 		);
 	}
@@ -1571,6 +1809,20 @@ export const council_room_client_js = `
 		// clearCallStatus matches on that prefix, and toggleLocalMedia passes it after a successful
 		// retry. A line that opened any other way would stay on screen for the rest of the meeting,
 		// long after the listener closed the other app and the device came back.
+		if (payload.kind === "screenshare") {
+			// The share picker maps NotAllowedError to CANCELED, not DENIED. Saying no screen was
+			// found would be wrong: the person closed the picker.
+			if (payload.message === "CANCELED") {
+				setCallStatus("Screen share unavailable. The share picker was closed.");
+				return;
+			}
+			if (payload.message === "COULD_NOT_START") {
+				setCallStatus("Screen share unavailable. Close any other app using it, then try Share again.");
+				return;
+			}
+			setCallStatus("Screen share unavailable. Check the browser screen-share permission.");
+			return;
+		}
 		if (payload.message === "COULD_NOT_START") {
 			setCallStatus(
 				payload.kind === "video"
@@ -2180,6 +2432,7 @@ export const council_room_client_js = `
 		// A start-recording request still in the air leaves the same mark.
 		byId("mute-button").removeAttribute("aria-busy");
 		byId("camera-button").removeAttribute("aria-busy");
+		byId("share-button").removeAttribute("aria-busy");
 		byId("start-recording-button").removeAttribute("aria-busy");
 		// A close that already succeeded leaves the confirmation dialog open on its pending wording,
 		// with the confirm button disabled. It is invisible only because the call view is hidden, so
@@ -2399,6 +2652,7 @@ export const council_room_client_js = `
 		byId("camera-button").addEventListener("click", function () {
 			toggleLocalMedia("video");
 		});
+		byId("share-button").addEventListener("click", toggleScreenShare);
 		byId("play-audio-button").addEventListener("click", retryBlockedAudio);
 		byId("leave-button").addEventListener("click", function () {
 			endLocally("You left the meeting.", true);

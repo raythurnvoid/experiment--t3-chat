@@ -45,6 +45,7 @@ describe("council_room_page_html", () => {
 
 	test("exposes a revision marker for QA provenance checks", () => {
 		expect(html).toMatch(/<meta name="council-room-revision" content="[^"]+" \/>/);
+		expect(html).toContain('content="council-room-r31"');
 	});
 
 	test("pins the SDK by exact version and subresource integrity hash", () => {
@@ -194,6 +195,7 @@ describe("council_room_page_html", () => {
 		const matches = html.match(/This meeting may be recorded\./g) ?? [];
 		expect(matches.length).toBeGreaterThanOrEqual(2);
 		expect(html).toContain("not used to label who spoke");
+		expect(html).toContain("Shared screens are captured in the recording.");
 		expect(html).not.toContain("attached to the transcript");
 		expect(html).not.toContain("attached to their part of the transcript");
 	});
@@ -203,6 +205,11 @@ describe("council_room_page_html", () => {
 			"participant-list",
 			"mute-button",
 			"camera-button",
+			"share-button",
+			"share-stage",
+			"share-video",
+			"share-note",
+			"share-label",
 			"play-audio-button",
 			"leave-button",
 			"start-recording-button",
@@ -303,12 +310,12 @@ describe("council_room_page_html", () => {
 	});
 
 	test("takes the control bar out of the float when the window is narrower than the bar", () => {
-		// The floating bar needs 628px for its widest label and keeps 16px of window on each side,
-		// so under a 660px window it cannot hold that width and the controls shrink under their own
-		// labels. The query starts at 659px, the first width where that happens. A static bar keeps
+		// The floating bar needs 720px for seven controls and keeps 16px of window on each side,
+		// so under a 752px window it cannot hold that width and the controls shrink under their own
+		// labels. The query starts at 751px, the first width where that happens. A static bar keeps
 		// the multi-column stage; sending these windows back to the phone rules would put one tile
 		// per row again, the defect above.
-		const query = "@media (max-height: 650px) and (aspect-ratio > 1/1) and (max-width: 659px) {";
+		const query = "@media (max-height: 650px) and (aspect-ratio > 1/1) and (max-width: 751px) {";
 		const fromBlock = html.slice(html.indexOf(query));
 		const narrowRules = fromBlock.slice(0, fromBlock.indexOf("\n}\n"));
 		expect(html).toContain(query);
@@ -326,17 +333,15 @@ describe("council_room_page_html", () => {
 		expect(narrowRules).toContain("order: 1;");
 	});
 
-	test("pins the values the control bar's 628px minimum is derived from", () => {
+	test("pins the values the control bar's 720px minimum is derived from", () => {
 		// The comment on that media query derives the minimum by hand, and the widest label is what
 		// drives it: "Recording unavailable" measures 125px, its control adds 8px of padding each
-		// side and a 1px border to reach 143px, the other five come to 423px, and the six plus five
-		// 8px gaps plus 10px of bar padding each side plus its 1px border make 628. Add the 32px of
-		// window the bar leaves itself and that is the 660px window it needs. Nothing recomputes any
-		// of it when an input moves. The last version of this comment derived 566 from six controls
-		// held at their 84px floor, which is only true while every label is short, and it went stale
-		// the moment a 21-character label was added. Pin the inputs and the results together, so a
-		// changed value fails here and sends the next reader to the recipe instead of past a stale
-		// number.
+		// side and a 1px border to reach 143px. Share sits on the 84px floor. The last live
+		// six-control measure plus that floor is 650, and six 8px gaps plus 10px of bar padding each
+		// side plus its 1px border make 720. Add the 32px of window the bar leaves itself and that
+		// is the 752px window it needs. Nothing recomputes any of it when an input moves. Pin the
+		// inputs and the results together, so a changed value fails here and sends the next reader
+		// to the recipe instead of past a stale number.
 		const fromControl = html.slice(html.indexOf(".control {"));
 		expect(fromControl.slice(0, fromControl.indexOf("}"))).toContain("min-width: 84px;");
 		const fromLabel = html.slice(html.indexOf(".control-label {"));
@@ -351,8 +356,8 @@ describe("council_room_page_html", () => {
 		const fromShortWindow = html.slice(html.indexOf("@media (max-height: 650px)"));
 		const shortWindowRules = fromShortWindow.slice(0, fromShortWindow.indexOf("\n}\n"));
 		expect(shortWindowRules).toContain(".control {\n\t\tmin-height: 58px;\n\t\tpadding: 5px 8px;\n\t}");
-		expect(html).toContain("566 + 40 + 20 + 2 = 628");
-		expect(html).toContain("it needs a 660px window");
+		expect(html).toContain("650 + 48 + 20 + 2 = 720");
+		expect(html).toContain("it needs a 752px window");
 	});
 
 	test("derives that minimum from the longest label the client can write", () => {
@@ -386,7 +391,7 @@ describe("council_room_page_html", () => {
 		// nothing. Tab still scrolled the bar into view, so a keyboard user escaped; a pointer or
 		// touch user could not reach Leave or End for all for the rest of the meeting. happy-dom does
 		// no layout, so this pins the rule text and the browser measurement carries the behaviour.
-		const query = "@media (max-height: 650px) and (aspect-ratio > 1/1) and (max-width: 659px) {";
+		const query = "@media (max-height: 650px) and (aspect-ratio > 1/1) and (max-width: 751px) {";
 		const fromBlock = html.slice(html.indexOf(query));
 		const narrowRules = fromBlock.slice(0, fromBlock.indexOf("\n}\n"));
 		expect(narrowRules).toContain(".call-view {\n\t\toverflow-y: auto;\n\t}");
@@ -396,7 +401,7 @@ describe("council_room_page_html", () => {
 	});
 
 	test("keeps the host error banner out of the phone control bar", () => {
-		// In the phone rules the bar is a normal block under the stage, and a host's six controls
+		// In the phone rules the bar is a normal block under the stage, and a host's seven controls
 		// always wrap to two rows: the bar measured 159px tall at both 390x844 and 320x640. A banner
 		// pinned 124px above the window bottom landed inside the bar's first row, overlapped it by
 		// 35px, and elementFromPoint at the icon centres answered host-error for mute, camera,
@@ -434,11 +439,11 @@ describe("council_room_page_html", () => {
 		const fromPhone = html.slice(html.indexOf(phoneQuery));
 		const phoneRules = fromPhone.slice(0, fromPhone.indexOf("\n}\n"));
 		expect(phoneRules).toContain(".control-label {\n\t\twhite-space: normal;\n\t}");
-		const narrowQuery = "@media (max-height: 650px) and (aspect-ratio > 1/1) and (max-width: 659px) {";
+		const narrowQuery = "@media (max-height: 650px) and (aspect-ratio > 1/1) and (max-width: 751px) {";
 		const fromNarrow = html.slice(html.indexOf(narrowQuery));
 		const narrowRules = fromNarrow.slice(0, fromNarrow.indexOf("\n}\n"));
 		expect(narrowRules).toContain(".control-label {\n\t\twhite-space: normal;\n\t}");
-		// Keep the base rule on nowrap. The floating bar's 628px minimum is derived from single-line
+		// Keep the base rule on nowrap. The floating bar's 720px minimum is derived from single-line
 		// labels, and the test above pins that arithmetic and the comment that explains it.
 		// pointer-events: none rides along in the same rule. A label is text on a button, .control
 		// does not clip it, and an overflowing one took the neighbouring control's clicks: at
@@ -468,6 +473,9 @@ describe("council_room_page_html", () => {
 		expect(html).toContain('pinned ? "Pinned — unpin " + name : "Pin " + name');
 		expect(html).toContain('id="mute-button" aria-pressed="false"');
 		expect(html).toContain('id="camera-button" aria-pressed="false"');
+		expect(html).toContain('id="share-button" aria-pressed="false"');
+		expect(html).toContain('<span class="control-label">Share</span>');
+		expect(html).toContain('.share-stage[data-active="true"]');
 		expect(html).toContain('role="status" aria-live="polite"');
 	});
 
@@ -818,6 +826,7 @@ describe("council_room_page_html", () => {
 		for (const event of [
 			"videoUpdate",
 			"audioUpdate",
+			"screenShareUpdate",
 			"participantJoined",
 			"participantLeft",
 			"roomLeft",
@@ -830,8 +839,8 @@ describe("council_room_page_html", () => {
 		}
 		// For audio and video, the two kinds the room asks for, SDK 2.0.1 sends one of six messages:
 		// ACCEPTED, DENIED, SYSTEM_DENIED, NOT_REQUESTED, COULD_NOT_START and NO_DEVICES_AVAILABLE.
-		// The enum holds a seventh, CANCELED, but the bytes the integrity hash above pins only produce
-		// it for kind "screenshare", which the room never asks for. Do not add it here.
+		// The enum holds a seventh, CANCELED, and the bytes the integrity hash above pins produce
+		// it for kind "screenshare" when the picker is dismissed. The share branch must name that.
 		// ACCEPTED is the only one that leaves the track working, so it is the only one the room may
 		// stay silent about. Naming the two refusals instead was wrong: Chromium's
 		// mapper sends NotReadableError and every error it does not recognise to COULD_NOT_START, so
@@ -841,6 +850,8 @@ describe("council_room_page_html", () => {
 		// does not send the listener to check the browser permission.
 		expect(html).toContain('payload.message === "ACCEPTED"');
 		expect(html).toContain('payload.message === "COULD_NOT_START"');
+		expect(html).toContain('payload.kind === "screenshare"');
+		expect(html).toContain('payload.message === "CANCELED"');
 		// Assert the clause that carries the difference, not the whole sentence: this branch has to
 		// name the other app holding the device, because sending the listener to the permission
 		// screen is the one answer that cannot help here. room/client.ts owns the exact wording.

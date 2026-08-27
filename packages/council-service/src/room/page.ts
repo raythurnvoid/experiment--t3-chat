@@ -32,7 +32,7 @@ const REALTIMEKIT_SDK_INTEGRITY = "sha384-EVOSez95uObqUjiV3FecQZJtqOIGneHAfSwbpj
  * old value, matches it against the value the harness notes record, and wrongly concludes that the
  * Worker is serving its own tree.
  */
-const ROOM_REVISION = "council-room-r30";
+const ROOM_REVISION = "council-room-r31";
 
 /**
  * The Worker builds the room page's CSP from this list. A missing entry breaks the room in a live
@@ -67,8 +67,8 @@ export const council_room_page_external_origins = [
 // promise that a typed display name labels who spoke.
 const CONSENT_NOTICE =
 	"This meeting may be recorded. If the host starts recording, Council saves one recording and one transcript, " +
-	"and the transcript is used to create a meeting summary. The name you type is shown to other people in the room. " +
-	"It is not used to label who spoke.";
+	"and the transcript is used to create a meeting summary. Shared screens are captured in the recording. " +
+	"The name you type is shown to other people in the room. It is not used to label who spoke.";
 
 const ROOM_CSS = `
 :root {
@@ -850,6 +850,49 @@ button {
 	}
 }
 
+.share-stage {
+	display: none;
+	position: relative;
+	min-height: 220px;
+	margin: 0 16px 12px;
+	overflow: hidden;
+	border: 1px solid var(--room-border);
+	border-radius: 14px;
+	background: #050608;
+}
+
+.share-stage[data-active="true"] {
+	display: block;
+}
+
+.share-video {
+	display: block;
+	width: 100%;
+	height: min(58vh, 720px);
+	object-fit: contain;
+	background: #050608;
+}
+
+.share-label,
+.share-note {
+	position: absolute;
+	left: 12px;
+	margin: 0;
+	padding: 4px 10px;
+	border-radius: 8px;
+	background: rgb(8 9 11 / 72%);
+	color: var(--room-text);
+	font-size: 13px;
+}
+
+.share-label {
+	bottom: 12px;
+}
+
+.share-note {
+	top: 12px;
+}
+
 .audio-bin {
 	display: none;
 }
@@ -896,7 +939,7 @@ button.control:hover:not(:disabled):not([aria-busy="true"]) {
 /* A control that is waiting for an answer marks itself busy instead of disabling itself, so that
    it keeps keyboard focus while it waits. It has to look the same as one that cannot be pressed, so
    the hover rule above skips a busy control too. #mute-button, #camera-button and
-   #start-recording-button all reach this state, and they drop every press while they are in it. */
+   #share-button and #start-recording-button all reach this state, and they drop every press while they are in it. */
 .control:disabled,
 .control[aria-busy="true"] {
 	opacity: 0.58;
@@ -1173,12 +1216,13 @@ button.control:hover:not(:disabled):not([aria-busy="true"]) {
 
 	/* The bar is a normal block under the stage here, so the banner has nothing to float over and
 	   sits in the column instead. Pinned 124px above the window bottom it landed inside the bar's
-	   first row: a host has six controls, the bar always wraps to two rows, and it measured 159px
-	   tall at both 390x844 and 320x640. The banner overlapped it by 35px, and elementFromPoint at
-	   the icon centres answered "host-error" for mute, camera, participant count and start
-	   recording at 390x844, and for mute, camera and participant count at 320x640. There is no
-	   dismiss and no auto-clear, so those icons stayed unreachable for the rest of the meeting.
-	   Do not go back to a hard-coded offset: it drifts again the next time a control is added. */
+	   first row: a host has seven controls, the bar always wraps to two rows, and it measured 159px
+	   tall at both 390x844 and 320x640 with six. A seventh control makes that wrap denser. The banner
+	   overlapped it by 35px, and elementFromPoint at the icon centres answered "host-error" for mute,
+	   camera, participant count and start recording at 390x844, and for mute, camera and participant
+	   count at 320x640. There is no dismiss and no auto-clear, so those icons stayed unreachable for
+	   the rest of the meeting. Do not go back to a hard-coded offset: it drifts again the next time a
+	   control is added. */
 	.host-error {
 		position: static;
 		width: auto;
@@ -1307,16 +1351,15 @@ button.control:hover:not(:disabled):not([aria-busy="true"]) {
    84px floor on a control. The widest one the client can write is RECORDING_LABELS.unavailable in
    room/client.ts, "Recording unavailable", and at the shipped 12px label size it measures 125px.
    This block sizes a control with 8px of padding on each side plus its 1px border, so that one
-   control is 143px and only three of the six sit on the floor. Measured at 660x450: the six
-   controls are 86 + 84 + 85 + 143 + 84 + 84 = 566, then five 8px gaps, 10px of bar padding on each
-   side and its 1px border, so 566 + 40 + 20 + 2 = 628. The bar keeps 16px of window on each side
-   (max-width: calc(100% - 32px)), so it needs a 660px window.
-   Do not read that 566 as the old recipe returning. This comment used to derive 566 for the whole
-   bar, from six controls held at 84px. That is what the bar would measure if every label were
-   short. The six real controls happen to add up to the same 566, and the bar is 628.
-   Below 660px the bar is capped and the controls shrink. The recording control eats its own
+   control is 143px and Share sits on the 84px floor. The last live six-control measure was
+   86 + 84 + 85 + 143 + 84 + 84 = 566. Adding Share at 84px makes 650. Six 8px gaps, 10px of bar
+   padding on each side and its 1px border, so 650 + 48 + 20 + 2 = 720. The bar keeps 16px of window
+   on each side (max-width: calc(100% - 32px)), so it needs a 752px window.
+   Do not read that 650 as six short labels. Share is a short label, so it uses the 84px floor. The
+   other six widths are the last live measure. The bar is 720.
+   Below 752px the bar is capped and the controls shrink. The recording control eats its own
    padding first, so nothing shows for a while: measured at height 450, the label leaves that
-   control at 638px and reaches "End for all" at 622px. The query below still starts at 659px,
+   control at 638px and reaches "End for all" at 622px. The query below still starts at 751px,
    because the width the bar needs is the number a reader can re-derive from the labels, and the
    width where the first pixel of overlap appears is not. Do not move it down to 638.
    Re-measure whenever a control is added, a label changes, or the label font size moves. The
@@ -1330,7 +1373,7 @@ button.control:hover:not(:disabled):not([aria-busy="true"]) {
    fewer tiles fit at once and the stage scrolls. That is the trade we want: the window scrolls in
    one direction instead of two (WCAG 1.4.10), and sideways scrolling is the thing that rule
    exists to prevent. */
-@media (max-height: 650px) and (aspect-ratio > 1/1) and (max-width: 659px) {
+@media (max-height: 650px) and (aspect-ratio > 1/1) and (max-width: 751px) {
 	/* Let this column scroll here, and only here. The bar and the banner are both normal blocks in
 	   it now, the bar refuses to shrink, and the stage is already down to nothing, so on the
 	   shortest windows the three of them add up to more than the column shows. The base rule clips
@@ -1371,7 +1414,7 @@ button.control:hover:not(:disabled):not([aria-busy="true"]) {
 	   The wrapped label is two lines, so the control it sits in grows from 66px to 84px and the
 	   bar from 163px to 180px. That is 4px more than the column shows at 320x256, and the
 	   .call-view rule above already scrolls it. Every control stayed reachable there: the bottom
-	   row ends at 249px in a 256px window, and elementFromPoint at all six centres answered the
+	   row ends at 249px in a 256px window, and elementFromPoint at all seven centres answered the
 	   control itself. */
 	.control-label {
 		white-space: normal;
@@ -1577,6 +1620,11 @@ export function council_room_page_html() {
 					<p class="call-status" id="call-status" role="status" aria-live="polite" tabindex="-1" hidden></p>
 					<button type="button" class="audio-recovery" id="play-audio-button" hidden>Play audio</button>
 				</div>
+				<div class="share-stage" id="share-stage" data-active="false" hidden>
+					<video class="share-video" id="share-video" autoplay playsinline muted aria-hidden="true"></video>
+					<p class="share-note" id="share-note" hidden>Showing the most recent share</p>
+					<p class="share-label" id="share-label"></p>
+				</div>
 				<div class="participant-stage" id="participant-list" role="list" aria-label="Meeting participants" data-count="0"></div>
 				<div class="audio-bin" id="audio-bin" aria-hidden="true"></div>
 				<div class="control-bar" role="group" aria-label="Meeting controls">
@@ -1585,6 +1633,9 @@ export function council_room_page_html() {
 					</button>
 					<button type="button" class="control" id="camera-button" aria-pressed="false">
 						<span class="control-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="m16 10 5-3v10l-5-3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span><span class="control-label">Camera</span>
+					</button>
+					<button type="button" class="control" id="share-button" aria-pressed="false">
+						<span class="control-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 20h8M12 16v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span class="control-label">Share</span>
 					</button>
 					<p class="control control-static" id="participant-count-status" role="status">
 						<span class="control-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 19c0-3.2 2.7-5.5 6-5.5s6 2.3 6 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16 6.5a2.7 2.7 0 0 1 0 5.2M17.5 14c2 .7 3.5 2.4 3.5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><em class="control-count-badge" id="participant-count">0</em></span><span class="control-label">Participants</span>

@@ -348,7 +348,16 @@ function default_handler(call: RecordedCall): Response | null {
 					],
 				});
 			}
-			return Response.json({ success: true, data: { permissions: { transcription_enabled: true } } });
+			return Response.json({
+				success: true,
+				data: {
+					config: { max_screenshare_count: 1 },
+					permissions: {
+						transcription_enabled: true,
+						media: { screenshare: { can_produce: "ALLOWED" } },
+					},
+				},
+			});
 		}
 	}
 

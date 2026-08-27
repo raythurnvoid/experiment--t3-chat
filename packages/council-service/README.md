@@ -138,6 +138,15 @@ Working on the room page:
 curl -s "http://127.0.0.1:8787/room?m=qa" | grep -o 'council-room-revision" content="[^"]*"'
 ```
 
+Room controls: Microphone, Camera, **Share**, Participants, Start recording (host), End for all
+(host), and Leave. Share is a toggle named `Share` in both states. Guests may share. The room
+allows one share at a time and refuses a second with a line that starts
+`Screen share unavailable.` If two shares still appear (the provider may accept more than one),
+the room shows the newest share this browser saw and a note that says
+`Showing the most recent share`. That note is not a server rule. Tab audio from a shared tab
+plays through the same Play audio recovery as remote microphone audio. The camera is unchanged.
+The consent line says shared screens are captured in the recording.
+
 ## Meeting states
 
 `created → open → closed → processing → ready | failed` (an unrecorded meeting goes
@@ -182,7 +191,17 @@ safe, installation-owned copy with no meeting code, ticket, email, token, admiss
 provider URL. A leftover track artifact still carries the provider's own file name, because that is the
 name the file has in the workspace, and the provider builds that name from the participant's
 provider and peer ids. Current composite files use the fixed names `recording.mp4` and
-`recording-audio.m4a`.
+`recording-audio.m4a`. A finished recorded meeting folder is meant to hold those two files plus
+`transcript.md`, `summary.md`, and `provider-transcript.json` when the provider published one.
+`provider-transcript.json` is best-effort: the pipeline continues without it. Do not rename the
+two recording files. The Council dashboard still shows both composite files as one Recording
+badge (`plugins/bonobo-plugin-council/src/app.tsx`).
+
+A 60-minute composite video measured about 144–187 MiB in the 2026-08-27 provider probe. That
+fits under the existing 500 MiB upload cap. Do not raise the cap for screen share. The mixed
+audio in that same probe was about 83 MiB per hour, which is over the 24 MB transcription
+read cap at about 17–18 minutes. A track past that cap is marked `rejected` and the run
+continues. Do not raise the 24 MB cap here.
 
 ## Council 0.2.0 release gate
 
@@ -206,8 +225,22 @@ Use this coupled order after separate release approval:
 5. Confirm the SDK commit Council already pins in `plugins/bonobo-plugin-council/package.json`
    resolves to `0.9.2`. The mirror exists: do not push a second one and do not re-pin Council.
 6. Build Council twice, push its exact commit, update the parent gitlink, and publish that exact SHA.
-7. Accept the new capability on the installation and run the create, join, close, and artifact smoke test.
-8. Reopen meeting creation.
+7. Accept the new capability on the installation and run the create, join, close, share, and artifact smoke test.
+
+Owner smoke checklist (run only after this gate):
+
+1. Create a meeting from the Council plugin.
+2. Join as host and as guest in two browsers.
+3. Confirm Share is visible, named Share, and starts unpressed.
+4. Guest shares a tab with readable text and some motion. The presentation area shows that share. The host hears tab audio if the guest shared it.
+5. Host presses Share while the guest is still sharing. The status line starts with `Screen share unavailable.` and says someone else is already sharing. The guest share stays on screen.
+6. Guest stops. Host shares. The refusal line clears. The presentation area shows the host share.
+7. Start recording. Keep the share up for at least one minute. End the meeting.
+8. After processing, the meeting folder has `recording.mp4`, `recording-audio.m4a`, `transcript.md`, `summary.md`, and `provider-transcript.json` when the provider published one.
+9. Open `recording.mp4`. The shared screen is visible and the 720p text is readable.
+10. Open `transcript.md` and `summary.md`. They are usable. A meeting longer than about 18 minutes may note a rejected audio file because of the 24 MB transcription cap. That is expected. Do not raise the cap here.
+
+Then reopen meeting creation.
 
 The checked-in `COUNCIL_MAINTENANCE` value is `false`. A coupled release deploys the same final
 source with that value overridden to `true`, then deploys the checked-in config again only after the
@@ -436,7 +469,9 @@ A second cap applies per track: transcription reads at most **24 MB** of one fil
 (`council_TRACK_TRANSCRIBE_MAX_BYTES`), sized to the 128 MB isolate rather than to the file, because
 the peak cost is about 3.3x the byte count. A track past it is marked `rejected` and **the run
 continues** — so the transcript is not always complete. An hour of Opus is roughly 14 MB at 32 kbps
-and 29 MB at 64 kbps, so a full-length track can land either side of this. Every refusal is logged
+and 29 MB at 64 kbps, so a full-length track can land either side of this. The 2026-08-27
+composite probe measured about 83 MiB of mixed AAC per hour, so a one-hour composite audio file
+crosses this cap at about 17–18 minutes. Every refusal is logged
 at the point it happens, and both `transcript.md` and `summary.md` carry a count of the tracks that
 could not be transcribed, so neither document claims silence for audio that was recorded. If filenames have
 the same provider timestamp, their names provide the stable final ordering, compared by code unit

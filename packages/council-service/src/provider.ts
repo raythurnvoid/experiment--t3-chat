@@ -120,9 +120,9 @@ export const council_PRESET_NAMES = {
 } as const;
 
 /**
- * Make sure Council's own transcription-enabled preset exists for a role and really carries the
- * permission. Returns the preset name to use on Add Participant. Never trusts the list endpoint's
- * permissions and never assumes a stock preset works.
+ * Make sure Council's own host or guest preset exists and really carries transcription plus
+ * screenshare produce. Returns the preset name to use on Add Participant. Never trusts the list
+ * endpoint's permissions and never assumes a stock preset works.
  */
 export async function council_provider_ensure_preset(env: Env, role: "host" | "guest") {
 	const targetName = council_PRESET_NAMES[role];
@@ -146,15 +146,38 @@ export async function council_provider_ensure_preset(env: Env, role: "host" | "g
 		const detail = await provider_fetch(env, `/presets/${existing.id}`);
 		const detailData = body_data(detail);
 		const permissions = detailData?.permissions as Record<string, unknown> | undefined;
-		if (detail.ok && permissions?.transcription_enabled === true) {
+		if (!detail.ok || !detailData || permissions?.transcription_enabled !== true) {
+			return Result<never>({
+				_nay: {
+					name: "preset_invalid",
+					message: `Preset ${targetName} exists but does not carry transcription_enabled`,
+				},
+			});
+		}
+		if (preset_carries_council_permissions(detailData)) {
 			return Result({ _yay: { presetName: targetName, presetId: existing.id } });
 		}
-		return Result<never>({
-			_nay: {
-				name: "preset_invalid",
-				message: `Preset ${targetName} exists but does not carry transcription_enabled`,
-			},
+
+		// Live Council presets were created before screenshare was pinned. PATCH the full object so
+		// a screenshare-only replace cannot drop transcription_enabled.
+		const patched = await provider_fetch(env, `/presets/${existing.id}`, {
+			method: "PATCH",
+			body: JSON.stringify(merge_council_preset_fields(detailData, targetName)),
 		});
+		if (!patched.ok) {
+			return provider_nay("Update preset", patched);
+		}
+		const readback = await provider_fetch(env, `/presets/${existing.id}`);
+		const readbackData = body_data(readback);
+		if (!readback.ok || !preset_carries_council_permissions(readbackData)) {
+			return Result<never>({
+				_nay: {
+					name: "preset_invalid",
+					message: `Preset ${targetName} exists but does not carry transcription_enabled and screenshare ALLOWED`,
+				},
+			});
+		}
+		return Result({ _yay: { presetName: targetName, presetId: existing.id } });
 	}
 
 	const source = listed(PRESET_SOURCES[role]);
@@ -169,21 +192,82 @@ export async function council_provider_ensure_preset(env: Env, role: "host" | "g
 		return provider_nay("Read stock preset", sourceDetail);
 	}
 
-	// Clone config and ui verbatim and add only the one permission that switches transcription on.
 	const created = await provider_fetch(env, "/presets", {
 		method: "POST",
-		body: JSON.stringify({
-			name: targetName,
-			config: sourceData.config,
-			permissions: { ...(sourceData.permissions as Record<string, unknown>), transcription_enabled: true },
-			ui: sourceData.ui,
-		}),
+		body: JSON.stringify(merge_council_preset_fields(sourceData, targetName)),
 	});
 	const createdData = body_data(created);
 	if (!created.ok || !createdData || !nonempty_string(createdData.id)) {
 		return provider_nay("Create preset", created);
 	}
+
+	// Create answers do not prove the stored permissions. Read DETAIL the same way the existing
+	// path does, or a later join would trust a preset that still says CAN_REQUEST.
+	const createdDetail = await provider_fetch(env, `/presets/${createdData.id}`);
+	const createdDetailData = body_data(createdDetail);
+	if (!createdDetail.ok || !preset_carries_council_permissions(createdDetailData)) {
+		return Result<never>({
+			_nay: {
+				name: "preset_invalid",
+				message: `Preset ${targetName} exists but does not carry transcription_enabled and screenshare ALLOWED`,
+			},
+		});
+	}
 	return Result({ _yay: { presetName: targetName, presetId: createdData.id } });
+}
+
+function as_record(value: unknown) {
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function screenshare_can_produce(permissions: unknown) {
+	return as_record(as_record(as_record(permissions).media).screenshare).can_produce;
+}
+
+/**
+ * Transcription plus screenshare produce must both be on. Never accept CAN_REQUEST. Council has
+ * no approve-share UI. max_screenshare_count 1 is the preset pin; the room client still refuses a
+ * second share because the provider accepted two shares when this field was 3.
+ */
+function preset_carries_council_permissions(detail: Record<string, unknown> | null) {
+	if (!detail) {
+		return false;
+	}
+	const permissions = as_record(detail.permissions);
+	if (permissions.transcription_enabled !== true) {
+		return false;
+	}
+	if (screenshare_can_produce(permissions) !== "ALLOWED") {
+		return false;
+	}
+	return as_record(detail.config).max_screenshare_count === 1;
+}
+
+function merge_council_preset_fields(detail: Record<string, unknown>, name: string) {
+	const permissions = as_record(detail.permissions);
+	const media = as_record(permissions.media);
+	const screenshare = as_record(media.screenshare);
+	const config = as_record(detail.config);
+
+	return {
+		name,
+		config: {
+			...config,
+			max_screenshare_count: 1,
+		},
+		permissions: {
+			...permissions,
+			transcription_enabled: true,
+			media: {
+				...media,
+				screenshare: {
+					...screenshare,
+					can_produce: "ALLOWED",
+				},
+			},
+		},
+		ui: detail.ui,
+	};
 }
 
 // #endregion presets
