@@ -472,9 +472,10 @@ fake-audio scratch-Chrome loop above.
   remount (Retry, session lost, or a later Open click) wipes it. Copy join code to the clipboard
   and a note first. Then the member clicks Open.
 - **Mint the host room link only when the host is ready to open it.** It is single-use and lasts two
-  minutes. Click `Get host room link`, copy it from the card, and open it in a **new tab**. Do not Join
-  from the QA Edge profile (mic permission wedges `getUserMedia`). The human host may Join in their
-  own browser; an agent Join still belongs in scratch Chrome.
+  minutes. After create, the list card only has `Open meeting` and `Delete`. `Get host room link`
+  appears only after `Open meeting`. Click `Get host room link`, copy it from the card, and open it
+  in a **new tab**. Do not Join from the QA Edge profile (mic permission wedges `getUserMedia`). The
+  human host may Join in their own browser; an agent Join still belongs in scratch Chrome.
 - **A leftover host cookie must not open the wrong meeting.** One `__Host-council_session` cookie
   covers the whole Worker origin. The room page must name `?m=` on resume so a cookie from another
   meeting is refused and the guest form appears. If the served `council-room-revision` lags the tree,
