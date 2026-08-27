@@ -445,7 +445,9 @@ click provably does nothing, not before.
   pressed, read host `#share-video` `videoWidth`/`videoHeight`. If that size is a monitor, move the
   fixture Chrome onto that monitor and pin it topmost (`HWND_TOPMOST`) so the live share shows the
   fixture text. Unpin when the meeting ends. Prove the host stage shows the fixture *before*
-  recording. `assets/files/speakers.wav` is documented but may be absent; generate a short speech
+  recording. Chrome's floating Stop sharing bar ends the capture without clicking Share. After that
+  stop, `#share-button` must have `aria-pressed="false"` even though `toggleScreenShare` did not
+  run. A failed in-app stop must not say to check the screen-share permission. `assets/files/speakers.wav` is documented but may be absent; generate a short speech
   WAV into `../t3-chat-+personal/+ai/` with Windows SAPI. Files toolbar Download of `recording.mp4`
   lands in the QA Edge Downloads folder. Playwriter `download.saveAs` fails here because the relay
   artifact path is already gone. Do not call `window.getScreenDetails()` from the fixture; it opens

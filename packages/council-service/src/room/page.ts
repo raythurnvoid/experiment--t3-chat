@@ -32,7 +32,7 @@ const REALTIMEKIT_SDK_INTEGRITY = "sha384-EVOSez95uObqUjiV3FecQZJtqOIGneHAfSwbpj
  * old value, matches it against the value the harness notes record, and wrongly concludes that the
  * Worker is serving its own tree.
  */
-const ROOM_REVISION = "council-room-r31";
+const ROOM_REVISION = "council-room-r32";
 
 /**
  * The Worker builds the room page's CSP from this list. A missing entry breaks the room in a live

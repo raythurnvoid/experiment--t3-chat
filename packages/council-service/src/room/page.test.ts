@@ -45,7 +45,7 @@ describe("council_room_page_html", () => {
 
 	test("exposes a revision marker for QA provenance checks", () => {
 		expect(html).toMatch(/<meta name="council-room-revision" content="[^"]+" \/>/);
-		expect(html).toContain('content="council-room-r31"');
+		expect(html).toContain('content="council-room-r32"');
 	});
 
 	test("pins the SDK by exact version and subresource integrity hash", () => {

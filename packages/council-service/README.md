@@ -235,6 +235,10 @@ These items already landed. Do not redo them:
 What this gate still had to do on that day: deploy this Worker so `GET /room` serves
 `council-room-r31`, then run the live share smoke, then leave `COUNCIL_MAINTENANCE` as `"false"`.
 
+A later room-client fix is live as `council-room-r32`. Chrome's Stop sharing bar now clears the
+Share button `aria-pressed` state, and a failed in-app stop no longer names the screen-share
+permission. Leave `COUNCIL_MAINTENANCE` as `"false"`.
+
 ### 1. Probe the live Worker and D1 (read-only)
 
 Compare the served room marker with `ROOM_REVISION` in `src/room/page.ts`:

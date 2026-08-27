@@ -1046,6 +1046,12 @@ export const council_room_client_js = `
 			var shareHandler = function () {
 				noteShareArrival(key, participant);
 				updateSharePresentation();
+				// Chrome's Stop sharing bar ends the capture and emits this event. It never clicks
+				// Share, so toggleScreenShare does not refresh aria-pressed. Mic and camera already
+				// refresh from their own update events.
+				if (record.isSelf) {
+					renderLocalControls();
+				}
 			};
 			participant.on("screenShareUpdate", shareHandler);
 			record.cleanups.push(function () {
@@ -1577,6 +1583,7 @@ export const council_room_client_js = `
 					return;
 				}
 				clearCallStatus("Screen share unavailable");
+				clearCallStatus("Could not stop the share");
 			},
 			function () {
 				if (state.sdk !== sdk) {
@@ -1585,6 +1592,12 @@ export const council_room_client_js = `
 				button.removeAttribute("aria-busy");
 				renderLocalControls();
 				if (state.reconnecting) {
+					return;
+				}
+				// A failed stop is not a permission problem. The share already started. Naming the
+				// permission here sends the user to a panel that already says allow.
+				if (sharing) {
+					setCallStatus("Could not stop the share. Try Share again.");
 					return;
 				}
 				// The picker maps NotAllowedError to CANCELED and emits that first. The promise then

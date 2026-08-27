@@ -1338,7 +1338,10 @@ is gone from the Playwright build Playwriter 0.4.0 ships — it throws
   only `aria-pressed` and take their accessible name from the `.control-label` text in the markup.
   Measured on the same build, in both states: `aria-label` is `null` and the AX name stays
   `"Microphone"`, `"Camera"`, and `"Share"` while `aria-pressed` flips. Share is pressed only when
-  this browser has a share **video track**, not when `enableScreenShare()` resolved.
+  this browser has a share **video track**, not when `enableScreenShare()` resolved. Chrome's
+  floating Stop sharing bar ends the capture and emits `screenShareUpdate` without clicking Share.
+  After that stop, `#share-button` must already be `aria-pressed="false"`. A failed in-app stop
+  must say it could not stop, not that the screen-share permission is missing.
 
 That is a decision somebody made, not an omission. The reason is written in the comment at the top of
 `renderLocalControls` in `client.ts`, and the test

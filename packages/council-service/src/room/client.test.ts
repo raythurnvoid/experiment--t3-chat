@@ -4005,6 +4005,45 @@ describe("council_room_client_js screen share", () => {
 		expect(stage.hidden).toBe(true);
 	});
 
+	test("refreshes the share button when the capture ends without clicking Share", async () => {
+		// Chrome's Stop sharing bar ends the track and emits screenShareUpdate. It never clicks
+		// Share, so toggleScreenShare does not run.
+		stub_display_media();
+		const sdk = make_fake_sdk();
+		await boot_to_call(sdk);
+		const button = document.getElementById("share-button") as HTMLButtonElement;
+
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-pressed")).toBe("true"));
+		expect(document.getElementById("share-stage")!.hidden).toBe(false);
+
+		stop_share(sdk.self);
+
+		expect(document.getElementById("share-stage")!.hidden).toBe(true);
+		expect(button.getAttribute("aria-pressed")).toBe("false");
+		expect(sdk.self.disableScreenShare).not.toHaveBeenCalled();
+	});
+
+	test("does not name the screen-share permission when a stop fails", async () => {
+		stub_display_media();
+		const sdk = make_fake_sdk();
+		await boot_to_call(sdk);
+		const button = document.getElementById("share-button") as HTMLButtonElement;
+
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-pressed")).toBe("true"));
+
+		sdk.self.disableScreenShare = vi.fn(async () => {
+			throw new Error("stop failed");
+		});
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-busy")).toBe(null));
+
+		expect(document.getElementById("call-status")!.textContent).toBe("Could not stop the share. Try Share again.");
+		expect(button.getAttribute("aria-pressed")).toBe("true");
+		expect(document.getElementById("share-stage")!.hidden).toBe(false);
+	});
+
 	test("treats an enabled share with no video track as a failed share", async () => {
 		stub_display_media();
 		const sdk = make_fake_sdk();
