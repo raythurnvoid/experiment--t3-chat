@@ -8,6 +8,7 @@
 import { NonRetryableError } from "cloudflare:workflows";
 
 import type { Env } from "./env.ts";
+import { council_HOST_UPLOAD_MAX_BYTES, council_recording_over_cap_reason } from "./env.ts";
 import type { WorkflowStep } from "./cf.ts";
 import type { council_WorkflowParams } from "./consumer.ts";
 import {
@@ -498,7 +499,7 @@ async function discover_tracks(env: Env, step: WorkflowStep, meeting: council_Me
  */
 async function upload_track(env: Env, meeting: council_MeetingRow, grantToken: string, fileName: string) {
 	const existing = await get_artifact(env, meeting.id, target_key("track_audio", fileName));
-	if (existing?.status === "finalized") {
+	if (existing?.status === "finalized" || existing?.status === "failed") {
 		return { nodeId: existing.node_id, skipped: true };
 	}
 
@@ -530,7 +531,7 @@ async function upload_track(env: Env, meeting: council_MeetingRow, grantToken: s
 		readOnly: true,
 		nonCollaborative: false,
 	});
-	return { nodeId: uploaded.nodeId, skipped: false };
+	return { nodeId: uploaded.nodeId, skipped: uploaded.refused === true };
 }
 
 /** Transcribe one track with Workers AI Whisper, bounded read, results stored on the track row. */
@@ -1011,6 +1012,9 @@ async function upload_artifact(
 	if (!artifact) {
 		throw new Error(`Artifact row for ${args.targetKey} is missing`);
 	}
+	if (artifact.status === "failed") {
+		return { nodeId: artifact.node_id, refused: true };
+	}
 
 	// Persist the exact create-target body once. A replayed step re-sends these stored bytes; a
 	// body rebuilt from fresh values could differ and the host would answer 409.
@@ -1047,6 +1051,35 @@ async function upload_artifact(
 	const target = await council_convex_uploads_create_target(env, args.grantToken, createBody);
 	if (target._nay) {
 		const message = `Upload target refused: ${target._nay.message}`;
+		// A recording over the host cap will answer this 400 on every replay of the stored body.
+		// Compare the stored create-target size, not this download's Content-Length. The host
+		// refuses the stored body. A later small Content-Length does not change that answer.
+		// Mark that one file failed and let audio, transcript, and summary finish. Do not
+		// treat any other 400 this way: a bad path or a missing flag can clear on retry.
+		if (
+			target._nay.name === "file_too_large" &&
+			is_stored_recording_file(args.fileName) &&
+			createBody.size > council_HOST_UPLOAD_MAX_BYTES
+		) {
+			const reason = council_recording_over_cap_reason(createBody.size);
+			console.warn("Recording file refused as over the host upload cap", {
+				meetingId: args.meeting.id,
+				fileName: args.fileName,
+				sizeBytes: args.size,
+				hostUploadMaxBytes: council_HOST_UPLOAD_MAX_BYTES,
+				reason,
+			});
+			if ("cancel" in args.body && typeof args.body.cancel === "function") {
+				await args.body.cancel();
+			}
+			await db
+				.prepare(
+					"UPDATE meeting_artifacts SET status = 'failed', bytes = ?, failure_reason = ?, updated_at = ? WHERE meeting_id = ? AND target_key = ?",
+				)
+				.bind(args.size, reason, Date.now(), args.meeting.id, args.targetKey)
+				.run();
+			return { nodeId: null, refused: true };
+		}
 		// Neither of these two clears itself. The plan does not change while the run is going, and the
 		// storage counter only counts up, because deleting a stored file gives no bytes back. Retrying
 		// asks the same question and gets the same answer, so it only delays the moment the page tells
@@ -1111,7 +1144,7 @@ async function upload_artifact(
 		)
 		.bind(committed.nodeId, committed.actualBytes ?? args.size, Date.now(), args.meeting.id, args.targetKey)
 		.run();
-	return { nodeId: committed.nodeId };
+	return { nodeId: committed.nodeId, refused: false };
 }
 
 // #endregion processing

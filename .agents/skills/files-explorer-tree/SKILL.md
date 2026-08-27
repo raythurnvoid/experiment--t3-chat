@@ -63,7 +63,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Source/conversion metadata stays in DB/R2 metadata, not visible generated Markdown.
 - `files_get_upload_pipeline_state` returns `waiting_for_upload`, `pending_processing`, `processing`, or `terminal` for the source asset. Plugin-run progress is separate and is not represented by the source `processingWorkId`.
 - R2 asset keys use `organizations/<organizationId>/workspaces/<workspaceId>/assets/<assetId>` for every asset kind. Convex uses `files_r2_assets.kind` to decide upload finalization behavior.
-- Upload max is 500 MiB (`files_MAX_UPLOADS_BYTES`); converted text max is 900,000 bytes (`files_MAX_TEXT_CONTENT_BYTES`).
+- Upload max is 2 GiB (`files_MAX_UPLOADS_BYTES`); converted text max is 900,000 bytes (`files_MAX_TEXT_CONTENT_BYTES`).
 
 # Uploaded Source And Plugin-Generated Files
 

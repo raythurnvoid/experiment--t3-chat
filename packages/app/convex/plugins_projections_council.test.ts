@@ -169,7 +169,14 @@ async function read_projection_file(
 const MEETING_ID = "af26438a-1234-4147-aeac-4abea4eb0495";
 const MEETING_PATH = `/meetings/${MEETING_ID}/meeting.md`;
 
-function meeting_value(args: { title?: string; status?: string; artifacts?: { kind: string; fileName: string }[] } = {}) {
+function meeting_value(
+	args: {
+		title?: string;
+		status?: string;
+		recordingWarning?: string | null;
+		artifacts?: { kind: string; fileName: string }[];
+	} = {},
+) {
 	return {
 		meetingId: MEETING_ID,
 		title: args.title ?? "Colleague test 26 Aug",
@@ -180,6 +187,7 @@ function meeting_value(args: { title?: string; status?: string; artifacts?: { ki
 		closedAt: Date.UTC(2026, 7, 26, 12, 10),
 		deadlineAt: null,
 		participantCount: 1,
+		recordingWarning: args.recordingWarning ?? null,
 		artifacts: args.artifacts ?? [],
 	};
 }
@@ -227,7 +235,36 @@ describe("council file projection", () => {
 		});
 		expect(meetingFile?.readOnlyScopeNodeId).toBe(file!.nodeId);
 		expect(meetingFile?.nonCollaborative).toBe(true);
+		expect(file?.content).not.toContain("Council could not store the video recording");
 		expect(meetingsFolder?.readOnlyScopeNodeId).toBeUndefined();
+	});
+
+	test("writes the over-cap recording warning into meeting.md", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_council_install(t);
+		const warning =
+			"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.";
+
+		const written = await t.mutation(internal.plugins_data.write_versioned_document, {
+			principal: service_principal(fixture),
+			collection: "meetings",
+			key: MEETING_ID,
+			revision: 1,
+			value: meeting_value({
+				recordingWarning: warning,
+				artifacts: [{ kind: "track_audio", fileName: "recording-audio.m4a" }],
+			}),
+		});
+		if (written._nay) {
+			throw new Error(written._nay.message);
+		}
+
+		await flush_projection(t);
+
+		const file = await read_projection_file(t, fixture, MEETING_PATH);
+		expect(file?.content).toContain(warning);
+		expect(file?.content).toContain("- recording-audio.m4a");
 	});
 
 	test("reuses a member /meetings folder and does not lock a sibling", async () => {

@@ -231,6 +231,38 @@ describe("council_convex_uploads_create_target", () => {
 		expect(denied._nay?.name).toBe("unauthorized");
 	});
 
+	test("a file-too-large 400 is its own refusal and a different 400 stays generic", async () => {
+		const { env } = make_test_env();
+		const body = {
+			idempotencyKey: "council-uploads-meeting-1",
+			targetKey: "track_audio:recording.mp4",
+			path: "/meetings/meeting-1/recording.mp4",
+			contentType: "video/mp4",
+			size: 10,
+			readOnly: true,
+			nonCollaborative: false,
+		};
+
+		const overCapMock = install_fetch({
+			"/service-uploads/create-target": () => Response.json({ message: "File too large" }, { status: 400 }),
+		});
+		restoreFetch = overCapMock.restore;
+		const overCap = await council_convex_uploads_create_target(env, "psg_processing", body);
+		expect(overCap._nay?.name).toBe("file_too_large");
+		expect(overCap._nay?.message).toContain("File too large");
+		overCapMock.restore();
+
+		// A path or flag 400 can clear on retry. Collapsing it into file_too_large would abandon a
+		// good recording because one create-target call had a bad body.
+		const pathMock = install_fetch({
+			"/service-uploads/create-target": () =>
+				Response.json({ message: "Path must be absolute and normalized" }, { status: 400 }),
+		});
+		restoreFetch = pathMock.restore;
+		const pathRefused = await council_convex_uploads_create_target(env, "psg_processing", body);
+		expect(pathRefused._nay?.name).toBe("refused");
+	});
+
 	test("parses the pending and committed halves of the target union", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch();

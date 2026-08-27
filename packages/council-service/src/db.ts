@@ -259,6 +259,7 @@ export type council_ArtifactRow = {
 	upload_body: string | null;
 	bytes: number | null;
 	status: "pending" | "finalized" | "failed" | "deleted";
+	failure_reason: string | null;
 	created_at: number;
 	updated_at: number;
 };

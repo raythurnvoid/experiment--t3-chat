@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { council_projection_value } from "./projection.ts";
 import { council_get_meeting, type council_ArtifactRow } from "./db.ts";
+import { council_RECORDING_OVER_CAP_MEMBER_SENTENCE } from "./env.ts";
 import { make_test_env, seed_grant, seed_meeting } from "../test/env.ts";
 
 /**
@@ -79,24 +80,68 @@ describe("council_projection_value", () => {
 			closedAt: 2000,
 			deadlineAt: 3000,
 			participantCount: 2,
+			recordingWarning: null,
 			artifacts: [],
 		});
 	});
 
 	test("lists only a finalized artifact that has a file node the page can open", async () => {
 		const meeting = await seeded_meeting();
-		const artifacts: Pick<council_ArtifactRow, "kind" | "node_id" | "file_name" | "status">[] = [
-			{ kind: "transcript_markdown", node_id: "node-transcript", file_name: "transcript.md", status: "finalized" },
+		const artifacts: Pick<council_ArtifactRow, "kind" | "node_id" | "file_name" | "status" | "failure_reason">[] = [
+			{ kind: "transcript_markdown", node_id: "node-transcript", file_name: "transcript.md", status: "finalized", failure_reason: null },
 			// A finalized row with no node id names no file, so the page would render a link to
 			// nothing. The pipeline writes the status and the node id in one statement, so this pair
 			// is the type's doing, not a state a run produces.
-			{ kind: "summary_markdown", node_id: null, file_name: "summary.md", status: "finalized" },
+			{ kind: "summary_markdown", node_id: null, file_name: "summary.md", status: "finalized", failure_reason: null },
 			// Still uploading. Its bytes are not committed yet, so the member must not be offered it.
-			{ kind: "track_audio", node_id: "node-track", file_name: "alice.webm", status: "pending" },
+			{ kind: "track_audio", node_id: "node-track", file_name: "alice.webm", status: "pending", failure_reason: null },
 		];
 
 		expect(council_projection_value(meeting, artifacts).artifacts).toEqual([
 			{ kind: "transcript_markdown", fileNodeId: "node-transcript", fileName: "transcript.md" },
 		]);
+	});
+
+	test("a failed over-cap recording adds the member warning and still omits that file", async () => {
+		const meeting = await seeded_meeting();
+		const projected = council_projection_value(meeting, [
+			{
+				kind: "track_audio",
+				node_id: "node-audio",
+				file_name: "recording-audio.m4a",
+				status: "finalized",
+				failure_reason: null,
+			},
+			{
+				kind: "track_audio",
+				node_id: null,
+				file_name: "recording.mp4",
+				status: "failed",
+				failure_reason: "recording too large to store: 1 MiB over the limit",
+			},
+		]);
+
+		expect(projected.recordingWarning).toBe(council_RECORDING_OVER_CAP_MEMBER_SENTENCE);
+		expect(projected.artifacts).toEqual([
+			{ kind: "track_audio", fileNodeId: "node-audio", fileName: "recording-audio.m4a" },
+		]);
+		expect(JSON.stringify(projected)).not.toContain(STALE_OPERATOR_REASON);
+	});
+
+	test("a processing meeting does not claim the other files were already saved", async () => {
+		const meeting = await seeded_meeting();
+		meeting.status = "processing";
+
+		expect(
+			council_projection_value(meeting, [
+				{
+					kind: "track_audio",
+					node_id: null,
+					file_name: "recording.mp4",
+					status: "failed",
+					failure_reason: "recording too large to store: 1 MiB over the limit",
+				},
+			]).recordingWarning,
+		).toBeNull();
 	});
 });

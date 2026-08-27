@@ -1593,7 +1593,7 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 		expect(recordingCall?.url.includes("/recordings/track")).toBe(false);
 		expect(recordingCall?.bodyJson).toEqual({
 			meeting_id: "pm-1",
-			max_seconds: 3600,
+			max_seconds: 47 * 60,
 			audio_config: { channel: "mono", codec: "AAC", export_file: true },
 			video_config: { codec: "H264", export_file: true, width: 1280, height: 720 },
 			realtimekit_bucket_config: { enabled: true },

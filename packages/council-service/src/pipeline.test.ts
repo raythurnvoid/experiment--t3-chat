@@ -1880,6 +1880,230 @@ describe("council_run_processing", () => {
 		expect(createCalls).toBe(1);
 	});
 
+	test("an over-cap recording 400 fails that file and still finishes the rest of the run", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		let recordingStopped = false;
+		const createKeys: string[] = [];
+		const mock = install_fetch(
+			processing_fetch_overrides({
+				"https://tracks.example/composite-video": () =>
+					new Response("videobytes", {
+						headers: { "Content-Length": String(2 * 1024 * 1024 * 1024 + 1) },
+					}),
+				"https://tracks.example/composite-audio": () =>
+					new Response("abcd", { headers: { "Content-Length": "4" } }),
+				"/recordings/rec-1": (call) => {
+					if (call.method === "PUT" && call.bodyJson?.action === "stop") {
+						recordingStopped = true;
+						return Response.json({ success: true, data: { status: "UPLOADING" } });
+					}
+					if (!recordingStopped) {
+						return Response.json({ success: true, data: { status: "RECORDING" } });
+					}
+					return Response.json({
+						success: true,
+						data: {
+							status: "UPLOADED",
+							recording_duration: 790,
+							download_url: "https://tracks.example/composite-video",
+							audio_download_url: "https://tracks.example/composite-audio",
+						},
+					});
+				},
+				"/service-uploads/create-target": (call) => {
+					const targetKey = String(call.bodyJson?.targetKey ?? "unknown");
+					createKeys.push(targetKey);
+					if (Number(call.bodyJson?.size) > 2 * 1024 * 1024 * 1024) {
+						return Response.json({ message: "File too large" }, { status: 400 });
+					}
+					return Response.json({
+						state: "pending",
+						path: String(call.bodyJson?.path),
+						nodeId: `node-${targetKey}`,
+						uploadUrl: `https://uploads.example/${encodeURIComponent(targetKey)}`,
+						headers: { "Content-Type": String(call.bodyJson?.contentType) },
+						uploadUrlExpiresAt: Date.now() + 15 * 60 * 1000,
+					});
+				},
+			}),
+		);
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		const outcome = await council_run_processing(env, retrying_step(), PROCESS_PARAMS);
+		expect(outcome).toBe("ready");
+
+		const video = await env.COUNCIL_DB.prepare(
+			"SELECT status, failure_reason, bytes FROM meeting_artifacts WHERE file_name = ?",
+		)
+			.bind(council_COMPOSITE_VIDEO_FILE_NAME)
+			.first<{ status: string; failure_reason: string; bytes: number }>();
+		expect(video).toEqual({
+			status: "failed",
+			failure_reason: "recording too large to store: 1 MiB over the limit",
+			bytes: 2 * 1024 * 1024 * 1024 + 1,
+		});
+
+		const others = await env.COUNCIL_DB.prepare(
+			"SELECT file_name, status FROM meeting_artifacts WHERE file_name != ? ORDER BY file_name",
+		)
+			.bind(council_COMPOSITE_VIDEO_FILE_NAME)
+			.all<{ file_name: string; status: string }>();
+		expect(others.results.map((row) => `${row.file_name}:${row.status}`)).toEqual([
+			"provider-transcript.json:finalized",
+			"recording-audio.m4a:finalized",
+			"summary.md:finalized",
+			"transcript.md:finalized",
+		]);
+
+		const meeting = await env.COUNCIL_DB.prepare("SELECT status FROM meetings WHERE id = 'meeting-1'").first<{
+			status: string;
+		}>();
+		expect(meeting?.status).toBe("ready");
+
+		const videoCreates = createKeys.filter((key) => key.includes(council_COMPOSITE_VIDEO_FILE_NAME));
+		expect(videoCreates).toHaveLength(1);
+
+		await env.COUNCIL_DB.prepare("UPDATE meetings SET status = 'processing' WHERE id = 'meeting-1'").run();
+		const afterRedrive = await council_run_processing(env, retrying_step(), PROCESS_PARAMS);
+		expect(afterRedrive).toBe("ready");
+		expect(createKeys.filter((key) => key.includes(council_COMPOSITE_VIDEO_FILE_NAME))).toHaveLength(1);
+	});
+
+	test("a stored over-cap create-target body stays permanent even if this download looks small", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		let recordingStopped = false;
+		let createCalls = 0;
+		const mock = install_fetch(
+			processing_fetch_overrides({
+				"https://tracks.example/composite-video": () =>
+					new Response("videobytes", {
+						headers: { "Content-Length": "4" },
+					}),
+				"https://tracks.example/composite-audio": () =>
+					new Response("abcd", { headers: { "Content-Length": "4" } }),
+				"/recordings/rec-1": (call) => {
+					if (call.method === "PUT" && call.bodyJson?.action === "stop") {
+						recordingStopped = true;
+						return Response.json({ success: true, data: { status: "UPLOADING" } });
+					}
+					if (!recordingStopped) {
+						return Response.json({ success: true, data: { status: "RECORDING" } });
+					}
+					return Response.json({
+						success: true,
+						data: {
+							status: "UPLOADED",
+							recording_duration: 790,
+							download_url: "https://tracks.example/composite-video",
+							audio_download_url: "https://tracks.example/composite-audio",
+						},
+					});
+				},
+				"/service-uploads/create-target": (call) => {
+					if (String(call.bodyJson?.targetKey ?? "").includes(council_COMPOSITE_VIDEO_FILE_NAME)) {
+						createCalls += 1;
+					}
+					if (Number(call.bodyJson?.size) > 2 * 1024 * 1024 * 1024) {
+						return Response.json({ message: "File too large" }, { status: 400 });
+					}
+					return Response.json({
+						state: "pending",
+						path: String(call.bodyJson?.path),
+						nodeId: `node-${String(call.bodyJson?.targetKey ?? "unknown")}`,
+						uploadUrl: `https://uploads.example/${encodeURIComponent(String(call.bodyJson?.targetKey ?? "unknown"))}`,
+						headers: { "Content-Type": String(call.bodyJson?.contentType) },
+						uploadUrlExpiresAt: Date.now() + 15 * 60 * 1000,
+					});
+				},
+			}),
+		);
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		// An earlier attempt stored the create-target body with the over-cap size. The host refuses
+		// that stored body forever. A later download that reports a small Content-Length must not
+		// turn this back into a retry: the next create-target still sends the stored size.
+		const storedSize = 2 * 1024 * 1024 * 1024 + 1;
+		const uploadBody = JSON.stringify({
+			idempotencyKey: "council-uploads-meeting-1",
+			targetKey: `track_audio:${council_COMPOSITE_VIDEO_FILE_NAME}`,
+			path: `/meetings/meeting-1/${council_COMPOSITE_VIDEO_FILE_NAME}`,
+			contentType: "video/mp4",
+			size: storedSize,
+			readOnly: true,
+			nonCollaborative: false,
+		});
+		await env.COUNCIL_DB.prepare(
+			`INSERT INTO meeting_artifacts (id, meeting_id, kind, target_key, file_name, status, upload_body, created_at, updated_at)
+			VALUES ('pre-video', 'meeting-1', 'track_audio', ?, ?, 'pending', ?, 0, 0)`,
+		)
+			.bind(`track_audio:${council_COMPOSITE_VIDEO_FILE_NAME}`, council_COMPOSITE_VIDEO_FILE_NAME, uploadBody)
+			.run();
+
+		const outcome = await council_run_processing(env, retrying_step(), PROCESS_PARAMS);
+		expect(outcome).toBe("ready");
+
+		const video = await env.COUNCIL_DB.prepare(
+			"SELECT status, failure_reason FROM meeting_artifacts WHERE file_name = ?",
+		)
+			.bind(council_COMPOSITE_VIDEO_FILE_NAME)
+			.first<{ status: string; failure_reason: string }>();
+		expect(video).toEqual({
+			status: "failed",
+			failure_reason: "recording too large to store: 1 MiB over the limit",
+		});
+		expect(createCalls).toBe(1);
+	});
+
+	test("a File too large 400 for a recording under the cap still retries", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		let createCalls = 0;
+		const mock = install_fetch(
+			processing_fetch_overrides({
+				"/service-uploads/create-target": () => {
+					createCalls += 1;
+					return Response.json({ message: "File too large" }, { status: 400 });
+				},
+			}),
+		);
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		// The fixture tracks are a few bytes. The host saying File too large for those is not the
+		// over-cap case. Treating it as permanent would abandon a good recording after one bad answer.
+		await expect(council_run_processing(env, retrying_step(), PROCESS_PARAMS)).rejects.toBeInstanceOf(Error);
+		expect(createCalls).toBeGreaterThan(1);
+		const failed = await env.COUNCIL_DB.prepare(
+			"SELECT status FROM meeting_artifacts WHERE file_name = ?",
+		)
+			.bind(ALICE_FILE)
+			.first<{ status: string }>();
+		expect(failed?.status).not.toBe("failed");
+	});
+
+	test("a create-target 400 that is not the over-cap message still retries", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		let createCalls = 0;
+		const mock = install_fetch(
+			processing_fetch_overrides({
+				"/service-uploads/create-target": () => {
+					createCalls += 1;
+					return Response.json({ message: "Path must be absolute and normalized" }, { status: 400 });
+				},
+			}),
+		);
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		await expect(council_run_processing(env, retrying_step(), PROCESS_PARAMS)).rejects.toBeInstanceOf(Error);
+		expect(createCalls).toBeGreaterThan(1);
+	});
+
 	test("a create-target server error still retries", async () => {
 		const counter = { runs: 0 };
 		const { env } = make_test_env({ AI: make_whisper_mock(counter) });

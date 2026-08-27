@@ -39,6 +39,7 @@ type MeetingValue = {
 	closedAt: number | null;
 	deadlineAt: number | null;
 	participantCount: number | null;
+	recordingWarning: string | null;
 	artifacts: MeetingArtifact[];
 };
 
@@ -124,6 +125,7 @@ function as_meeting_value(value: Record<string, unknown>): MeetingValue | null {
 		closedAt: as_optional_number(value.closedAt),
 		deadlineAt: as_optional_number(value.deadlineAt),
 		participantCount: as_optional_number(value.participantCount),
+		recordingWarning: typeof value.recordingWarning === "string" ? value.recordingWarning : null,
 		artifacts: as_meeting_artifacts(value.artifacts),
 	};
 }
@@ -162,6 +164,11 @@ export function plugins_projections_council_build_markdown(value: MeetingValue) 
 		lines.push(`- Participants: ${value.participantCount}`);
 	}
 
+	if (value.recordingWarning !== null) {
+		lines.push("");
+		lines.push(value.recordingWarning);
+	}
+
 	lines.push("");
 	if (value.artifacts.length === 0) {
 		lines.push("Council stored no recording files for this meeting.");
@@ -190,6 +197,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				closedAt: Date.UTC(2026, 7, 26, 12, 10),
 				deadlineAt: null,
 				participantCount: 1,
+				recordingWarning: null,
 				artifacts: [],
 			});
 
@@ -213,6 +221,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				closedAt: null,
 				deadlineAt: null,
 				participantCount: null,
+				recordingWarning: null,
 				artifacts: [
 					{ kind: "track_audio", fileName: "alice.webm" },
 					{ kind: "transcript_markdown", fileName: "transcript.md" },
@@ -223,6 +232,31 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(markdown).toContain("- alice.webm");
 			expect(markdown).toContain("- transcript.md");
 			expect(markdown).not.toContain("Council stored no recording files");
+		});
+
+		test("writes the over-cap recording warning above the saved-file list", () => {
+			const markdown = plugins_projections_council_build_markdown({
+				meetingId: "meeting-1",
+				title: "Long call",
+				status: "ready",
+				createdAt: null,
+				openedAt: null,
+				closedAt: null,
+				deadlineAt: null,
+				participantCount: null,
+				recordingWarning:
+					"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+				artifacts: [
+					{ kind: "track_audio", fileName: "recording-audio.m4a" },
+					{ kind: "transcript_markdown", fileName: "transcript.md" },
+				],
+			});
+
+			expect(markdown).toContain(
+				"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+			);
+			expect(markdown).toContain("- recording-audio.m4a");
+			expect(markdown).toContain("- transcript.md");
 		});
 	});
 }

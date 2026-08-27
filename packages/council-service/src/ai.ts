@@ -119,6 +119,12 @@ Return only the requested JSON object.`;
  * audio to the member's folder, so the member can still listen to it. A track past that budget was
  * never uploaded and leaves nothing behind. Whoever wants to raise this must first stop holding the
  * whole track in memory.
+ *
+ * Composite `transcript.md` is this Whisper path, not `provider-transcript.json`. The 2026-08-27
+ * probe measured about 1.38 MB/min of mixed audio, so a composite `recording-audio.m4a` crosses
+ * 24 MB at about 17 minutes. A file over this cap is marked `rejected` and the run continues.
+ * The provider transcript is only the product text when track files never arrived. Do not raise
+ * this cap here.
  */
 export const council_TRACK_TRANSCRIBE_MAX_BYTES = 24 * 1024 * 1024;
 

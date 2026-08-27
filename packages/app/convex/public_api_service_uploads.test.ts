@@ -8,7 +8,7 @@ import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
-import { files_ROOT_ID } from "../server/files.ts";
+import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 
@@ -747,6 +747,35 @@ describe("service upload drain", () => {
 });
 
 describe("service upload targets", () => {
+	test("refuses a declared size over the 2 GiB upload cap and accepts the cap itself", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+
+		// Pin the number the host and Council both name. A silent revert to 500 MiB would pass
+		// every other size test, because those tests read this constant instead of 2 GiB.
+		expect(files_MAX_UPLOADS_BYTES).toBe(2 * 1024 * 1024 * 1024);
+		// The service upload path is one signed PUT. R2 refuses a single PUT above 5 GiB.
+		expect(files_MAX_UPLOADS_BYTES).toBeLessThanOrEqual(5 * 1024 * 1024 * 1024);
+
+		const atCap = await call(t, CREATE_TARGET_PATH, sealed, target_body({ size: files_MAX_UPLOADS_BYTES }));
+		expect(atCap.status, await atCap.clone().text()).toBe(200);
+
+		const overCap = await call(
+			t,
+			CREATE_TARGET_PATH,
+			sealed,
+			target_body({
+				targetKey: "too-large",
+				path: "/meetings/meeting-1/too-large.mp4",
+				size: files_MAX_UPLOADS_BYTES + 1,
+			}),
+		);
+		expect(overCap.status).toBe(400);
+		expect(await overCap.json()).toEqual({ message: "File too large" });
+		expect(await read_targets(t)).toHaveLength(1);
+	});
+
 	test("requires both mode flags and rejects non-collaborative binary targets", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);

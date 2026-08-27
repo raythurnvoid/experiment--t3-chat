@@ -71,7 +71,10 @@ export function make_test_env(overrides?: Partial<Env>) {
 		},
 		COUNCIL_PLUGIN_ORIGIN: "https://plugin-origin.example",
 		CONVEX_HTTP_URL: "https://convex.example",
-		COUNCIL_MEETING_MAX_MINUTES: "60",
+		// 47 is the largest whole minute that still fits the 2 GiB host cap at the 720p worst-case
+		// rate. The checked-in Worker var is still 60; create refuses that value until an operator
+		// lowers it.
+		COUNCIL_MEETING_MAX_MINUTES: "47",
 		COUNCIL_MEETING_MAX_PARTICIPANTS: "25",
 		COUNCIL_DESTINATION_PATH_PREFIX: "/meetings",
 		COUNCIL_MAINTENANCE: "false",

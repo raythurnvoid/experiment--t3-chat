@@ -85,21 +85,27 @@ async function convex_post(
 			/^This plugin (?:has used its \d+ (?:MiB of storage|document slots)|can use at most \d+ collections)$/u.test(
 				bodyRecord.message,
 			);
+		// The host create-target size check answers this exact 400. A different 400 (a bad path,
+		// a missing flag) can clear on retry. This one cannot: the stored upload body keeps the
+		// same declared size, so every replay asks the same question.
+		const fileTooLarge = response.status === 400 && bodyRecord?.message === "File too large";
 		const name = storageFull
 			? "storage_full"
 			: planRequired
 				? "plan_required"
 				: dataStoreFull
 					? "data_store_full"
-					: response.status === 401 || response.status === 403
-						? "unauthorized"
-						: response.status === 404
-							? "not_found"
-							: response.status === 409
-								? "conflict"
-								: response.status === 429
-									? "rate_limited"
-									: "refused";
+					: fileTooLarge
+						? "file_too_large"
+						: response.status === 401 || response.status === 403
+							? "unauthorized"
+							: response.status === 404
+								? "not_found"
+								: response.status === 409
+									? "conflict"
+									: response.status === 429
+										? "rate_limited"
+										: "refused";
 		// Carry the host's own reason when it sent one. Without it a stored failure says only which
 		// route answered 409, so an operator reading it cannot tell a locked file from a full quota,
 		// and cannot tell the member which one to clear.

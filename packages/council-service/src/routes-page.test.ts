@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import worker from "./index.ts";
 import { council_encrypt } from "./crypto.ts";
 import { council_RATE_LIMITS } from "./db.ts";
-import type { Env } from "./env.ts";
+import { council_RECORDING_OVER_CAP_MEMBER_SENTENCE, type Env } from "./env.ts";
 import { install_fetch, make_test_env, seed_grant, seed_meeting, FUTURE } from "../test/env.ts";
 
 const WORKER_ORIGIN = "https://council.example";
@@ -35,6 +35,24 @@ afterEach(() => {
 });
 
 describe("council_handle_page_api /api/meetings/create", () => {
+	test("a meeting length past the host upload cap refuses create before it writes D1", async () => {
+		const { env } = make_test_env({ COUNCIL_MEETING_MAX_MINUTES: "60" });
+		const mock = install_fetch();
+		restoreFetch = mock.restore;
+
+		const response = await worker.fetch(page_post("/api/meetings/create", { title: "Standup" }), env);
+		expect(response.status).toBe(503);
+		await expect(response.json()).resolves.toEqual({
+			message:
+				"Council cannot start a meeting this long. The configured length would produce a recording larger than the workspace can store.",
+		});
+		const count = await env.COUNCIL_DB.prepare("SELECT COUNT(*) AS n FROM meetings").first<{ n: number }>();
+		expect(count?.n).toBe(0);
+		expect(mock.calls.map((call) => call.url)).toEqual([
+			"https://convex.example/api/internal/plugins/service-grants/exchange",
+		]);
+	});
+
 	test("maintenance blocks a create before it writes D1 or calls the provider", async () => {
 		const { env } = make_test_env({ COUNCIL_MAINTENANCE: "true" });
 		const mock = install_fetch();
@@ -370,7 +388,7 @@ describe("council_handle_page_api /api/meetings/open", () => {
 			"SELECT status, opened_at, deadline_at FROM meetings WHERE id = 'meeting-1'",
 		).first<{ status: string; opened_at: number; deadline_at: number }>();
 		expect(stored?.status).toBe("open");
-		expect(stored && stored.deadline_at - stored.opened_at).toBe(60 * 60 * 1000);
+		expect(stored && stored.deadline_at - stored.opened_at).toBe(47 * 60 * 1000);
 		expect(mock.calls.some((call) => call.url.includes("/service-grants/verify-live"))).toBe(true);
 	});
 
@@ -805,6 +823,50 @@ describe("council_handle_page_api /api/meetings/list and /api/meetings/get", () 
 		expect(getBody.meeting.id).toBe("meeting-live");
 		expect(getBody.meeting.artifacts).toEqual(getBody.artifacts);
 		expect(getBody.artifacts).toEqual([{ kind: "transcript_markdown", name: "transcript.md", fileNodeId: "node-9" }]);
+		expect((listBody.meetings[0] as { recordingWarning: string | null }).recordingWarning).toBeNull();
+	});
+
+	test("a ready meeting with an over-cap video names the lost recording on list and get", async () => {
+		const { env } = make_test_env();
+		restoreFetch = install_fetch().restore;
+		await seed_grant(env);
+		await seed_meeting(env, { id: "meeting-live", code: "d".repeat(64), status: "ready" });
+		await env.COUNCIL_DB.prepare(
+			`INSERT INTO meeting_artifacts (id, meeting_id, kind, target_key, file_name, node_id, status, failure_reason, created_at, updated_at)
+			VALUES
+			('a1', 'meeting-live', 'transcript_markdown', 'transcript_markdown:transcript.md', 'transcript.md', 'node-9', 'finalized', NULL, 0, 0),
+			('a2', 'meeting-live', 'track_audio', 'track_audio:recording.mp4', 'recording.mp4', NULL, 'failed', 'recording too large to store: 1 MiB over the limit', 0, 0)`,
+		).run();
+
+		const listResponse = await worker.fetch(page_post("/api/meetings/list", {}), env);
+		const listBody = (await listResponse.json()) as {
+			meetings: { recordingWarning: string | null; artifacts: { name: string }[] }[];
+		};
+		expect(listBody.meetings[0]?.recordingWarning).toBe(council_RECORDING_OVER_CAP_MEMBER_SENTENCE);
+		expect(listBody.meetings[0]?.artifacts.map((artifact) => artifact.name)).toEqual(["transcript.md"]);
+
+		const getResponse = await worker.fetch(page_post("/api/meetings/get", { meetingId: "meeting-live" }), env);
+		const getBody = (await getResponse.json()) as {
+			meeting: { recordingWarning: string | null };
+		};
+		expect(getBody.meeting.recordingWarning).toBe(listBody.meetings[0]?.recordingWarning);
+	});
+
+	test("a processing meeting with an over-cap video does not claim the other files were saved", async () => {
+		const { env } = make_test_env();
+		restoreFetch = install_fetch().restore;
+		await seed_grant(env);
+		await seed_meeting(env, { id: "meeting-live", code: "d".repeat(64), status: "processing" });
+		await env.COUNCIL_DB.prepare(
+			`INSERT INTO meeting_artifacts (id, meeting_id, kind, target_key, file_name, node_id, status, failure_reason, created_at, updated_at)
+			VALUES ('a2', 'meeting-live', 'track_audio', 'track_audio:recording.mp4', 'recording.mp4', NULL, 'failed', 'recording too large to store: 1 MiB over the limit', 0, 0)`,
+		).run();
+
+		const listResponse = await worker.fetch(page_post("/api/meetings/list", {}), env);
+		const listBody = (await listResponse.json()) as {
+			meetings: { recordingWarning: string | null }[];
+		};
+		expect(listBody.meetings[0]?.recordingWarning).toBeNull();
 	});
 });
 

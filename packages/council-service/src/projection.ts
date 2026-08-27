@@ -8,6 +8,7 @@
 
 import type { D1Database } from "./cf.ts";
 import type { Env } from "./env.ts";
+import { council_recording_over_cap_member_sentence } from "./env.ts";
 import type { council_ArtifactRow, council_MeetingRow } from "./db.ts";
 import { council_get_meeting, council_get_service_grant } from "./db.ts";
 import { council_decrypt } from "./crypto.ts";
@@ -20,16 +21,20 @@ export const council_PROJECTION_COLLECTION = "meetings";
  * The bounded member-visible document. No code, no ticket, no email, no token, no provider URL —
  * the page needs none of them, and the store must never hold an admission secret.
  *
- * It carries no `failure_reason` either. That column holds the message the pipeline threw, which is
- * written for an operator: it names internal Convex routes, HTTP statuses and upload target keys.
+ * It carries no `meetings.failure_reason`. That column holds the message the pipeline threw, which
+ * is written for an operator: it names internal Convex routes, HTTP statuses and upload target keys.
  * Nothing is lost by leaving it out. The pipeline drops the failure category before it stores the
  * text, so the column carries no failure code, and a member-facing sentence can only be chosen by
  * `status` — which is in this document. The column stays in D1, where an operator reads it by
  * meeting id and `store_summary_markdown` reads it back for its own retry decision.
+ *
+ * `recordingWarning` is different. It is a fixed product sentence for one case the status cannot
+ * name: a ready meeting whose video was refused as over the host cap. The artifact reason that
+ * selected it stays in D1.
  */
 export function council_projection_value(
 	meeting: council_MeetingRow,
-	artifacts: Pick<council_ArtifactRow, "kind" | "node_id" | "file_name" | "status">[],
+	artifacts: Pick<council_ArtifactRow, "kind" | "node_id" | "file_name" | "status" | "failure_reason">[],
 ) {
 	return {
 		meetingId: meeting.id,
@@ -41,6 +46,7 @@ export function council_projection_value(
 		closedAt: meeting.closed_at,
 		deadlineAt: meeting.deadline_at,
 		participantCount: meeting.participant_count,
+		recordingWarning: council_recording_over_cap_member_sentence(meeting.status, artifacts),
 		artifacts: artifacts
 			.filter((artifact) => artifact.status === "finalized" && artifact.node_id !== null)
 			.map((artifact) => ({ kind: artifact.kind, fileNodeId: artifact.node_id, fileName: artifact.file_name })),

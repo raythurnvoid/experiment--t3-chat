@@ -197,11 +197,32 @@ provider and peer ids. Current composite files use the fixed names `recording.mp
 two recording files. The Council dashboard still shows both composite files as one Recording
 badge (`plugins/bonobo-plugin-council/src/app.tsx`).
 
-A 60-minute composite video measured about 144–187 MiB in the 2026-08-27 provider probe. That
-fits under the existing 500 MiB upload cap. Do not raise the cap for screen share. The mixed
-audio in that same probe was about 83 MiB per hour, which is over the 24 MB transcription
-read cap at about 17–18 minutes. A track past that cap is marked `rejected` and the run
-continues. Do not raise the 24 MB cap here.
+A 60-minute composite video measured about 144–187 MiB in the 2026-08-27 provider probe
+(low-motion, about two-minute samples). The host upload cap is now 2 GiB
+(`files_MAX_UPLOADS_BYTES`). That probe fits. Cloudflare's published 720p live-stream
+worst case is 2.7 GB per hour, which is past 2 GiB at 48 minutes. The Worker refuses
+`/api/meetings/create` when `COUNCIL_MEETING_MAX_MINUTES` times that worst-case rate
+exceeds the host cap. The largest whole-minute setting that still fits is 47. The
+checked-in Worker var is still 60, so create answers 503 until an operator lowers it.
+
+If a recording file is still over the cap at upload time, create-target answers 400
+`File too large`. The pipeline marks that artifact `failed` with
+`recording too large to store: N MiB over the limit`, does not retry that target, and
+lets audio, transcript, and summary finish so the meeting can reach `ready`. The
+card and `meeting.md` then carry a fixed sentence: the video was too large to store,
+and audio, transcript, and summary were still saved. The badge list still shows only
+finalized files, so a saved audio file still makes one Recording badge. Operators
+read `meeting_artifacts.failure_reason` for the exact overflow.
+
+Apply `0009_artifact_failure_reason.sql` before the Worker that writes that column.
+Deploying the Worker first makes an over-cap recording throw on the missing column
+and fall back into retry. Lower `COUNCIL_MEETING_MAX_MINUTES` to 47 or less before
+create is useful again. The dashboard sentence needs a plugin publish. `meeting.md`
+needs the Convex projection change.
+
+The mixed audio in that same probe was about 83 MiB per hour, which is over the 24 MB
+transcription read cap at about 17–18 minutes. See "Composite transcript path" below.
+Do not raise the 24 MB cap here.
 
 ## Council 0.2.0 release gate
 
@@ -222,7 +243,8 @@ These items already landed. Do not redo them:
 
 - Remote D1 has `0001` through `0008`. `0006` already rebuilt `meeting_artifacts` and added
   `meeting_summaries`. `0007` added the join-attempt columns. `0008` dropped unused
-  `meeting_tracks.participant_id` and `meeting_tracks.start_offset_ms`.
+  `meeting_tracks.participant_id` and `meeting_tracks.start_offset_ms`. `0009` is not
+  applied yet. Apply it before the Worker that writes `meeting_artifacts.failure_reason`.
 - Nine meetings are `ready`. No meeting is `created`, `open`, `closed`, `processing`, or `deleting`.
 - Those ready meetings still have 23 finalized artifact rows. **Do not delete them.** `0006` already
   ran. A later drain would only hide files the dashboard already shows.
@@ -273,8 +295,13 @@ through the Cloudflare API (`POST /accounts/<account>/d1/database/<id>/query`) w
 ### 2. Stop creates only when work is still in flight
 
 Turn the bridge on when any meeting is `created`, `open`, `closed`, `processing`, or `deleting`,
-or when `0006` has not been applied yet. Deploy the **same final source** with the var override.
-Do not commit `"true"`:
+or when `0006` has not been applied yet.
+
+Apply `0009` before any deploy of this source, including this maintenance deploy. This
+Worker writes `meeting_artifacts.failure_reason`. If that column is missing, an
+over-cap recording that is already processing throws and stays in retry.
+
+Then deploy the **same final source** with the var override. Do not commit `"true"`:
 
 ```bash
 vp env exec pnpx wrangler deploy --config packages/council-service/wrangler.jsonc --var COUNCIL_MAINTENANCE:true --message "Council maintenance on"
@@ -300,6 +327,10 @@ Read the count back. It must be `0` before you apply `0006`. Do not run that del
 has already succeeded.
 
 ### 4. Apply pending D1 migrations
+
+For the recording-cap Worker, apply `0009` here before step 5. That Worker writes
+`meeting_artifacts.failure_reason`. If the column is missing, an over-cap recording
+throws and the run stays in retry.
 
 ```bash
 vp env exec pnpx wrangler d1 migrations apply bonobo-council --remote --config packages/council-service/wrangler.jsonc
@@ -618,8 +649,10 @@ The lifecycle this implies (plan-3 E8):
    only `Pay As You Go` and `Pro` do, and an owner-billed organization answers to the owner's plan.
    Both fail the run at once (no Workflow step retries), the same way a member lock fails a delete:
    the plan does not change mid-run, and the storage counter only counts up, so every retry gets the
-   same refusal back and only delays the moment the page tells the member the meeting failed. Every
-   other create-target failure still retries. The plan has to be raised, or the storage ceiling
+   same refusal back and only delays the moment the page tells the member the meeting failed. A
+   create-target 400 whose message is exactly `File too large` is different when the file is a
+   stored recording: that target is marked `failed` with the over-cap reason, and the rest of the
+   run continues. Any other 400 still retries. Every other create-target failure still retries. The plan has to be raised, or the storage ceiling
    lifted, before a redrive can work. Reaching `ready` or `failed` releases nothing — the counter only grows. An operator redrive
    of a `failed` meeting (the cron and
    `council_request_processing_redrive` bump `processing_generation` and insert a fresh outbox row;
@@ -662,6 +695,28 @@ cost of a shared editor document. Audio tracks are read-only too, but they are u
 knows, and `.webm` is not one, so asking for it would make every `track_audio` target return 400 and
 fail the run. A stored `.webm` is a binary file the editor never opens, so the flag changes nothing
 for it either way. No Council service upload starts plugin upload events.
+
+### Composite transcript path
+
+`transcript.md` for a composite run is built from Workers AI Whisper on `recording-audio.m4a`,
+not from `provider-transcript.json`.
+
+1. `transcribe_track` in `src/pipeline.ts` downloads each discovered file. Composite video is
+   skipped. Composite audio is sent to `council_transcribe_track` only when the download is at
+   most `council_TRACK_TRANSCRIBE_MAX_BYTES` (24 MB) in `src/ai.ts`.
+2. `load_attributed_transcript` reads rows with status `transcribed` and turns composite
+   segments into Meeting lines.
+3. `fetch_provider_transcript` stores `provider-transcript.json` as a diagnostic. Speaker ids
+   there are still placeholder values, so those sentences are not merged into `transcript.md`.
+4. The provider transcript becomes the product text only when track files never arrived
+   (`filesNeverPublished`) and attribution has no lines. That is the hang / missing-files
+   fallback. A composite file that existed and was rejected for size does **not** take that
+   fallback. The document then carries the dropped-track sentence and no speech lines.
+
+The 2026-08-27 probe measured about 1.38 MB/min of composite audio (~83 MB/hour). 24 MB is
+about 17 minutes. A longer composite run loses Whisper text for that file. The raw audio can
+still land in the folder when it is under the 2 GiB upload cap. This cap is a Workers memory
+ceiling, not an upload ceiling. Do not raise it here. That is its own job.
 
 One real cap to know: an upload run allows at most **16 targets**. The transcript and provider
 diagnostic spend two, and the generated summary spends one, so at most 13 recording files are

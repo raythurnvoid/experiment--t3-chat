@@ -253,3 +253,41 @@ describe("0008_drop_dead_track_columns.sql", () => {
 		expect(db.prepare("SELECT COUNT(*) AS n FROM meeting_tracks").get()).toEqual({ n: 0 });
 	});
 });
+
+describe("0009_artifact_failure_reason.sql", () => {
+	test("adds failure_reason and keeps an existing artifact row", () => {
+		const db = new DatabaseSync(":memory:");
+		apply(db, [
+			...BEFORE_SUMMARY,
+			"0006_summary_artifact.sql",
+			"0007_join_attempt_owner.sql",
+			"0008_drop_dead_track_columns.sql",
+		]);
+		seed_meeting(db);
+		db.exec(`
+			INSERT INTO meeting_artifacts (
+				id, meeting_id, kind, target_key, file_name, node_id, upload_body, bytes, status,
+				created_at, updated_at
+			) VALUES ('artifact-1', 'meeting-1', 'track_audio', 'track_audio:recording.mp4',
+				'recording.mp4', NULL, '{}', 1, 'pending', 0, 0);
+		`);
+
+		apply(db, ["0009_artifact_failure_reason.sql"]);
+
+		expect(
+			db
+				.prepare("SELECT file_name, status, failure_reason FROM meeting_artifacts WHERE id = 'artifact-1'")
+				.get(),
+		).toEqual({
+			file_name: "recording.mp4",
+			status: "pending",
+			failure_reason: null,
+		});
+		db.exec(
+			"UPDATE meeting_artifacts SET status = 'failed', failure_reason = 'recording too large to store: 1 MiB over the limit' WHERE id = 'artifact-1';",
+		);
+		expect(db.prepare("SELECT failure_reason FROM meeting_artifacts WHERE id = 'artifact-1'").get()).toEqual({
+			failure_reason: "recording too large to store: 1 MiB over the limit",
+		});
+	});
+});

@@ -15,7 +15,9 @@
 		"COUNCIL_PLUGIN_ORIGIN": "https://grand-finch-267.convex.site",
 		"CONVEX_HTTP_URL": "https://grand-finch-267.convex.site",
 		// MVP ceilings. A meeting closes at the deadline whatever else happens, and the 26th accepted
-		// participant is refused.
+		// participant is refused. After the recording-ceiling change, 60 minutes at Cloudflare's
+		// 720p worst case is larger than the 2 GiB host upload cap. Create then answers 503 until
+		// this value is 47 or lower. Do not raise it without raising the host cap first.
 		"COUNCIL_MEETING_MAX_MINUTES": "60",
 		"COUNCIL_MEETING_MAX_PARTICIPANTS": "25",
 		// Workspace folder Council writes meeting artifacts under; each meeting gets a subfolder. The

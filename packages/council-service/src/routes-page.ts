@@ -5,7 +5,15 @@
  */
 
 import type { Env } from "./env.ts";
-import { council_destination_prefix, council_max_minutes, council_max_participants } from "./env.ts";
+import {
+	council_HOST_UPLOAD_MAX_BYTES,
+	council_destination_prefix,
+	council_max_minutes,
+	council_max_participants,
+	council_meeting_length_exceeds_host_upload_cap,
+	council_recording_over_cap_member_sentence,
+	council_worst_case_recording_bytes,
+} from "./env.ts";
 import { council_cors_headers } from "./cors.ts";
 import {
 	council_get_meeting,
@@ -42,6 +50,8 @@ function projection_idempotency_key(meetingId: string) {
 /**
  * The sanitized meeting the page may see. Never the code hash, the grant ids, the provider ids, or
  * the stored `failure_reason`. `failure_sentence` says what the page gets in place of that column.
+ * `recordingWarning` is the one extra product sentence for a ready meeting whose video was
+ * refused as over the host cap.
  */
 function meeting_view(env: Env, meeting: council_MeetingRow, artifacts: council_ArtifactRow[] = []) {
 	return {
@@ -49,6 +59,7 @@ function meeting_view(env: Env, meeting: council_MeetingRow, artifacts: council_
 		title: meeting.title,
 		status: meeting.status,
 		failureReason: failure_sentence(meeting),
+		recordingWarning: council_recording_over_cap_member_sentence(meeting.status, artifacts),
 		createdAt: meeting.created_at,
 		openedAt: meeting.opened_at,
 		closedAt: meeting.closed_at,
@@ -212,6 +223,21 @@ async function handle_create(context: PageContext) {
 	// Keep every new meeting out of D1 while a coordinated release changes the host contract.
 	if (env.COUNCIL_MAINTENANCE === "true") {
 		return respond(503, { message: "Council is being upgraded. Try again shortly." }, 300);
+	}
+	// Raising COUNCIL_MEETING_MAX_MINUTES past what the host can store must fail now, not after
+	// a long recording sits in hourly retry until the grant dies. The worst-case rate is
+	// Cloudflare's published 720p ceiling, not the low-motion probe.
+	const maxMinutes = council_max_minutes(env);
+	if (council_meeting_length_exceeds_host_upload_cap(maxMinutes)) {
+		console.error("COUNCIL_MEETING_MAX_MINUTES is too high for the host upload cap", {
+			maxMinutes,
+			worstCaseBytes: council_worst_case_recording_bytes(maxMinutes),
+			hostUploadMaxBytes: council_HOST_UPLOAD_MAX_BYTES,
+		});
+		return respond(503, {
+			message:
+				"Council cannot start a meeting this long. The configured length would produce a recording larger than the workspace can store.",
+		});
 	}
 	const title = council_read_string_field(context.body, "title", { maxBytes: 200 });
 	if (title._nay || title._yay === null) {
@@ -377,13 +403,15 @@ async function handle_list(context: PageContext) {
 		.bind(actor.installationId)
 		.all<council_MeetingRow>();
 	// One bounded companion query avoids one details request per card on every page poll.
+	// Failed recording rows stay out of the badge list (`artifacts_view`), but the card
+	// still needs them so it can show the over-cap warning on a ready meeting.
 	const artifacts = await env.COUNCIL_DB.prepare(
 		`SELECT a.* FROM meeting_artifacts a
 		WHERE a.meeting_id IN (
 			SELECT id FROM meetings
 			WHERE installation_id = ? AND status != 'deleted_tombstone'
 			ORDER BY created_at DESC LIMIT 100
-		) AND a.status = 'finalized'
+		) AND a.status IN ('finalized', 'failed')
 		ORDER BY a.meeting_id, a.kind, a.file_name`,
 	)
 		.bind(actor.installationId)
