@@ -59,7 +59,7 @@ export function plugins_ui_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (_ctx, request) => {
 								const { plugins_ui_http_session_jwt_preflight } = await import("./plugins_ui.ts");
-								return await plugins_ui_http_session_jwt_preflight(request);
+								return plugins_ui_http_session_jwt_preflight(request);
 							}),
 						});
 

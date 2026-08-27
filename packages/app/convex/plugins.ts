@@ -4944,7 +4944,7 @@ export const list_recent_runs = query({
 		// a way to read what is inside a folder you were never given. Asked once for the whole page,
 		// because the filter answers once per restricted scope and these runs usually share one.
 		const runFileNodes = await Promise.all(
-			runs.map((run) => (run.fileNodeId ? ctx.db.get("files_nodes", run.fileNodeId) : null)),
+			runs.map(async (run) => (run.fileNodeId ? await ctx.db.get("files_nodes", run.fileNodeId) : null)),
 		);
 		const readableNodeIds = new Set(
 			(
