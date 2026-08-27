@@ -43,7 +43,10 @@ import {
 	type council_MeetingSummary,
 } from "./ai.ts";
 import {
+	council_attribute_composite_segments,
 	council_attribute_tracks,
+	council_is_composite_audio_file,
+	council_is_composite_video_file,
 	council_parse_track_file_name,
 	council_provider_transcript_fallback_segments,
 	council_provider_transcript_has_real_identity,
@@ -67,6 +70,22 @@ const POLL_SLEEP = "30 seconds";
  * The host allows 16 upload targets per run; transcript, summary, and provider diagnostic take three.
  */
 const UPLOADED_TRACKS_MAX = 13;
+
+function is_stored_recording_file(fileName: string) {
+	if (council_is_composite_audio_file(fileName) || council_is_composite_video_file(fileName)) {
+		return true;
+	}
+	const parsed = council_parse_track_file_name(fileName);
+	return parsed?.streamKind === "peer" && parsed.mediaKind === "audio";
+}
+
+function is_transcribable_recording_file(fileName: string) {
+	if (council_is_composite_audio_file(fileName)) {
+		return true;
+	}
+	const parsed = council_parse_track_file_name(fileName);
+	return parsed?.streamKind === "peer" && parsed.mediaKind === "audio";
+}
 
 /** Written into `summary.md` when the model keeps failing. See `store_summary_markdown` for why. */
 const SUMMARY_FALLBACK: council_MeetingSummary = {
@@ -195,26 +214,20 @@ async function run_processing_steps(env: Env, step: WorkflowStep, params: counci
 			return left < right ? -1 : left > right ? 1 : 0;
 		});
 
-		// Only a peer audio track may take an upload slot. `transcribe_track` and `tracks.ts` both
-		// refuse anything else, and this pipeline declares every stored track as `audio/webm`, so a
-		// video or screen-share file would be stored under a lying content type and would push a
-		// real audio track out of the budget. Track recording writes per-participant audio only
-		// today — `council_provider_start_track_recording` sends no `layers` on purpose — so this
-		// filter normally drops nothing. It keeps the budget and the declared type honest if the
-		// provider ever starts publishing other files.
-		const audioFileNames = trackFileNames.filter((fileName) => {
-			const parsed = council_parse_track_file_name(fileName);
-			return parsed?.streamKind === "peer" && parsed.mediaKind === "audio";
-		});
-		const storedFileNames = new Set(audioFileNames.slice(0, UPLOADED_TRACKS_MAX));
+		// Only a peer audio track or a composite file may take an upload slot. Screen-share and
+		// other extra files would push a real recording out of the budget. Composite start writes
+		// one mixed video and one mixed audio. Older track recordings still write per-participant
+		// audio. This filter keeps the budget honest if the provider publishes other files.
+		const storedCandidates = trackFileNames.filter(is_stored_recording_file);
+		const storedFileNames = new Set(storedCandidates.slice(0, UPLOADED_TRACKS_MAX));
 
 		// The host allows at most 16 upload targets per run. Transcript, summary, and provider
 		// diagnostic use three. Every track is still transcribed, but raw audio past the remaining
 		// budget is not archived.
-		if (audioFileNames.length > UPLOADED_TRACKS_MAX) {
+		if (storedCandidates.length > UPLOADED_TRACKS_MAX) {
 			console.warn("More tracks than the upload target budget; extra raw audio is not stored", {
 				meetingId: meeting.id,
-				trackCount: audioFileNames.length,
+				trackCount: storedCandidates.length,
 				uploadBudget: UPLOADED_TRACKS_MAX,
 			});
 		}
@@ -388,11 +401,9 @@ async function discover_tracks(env: Env, step: WorkflowStep, meeting: council_Me
 	}
 	const recordingId = meeting.provider_recording_id;
 
-	// The provider does not stop a track recording when the session ends — without a stop it runs
-	// to its max_seconds cap and the poll below times out against a RECORDING status. Close already
-	// tried this stop best-effort; this poll repeats it until the recording leaves RECORDING, so a
-	// refused read or refused stop only costs one attempt out of the poll budget instead of
-	// erroring the workflow.
+	// Close stops the recording before kick-all. This poll repeats that stop while the status is
+	// still RECORDING, so a refused close stop only costs one attempt out of the poll budget
+	// instead of erroring the workflow. Without any stop the recording runs to its max_seconds cap.
 	let lastStatus: string | null = null;
 	let lastDuration: number | null = null;
 	for (let attempt = 0; attempt < RECORDING_POLL_LIMIT; attempt++) {
@@ -513,7 +524,7 @@ async function upload_track(env: Env, meeting: council_MeetingRow, grantToken: s
 		kind: "track_audio",
 		targetKey: target_key("track_audio", fileName),
 		fileName,
-		contentType: "audio/webm",
+		contentType: file.contentType,
 		size: download._yay.contentLength,
 		body: with_fixed_length(download._yay.stream, download._yay.contentLength),
 		readOnly: true,
@@ -537,10 +548,17 @@ async function transcribe_track(env: Env, meeting: council_MeetingRow, fileName:
 	}
 	const now = Date.now();
 
-	// A file that is not an audio peer track never reaches Whisper; the attribution module would
-	// reject it anyway, and rejecting here saves the model call.
-	const parsed = council_parse_track_file_name(fileName);
-	if (!parsed || parsed.streamKind !== "peer" || parsed.mediaKind !== "audio") {
+	// The mixed video is stored so the member can watch it. It has no speech of its own, so do not
+	// send it to Whisper and do not mark it rejected. A rejected row would inflate the dropped-track
+	// count for a file we never meant to transcribe.
+	if (council_is_composite_video_file(fileName)) {
+		return { skipped: true };
+	}
+
+	// A file that is not speech never reaches Whisper. Composite audio is the mixed file. A peer
+	// audio track is the older per-speaker file. Anything else is refused here so the model is not
+	// called for it.
+	if (!is_transcribable_recording_file(fileName)) {
 		// A row rejected here is never read again: `load_attributed_transcript` selects `transcribed`
 		// rows only, so attribution never sees this file and cannot report it. The log is the only
 		// place that names the file and why it was dropped, and the rendered documents only carry the
@@ -694,14 +712,23 @@ async function load_attributed_transcript(env: Env, meeting: council_MeetingRow)
 	const refusedTrackCount = allRows.results.filter((row) => row.status === "rejected").length;
 	const participants = await load_participants(env, meeting.id);
 
+	const compositeRows = transcribedRows.filter((row) => council_is_composite_audio_file(row.file_name));
+	const trackRows = transcribedRows.filter((row) => !council_is_composite_audio_file(row.file_name));
+
+	const segments: council_AttributedSegment[] = [];
+	for (const row of compositeRows) {
+		const parsedSegments = row.transcript_json ? (JSON.parse(row.transcript_json) as council_TrackSegment[]) : [];
+		segments.push(...council_attribute_composite_segments(parsedSegments));
+	}
+
 	// The meeting clock zero is the earliest track start from the filename timestamps, so offsets
 	// need no extra provider call and replay identically.
-	const parsedStarts = transcribedRows
+	const parsedStarts = trackRows
 		.map((row) => council_parse_track_file_name(row.file_name)?.recordedAtMs)
 		.filter((value): value is number => typeof value === "number");
 	const clockZero = parsedStarts.length > 0 ? Math.min(...parsedStarts) : 0;
 
-	const tracks: council_Track[] = transcribedRows.map((row) => {
+	const tracks: council_Track[] = trackRows.map((row) => {
 		const recordedAtMs = council_parse_track_file_name(row.file_name)?.recordedAtMs ?? clockZero;
 		return {
 			fileName: row.file_name,
@@ -720,13 +747,27 @@ async function load_attributed_transcript(env: Env, meeting: council_MeetingRow)
 				displayName: participant.display_name,
 			})),
 	});
+	segments.push(...attribution.segments);
+
+	segments.sort((left, right) => {
+		if (left.startMs !== right.startMs) {
+			return left.startMs - right.startMs;
+		}
+		if (left.endMs !== right.endMs) {
+			return left.endMs - right.endMs;
+		}
+		return left.participantId < right.participantId ? -1 : left.participantId > right.participantId ? 1 : 0;
+	});
 
 	// Both counts are the same thing to a reader: a track that was recorded and whose speech is in
 	// no document. Add them once here so the transcript and the summary cannot disagree.
-	return { ...attribution, droppedTrackCount: refusedTrackCount + attribution.rejected.length };
+	return { segments, rejected: attribution.rejected, droppedTrackCount: refusedTrackCount + attribution.rejected.length };
 }
 
-/** Build the product artifact: the speaker-attributed Markdown transcript from the track files. */
+/**
+ * Build the product artifact: the Markdown transcript.
+ * Composite lines use the fixed Meeting name. Leftover track files still use speaker names.
+ */
 async function render_and_upload_markdown(
 	env: Env,
 	meeting: council_MeetingRow,

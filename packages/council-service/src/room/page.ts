@@ -32,7 +32,7 @@ const REALTIMEKIT_SDK_INTEGRITY = "sha384-EVOSez95uObqUjiV3FecQZJtqOIGneHAfSwbpj
  * old value, matches it against the value the harness notes record, and wrongly concludes that the
  * Worker is serving its own tree.
  */
-const ROOM_REVISION = "council-room-r28";
+const ROOM_REVISION = "council-room-r30";
 
 /**
  * The Worker builds the room page's CSP from this list. A missing entry breaks the room in a live
@@ -63,10 +63,12 @@ export const council_room_page_external_origins = [
 	"wss://*.realtime.cloudflare.com",
 ];
 
+// Composite start writes one mixed audio file. Those lines use the fixed Meeting name, so do not
+// promise that a typed display name labels who spoke.
 const CONSENT_NOTICE =
-	"This meeting may be recorded. If the host starts recording, the name each participant types is attached to " +
-	"their part of the transcript and the transcript is used to create a meeting summary. Names are not verified — " +
-	"a name tells you which voice said what, not who a person really is.";
+	"This meeting may be recorded. If the host starts recording, Council saves one recording and one transcript, " +
+	"and the transcript is used to create a meeting summary. The name you type is shown to other people in the room. " +
+	"It is not used to label who spoke.";
 
 const ROOM_CSS = `
 :root {
@@ -1516,7 +1518,7 @@ export function council_room_page_html() {
 						<div class="field">
 							<label for="guest-name">Display name</label>
 							<input id="guest-name" name="displayName" type="text" autocomplete="name" required aria-describedby="guest-name-hint" />
-							<p class="field-hint" id="guest-name-hint">Shown to other participants and attached to the transcript.</p>
+							<p class="field-hint" id="guest-name-hint">Shown to other participants.</p>
 						</div>
 						<div class="field">
 							<label for="guest-email">Email <span class="optional">(optional)</span></label>
@@ -1558,7 +1560,7 @@ export function council_room_page_html() {
 						<div class="field" id="host-name-field" hidden>
 							<label for="host-name">Display name</label>
 							<input id="host-name" name="displayName" type="text" autocomplete="name" aria-describedby="host-name-hint" />
-							<p class="field-hint" id="host-name-hint">Shown to other participants and attached to the transcript.</p>
+							<p class="field-hint" id="host-name-hint">Shown to other participants.</p>
 						</div>
 						<p class="lobby-deadline" id="lobby-deadline"></p>
 						<p class="consent-notice">${CONSENT_NOTICE}</p>

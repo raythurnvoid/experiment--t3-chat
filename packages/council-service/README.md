@@ -2,7 +2,7 @@
 
 The Cloudflare Worker behind the Council meeting plugin. It creates provider meetings, mints guest
 tokens, serves the public meeting room on its own origin, and turns a finished meeting into a
-recording, a speaker-attributed transcript, and a structured meeting summary in the workspace.
+recording, a transcript, and a structured meeting summary in the workspace.
 
 The meeting lifecycle, room security model, webhook intake, Queue consumer,
 processing/deletion Workflow, and cleanup cron are implemented and tested. The current source has
@@ -15,14 +15,27 @@ Comments and migrations in this package say "Plan 2". That names the host's plug
 routes. It stores at most 16 KiB per document value, and that 16 KiB is the envelope one meeting
 projection reserves.
 
-## Why the transcript is built from track files
+## How the transcript names speakers
 
 RealtimeKit's own post-meeting transcript cannot say who spoke. Every segment comes back with the
 literals `TEST`, `unique_id`, `user_id`, and `custom_participant_id` in `peerData`, while the session
 participant endpoint reports the real names for that same session. The words are right and only the
 speaker is wrong.
 
-So Council never reads identity from the transcript. It reads identity from the file name:
+Council starts a **composite** recording (`POST /recordings`). The provider bot writes one mixed
+video and one mixed audio file. Those files stay in the provider's managed bucket for seven days,
+so Council has to fetch and copy them. That copy is what the Workflow is for — Workers give a step
+unlimited wall-clock but cap persisted state, so a step streams the bytes into the app's presigned
+upload URL and returns only a small record, never the bytes.
+
+The mixed audio has no speaker id. `src/tracks.ts` labels every line **Meeting**. It does not guess
+a speaker from the names people typed in the room.
+
+Older meetings used per-speaker **track** recording. That path hung live on long calls
+(`UPLOADING`, duration 0, no files). Composite is the current start path because it is a different
+recorder. Track file names still work in the pipeline so an older recording can finish.
+
+When the provider still publishes per-speaker track files, identity comes from the file name:
 
 1. Council generates the durable participant id and sends it as `custom_participant_id` to Add
    Participant.
@@ -39,12 +52,6 @@ The live provider run proved that it is the Add Participant response `data.id`.
 
 A track whose speech is attributed by position rather than by that provider id fails the tests in
 `src/tracks.test.ts`, which is the point of them.
-
-Two provider limits shape the design and are not negotiable from this side: track recording is
-**audio only**, and it accepts **no `storage_config`**, so the files stay in the provider's managed
-bucket for seven days and Council has to fetch and copy them. That copy is what the Workflow is for —
-Workers give a step unlimited wall-clock but cap persisted state, so a step streams the bytes into
-the app's presigned upload URL and returns only a small record, never the bytes.
 
 ## Route surface
 
@@ -72,9 +79,10 @@ Over it these routes answer 429; without `CF-Connecting-IP` they answer 400 unle
 - `/api/meetings/room-ticket` — mint a one-time host ticket for the room origin. The ticket stores
   the exact interactive grant that authorized it; another page exchange must not change which
   grant this room later verifies.
-- `/api/meetings/close` — close admission, end the provider session, and STOP the recording
-  explicitly — the provider does not stop a track recording when the session ends, and its track
-  files publish only after the stop. With a recording, hand the meeting to processing (the grant
+- `/api/meetings/close` — close admission, STOP the recording while the session is still live,
+  then kick everyone. Session end can stop a composite recording, but a stop after kick-all hung
+  track recordings live, so close still stops first. With a recording, hand the meeting to
+  processing (the grant
   already exists from open; the pipeline's discover poll repeats the stop until the recording
   leaves `RECORDING`, so a refused stop only costs poll attempts, while a recording the provider
   marks `ERRORED` fails the meeting on the first read instead of waiting the poll budget out).
@@ -101,7 +109,7 @@ call.
   that actor.
 - `/room/api/state` — the meeting view the room polls.
 - `/room/api/host/start-recording` — host only; verify the room session's exact actor grant, then
-  start track recording with the meeting-length cap. The
+  start a composite recording with the meeting-length cap. The
   recording id is attached only while the meeting is still `open` with no recording — a close (or a
   second start) can land while the provider answer is in the air, and close stops only the id it
   finds in the row. A refused attach stops the just-started recording itself and answers 409.
@@ -171,9 +179,10 @@ even when no recording uploaded. That note is derived: the store stays the sourc
 file never holds a join code, guest secret, or host ticket. Recordings still land in the same folder
 only after a successful service upload. The Convex document gives the host and future plugin UI a
 safe, installation-owned copy with no meeting code, ticket, email, token, admission secret, or
-provider URL. A stored track artifact does carry the provider's own file name, because that is the
+provider URL. A leftover track artifact still carries the provider's own file name, because that is the
 name the file has in the workspace, and the provider builds that name from the participant's
-provider and peer ids.
+provider and peer ids. Current composite files use the fixed names `recording.mp4` and
+`recording-audio.m4a`.
 
 ## Council 0.2.0 release gate
 
@@ -417,11 +426,11 @@ fail the run. A stored `.webm` is a binary file the editor never opens, so the f
 for it either way. No Council service upload starts plugin upload events.
 
 One real cap to know: an upload run allows at most **16 targets**. The transcript and provider
-diagnostic spend two, and the generated summary spends one, so at most 13 raw audio tracks are
-stored. Only a per-participant audio track can take one of those slots: every stored track is
-declared `audio/webm`, and a file that is not a peer audio track is refused by transcription and by
-attribution anyway. Track recording writes audio only today, so nothing is dropped by that rule.
-A large meeting's extra raw audio is not stored, and the pipeline logs when that happens.
+diagnostic spend two, and the generated summary spends one, so at most 13 recording files are
+stored. A composite recording uses two of those slots (the mixed video and the mixed audio) and
+stores each under its real type. A leftover per-participant audio track still uses `audio/webm`.
+A file that is not speech or a composite file is refused. A large meeting's extra raw audio is not
+stored, and the pipeline logs when that happens.
 
 A second cap applies per track: transcription reads at most **24 MB** of one file
 (`council_TRACK_TRANSCRIBE_MAX_BYTES`), sized to the 128 MB isolate rather than to the file, because

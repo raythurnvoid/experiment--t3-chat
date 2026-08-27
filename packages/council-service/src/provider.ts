@@ -20,6 +20,7 @@
 import { Result } from "./result.ts";
 import type { Env } from "./env.ts";
 import { council_read_stream_with_limit } from "./http.ts";
+import { council_COMPOSITE_AUDIO_FILE_NAME, council_COMPOSITE_VIDEO_FILE_NAME } from "./tracks.ts";
 
 /** The only origin the provider bearer may ever be sent to. */
 const PROVIDER_ORIGIN = "https://api.cloudflare.com";
@@ -252,32 +253,38 @@ export async function council_provider_delete_participant(
 }
 
 /**
- * Start TRACK recording: one audio file per participant, named with the Add Participant id, which
- * is the attribution the whole design rests on. `layers` is omitted on purpose — the live
- * validator rejects the documented string shape, and omitting it yields the per-participant
- * naming. `max_seconds` enforces the meeting cap provider-side whatever else happens.
+ * Start a composite recording. A provider bot joins the room and writes one mixed file. Track
+ * recording hung live on long calls (`UPLOADING`, duration 0, no files) after both kick-then-stop
+ * and stop-then-kick. Composite is a different recorder. `max_seconds` still caps the meeting
+ * provider-side. Export the audio file too so Whisper can read it without the video.
  */
-export async function council_provider_start_track_recording(
+export async function council_provider_start_recording(
 	env: Env,
 	args: { providerMeetingId: string; maxSeconds: number },
 ) {
-	const response = await provider_fetch(env, "/recordings/track", {
+	const response = await provider_fetch(env, "/recordings", {
 		method: "POST",
-		body: JSON.stringify({ meeting_id: args.providerMeetingId, max_seconds: args.maxSeconds }),
+		body: JSON.stringify({
+			meeting_id: args.providerMeetingId,
+			max_seconds: args.maxSeconds,
+			audio_config: { channel: "mono", codec: "AAC", export_file: true },
+			video_config: { codec: "H264", export_file: true, width: 1280, height: 720 },
+			realtimekit_bucket_config: { enabled: true },
+		}),
 	});
 	const data = body_data(response);
 	const recording = (data?.recording ?? data) as Record<string, unknown> | null;
 	if (!response.ok || !recording || !nonempty_string(recording.id)) {
-		return provider_nay("Start track recording", response);
+		return provider_nay("Start recording", response);
 	}
 	return Result({ _yay: { providerRecordingId: recording.id } });
 }
 
 /**
- * Stop a running recording. The provider does NOT stop a track recording when the session ends —
- * proven live on 2026-08-16, where a recording stayed RECORDING for 25+ minutes after kick-all
- * emptied the room — it runs to its max_seconds cap instead, and the track files publish only
- * after the stop. So the close path and the processing pipeline both stop it explicitly.
+ * Stop a running recording. Close must call this while the provider session is still live, then
+ * kick everyone. A stop after kick-all can leave the recording UPLOADING with duration 0 and no
+ * files. The pipeline also stops a recording that is still RECORDING, because a refused close
+ * stop must not strand the file until max_seconds.
  */
 export async function council_provider_stop_recording(env: Env, recordingId: string) {
 	const response = await provider_fetch(env, `/recordings/${recordingId}`, {
@@ -365,10 +372,54 @@ export async function council_provider_get_session(env: Env, sessionId: string) 
 export type council_ProviderTrackFile = {
 	fileName: string;
 	downloadUrl: string;
+	kind: "track" | "composite-video" | "composite-audio";
+	contentType: string;
 };
 
+function recording_files(recording: Record<string, unknown>): council_ProviderTrackFile[] {
+	const files: council_ProviderTrackFile[] = [];
+	const downloadUrl = recording.download_url;
+
+	// Composite recordings return one video URL string. Track recordings return a link map.
+	if (nonempty_string(downloadUrl)) {
+		files.push({
+			fileName: council_COMPOSITE_VIDEO_FILE_NAME,
+			downloadUrl,
+			kind: "composite-video",
+			contentType: "video/mp4",
+		});
+	} else if (typeof downloadUrl === "object" && downloadUrl !== null) {
+		const linkGroups = (Array.isArray((downloadUrl as Record<string, unknown>).links)
+			? (downloadUrl as Record<string, unknown>).links
+			: []) as Record<string, unknown>[];
+		const downloadUrls = (linkGroups[0]?.download_urls ?? {}) as Record<string, { download_url?: unknown }>;
+		for (const [fileName, entry] of Object.entries(downloadUrls)) {
+			if (entry && nonempty_string(entry.download_url)) {
+				files.push({
+					fileName,
+					downloadUrl: entry.download_url,
+					kind: "track",
+					contentType: "audio/webm",
+				});
+			}
+		}
+	}
+
+	if (nonempty_string(recording.audio_download_url)) {
+		files.push({
+			fileName: council_COMPOSITE_AUDIO_FILE_NAME,
+			downloadUrl: recording.audio_download_url,
+			kind: "composite-audio",
+			contentType: "audio/mp4",
+		});
+	}
+
+	return files;
+}
+
 /**
- * Read the recording and list its per-participant track files. The download URLs are presigned
+ * Read the recording and list its files. Composite recordings return a video URL and an audio
+ * URL. Track recordings return a per-participant link map. The download URLs are presigned
  * capabilities that live for seven days; they are handed to the streaming download and never
  * stored or logged.
  */
@@ -389,23 +440,13 @@ export async function council_provider_get_recording(env: Env, recordingId: stri
 		return provider_nay("Read recording", response);
 	}
 
-	const downloadUrl = recording.download_url as Record<string, unknown> | undefined;
-	const linkGroups = (Array.isArray(downloadUrl?.links) ? downloadUrl.links : []) as Record<string, unknown>[];
-	const downloadUrls = (linkGroups[0]?.download_urls ?? {}) as Record<string, { download_url?: unknown }>;
-	const trackFiles: council_ProviderTrackFile[] = [];
-	for (const [fileName, entry] of Object.entries(downloadUrls)) {
-		if (entry && nonempty_string(entry.download_url)) {
-			trackFiles.push({ fileName, downloadUrl: entry.download_url });
-		}
-	}
-
 	return Result({
 		_yay: {
 			status: typeof recording.status === "string" ? recording.status : null,
 			// Duration 0 after stop, with no files, is the hang we measured live. The pipeline
 			// reads this to tell that hang apart from a slow upload that is still writing bytes.
 			recordingDuration: typeof recording.recording_duration === "number" ? recording.recording_duration : null,
-			trackFiles,
+			trackFiles: recording_files(recording),
 		},
 	});
 }

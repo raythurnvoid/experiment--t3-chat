@@ -7,6 +7,7 @@ import { council_encrypt, council_sha256_hex } from "./crypto.ts";
 import {
 	FUTURE,
 	install_fetch,
+	is_start_recording_call,
 	make_test_env,
 	seed_grant,
 	seed_meeting,
@@ -1540,7 +1541,7 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 		);
 		expect(response.status).toBe(409);
 		expect(((await response.json()) as { message: string }).message).toBe("The meeting's authority is no longer live");
-		expect(mock.calls.some((call) => call.url.includes("/recordings/track"))).toBe(false);
+		expect(mock.calls.some((call) => is_start_recording_call(call))).toBe(false);
 	});
 
 	test("starts recording with the exact live grant that minted the room session", async () => {
@@ -1573,10 +1574,11 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 			env,
 		);
 		expect(response.status).toBe(200);
-		expect(mock.calls.some((call) => call.url.includes("/recordings/track"))).toBe(true);
+		expect(mock.calls.some((call) => is_start_recording_call(call))).toBe(true);
+		expect(mock.calls.some((call) => call.url.includes("/recordings/track"))).toBe(false);
 	});
 
-	test("starts the track recording with the meeting-length cap and stores the recording id", async () => {
+	test("starts the composite recording with the meeting-length cap and stores the recording id", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch();
 		restoreFetch = mock.restore;
@@ -1587,8 +1589,15 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 		const response = await worker.fetch(room_post("/room/api/host/start-recording", {}, headers), env);
 		expect(response.status).toBe(200);
 
-		const recordingCall = mock.calls.find((call) => call.url.includes("/recordings/track"));
-		expect(recordingCall?.bodyJson).toEqual({ meeting_id: "pm-1", max_seconds: 3600 });
+		const recordingCall = mock.calls.find((call) => is_start_recording_call(call));
+		expect(recordingCall?.url.includes("/recordings/track")).toBe(false);
+		expect(recordingCall?.bodyJson).toEqual({
+			meeting_id: "pm-1",
+			max_seconds: 3600,
+			audio_config: { channel: "mono", codec: "AAC", export_file: true },
+			video_config: { codec: "H264", export_file: true, width: 1280, height: 720 },
+			realtimekit_bucket_config: { enabled: true },
+		});
 
 		const meeting = await env.COUNCIL_DB.prepare(
 			"SELECT provider_recording_id, recording_started_at, status FROM meetings WHERE id = 'meeting-1'",
@@ -1629,7 +1638,7 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 	test("a lost provider answer moves the meeting to recording_start_unknown and never auto-retries", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch({
-			"/recordings/track": () => {
+			"POST /recordings": () => {
 				throw new Error("socket dropped");
 			},
 		});
@@ -1660,7 +1669,7 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 		const mock = install_fetch({
 			// The provider answered and said no. That is not a lost answer: nothing started, and the
 			// second call shows the host can still get a recording.
-			"/recordings/track": () => {
+			"POST /recordings": () => {
 				trackCalls += 1;
 				return trackCalls === 1
 					? Response.json({ success: false }, { status: 400 })
@@ -1702,7 +1711,7 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 		// in the settled row, and the just-started recording must be stopped again.
 		let closeStatus = 0;
 		const mock = install_fetch({
-			"/recordings/track": async () => {
+			"POST /recordings": async () => {
 				const closed = await worker.fetch(room_post("/room/api/host/close", {}, headers), env);
 				closeStatus = closed.status;
 				return Response.json({ success: true, data: { recording: { id: "rec-late" } } });
@@ -1739,7 +1748,7 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 		let trackCalls = 0;
 		let second: Response | null = null;
 		const mock = install_fetch({
-			"/recordings/track": async () => {
+			"POST /recordings": async () => {
 				trackCalls += 1;
 				if (trackCalls === 1) {
 					second = await worker.fetch(room_post("/room/api/host/start-recording", {}, headers), env);
@@ -1780,7 +1789,7 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 		let trackCalls = 0;
 		let second: Response | null = null;
 		const mock = install_fetch({
-			"/recordings/track": async () => {
+			"POST /recordings": async () => {
 				trackCalls += 1;
 				if (trackCalls === 1) {
 					second = await worker.fetch(room_post("/room/api/host/start-recording", {}, headers), env);
@@ -1819,7 +1828,7 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 		let trackCalls = 0;
 		let second: Response | null = null;
 		const mock = install_fetch({
-			"/recordings/track": async () => {
+			"POST /recordings": async () => {
 				trackCalls += 1;
 				if (trackCalls === 1) {
 					second = await worker.fetch(room_post("/room/api/host/start-recording", {}, headers), env);
@@ -1860,7 +1869,7 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 		let secondStatus = 0;
 		let closeStatus = 0;
 		const mock = install_fetch({
-			"/recordings/track": async () => {
+			"POST /recordings": async () => {
 				trackCalls += 1;
 				if (trackCalls === 1) {
 					const second = await worker.fetch(room_post("/room/api/host/start-recording", {}, headers), env);
@@ -1895,7 +1904,7 @@ describe("council_handle_room_api /room/api/host/start-recording", () => {
 		await seed_meeting(env, { status: "open", deadlineAt: FUTURE });
 		const headers = await seed_host_session(env);
 		const mock = install_fetch({
-			"/recordings/track": () => Response.json({ success: true, data: { recording: { id: "rec-unstored" } } }),
+			"POST /recordings": () => Response.json({ success: true, data: { recording: { id: "rec-unstored" } } }),
 			"/recordings/rec-unstored": () => Response.json({ success: true, data: { action: "stop" } }),
 		});
 		restoreFetch = mock.restore;

@@ -1511,9 +1511,9 @@ export const council_room_client_js = `
 			return;
 		}
 		// Say nothing while the host's own close is still in the air. This frame is that close
-		// arriving early: the service kicks everyone out of the provider room first and only then
-		// stops the recording, seals the meeting and projects it, so the provider's kick reaches
-		// this browser several calls before the answer does. Ending here sets state.over, the
+		// arriving early: the service stops the recording, then kicks everyone, then seals the
+		// meeting and projects it, so the provider's kick can still reach this browser before the
+		// close answer does. Ending here sets state.over, the
 		// close's own answer then hits endLocally's early return, and the host who recorded gets
 		// "The meeting has ended." instead of being told where their files will appear. The close
 		// writes the ended screen itself when it settles. state.closeController is cleared when it

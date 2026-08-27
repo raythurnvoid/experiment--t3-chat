@@ -8,9 +8,9 @@ import {
 	council_provider_find_session,
 	council_provider_get_active_session,
 	council_provider_get_recording,
-	council_provider_start_track_recording,
+	council_provider_start_recording,
 } from "./provider.ts";
-import { install_fetch, make_test_env } from "../test/env.ts";
+import { install_fetch, is_start_recording_call, make_test_env } from "../test/env.ts";
 
 let restoreFetch: (() => void) | null = null;
 afterEach(() => {
@@ -326,17 +326,24 @@ describe("council_provider_fetch_transcript", () => {
 	});
 });
 
-describe("council_provider_start_track_recording", () => {
-	test("sends the meeting id and the max_seconds cap, without a layers field", async () => {
+describe("council_provider_start_recording", () => {
+	test("starts a composite recording with the meeting-length cap", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch();
 		restoreFetch = mock.restore;
 
-		const started = await council_provider_start_track_recording(env, { providerMeetingId: "pm-1", maxSeconds: 3600 });
+		const started = await council_provider_start_recording(env, { providerMeetingId: "pm-1", maxSeconds: 3600 });
 		expect(started._yay?.providerRecordingId).toBe("rec-1");
 
-		const call = mock.calls.find((candidate) => candidate.url.includes("/recordings/track"));
-		expect(call?.bodyJson).toEqual({ meeting_id: "pm-1", max_seconds: 3600 });
+		const call = mock.calls.find((candidate) => is_start_recording_call(candidate));
+		expect(call?.url.includes("/recordings/track")).toBe(false);
+		expect(call?.bodyJson).toEqual({
+			meeting_id: "pm-1",
+			max_seconds: 3600,
+			audio_config: { channel: "mono", codec: "AAC", export_file: true },
+			video_config: { codec: "H264", export_file: true, width: 1280, height: 720 },
+			realtimekit_bucket_config: { enabled: true },
+		});
 	});
 
 	// This is the quietest of the empty ids. Kept, it becomes the meeting's stored recording id, and
@@ -345,11 +352,11 @@ describe("council_provider_start_track_recording", () => {
 	test("refuses an empty recording id the same way it refuses a missing one", async () => {
 		const { env } = make_test_env();
 		const mock = install_fetch({
-			"/recordings/track": () => Response.json({ success: true, data: { recording: { id: "" } } }),
+			"POST /recordings": () => Response.json({ success: true, data: { recording: { id: "" } } }),
 		});
 		restoreFetch = mock.restore;
 
-		const started = await council_provider_start_track_recording(env, { providerMeetingId: "pm-1", maxSeconds: 3600 });
+		const started = await council_provider_start_recording(env, { providerMeetingId: "pm-1", maxSeconds: 3600 });
 		expect(started._nay?.name).toBe("provider_refused");
 	});
 });
@@ -385,8 +392,56 @@ describe("council_provider_get_recording", () => {
 		expect(recording._yay?.status).toBe("UPLOADED");
 		expect(recording._yay?.recordingDuration).toBeNull();
 		expect(recording._yay?.trackFiles).toEqual([
-			{ fileName: "council_p1_peer1_peer_audio_1.webm", downloadUrl: "https://tracks.example/a" },
-			{ fileName: "council_p2_peer2_peer_audio_2.webm", downloadUrl: "https://tracks.example/b" },
+			{
+				fileName: "council_p1_peer1_peer_audio_1.webm",
+				downloadUrl: "https://tracks.example/a",
+				kind: "track",
+				contentType: "audio/webm",
+			},
+			{
+				fileName: "council_p2_peer2_peer_audio_2.webm",
+				downloadUrl: "https://tracks.example/b",
+				kind: "track",
+				contentType: "audio/webm",
+			},
+		]);
+	});
+
+	test("lists the mixed video and audio files from a composite recording", async () => {
+		const { env } = make_test_env();
+		const mock = install_fetch({
+			"/recordings/rec-1": () =>
+				Response.json({
+					success: true,
+					data: {
+						recording: {
+							id: "rec-1",
+							status: "UPLOADED",
+							recording_duration: 790,
+							download_url: "https://tracks.example/video",
+							audio_download_url: "https://tracks.example/audio",
+						},
+					},
+				}),
+		});
+		restoreFetch = mock.restore;
+
+		const recording = await council_provider_get_recording(env, "rec-1");
+		expect(recording._yay?.status).toBe("UPLOADED");
+		expect(recording._yay?.recordingDuration).toBe(790);
+		expect(recording._yay?.trackFiles).toEqual([
+			{
+				fileName: "recording.mp4",
+				downloadUrl: "https://tracks.example/video",
+				kind: "composite-video",
+				contentType: "video/mp4",
+			},
+			{
+				fileName: "recording-audio.m4a",
+				downloadUrl: "https://tracks.example/audio",
+				kind: "composite-audio",
+				contentType: "audio/mp4",
+			},
 		]);
 	});
 
@@ -421,7 +476,12 @@ describe("council_provider_get_recording", () => {
 
 		const recording = await council_provider_get_recording(env, "rec-1");
 		expect(recording._yay?.trackFiles).toEqual([
-			{ fileName: "council_p2_peer2_peer_audio_2.webm", downloadUrl: "https://tracks.example/b" },
+			{
+				fileName: "council_p2_peer2_peer_audio_2.webm",
+				downloadUrl: "https://tracks.example/b",
+				kind: "track",
+				contentType: "audio/webm",
+			},
 		]);
 	});
 

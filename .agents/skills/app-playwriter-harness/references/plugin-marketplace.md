@@ -429,7 +429,7 @@ click provably does nothing, not before.
   Do not hop `about:blank` first — that hides the bug. Success is `#view-lobby` visible, `#view-ended`
   hidden, `#join-button` enabled, role Host, hash erased. Join again on that lobby to prove the button
   was re-armed.
-  Chrome 151 on this machine still lists the real microphones when launched with `--use-fake-device-for-media-capture` and a 48 kHz stereo fake-audio WAV. `getUserMedia` then captures the default hardware device, not the file. Call `context.grantPermissions(["microphone"], { origin })` before Join or Unmute, or `getUserMedia` returns `NotAllowedError`. Treat missing phrase attribution after that as an environment/provider blocker, not as proof the lobby names failed — the transcript still carries the typed display names.
+  Chrome 151 on this machine still lists the real microphones when launched with `--use-fake-device-for-media-capture` and a 48 kHz stereo fake-audio WAV. `getUserMedia` then captures the default hardware device, not the file. Call `context.grantPermissions(["microphone"], { origin })` before Join or Unmute, or `getUserMedia` returns `NotAllowedError`. Treat a missing spoken phrase after that as an environment/provider blocker, not as proof Join failed. Composite transcripts label every line `Meeting`. They do not use the typed lobby names.
   ~30 seconds of looping speech WAV produces a real `transcript.md`. Processing can take ~5 minutes when the best-effort provider-transcript polling
   runs its sleeps, and `provider-transcript.json` may legitimately never appear — poll the D1
   `meetings.status` (read-only `wrangler d1 execute bonobo-council --remote`) instead of trusting a
@@ -437,7 +437,7 @@ click provably does nothing, not before.
   see the polling hazards bullet above. Do not reload the host page to pick up that change.
 - Since the 2026-08-16 upload-conversion change, the pipeline's `transcript.md` becomes a normal
   editable rich text document (`yjsRootKind: "rich_text"`, chunk-readable) and a produced
-  `provider-transcript.json` becomes an editable plain-text document; the `.webm` track files stay
+  `provider-transcript.json` becomes an editable plain-text document; the recording files stay
   stored blobs. Deleting a meeting archives the whole `/meetings/<meetingId>` folder through the
   service `archive-destination` door and tombstones the D1 row. Check it by reading the file nodes,
   not the tree alone: the folder and every file in it get ONE shared `archiveOperationId`, so they
@@ -457,7 +457,7 @@ Use this when a person wants a real call with guests and files in `/meetings/<id
 fake-audio scratch-Chrome loop above.
 
 - **Paid plan first.** Service uploads refuse Free and anonymous users (`This workspace's plan does
-  not include plugin service file storage`). Only `Pay As You Go` and `Pro` store tracks. Prove it
+  not include plugin service file storage`). Only `Pay As You Go` and `Pro` store recording files. Prove it
   from the signed-in account: `app_convex.query(app_convex_api.billing.get_current_user_subscription)`
   is null for anonymous, and that session is treated as Free. Do not start a recorded call on the QA
   Edge anonymous tab and expect Files to fill.
@@ -486,8 +486,9 @@ fake-audio scratch-Chrome loop above.
 - **Start recording in the room.** Close without that click settles `ready` with no recording files.
   The host still writes `/meetings/<meetingId>/meeting.md` from the plugin store (title, status,
   times). After Close, the card moves `processing → ready` (often a few minutes). Recordings land
-  under `/meetings/<meetingId>/`: per-speaker `.webm`, `transcript.md`, `summary.md`, and maybe
-  `provider-transcript.json`. Those blob uploads need a paid plan; the meeting note does not.
+  under `/meetings/<meetingId>/`: `recording.mp4`, `recording-audio.m4a`, `transcript.md`,
+  `summary.md`, and maybe `provider-transcript.json`. Composite transcript lines are labeled
+  `Meeting`. Those blob uploads need a paid plan; the meeting note does not.
 - **`Saved to /meetings/<id>` on the card is still a planned recording path.** The service writes
   `destinationPath` at create time. Recordings appear in Files only on the first successful upload.
   Installed Council 0.2.0 still prints `Saved to` on every card even when `artifactCount` is 0.
@@ -521,10 +522,50 @@ fake-audio scratch-Chrome loop above.
   If the Workflow error is `The provider never published the recording's track files`, ask
   RealtimeKit live (Cloudflare API MCP `GET .../recordings/{id}`, or list today's recordings).
   Print only `status`, `recording_duration`, whether `download_url` exists, and `err_message`.
+  Through the Cloudflare API MCP, RealtimeKit list calls return `{ success, data, paging }`,
+  not `result`. Filter with `search` set to the meeting title so you do not need the
+  meeting id. Never print `access_token` from the apps list.
   Never print recording ids or download URLs. A real upload-in-progress still looks like
   `UPLOADING`, but a hang looks like `UPLOADING` plus `recording_duration: 0`, no `download_url`,
   and a null `err_message` long after `stopped_time`. That same shape was still live on a
-  2026-08-16 track recording ten days later. After the full poll, Council now finishes `ready`
+  2026-08-16 track recording ten days later.
+  **Close order (deployed 2026-08-26, Worker `39a33ead`).** `council_close_meeting`
+  now stops the recording while the session is still live, then kicks everyone. Room
+  End meeting, dashboard Close, and the deadline cron all use this one function. A
+  refused first stop still kicks and still hands the meeting to processing. Do not
+  wait for `UPLOADED` inside close — the room has a 30 second budget.
+  **Live proof failed (verified 2026-08-27).** Stop-then-kick did not fix the hang.
+  Title `Stop first 27 Aug`, same flow: host records alone, guest joins about two
+  minutes later, stay ~13 minutes (791 s), End meeting, no Stop. RealtimeKit was
+  `UPLOADING`, `recording_duration: 0`, no `download_url`, null `err_message`, no
+  file size at 67 s after `stopped_time`, and still the same at 343 s. D1 stayed
+  `processing` generation 1 with 2 participants. The kick-order guess is wrong.
+  Next RK-only step was the start path: composite `POST /recordings` instead of
+  track. **Live proof passed (verified 2026-08-27).** Title `Composite first 27 Aug`,
+  same long flow (~14 minutes 37 seconds, no Stop). RealtimeKit was `UPLOADED`
+  with duration above 0, a string `download_url`, and an `audio_download_url`.
+  Council discovered `recording.mp4` and `recording-audio.m4a`. The hang is gone
+  on composite start. The first save failed because QA Edge `personal/home` was
+  anonymous/`Free` (`403` plugin service file storage). After that billed user's
+  snapshot was moved to `Pay As You Go`, generation 2 finished `ready` with
+  finalized `recording.mp4`, `recording-audio.m4a`, `transcript.md`,
+  `summary.md`, and `provider-transcript.json`. The Council card then showed
+  Ready, Recording, Transcript, Summary, and Saved to. Do not invent files for
+  meetings that already hung — there is no retry-upload API. Do not Join from QA Edge. Use two scratch Chromes. Copy the
+  guest URL immediately before the scratch clipboard read. Drive Council clicks
+  through `state.appPlaywriterHarness.page`. Installed Open is named
+  `Open meeting` only. Scope it with `li.meeting` plus the title text. A bound
+  Council tab can show the plugin iframe in the DOM while `page.frames()` still
+  lists only the host — open an owned tab so the frame attaches. Do not
+  snapshot the plugin iframe.
+  **Live hang before the fix (verified 2026-08-26).** The hang is not only the old TEST
+  meeting. A new ~13 minute call that copied that flow reproduced it on the first try
+  with kick-then-stop. RealtimeKit went to `UPLOADING` with `recording_duration: 0`,
+  no `download_url`, null `err_message`, and null `file_size` as soon as
+  `stopped_time` was set. Five minutes later it had not moved. A short older row in
+  the same list was `UPLOADED` with a real duration, so this is not "every recording
+  looks like this while files copy."
+  After the full poll, Council still finishes `ready`
   from the provider transcript when it sees that hang (`duration === 0`). A slow upload with
   no duration still fails so a later redrive can pick up files. RealtimeKit's only recording
   actions are `stop` / `pause` / `resume`. There is no retry-upload API. A leftover provider

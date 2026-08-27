@@ -3,6 +3,7 @@ import { NonRetryableError } from "cloudflare:workflows";
 
 import { council_run_deletion, council_run_processing } from "./pipeline.ts";
 import { council_SUMMARY_FAILURE_PREFIX } from "./ai.ts";
+import { council_COMPOSITE_AUDIO_FILE_NAME, council_COMPOSITE_VIDEO_FILE_NAME } from "./tracks.ts";
 import { council_request_meeting_delete, council_request_processing_redrive } from "./lifecycle.ts";
 import { council_get_meeting } from "./db.ts";
 import type { D1Database, D1PreparedStatement, WorkflowStep } from "./cf.ts";
@@ -394,6 +395,82 @@ describe("council_run_processing", () => {
 		for (const call of createTargets) {
 			expect(String(call.bodyJson?.path).startsWith("/meetings/meeting-1/")).toBe(true);
 		}
+	});
+
+	test("stores the mixed composite files and attributes speech to Meeting", async () => {
+		const counter = { runs: 0 };
+		const { env } = make_test_env({ AI: make_whisper_mock(counter) });
+		let recordingStopped = false;
+		const mock = install_fetch(
+			processing_fetch_overrides({
+				// Ten bytes so Whisper throws if this video is sent to the model. Four-byte audio is
+				// Alice's phrase. A crossed download would fail this test instead of looking ready.
+				"https://tracks.example/composite-video": () =>
+					new Response("videobytes", { headers: { "Content-Length": "10" } }),
+				"https://tracks.example/composite-audio": () =>
+					new Response("abcd", { headers: { "Content-Length": "4" } }),
+				"/recordings/rec-1": (call) => {
+					if (call.method === "PUT" && call.bodyJson?.action === "stop") {
+						recordingStopped = true;
+						return Response.json({ success: true, data: { status: "UPLOADING" } });
+					}
+					if (!recordingStopped) {
+						return Response.json({ success: true, data: { status: "RECORDING" } });
+					}
+					return Response.json({
+						success: true,
+						data: {
+							status: "UPLOADED",
+							recording_duration: 790,
+							download_url: "https://tracks.example/composite-video",
+							audio_download_url: "https://tracks.example/composite-audio",
+						},
+					});
+				},
+			}),
+		);
+		restoreFetch = mock.restore;
+		await seed_processing_meeting(env);
+
+		const outcome = await council_run_processing(env, test_step(), PROCESS_PARAMS);
+		expect(outcome).toBe("ready");
+
+		const artifacts = await env.COUNCIL_DB.prepare("SELECT kind, status FROM meeting_artifacts ORDER BY kind").all<{
+			kind: string;
+			status: string;
+		}>();
+		expect(artifacts.results.map((row) => `${row.kind}:${row.status}`)).toEqual([
+			"provider_transcript:finalized",
+			"summary_markdown:finalized",
+			"track_audio:finalized",
+			"track_audio:finalized",
+			"transcript_markdown:finalized",
+		]);
+
+		const markdown = markdown_put_body(mock.calls);
+		expect(markdown).toContain(`**Meeting:** ${ALICE_PHRASE}`);
+		expect(markdown).not.toContain("**Alice Prime:**");
+		expect(markdown).not.toContain("**Bob Echo:**");
+		expect(markdown).not.toContain("could not be transcribed");
+
+		const track_status = async (fileName: string) =>
+			(
+				await env.COUNCIL_DB.prepare("SELECT status FROM meeting_tracks WHERE file_name = ?")
+					.bind(fileName)
+					.first<{ status: string }>()
+			)?.status;
+		expect(await track_status(council_COMPOSITE_VIDEO_FILE_NAME)).toBe("discovered");
+		expect(await track_status(council_COMPOSITE_AUDIO_FILE_NAME)).toBe("transcribed");
+
+		const trackTargets = mock.calls.filter(
+			(call) =>
+				call.url.includes("/service-uploads/create-target") &&
+				String(call.bodyJson?.targetKey).startsWith("track_audio:"),
+		);
+		expect(trackTargets.map((call) => call.bodyJson?.contentType).sort()).toEqual(["audio/mp4", "video/mp4"]);
+
+		expect(counter.runs).toBe(2);
+		expect(counter.summaryRuns).toBe(1);
 	});
 
 	test("a refused recording read or stop costs poll attempts, never the meeting", async () => {
@@ -1374,9 +1451,9 @@ describe("council_run_processing", () => {
 	// drops it before it can take a slot, and `transcribe_track` drops it again before Whisper. One
 	// file per condition, each wrong in one field only. A single file wrong in several fields would
 	// leave every condition but one deletable with the suite still green. `tracks.test.ts` splits the
-	// same two-field guard the same way. None of these files exists today, because
-	// `council_provider_start_track_recording` sends no `layers` and the provider then writes
-	// per-participant audio only; they are the shapes the guards exist to refuse.
+	// same two-field guard the same way. None of these files exists today: composite start writes
+	// the mixed files, and older track recordings write per-participant audio only. These rows are
+	// the file shapes the guards exist to refuse.
 	test("a track file that is not a readable peer audio name is never uploaded and never transcribed", async () => {
 		const counter = { runs: 0 };
 		const { env } = make_test_env({ AI: make_whisper_mock(counter) });

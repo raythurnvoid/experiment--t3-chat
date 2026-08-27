@@ -3106,8 +3106,8 @@ describe("council_room_client_js call controls", () => {
 		(document.getElementById("end-meeting-button") as HTMLButtonElement).click();
 		(document.getElementById("host-confirm-yes") as HTMLButtonElement).click();
 
-		// council_close_meeting commits the closed transition, then kicks the provider room, and
-		// only then stops the recording, seals the meeting and projects it before it answers. The
+		// council_close_meeting commits the closed transition, then stops the recording, then
+		// kicks the provider room, then seals the meeting and projects it before it answers. The
 		// pinned SDK turns a kickAll into leaveRoom("ended"), so this frame reaches the host two to
 		// four outbound calls ahead of the answer — essentially always, not occasionally. It used to
 		// end the call with the neutral line, and the close's own answer then hit endLocally's early

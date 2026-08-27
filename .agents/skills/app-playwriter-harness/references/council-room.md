@@ -822,6 +822,18 @@ should. It is `snapshot()` that reads the wrong surface. Use `getCleanHTML` for 
 - **`#host-confirm` is always mounted**, like the app's dialogs. Its `hidden` property is the state,
   and `#host-confirm-yes` disables itself while a close is in flight while `#host-confirm-cancel`
   stays enabled as the way out. Escape aborts the request, not only the dialog.
+- **End meeting stops the recording before kick-all.** There is no Stop in the room. Confirm
+  (`#host-confirm-yes`) hits `/room/api/host/close`, and that path stops the provider
+  recording while people are still in the session, then kicks everyone. Start recording now
+  uses composite `POST /recordings`, not per-speaker track. Track start still hung
+  on 2026-08-27 (`Stop first 27 Aug`, ~13 minutes, no Stop: RealtimeKit
+  `UPLOADING`, duration 0, no download URL). Composite start on the same day
+  (`Composite first 27 Aug`, ~14 minutes 37 seconds, no Stop) finished
+  RealtimeKit `UPLOADED` with duration above 0 and both download URLs. After the
+  billed workspace could store plugin files, Council saved the mixed video,
+  mixed audio, transcript, and summary and the card showed Ready plus
+  Recording. Do not wait on `UPLOADED` in the room — the close budget is 30 s.
+  Do not Join from QA Edge for this check.
 - **The dialog opens with focus on Cancel**, not on the confirm button, and Cancel keeps focus while
   the close is pending — both Tab directions are trapped onto it because it is the only control left.
   So `activeElement` is `#host-confirm-cancel` both at open and during the request. Do not expect the

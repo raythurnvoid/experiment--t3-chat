@@ -32,7 +32,7 @@ import {
 	council_provider_add_participant,
 	council_provider_delete_participant,
 	council_provider_ensure_preset,
-	council_provider_start_track_recording,
+	council_provider_start_recording,
 	council_provider_stop_recording,
 } from "./provider.ts";
 import { council_close_meeting } from "./lifecycle.ts";
@@ -892,7 +892,7 @@ async function handle_start_recording(request: Request, env: Env, now: number) {
 
 	let started;
 	try {
-		started = await council_provider_start_track_recording(env, {
+		started = await council_provider_start_recording(env, {
 			providerMeetingId: meeting.provider_meeting_id,
 			maxSeconds: council_max_minutes(env) * 60,
 		});

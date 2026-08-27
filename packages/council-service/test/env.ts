@@ -128,7 +128,7 @@ export function install_fetch(overrides: Record<string, FetchHandler> = {}) {
 		calls.push(call);
 
 		for (const [needle, handler] of Object.entries(overrides)) {
-			if (url.includes(needle)) {
+			if (override_matches(needle, call)) {
 				return await handler(call);
 			}
 		}
@@ -145,6 +145,45 @@ export function install_fetch(overrides: Record<string, FetchHandler> = {}) {
 			globalThis.fetch = original;
 		},
 	};
+}
+
+/**
+ * Match an override key to one recorded call.
+ *
+ * A bare substring still wins, as before. `POST /recordings` is the collection start. GET and PUT
+ * on `/recordings/{id}` also contain that substring, so that keyed override only matches when the
+ * path ends at `/recordings`.
+ */
+function override_matches(needle: string, call: RecordedCall) {
+	const spaced = /^(GET|POST|PUT|PATCH|DELETE) (.+)$/.exec(needle);
+	if (!spaced) {
+		return call.url.includes(needle);
+	}
+
+	const method = spaced[1];
+	const pathNeedle = spaced[2];
+	if (call.method !== method || !call.url.includes(pathNeedle)) {
+		return false;
+	}
+	if (pathNeedle === "/recordings") {
+		return is_start_recording_call(call);
+	}
+	return true;
+}
+
+/**
+ * The composite start is POST /recordings. GET and PUT /recordings/{id} also contain that
+ * substring, so match the collection path only.
+ */
+export function is_start_recording_call(call: { url: string; method: string }) {
+	if (call.method !== "POST") {
+		return false;
+	}
+	try {
+		return new URL(call.url).pathname.endsWith("/recordings");
+	} catch {
+		return false;
+	}
 }
 
 let addParticipantCounter = 0;
@@ -271,6 +310,22 @@ function default_handler(call: RecordedCall): Response | null {
 		}
 		if (url.includes("/recordings/track") && call.method === "POST") {
 			return Response.json({ success: true, data: { recording: { id: "rec-1" } } });
+		}
+		try {
+			if (call.method === "POST" && new URL(url).pathname.endsWith("/recordings")) {
+				return Response.json({ success: true, data: { recording: { id: "rec-1" } } });
+			}
+		} catch {
+			// Keep going. A bad URL is not a start-recording call.
+		}
+		if (url.includes("/recordings/") && call.method === "PUT") {
+			return Response.json({ success: true, data: { action: "stop" } });
+		}
+		if (url.includes("/recordings/") && call.method === "GET") {
+			return Response.json({
+				success: true,
+				data: { status: "UPLOADING", recording_duration: 10, download_url: { links: [] } },
+			});
 		}
 		if (url.includes("/active-session/kick-all")) {
 			return Response.json({ success: true, data: { action: "kick-all" } });

@@ -9,6 +9,7 @@ import { council_get_meeting, council_transition_meeting } from "./db.ts";
 import { council_encrypt } from "./crypto.ts";
 import {
 	council_provider_get_active_session,
+	council_provider_get_recording,
 	council_provider_kick_all,
 	council_provider_stop_recording,
 } from "./provider.ts";
@@ -26,9 +27,12 @@ import { Result } from "./result.ts";
  * Order matters and is deliberate:
  * 1. The D1 transition closes admission first — whatever the provider does next, no new join
  *    token can be minted once this commits.
- * 2. The provider session is ended best-effort. A failure here is not a failed close; everyone
+ * 2. If a recording is running, stop it while the provider session is still live. Kick-all ends
+ *    that session. A stop after the room is empty can leave the recording UPLOADING with
+ *    duration 0 and no files — the hang measured live on 2026-08-26.
+ * 3. Then end the provider session best-effort. A failure here is not a failed close; everyone
  *    leaving ends the session anyway and the recording has its own `max_seconds` cap.
- * 3. With a recording, the meeting enters `processing` and the outbox row exists in one atomic
+ * 4. With a recording, the meeting enters `processing` and the outbox row exists in one atomic
  *    batch. The sealed grant already exists — the open claimed it — so a crash leaves either a
  *    closed meeting the cron can re-drive or a fully handed-off one.
  */
@@ -64,7 +68,7 @@ export async function council_close_meeting(env: Env, meetingId: string, now: nu
 	const closedMeeting = await council_get_meeting(db, meetingId);
 	const providerRecordingId = closedMeeting?.provider_recording_id ?? null;
 
-	// Best-effort provider session end. Capture the session id while the meeting still has an
+	// Best-effort provider teardown. Capture the session id while the meeting still has an
 	// active session — the pipeline needs it later and the sessions list filter cannot be trusted.
 	if (meeting.provider_meeting_id) {
 		try {
@@ -75,22 +79,33 @@ export async function council_close_meeting(env: Env, meetingId: string, now: nu
 					.bind(active._yay.sessionId, meetingId)
 					.run();
 			}
-			const kicked = await council_provider_kick_all(env, meeting.provider_meeting_id);
-			if (kicked._nay) {
-				console.warn("Provider kick-all refused; participants end the session by leaving", {
-					meetingId,
-				});
-			}
-			// The provider does not stop a track recording when the session ends — it runs to its
-			// max_seconds cap and publishes no track files until stopped. Stop it here so processing
-			// can start now; the pipeline repeats this stop durably, so a failure only delays it.
+			// Stop the recording before kick-all. The people must still be in the session so the
+			// provider can finish the file. The pipeline repeats this stop if this one is refused.
 			if (providerRecordingId) {
 				const stopped = await council_provider_stop_recording(env, providerRecordingId);
 				if (stopped._nay) {
 					console.warn("Stopping the recording at close failed; the pipeline retries the stop", {
 						meetingId,
 					});
+				} else {
+					const recording = await council_provider_get_recording(env, providerRecordingId);
+					// Stop once more only while the provider still says RECORDING. Do not wait for
+					// UPLOADED here. The room close has a 30 second budget. The pipeline polls for files.
+					if (!recording._nay && recording._yay.status === "RECORDING") {
+						const retried = await council_provider_stop_recording(env, providerRecordingId);
+						if (retried._nay) {
+							console.warn("The second stop at close failed; the pipeline retries the stop", {
+								meetingId,
+							});
+						}
+					}
 				}
+			}
+			const kicked = await council_provider_kick_all(env, meeting.provider_meeting_id);
+			if (kicked._nay) {
+				console.warn("Provider kick-all refused; participants end the session by leaving", {
+					meetingId,
+				});
 			}
 		} catch (error) {
 			console.warn("Provider session end failed; participants end the session by leaving", {

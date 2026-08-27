@@ -124,6 +124,120 @@ describe("council_close_meeting", () => {
 		expect(row?.status).toBe("ready");
 	});
 
+	test("stops a running recording before kick-all", async () => {
+		const { env, queueSent } = make_test_env();
+		const mock = install_fetch();
+		restoreFetch = mock.restore;
+		await seed_grant(env);
+		await seed_sealed_grant(env);
+		await seed_meeting(env, {
+			status: "open",
+			providerMeetingId: "pm-1",
+			providerRecordingId: "rec-1",
+			processingGrantId: "grant-2",
+			openedAt: SEEDED_AT,
+			recordingStartedAt: SEEDED_AT,
+			createdAt: SEEDED_AT,
+		});
+
+		const closed = await council_close_meeting(env, "meeting-1", NOW);
+		expect(closed._yay?.status).toBe("processing");
+		expect(closed._yay?.recorded).toBe(true);
+
+		const providerCalls = mock.calls.filter((call) => call.url.includes("/realtime/kit/"));
+		const stopIndex = providerCalls.findIndex(
+			(call) => call.method === "PUT" && call.url.includes("/recordings/rec-1"),
+		);
+		const kickIndex = providerCalls.findIndex((call) => call.url.includes("/active-session/kick-all"));
+		expect(stopIndex).toBeGreaterThanOrEqual(0);
+		expect(kickIndex).toBeGreaterThan(stopIndex);
+		expect(queueSent).toHaveLength(1);
+	});
+
+	test("retries stop once when the provider still says RECORDING", async () => {
+		const { env } = make_test_env();
+		const mock = install_fetch({
+			"/recordings/rec-1": (call) => {
+				if (call.method === "PUT") {
+					return Response.json({ success: true, data: { action: "stop" } });
+				}
+				return Response.json({ success: true, data: { status: "RECORDING", recording_duration: 0 } });
+			},
+		});
+		restoreFetch = mock.restore;
+		await seed_grant(env);
+		await seed_sealed_grant(env);
+		await seed_meeting(env, {
+			status: "open",
+			providerMeetingId: "pm-1",
+			providerRecordingId: "rec-1",
+			processingGrantId: "grant-2",
+			openedAt: SEEDED_AT,
+			recordingStartedAt: SEEDED_AT,
+			createdAt: SEEDED_AT,
+		});
+
+		await council_close_meeting(env, "meeting-1", NOW);
+
+		const stopCalls = mock.calls.filter((call) => call.method === "PUT" && call.url.includes("/recordings/rec-1"));
+		const kickIndex = mock.calls.findIndex((call) => call.url.includes("/active-session/kick-all"));
+		const lastStopIndex = mock.calls.findLastIndex(
+			(call) => call.method === "PUT" && call.url.includes("/recordings/rec-1"),
+		);
+		expect(stopCalls).toHaveLength(2);
+		expect(kickIndex).toBeGreaterThan(lastStopIndex);
+	});
+
+	test("a refused stop still kicks and still hands the meeting to processing", async () => {
+		const { env, queueSent } = make_test_env();
+		const mock = install_fetch({
+			"/recordings/rec-1": (call) => {
+				if (call.method === "PUT") {
+					return Response.json({ success: false }, { status: 400 });
+				}
+				return Response.json({ success: true, data: { status: "RECORDING", recording_duration: 0 } });
+			},
+		});
+		restoreFetch = mock.restore;
+		await seed_grant(env);
+		await seed_sealed_grant(env);
+		await seed_meeting(env, {
+			status: "open",
+			providerMeetingId: "pm-1",
+			providerRecordingId: "rec-1",
+			processingGrantId: "grant-2",
+			openedAt: SEEDED_AT,
+			recordingStartedAt: SEEDED_AT,
+			createdAt: SEEDED_AT,
+		});
+
+		const closed = await council_close_meeting(env, "meeting-1", NOW);
+		expect(closed._nay).toBeUndefined();
+		expect(closed._yay?.status).toBe("processing");
+		expect(mock.calls.some((call) => call.url.includes("/active-session/kick-all"))).toBe(true);
+		expect(queueSent).toHaveLength(1);
+	});
+
+	test("a meeting with no recording still only kicks", async () => {
+		const { env } = make_test_env();
+		const mock = install_fetch();
+		restoreFetch = mock.restore;
+		await seed_grant(env);
+		await seed_meeting(env, {
+			status: "open",
+			providerMeetingId: "pm-1",
+			providerRecordingId: null,
+			openedAt: SEEDED_AT,
+			createdAt: SEEDED_AT,
+		});
+
+		const closed = await council_close_meeting(env, "meeting-1", NOW);
+		expect(closed._yay?.status).toBe("ready");
+		expect(closed._yay?.recorded).toBe(false);
+		expect(mock.calls.some((call) => call.url.includes("/active-session/kick-all"))).toBe(true);
+		expect(mock.calls.some((call) => call.method === "PUT" && call.url.includes("/recordings/"))).toBe(false);
+	});
+
 	test("a close whose projection enqueue collides still answers the settled status", async () => {
 		const { env } = make_test_env();
 		restoreFetch = install_fetch().restore;

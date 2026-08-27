@@ -193,8 +193,9 @@ describe("council_room_page_html", () => {
 		// the call, so the host sees it too.
 		const matches = html.match(/This meeting may be recorded\./g) ?? [];
 		expect(matches.length).toBeGreaterThanOrEqual(2);
-		expect(html).toContain("attached to their part of the transcript");
-		expect(html).toContain("Names are not verified");
+		expect(html).toContain("not used to label who spoke");
+		expect(html).not.toContain("attached to the transcript");
+		expect(html).not.toContain("attached to their part of the transcript");
 	});
 
 	test("ships every call control the room contract names", () => {

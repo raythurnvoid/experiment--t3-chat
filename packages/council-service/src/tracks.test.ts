@@ -1,8 +1,15 @@
 import { describe, expect, test } from "vitest";
 
 import {
+	council_attribute_composite_segments,
 	council_attribute_tracks,
+	council_COMPOSITE_AUDIO_FILE_NAME,
+	council_COMPOSITE_SPEAKER_ID,
+	council_COMPOSITE_SPEAKER_NAME,
+	council_COMPOSITE_VIDEO_FILE_NAME,
 	council_escape_markdown_inline,
+	council_is_composite_audio_file,
+	council_is_composite_video_file,
 	council_parse_track_file_name,
 	council_provider_transcript_fallback_segments,
 	council_provider_transcript_has_real_identity,
@@ -163,7 +170,7 @@ describe("council_attribute_tracks", () => {
 	// Two independent conditions refuse a track here: the stream must be a peer stream, and the media
 	// must be audio. A file wrong in both fields is still refused with either condition deleted, so
 	// each condition also gets a row that breaks its own field alone. No such file exists today,
-	// because `council_provider_start_track_recording` sends no `layers` and the provider then writes
+	// because composite start writes the mixed files, and older track recordings write
 	// per-participant audio only. These rows are the file shapes the guard exists to refuse.
 	test.each([
 		["a peer video track", "_peer_video_"],
@@ -176,6 +183,25 @@ describe("council_attribute_tracks", () => {
 
 		expect(segments).toEqual([]);
 		expect(rejected).toEqual([{ fileName: track.fileName, reason: "not_an_audio_peer_track" }]);
+	});
+});
+
+describe("council_attribute_composite_segments", () => {
+	test("binds mixed-file speech to the fixed Meeting name", () => {
+		expect(council_is_composite_audio_file(council_COMPOSITE_AUDIO_FILE_NAME)).toBe(true);
+		expect(council_is_composite_video_file(council_COMPOSITE_VIDEO_FILE_NAME)).toBe(true);
+
+		expect(
+			council_attribute_composite_segments([{ startMs: 1000, endMs: 2000, text: ALICE_PHRASE }]),
+		).toEqual([
+			{
+				startMs: 1000,
+				endMs: 2000,
+				text: ALICE_PHRASE,
+				participantId: council_COMPOSITE_SPEAKER_ID,
+				displayName: council_COMPOSITE_SPEAKER_NAME,
+			},
+		]);
 	});
 });
 
@@ -336,6 +362,20 @@ describe("council_render_transcript_markdown", () => {
 		expect(markdown).toContain("Alice Prime");
 		expect(markdown).toContain("hello world");
 		expect(markdown).not.toContain("No speech was recorded");
+		expect(markdown).not.toContain("Names are the ones participants typed when they joined");
+	});
+
+	test("does not say composite Meeting lines are typed join names", () => {
+		const markdown = council_render_transcript_markdown({
+			title: "Composite",
+			segments: council_attribute_composite_segments([{ startMs: 0, endMs: 1000, text: "hello" }]),
+			droppedTrackCount: 0,
+			recordingWasTooShort: false,
+			recordingFilesNeverPublished: false,
+		});
+		expect(markdown).toContain("**Meeting:**");
+		expect(markdown).toContain("Lines are labeled Meeting");
+		expect(markdown).not.toContain("Names are the ones participants typed when they joined");
 	});
 });
 

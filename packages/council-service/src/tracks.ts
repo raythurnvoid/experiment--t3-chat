@@ -4,8 +4,9 @@
  * The provider's own transcript cannot say who spoke. Every segment it returns carries the literals
  * `TEST`, `unique_id`, `user_id`, and `custom_participant_id` in `peerData`, while the session
  * participant endpoint reports the real names for the same session. So Council never reads identity
- * out of the transcript. It reads identity out of the *file*: track recording writes one audio file
- * per participant and puts the provider's Add Participant response id into the file name.
+ * out of the transcript. When the provider still publishes per-speaker track files, identity comes
+ * from the file name: the Add Participant response id. Composite recordings are one mixed file.
+ * Those lines use the fixed Meeting name below. They cannot name a speaker.
  *
  * Council keeps its own `custom_participant_id` as the durable participant id. It also records the
  * separate `data.id` returned by Add Participant and matches that provider id from the track name
@@ -21,7 +22,7 @@ export type council_Participant = {
 	displayName: string;
 };
 
-/** One line of speech from a single participant's own audio track. */
+/** One line of speech from a stored audio file. */
 export type council_TrackSegment = {
 	startMs: number;
 	endMs: number;
@@ -66,6 +67,27 @@ export type council_TrackFileName = {
 	mediaKind: string;
 	recordedAtMs: number;
 };
+
+/**
+ * Names Council stores for a composite recording. The provider's `output_file_name` can carry a
+ * meeting id. These two names do not.
+ */
+export const council_COMPOSITE_VIDEO_FILE_NAME = "recording.mp4";
+export const council_COMPOSITE_AUDIO_FILE_NAME = "recording-audio.m4a";
+
+/** Display name for speech from the mixed composite audio. That file has no per-speaker id. */
+export const council_COMPOSITE_SPEAKER_NAME = "Meeting";
+
+/** Durable participant id for composite speech. It is not a real Council participant row. */
+export const council_COMPOSITE_SPEAKER_ID = "recording";
+
+export function council_is_composite_audio_file(fileName: string) {
+	return fileName === council_COMPOSITE_AUDIO_FILE_NAME;
+}
+
+export function council_is_composite_video_file(fileName: string) {
+	return fileName === council_COMPOSITE_VIDEO_FILE_NAME;
+}
 
 /** The last five underscore-separated fields are fixed, so read the name from its end. */
 const TRACK_FILE_NAME_TRAILING_FIELDS = 5;
@@ -184,6 +206,20 @@ export function council_attribute_tracks(args: {
 	});
 
 	return { segments, rejected };
+}
+
+/**
+ * Bind mixed-file speech to the fixed Meeting name. The composite file has no speaker id, so do
+ * not guess a participant.
+ */
+export function council_attribute_composite_segments(segments: council_TrackSegment[]): council_AttributedSegment[] {
+	return segments.map((segment) => ({
+		startMs: segment.startMs,
+		endMs: segment.endMs,
+		text: segment.text,
+		participantId: council_COMPOSITE_SPEAKER_ID,
+		displayName: council_COMPOSITE_SPEAKER_NAME,
+	}));
 }
 
 /**
@@ -362,10 +398,25 @@ export function council_render_transcript_markdown(args: {
 		);
 	}
 
-	lines.push(
-		"Names are the ones participants typed when they joined. They are not verified identities.",
-		"",
-	);
+	// Hang-recovery lines already have the provider-transcript banner. Do not also say those
+	// names were typed in the lobby. Composite lines use the fixed Meeting name, not a join name.
+	if (!args.recordingFilesNeverPublished) {
+		const compositeOnly = args.segments.every(
+			(segment) => segment.participantId === council_COMPOSITE_SPEAKER_ID,
+		);
+		if (compositeOnly) {
+			lines.push(
+				"This recording is one mixed audio file. Lines are labeled Meeting. That name is not a person in the room.",
+				"",
+			);
+		} else {
+			lines.push(
+				"Names are the ones participants typed when they joined. They are not verified identities.",
+				"",
+			);
+		}
+	}
+
 	for (const segment of args.segments) {
 		lines.push(
 			`- \`${format_timestamp(segment.startMs)}\` **${council_escape_markdown_inline(segment.displayName)}:** ${council_escape_markdown_inline(segment.text)}`,
