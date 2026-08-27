@@ -347,6 +347,9 @@ click provably does nothing, not before.
   Verified 2026-08-16: even after that locator **resolves** to `#P0-0`, `fill()` can still hang on
   actionability inside the Convex `plugins-ui` iframe. Click the input, `Control+A`, then
   `pressSequentially` the title. Do not `{ force: true }`.
+  The submit control's accessible name is `Create meeting`, not `Create`.
+  `getByRole("button", { name: /^Create$/ })` never matches and hangs until the CLI timeout.
+  Use `/Create meeting/i`. Verified 2026-08-27.
 - Prefer `page.frameLocator(".PluginsUiFrame")` over `frames().filter(...).evaluate(...)` for later
   Council clicks. A plugin-frame `evaluate` during a remount dies with `Execution context was destroyed`
   and can take the CLI down with the libuv assertion. `Get room link` itself is a locator click; give

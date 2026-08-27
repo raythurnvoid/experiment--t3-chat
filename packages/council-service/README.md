@@ -422,7 +422,8 @@ profile.
   `{meeting, joinCode, guestUrl}` on session `state`. Never print those values. The meeting id is
   the one reportable field.
 - Do not `fill()` the title box. Click it, `Control+A`, then `pressSequentially`. `fill()` can hang
-  inside the Convex `plugins-ui` iframe until the CLI timeout.
+  inside the Convex `plugins-ui` iframe until the CLI timeout. The submit button is named
+  `Create meeting`, not `Create`.
 - The one-time join code lives in `section.created-panel`, not in `li.meeting`. The row only rebuilds
   the guest link. Reading the row first looks like the code is gone.
 - On this GitHub Pages host, `navigator.clipboard.writeText` from `page.evaluate` can hang until the
