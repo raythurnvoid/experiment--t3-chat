@@ -6,9 +6,9 @@ recording, a transcript, and a structured meeting summary in the workspace.
 
 The meeting lifecycle, room security model, webhook intake, Queue consumer,
 processing/deletion Workflow, and cleanup cron are implemented and tested. The current source has
-migrations `0001` through `0008`. Migrations `0006`, `0007`, and `0008` are part of the Council
-`0.2.0` release gate and must follow the in-flight meeting audit described below. Do not wipe D1 or
-apply release migrations without that audit.
+migrations `0001` through `0008`. Remote D1 has those eight files. `0006` still refuses to run on a
+new database that already has artifact rows — follow the drain rule in the release gate before you
+apply it there. Do not wipe D1.
 
 Comments and migrations in this package say "Plan 2". That names the host's plugin document store,
 `packages/app/convex/plugins_data.ts`, which this Worker reaches through the `/api/v1/plugin-data/*`
@@ -205,48 +205,249 @@ continues. Do not raise the 24 MB cap here.
 
 ## Council 0.2.0 release gate
 
-Do not deploy this source over live meeting work without an explicit audit. First stop new meetings
-through the release maintenance bridge. The bridge closes `/api/meetings/create` and nothing else, so
-a meeting that is already `created` can still be opened while the bridge is on, and each open seals a
-fresh processing grant. Drain those meetings as part of the audit. Inspect every `created`, `open`,
-`closed`, `processing`, `failed`, and deleting meeting plus every pending or committed upload target. In
-particular, an older run may already own 14 audio targets; adding `summary.md` would make its redrive
-ask for a seventeenth target. The release owner must choose migration or erasure for those exact
-runs and for any stored old create-target body. Migration `0006` now refuses to run while any old
-artifact row remains, so this choice cannot be skipped by mistake.
+This is the operator runbook. Run every command through Vite Plus. Never print secrets, provider
+tokens, download URLs, join codes, or host room links.
 
-Use this coupled order after separate release approval:
+The checked-in `COUNCIL_MAINTENANCE` value is `false`. A cutover deploy may override it to `"true"`
+so `/api/meetings/create` refuses new meetings. The bridge does not close already-created meetings.
+A `created` meeting can still be opened while the bridge is on, and each open seals a fresh
+processing grant.
 
-1. Turn on the meeting maintenance bridge. Audit and drain every old artifact row and matching host target.
-2. Apply D1 migrations `0006`, `0007`, and `0008`. `0008` drops the two `meeting_tracks` columns
-   nothing ever wrote, `participant_id` and `start_offset_ms`.
-3. Deploy the strict core upload contract and the new read-only capability.
-4. Deploy this Worker.
-5. Confirm the SDK commit Council already pins in `plugins/bonobo-plugin-council/package.json`
-   resolves to `0.9.2`. The mirror exists: do not push a second one and do not re-pin Council.
-6. Build Council twice, push its exact commit, update the parent gitlink, and publish that exact SHA.
-7. Accept the new capability on the installation and run the create, join, close, share, and artifact smoke test.
+Source work alone does not authorize these remote actions. Run them only after an explicit release
+request.
 
-Owner smoke checklist (run only after this gate):
+### Live state on 2026-08-27 (read this before repeating work)
 
-1. Create a meeting from the Council plugin.
-2. Join as host and as guest in two browsers.
-3. Confirm Share is visible, named Share, and starts unpressed.
-4. Guest shares a tab with readable text and some motion. The presentation area shows that share. The host hears tab audio if the guest shared it.
-5. Host presses Share while the guest is still sharing. The status line starts with `Screen share unavailable.` and says someone else is already sharing. The guest share stays on screen.
+These items already landed. Do not redo them:
+
+- Remote D1 has `0001` through `0008`. `0006` already rebuilt `meeting_artifacts` and added
+  `meeting_summaries`. `0007` added the join-attempt columns. `0008` dropped unused
+  `meeting_tracks.participant_id` and `meeting_tracks.start_offset_ms`.
+- Nine meetings are `ready`. No meeting is `created`, `open`, `closed`, `processing`, or `deleting`.
+- Those ready meetings still have 23 finalized artifact rows. **Do not delete them.** `0006` already
+  ran. A later drain would only hide files the dashboard already shows.
+- Council plugin `0.2.1` is published (`sourceCommitSha` `bbf482b74df9cfacad8c62b94546d881df754fa6`).
+  The parent gitlink matches. The SDK pin resolves to `0.9.2`. Do not publish a second copy.
+- The installs that run live meetings already accepted `workspace.files.create-read-only`.
+- The host upload contract is already on the Convex deployment. Composite meetings already stored
+  `summary.md`.
+
+What this gate still had to do on that day: deploy this Worker so `GET /room` serves
+`council-room-r31`, then run the live share smoke, then leave `COUNCIL_MAINTENANCE` as `"false"`.
+
+### 1. Probe the live Worker and D1 (read-only)
+
+Compare the served room marker with `ROOM_REVISION` in `src/room/page.ts`:
+
+```bash
+curl -s "https://bonobo-council-service.ray-thurne-void.workers.dev/room?m=qa" | grep -o 'council-room-revision" content="[^"]*"'
+```
+
+List applied migrations, meeting counts, and artifact counts. Never select `upload_body`, tokens,
+or provider ids:
+
+```bash
+vp env exec pnpx wrangler d1 execute bonobo-council --remote --config packages/council-service/wrangler.jsonc --json --command "SELECT name FROM d1_migrations ORDER BY name;"
+```
+
+```bash
+vp env exec pnpx wrangler d1 execute bonobo-council --remote --config packages/council-service/wrangler.jsonc --json --command "SELECT status, COUNT(*) AS n FROM meetings GROUP BY status ORDER BY status;"
+```
+
+```bash
+vp env exec pnpx wrangler d1 execute bonobo-council --remote --config packages/council-service/wrangler.jsonc --json --command "SELECT kind, status, COUNT(*) AS n FROM meeting_artifacts GROUP BY kind, status ORDER BY kind, status;"
+```
+
+```bash
+vp env exec pnpx wrangler d1 execute bonobo-council --remote --config packages/council-service/wrangler.jsonc --json --command "PRAGMA table_info(meeting_tracks);"
+```
+
+A first `d1 execute --remote` in a session can fail with Cloudflare `7403` even when
+`wrangler whoami` shows `d1 (write)`. Retry the same command once. If it still fails, query D1
+through the Cloudflare API (`POST /accounts/<account>/d1/database/<id>/query`) with the same SQL.
+
+### 2. Stop creates only when work is still in flight
+
+Turn the bridge on when any meeting is `created`, `open`, `closed`, `processing`, or `deleting`,
+or when `0006` has not been applied yet. Deploy the **same final source** with the var override.
+Do not commit `"true"`:
+
+```bash
+vp env exec pnpx wrangler deploy --config packages/council-service/wrangler.jsonc --var COUNCIL_MAINTENANCE:true --message "Council maintenance on"
+```
+
+Prove create is closed from the plugin page (the create form shows the maintenance message). Then
+finish the audit.
+
+If every meeting is already `ready` or `failed`, and `0006` is already in `d1_migrations`, skip the
+override. Deploy the checked-in config once (step 5).
+
+### 3. Drain only for a first `0006` apply
+
+`0006` refuses to run while `meeting_artifacts` has any row. Old create-target bodies also lack the
+strict host flags, so those rows cannot be replayed. Erase the D1 artifact rows **only when `0006`
+is not in `d1_migrations` yet**. Close or fail any `processing` meeting first. Then:
+
+```bash
+vp env exec pnpx wrangler d1 execute bonobo-council --remote --config packages/council-service/wrangler.jsonc --json --command "DELETE FROM meeting_artifacts;"
+```
+
+Read the count back. It must be `0` before you apply `0006`. Do not run that delete after `0006`
+has already succeeded.
+
+### 4. Apply pending D1 migrations
+
+```bash
+vp env exec pnpx wrangler d1 migrations apply bonobo-council --remote --config packages/council-service/wrangler.jsonc
+```
+
+Non-interactive Wrangler answers `yes` to the availability prompt. Read the migrations and
+`PRAGMA table_info(meeting_tracks)` back. After `0008`, that table must not list `participant_id`
+or `start_offset_ms`. An applied migration is not the same as a served schema — always read back.
+
+### 5. Deploy this Worker
+
+Required secrets already exist on `bonobo-council-service`. Do not put them again.
+
+```bash
+vp env exec pnpx wrangler deploy --config packages/council-service/wrangler.jsonc --message "Council room screen share"
+```
+
+Prove the live document, not the local constant:
+
+```bash
+curl -s "https://bonobo-council-service.ray-thurne-void.workers.dev/room?m=qa" | grep -o 'council-room-revision" content="[^"]*"'
+```
+
+If you turned maintenance on in step 2, deploy the same source again **without** `--var` after
+capability consent, so the checked-in `"false"` is what the Worker serves. Then create still works
+for the smoke.
+
+Do not run `wrangler tail` on this Worker while a meeting is `processing`. Enabling tail can reset
+the Workflow Durable Object.
+
+### 6. Plugin, SDK, and capability
+
+Confirm the pin, then stop if it already matches:
+
+- `plugins/bonobo-plugin-council/package.json` points at SDK commit
+  `d32091deb17af467229ba980b73b2b09c01d4eaa`.
+- `pnpm-lock.yaml` in that repo resolves that commit to version `0.9.2`. Do not push a second
+  mirror and do not re-pin Council.
+- Parent gitlink `plugins/bonobo-plugin-council` equals the published `sourceCommitSha`.
+- The installation's `acceptedCapabilities` includes `workspace.files.create-read-only`.
+
+If a new plugin commit is required, follow `plugins/bonobo-plugin-council/README.md` (build twice,
+`git status --porcelain` empty, push the submodule, update the gitlink, publish that SHA, then
+accept the new capability). A CLI install does not refresh an open plugin frame — reload the
+Council page.
+
+### 7. Live share smoke
+
+Drive the Council **dashboard** from the signed-in app tab. Drive **Join** in two scratch Chromes.
+Do not Join from the reserved QA Edge profile: the microphone permission prompt wedges
+`getUserMedia` there.
+
+Use a workspace on **Pay As You Go** or **Pro**. Anonymous and Free workspaces refuse service
+uploads with 403, and the meeting then fails even when the provider recorded files.
+
+1. Create a meeting from the Council plugin. Copy the join code and guest link before
+   `Done, I saved the invite`. The service cannot show the code again.
+2. Select **Open meeting**. Then **Get host room link**. The host link is single-use and lasts two
+   minutes — mint it only when the host scratch Chrome is ready.
+3. Join as host and as guest in the two scratch browsers. Confirm Share is visible, named Share,
+   and starts unpressed.
+4. Guest shares a tab with readable text and some motion. The presentation area shows that share.
+   The host hears tab audio if the guest shared it.
+5. Host presses Share while the guest is still sharing. The status line starts with
+   `Screen share unavailable.` and says someone else is already sharing. The guest share stays on
+   screen.
 6. Guest stops. Host shares. The refusal line clears. The presentation area shows the host share.
 7. Start recording. Keep the share up for at least one minute. End the meeting.
-8. After processing, the meeting folder has `recording.mp4`, `recording-audio.m4a`, `transcript.md`, `summary.md`, and `provider-transcript.json` when the provider published one.
+8. Poll D1 `meetings.status` until `ready` or `failed`. Do not reload the dashboard to force that
+   change. After processing, the meeting folder has `recording.mp4`, `recording-audio.m4a`,
+   `transcript.md`, `summary.md`, and `provider-transcript.json` when the provider published one.
 9. Open `recording.mp4`. The shared screen is visible and the 720p text is readable.
-10. Open `transcript.md` and `summary.md`. They are usable. A meeting longer than about 18 minutes may note a rejected audio file because of the 24 MB transcription cap. That is expected. Do not raise the cap here.
+10. Open `transcript.md` and `summary.md`. They are usable. A meeting longer than about 18 minutes
+    may note a rejected audio file because of the 24 MB transcription cap. That is expected. Do
+    not raise the cap here.
 
-Then reopen meeting creation.
+Then create one more meeting and confirm create is still open.
 
-The checked-in `COUNCIL_MAINTENANCE` value is `false`. A coupled release deploys the same final
-source with that value overridden to `true`, then deploys the checked-in config again only after the
-capability consent and smoke test are ready.
+### 7a. How to drive that smoke without guessing
 
-Source work alone does not authorize any of these remote actions.
+Do this on the GitHub Pages dashboard
+(`https://raythurnvoid.github.io/experiment--t3-chat/w/personal/home/plugins/council/pages/council`).
+`localhost:5173` is often down. Do not start `pnpm run dev`. Do not Join from the reserved QA Edge
+profile.
+
+**Create and invite**
+
+- Put a host-page listener on `/api/meetings/create` *before* you press Create, and park
+  `{meeting, joinCode, guestUrl}` on session `state`. Never print those values. The meeting id is
+  the one reportable field.
+- Do not `fill()` the title box. Click it, `Control+A`, then `pressSequentially`. `fill()` can hang
+  inside the Convex `plugins-ui` iframe until the CLI timeout.
+- The one-time join code lives in `section.created-panel`, not in `li.meeting`. The row only rebuilds
+  the guest link. Reading the row first looks like the code is gone.
+- On this GitHub Pages host, `navigator.clipboard.writeText` from `page.evaluate` can hang until the
+  timeout. Copy with a textarea and `document.execCommand("copy")` on the host page. Scratch Chrome
+  may only *read* the clipboard, on the Worker origin.
+
+**Scratch Chromes**
+
+Launch system Chrome, not Playwriter's chrome. Use a fresh `--user-data-dir` and a new CDP port
+(9223 is often already taken). Park each browser on `/room?m=qa` so you can grant microphone and
+clipboard-read on the Worker origin before you assign the real URL.
+
+```text
+--use-fake-ui-for-media-capture
+--use-fake-ui-for-media-stream
+--use-fake-device-for-media-capture
+--use-file-for-fake-audio-capture=<speech.wav>
+--autoplay-policy=no-user-gesture-required
+--auto-select-tab-capture-source-by-title=<fixture-tab-title>
+```
+
+Do not also set `--auto-select-desktop-capture-source`. That flag is a substring match. When nothing
+matches, Chrome 151 on this machine picks a whole monitor. The 2026-08-27 run captured DISPLAY1
+(`1680x1050` at `X=-1680`), not the titled tab, even with the tab-title flag. RealtimeKit
+`enableScreenShare()` follows that desktop-capture path.
+
+To make the live share show the fixture anyway:
+
+1. Serve a page whose `<title>` is unique, with huge readable text and a ticking counter.
+2. Open that page in the guest Chrome.
+3. After Share is pressed, read the host `#share-video` size. If it matches a monitor
+   (`1680x1050` here), the picker took a screen.
+4. List Windows screens. Move the fixture Chrome onto the captured monitor. Pin it topmost
+   (`HWND_TOPMOST`) so it sits above whatever else is on that display. Unpin when the meeting ends.
+5. Prove the host stage shows the fixture text *before* you start recording. A share of the wrong
+   screen fails the gate.
+
+The host ticket lobby can require `#host-name` when the ticket has no display name
+(`hostNeedsName`). Fill it before Join. The guest Continue button is `#guest-submit`.
+
+Mint **Get host room link** only after the host Chrome is up. The ticket lasts two minutes and is
+single-use. `page.waitForFunction` returns a JSHandle, not a string — read the input with
+`evaluate` after it appears. Do not click Get host room link again if the first click already
+minted; that would replace the ticket.
+
+**After End meeting**
+
+Poll D1 by title only:
+
+```bash
+vp env exec pnpx wrangler d1 execute bonobo-council --remote --config packages/council-service/wrangler.jsonc --json --command "SELECT status, title FROM meetings WHERE title LIKE 'Share smoke%' ORDER BY created_at DESC LIMIT 5;"
+```
+
+Do not select `upload_body`, tokens, or download URLs. Do not run `wrangler tail` while status is
+`processing`. Do not reload the dashboard to force the change. Processing often takes a few
+minutes.
+
+Playwriter recipes for the dashboard, clipboard handoff, and room controls live in
+`.agents/skills/app-playwriter-harness/references/plugin-marketplace.md` (Council sections) and
+`references/council-room.md`.
 
 ## Commands
 
@@ -275,7 +476,7 @@ vp env exec pnpx wrangler d1 execute bonobo-council --remote --config packages/c
 | Resource          | Name                        | Note                                                                                                                                       |
 | ----------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | Worker            | `bonobo-council-service`    | Deployed at `https://bonobo-council-service.ray-thurne-void.workers.dev`                                                                   |
-| D1 database       | `bonobo-council`            | `b32e1b59-11ad-4086-9c92-72480e820e16`, region WEUR, migrations `0001` through `0005` applied to remote. Do not re-apply `0004` or `0005`. |
+| D1 database       | `bonobo-council`            | `b32e1b59-11ad-4086-9c92-72480e820e16`, region WEUR, migrations `0001` through `0008` applied to remote. Do not re-apply `0004`–`0008`. |
 | Queue             | `bonobo-council-events`     | 8-day message retention; consumer on this Worker, `max_batch_size` 1, `max_retries` 5                                                      |
 | Dead-letter queue | `bonobo-council-events-dlq` | 8-day message retention; consumed by this Worker to mark outbox rows `dead`                                                                |
 | Workflow          | `bonobo-council-workflow`   | Binding `COUNCIL_WORKFLOW`, class `CouncilWorkflow`; created on first deploy                                                               |

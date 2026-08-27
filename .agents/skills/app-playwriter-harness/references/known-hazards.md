@@ -604,7 +604,8 @@ await state.appPlaywriterHarness.auditAccessibility({ frame, selector: "body" })
 page, so everything else about the audit is unchanged. Read `url` in the result to confirm which
 document was screened. Added 2026-08-24 while screening Chitchat. `page.frameLocator(...)` is not a
 `Frame`. Passing it throws `target.waitForSelector is not a function` and the CLI dies with the libuv
-assertion (exit 9). Use `page.frames()` as above. Verified 2026-08-26.
+assertion (exit 9). Use `page.frames()` as above. Verified 2026-08-26. Re-hit 2026-08-27 on Council
+`.PluginsUiFrame`.
 
 ## A blocked hit target on a hover-revealed action is the resting state, not a bug
 

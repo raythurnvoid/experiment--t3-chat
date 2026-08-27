@@ -355,6 +355,12 @@ click provably does nothing, not before.
   the service stores only hashes). Capture it with a host-page `state.page.on("response")` listener filtered
   on `/api/meetings/create`, park the values on `state`, and never print them — the meeting id is the one
   reportable field. Read success from the captured body, not the panel alone.
+- The one-time join code is only in `section.created-panel`. `li.meeting` rebuilds the guest link and
+  never has the code. Reading the row first looks like the invite is gone. Verified 2026-08-27.
+- On the GitHub Pages app origin, `navigator.clipboard.writeText` from `page.evaluate` can hang until
+  the CLI timeout (it does not always reject). Copy with a host-page textarea and
+  `document.execCommand("copy")`. Scratch Chrome only *reads* the clipboard, on the Worker origin.
+  Verified 2026-08-27.
 - Delete is a two-step inline confirm: `Delete` renders a `Confirm delete` / `Cancel` panel below the
   row while the original `Delete` button stays in place, so scope the second click by exact name. After
   confirming, a body-text check can race the follow-up
@@ -432,6 +438,20 @@ click provably does nothing, not before.
   hidden, `#join-button` enabled, role Host, hash erased. Join again on that lobby to prove the button
   was re-armed.
   Chrome 151 on this machine still lists the real microphones when launched with `--use-fake-device-for-media-capture` and a 48 kHz stereo fake-audio WAV. `getUserMedia` then captures the default hardware device, not the file. Call `context.grantPermissions(["microphone"], { origin })` before Join or Unmute, or `getUserMedia` returns `NotAllowedError`. Treat a missing spoken phrase after that as an environment/provider blocker, not as proof Join failed. Composite transcripts label every line `Meeting`. They do not use the typed lobby names.
+- Live share smoke on Chrome 151 (verified 2026-08-27). `sdk.self.enableScreenShare()` follows the
+  desktop-capture picker. `--auto-select-tab-capture-source-by-title=<fixture-title>` did not pick
+  the tab. `--auto-select-desktop-capture-source` is a substring match; when nothing matches, this
+  machine captured DISPLAY1 (`1680x1050` at `X=-1680`). Do not set both flags. After Share is
+  pressed, read host `#share-video` `videoWidth`/`videoHeight`. If that size is a monitor, move the
+  fixture Chrome onto that monitor and pin it topmost (`HWND_TOPMOST`) so the live share shows the
+  fixture text. Unpin when the meeting ends. Prove the host stage shows the fixture *before*
+  recording. `assets/files/speakers.wav` is documented but may be absent; generate a short speech
+  WAV into `../t3-chat-+personal/+ai/` with Windows SAPI. Files toolbar Download of `recording.mp4`
+  lands in the QA Edge Downloads folder. Playwriter `download.saveAs` fails here because the relay
+  artifact path is already gone. Do not call `window.getScreenDetails()` from the fixture; it opens
+  a "Manage windows on all your displays" prompt on the captured screen.
+- `auditAccessibility({ frame })` needs a Playwright `Frame` from `page.frames()`. See the
+  FrameLocator hazard in `known-hazards.md`. Re-hit 2026-08-27 on Council.
   ~30 seconds of looping speech WAV produces a real `transcript.md`. Processing can take ~5 minutes when the best-effort provider-transcript polling
   runs its sleeps, and `provider-transcript.json` may legitimately never appear — poll the D1
   `meetings.status` (read-only `wrangler d1 execute bonobo-council --remote`) instead of trusting a
