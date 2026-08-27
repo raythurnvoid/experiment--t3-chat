@@ -607,6 +607,12 @@ document was screened. Added 2026-08-24 while screening Chitchat. `page.frameLoc
 assertion (exit 9). Use `page.frames()` as above. Verified 2026-08-26. Re-hit 2026-08-27 on Council
 `.PluginsUiFrame`.
 
+## A `try` / `catch` inside `playwriter -e` can become a SyntaxError and kill the CLI
+
+The CLI wraps `-e` in `(async () => { ... })()`. A `try {` you paste there can lose its `catch`,
+throw `Missing catch or finally after try`, then die with the same libuv assertion (exit 9). Put
+the script in a `-f` file instead. Re-hit 2026-08-27 while auditing the Council room control bar.
+
 ## A blocked hit target on a hover-revealed action is the resting state, not a bug
 
 `auditAccessibility` measures where the pointer lands right now. A row action or message action that is
