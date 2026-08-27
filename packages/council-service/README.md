@@ -203,7 +203,7 @@ A 60-minute composite video measured about 144–187 MiB in the 2026-08-27 provi
 worst case is 2.7 GB per hour, which is past 2 GiB at 48 minutes. The Worker refuses
 `/api/meetings/create` when `COUNCIL_MEETING_MAX_MINUTES` times that worst-case rate
 exceeds the host cap. The largest whole-minute setting that still fits is 47. The
-checked-in Worker var is still 60, so create answers 503 until an operator lowers it.
+checked-in Worker var is 47.
 
 If a recording file is still over the cap at upload time, create-target answers 400
 `File too large`. The pipeline marks that artifact `failed` with
@@ -216,8 +216,7 @@ read `meeting_artifacts.failure_reason` for the exact overflow.
 
 Apply `0009_artifact_failure_reason.sql` before the Worker that writes that column.
 Deploying the Worker first makes an over-cap recording throw on the missing column
-and fall back into retry. Lower `COUNCIL_MEETING_MAX_MINUTES` to 47 or less before
-create is useful again. The dashboard sentence needs a plugin publish. `meeting.md`
+and fall back into retry. The dashboard sentence needs a plugin publish. `meeting.md`
 needs the Convex projection change.
 
 The mixed audio in that same probe was about 83 MiB per hour, which is over the 24 MB
@@ -241,25 +240,26 @@ request.
 
 These items already landed. Do not redo them:
 
-- Remote D1 has `0001` through `0008`. `0006` already rebuilt `meeting_artifacts` and added
+- Remote D1 has `0001` through `0009`. `0006` already rebuilt `meeting_artifacts` and added
   `meeting_summaries`. `0007` added the join-attempt columns. `0008` dropped unused
-  `meeting_tracks.participant_id` and `meeting_tracks.start_offset_ms`. `0009` is not
-  applied yet. Apply it before the Worker that writes `meeting_artifacts.failure_reason`.
-- Nine meetings are `ready`. No meeting is `created`, `open`, `closed`, `processing`, or `deleting`.
-- Those ready meetings still have 23 finalized artifact rows. **Do not delete them.** `0006` already
-  ran. A later drain would only hide files the dashboard already shows.
-- Council plugin `0.2.1` is published (`sourceCommitSha` `bbf482b74df9cfacad8c62b94546d881df754fa6`).
-  The parent gitlink matches. The SDK pin resolves to `0.9.2`. Do not publish a second copy.
-- The installs that run live meetings already accepted `workspace.files.create-read-only`.
-- The host upload contract is already on the Convex deployment. Composite meetings already stored
-  `summary.md`.
-
-What this gate still had to do on that day: deploy this Worker so `GET /room` serves
-`council-room-r31`, then run the live share smoke, then leave `COUNCIL_MAINTENANCE` as `"false"`.
+  `meeting_tracks.participant_id` and `meeting_tracks.start_offset_ms`. `0009` added
+  `meeting_artifacts.failure_reason`.
+- Ten meetings are `ready`. One meeting is a `deleted_tombstone`. No meeting is `created`,
+  `open`, `closed`, `processing`, or `deleting`.
+- Those ready meetings still have finalized artifact rows. **Do not delete them.** `0006`
+  already ran. A later drain would only hide files the dashboard already shows.
+- Council plugin `0.2.2` is published (`sourceCommitSha`
+  `ce8906c7a9f8001e41bf965aea789512af3a68d6`). The parent gitlink matches. The SDK pin
+  resolves to `0.9.2`. Do not publish a second copy.
+- The installs that run live meetings already accepted `workspace.files.create-read-only`
+  and are on `0.2.2`.
+- The host upload cap is 2 GiB on the Convex deployment. The live Worker var
+  `COUNCIL_MEETING_MAX_MINUTES` is `47`. `GET /room` serves `council-room-r32`.
+  Leave `COUNCIL_MAINTENANCE` as `"false"`.
 
 A later room-client fix is live as `council-room-r32`. Chrome's Stop sharing bar now clears the
 Share button `aria-pressed` state, and a failed in-app stop no longer names the screen-share
-permission. Leave `COUNCIL_MAINTENANCE` as `"false"`.
+permission.
 
 ### 1. Probe the live Worker and D1 (read-only)
 
