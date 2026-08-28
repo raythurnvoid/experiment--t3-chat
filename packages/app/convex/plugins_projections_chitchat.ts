@@ -38,11 +38,22 @@ const REACTION_EMOJI: Record<string, string> = {
 const PRIVATE_KEY_PREFIX = "p/";
 const MISSING_NAME = "Someone with no name yet";
 const ROOT_FOLDER_PATH = "/chitchat";
+const PRIVATE_FOLDER_NAME = "private";
 const README_CHANNEL_KEY = "__readme__";
 const README_FILE_NAME = "README.md";
 const ROLLOVER_MAX_BYTES = 600_000;
 const CHANNELS_PER_SYNC = 3;
 const CHANGE_COLLECTIONS = ["channels", "messages", "replies", "reactions"] as const;
+const SCOPES_PER_PAGE = 64;
+
+/**
+ * Copied from the Chitchat plugin's `chat_PRIVATE_CHANNEL_DISCLOSURE`, same rule as
+ * `REACTION_EMOJI` above: the host must not import the plugin package. The owner reads every
+ * scope and every restricted file before any grant is consulted, so copy that says "private"
+ * must say this too.
+ */
+const PRIVATE_DISCLOSURE =
+	"Only the people in this channel can read this file — and the organization owner, who can read everything in this workspace.";
 
 type ChannelValue = {
 	name: string;
@@ -74,6 +85,7 @@ type ChannelProjectionInput = {
 	channelKey: string;
 	channelName: string;
 	topic: string | null;
+	isPrivate: boolean;
 	messages: ProjectionMessage[];
 	repliesByRootKey: Map<string, ProjectionMessage[]>;
 	reactionsByTargetKey: Map<string, ProjectionReaction[]>;
@@ -215,11 +227,13 @@ function sort_messages(messages: ProjectionMessage[]) {
 	});
 }
 
-function channel_header(channelName: string, topic: string | null) {
+function channel_header(channelName: string, topic: string | null, isPrivate: boolean) {
 	const lines = [
 		`# ${channelName}`,
 		"",
-		"Public Chitchat channel. This file is a derived copy. Edit chat in the Chitchat page, not here.",
+		isPrivate
+			? `Private Chitchat channel. ${PRIVATE_DISCLOSURE} This file is a derived copy. Edit chat in the Chitchat page, not here.`
+			: "Public Chitchat channel. This file is a derived copy. Edit chat in the Chitchat page, not here.",
 	];
 	if (topic !== null && topic !== "") {
 		lines.push("", topic);
@@ -233,7 +247,7 @@ function channel_header(channelName: string, topic: string | null) {
  * with a two-space indent. Rebuilds always come from store docs, never from parsing comments.
  */
 export function plugins_projections_chitchat_build_markdown(input: ChannelProjectionInput) {
-	const header = channel_header(input.channelName, input.topic);
+	const header = channel_header(input.channelName, input.topic, input.isPrivate);
 	const blocks: string[] = [];
 
 	for (const message of sort_messages(input.messages)) {
@@ -327,10 +341,11 @@ function readme_markdown() {
 	return [
 		"# Chitchat",
 		"",
-		"These files are a derived copy of public Chitchat channels in this workspace.",
+		"These files are a derived copy of Chitchat channels in this workspace.",
 		"",
 		"- Edit chat in the Chitchat page, not in these files.",
-		"- Private channels never appear here.",
+		`- Private channels appear under \`${PRIVATE_FOLDER_NAME}/\`. Each channel folder is visible only to the people in that channel — and the organization owner, who can read everything in this workspace.`,
+		"- Do not share those folders by hand. The sync resets each folder's sharing to the channel's members.",
 		"- Author names are a snapshot. A rename shows up the next time a channel file is rebuilt.",
 		"- The folder is read-only. The workspace agent can read these files with bash.",
 	].join("\n");
@@ -444,6 +459,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				channelKey: "chan-1",
 				channelName: "general",
 				topic: null,
+				isPrivate: false,
 				messages: [
 					{
 						key: "chan-1:msg1",
@@ -501,6 +517,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				channelKey: "chan-1",
 				channelName: "general",
 				topic: null,
+				isPrivate: false,
 				messages: [
 					{
 						key: "chan-1:msg1",
@@ -524,6 +541,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				channelKey: "chan-1",
 				channelName: "general",
 				topic: null,
+				isPrivate: false,
 				messages: [
 					{
 						key: "chan-1:msg1",
@@ -579,6 +597,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				channelKey: "chan-1",
 				channelName: "general",
 				topic: null,
+				isPrivate: false,
 				messages: [
 					{
 						key: "chan-1:msg1",
@@ -595,6 +614,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				channelKey: "chan-1",
 				channelName: "general",
 				topic: null,
+				isPrivate: false,
 				messages: [
 					{
 						key: "chan-1:msg1",
@@ -685,7 +705,43 @@ async function run_chitchat_sync(
 		}
 	}
 
+	// Scoped changes never enter the unscoped pass above, so every private channel keeps its own
+	// fence per collection. An idle scope costs one small indexed read per collection here.
+	let afterScopeId: string | undefined;
+	for (;;) {
+		const scopePage = (await ctx.runQuery(internal.plugins_projections_chitchat.list_scope_ids, {
+			installationId: args.installationId,
+			afterScopeId,
+		})) as { scopeIds: string[]; continueAfter: string | null };
+		for (const scopeId of scopePage.scopeIds) {
+			for (const collection of CHANGE_COLLECTIONS) {
+				let more = true;
+				while (more) {
+					const page = (await ctx.runMutation(internal.plugins_projections_chitchat.advance_collection_cursor, {
+						installationId: args.installationId,
+						collection,
+						scopeId,
+					})) as { _yay?: { truncated: boolean }; _nay?: { message: string } };
+					const pageYay = page._yay;
+					if (page._nay || pageYay === undefined) {
+						return;
+					}
+
+					more = pageYay.truncated;
+				}
+			}
+		}
+
+		if (scopePage.continueAfter === null) {
+			break;
+		}
+		afterScopeId = scopePage.continueAfter;
+	}
+
 	await ctx.runMutation(internal.plugins_projections_chitchat.reconcile_public_channels, {
+		installationId: args.installationId,
+	});
+	await ctx.runMutation(internal.plugins_projections_chitchat.reconcile_private_channels, {
 		installationId: args.installationId,
 	});
 
@@ -720,11 +776,49 @@ async function run_chitchat_sync(
 			blocks: built.blocks,
 			maxBytes: ROLLOVER_MAX_BYTES,
 		});
+
+		// A private channel writes into its own restricted folder. Grants come in two phases
+		// around the file writes: extras are removed before new content lands (an adopted
+		// leftover folder must not show the new channel to the old channel's readers), and
+		// missing members are added only after a successful write (a failed write must not open
+		// stale content to new members).
+		let channelFolderPath = folderPath;
+		if (is_private_key(channel.channelKey)) {
+			const preferredPath = `${folderPath}/${PRIVATE_FOLDER_NAME}/${built.slug}`;
+			const collisionPath = `${folderPath}/${PRIVATE_FOLDER_NAME}/${collision_slug(built.slug, channel.channelKey)}`;
+			const ensured = (await ctx.runMutation(internal.plugins_projections.ensure_private_channel_folder, {
+				installationId: args.installationId,
+				channelKey: channel.channelKey,
+				folderPath: preferredPath,
+				collisionFolderPath: collisionPath,
+			})) as { _yay?: { folderPath: string }; _nay?: { message: string } };
+			if (ensured._nay || !ensured._yay) {
+				console.error("Failed to ensure private channel folder", {
+					message: ensured._nay?.message,
+					installationId: args.installationId,
+					channelKey: channel.channelKey,
+				});
+				await ctx.runMutation(internal.plugins_projections.finish_sync, {
+					installationId: args.installationId,
+					syncGeneration: args.syncGeneration,
+					continueImmediately: false,
+				});
+				return;
+			}
+
+			channelFolderPath = ensured._yay.folderPath;
+			await ctx.runMutation(internal.plugins_projections.reconcile_private_folder_grants, {
+				installationId: args.installationId,
+				channelKey: channel.channelKey,
+				phase: "remove_extra",
+			});
+		}
+
 		const written = await ctx.runAction(internal.plugins_projections.write_projection_channel_files, {
 			installationId: args.installationId,
 			channelKey: channel.channelKey,
 			slug: built.slug,
-			folderPath,
+			folderPath: channelFolderPath,
 			texts: files,
 		});
 		if (written._nay) {
@@ -739,6 +833,14 @@ async function run_chitchat_sync(
 				continueImmediately: false,
 			});
 			return;
+		}
+
+		if (is_private_key(channel.channelKey)) {
+			await ctx.runMutation(internal.plugins_projections.reconcile_private_folder_grants, {
+				installationId: args.installationId,
+				channelKey: channel.channelKey,
+				phase: "add_missing",
+			});
 		}
 
 		await ctx.runMutation(internal.plugins_projections_chitchat.complete_dirty_channel, {
@@ -791,6 +893,8 @@ export const advance_collection_cursor = internalMutation({
 	args: {
 		installationId: v.id("plugins_workspace_installations"),
 		collection: CHANGE_COLLECTIONS_VALIDATOR,
+		/** A private channel's scope. Every doc in it belongs to the channel whose key is this id. */
+		scopeId: v.optional(v.string()),
 		pageSize: v.optional(v.number()),
 	},
 	returns: v_result({ _yay: v.object({ truncated: v.boolean() }) }),
@@ -800,7 +904,10 @@ export const advance_collection_cursor = internalMutation({
 			return Result({ _nay: { message: "Missing projection state" } });
 		}
 
-		const cursor = state.cursors[args.collection] ?? null;
+		// A scoped pass keeps its own fence per scope, so a deleted scope's keys can be cleaned up
+		// without touching the public fences.
+		const cursorKey = args.scopeId === undefined ? args.collection : scope_cursor_key(args.scopeId, args.collection);
+		const cursor = state.cursors[cursorKey] ?? null;
 		const pageSize = args.pageSize ?? plugins_data_MAX_LIST_PAGE_SIZE;
 		const takeSize = pageSize + plugins_PROJECTION_CHANGE_TIE_EXTRA + 1;
 		const raw = await ctx.db
@@ -809,7 +916,7 @@ export const advance_collection_cursor = internalMutation({
 				const base = q
 					.eq("installationId", args.installationId)
 					.eq("collection", args.collection)
-					.eq("scopeId", undefined);
+					.eq("scopeId", args.scopeId);
 				return cursor === null ? base : base.gte("updatedAt", cursor.updatedAt);
 			})
 			.order("asc")
@@ -826,7 +933,11 @@ export const advance_collection_cursor = internalMutation({
 					await ctx.db.patch("plugins_data_projection_states", state._id, {
 						cursors: {
 							...state.cursors,
-							[args.collection]: { updatedAt: lastRaw.updatedAt, lastId: lastRaw._id },
+							[cursorKey]: {
+								updatedAt: lastRaw.updatedAt,
+								lastCreationTime: lastRaw._creationTime,
+								lastId: lastRaw._id,
+							},
 						},
 						updatedAt: Date.now(),
 					});
@@ -839,7 +950,9 @@ export const advance_collection_cursor = internalMutation({
 		const truncated = fresh.length > pageSize || raw.length === takeSize;
 
 		for (const doc of page) {
-			const channelKey = plugins_projections_chitchat_channel_key(args.collection, doc.key);
+			// Inside a scope no key parsing is needed: the scope id is the channel key.
+			const channelKey =
+				args.scopeId !== undefined ? args.scopeId : plugins_projections_chitchat_channel_key(args.collection, doc.key);
 			if (channelKey === null) {
 				continue;
 			}
@@ -860,13 +973,63 @@ export const advance_collection_cursor = internalMutation({
 			await ctx.db.patch("plugins_data_projection_states", state._id, {
 				cursors: {
 					...state.cursors,
-					[args.collection]: { updatedAt: next.updatedAt, lastId: next.lastId as Id<"plugins_data"> },
+					[cursorKey]: {
+						updatedAt: next.updatedAt,
+						lastCreationTime: next.lastCreationTime,
+						lastId: next.lastId as Id<"plugins_data">,
+					},
 				},
 				updatedAt: Date.now(),
 			});
 		}
 
 		return Result({ _yay: { truncated } });
+	},
+});
+
+/**
+ * Cursor-record key of one scope's fence in one collection. Scope ids may contain `:`, but the
+ * collection suffix comes from the fixed `CHANGE_COLLECTIONS` list, so two different
+ * (scope, collection) pairs can never build the same key.
+ */
+function scope_cursor_key(scopeId: string, collection: string) {
+	return `${scopeId}:${collection}`;
+}
+
+/**
+ * Page the installation's scope ids for the scoped cursor pass. One `plugins_data_scopes` row
+ * exists per collection, all sharing the scope id, so adjacent duplicates collapse here.
+ */
+export const list_scope_ids = internalQuery({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		afterScopeId: v.optional(v.string()),
+	},
+	returns: v.object({
+		scopeIds: v.array(v.string()),
+		continueAfter: v.union(v.string(), v.null()),
+	}),
+	handler: async (ctx, args) => {
+		const rows = await ctx.db
+			.query("plugins_data_scopes")
+			.withIndex("by_installation_scope", (q) => {
+				const base = q.eq("installationId", args.installationId);
+				return args.afterScopeId === undefined ? base : base.gt("scopeId", args.afterScopeId);
+			})
+			.take(SCOPES_PER_PAGE);
+
+		const scopeIds: string[] = [];
+		for (const row of rows) {
+			if (scopeIds[scopeIds.length - 1] !== row.scopeId) {
+				scopeIds.push(row.scopeId);
+			}
+		}
+
+		const last = rows[rows.length - 1];
+		return {
+			scopeIds,
+			continueAfter: rows.length === SCOPES_PER_PAGE && last !== undefined ? last.scopeId : null,
+		};
 	},
 });
 
@@ -936,12 +1099,100 @@ export const reconcile_public_channels = internalMutation({
 				continue;
 			}
 
+			// Private channels never enter `liveKeys` (the scan is unscoped), so this pass would
+			// archive every one of them. Their own reconcile below owns their lifecycle.
+			if (is_private_key(channelKey)) {
+				continue;
+			}
+
 			if (!liveKeys.has(channelKey)) {
 				await ctx.scheduler.runAfter(0, internal.plugins_projections.archive_projection_channel, {
 					installationId: args.installationId,
 					channelKey,
 				});
 			}
+		}
+
+		return null;
+	},
+});
+
+/**
+ * Archive mapped private channels whose scope is gone or whose channel doc is archived, and
+ * drop the dead scope's cursor fences so the cursor record does not grow forever.
+ *
+ * `archive_projection_channel` archives every mapped node of the channel, and the folder map
+ * row (`rolloverIndex` -1) makes the restricted folder one of them. The folder keeps its grants
+ * while archived — hidden from everyone but its old members and the owner, same freeze rule as
+ * an uninstall.
+ */
+export const reconcile_private_channels = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const state = await db_get_projection_state(ctx, args.installationId);
+		if (!state) {
+			return null;
+		}
+
+		const mapped = await ctx.db
+			.query("plugins_data_projection_files")
+			.withIndex("by_organization_workspace_installation", (q) =>
+				q
+					.eq("organizationId", state.organizationId)
+					.eq("workspaceId", state.workspaceId)
+					.eq("installationId", args.installationId),
+			)
+			.collect();
+		const mappedKeys = new Set(mapped.map((doc) => doc.channelKey));
+		const deadScopeIds: string[] = [];
+		for (const channelKey of mappedKeys) {
+			if (!is_private_key(channelKey)) {
+				continue;
+			}
+
+			const scopeRow = await ctx.db
+				.query("plugins_data_scopes")
+				.withIndex("by_installation_scope", (q) =>
+					q.eq("installationId", args.installationId).eq("scopeId", channelKey),
+				)
+				.first();
+			const channelDoc =
+				scopeRow === null
+					? null
+					: await ctx.db
+							.query("plugins_data")
+							.withIndex("by_installation_collection_key", (q) =>
+								q.eq("installationId", args.installationId).eq("collection", "channels").eq("key", channelKey),
+							)
+							.first();
+			const channelValue =
+				channelDoc !== null && channelDoc.scopeId === channelKey ? as_channel_value(channelDoc.value) : null;
+			const alive = channelValue !== null && channelValue.archivedAt === null;
+			if (alive) {
+				continue;
+			}
+
+			deadScopeIds.push(channelKey);
+			await ctx.scheduler.runAfter(0, internal.plugins_projections.archive_projection_channel, {
+				installationId: args.installationId,
+				channelKey,
+			});
+		}
+
+		if (deadScopeIds.length > 0) {
+			const cursors = { ...state.cursors };
+			for (const scopeId of deadScopeIds) {
+				for (const collection of CHANGE_COLLECTIONS) {
+					delete cursors[scope_cursor_key(scopeId, collection)];
+				}
+			}
+			await ctx.db.patch("plugins_data_projection_states", state._id, {
+				cursors,
+				updatedAt: Date.now(),
+			});
 		}
 
 		return null;
@@ -1001,9 +1252,7 @@ export const load_channel_projection = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		if (is_private_key(args.channelKey)) {
-			return null;
-		}
+		const isPrivate = is_private_key(args.channelKey);
 
 		const channelDoc = await ctx.db
 			.query("plugins_data")
@@ -1011,7 +1260,13 @@ export const load_channel_projection = internalQuery({
 				q.eq("installationId", args.installationId).eq("collection", "channels").eq("key", args.channelKey),
 			)
 			.first();
-		if (!channelDoc || channelDoc.scopeId !== undefined) {
+		if (!channelDoc) {
+			return null;
+		}
+
+		// A public channel doc is unscoped. A private channel's doc sits inside its own scope,
+		// whose id is the channel key. Any other pairing is not a projectable channel.
+		if (isPrivate ? channelDoc.scopeId !== args.channelKey : channelDoc.scopeId !== undefined) {
 			return null;
 		}
 
@@ -1026,10 +1281,11 @@ export const load_channel_projection = internalQuery({
 		const reactionsByTargetKey = new Map<string, ProjectionReaction[]>();
 		const userIds = new Set<string>();
 
-		const messageDocs = await db_list_public_prefix(ctx, {
+		const messageDocs = await db_list_channel_prefix(ctx, {
 			installationId: args.installationId,
 			collection: "messages",
 			keyPrefix: prefix,
+			scopeId: isPrivate ? args.channelKey : undefined,
 		});
 		for (const doc of messageDocs) {
 			const value = as_message_value(doc.value);
@@ -1046,10 +1302,11 @@ export const load_channel_projection = internalQuery({
 			});
 		}
 
-		const replyDocs = await db_list_public_prefix(ctx, {
+		const replyDocs = await db_list_channel_prefix(ctx, {
 			installationId: args.installationId,
 			collection: "replies",
 			keyPrefix: prefix,
+			scopeId: isPrivate ? args.channelKey : undefined,
 		});
 		for (const doc of replyDocs) {
 			const value = as_message_value(doc.value);
@@ -1069,10 +1326,11 @@ export const load_channel_projection = internalQuery({
 			repliesByRootKey.set(rootKey, list);
 		}
 
-		const reactionDocs = await db_list_public_prefix(ctx, {
+		const reactionDocs = await db_list_channel_prefix(ctx, {
 			installationId: args.installationId,
 			collection: "reactions",
 			keyPrefix: prefix,
+			scopeId: isPrivate ? args.channelKey : undefined,
 		});
 		for (const doc of reactionDocs) {
 			const parsed = reaction_target_and_token(doc.key);
@@ -1105,6 +1363,7 @@ export const load_channel_projection = internalQuery({
 			channelKey: args.channelKey,
 			channelName: channelValue.name,
 			topic: channelValue.topic ?? null,
+			isPrivate,
 			messages,
 			repliesByRootKey,
 			reactionsByTargetKey,
@@ -1134,12 +1393,14 @@ export const load_channel_projection = internalQuery({
 	},
 });
 
-async function db_list_public_prefix(
+async function db_list_channel_prefix(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		installationId: Id<"plugins_workspace_installations">;
 		collection: string;
 		keyPrefix: string;
+		/** Set for a private channel: its docs sit inside the scope whose id is the channel key. */
+		scopeId: string | undefined;
 	},
 ) {
 	const docs: Doc<"plugins_data">[] = [];
@@ -1152,7 +1413,7 @@ async function db_list_public_prefix(
 				const scoped = q
 					.eq("installationId", args.installationId)
 					.eq("collection", args.collection)
-					.eq("scopeId", undefined);
+					.eq("scopeId", args.scopeId);
 				if (keyStartExclusive === undefined) {
 					return scoped.gte("key", args.keyPrefix).lt("key", upper);
 				}

@@ -1,5 +1,6 @@
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -136,6 +137,32 @@ async function seed_plugin_user_write(t: ReturnType<typeof test_convex>, args: {
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", subject: clerkUserId, external_id: userId });
 	const pageSession = await seed_page_session(t, fixture);
 	return { ...fixture, asUser, ...pageSession } as const;
+}
+
+async function join_workspace_member(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_plugin_user_write>>,
+	clerkUserId: string,
+) {
+	return await t.run(async (ctx) => {
+		const now = Date.now();
+		const userId = await ctx.db.insert("users", { clerkUserId });
+		await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			userId,
+			active: true,
+			updatedAt: now,
+		});
+		await access_control_db_ensure_role_assignment(ctx, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			userId,
+			role: "member",
+			now,
+		});
+		return { userId } as const;
+	});
 }
 
 async function flush_projection(t: ReturnType<typeof test_convex>) {
@@ -634,7 +661,7 @@ describe("chitchat file projection", () => {
 		await flush_projection(t);
 
 		const readme = await read_projection_file(t, fixture, "/chitchat/README.md");
-		expect(readme?.content).toContain("Private channels never appear here.");
+		expect(readme?.content).toContain("Private channels appear under `private/`.");
 		expect(readme?.content).not.toContain("readme-channel-text");
 
 		const channelFile = await t.run(async (ctx) => {
@@ -857,5 +884,413 @@ describe("chitchat file projection", () => {
 		await t.mutation(internal.plugins_projections.ensure_hourly, { afterId: firstPageLastId });
 		const afterSecondPage = await t.run(async (ctx) => await ctx.db.query("plugins_data_projection_states").collect());
 		expect(afterSecondPage).toHaveLength(21);
+	});
+});
+
+describe("private channel projection", () => {
+	// The scope id is the channel key. The public put/append helpers are key-generic, so passing
+	// the scope id as the channel key writes documents inside the scope's key range.
+	const SCOPE_ID = "p/room-1";
+
+	async function seed_private_channel(t: ReturnType<typeof test_convex>) {
+		const fixture = await seed_plugin_user_write(t, { pluginName: "chitchat" });
+		const scope = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: {
+				kind: "create",
+				scopeId: SCOPE_ID,
+				collections: ["channels", "messages", "replies", "reactions"],
+				keyPrefix: SCOPE_ID,
+			},
+		});
+		if (scope._nay) {
+			throw new Error(scope._nay.message);
+		}
+
+		await put_public_channel(fixture, SCOPE_ID, "war-room");
+		return fixture;
+	}
+
+	async function set_scope_member(
+		fixture: Awaited<ReturnType<typeof seed_plugin_user_write>>,
+		userId: Id<"users">,
+		scopeId = SCOPE_ID,
+	) {
+		const set = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId, userId, level: "member" },
+		});
+		if (set._nay) {
+			throw new Error(set._nay.message);
+		}
+	}
+
+	async function read_private_folder(
+		t: ReturnType<typeof test_convex>,
+		fixture: Awaited<ReturnType<typeof seed_plugin_user_write>>,
+		scopeId = SCOPE_ID,
+	) {
+		return await t.run(async (ctx) => {
+			const row = await ctx.db
+				.query("plugins_data_projection_files")
+				.withIndex("by_installation_channelKey_rolloverIndex", (q) =>
+					q.eq("installationId", fixture.installationId).eq("channelKey", scopeId).eq("rolloverIndex", -1),
+				)
+				.first();
+			if (!row) {
+				return null;
+			}
+
+			const node = await ctx.db.get("files_nodes", row.fileNodeId);
+			return { row, node } as const;
+		});
+	}
+
+	async function read_folder_grants(
+		t: ReturnType<typeof test_convex>,
+		fixture: Awaited<ReturnType<typeof seed_plugin_user_write>>,
+		folderNodeId: Id<"files_nodes">,
+	) {
+		return await t.run(async (ctx) => {
+			return await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("resourceKind", "file")
+						.eq("resourceId", String(folderNodeId)),
+				)
+				.collect();
+		});
+	}
+
+	test("a private channel projects into a restricted folder only scope members can read", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		const bob = await join_workspace_member(t, fixture, "chitchat-bob");
+		const carol = await join_workspace_member(t, fixture, "chitchat-carol");
+		await set_scope_member(fixture, bob.userId);
+
+		const appended = await append_public_message(fixture, SCOPE_ID, "private plans", "private-1");
+		const reply = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
+			collection: "replies",
+			keyPrefix: `${appended.key}:`,
+			value: { text: "private reply", attachments: [], editedAt: null, deletedAt: null },
+			clientRequestId: "private-reply-1",
+		});
+		if (reply._nay) {
+			throw new Error(reply._nay.message);
+		}
+		const reacted = await fixture.asPage.mutation(api.plugins_data.user_put_owned_document, {
+			collection: "reactions",
+			key: `${appended.key}:thumbs_up`,
+			value: {},
+		});
+		if (reacted._nay) {
+			throw new Error(reacted._nay.message);
+		}
+		await flush_projection(t);
+
+		// The owner (Alice) reads everything, so this proves the file exists at the private path.
+		const file = await read_projection_file(t, fixture, "/chitchat/private/war-room/war-room.md");
+		expect(file?.content).toContain("private plans");
+		expect(file?.content).toContain("private reply");
+		expect(file?.content).toContain("👍 1");
+		expect(file?.content).toContain("organization owner");
+		expect(await read_projection_file(t, fixture, "/chitchat/war-room.md")).toBeNull();
+
+		// All four scoped collections keep their own fence.
+		const state = await read_projection_state(t, fixture.installationId);
+		expect(state?.cursors[`${SCOPE_ID}:replies`]).toBeDefined();
+		expect(state?.cursors[`${SCOPE_ID}:reactions`]).toBeDefined();
+
+		const folder = await read_private_folder(t, fixture);
+		expect(folder?.row.path).toBe("/chitchat/private/war-room");
+		expect(folder?.node?.restrictedScopeNodeId).toBe(folder?.node?._id);
+
+		const grants = await read_folder_grants(t, fixture, folder!.node!._id);
+		expect(grants.map((grant) => [grant.userId, grant.permission]).sort()).toEqual(
+			[
+				[fixture.userId, "content.read"],
+				[bob.userId, "content.read"],
+			].sort(),
+		);
+		expect(grants.every((grant) => grant.principalKind === "user")).toBe(true);
+
+		const asBob = await read_projection_file(
+			t,
+			{ ...fixture, userId: bob.userId },
+			"/chitchat/private/war-room/war-room.md",
+		);
+		expect(asBob?.content).toContain("private plans");
+		const asCarol = await read_projection_file(
+			t,
+			{ ...fixture, userId: carol.userId },
+			"/chitchat/private/war-room/war-room.md",
+		);
+		expect(asCarol).toBeNull();
+	});
+
+
+	test("two private channels with the same name get separate restricted folders", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		const bob = await join_workspace_member(t, fixture, "chitchat-bob");
+		await set_scope_member(fixture, bob.userId);
+		await append_public_message(fixture, SCOPE_ID, "alpha secret", "twin-1");
+		await flush_projection(t);
+
+		const secondScope = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: {
+				kind: "create",
+				scopeId: "p/room-2",
+				collections: ["channels", "messages", "replies", "reactions"],
+				keyPrefix: "p/room-2",
+			},
+		});
+		if (secondScope._nay) {
+			throw new Error(secondScope._nay.message);
+		}
+
+		await put_public_channel(fixture, "p/room-2", "war-room");
+		await append_public_message(fixture, "p/room-2", "bravo secret", "twin-2");
+		await flush_projection(t);
+
+		// Each channel keeps its own folder; the second lands on the collision slug.
+		const firstFolder = await read_private_folder(t, fixture);
+		const secondFolder = await read_private_folder(t, fixture, "p/room-2");
+		expect(firstFolder?.row.path).toBe("/chitchat/private/war-room");
+		expect(secondFolder?.row.path).toBe(`/chitchat/private/${collision_slug("war-room", "p/room-2")}`);
+		expect(secondFolder?.node?._id).not.toBe(firstFolder?.node?._id);
+
+		const firstFile = await read_projection_file(t, fixture, "/chitchat/private/war-room/war-room.md");
+		expect(firstFile?.content).toContain("alpha secret");
+		expect(firstFile?.content).not.toContain("bravo secret");
+
+		// Bob is only in the first channel: his grant there must survive the second channel's
+		// sync, and he gets nothing on the second folder.
+		const firstGrants = await read_folder_grants(t, fixture, firstFolder!.node!._id);
+		expect(firstGrants.map((grant) => grant.userId).sort()).toEqual([fixture.userId, bob.userId].sort());
+		const secondGrants = await read_folder_grants(t, fixture, secondFolder!.node!._id);
+		expect(secondGrants.map((grant) => grant.userId)).toEqual([fixture.userId]);
+		expect(
+			await read_projection_file(t, { ...fixture, userId: bob.userId }, secondFolder!.row.path + "/war-room.md"),
+		).toBeNull();
+	});
+
+	test("a second sync keeps the private folder instead of archiving it as an unknown public channel", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+
+		await append_public_message(fixture, SCOPE_ID, "first private", "keep-1");
+		await flush_projection(t);
+		await append_public_message(fixture, SCOPE_ID, "second private", "keep-2");
+		await flush_projection(t);
+
+		const file = await read_projection_file(t, fixture, "/chitchat/private/war-room/war-room.md");
+		expect(file?.content).toContain("first private");
+		expect(file?.content).toContain("second private");
+
+		const folder = await read_private_folder(t, fixture);
+		expect(folder?.node?.archiveOperationId).toBeUndefined();
+	});
+
+	test("remove_principal hides the folder from the removed member before any sync runs", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		const bob = await join_workspace_member(t, fixture, "chitchat-bob");
+		await set_scope_member(fixture, bob.userId);
+
+		await append_public_message(fixture, SCOPE_ID, "before removal", "remove-1");
+		await flush_projection(t);
+		const asBobBefore = await read_projection_file(
+			t,
+			{ ...fixture, userId: bob.userId },
+			"/chitchat/private/war-room/war-room.md",
+		);
+		expect(asBobBefore?.content).toContain("before removal");
+
+		const removed = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "remove_principal", scopeId: SCOPE_ID, userId: bob.userId },
+		});
+		if (removed._nay) {
+			throw new Error(removed._nay.message);
+		}
+
+		// No timers ran, so no sync has: the mutation itself must have deleted the mirrored grant.
+		const folder = await read_private_folder(t, fixture);
+		const grantsNow = await read_folder_grants(t, fixture, folder!.node!._id);
+		expect(grantsNow.map((grant) => grant.userId)).toEqual([fixture.userId]);
+		expect(
+			await read_projection_file(t, { ...fixture, userId: bob.userId }, "/chitchat/private/war-room/war-room.md"),
+		).toBeNull();
+
+		// The sync the removal scheduled must not add the grant back.
+		await flush_projection(t);
+		const grantsAfterSync = await read_folder_grants(t, fixture, folder!.node!._id);
+		expect(grantsAfterSync.map((grant) => grant.userId)).toEqual([fixture.userId]);
+		expect(
+			await read_projection_file(t, { ...fixture, userId: bob.userId }, "/chitchat/private/war-room/war-room.md"),
+		).toBeNull();
+	});
+
+	test("set_principal opens the folder to the new member after the scheduled sync", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+
+		await append_public_message(fixture, SCOPE_ID, "before bob joined", "join-1");
+		await flush_projection(t);
+
+		const bob = await join_workspace_member(t, fixture, "chitchat-bob");
+		expect(
+			await read_projection_file(t, { ...fixture, userId: bob.userId }, "/chitchat/private/war-room/war-room.md"),
+		).toBeNull();
+
+		await set_scope_member(fixture, bob.userId);
+
+		// Adds ride the sync: before timers run the folder is still closed to Bob.
+		expect(
+			await read_projection_file(t, { ...fixture, userId: bob.userId }, "/chitchat/private/war-room/war-room.md"),
+		).toBeNull();
+
+		await flush_projection(t);
+		const asBob = await read_projection_file(
+			t,
+			{ ...fixture, userId: bob.userId },
+			"/chitchat/private/war-room/war-room.md",
+		);
+		expect(asBob?.content).toContain("before bob joined");
+	});
+
+	test("the sync removes hand-added grants and restores the folder restriction", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		const carol = await join_workspace_member(t, fixture, "chitchat-carol");
+
+		await append_public_message(fixture, SCOPE_ID, "healed content", "heal-1");
+		await flush_projection(t);
+
+		const folder = await read_private_folder(t, fixture);
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			// A hand-added share for a non-member, and an extra write grant for a member.
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				resourceKind: "file",
+				resourceId: String(folder!.node!._id),
+				principalKind: "user",
+				userId: carol.userId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				resourceKind: "file",
+				resourceId: String(folder!.node!._id),
+				principalKind: "user",
+				userId: fixture.userId,
+				permission: "content.write",
+				createdAt: now,
+				updatedAt: now,
+			});
+			// An owner's manual unrestrict.
+			await ctx.db.patch("files_nodes", folder!.node!._id, { restrictedScopeNodeId: undefined });
+		});
+
+		await append_public_message(fixture, SCOPE_ID, "trigger heal", "heal-2");
+		await flush_projection(t);
+
+		const healedFolder = await read_private_folder(t, fixture);
+		expect(healedFolder?.node?.restrictedScopeNodeId).toBe(healedFolder?.node?._id);
+		const grants = await read_folder_grants(t, fixture, folder!.node!._id);
+		expect(grants.map((grant) => [grant.userId, grant.permission])).toEqual([[fixture.userId, "content.read"]]);
+
+		// Anchor the path first: Carol's null below must mean "refused", not "no such file".
+		const healedFile = await read_projection_file(t, fixture, "/chitchat/private/war-room/war-room.md");
+		expect(healedFile?.content).toContain("trigger heal");
+		expect(
+			await read_projection_file(t, { ...fixture, userId: carol.userId }, "/chitchat/private/war-room/war-room.md"),
+		).toBeNull();
+	});
+
+	test("deleting the scope removes the grants now and archives the folder on the next sync", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		const bob = await join_workspace_member(t, fixture, "chitchat-bob");
+		await set_scope_member(fixture, bob.userId);
+
+		await append_public_message(fixture, SCOPE_ID, "doomed content", "delete-1");
+		await flush_projection(t);
+		const folder = await read_private_folder(t, fixture);
+		expect((await read_folder_grants(t, fixture, folder!.node!._id)).length).toBe(2);
+		// Anchor the path first: the null read after the delete must mean "archived", not "never
+		// existed".
+		expect((await read_projection_file(t, fixture, "/chitchat/private/war-room/war-room.md"))?.content).toContain(
+			"doomed content",
+		);
+
+		const deleted = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "delete", scopeId: SCOPE_ID },
+		});
+		if (deleted._nay) {
+			throw new Error(deleted._nay.message);
+		}
+
+		// Grants go in the same mutation; the archive rides the scheduled sync.
+		expect(await read_folder_grants(t, fixture, folder!.node!._id)).toEqual([]);
+
+		await flush_projection(t);
+		expect(await read_private_folder(t, fixture)).toBeNull();
+		const folderNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", folder!.node!._id));
+		expect(folderNode?.archiveOperationId).toBeDefined();
+		expect(await read_projection_file(t, fixture, "/chitchat/private/war-room/war-room.md")).toBeNull();
+
+		const state = await read_projection_state(t, fixture.installationId);
+		expect(Object.keys(state?.cursors ?? {}).filter((key) => key.startsWith(`${SCOPE_ID}:`))).toEqual([]);
+	});
+
+	test("a scoped message advances the scoped cursor and dirties only the private channel", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		await put_public_channel(fixture, "chan-general", "general");
+		await append_public_message(fixture, "chan-general", "public message", "cursor-pub-1");
+		await append_public_message(fixture, SCOPE_ID, "private message", "cursor-priv-1");
+		await flush_projection(t);
+
+		const cleanState = await read_projection_state(t, fixture.installationId);
+		const publicCursor = cleanState?.cursors.messages;
+		expect(cleanState?.cursors[`${SCOPE_ID}:messages`]).toBeDefined();
+
+		await append_public_message(fixture, SCOPE_ID, "second private message", "cursor-priv-2");
+		const advanced = await t.mutation(internal.plugins_projections_chitchat.advance_collection_cursor, {
+			installationId: fixture.installationId,
+			collection: "messages",
+			scopeId: SCOPE_ID,
+		});
+		if (advanced._nay) {
+			throw new Error(advanced._nay.message);
+		}
+
+		const dirty = await t.run(async (ctx) => {
+			return await ctx.db
+				.query("plugins_data_projection_dirty_channels")
+				.withIndex("by_installation_channelKey", (q) => q.eq("installationId", fixture.installationId))
+				.collect();
+		});
+		expect(dirty.map((row) => row.channelKey)).toEqual([SCOPE_ID]);
+
+		const state = await read_projection_state(t, fixture.installationId);
+		expect(state?.cursors[`${SCOPE_ID}:messages`]).not.toEqual(cleanState?.cursors[`${SCOPE_ID}:messages`]);
+		expect(state?.cursors.messages).toEqual(publicCursor);
 	});
 });

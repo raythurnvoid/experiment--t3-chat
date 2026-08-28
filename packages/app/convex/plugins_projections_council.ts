@@ -465,7 +465,11 @@ export const advance_collection_cursor = internalMutation({
 					await ctx.db.patch("plugins_data_projection_states", state._id, {
 						cursors: {
 							...state.cursors,
-							[MEETINGS_COLLECTION]: { updatedAt: lastRaw.updatedAt, lastId: lastRaw._id },
+							[MEETINGS_COLLECTION]: {
+								updatedAt: lastRaw.updatedAt,
+								lastCreationTime: lastRaw._creationTime,
+								lastId: lastRaw._id,
+							},
 						},
 						updatedAt: Date.now(),
 					});
@@ -496,7 +500,11 @@ export const advance_collection_cursor = internalMutation({
 			await ctx.db.patch("plugins_data_projection_states", state._id, {
 				cursors: {
 					...state.cursors,
-					[MEETINGS_COLLECTION]: { updatedAt: next.updatedAt, lastId: next.lastId as Id<"plugins_data"> },
+					[MEETINGS_COLLECTION]: {
+						updatedAt: next.updatedAt,
+						lastCreationTime: next.lastCreationTime,
+						lastId: next.lastId as Id<"plugins_data">,
+					},
 				},
 				updatedAt: Date.now(),
 			});

@@ -118,10 +118,18 @@ Fields: `organizationId`, `workspaceId`, `resourceKind` (`organization` | `works
 `thread` | `plugin_scope`), `resourceId` (stringified id), `principalKind` (`role` | `user` |
 `public`), optional `userId`, optional `role`, `permission`, `createdAt`, `updatedAt`.
 
-**Two writers: `files_sharing.ts` and `plugins_data.ts`.** System role permissions moved into code, so
-the old seeded organization and workspace grants are gone. Every other grant doc is a file share: one
-doc per permission per principal, with the **restricted scope node** as `resourceId`. Nothing writes a
-`public` grant, and the share validator has no `public` arm.
+**Three writers: `files_sharing.ts`, `plugins_data.ts`, and `plugins_projections.ts`.** System role
+permissions moved into code, so the old seeded organization and workspace grants are gone. Every
+other grant doc is a file share: one doc per permission per principal, with the **restricted scope
+node** as `resourceId`. Nothing writes a `public` grant, and the share validator has no `public` arm.
+
+`plugins_projections.reconcile_private_folder_grants` writes file grants too: one `content.read` per
+scope member on a private channel's projection folder, mirroring the `plugin_scope` grants. The sync
+owns that folder's grant list — it deletes anything else on the folder, including grants a person
+added by hand through the share dialog, and it never writes more than `content.read` (a file `manage`
+grant would let a channel manager unrestrict or re-share the folder). Removals are also applied
+synchronously inside `user_manage_scope` (`db_sync_scope_projection_acl` in `plugins_data.ts`), so a
+removed member loses the folder in the same transaction; adds wait for the next sync.
 
 `plugins_data.user_manage_scope` writes the `plugin_scope` grants. `resourceId` is
 `"<installationId>:<scopeId>"` — the installation is part of it because two installations may mint the

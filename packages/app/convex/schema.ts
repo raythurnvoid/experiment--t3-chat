@@ -1999,6 +1999,10 @@ const app_convex_schema = defineSchema({
 			v.string(),
 			v.object({
 				updatedAt: v.number(),
+				// Index ties on `updatedAt` order by `_creationTime` then random `_id`, so the fence
+				// needs the pair. Optional because the field arrived on populated cursor records; a
+				// cursor without it re-applies its tied page once, which is idempotent.
+				lastCreationTime: v.optional(v.number()),
 				lastId: v.id("plugins_data"),
 			}),
 		),

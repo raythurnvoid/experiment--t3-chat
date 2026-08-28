@@ -570,12 +570,37 @@ channel, wait a few seconds (2s debounce plus sync), then open
   `(message deleted)` and hide the body, reactions show as `reactions:`.
 - Messages inside one file are oldest first. Send unique older then newer markers; the older
   marker must appear first in the file text. Prove Convex is pushing before trusting that order.
-- Private channels (`#name (private)`, keys `p/...`) must not appear. Expand `Show more` before
-  treating a missing name as proof.
+- Private channels do not appear next to the public files. They project into
+  `/chitchat/private/<slug>/<slug>.md` — see the next section. Expand `Show more` before treating a
+  missing name as proof.
 - The workspace agent can `cat` those paths with bash and is refused on write
   (`cannot write '...': This item is read-only.`).
 - **Prove Convex is pushing before trusting the Files UI.** `convex function-spec` must list
   `plugins_projections`. `convex codegen` is not a push. A unique line in `readme_markdown()`,
   then `convex dev --once`, then a public send, must show that line in `/chitchat/README.md`.
   Restore the README text and push again so the committed copy has no QA token.
+
+## Private projection (`/chitchat/private/<slug>/` in Files)
+
+A private channel projects into its own restricted folder, `/chitchat/private/<slug>/<slug>.md`,
+visible only to the channel's scope members. The sync mirrors one `content.read` file grant per
+scope member onto the folder and owns that list — a hand-added grant on the folder is deleted on
+the next sync. Proven live 2026-08-28 on the dev deployment with an owner tab plus a scratch-browser
+viewer.
+
+- The file opens read-only like the public ones and ends with a disclosure line saying who can read
+  the folder. The `private` container folder itself (`rolloverIndex` -1 in the map table) holds no
+  grants; each channel folder does.
+- **Timing is asymmetric by design.** Removing someone from the channel (People dialog → `Remove`)
+  deletes their folder grant in the same mutation — their files tree loses the folder on the next
+  query tick, no sync wait. Adding someone only lands after the debounced sync (~2 s plus sync), so
+  wait before calling a missing folder a bug.
+- Full second-identity cycle (needs `second-user-fixtures.md`; the owner bypasses ACL so an
+  owner-only run proves nothing): viewer's files tree has no `private` row at all → add the viewer
+  via the People dialog → viewer sees `/chitchat/private/<slug>/` and can open the file, disclosure
+  included → remove the viewer → the folder disappears without a reload.
+- A sync run writes channels in key order and aborts on the first conflict, keeping the dirty rows.
+  A stale public-channel file conflict (`This file changed while you were saving...`) can therefore
+  delay a `p/` channel's first projection; any later message retries the run, and the hourly cron is
+  the backstop. Send a second message before diagnosing a missing private folder.
 

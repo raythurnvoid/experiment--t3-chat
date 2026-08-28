@@ -20,6 +20,7 @@ import { r2_create_asset_key, r2_put_object } from "./r2_client.ts";
 import {
 	files_nodes_db_archive_nodes,
 	files_nodes_db_cascade_read_only_scope,
+	files_nodes_db_cascade_restricted_scope,
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes.ts";
 import {
@@ -575,6 +576,321 @@ export const write_projection_channel_files = internalAction({
 		return Result({ _yay: null });
 	},
 });
+
+/**
+ * The folder map row of a private channel keeps this rollover index. Real files start at 0, so
+ * `trim_projection_channel_files` never trims it, and `archive_projection_channel` archives the
+ * folder together with its files.
+ */
+export const plugins_PRIVATE_FOLDER_ROLLOVER_INDEX = -1;
+
+/**
+ * One private channel's scope names at most 50 people and each person holds at most three
+ * permission docs, so one bounded read covers the whole grant list on either side of the mirror.
+ */
+const MIRROR_GRANT_TAKE = 256;
+
+/**
+ * Reuse or create the restricted folder that holds one private channel's files.
+ *
+ * The folder inherits the read-only lock from the locked projection root and carries its own
+ * ACL restriction. Members cannot create nodes under the locked root, so a live folder mapped
+ * for this channel — or found at the candidate path with the root's lock — is ours to reuse.
+ * The restriction is re-asserted on every call, so an owner's manual unrestrict heals the same
+ * way the root heals a manual unlock.
+ */
+export const ensure_private_channel_folder = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		channelKey: v.string(),
+		folderPath: v.string(),
+		collisionFolderPath: v.string(),
+	},
+	returns: v_result({ _yay: v.object({ folderNodeId: v.id("files_nodes"), folderPath: v.string() }) }),
+	handler: async (ctx, args) => {
+		const live = await db_require_live_state(ctx, args.installationId);
+		if (live._nay) {
+			return live;
+		}
+
+		const ready = live._yay;
+		if (!ready) {
+			return Result({ _nay: { message: "Installation gone" } });
+		}
+
+		const { installation, writerUserId, state } = ready;
+		if (!state.rootFolderNodeId) {
+			return Result({ _nay: { message: "Projection folder is not ready" } });
+		}
+
+		const now = Date.now();
+
+		const mappedRow = await ctx.db
+			.query("plugins_data_projection_files")
+			.withIndex("by_installation_channelKey_rolloverIndex", (q) =>
+				q
+					.eq("installationId", args.installationId)
+					.eq("channelKey", args.channelKey)
+					.eq("rolloverIndex", plugins_PRIVATE_FOLDER_ROLLOVER_INDEX),
+			)
+			.first();
+		if (mappedRow) {
+			const mappedFolder = await ctx.db.get("files_nodes", mappedRow.fileNodeId);
+			if (mappedFolder && mappedFolder.kind === "folder" && mappedFolder.archiveOperationId === undefined) {
+				await db_assert_restricted_scope(ctx, {
+					organizationId: installation.organizationId,
+					workspaceId: installation.workspaceId,
+					folder: mappedFolder,
+				});
+				return Result({ _yay: { folderNodeId: mappedFolder._id, folderPath: mappedFolder.path } });
+			}
+		}
+
+		const candidates = [args.folderPath, args.collisionFolderPath];
+		let folderPath: string | null = null;
+		let folderNodeId: Id<"files_nodes"> | null = null;
+
+		for (const candidate of candidates) {
+			const occupant = await db_get_active_node_by_path(ctx, {
+				organizationId: installation.organizationId,
+				workspaceId: installation.workspaceId,
+				path: candidate,
+			});
+			if (!occupant) {
+				folderPath = candidate;
+				folderNodeId = null;
+				break;
+			}
+
+			// A folder carrying the root's lock is a leftover projection folder: members cannot
+			// create under the locked root. Anything else at this path is not ours.
+			if (occupant.kind === "folder" && occupant.readOnlyScopeNodeId === state.rootFolderNodeId) {
+				// A folder mapped to a channel is that channel's live home, not a leftover. Two
+				// private channels with the same name must not share one folder: the second
+				// channel's grant reconcile would remove the first channel's readers and open its
+				// files to the wrong people. This channel's own mapped folder was already handled
+				// above, so any map row here belongs to another channel — try the collision path.
+				const occupantMapped = await ctx.db
+					.query("plugins_data_projection_files")
+					.withIndex("by_installation_fileNodeId", (q) =>
+						q.eq("installationId", args.installationId).eq("fileNodeId", occupant._id),
+					)
+					.first();
+				if (occupantMapped) {
+					continue;
+				}
+
+				folderPath = occupant.path;
+				folderNodeId = occupant._id;
+				break;
+			}
+		}
+
+		if (folderPath === null) {
+			return Result({ _nay: { message: "Private channel folder path is occupied" } });
+		}
+
+		if (folderNodeId === null) {
+			const rootFolder = await ctx.db.get("files_nodes", state.rootFolderNodeId);
+			const rootLocked = rootFolder !== null && rootFolder.readOnlyScopeNodeId === rootFolder._id;
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				userId: writerUserId,
+				organizationId: installation.organizationId,
+				workspaceId: installation.workspaceId,
+				parentId: files_ROOT_ID,
+				path: folderPath,
+				kind: "folder",
+				...(rootLocked ? { skipAccessControlAndLock: true as const, inheritParentReadOnlyScope: true as const } : {}),
+				now,
+			});
+			if (created._nay) {
+				return Result({ _nay: { message: created._nay.message } });
+			}
+
+			folderNodeId = created._yay;
+		}
+
+		const folder = await ctx.db.get("files_nodes", folderNodeId);
+		if (!folder) {
+			return Result({ _nay: { message: "Private channel folder missing after create" } });
+		}
+
+		await db_assert_restricted_scope(ctx, {
+			organizationId: installation.organizationId,
+			workspaceId: installation.workspaceId,
+			folder,
+		});
+
+		if (mappedRow) {
+			await ctx.db.patch("plugins_data_projection_files", mappedRow._id, {
+				fileNodeId: folder._id,
+				path: folder.path,
+				updatedAt: now,
+			});
+		} else {
+			await ctx.db.insert("plugins_data_projection_files", {
+				organizationId: installation.organizationId,
+				workspaceId: installation.workspaceId,
+				installationId: args.installationId,
+				channelKey: args.channelKey,
+				fileNodeId: folder._id,
+				rolloverIndex: plugins_PRIVATE_FOLDER_ROLLOVER_INDEX,
+				path: folder.path,
+				updatedAt: now,
+			});
+		}
+
+		return Result({ _yay: { folderNodeId: folder._id, folderPath: folder.path } });
+	},
+});
+
+/**
+ * Mirror one private channel's scope membership onto its folder's file grants.
+ *
+ * Every person in the scope gets exactly one `content.read` grant on the folder, nothing more —
+ * a file `manage` grant would let a channel manager unrestrict or re-share the folder. The sync
+ * owns the grant list: anything else on the folder is removed, including grants a person added
+ * by hand through the share dialog.
+ *
+ * Two phases, because folder adoption can hand a leftover folder to a new channel with the same
+ * name: `remove_extra` runs before the files are rewritten so the old channel's readers lose the
+ * folder before new content lands, and `add_missing` runs after a successful write so a failed
+ * write never opens stale content to new members.
+ */
+export const reconcile_private_folder_grants = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		channelKey: v.string(),
+		phase: v.union(v.literal("remove_extra"), v.literal("add_missing")),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const state = await db_get_projection_state(ctx, args.installationId);
+		if (!state) {
+			return null;
+		}
+
+		const mappedRow = await ctx.db
+			.query("plugins_data_projection_files")
+			.withIndex("by_installation_channelKey_rolloverIndex", (q) =>
+				q
+					.eq("installationId", args.installationId)
+					.eq("channelKey", args.channelKey)
+					.eq("rolloverIndex", plugins_PRIVATE_FOLDER_ROLLOVER_INDEX),
+			)
+			.first();
+		if (!mappedRow) {
+			return null;
+		}
+
+		const folder = await ctx.db.get("files_nodes", mappedRow.fileNodeId);
+		if (!folder || folder.archiveOperationId !== undefined) {
+			return null;
+		}
+
+		// The channel key is the scope id, and `scope_resource_id` in plugins_data.ts owns this
+		// resource-id format.
+		const scopeResourceId = `${args.installationId}:${args.channelKey}`;
+		const scopeGrants = await ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+				q
+					.eq("organizationId", state.organizationId)
+					.eq("workspaceId", state.workspaceId)
+					.eq("resourceKind", "plugin_scope")
+					.eq("resourceId", scopeResourceId),
+			)
+			.take(MIRROR_GRANT_TAKE);
+		const memberUserIds = new Set<Id<"users">>();
+		for (const grant of scopeGrants) {
+			if (grant.userId) {
+				memberUserIds.add(grant.userId);
+			}
+		}
+
+		const folderGrants = await ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+				q
+					.eq("organizationId", state.organizationId)
+					.eq("workspaceId", state.workspaceId)
+					.eq("resourceKind", "file")
+					.eq("resourceId", String(folder._id)),
+			)
+			.take(MIRROR_GRANT_TAKE);
+
+		if (args.phase === "remove_extra") {
+			const kept = new Set<Id<"users">>();
+			for (const grant of folderGrants) {
+				const mirrored =
+					grant.principalKind === "user" &&
+					grant.userId !== undefined &&
+					memberUserIds.has(grant.userId) &&
+					grant.permission === "content.read" &&
+					!kept.has(grant.userId);
+				if (mirrored && grant.userId) {
+					kept.add(grant.userId);
+					continue;
+				}
+
+				await ctx.db.delete("access_control_permission_grants", grant._id);
+			}
+			return null;
+		}
+
+		const holders = new Set<Id<"users">>();
+		for (const grant of folderGrants) {
+			if (grant.principalKind === "user" && grant.userId && grant.permission === "content.read") {
+				holders.add(grant.userId);
+			}
+		}
+
+		const now = Date.now();
+		for (const userId of memberUserIds) {
+			if (holders.has(userId)) {
+				continue;
+			}
+
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: state.organizationId,
+				workspaceId: state.workspaceId,
+				resourceKind: "file",
+				resourceId: String(folder._id),
+				principalKind: "user",
+				userId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+		}
+
+		return null;
+	},
+});
+
+/**
+ * Assert a private channel folder's ACL restriction on itself and cascade it downwards.
+ */
+async function db_assert_restricted_scope(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		folder: Doc<"files_nodes">;
+	},
+) {
+	if (args.folder.restrictedScopeNodeId === args.folder._id) {
+		return;
+	}
+
+	await ctx.db.patch("files_nodes", args.folder._id, { restrictedScopeNodeId: args.folder._id });
+	await files_nodes_db_cascade_restricted_scope(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		parentId: args.folder._id,
+		scopeNodeId: args.folder._id,
+	});
+}
 
 export const archive_projection_channel = internalMutation({
 	args: {

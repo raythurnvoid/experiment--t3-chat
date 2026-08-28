@@ -3109,6 +3109,90 @@ async function db_delete_scope(ctx: MutationCtx, scopes: Doc<"plugins_data_scope
 }
 
 /**
+ * Keep the file projection in step with a scope membership change.
+ *
+ * A scope change writes no store document, so the projection's change cursors never see it.
+ * By projection convention a private channel's file channel key is its scope id, so this marks
+ * that channel dirty and schedules a sync.
+ *
+ * Removing a person (or deleting the scope) also deletes their mirrored `content.read` grants
+ * on the mapped channel folder in this same transaction. Being removed from a private channel
+ * must close the projected file at once, not after the sync debounce. Additions ride the
+ * debounced sync instead — showing up late is safe, staying readable late is not.
+ */
+async function db_sync_scope_projection_acl(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		scopeId: string;
+		removeGrantsFor: Id<"users">[] | "all" | null;
+	},
+) {
+	if (!plugins_projections_is_registered(args.installation.pluginName)) {
+		return;
+	}
+
+	const now = Date.now();
+	const existingDirty = await ctx.db
+		.query("plugins_data_projection_dirty_channels")
+		.withIndex("by_installation_channelKey", (q) =>
+			q.eq("installationId", args.installation._id).eq("channelKey", args.scopeId),
+		)
+		.first();
+	if (existingDirty) {
+		await ctx.db.patch("plugins_data_projection_dirty_channels", existingDirty._id, { updatedAt: now });
+	} else {
+		await ctx.db.insert("plugins_data_projection_dirty_channels", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			installationId: args.installation._id,
+			channelKey: args.scopeId,
+			updatedAt: now,
+		});
+	}
+	await db_schedule_projection_sync_if_registered(ctx, args.installation);
+
+	if (args.removeGrantsFor === null) {
+		return;
+	}
+
+	// -1 is the channel folder's map row (`plugins_PRIVATE_FOLDER_ROLLOVER_INDEX` in
+	// plugins_projections.ts). No row means the channel was never projected.
+	const folderRow = await ctx.db
+		.query("plugins_data_projection_files")
+		.withIndex("by_installation_channelKey_rolloverIndex", (q) =>
+			q.eq("installationId", args.installation._id).eq("channelKey", args.scopeId).eq("rolloverIndex", -1),
+		)
+		.first();
+	if (!folderRow) {
+		return;
+	}
+
+	// Same bound as `MIRROR_GRANT_TAKE` in plugins_projections.ts: the mirror writes one grant
+	// per scope member and a scope names at most 50 people.
+	const folderGrants = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("resourceKind", "file")
+				.eq("resourceId", String(folderRow.fileNodeId)),
+		)
+		.take(256);
+	for (const grant of folderGrants) {
+		const remove =
+			args.removeGrantsFor === "all" ||
+			(grant.principalKind === "user" && grant.userId !== undefined && args.removeGrantsFor.includes(grant.userId));
+		if (remove) {
+			await ctx.db.delete("access_control_permission_grants", grant._id);
+		}
+	}
+}
+
+/**
  * Create a private scope, change who is in it, or delete it.
  *
  * One mutation owns the whole lifecycle, the way `files_sharing.set_node_share_grant` both inserts
@@ -3315,6 +3399,13 @@ export const user_manage_scope = mutation({
 
 		if (args.action.kind === "delete") {
 			await db_delete_scope(ctx, existing);
+			await db_sync_scope_projection_acl(ctx, {
+				installation,
+				organizationId: organization._id,
+				workspaceId: workspace._id,
+				scopeId: scopeId._yay,
+				removeGrantsFor: "all",
+			});
 			return Result({ _yay: { scopeId: scopeId._yay } });
 		}
 
@@ -3333,6 +3424,13 @@ export const user_manage_scope = mutation({
 				userId: target,
 				level: null,
 				now,
+			});
+			await db_sync_scope_projection_acl(ctx, {
+				installation,
+				organizationId: organization._id,
+				workspaceId: workspace._id,
+				scopeId: scopeId._yay,
+				removeGrantsFor: [target],
 			});
 			return Result({ _yay: { scopeId: scopeId._yay } });
 		}
@@ -3380,6 +3478,13 @@ export const user_manage_scope = mutation({
 			userId: target,
 			level: args.action.level,
 			now,
+		});
+		await db_sync_scope_projection_acl(ctx, {
+			installation,
+			organizationId: organization._id,
+			workspaceId: workspace._id,
+			scopeId: scopeId._yay,
+			removeGrantsFor: null,
 		});
 		return Result({ _yay: { scopeId: scopeId._yay } });
 	},
