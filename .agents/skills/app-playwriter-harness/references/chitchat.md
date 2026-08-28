@@ -583,22 +583,28 @@ channel, wait a few seconds (2s debounce plus sync), then open
 ## Private projection (`/chitchat/private/<slug>/` in Files)
 
 A private channel projects into its own restricted folder, `/chitchat/private/<slug>/<slug>.md`,
-visible only to the channel's scope members. The sync mirrors one `content.read` file grant per
-scope member onto the folder and owns that list — a hand-added grant on the folder is deleted on
-the next sync. Proven live 2026-08-28 on the dev deployment with an owner tab plus a scratch-browser
-viewer.
+readable by the channel's scope members — and by the organization owner, who reads every restricted
+file in the workspace, which is why an owner-only run proves nothing. The sync mirrors one
+`content.read` file grant per scope member onto the folder and owns that list: a hand-added grant is
+deleted when that channel next syncs (a message or a membership change there, not any sync).
+Proven live 2026-08-28 on the dev deployment with an owner tab plus a scratch-browser viewer.
 
-- The file opens read-only like the public ones and ends with a disclosure line saying who can read
-  the folder. The `private` container folder itself (`rolloverIndex` -1 in the map table) holds no
-  grants; each channel folder does.
+- The file opens read-only like the public ones. The disclosure line naming who can read it sits in
+  the file header, on the third line, not at the end. The `-1` map row is the channel folder, and
+  that folder carries the grants. The `/chitchat/private` container above it has no map row and no
+  restriction of its own.
 - **Timing is asymmetric by design.** Removing someone from the channel (People dialog → `Remove`)
   deletes their folder grant in the same mutation — their files tree loses the folder on the next
   query tick, no sync wait. Adding someone only lands after the debounced sync (~2 s plus sync), so
   wait before calling a missing folder a bug.
-- Full second-identity cycle (needs `second-user-fixtures.md`; the owner bypasses ACL so an
-  owner-only run proves nothing): viewer's files tree has no `private` row at all → add the viewer
-  via the People dialog → viewer sees `/chitchat/private/<slug>/` and can open the file, disclosure
-  included → remove the viewer → the folder disappears without a reload.
+- Full second-identity cycle (needs `second-user-fixtures.md`): the viewer's files tree shows the
+  empty `private` container but no channel folder inside it — the container is unrestricted, so
+  assert on the channel name, not on `private` being absent → add the viewer via the People dialog
+  → viewer sees `/chitchat/private/<slug>/` and can open the file, disclosure included → remove the
+  viewer → the folder disappears without a reload.
+- Archiving the channel (the plugin's "delete channel") archives the folder and deletes its mirrored
+  grants, so a member removed after that keeps nothing. Unarchiving builds a fresh folder and leaves
+  the archived one behind; that is the archive rule, not a bug.
 - A sync run writes channels in key order and aborts on the first conflict, keeping the dirty rows.
   A stale public-channel file conflict (`This file changed while you were saving...`) can therefore
   delay a `p/` channel's first projection; any later message retries the run, and the hourly cron is

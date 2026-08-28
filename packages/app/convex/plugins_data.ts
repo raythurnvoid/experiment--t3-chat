@@ -3142,7 +3142,13 @@ async function db_sync_scope_projection_acl(
 		)
 		.first();
 	if (existingDirty) {
-		await ctx.db.patch("plugins_data_projection_dirty_channels", existingDirty._id, { updatedAt: now });
+		// Step past the stored stamp instead of writing the clock. `complete_dirty_channel` compares
+		// it to decide whether a change landed mid-rebuild, and a scope change shares a millisecond
+		// with the rebuild often enough to matter — it writes no store document, so a dropped dirty
+		// row is the only record of it and no cursor can find it again.
+		await ctx.db.patch("plugins_data_projection_dirty_channels", existingDirty._id, {
+			updatedAt: Math.max(now, existingDirty.updatedAt + 1),
+		});
 	} else {
 		await ctx.db.insert("plugins_data_projection_dirty_channels", {
 			organizationId: args.organizationId,

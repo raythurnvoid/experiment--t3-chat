@@ -1,6 +1,7 @@
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -391,7 +392,7 @@ describe("chitchat file projection", () => {
 		expect(afterDelete?.content).not.toContain("edited text");
 	});
 
-	test("a private scoped channel never appears in a file or a search chunk", async () => {
+	test("a channel doc whose scope id is not its key is not projected at all", async () => {
 		vi.useFakeTimers();
 		const t = test_convex();
 		const fixture = await seed_plugin_user_write(t, { pluginName: "chitchat" });
@@ -431,7 +432,11 @@ describe("chitchat file projection", () => {
 
 		await flush_projection(t);
 
+		// The scope id must equal the channel key. This pairing is one the plugin never writes, and
+		// the projector refuses it rather than guessing which one names the channel — so nothing is
+		// written at either the public path or the private one.
 		expect(await read_projection_file(t, fixture, "/chitchat/secret.md")).toBeNull();
+		expect(await read_projection_file(t, fixture, "/chitchat/private/secret/secret.md")).toBeNull();
 		const chunks = await t.run(async (ctx) => await ctx.db.query("files_text_chunks").collect());
 		expect(chunks.some((chunk) => chunk.textChunk.includes(secret))).toBe(false);
 	});
@@ -1074,9 +1079,112 @@ describe("private channel projection", () => {
 		expect(firstGrants.map((grant) => grant.userId).sort()).toEqual([fixture.userId, bob.userId].sort());
 		const secondGrants = await read_folder_grants(t, fixture, secondFolder!.node!._id);
 		expect(secondGrants.map((grant) => grant.userId)).toEqual([fixture.userId]);
-		expect(
-			await read_projection_file(t, { ...fixture, userId: bob.userId }, secondFolder!.row.path + "/war-room.md"),
-		).toBeNull();
+
+		// Anchor the second file's path before reading it as Bob: a wrong path would read null for
+		// everybody and prove nothing about his access.
+		const secondPath = `${secondFolder!.row.path}/war-room.md`;
+		expect((await read_projection_file(t, fixture, secondPath))?.content).toContain("bravo secret");
+		expect(await read_projection_file(t, { ...fixture, userId: bob.userId }, secondPath)).toBeNull();
+	});
+
+	test("adopting a leftover folder does not hand the old channel's files to the new members", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		await append_public_message(fixture, SCOPE_ID, "old channel content", "leftover-1");
+		await flush_projection(t);
+		const oldFolder = await read_private_folder(t, fixture);
+
+		// A rollover file of the old channel. Producing one for real needs a 600 KB transcript, so
+		// insert it through the same node writer the projection uses.
+		const leftoverNodeId = await t.run(async (ctx) => {
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				userId: fixture.userId,
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				parentId: files_ROOT_ID,
+				path: `${oldFolder!.row.path}/war-room.001.md`,
+				kind: "file",
+				contentType: "text/markdown;charset=utf-8",
+				skipAccessControlAndLock: true,
+				inheritParentReadOnlyScope: true,
+				now: Date.now(),
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+
+			return created._yay;
+		});
+
+		// Uninstall and disable delete the projection map rows and leave the files. What is left is
+		// an unmapped folder that still carries the root lock, which the next same-name channel adopts.
+		await t.run(async (ctx) => {
+			const rows = await ctx.db
+				.query("plugins_data_projection_files")
+				.withIndex("by_organization_workspace_installation", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("installationId", fixture.installationId),
+				)
+				.collect();
+			await Promise.all(rows.map((row) => ctx.db.delete("plugins_data_projection_files", row._id)));
+		});
+
+		const bob = await join_workspace_member(t, fixture, "chitchat-bob");
+		const newScope = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: {
+				kind: "create",
+				scopeId: "p/room-9",
+				collections: ["channels", "replies", "messages", "reactions"],
+				keyPrefix: "p/room-9",
+			},
+		});
+		if (newScope._nay) {
+			throw new Error(newScope._nay.message);
+		}
+		await set_scope_member(fixture, bob.userId, "p/room-9");
+		await put_public_channel(fixture, "p/room-9", "war-room");
+		await append_public_message(fixture, "p/room-9", "new channel content", "leftover-2");
+		await flush_projection(t);
+
+		// The new channel took the folder, so its members now read everything inside it. The old
+		// channel's rollover file must not be one of those things.
+		const adopted = await read_private_folder(t, fixture, "p/room-9");
+		expect(adopted?.node?._id).toBe(oldFolder!.node!._id);
+		const leftover = await t.run(async (ctx) => await ctx.db.get("files_nodes", leftoverNodeId));
+		expect(leftover?.archiveOperationId).toBeDefined();
+	});
+
+	test("a non-member's text search cannot reach the private channel file", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		const bob = await join_workspace_member(t, fixture, "chitchat-bob");
+		const carol = await join_workspace_member(t, fixture, "chitchat-carol");
+		await set_scope_member(fixture, bob.userId);
+		await append_public_message(fixture, SCOPE_ID, "zebra classified plan", "search-1");
+		await flush_projection(t);
+
+		const search = async (userId: Id<"users">) =>
+			await t.query(internal.files_nodes.text_search_files, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				// Both hold workspace-wide read from their role. The folder restriction, not the
+				// workspace check, is what has to keep Carol out.
+				hasWorkspaceRead: true,
+				query: "zebra classified plan",
+				numItems: 10,
+				cursor: null,
+			});
+
+		// The projected file is indexed like any other file, so the words really are in the index.
+		expect((await search(bob.userId)).items.map((item) => item.path)).toContain(
+			"/chitchat/private/war-room/war-room.md",
+		);
+		expect((await search(carol.userId)).items).toEqual([]);
 	});
 
 	test("a second sync keeps the private folder instead of archiving it as an unknown public channel", async () => {
@@ -1176,6 +1284,33 @@ describe("private channel projection", () => {
 		await flush_projection(t);
 
 		const folder = await read_private_folder(t, fixture);
+
+		// The owner's real "Stop restricting" door. It clears the folder pointer and cascades that to
+		// every file inside, so the heal has to restore both — patching only the folder would leave
+		// the files already readable and prove nothing about the cascade. It also drops every grant
+		// on the folder, so the hand-added ones below are inserted after it.
+		const unrestricted = await fixture.asUser.mutation(api.files_sharing.unrestrict_node, {
+			membershipId: fixture.membershipId,
+			nodeId: folder!.node!._id,
+		});
+		if (unrestricted._nay) {
+			throw new Error(unrestricted._nay.message);
+		}
+		const openedFile = await t.run(async (ctx) => {
+			const node = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("path", "/chitchat/private/war-room/war-room.md")
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			return { found: node !== null, restrictedScopeNodeId: node?.restrictedScopeNodeId ?? null };
+		});
+		expect(openedFile).toEqual({ found: true, restrictedScopeNodeId: null });
+
 		await t.run(async (ctx) => {
 			const now = Date.now();
 			// A hand-added share for a non-member, and an extra write grant for a member.
@@ -1201,8 +1336,6 @@ describe("private channel projection", () => {
 				createdAt: now,
 				updatedAt: now,
 			});
-			// An owner's manual unrestrict.
-			await ctx.db.patch("files_nodes", folder!.node!._id, { restrictedScopeNodeId: undefined });
 		});
 
 		await append_public_message(fixture, SCOPE_ID, "trigger heal", "heal-2");
@@ -1256,6 +1389,170 @@ describe("private channel projection", () => {
 
 		const state = await read_projection_state(t, fixture.installationId);
 		expect(Object.keys(state?.cursors ?? {}).filter((key) => key.startsWith(`${SCOPE_ID}:`))).toEqual([]);
+	});
+
+	test("a deleted scope stops projecting instead of rebuilding the channel", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		await append_public_message(fixture, SCOPE_ID, "doomed content", "revive-1");
+		await flush_projection(t);
+		// Anchor the path first: the null below must mean "dead scope", not "never existed".
+		expect((await read_projection_file(t, fixture, "/chitchat/private/war-room/war-room.md"))?.content).toContain(
+			"doomed content",
+		);
+
+		const deleted = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "delete", scopeId: SCOPE_ID },
+		});
+		if (deleted._nay) {
+			throw new Error(deleted._nay.message);
+		}
+
+		// A deleted scope keeps its documents, so the channel doc still looks alive. Only the missing
+		// scope row says the channel is dead, and the projector has to read that too — otherwise the
+		// dirty row this delete leaves behind rebuilds the whole transcript after the archive ran.
+		expect(
+			await t.query(internal.plugins_projections_chitchat.load_channel_projection, {
+				installationId: fixture.installationId,
+				channelKey: SCOPE_ID,
+			}),
+		).toBeNull();
+	});
+
+	test("archiving the channel takes the mirrored grants with the folder", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		const bob = await join_workspace_member(t, fixture, "chitchat-bob");
+		await set_scope_member(fixture, bob.userId);
+		await append_public_message(fixture, SCOPE_ID, "archived content", "archive-1");
+		await flush_projection(t);
+		const folder = await read_private_folder(t, fixture);
+		expect((await read_folder_grants(t, fixture, folder!.node!._id)).length).toBe(2);
+
+		// The Chitchat archive button, which is what "delete channel" does in the plugin UI.
+		const archived = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "channels",
+			key: SCOPE_ID,
+			value: { name: "war-room", archivedAt: Date.now() },
+		});
+		if (archived._nay) {
+			throw new Error(archived._nay.message);
+		}
+		await flush_projection(t);
+
+		// The folder map row is gone with the archive, and that row is the only way back to these
+		// grants. Left behind, nothing could ever remove them: Bob would keep reading the archived
+		// copy after being dropped from the channel.
+		expect(await read_private_folder(t, fixture)).toBeNull();
+		expect(await read_folder_grants(t, fixture, folder!.node!._id)).toEqual([]);
+	});
+
+	test("a member's private read cursor does not rebuild the channel file", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		await append_public_message(fixture, SCOPE_ID, "cursor churn", "churn-1");
+		await flush_projection(t);
+
+		const advance_channels = async () => {
+			const advanced = await t.mutation(internal.plugins_projections_chitchat.advance_collection_cursor, {
+				installationId: fixture.installationId,
+				collection: "channels",
+				scopeId: SCOPE_ID,
+			});
+			if (advanced._nay) {
+				throw new Error(advanced._nay.message);
+			}
+
+			return await t.run(async (ctx) => {
+				const rows = await ctx.db
+					.query("plugins_data_projection_dirty_channels")
+					.withIndex("by_installation_channelKey", (q) => q.eq("installationId", fixture.installationId))
+					.collect();
+				return rows.map((row) => row.channelKey);
+			});
+		};
+
+		// The plugin keeps each member's read cursor for a private channel in the `channels`
+		// collection inside the scope, so a `p/` key never shows up in the public cursor map. The
+		// server appends the user id, making the stored key `<channelKey>:read:<userId>`.
+		const cursorDoc = await fixture.asPage.mutation(api.plugins_data.user_put_owned_document, {
+			collection: "channels",
+			key: `${SCOPE_ID}:read`,
+			value: { lastReadAt: Date.now() },
+		});
+		if (cursorDoc._nay) {
+			throw new Error(cursorDoc._nay.message);
+		}
+		expect(await advance_channels()).toEqual([]);
+
+		// Anchor it: the channel document itself in the same collection still marks the channel dirty.
+		// Step the clock first — the fence orders a shared millisecond by creation time, and the
+		// channel doc is older than the read cursor written above.
+		vi.advanceTimersByTime(5);
+		await put_public_channel(fixture, SCOPE_ID, "war-room-renamed");
+		expect(await advance_channels()).toEqual([SCOPE_ID]);
+	});
+
+	test("a scope change during a rebuild keeps the channel dirty", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		const bob = await join_workspace_member(t, fixture, "chitchat-bob");
+		const carol = await join_workspace_member(t, fixture, "chitchat-carol");
+		await set_scope_member(fixture, bob.userId);
+
+		// What the sync sees when it picks the channel up.
+		const picked = await t.query(internal.plugins_projections_chitchat.peek_dirty_channel, {
+			installationId: fixture.installationId,
+		});
+		expect(picked?.channelKey).toBe(SCOPE_ID);
+
+		// A second membership change lands while the rebuild is in flight. It writes no store
+		// document, so this dirty row is the only record of it.
+		await set_scope_member(fixture, carol.userId);
+
+		await t.mutation(internal.plugins_projections_chitchat.complete_dirty_channel, {
+			installationId: fixture.installationId,
+			channelKey: SCOPE_ID,
+			updatedAt: picked!.updatedAt,
+		});
+
+		const stillDirty = await t.run(async (ctx) => {
+			const rows = await ctx.db
+				.query("plugins_data_projection_dirty_channels")
+				.withIndex("by_installation_channelKey", (q) => q.eq("installationId", fixture.installationId))
+				.collect();
+			return rows.map((row) => row.channelKey);
+		});
+		expect(stillDirty).toEqual([SCOPE_ID]);
+	});
+
+	test("archiving the channel keeps its scoped cursors", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const fixture = await seed_private_channel(t);
+		await append_public_message(fixture, SCOPE_ID, "archived cursors", "cursor-archive-1");
+		await flush_projection(t);
+		const before = await read_projection_state(t, fixture.installationId);
+		expect(before?.cursors[`${SCOPE_ID}:messages`]).toBeDefined();
+
+		const archived = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "channels",
+			key: SCOPE_ID,
+			value: { name: "war-room", archivedAt: Date.now() },
+		});
+		if (archived._nay) {
+			throw new Error(archived._nay.message);
+		}
+		await flush_projection(t);
+
+		// The scope is still alive, so the scoped pass keeps listing it. Dropping the fences here
+		// would make the next run re-read the channel's whole history from the start.
+		const after = await read_projection_state(t, fixture.installationId);
+		expect(after?.cursors[`${SCOPE_ID}:messages`]).toEqual(before?.cursors[`${SCOPE_ID}:messages`]);
 	});
 
 	test("a scoped message advances the scoped cursor and dirties only the private channel", async () => {

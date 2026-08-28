@@ -127,9 +127,15 @@ node** as `resourceId`. Nothing writes a `public` grant, and the share validator
 scope member on a private channel's projection folder, mirroring the `plugin_scope` grants. The sync
 owns that folder's grant list — it deletes anything else on the folder, including grants a person
 added by hand through the share dialog, and it never writes more than `content.read` (a file `manage`
-grant would let a channel manager unrestrict or re-share the folder). Removals are also applied
-synchronously inside `user_manage_scope` (`db_sync_scope_projection_acl` in `plugins_data.ts`), so a
-removed member loses the folder in the same transaction; adds wait for the next sync.
+grant would let a channel manager unrestrict or re-share the folder). That clean-up runs when that
+channel next syncs, not on every sync, so a hand-added grant on a quiet channel's folder survives
+until the next message or membership change there. Only the owner can add one: `content.read` is all
+the mirror hands out, and every `files_sharing.ts` writer needs `content.permissions.manage` on the
+node. Removals are applied synchronously inside `user_manage_scope`
+(`db_sync_scope_projection_acl` in `plugins_data.ts`), so a removed member loses the folder in the
+same transaction; adds wait for the next sync. Archiving the channel deletes the mirrored grants
+outright (`archive_projection_channel`), because the folder map row it deletes is the only way back
+to them.
 
 `plugins_data.user_manage_scope` writes the `plugin_scope` grants. `resourceId` is
 `"<installationId>:<scopeId>"` — the installation is part of it because two installations may mint the
@@ -683,6 +689,14 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   there. `files_nodes_db_create_node_recursively_at_path` answers `"This file already exists."`, and
   the public write route answers `"Permission denied"`. Neither hands over the name, the content or
   the author, and hiding it would need two nodes on one path. Accepted, not overlooked.
+- **`/chitchat/private` sharpens that oracle and is the current worst case.** Every private Chitchat
+  channel folder hangs off that one unrestricted, well-known parent, and each folder is named after
+  its channel, so guessing there is cheaper than guessing anywhere else — and the refusal strings
+  differ by case (`create_folder_node` on an existing unreadable child answers `"Permission denied"`,
+  a free name answers `"This item is read-only."` from the root lock). The names of the channels are
+  the secret the projection is protecting, so if this oracle is ever closed, close it by collapsing
+  those two answers the way `create_upload_nodes` collapses its skips into `"conflict"`. Known and
+  accepted for now; the tree itself lists no channel folder to a non-member.
 - **The folder import widens that oracle's budget, on purpose.** `files_nodes.create_upload_nodes`
   reports per-item skips, and a skip is the same class of probe. The payload never says why: a
   permission refusal and a user-chosen skip both answer the one literal `"conflict"`. Each item is

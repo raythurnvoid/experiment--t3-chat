@@ -591,6 +591,12 @@ export const plugins_PRIVATE_FOLDER_ROLLOVER_INDEX = -1;
 const MIRROR_GRANT_TAKE = 256;
 
 /**
+ * How many children of an adopted private folder one pass archives. A channel folder holds only
+ * that channel's rollover files, so this covers a 150 MB transcript's worth of them.
+ */
+const LEFTOVER_ARCHIVE_TAKE = 256;
+
+/**
  * Reuse or create the restricted folder that holds one private channel's files.
  *
  * The folder inherits the read-only lock from the locked projection root and carries its own
@@ -649,6 +655,7 @@ export const ensure_private_channel_folder = internalMutation({
 		const candidates = [args.folderPath, args.collisionFolderPath];
 		let folderPath: string | null = null;
 		let folderNodeId: Id<"files_nodes"> | null = null;
+		let adoptedLeftover = false;
 
 		for (const candidate of candidates) {
 			const occupant = await db_get_active_node_by_path(ctx, {
@@ -682,6 +689,7 @@ export const ensure_private_channel_folder = internalMutation({
 
 				folderPath = occupant.path;
 				folderNodeId = occupant._id;
+				adoptedLeftover = true;
 				break;
 			}
 		}
@@ -720,6 +728,29 @@ export const ensure_private_channel_folder = internalMutation({
 			workspaceId: installation.workspaceId,
 			folder,
 		});
+
+		// An adopted folder can still hold files from the channel that used to live here. Uninstall
+		// and disable delete the map rows but leave the files, so a new channel with the same name
+		// finds an unmapped folder and takes it. Its members are about to be granted read on this
+		// folder, and the grant covers everything inside, so archive what this channel did not write.
+		// The channel's own files are rebuilt from the store right after this.
+		if (adoptedLeftover) {
+			const leftovers = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", installation.organizationId)
+						.eq("workspaceId", installation.workspaceId)
+						.eq("parentId", folder._id),
+				)
+				.take(LEFTOVER_ARCHIVE_TAKE);
+			const leftoverIds = leftovers
+				.filter((node) => node.archiveOperationId === undefined)
+				.map((node) => node._id);
+			if (leftoverIds.length > 0) {
+				await files_nodes_db_archive_nodes(ctx, { nodeIds: leftoverIds, updatedBy: writerUserId, now });
+			}
+		}
 
 		if (mappedRow) {
 			await ctx.db.patch("plugins_data_projection_files", mappedRow._id, {
@@ -917,6 +948,25 @@ export const archive_projection_channel = internalMutation({
 				updatedBy: state.writerUserId,
 				now: Date.now(),
 			});
+		}
+
+		// A private channel's mirrored grants hang off its folder, and the folder map row is the only
+		// way back to them. The row is deleted right below, so take the grants now. Left behind they
+		// would be unreachable forever: nothing could remove them, and somebody dropped from the
+		// channel afterwards would keep reading the archived copy.
+		const folderRow = docs.find((doc) => doc.rolloverIndex === plugins_PRIVATE_FOLDER_ROLLOVER_INDEX);
+		if (folderRow) {
+			const folderGrants = await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+					q
+						.eq("organizationId", state.organizationId)
+						.eq("workspaceId", state.workspaceId)
+						.eq("resourceKind", "file")
+						.eq("resourceId", String(folderRow.fileNodeId)),
+				)
+				.take(MIRROR_GRANT_TAKE);
+			await Promise.all(folderGrants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)));
 		}
 
 		await Promise.all(docs.map((doc) => ctx.db.delete("plugins_data_projection_files", doc._id)));

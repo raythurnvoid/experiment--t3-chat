@@ -11,6 +11,14 @@ import { compareValues } from "convex/values";
  *
  * `lastCreationTime` is optional because the field arrived on populated cursor records. A cursor
  * without it keeps every tied doc, which re-marks channels dirty once — idempotent, never lossy.
+ *
+ * This is exactly-once for inserts, and that is the whole guarantee. A store write to an existing
+ * key is a patch: it bumps `updatedAt` but keeps the original `_creationTime`, so on the fence
+ * millisecond it sorts *before* a document inserted in that same millisecond. If a scan reads the
+ * insert and the patch lands right after, the patch is behind the fence and never applied — an
+ * edit, a delete, a removed reaction, or a rename can stay out of the file until that channel
+ * changes again. Widening the fence to keep the whole millisecond would re-mark those channels
+ * dirty on every run and the sync would never settle, so this is the accepted trade.
  */
 export type plugins_ProjectionCursor = {
 	updatedAt: number;

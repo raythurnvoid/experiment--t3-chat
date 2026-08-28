@@ -749,7 +749,7 @@ async function run_chitchat_sync(
 	while (processed < CHANNELS_PER_SYNC) {
 		const channel = (await ctx.runQuery(internal.plugins_projections_chitchat.peek_dirty_channel, {
 			installationId: args.installationId,
-		})) as { channelKey: string } | null;
+		})) as { channelKey: string; updatedAt: number } | null;
 		if (channel === null) {
 			break;
 		}
@@ -766,6 +766,7 @@ async function run_chitchat_sync(
 			await ctx.runMutation(internal.plugins_projections_chitchat.complete_dirty_channel, {
 				installationId: args.installationId,
 				channelKey: channel.channelKey,
+				updatedAt: channel.updatedAt,
 			});
 			processed += 1;
 			continue;
@@ -846,13 +847,14 @@ async function run_chitchat_sync(
 		await ctx.runMutation(internal.plugins_projections_chitchat.complete_dirty_channel, {
 			installationId: args.installationId,
 			channelKey: channel.channelKey,
+			updatedAt: channel.updatedAt,
 		});
 		processed += 1;
 	}
 
 	const moreDirty = (await ctx.runQuery(internal.plugins_projections_chitchat.peek_dirty_channel, {
 		installationId: args.installationId,
-	})) as { channelKey: string } | null;
+	})) as { channelKey: string; updatedAt: number } | null;
 
 	await ctx.runMutation(internal.plugins_projections.finish_sync, {
 		installationId: args.installationId,
@@ -950,9 +952,18 @@ export const advance_collection_cursor = internalMutation({
 		const truncated = fresh.length > pageSize || raw.length === takeSize;
 
 		for (const doc of page) {
-			// Inside a scope no key parsing is needed: the scope id is the channel key.
-			const channelKey =
-				args.scopeId !== undefined ? args.scopeId : plugins_projections_chitchat_channel_key(args.collection, doc.key);
+			let channelKey: string | null;
+			if (args.scopeId === undefined) {
+				channelKey = plugins_projections_chitchat_channel_key(args.collection, doc.key);
+			} else if (args.collection === "channels" && doc.key !== args.scopeId) {
+				// The `channels` collection inside a scope also holds each member's private read
+				// cursor, stored as `<channelKey>:read:<userId>`. That is not channel content, and
+				// rebuilding the whole file every time somebody opens the channel is pure churn.
+				channelKey = null;
+			} else {
+				// Otherwise no key parsing is needed inside a scope: the scope id is the channel key.
+				channelKey = args.scopeId;
+			}
 			if (channelKey === null) {
 				continue;
 			}
@@ -1119,12 +1130,13 @@ export const reconcile_public_channels = internalMutation({
 
 /**
  * Archive mapped private channels whose scope is gone or whose channel doc is archived, and
- * drop the dead scope's cursor fences so the cursor record does not grow forever.
+ * drop a deleted scope's cursor fences so the cursor record does not grow forever.
  *
  * `archive_projection_channel` archives every mapped node of the channel, and the folder map
- * row (`rolloverIndex` -1) makes the restricted folder one of them. The folder keeps its grants
- * while archived — hidden from everyone but its old members and the owner, same freeze rule as
- * an uninstall.
+ * row (`rolloverIndex` -1) makes the restricted folder one of them. It takes the folder's
+ * mirrored grants with it: after the map row is gone nothing could reach them again, so somebody
+ * dropped from the channel later would keep reading the archived copy. The archived copy stays
+ * readable to the organization owner, like every other archived file.
  */
 export const reconcile_private_channels = internalMutation({
 	args: {
@@ -1175,11 +1187,17 @@ export const reconcile_private_channels = internalMutation({
 				continue;
 			}
 
-			deadScopeIds.push(channelKey);
 			await ctx.scheduler.runAfter(0, internal.plugins_projections.archive_projection_channel, {
 				installationId: args.installationId,
 				channelKey,
 			});
+
+			// Drop the fences only when the scope itself is gone. An archived channel keeps its scope,
+			// so the scoped pass still lists it every run, and a dropped fence would make the next run
+			// re-read the channel's whole history from the start.
+			if (scopeRow === null) {
+				deadScopeIds.push(channelKey);
+			}
 		}
 
 		if (deadScopeIds.length > 0) {
@@ -1203,7 +1221,7 @@ export const peek_dirty_channel = internalQuery({
 	args: {
 		installationId: v.id("plugins_workspace_installations"),
 	},
-	returns: v.union(v.object({ channelKey: v.string() }), v.null()),
+	returns: v.union(v.object({ channelKey: v.string(), updatedAt: v.number() }), v.null()),
 	handler: async (ctx, args) => {
 		const dirty = await ctx.db
 			.query("plugins_data_projection_dirty_channels")
@@ -1213,14 +1231,23 @@ export const peek_dirty_channel = internalQuery({
 			return null;
 		}
 
-		return { channelKey: dirty.channelKey };
+		return { channelKey: dirty.channelKey, updatedAt: dirty.updatedAt };
 	},
 });
 
+/**
+ * Drop the dirty row this run just rebuilt.
+ *
+ * `updatedAt` is the value the run saw when it picked the channel up. A scope membership change
+ * writes no store document, so no cursor can find it again: the dirty row is the only record that
+ * it happened. If one lands while the channel is being rebuilt it bumps `updatedAt`, and deleting
+ * the row anyway would lose that change for good. Keep the row instead and let the next run take it.
+ */
 export const complete_dirty_channel = internalMutation({
 	args: {
 		installationId: v.id("plugins_workspace_installations"),
 		channelKey: v.string(),
+		updatedAt: v.number(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1230,7 +1257,7 @@ export const complete_dirty_channel = internalMutation({
 				q.eq("installationId", args.installationId).eq("channelKey", args.channelKey),
 			)
 			.first();
-		if (dirty) {
+		if (dirty && dirty.updatedAt === args.updatedAt) {
 			await ctx.db.delete("plugins_data_projection_dirty_channels", dirty._id);
 		}
 
@@ -1268,6 +1295,22 @@ export const load_channel_projection = internalQuery({
 		// whose id is the channel key. Any other pairing is not a projectable channel.
 		if (isPrivate ? channelDoc.scopeId !== args.channelKey : channelDoc.scopeId !== undefined) {
 			return null;
+		}
+
+		// Deleting a scope leaves its documents in place so nobody can claim the key range again, so
+		// the channel doc alone still looks alive. Read the scope row too. Without it there is no
+		// membership list to mirror, and the dirty row the delete leaves behind would rebuild the
+		// whole transcript into a folder that `reconcile_private_channels` just archived.
+		if (isPrivate) {
+			const scopeRow = await ctx.db
+				.query("plugins_data_scopes")
+				.withIndex("by_installation_scope", (q) =>
+					q.eq("installationId", args.installationId).eq("scopeId", args.channelKey),
+				)
+				.first();
+			if (!scopeRow) {
+				return null;
+			}
 		}
 
 		const channelValue = as_channel_value(channelDoc.value);
@@ -1463,7 +1506,12 @@ async function db_mark_channel_dirty(
 		)
 		.first();
 	if (existing) {
-		await ctx.db.patch("plugins_data_projection_dirty_channels", existing._id, { updatedAt: Date.now() });
+		// `complete_dirty_channel` compares this stamp to decide whether a change landed while the
+		// channel was being rebuilt. Two mutations can share one `Date.now()`, so step past the
+		// stored value instead of writing the clock, and every mark is visible to that check.
+		await ctx.db.patch("plugins_data_projection_dirty_channels", existing._id, {
+			updatedAt: Math.max(Date.now(), existing.updatedAt + 1),
+		});
 		return;
 	}
 
