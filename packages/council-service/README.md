@@ -261,6 +261,16 @@ A later room-client fix is live as `council-room-r32`. Chrome's Stop sharing bar
 Share button `aria-pressed` state, and a failed in-app stop no longer names the screen-share
 permission.
 
+Update 2026-08-30:
+
+- The Worker serves the custom domain `https://council.bonobo-senate.com` beside the workers.dev
+  host (`routes` + `workers_dev: true` in `wrangler.jsonc`). Ticket and guest URLs follow whichever
+  host served the request. The provider webhook target still points at the workers.dev host, so do
+  not turn `workers_dev` off.
+- Council plugin `0.2.3` (`sourceCommitSha` `7496551eacff664d1a9ee832cba42c24f8078498`) moves
+  `COUNCIL_SERVICE_ORIGIN` and the manifest `uiOutboundOrigins` to the custom domain. Updating an
+  installation to it asks to re-accept that origin.
+
 ### 1. Probe the live Worker and D1 (read-only)
 
 Compare the served room marker with `ROOM_REVISION` in `src/room/page.ts`:
@@ -511,7 +521,7 @@ vp env exec pnpx wrangler d1 execute bonobo-council --remote --config packages/c
 
 | Resource          | Name                        | Note                                                                                                                                       |
 | ----------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Worker            | `bonobo-council-service`    | Deployed at `https://bonobo-council-service.ray-thurne-void.workers.dev`                                                                   |
+| Worker            | `bonobo-council-service`    | Deployed at `https://council.bonobo-senate.com` (custom domain) and `https://bonobo-council-service.ray-thurne-void.workers.dev`           |
 | D1 database       | `bonobo-council`            | `b32e1b59-11ad-4086-9c92-72480e820e16`, region WEUR, migrations `0001` through `0008` applied to remote. Do not re-apply `0004`–`0008`. |
 | Queue             | `bonobo-council-events`     | 8-day message retention; consumer on this Worker, `max_batch_size` 1, `max_retries` 5                                                      |
 | Dead-letter queue | `bonobo-council-events-dlq` | 8-day message retention; consumed by this Worker to mark outbox rows `dead`                                                                |

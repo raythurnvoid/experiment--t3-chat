@@ -2,6 +2,14 @@
 	"$schema": "https://unpkg.com/wrangler/config-schema.json",
 	"name": "bonobo-council-service",
 	"main": "src/index.ts",
+	// The public custom domain for the room and its APIs. `custom_domain: true` makes Cloudflare
+	// create the DNS record and certificate on the bonobo-senate.com zone at deploy time. The
+	// workers.dev host keeps working; ticket URLs follow whichever host served the request.
+	"routes": [{ "pattern": "council.bonobo-senate.com", "custom_domain": true }],
+	// Adding `routes` makes wrangler disable the workers.dev host by default. Keep it on: the
+	// provider webhook target and older recorded links still use the workers.dev origin. The
+	// Council plugin calls the custom domain since 0.2.3.
+	"workers_dev": true,
 	// From 2026-08-04 the runtime enables `nodejs_compat` and `nodejs_compat_v2` by itself, so this
 	// Worker declares no compatibility flags at all. Adding them back would be a no-op today and a
 	// contradiction the next reader has to resolve.

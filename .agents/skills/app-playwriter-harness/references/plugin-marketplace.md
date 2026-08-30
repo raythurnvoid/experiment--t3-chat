@@ -43,6 +43,8 @@ The claim form's submit button is named `Claim` (`exact: true`) — there is no 
 
 A CLI `install_version` does not refresh an already-open plugin frame. Reload the plugin page tab, then wait for `/plugins-ui/` again. Verified 2026-08-27 on Council after upgrading `0.2.0` to `0.2.1`.
 
+**The GitHub Pages host can serve a frontend older than the deployed backend, and its Publish button then cannot publish at all.** Verified 2026-08-30: the deployed bundle predated the SHA-confirmation dialog, so `Publish` called `plugins:publish_version` with only `{repositoryId}` and the backend refused with `ArgumentValidationError: missing expectedSourceCommitSha` — no dialog ever opens, the page shows nothing (the error is only in the console), and the click itself LANDS, so a focus+Enter "retry" just logs a second refused attempt. Arg validation runs before the handler, so these refused attempts publish nothing. Recovery: the signed-in CLI recipe above (`plugins:get_publish_candidate_head` → verify the SHA independently, e.g. `git ls-remote` → `plugins:publish_version` with `--identity` on the claim's `ownerUserId`). The update/consent flow on that same stale frontend works fine.
+
 ## Publishing a QA fixture plugin without GitHub
 
 When a check needs a plugin with an arbitrary manifest (for example specific `secrets[]` declarations), publishing through GitHub is overkill. Claim a fake repository URL through the publisher UI as the signed-in user, then register the version with the operator-invokable internal mutations from the CLI (see the CLI recipe in `snippets.md` for the command wrapper and the JSON5 args syntax):
