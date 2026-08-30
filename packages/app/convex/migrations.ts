@@ -1264,6 +1264,148 @@ export const audit_plugin_scope_last_append_defaults_page = internalQuery({
 	},
 });
 
+/** Stamp one legacy private projection only after its map, locks, scope, and readers still agree. */
+export const migrate_proved_projection_private_folder_authority = internalMutation({
+	args: { projectionFileId: v.id("plugins_data_projection_files") },
+	returns: v.object({ migrated: v.boolean() }),
+	handler: async (ctx, args) => {
+		const projectionFile = await ctx.db.get("plugins_data_projection_files", args.projectionFileId);
+		if (!projectionFile || projectionFile.rolloverIndex !== plugins_PRIVATE_FOLDER_ROLLOVER_INDEX) {
+			throw new Error("Expected one legacy Chitchat private-folder map");
+		}
+
+		const [installation, state, folder] = await Promise.all([
+			ctx.db.get("plugins_workspace_installations", projectionFile.installationId),
+			ctx.db
+				.query("plugins_data_projection_states")
+				.withIndex("by_installation", (q) => q.eq("installationId", projectionFile.installationId))
+				.first(),
+			ctx.db.get("files_nodes", projectionFile.fileNodeId),
+		]);
+		const root = state?.rootFolderNodeId ? await ctx.db.get("files_nodes", state.rootFolderNodeId) : null;
+		const [activeRoot, activeFolder] = await Promise.all([
+			root
+				? ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+							q
+								.eq("organizationId", projectionFile.organizationId)
+								.eq("workspaceId", projectionFile.workspaceId)
+								.eq("path", root.path)
+								.eq("archiveOperationId", undefined),
+						)
+						.first()
+				: null,
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", projectionFile.organizationId)
+						.eq("workspaceId", projectionFile.workspaceId)
+						.eq("path", projectionFile.path)
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		]);
+		const provedNodes =
+			installation?.pluginName === "chitchat" &&
+			installation.organizationId === projectionFile.organizationId &&
+			installation.workspaceId === projectionFile.workspaceId &&
+			state?.pluginName === "chitchat" &&
+			state.organizationId === projectionFile.organizationId &&
+			state.workspaceId === projectionFile.workspaceId &&
+			root !== null &&
+			activeRoot?._id === root._id &&
+			root.kind === "folder" &&
+			root.readOnlyScopeNodeId === root._id &&
+			(root.projectionPluginName === undefined || root.projectionPluginName === "chitchat") &&
+			folder !== null &&
+			activeFolder?._id === folder._id &&
+			folder.kind === "folder" &&
+			folder.readOnlyScopeNodeId === root._id &&
+			folder.restrictedScopeNodeId === folder._id &&
+			(folder.projectionPluginName === undefined || folder.projectionPluginName === "chitchat");
+		if (!provedNodes) {
+			throw new Error("Legacy Chitchat private-folder authority is not proved");
+		}
+
+		const scopes = await ctx.db
+			.query("plugins_data_scopes")
+			.withIndex("by_installation_scope", (q) =>
+				q.eq("installationId", projectionFile.installationId).eq("scopeId", projectionFile.channelKey),
+			)
+			.take(plugins_data_MAX_COLLECTIONS + 1);
+		if (
+			scopes.length === 0 ||
+			scopes.length > plugins_data_MAX_COLLECTIONS ||
+			scopes.some(
+				(scope) =>
+					scope.organizationId !== projectionFile.organizationId ||
+					scope.workspaceId !== projectionFile.workspaceId ||
+					scope.keyPrefix !== projectionFile.channelKey,
+			)
+		) {
+			throw new Error("Legacy Chitchat private-folder scope is not proved");
+		}
+
+		const scopeResourceId = `${projectionFile.installationId}:${projectionFile.channelKey}`;
+		const [scopeGrants, folderGrants] = await Promise.all([
+			ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+					q
+						.eq("organizationId", projectionFile.organizationId)
+						.eq("workspaceId", projectionFile.workspaceId)
+						.eq("resourceKind", "plugin_scope")
+						.eq("resourceId", scopeResourceId),
+				)
+				.take(101),
+			ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+					q
+						.eq("organizationId", projectionFile.organizationId)
+						.eq("workspaceId", projectionFile.workspaceId)
+						.eq("resourceKind", "file")
+						.eq("resourceId", String(folder._id)),
+				)
+				.take(101),
+		]);
+		if (scopeGrants.length > 100 || folderGrants.length > 100) {
+			throw new Error("Legacy Chitchat private-folder grant proof is too large");
+		}
+		if (
+			scopeGrants.length === 0 ||
+			scopeGrants.some((grant) => grant.principalKind !== "user" || grant.userId === undefined)
+		) {
+			throw new Error("Legacy Chitchat private-folder readers are not proved");
+		}
+		const expectedUsers = new Set(scopeGrants.flatMap((grant) => (grant.userId ? [grant.userId] : [])));
+		const actualUsers = new Set<Id<"users">>();
+		for (const grant of folderGrants) {
+			if (
+				grant.principalKind !== "user" ||
+				grant.userId === undefined ||
+				grant.permission !== "content.read" ||
+				actualUsers.has(grant.userId)
+			) {
+				throw new Error("Legacy Chitchat private-folder readers are not proved");
+			}
+			actualUsers.add(grant.userId);
+		}
+		if (expectedUsers.size !== actualUsers.size || [...expectedUsers].some((userId) => !actualUsers.has(userId))) {
+			throw new Error("Legacy Chitchat private-folder readers are not proved");
+		}
+
+		const migrated = root.projectionPluginName !== "chitchat" || folder.projectionPluginName !== "chitchat";
+		await Promise.all([
+			ctx.db.patch("files_nodes", root._id, { projectionPluginName: "chitchat" }),
+			ctx.db.patch("files_nodes", folder._id, { projectionPluginName: "chitchat" }),
+		]);
+		return { migrated };
+	},
+});
+
 /** Prove every surviving member counter uses exact document-bound generations. */
 export const audit_legacy_plugins_data_member_usage_page = internalQuery({
 	args: { cursor: v.union(v.null(), v.string()) },

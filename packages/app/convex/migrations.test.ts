@@ -1694,6 +1694,28 @@ describe("projection scaling cutover migrations", () => {
 				path: "/chitchat/private/war-room",
 				updatedAt: now,
 			});
+			await ctx.db.insert("plugins_data_scopes", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				installationId: fixture.installationId,
+				scopeId: "p/war-room",
+				collection: "messages",
+				keyPrefix: "p/war-room",
+				createdByUserId: fixture.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				resourceKind: "plugin_scope",
+				resourceId: `${fixture.installationId}:p/war-room`,
+				principalKind: "user",
+				userId: fixture.userId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
 			const grantId = await ctx.db.insert("access_control_permission_grants", {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
@@ -1743,15 +1765,18 @@ describe("projection scaling cutover migrations", () => {
 		// This simulates the operator choosing a proof-based migration instead of erasing the folder.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", seeded.rootId, {
-				projectionPluginName: "chitchat",
 				readOnlyScopeNodeId: seeded.rootId,
 			});
 			await ctx.db.patch("files_nodes", seeded.privateFolderId, {
-				projectionPluginName: "chitchat",
 				readOnlyScopeNodeId: seeded.rootId,
 				restrictedScopeNodeId: seeded.privateFolderId,
 			});
 		});
+		expect(
+			await t.mutation(internal.migrations.migrate_proved_projection_private_folder_authority, {
+				projectionFileId: seeded.privateMapId,
+			}),
+		).toEqual({ migrated: true });
 		await t.mutation(internal.migrations.audit_projection_private_folder_authority, {
 			cursor: null,
 			batchSize: 100,
