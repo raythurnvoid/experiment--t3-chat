@@ -109,6 +109,10 @@ The ceiling around it: the mint refuses outright unless the installation accepte
 Publishing behavior in `publish_version_from_github` (`packages/app/convex/plugins.ts`):
 
 - Declared over-limit input is rejected before any file fetch, upload, or registration.
+- Each review model request has two bounded retries for retryable provider errors. The AI SDK honors
+  `Retry-After`, and the review's five-minute abort signal covers both requests and retry waits. Keep
+  the retry inside the current review: restarting the publish repeats its earlier model calls and can
+  hit the same token-rate window at the same later step.
 - After reading only branch HEAD and the manifest, publishing rejects foreign plugin-name ownership and conflicting immutable versions before artifact downloads, AI review, uploads, or cleanup-attempt writes.
 - Bodies are read through `read_response_body_bounded` — a streaming reader that cancels past the bound. `Content-Length` may pre-reject but is never the enforcement boundary. Exact byte-count and SHA-256 checks still run after the read.
 - Downloads and uploads each run through a 4-wide shared-index worker loop (`ARTIFACT_DOWNLOAD_CONCURRENCY` / `ARTIFACT_UPLOAD_CONCURRENCY`), never unbounded `Promise.all`.

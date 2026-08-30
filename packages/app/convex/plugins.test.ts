@@ -22,7 +22,7 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 
-// Keep the provider call visible so this module can verify that automatic retries stay disabled.
+// Keep the provider call visible so this module can verify the bounded retry policy.
 const ai = vi.hoisted(() => ({ generateText: vi.fn() }));
 
 vi.mock("ai", async (importOriginal) => ({
@@ -8566,16 +8566,35 @@ describe("plugins publish_version", () => {
 		expect(verdictBody.text.format.schema.properties).toHaveProperty("verdict");
 	});
 
-	test("makes one provider attempt for an AI review", async () => {
-		ai.generateText.mockReset().mockResolvedValue({
-			output: { verdict: "passed", findings: [] },
-		});
+	test("keeps retryable provider failures inside the current AI review", async () => {
+		vi.mocked(plugins_ai_review.generate_step).mockRestore();
+		ai.generateText
+			.mockReset()
+			.mockResolvedValueOnce({
+				output: {
+					tool: "done",
+					path: "",
+					startLine: 0,
+					lineCount: 0,
+					startByte: 0,
+					byteCount: 0,
+					literal: "",
+					pathGlob: "",
+					notes: [],
+				},
+			})
+			.mockResolvedValueOnce({
+				output: { verdict: "passed", findings: [] },
+			});
 
 		const abortSignal = new AbortController().signal;
+		await plugins_ai_review.generate_step({ system: "policy", prompt: "artifact", abortSignal });
 		await plugins_ai_review.generate_verdict({ system: "policy", prompt: "artifact", abortSignal });
 
-		expect(ai.generateText).toHaveBeenCalledOnce();
-		expect(ai.generateText).toHaveBeenCalledWith(expect.objectContaining({ maxRetries: 0, abortSignal }));
+		expect(ai.generateText).toHaveBeenCalledTimes(2);
+		for (const [options] of ai.generateText.mock.calls) {
+			expect(options).toEqual(expect.objectContaining({ maxRetries: 2, abortSignal }));
+		}
 	});
 
 	test("does not cache a negative verdict without a usable finding", async () => {

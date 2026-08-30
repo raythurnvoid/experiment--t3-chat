@@ -150,6 +150,9 @@ const REVIEW_GLOB_MAX_WILDCARDS = 8;
  */
 const REVIEW_STEP_MAX_OUTPUT_TOKENS = 16_000;
 const REVIEW_VERDICT_MAX_OUTPUT_TOKENS = 32_000;
+// Keep a retryable provider error inside this review. Restarting the whole publish repeats every
+// earlier model call and can hit the same token-rate window again before it reaches this step.
+const REVIEW_MODEL_MAX_RETRIES = 2;
 const REVIEW_GREP_MAX_MATCHES = 50;
 const REVIEW_GREP_MAX_LINE_CHARS = 400;
 /**
@@ -1574,8 +1577,8 @@ export const plugins_ai_review = {
 			// schema and the reasoning effort. Do not switch this back to `openai(...)` without a way to
 			// read only the final message.
 			model: openai.chat(REVIEW_MODEL_ID),
-			// One provider attempt per step. The host's own budget already bounds the whole loop.
-			maxRetries: 0,
+			// The AI SDK honors Retry-After. The review deadline still bounds every attempt and wait.
+			maxRetries: REVIEW_MODEL_MAX_RETRIES,
 			// A step is a short move plus a few notes, but the model is a reasoning model, and its thinking
 			// is charged against this same ceiling before it writes a single visible character. Budgeting
 			// only for the visible answer made every step fail: the model spent the ceiling on reasoning,
@@ -1596,8 +1599,8 @@ export const plugins_ai_review = {
 		const result = await generateText({
 			// Chat completions for the same reason as the step call above: one message per answer.
 			model: openai.chat(REVIEW_MODEL_ID),
-			// The publish action retries a failed review later; one security-gate run gets one provider attempt.
-			maxRetries: 0,
+			// Keep transient provider failures inside this security-gate run for the same reason as a step.
+			maxRetries: REVIEW_MODEL_MAX_RETRIES,
 			// The verdict is short, but the capability map grows with what the manifest declares: up to 16
 			// capabilities plus 16 backend and 16 UI origins, each with a path and a line of evidence.
 			// The model's reasoning is charged against this ceiling too, so the budget covers both.
