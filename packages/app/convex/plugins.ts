@@ -153,6 +153,10 @@ const REVIEW_VERDICT_MAX_OUTPUT_TOKENS = 32_000;
 // Keep a retryable provider error inside this review. Restarting the whole publish repeats every
 // earlier model call and can hit the same token-rate window again before it reaches this step.
 const REVIEW_MODEL_MAX_RETRIES = 2;
+// Leave a small cushion because the provider's request estimate can differ from the exact input count.
+const REVIEW_RATE_LIMIT_TOKEN_MARGIN = 1_000;
+const REVIEW_RATE_LIMIT_WAIT_PADDING_MS = 250;
+const REVIEW_RATE_LIMIT_WAIT_JITTER_MS = 250;
 const REVIEW_GREP_MAX_MATCHES = 50;
 const REVIEW_GREP_MAX_LINE_CHARS = 400;
 /**
@@ -1521,7 +1525,52 @@ function review_wall_clock_expired(startedAt: number, deadlineSignal: AbortSigna
 	return deadlineSignal.aborted || Date.now() - startedAt > REVIEW_MAX_WALL_CLOCK_MS;
 }
 
-// Kept as a spy-able object so tests can stub the verdict without mocking OpenAI HTTP responses.
+type ReviewTokenRateLimitWindow = {
+	remainingTokens: number;
+	availableAt: number;
+};
+
+function review_parse_rate_limit_reset_ms(value: string | null) {
+	if (!value) {
+		return null;
+	}
+
+	let parsedMs = 0;
+	let consumedCharacters = 0;
+	for (const part of value.matchAll(/(\d+(?:\.\d+)?)(ms|s|m|h)/gu)) {
+		if (part.index !== consumedCharacters) {
+			return null;
+		}
+		const amount = Number(part[1]);
+		const unit = part[2];
+		parsedMs += amount * (unit === "h" ? 60 * 60 * 1000 : unit === "m" ? 60 * 1000 : unit === "s" ? 1000 : 1);
+		consumedCharacters += part[0].length;
+	}
+
+	return consumedCharacters === value.length ? Math.ceil(parsedMs) : null;
+}
+
+function review_read_token_rate_limits(headers: Record<string, string> | undefined) {
+	if (!headers) {
+		return [];
+	}
+
+	const normalized = new Headers(headers);
+	const now = Date.now();
+	return [
+		["x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens"],
+		["x-ratelimit-remaining-project-tokens", "x-ratelimit-reset-project-tokens"],
+	].flatMap(([remainingHeader, resetHeader]) => {
+		const remainingValue = normalized.get(remainingHeader);
+		const remainingTokens = Number(remainingValue);
+		const resetMs = review_parse_rate_limit_reset_ms(normalized.get(resetHeader));
+		return remainingValue !== null && Number.isFinite(remainingTokens) && remainingTokens >= 0 && resetMs !== null
+			? [{ remainingTokens, availableAt: now + resetMs }]
+			: [];
+	});
+}
+
+// Keep provider calls and pacing spy-able so tests do not need to mock OpenAI HTTP responses.
 export const plugins_ai_review = {
 	count_input_tokens: async (args: {
 		system: string;
@@ -1567,7 +1616,12 @@ export const plugins_ai_review = {
 	 * Kept separate from the verdict call so the loop and the final synthesis can be stubbed apart, and
 	 * so a step that returns nothing usable costs the review a step instead of a verdict.
 	 */
-	generate_step: async (args: { system: string; prompt: string; abortSignal: AbortSignal }) => {
+	generate_step: async (args: {
+		system: string;
+		prompt: string;
+		abortSignal: AbortSignal;
+		onRateLimit?: (windows: ReviewTokenRateLimitWindow[]) => void;
+	}) => {
 		const result = await generateText({
 			// Chat completions, not the Responses API. On Responses this model answers with several
 			// messages. The provider marks a few of them `commentary` and the last one `final_answer`.
@@ -1593,7 +1647,9 @@ export const plugins_ai_review = {
 			abortSignal: args.abortSignal,
 		});
 
-		return result.output;
+		const output = result.output;
+		args.onRateLimit?.(review_read_token_rate_limits(result.response.headers));
+		return output;
 	},
 	generate_verdict: async (args: { system: string; prompt: string; abortSignal: AbortSignal }) => {
 		const result = await generateText({
@@ -1615,6 +1671,42 @@ export const plugins_ai_review = {
 		// ran out of output tokens before finishing. The publish action catches the throw and refuses
 		// to register the version, so the security gate stays closed on a failed review.
 		return result.output;
+	},
+	wait_for_token_budget: async (args: {
+		windows: ReviewTokenRateLimitWindow[];
+		requestTokens: number;
+		abortSignal: AbortSignal;
+	}) => {
+		const now = Date.now();
+		const waitMs = Math.max(
+			0,
+			...args.windows
+				.filter((window) => window.remainingTokens < args.requestTokens + REVIEW_RATE_LIMIT_TOKEN_MARGIN)
+				.map((window) => window.availableAt - now),
+		);
+		if (waitMs <= 0) {
+			return !args.abortSignal.aborted;
+		}
+
+		return await new Promise<boolean>((resolve) => {
+			if (args.abortSignal.aborted) {
+				resolve(false);
+				return;
+			}
+
+			const onAbort = () => {
+				clearTimeout(timeout);
+				resolve(false);
+			};
+			const timeout = setTimeout(
+				() => {
+					args.abortSignal.removeEventListener("abort", onAbort);
+					resolve(true);
+				},
+				waitMs + REVIEW_RATE_LIMIT_WAIT_PADDING_MS + Math.floor(Math.random() * REVIEW_RATE_LIMIT_WAIT_JITTER_MS),
+			);
+			args.abortSignal.addEventListener("abort", onAbort, { once: true });
+		});
 	},
 };
 
@@ -2324,6 +2416,7 @@ export const run_version_review = internalAction({
 		const deadlineSignal = AbortSignal.timeout(REVIEW_MAX_WALL_CLOCK_MS);
 		let navigationComplete = false;
 		let subjectEvidenceRetries = 0;
+		let tokenRateLimits: ReviewTokenRateLimitWindow[] = [];
 
 		// The step counter has to outlive the loop, because which of the three ways the loop ended
 		// decides what the publisher is told below. `navigationComplete` marks the reviewer finishing.
@@ -2396,12 +2489,24 @@ export const run_version_review = internalAction({
 			if (review_wall_clock_expired(startedAt, deadlineSignal)) {
 				return Result({ _nay: { message: "Plugin review did not finish within its time limit; try again" } });
 			}
+			const hasStepTokenBudget = await plugins_ai_review.wait_for_token_budget({
+				windows: tokenRateLimits,
+				requestTokens: Math.max(stepInputTokens, REVIEW_STEP_MAX_OUTPUT_TOKENS),
+				abortSignal: deadlineSignal,
+			});
+			tokenRateLimits = [];
+			if (!hasStepTokenBudget) {
+				return Result({ _nay: { message: "Plugin review did not finish within its time limit; try again" } });
+			}
 
 			let chosen: ReviewStep;
 			try {
 				chosen = await plugins_ai_review.generate_step({
 					...stepPrompt,
 					abortSignal: deadlineSignal,
+					onRateLimit: (windows) => {
+						tokenRateLimits = windows;
+					},
 				});
 			} catch (error) {
 				// Keep provider details in the log. This model-step failure has a stable publisher message.
@@ -2543,6 +2648,14 @@ export const run_version_review = internalAction({
 			});
 		}
 		if (review_wall_clock_expired(startedAt, deadlineSignal)) {
+			return Result({ _nay: { message: "Plugin review did not finish within its time limit; try again" } });
+		}
+		const hasVerdictTokenBudget = await plugins_ai_review.wait_for_token_budget({
+			windows: tokenRateLimits,
+			requestTokens: Math.max(inputTokens, REVIEW_VERDICT_MAX_OUTPUT_TOKENS),
+			abortSignal: deadlineSignal,
+		});
+		if (!hasVerdictTokenBudget) {
 			return Result({ _nay: { message: "Plugin review did not finish within its time limit; try again" } });
 		}
 

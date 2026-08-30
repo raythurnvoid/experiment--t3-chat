@@ -8597,6 +8597,78 @@ describe("plugins publish_version", () => {
 		}
 	});
 
+	test("reads both token-rate windows from a successful model step", async () => {
+		vi.mocked(plugins_ai_review.generate_step).mockRestore();
+		vi.spyOn(Date, "now").mockReturnValue(10_000);
+		ai.generateText.mockReset().mockResolvedValue({
+			output: {
+				tool: "done",
+				path: "",
+				startLine: 0,
+				lineCount: 0,
+				startByte: 0,
+				byteCount: 0,
+				literal: "",
+				pathGlob: "",
+				notes: [],
+			},
+			response: {
+				headers: {
+					"x-ratelimit-remaining-tokens": "149984",
+					"x-ratelimit-reset-tokens": "6m0s",
+					"x-ratelimit-remaining-project-tokens": "57000",
+					"x-ratelimit-reset-project-tokens": "249ms",
+				},
+			},
+		});
+		const onRateLimit = vi.fn();
+
+		await plugins_ai_review.generate_step({
+			system: "policy",
+			prompt: "artifact",
+			abortSignal: new AbortController().signal,
+			onRateLimit,
+		});
+
+		expect(onRateLimit).toHaveBeenCalledWith([
+			{ remainingTokens: 149_984, availableAt: 370_000 },
+			{ remainingTokens: 57_000, availableAt: 10_249 },
+		]);
+	});
+
+	test("waits for a low token budget and stops waiting when the review deadline aborts", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(10_000);
+			vi.spyOn(Math, "random").mockReturnValue(0);
+			let finished = false;
+			const waiting = plugins_ai_review.wait_for_token_budget({
+				windows: [{ remainingTokens: 1_000, availableAt: 13_000 }],
+				requestTokens: 2_000,
+				abortSignal: new AbortController().signal,
+			});
+			void waiting.then(() => {
+				finished = true;
+			});
+
+			await vi.advanceTimersByTimeAsync(3_249);
+			expect(finished).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(waiting).resolves.toBe(true);
+
+			const deadline = new AbortController();
+			const aborted = plugins_ai_review.wait_for_token_budget({
+				windows: [{ remainingTokens: 0, availableAt: 30_000 }],
+				requestTokens: 2_000,
+				abortSignal: deadline.signal,
+			});
+			deadline.abort();
+			await expect(aborted).resolves.toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("does not cache a negative verdict without a usable finding", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
